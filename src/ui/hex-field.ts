@@ -72,12 +72,20 @@ export function renderHexField(
     actions.qr?.();
   });
   const refresh = map.querySelector<HTMLButtonElement>(".qr-refresh");
-  refresh?.addEventListener("pointerdown", (event) => event.stopPropagation());
-  refresh?.addEventListener("click", (event) => {
+  let lastRefreshAt = 0;
+  const refreshQr = (event: Event) => {
     event.preventDefault();
     event.stopPropagation();
+    const now = Date.now();
+    if (now - lastRefreshAt < 250) {
+      return;
+    }
+    lastRefreshAt = now;
     actions.refreshQr?.();
-  });
+  };
+  refresh?.addEventListener("pointerdown", (event) => event.stopPropagation());
+  refresh?.addEventListener("pointerup", refreshQr);
+  refresh?.addEventListener("click", refreshQr);
   map.querySelectorAll<HTMLButtonElement>(".hex.filled").forEach((button) => {
     let timer = 0;
     let held = false;

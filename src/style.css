@@ -87,11 +87,6 @@ svg {
   cursor: pointer;
 }
 
-.install p {
-  margin: 0;
-  font-size: 18px;
-}
-
 .nick-form {
   display: grid;
   grid-template-columns: 44px minmax(0, 220px) 44px;

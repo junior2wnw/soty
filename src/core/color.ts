@@ -19,3 +19,7 @@ export function colorFor(value: string): string {
   }
   return palette[Math.abs(hash) % palette.length] ?? "#0f6bff";
 }
+
+export function safeColor(value: string | undefined, fallbackSeed: string): string {
+  return value && /^#[\da-f]{6}$/iu.test(value) ? value : colorFor(fallbackSeed);
+}

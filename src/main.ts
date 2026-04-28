@@ -1,7 +1,7 @@
 import QRCode from "qrcode";
 import { JoinRequest, ReceivedFile, RemoteRequest, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
-import { colorFor } from "./core/color";
+import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { filesFrom, renderFileRail } from "./features/files";
 import { loadRemoteEnabled, setRemoteEnabled } from "./features/remote";
@@ -136,7 +136,6 @@ function renderInstall(): void {
     <section class="install">
       <div class="install-mark">${icon("install")}</div>
       <button class="install-button" type="button" aria-label="install">${icon("install")}</button>
-      <p>PWA</p>
     </section>
   `;
   app.querySelector("button")?.addEventListener("click", () => {
@@ -310,7 +309,8 @@ function renderApp(): void {
     ensureSync(tunnel);
   }
 
-  const topHeight = localStorage.getItem("soty:split:v1") || "168";
+  const storedTop = Number.parseInt(localStorage.getItem("soty:split:v1") || "", 10);
+  const topHeight = Number.isFinite(storedTop) ? String(Math.max(72, Math.min(420, storedTop))) : "168";
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
     <section class="shell" style="--top:${topHeight}px">
@@ -402,7 +402,7 @@ function renderTiles(): void {
   renderHexField(field, sorted.map((tunnel) => ({
     id: tunnel.id,
     label: counterpartyLabel(tunnel),
-    color: tunnel.color || colorFor(counterpartyLabel(tunnel) + tunnel.id),
+    color: safeColor(tunnel.color, counterpartyLabel(tunnel) + tunnel.id),
     active: tunnel.id === selectedId,
     unread: tunnel.unread
   })), {
@@ -700,7 +700,7 @@ function renderFiles(): void {
     return;
   }
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
-  const color = tunnel?.color || colorFor((tunnel?.label || selectedId) + selectedId);
+  const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
   renderFileRail(rail, files.get(selectedId) ?? [], color);
 }
 
