@@ -262,7 +262,11 @@ export class TunnelSync {
     window.removeEventListener("focus", this.wakeReconnect);
     window.removeEventListener("pageshow", this.wakeReconnect);
     document.removeEventListener("visibilitychange", this.visibleReconnect);
-    this.ws?.close();
+    const ws = this.ws;
+    this.ws = null;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
     this.doc.destroy();
   }
 
@@ -279,9 +283,13 @@ export class TunnelSync {
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.destroyed) {
+        ws.close();
+        return;
+      }
       this.lastSeenAt = Date.now();
       void this.auth.then((auth) => {
-        if (ws.readyState === WebSocket.OPEN) {
+        if (!this.destroyed && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: "hello",
             deviceId: this.device.id,
@@ -293,11 +301,15 @@ export class TunnelSync {
     };
 
     ws.onmessage = (event) => {
-      void this.handleRawMessage(event.data as string);
+      if (!this.destroyed) {
+        void this.handleRawMessage(event.data as string);
+      }
     };
 
     ws.onerror = () => {
-      ws.close();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
     };
 
     ws.onclose = () => {
