@@ -74,6 +74,8 @@ const joinPrompts = new Set<string>();
 let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
 let joinCompleted = false;
+let qrOverlay: HTMLDivElement | null = null;
+let qrMode: "modal" | "persistent" | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -317,6 +319,7 @@ function renderApp(): void {
       <header class="tiles${hasVisibleTunnels ? "" : " empty"}">
         <div class="hex-field"></div>
       </header>
+      <button class="qr-open" type="button" aria-label="qr">${icon("qr")}</button>
       <button class="splitter" type="button" aria-label="resize"></button>
       <section class="editor">
         <div class="text-paint" aria-hidden="true"><div class="text-paint-inner"></div></div>
@@ -335,6 +338,9 @@ function renderApp(): void {
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
+  app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
+    void showQr(false);
+  });
   renderTiles();
   textarea?.addEventListener("input", () => {
     const sync = syncs.get(selectedId);
@@ -387,17 +393,13 @@ function renderTiles(): void {
   if (sorted.length === 0) {
     renderHexField(field, [], {
       select: () => undefined,
-      menu: () => undefined,
-      qr: () => {
-        void showQr();
-      },
-      refreshQr: () => {
-        rotateInviteTunnel();
-        renderTiles();
-      }
-    }, { emptyQr: true });
-    void paintInlineQr(field);
+      menu: () => undefined
+    });
+    void showQr(true);
     return;
+  }
+  if (qrMode === "persistent") {
+    closeQrOverlay();
   }
   renderHexField(field, sorted.map((tunnel) => ({
     id: tunnel.id,
@@ -643,11 +645,12 @@ function closeTunnel(id: string): void {
   renderApp();
 }
 
-function rotateInviteTunnel(): TunnelRecord | null {
+function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
   if (!device) {
     return null;
   }
   const current = loadTunnels();
+  const previousSelected = selectedId;
   for (const tunnel of current.filter((item) => !item.counterparty)) {
     const sync = syncs.get(tunnel.id);
     sync?.closeForEveryone();
@@ -657,10 +660,16 @@ function rotateInviteTunnel(): TunnelRecord | null {
     files.delete(tunnel.id);
   }
   const tunnel = createTunnel();
-  const next = [tunnel, ...current.filter((item) => item.counterparty)];
+  const counterparties = current.filter((item) => item.counterparty);
+  const next = [tunnel, ...counterparties];
   saveTunnels(next);
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  if (preserveSelection && counterparties.some((item) => item.id === previousSelected)) {
+    selectedId = previousSelected;
+    saveSelectedTunnelId(previousSelected);
+  } else {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+  }
   tunnels = next;
   ensureSync(tunnel);
   return tunnel;
@@ -867,28 +876,29 @@ function diffPlain(before: string, after: string): [number, number, string] {
   return [start, beforeEnd - start, after.slice(start, afterEnd)];
 }
 
-async function showQr(): Promise<void> {
+async function showQr(persistent: boolean): Promise<void> {
   if (!device) {
     return;
   }
   const currentDevice = device;
-  let tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const preserveSelection = sortedVisibleTunnels().length > 0;
+  const tunnel = ensureInviteTunnel(preserveSelection);
   if (!tunnel) {
-    tunnel = createTunnel();
-    tunnels = upsertTunnel(tunnel);
-    selectedId = tunnel.id;
-    renderApp();
+    return;
   }
+  closeQrOverlay();
   const overlay = document.createElement("div");
-  overlay.className = "qr-modal";
+  overlay.className = `qr-modal${persistent ? " persistent" : ""}`;
   overlay.innerHTML = `
-    <div>
+    <div class="qr-sheet">
       <canvas></canvas>
       <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
-      <button class="icon-button" type="button" aria-label="close">${icon("close")}</button>
+      ${persistent ? "" : `<button class="icon-button close-button" type="button" aria-label="close">${icon("close")}</button>`}
     </div>
   `;
   document.body.append(overlay);
+  qrOverlay = overlay;
+  qrMode = persistent ? "persistent" : "modal";
   const canvas = overlay.querySelector("canvas");
   const draw = async (nextTunnel: TunnelRecord) => {
     if (!canvas) {
@@ -906,42 +916,45 @@ async function showQr(): Promise<void> {
   };
   await draw(tunnel);
   overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
-    const nextTunnel = rotateInviteTunnel();
+    const nextTunnel = rotateInviteTunnel(preserveSelection);
     if (nextTunnel) {
       void draw(nextTunnel);
-      renderTiles();
     }
   });
-  overlay.querySelector<HTMLButtonElement>("button[aria-label='close']")?.addEventListener("click", () => overlay.remove());
+  overlay.querySelector<HTMLButtonElement>(".close-button")?.addEventListener("click", () => closeQrOverlay());
 }
 
-async function paintInlineQr(field: HTMLElement): Promise<void> {
+function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
   if (!device) {
-    return;
+    return null;
   }
-  const canvas = field.querySelector<HTMLCanvasElement>(".qr-hex canvas");
-  const fallback = field.querySelector<HTMLElement>(".qr-fallback");
-  if (!canvas) {
-    return;
-  }
-  let tunnel = loadTunnels().find((item) => item.id === selectedId) || loadTunnels()[0];
+  const current = loadTunnels();
+  let tunnel = current.find((item) => !item.counterparty);
   if (!tunnel) {
     tunnel = createTunnel();
-    tunnels = upsertTunnel(tunnel);
-    selectedId = tunnel.id;
-  }
-  const url = await inviteUrl(tunnel, device);
-  await QRCode.toCanvas(canvas, url, {
-    margin: 1,
-    scale: 5,
-    color: {
-      dark: "#141414",
-      light: "#fbfaf6"
+    const previousSelected = selectedId;
+    const next = [tunnel, ...current];
+    saveTunnels(next);
+    tunnels = next;
+    if (!preserveSelection) {
+      selectedId = tunnel.id;
+      saveSelectedTunnelId(tunnel.id);
+    } else if (previousSelected) {
+      selectedId = previousSelected;
+      saveSelectedTunnelId(previousSelected);
     }
-  });
-  if (fallback) {
-    fallback.hidden = true;
+  } else if (!preserveSelection) {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
   }
+  ensureSync(tunnel);
+  return tunnel;
+}
+
+function closeQrOverlay(): void {
+  qrOverlay?.remove();
+  qrOverlay = null;
+  qrMode = null;
 }
 
 function setupSplitter(): void {
