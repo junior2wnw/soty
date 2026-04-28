@@ -390,6 +390,10 @@ function renderTiles(): void {
       menu: () => undefined,
       qr: () => {
         void showQr();
+      },
+      refreshQr: () => {
+        rotateInviteTunnel();
+        renderTiles();
       }
     }, { emptyQr: true });
     void paintInlineQr(field);
@@ -639,6 +643,29 @@ function closeTunnel(id: string): void {
   renderApp();
 }
 
+function rotateInviteTunnel(): TunnelRecord | null {
+  if (!device) {
+    return null;
+  }
+  const current = loadTunnels();
+  for (const tunnel of current.filter((item) => !item.counterparty)) {
+    const sync = syncs.get(tunnel.id);
+    sync?.closeForEveryone();
+    syncs.delete(tunnel.id);
+    writerLines.delete(tunnel.id);
+    activeWriters.delete(tunnel.id);
+    files.delete(tunnel.id);
+  }
+  const tunnel = createTunnel();
+  const next = [tunnel, ...current.filter((item) => item.counterparty)];
+  saveTunnels(next);
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  tunnels = next;
+  ensureSync(tunnel);
+  return tunnel;
+}
+
 async function sendFiles(list?: FileList | null): Promise<void> {
   if (!selectedId) {
     return;
@@ -844,6 +871,7 @@ async function showQr(): Promise<void> {
   if (!device) {
     return;
   }
+  const currentDevice = device;
   let tunnel = loadTunnels().find((item) => item.id === selectedId);
   if (!tunnel) {
     tunnel = createTunnel();
@@ -851,18 +879,22 @@ async function showQr(): Promise<void> {
     selectedId = tunnel.id;
     renderApp();
   }
-  const url = await inviteUrl(tunnel, device);
   const overlay = document.createElement("div");
   overlay.className = "qr-modal";
   overlay.innerHTML = `
     <div>
       <canvas></canvas>
+      <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
       <button class="icon-button" type="button" aria-label="close">${icon("close")}</button>
     </div>
   `;
   document.body.append(overlay);
   const canvas = overlay.querySelector("canvas");
-  if (canvas) {
+  const draw = async (nextTunnel: TunnelRecord) => {
+    if (!canvas) {
+      return;
+    }
+    const url = await inviteUrl(nextTunnel, currentDevice);
     await QRCode.toCanvas(canvas, url, {
       margin: 1,
       scale: 8,
@@ -871,8 +903,16 @@ async function showQr(): Promise<void> {
         light: "#f8f7f2"
       }
     });
-  }
-  overlay.querySelector("button")?.addEventListener("click", () => overlay.remove());
+  };
+  await draw(tunnel);
+  overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
+    const nextTunnel = rotateInviteTunnel();
+    if (nextTunnel) {
+      void draw(nextTunnel);
+      renderTiles();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>("button[aria-label='close']")?.addEventListener("click", () => overlay.remove());
 }
 
 async function paintInlineQr(field: HTMLElement): Promise<void> {

@@ -1,4 +1,4 @@
-export type IconName = "install" | "qr" | "close" | "check" | "person" | "clip" | "remote" | "download";
+export type IconName = "install" | "qr" | "close" | "check" | "person" | "clip" | "remote" | "download" | "refresh";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
@@ -8,7 +8,8 @@ const paths: Record<IconName, string> = {
   person: "M12 12c2.2 0 4-1.8 4-4s-1.8-4-4-4-4 1.8-4 4 1.8 4 4 4Zm0 2c-2.7 0-8 1.4-8 4v2h16v-2c0-2.6-5.3-4-8-4Z",
   clip: "M16.5 6.5 8.4 14.6c-1.2 1.2-1.2 3.1 0 4.2 1.2 1.2 3.1 1.2 4.2 0l8.8-8.8c1.9-1.9 1.9-5 0-6.9s-5-1.9-6.9 0L5.3 12.4c-2.7 2.7-2.7 7.1 0 9.8s7.1 2.7 9.8 0l8.1-8.1-1.4-1.4-8.1 8.1c-1.9 1.9-5 1.9-6.9 0s-1.9-5 0-6.9l9.2-9.2c1.1-1.1 2.9-1.1 4 0s1.1 2.9 0 4l-8.8 8.8c-.4.4-1 .4-1.4 0s-.4-1 0-1.4l8.1-8.1-1.4-1.5Z",
   remote: "M3 4h18v12H3V4Zm2 2v8h14V6H5Zm4 12h6v2H9v-2Zm-4 2h14v2H5v-2Zm7-12 4 3-4 3V8Z",
-  download: "M5 20h14v-2H5v2ZM13 4h-2v8H8l4 4 4-4h-3V4Z"
+  download: "M5 20h14v-2H5v2ZM13 4h-2v8H8l4 4 4-4h-3V4Z",
+  refresh: "M17.7 6.3C16.2 4.9 14.2 4 12 4c-3.7 0-6.8 2.6-7.6 6h2.1c.7-2.3 2.9-4 5.5-4 1.7 0 3.3.7 4.4 1.8L13 11h8V3l-3.3 3.3ZM6.3 17.7C7.8 19.1 9.8 20 12 20c3.7 0 6.8-2.6 7.6-6h-2.1c-.7 2.3-2.9 4-5.5 4-1.7 0-3.3-.7-4.4-1.8L11 13H3v8l3.3-3.3Z"
 };
 
 export function icon(name: IconName): string {

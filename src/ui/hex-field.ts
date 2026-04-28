@@ -12,6 +12,7 @@ export interface HexFieldActions {
   readonly select: (id: string) => void;
   readonly menu: (id: string, x: number, y: number) => void;
   readonly qr?: () => void;
+  readonly refreshQr?: () => void;
 }
 
 export interface HexFieldOptions {
@@ -53,17 +54,30 @@ export function renderHexField(
     }
     if (options.emptyQr && index === 0) {
       return `
-        <button class="hex qr-hex" type="button" style="--x:${left}px;--y:${top}px" aria-label="qr">
+        <div class="hex qr-hex" style="--x:${left}px;--y:${top}px">
           <canvas></canvas>
           <span class="qr-fallback">${icon("qr")}</span>
-        </button>
+          <button class="qr-refresh" type="button" aria-label="refresh">${icon("refresh")}</button>
+        </div>
       `;
     }
     return `<div class="hex hex-cell" style="--x:${left}px;--y:${top}px"></div>`;
   }).join("");
 
   installPan(root, map);
-  map.querySelector<HTMLButtonElement>(".qr-hex")?.addEventListener("click", () => actions.qr?.());
+  map.querySelector<HTMLElement>(".qr-hex")?.addEventListener("click", (event) => {
+    if ((event.target as HTMLElement).closest(".qr-refresh")) {
+      return;
+    }
+    actions.qr?.();
+  });
+  const refresh = map.querySelector<HTMLButtonElement>(".qr-refresh");
+  refresh?.addEventListener("pointerdown", (event) => event.stopPropagation());
+  refresh?.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    actions.refreshQr?.();
+  });
   map.querySelectorAll<HTMLButtonElement>(".hex.filled").forEach((button) => {
     let timer = 0;
     let held = false;
@@ -107,6 +121,9 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   let baseX = 0;
   let baseY = 0;
   const down = (event: PointerEvent) => {
+    if ((event.target as HTMLElement).closest(".qr-hex")) {
+      return;
+    }
     dragging = true;
     movedDuringPointer = false;
     startX = event.clientX;

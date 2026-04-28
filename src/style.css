@@ -334,7 +334,7 @@ svg {
   box-shadow:
     inset 0 0 0 2px #141414,
     0 8px 26px rgba(20, 20, 20, 0.08);
-  cursor: pointer;
+  cursor: default;
 }
 
 .qr-hex::before {
@@ -345,6 +345,7 @@ svg {
   width: 104px !important;
   height: 104px !important;
   image-rendering: pixelated;
+  cursor: pointer;
 }
 
 .qr-fallback {
@@ -352,6 +353,38 @@ svg {
   display: grid;
   place-items: center;
   color: #141414;
+  pointer-events: none;
+}
+
+.qr-fallback[hidden] {
+  display: none;
+}
+
+.qr-refresh {
+  position: absolute;
+  right: -10px;
+  bottom: -10px;
+  z-index: 2;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 2px solid #141414;
+  border-radius: 50%;
+  background: #fbfaf6;
+  color: #141414;
+  cursor: pointer;
+}
+
+.qr-refresh svg {
+  width: 20px;
+  height: 20px;
+}
+
+.qr-refresh:active {
+  background: #141414;
+  color: #f8f7f2;
+  transform: scale(0.96);
 }
 
 .icon-button {
@@ -630,6 +663,7 @@ svg {
   position: relative;
   display: grid;
   place-items: center;
+  gap: 10px;
   padding: 18px;
   border: 2px solid #141414;
   border-radius: 8px;
@@ -648,6 +682,10 @@ svg {
   top: -14px;
   background: #141414;
   color: #f8f7f2;
+}
+
+.qr-modal .refresh-button {
+  right: 38px;
 }
 
 @media (max-width: 520px) {
