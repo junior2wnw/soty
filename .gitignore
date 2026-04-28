@@ -1,0 +1,9 @@
+﻿node_modules/
+dist/
+data/
+.codex-work/
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

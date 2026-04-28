@@ -1,0 +1,29 @@
+{
+  "name": "soty-online-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "node server/index.js",
+    "start": "node server/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0",
+    "yjs": "^13.6.21"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.5.12",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
