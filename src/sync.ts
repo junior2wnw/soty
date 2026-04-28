@@ -195,7 +195,9 @@ export class TunnelSync {
   }
 
   closeForEveryone(): void {
-    this.ws?.send(JSON.stringify({ type: "close" }));
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "close" }));
+    }
     this.destroy();
   }
 
