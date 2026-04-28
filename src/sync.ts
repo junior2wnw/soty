@@ -536,7 +536,7 @@ export class TunnelSync {
 
   private sendControl(message: ControlMessage): void {
     const ws = this.ws;
-    if (ws?.readyState === WebSocket.OPEN) {
+    if (this.ready && ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
       return;
     }
