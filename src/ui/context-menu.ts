@@ -6,13 +6,24 @@ export interface CounterpartyMenuActions {
   readonly close: () => void;
 }
 
-export function openCounterpartyMenu(x: number, y: number, actions: CounterpartyMenuActions): void {
+export interface CounterpartyMenuState {
+  readonly remoteEnabled: boolean;
+}
+
+let currentCleanup = () => undefined;
+
+export function openCounterpartyMenu(
+  x: number,
+  y: number,
+  actions: CounterpartyMenuActions,
+  state: CounterpartyMenuState = { remoteEnabled: false }
+): void {
   closeCounterpartyMenu();
   const menu = document.createElement("div");
   menu.className = "counterparty-menu";
   menu.innerHTML = `
     <button type="button" data-action="attach" aria-label="attach">${icon("clip")}</button>
-    <button type="button" data-action="remote" aria-label="remote">${icon("remote")}</button>
+    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote">${icon("remote")}</button>
     <button type="button" data-action="close" aria-label="close">${icon("close")}</button>
   `;
   document.body.append(menu);
@@ -20,10 +31,23 @@ export function openCounterpartyMenu(x: number, y: number, actions: Counterparty
   menu.style.left = `${Math.min(window.innerWidth - rect.width - 8, Math.max(8, x))}px`;
   menu.style.top = `${Math.min(window.innerHeight - rect.height - 8, Math.max(8, y))}px`;
 
-  const off = () => closeCounterpartyMenu();
+  const off = (event: Event) => {
+    if (event.target instanceof Node && menu.contains(event.target)) {
+      return;
+    }
+    closeCounterpartyMenu();
+  };
   window.setTimeout(() => {
-    window.addEventListener("pointerdown", off, { once: true });
+    if (!document.body.contains(menu)) {
+      return;
+    }
+    window.addEventListener("pointerdown", off);
     window.addEventListener("keydown", off, { once: true });
+    currentCleanup = () => {
+      window.removeEventListener("pointerdown", off);
+      window.removeEventListener("keydown", off);
+      currentCleanup = () => undefined;
+    };
   });
 
   menu.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
@@ -38,5 +62,6 @@ export function openCounterpartyMenu(x: number, y: number, actions: Counterparty
 }
 
 export function closeCounterpartyMenu(): void {
+  currentCleanup();
   document.querySelector(".counterparty-menu")?.remove();
 }

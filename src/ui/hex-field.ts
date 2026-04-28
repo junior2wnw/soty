@@ -1,3 +1,5 @@
+import { icon } from "../icons";
+
 export interface HexItem {
   readonly id: string;
   readonly label: string;
@@ -9,35 +11,60 @@ export interface HexItem {
 export interface HexFieldActions {
   readonly select: (id: string) => void;
   readonly menu: (id: string, x: number, y: number) => void;
+  readonly qr?: () => void;
+}
+
+export interface HexFieldOptions {
+  readonly emptyQr?: boolean;
 }
 
 let panX = 0;
 let panY = 0;
+let movedDuringPointer = false;
+const panCleanups = new WeakMap<HTMLElement, () => void>();
 
-export function renderHexField(root: HTMLElement, items: readonly HexItem[], actions: HexFieldActions): void {
-  const positions = spiral(items.length);
+export function renderHexField(
+  root: HTMLElement,
+  items: readonly HexItem[],
+  actions: HexFieldActions,
+  options: HexFieldOptions = {}
+): void {
+  const positions = gridPositions(Math.max(7, Math.ceil(Math.sqrt(Math.max(items.length, 1))) + 4));
+  const itemByIndex = new Map(items.map((item, index) => [index, item]));
   root.innerHTML = `<div class="hex-map"></div>`;
   const map = root.querySelector<HTMLDivElement>(".hex-map");
   if (!map) {
     return;
   }
   map.style.transform = `translate(${panX}px, ${panY}px)`;
-  map.innerHTML = items.map((item, index) => {
-    const [q, r] = positions[index] ?? [0, 0];
-    const left = 50 + (q + r / 2) * 82;
-    const top = 50 + r * 72;
-    return `
-      <button class="hex${item.active ? " active" : ""}" data-id="${item.id}" type="button"
-        style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="chat">
-        <span>${escapeHtml(initials(item.label))}</span>
-        <b>${escapeHtml(item.label)}</b>
-        ${item.unread ? "<i></i>" : ""}
-      </button>
-    `;
+  map.innerHTML = positions.map(([q, r], index) => {
+    const item = itemByIndex.get(index);
+    const left = (q + r / 2) * 82;
+    const top = r * 72;
+    if (item) {
+      return `
+        <button class="hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"
+          style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="counterparty">
+          <span>${escapeHtml(initials(item.label))}</span>
+          <b>${escapeHtml(item.label)}</b>
+          ${item.unread ? "<i></i>" : ""}
+        </button>
+      `;
+    }
+    if (options.emptyQr && index === 0) {
+      return `
+        <button class="hex qr-hex" type="button" style="--x:${left}px;--y:${top}px" aria-label="qr">
+          <canvas></canvas>
+          <span class="qr-fallback">${icon("qr")}</span>
+        </button>
+      `;
+    }
+    return `<div class="hex hex-cell" style="--x:${left}px;--y:${top}px"></div>`;
   }).join("");
 
   installPan(root, map);
-  map.querySelectorAll<HTMLButtonElement>(".hex").forEach((button) => {
+  map.querySelector<HTMLButtonElement>(".qr-hex")?.addEventListener("click", () => actions.qr?.());
+  map.querySelectorAll<HTMLButtonElement>(".hex.filled").forEach((button) => {
     let timer = 0;
     let held = false;
     const id = button.dataset.id || "";
@@ -48,15 +75,22 @@ export function renderHexField(root: HTMLElement, items: readonly HexItem[], act
     });
     button.addEventListener("pointerdown", (event) => {
       held = false;
+      movedDuringPointer = false;
       timer = window.setTimeout(() => {
         held = true;
         open(event.clientX, event.clientY);
       }, 560);
     });
+    button.addEventListener("pointermove", () => {
+      if (movedDuringPointer) {
+        window.clearTimeout(timer);
+      }
+    });
     button.addEventListener("pointerup", () => window.clearTimeout(timer));
+    button.addEventListener("pointercancel", () => window.clearTimeout(timer));
     button.addEventListener("pointerleave", () => window.clearTimeout(timer));
     button.addEventListener("click", (event) => {
-      if (held) {
+      if (held || movedDuringPointer) {
         event.preventDefault();
         return;
       }
@@ -66,47 +100,68 @@ export function renderHexField(root: HTMLElement, items: readonly HexItem[], act
 }
 
 function installPan(root: HTMLElement, map: HTMLElement): void {
+  panCleanups.get(root)?.();
   let dragging = false;
   let startX = 0;
   let startY = 0;
   let baseX = 0;
   let baseY = 0;
-  root.addEventListener("pointerdown", (event) => {
-    if ((event.target as HTMLElement).closest(".hex")) {
-      return;
-    }
+  const down = (event: PointerEvent) => {
     dragging = true;
+    movedDuringPointer = false;
     startX = event.clientX;
     startY = event.clientY;
     baseX = panX;
     baseY = panY;
     root.setPointerCapture(event.pointerId);
-  });
-  root.addEventListener("pointermove", (event) => {
+  };
+  const move = (event: PointerEvent) => {
     if (!dragging) {
       return;
     }
-    panX = baseX + event.clientX - startX;
-    panY = baseY + event.clientY - startY;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.abs(dx) + Math.abs(dy) < 5) {
+      return;
+    }
+    movedDuringPointer = true;
+    panX = baseX + dx;
+    panY = baseY + dy;
     map.style.transform = `translate(${panX}px, ${panY}px)`;
-  });
-  root.addEventListener("pointerup", () => {
+  };
+  const up = () => {
     dragging = false;
+  };
+  root.addEventListener("pointerdown", down);
+  root.addEventListener("pointermove", move);
+  root.addEventListener("pointerup", up);
+  root.addEventListener("pointercancel", up);
+  panCleanups.set(root, () => {
+    root.removeEventListener("pointerdown", down);
+    root.removeEventListener("pointermove", move);
+    root.removeEventListener("pointerup", up);
+    root.removeEventListener("pointercancel", up);
   });
 }
 
-function spiral(count: number): [number, number][] {
+function gridPositions(radius: number): [number, number][] {
   const result: [number, number][] = [[0, 0]];
+  for (let ring = 1; ring <= radius; ring += 1) {
+    result.push(...ringPositions(ring));
+  }
+  return result;
+}
+
+function ringPositions(radius: number): [number, number][] {
+  const result: [number, number][] = [];
   const dirs: [number, number][] = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]];
-  for (let radius = 1; result.length < count; radius += 1) {
-    let q = -radius;
-    let r = 0;
-    for (const [dq, dr] of dirs) {
-      for (let step = 0; step < radius && result.length < count; step += 1) {
-        result.push([q, r]);
-        q += dq;
-        r += dr;
-      }
+  let q = -radius;
+  let r = 0;
+  for (const [dq, dr] of dirs) {
+    for (let step = 0; step < radius; step += 1) {
+      result.push([q, r]);
+      q += dq;
+      r += dr;
     }
   }
   return result;

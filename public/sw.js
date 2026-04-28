@@ -20,14 +20,31 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") {
     return;
   }
-  if (new URL(request.url).pathname.startsWith("/ws")) {
+  const url = new URL(request.url);
+  if (url.pathname.startsWith("/ws")) {
+    return;
+  }
+  if (request.mode === "navigate") {
+    event.respondWith(fetch(request).catch(() => caches.match("/")));
+    return;
+  }
+  if (url.origin !== self.location.origin || url.search) {
+    event.respondWith(fetch(request));
+    return;
+  }
+  const cacheable = url.pathname.startsWith("/assets/")
+    || shell.includes(url.pathname);
+  if (!cacheable) {
+    event.respondWith(fetch(request));
     return;
   }
   event.respondWith(
     fetch(request)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(cacheName).then((cache) => cache.put(request, copy));
+        if (response.ok) {
+          const copy = response.clone();
+          caches.open(cacheName).then((cache) => cache.put(request, copy));
+        }
         return response;
       })
       .catch(() => caches.match(request).then((cached) => cached || caches.match("/")))

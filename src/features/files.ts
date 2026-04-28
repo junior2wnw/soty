@@ -2,8 +2,10 @@ import { clock } from "../core/time";
 import { icon } from "../icons";
 import { ReceivedFile } from "../sync";
 
+export const maxFileBytes = 20_000_000;
+
 export function filesFrom(list?: FileList | null): File[] {
-  return list ? Array.from(list) : [];
+  return list ? Array.from(list).filter((file) => file.size <= maxFileBytes) : [];
 }
 
 export function renderFileRail(root: HTMLElement, files: readonly ReceivedFile[], color: string): void {

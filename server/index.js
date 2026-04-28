@@ -14,7 +14,7 @@ const port = Number.parseInt(process.env.PORT || "8080", 10);
 
 const app = createHttpApp(distDir);
 const server = createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 34_000_000 });
 const store = createRoomStore(dataDir);
 
 attachRealtime(wss, store);
@@ -22,7 +22,7 @@ attachRealtime(wss, store);
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url || "/", "http://localhost");
   const match = url.pathname.match(/^\/ws\/([A-Za-z0-9_-]{16,96})$/u);
-  if (!match?.[1]) {
+  if (!match?.[1] || !isAllowedOrigin(request)) {
     socket.destroy();
     return;
   }
@@ -32,5 +32,21 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 server.listen(port, "0.0.0.0", () => {
-  console.log(`soty.online chat listening on ${port}`);
+  console.log(`soty.online listening on ${port}`);
 });
+
+function isAllowedOrigin(request) {
+  const origin = request.headers.origin;
+  if (!origin) {
+    return true;
+  }
+  const host = request.headers.host;
+  if (!host) {
+    return false;
+  }
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}

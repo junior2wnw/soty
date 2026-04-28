@@ -6,16 +6,32 @@ import {
   isShortText
 } from "./validators.js";
 
+const rateWindowMs = 10_000;
+const maxMessagesPerWindow = 600;
+const maxBytesPerWindow = 70_000_000;
+const maxStoredFiles = 100;
+const maxStoredFileBytes = 200_000_000;
+
 export function attachRealtime(wss, store) {
   wss.on("connection", async (ws, _request, roomId) => {
     const room = await store.load(roomId);
-    const peer = { id: "", nick: "", joinRequestId: "", ws };
+    const peer = {
+      id: "",
+      nick: "",
+      joinRequestId: "",
+      rateStartedAt: Date.now(),
+      messageCount: 0,
+      byteCount: 0,
+      ws
+    };
     ws.isAlive = true;
     ws.on("pong", () => {
       ws.isAlive = true;
     });
     ws.on("message", (raw) => {
-      void handleMessage(room, peer, ws, store, raw);
+      void handleMessage(room, peer, ws, store, raw).catch(() => {
+        ws.close(1011, "message error");
+      });
     });
     ws.on("close", () => {
       if (peer.joinRequestId) {
@@ -46,6 +62,10 @@ export function attachRealtime(wss, store) {
 }
 
 async function handleMessage(room, peer, ws, store, raw) {
+  if (!allowMessage(peer, raw)) {
+    ws.close(1008, "rate limit");
+    return;
+  }
   let message;
   try {
     message = JSON.parse(raw.toString());
@@ -59,7 +79,7 @@ async function handleMessage(room, peer, ws, store, raw) {
   }
 
   if (message.type === "hello") {
-    handleHello(room, peer, ws, message);
+    await handleHello(room, peer, ws, store, message);
     return;
   }
 
@@ -127,7 +147,7 @@ async function handleMessage(room, peer, ws, store, raw) {
   }
 }
 
-function handleHello(room, peer, ws, message) {
+async function handleHello(room, peer, ws, store, message) {
   if (!isShortText(message.deviceId, 120) || !isShortText(message.nick, 80)) {
     ws.close(1008, "bad hello");
     return;
@@ -154,6 +174,18 @@ function handleHello(room, peer, ws, message) {
     });
     return;
   }
+  if (!isShortText(message.roomAuth, 128)) {
+    ws.close(1008, "missing auth");
+    return;
+  }
+  if (!room.state.auth) {
+    room.state.auth = message.roomAuth;
+    await store.save(room);
+  }
+  if (room.state.auth !== message.roomAuth) {
+    ws.close(1008, "bad auth");
+    return;
+  }
   room.peers.set(peer.id, peer);
   ws.send(JSON.stringify({
     type: "hello",
@@ -170,7 +202,7 @@ function handleHello(room, peer, ws, message) {
 }
 
 async function storeUpdate(room, peer, ws, store, update) {
-  const stored = withPeer(peer, update);
+  const stored = withPeer(peer, update, false);
   if (room.seen.has(stored.id)) {
     ws.send(JSON.stringify({ type: "ack", id: stored.id }));
     return;
@@ -187,33 +219,34 @@ async function storeUpdate(room, peer, ws, store, update) {
   room.seen.add(stored.id);
   await store.save(room);
   ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-  broadcast(room, peer.id, { type: "update", update: stored });
+  broadcast(room, peer.id, { type: "update", update: withPeer(peer, stored, true) });
 }
 
 async function storeFile(room, peer, ws, store, file) {
-  const stored = withPeer(peer, file);
+  const stored = withPeer(peer, file, false);
   if (room.seen.has(stored.id)) {
     ws.send(JSON.stringify({ type: "ack", id: stored.id }));
     return;
   }
   room.seen.add(stored.id);
   room.state.files.push(stored);
-  if (room.state.files.length > 300) {
-    room.state.files.splice(0, room.state.files.length - 300);
-  }
+  trimStoredFiles(room.state.files);
   await store.save(room);
   ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-  broadcast(room, peer.id, { type: "file", file: stored });
+  broadcast(room, peer.id, { type: "file", file: withPeer(peer, stored, true) });
 }
 
-function withPeer(peer, payload) {
-  return {
+function withPeer(peer, payload, includeNick = true) {
+  const next = {
     ...payload,
     deviceId: peer.id,
-    deviceNick: peer.nick,
-    nick: peer.nick,
     createdAt: new Date().toISOString()
   };
+  if (includeNick) {
+    next.deviceNick = peer.nick;
+    next.nick = peer.nick;
+  }
+  return next;
 }
 
 function broadcast(room, exceptDeviceId, message) {
@@ -227,4 +260,27 @@ function broadcast(room, exceptDeviceId, message) {
 
 function publicPeer(peer) {
   return { id: peer.id, nick: peer.nick };
+}
+
+function allowMessage(peer, raw) {
+  const now = Date.now();
+  if (now - peer.rateStartedAt > rateWindowMs) {
+    peer.rateStartedAt = now;
+    peer.messageCount = 0;
+    peer.byteCount = 0;
+  }
+  peer.messageCount += 1;
+  peer.byteCount += Buffer.byteLength(raw);
+  return peer.messageCount <= maxMessagesPerWindow && peer.byteCount <= maxBytesPerWindow;
+}
+
+function trimStoredFiles(files) {
+  while (files.length > maxStoredFiles) {
+    files.shift();
+  }
+  let total = files.reduce((sum, file) => sum + (Number.isSafeInteger(file.bytes) ? file.bytes : 0), 0);
+  while (total > maxStoredFileBytes && files.length > 0) {
+    const removed = files.shift();
+    total -= Number.isSafeInteger(removed?.bytes) ? removed.bytes : 0;
+  }
 }

@@ -186,6 +186,10 @@ export async function inviteUrl(tunnel: TunnelRecord, device: DeviceRecord): Pro
   return url.toString();
 }
 
+export async function roomAuth(tunnel: TunnelRecord): Promise<string> {
+  return sha256Base64Url(`soty.room-auth.v1:${tunnel.id}:${tunnel.key}`);
+}
+
 export function joinInviteFromLocation(): JoinInvite | null {
   const compact = new URL(window.location.href).searchParams.get("j");
   if (!compact) {

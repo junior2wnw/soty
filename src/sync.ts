@@ -7,7 +7,8 @@ import {
   decode,
   encode,
   encryptRoomKeyForJoin,
-  encryptForTunnel
+  encryptForTunnel,
+  roomAuth
 } from "./trustlink";
 
 export interface PeerInfo {
@@ -130,6 +131,7 @@ export class TunnelSync {
   private heartbeatTimer = 0;
   private lastSeenAt = 0;
   private needsSnapshot = false;
+  private readonly auth: Promise<string>;
   private readonly offlineQueue: OutboundUpdate[] = [];
   private readonly pendingAcks = new Map<string, OutboundUpdate>();
   private readonly controlQueue: ControlMessage[] = [];
@@ -151,6 +153,7 @@ export class TunnelSync {
     private readonly device: DeviceRecord,
     private readonly callbacks: SyncCallbacks
   ) {
+    this.auth = roomAuth(tunnel);
     this.doc.on("update", (update: Uint8Array, origin: unknown) => {
       if (origin === "remote") {
         return;
@@ -275,15 +278,20 @@ export class TunnelSync {
 
     ws.onopen = () => {
       this.lastSeenAt = Date.now();
-      ws.send(JSON.stringify({
-        type: "hello",
-        deviceId: this.device.id,
-        nick: this.device.nick
-      }));
+      void this.auth.then((auth) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "hello",
+            deviceId: this.device.id,
+            nick: this.device.nick,
+            roomAuth: auth
+          }));
+        }
+      }).catch(() => ws.close());
     };
 
     ws.onmessage = (event) => {
-      void this.handleMessage(JSON.parse(event.data as string) as ServerMessage);
+      void this.handleRawMessage(event.data as string);
     };
 
     ws.onerror = () => {
@@ -302,6 +310,14 @@ export class TunnelSync {
         this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
       }
     };
+  }
+
+  private async handleRawMessage(raw: string): Promise<void> {
+    try {
+      await this.handleMessage(JSON.parse(raw) as ServerMessage);
+    } catch {
+      this.callbacks.onState("connecting");
+    }
   }
 
   private async handleMessage(message: ServerMessage): Promise<void> {

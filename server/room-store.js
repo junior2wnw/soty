@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export function createRoomStore(dataDir) {
@@ -11,11 +11,12 @@ export function createRoomStore(dataDir) {
       if (existing) {
         return existing;
       }
-      await mkdir(dataDir, { recursive: true });
+      await mkdir(dataDir, { recursive: true, mode: 0o700 });
       const file = path.join(dataDir, `${roomId}.json`);
       const state = existsSync(file)
-        ? JSON.parse(await readFile(file, "utf8"))
-        : { snapshot: null, updates: [], files: [], closed: null };
+        ? await readState(file)
+        : { auth: null, snapshot: null, updates: [], files: [], closed: null };
+      state.auth ??= null;
       state.updates ??= [];
       state.files ??= [];
       const seen = new Set([
@@ -45,8 +46,17 @@ export function createRoomStore(dataDir) {
   };
 }
 
+async function readState(file) {
+  try {
+    return JSON.parse(await readFile(file, "utf8"));
+  } catch {
+    return { auth: null, snapshot: null, updates: [], files: [], closed: null };
+  }
+}
+
 async function writeRoom(room) {
   const tmp = `${room.file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  await writeFile(tmp, JSON.stringify(room.state), "utf8");
+  await writeFile(tmp, JSON.stringify(room.state), { encoding: "utf8", mode: 0o600 });
   await rename(tmp, room.file);
+  await chmod(room.file, 0o600).catch(() => undefined);
 }
