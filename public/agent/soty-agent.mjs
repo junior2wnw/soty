@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.1";
+const agentVersion = "0.3.2";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -149,8 +149,12 @@ function runCommand(ws, id, command, timeoutMs) {
     send(ws, id, "!\n", 124, "exit");
   }, Math.max(1000, timeoutMs));
 
-  child.stdout.on("data", (chunk) => sendChunks(ws, id, chunk.toString("utf8")));
-  child.stderr.on("data", (chunk) => sendChunks(ws, id, chunk.toString("utf8")));
+  const decodeStdout = createOutputDecoder();
+  const decodeStderr = createOutputDecoder();
+  child.stdout.on("data", (chunk) => sendChunks(ws, id, decodeStdout(chunk)));
+  child.stderr.on("data", (chunk) => sendChunks(ws, id, decodeStderr(chunk)));
+  child.stdout.on("end", () => sendChunks(ws, id, decodeStdout(Buffer.alloc(0), true)));
+  child.stderr.on("end", () => sendChunks(ws, id, decodeStderr(Buffer.alloc(0), true)));
   child.on("error", (error) => {
     clearTimeout(timer);
     active.delete(id);
@@ -200,10 +204,11 @@ function shellSpec(command) {
     return { file: requestedShell || process.env.SHELL || "/bin/sh", args: ["-lc", command] };
   }
   if (requestedShell.toLowerCase().includes("cmd")) {
-    return { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command] };
+    return { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`] };
   }
   const file = requestedShell || "powershell.exe";
-  const wrapped = `${command}; if ($global:LASTEXITCODE -ne $null) { exit $global:LASTEXITCODE }`;
+  const utf8 = "$__sotyUtf8 = New-Object System.Text.UTF8Encoding $false; [Console]::InputEncoding = $__sotyUtf8; [Console]::OutputEncoding = $__sotyUtf8; $OutputEncoding = $__sotyUtf8; chcp.com 65001 | Out-Null";
+  const wrapped = `${utf8}; ${command}; if ($global:LASTEXITCODE -ne $null) { exit $global:LASTEXITCODE }`;
   return {
     file,
     args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", wrapped]
@@ -226,6 +231,23 @@ function originAllowed(origin) {
 function localDevOrigin(origin) {
   return origin.startsWith("http://localhost:")
     || origin.startsWith("http://127.0.0.1:");
+}
+
+function createOutputDecoder() {
+  const utf8 = new TextDecoder("utf-8");
+  const oem = process.platform === "win32" ? new TextDecoder("ibm866") : null;
+  let selected = "utf8";
+  return (chunk, flush = false) => {
+    if (selected === "oem" && oem) {
+      return oem.decode(chunk, { stream: !flush });
+    }
+    const text = utf8.decode(chunk, { stream: !flush });
+    if (oem && text.includes("\uFFFD")) {
+      selected = "oem";
+      return oem.decode(chunk, { stream: !flush });
+    }
+    return text;
+  };
 }
 
 function scheduleUpdate() {

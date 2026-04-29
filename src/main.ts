@@ -401,8 +401,9 @@ function renderApp(): void {
     }
   });
   app.querySelector<HTMLButtonElement>(".terminal-close")?.addEventListener("click", () => {
-    terminalOpenId = "";
-    renderTerminal();
+    if (selectedId) {
+      closeRemoteMode(selectedId);
+    }
   });
   app.querySelector<HTMLFormElement>(".terminal-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -469,14 +470,7 @@ function renderTiles(): void {
 
 async function toggleRemoteGrant(id: string): Promise<void> {
   if (remoteEnabled.has(id)) {
-    remoteEnabled = setRemoteEnabled(id, false);
-    syncs.get(id)?.grantRemote(false, "*");
-    if (terminalOpenId === id) {
-      terminalOpenId = "";
-    }
-    setTerminalState(id, "ok");
-    renderTerminal();
-    renderTiles();
+    closeRemoteMode(id);
     return;
   }
 
@@ -533,6 +527,27 @@ function renderAgentInstall(tunnelId: string): void {
     })();
   });
   overlay.querySelector(".close-button")?.addEventListener("click", () => overlay.remove());
+}
+
+function closeRemoteMode(tunnelId: string): void {
+  const sync = syncs.get(tunnelId);
+  const hostDeviceId = remoteAccess.get(tunnelId);
+  if (remoteEnabled.has(tunnelId)) {
+    remoteEnabled = setRemoteEnabled(tunnelId, false);
+    sync?.grantRemote(false, "*");
+  }
+  if (hostDeviceId) {
+    remoteAccess = setRemoteAccess(tunnelId, "", false);
+    if (hostDeviceId !== device?.id) {
+      sync?.grantRemote(false, hostDeviceId);
+    }
+  }
+  if (terminalOpenId === tunnelId) {
+    terminalOpenId = "";
+  }
+  setTerminalState(tunnelId, "ok");
+  renderTerminal();
+  renderTiles();
 }
 
 function sortedVisibleTunnels(): TunnelRecord[] {
@@ -793,6 +808,10 @@ function deleteFile(fileId: string): void {
 function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   if (!device || grant.deviceId === device.id || !grantTargetsThisDevice(grant.targetDeviceId)) {
     return;
+  }
+  if (!grant.enabled && remoteEnabled.has(tunnelId)) {
+    remoteEnabled = setRemoteEnabled(tunnelId, false);
+    syncs.get(tunnelId)?.grantRemote(false, "*");
   }
   remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
   if (grant.enabled) {
