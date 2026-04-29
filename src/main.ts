@@ -3,6 +3,8 @@ import { JoinRequest, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, Tu
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
+import { checkLocalAgent, downloadAgentInstaller } from "./features/agent";
+import type { LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
@@ -65,6 +67,9 @@ let remoteAccess = loadRemoteAccess();
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
 const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
+let localAgent: LocalAgentStatus = { ok: false };
+let agentProbeTimer = 0;
+let agentProbe: Promise<LocalAgentStatus> | null = null;
 const writerLines = new Map<string, Map<number, {
   readonly nick: string;
   readonly deviceId: string;
@@ -452,13 +457,7 @@ function renderTiles(): void {
         remote: () => {
           selectedId = id;
           saveSelectedTunnelId(id);
-          const enabled = !remoteEnabled.has(id);
-          remoteEnabled = setRemoteEnabled(id, enabled);
-          syncs.get(id)?.grantRemote(enabled, "*");
-          terminalOpenId = enabled ? id : "";
-          setTerminalState(id, enabled ? "idle" : "ok");
-          renderTerminal();
-          renderTiles();
+          void toggleRemoteGrant(id);
         },
         close: () => closeTunnel(id)
       }, {
@@ -466,6 +465,74 @@ function renderTiles(): void {
       });
     }
   });
+}
+
+async function toggleRemoteGrant(id: string): Promise<void> {
+  if (remoteEnabled.has(id)) {
+    remoteEnabled = setRemoteEnabled(id, false);
+    syncs.get(id)?.grantRemote(false, "*");
+    if (terminalOpenId === id) {
+      terminalOpenId = "";
+    }
+    setTerminalState(id, "ok");
+    renderTerminal();
+    renderTiles();
+    return;
+  }
+
+  const agent = await refreshLocalAgent();
+  if (!agent.ok) {
+    renderAgentInstall(id);
+    return;
+  }
+
+  remoteEnabled = setRemoteEnabled(id, true);
+  syncs.get(id)?.grantRemote(true, "*");
+  terminalOpenId = id;
+  setTerminalState(id, "idle");
+  renderTerminal();
+  renderTiles();
+}
+
+async function refreshLocalAgent(): Promise<LocalAgentStatus> {
+  window.clearTimeout(agentProbeTimer);
+  agentProbe = agentProbe || checkLocalAgent().finally(() => {
+    agentProbe = null;
+  });
+  localAgent = await agentProbe;
+  document.querySelector(".agent-sheet")?.classList.toggle("is-ok", localAgent.ok);
+  if (localAgent.ok) {
+    agentProbeTimer = window.setTimeout(() => void refreshLocalAgent(), 30_000);
+  }
+  return localAgent;
+}
+
+function renderAgentInstall(tunnelId: string): void {
+  document.querySelector(".agent-modal")?.remove();
+  const overlay = document.createElement("div");
+  overlay.className = "agent-modal";
+  overlay.innerHTML = `
+    <div class="agent-sheet${localAgent.ok ? " is-ok" : ""}">
+      <span class="agent-mark">${icon("remote")}</span>
+      <button class="icon-button download-button" type="button" aria-label="download">${icon("download")}</button>
+      <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
+      <button class="icon-button close-button" type="button" aria-label="close">${icon("close")}</button>
+    </div>
+  `;
+  document.body.append(overlay);
+  overlay.querySelector(".download-button")?.addEventListener("click", () => {
+    downloadAgentInstaller();
+  });
+  overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
+    void (async () => {
+      const agent = await refreshLocalAgent();
+      if (agent.ok) {
+        overlay.remove();
+        void toggleRemoteGrant(tunnelId);
+      }
+    })();
+  });
+  overlay.querySelector(".close-button")?.addEventListener("click", () => overlay.remove());
 }
 
 function sortedVisibleTunnels(): TunnelRecord[] {
@@ -759,7 +826,7 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
   }
   if (typeof output.exitCode === "number") {
     setTerminalState(tunnelId, output.exitCode === 0 ? "ok" : output.exitCode === 127 ? "off" : "bad");
-    appendTerminalLine(tunnelId, `${output.exitCode === 0 ? "✓" : "!"} ${output.exitCode}`);
+    appendTerminalLine(tunnelId, `${output.exitCode === 0 ? "+" : "!"} ${output.exitCode}`);
   }
   terminalOpenId = tunnelId;
   renderTerminal();
@@ -894,7 +961,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     if (typeof exitCode === "number") {
       finished = true;
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalLine(tunnelId, `${exitCode === 0 ? "✓" : "!"} ${exitCode}`);
+      appendTerminalLine(tunnelId, `${exitCode === 0 ? "+" : "!"} ${exitCode}`);
     }
     renderTerminal();
     void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);

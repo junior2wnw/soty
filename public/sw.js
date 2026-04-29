@@ -1,4 +1,4 @@
-const cacheName = "soty-online-v6";
+const cacheName = "soty-online-v8";
 const shell = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -29,7 +29,6 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (url.origin !== self.location.origin || url.search) {
-    event.respondWith(fetch(request));
     return;
   }
   const cacheable = url.pathname.startsWith("/assets/")

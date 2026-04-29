@@ -15,7 +15,8 @@ The browser side stays deliberately simple:
 - the relay remains the reliable path for signaling, reconnects, history, and fallback delivery;
 - file transfer works from the counterparty menu and drag and drop;
 - the remote icon grants one-way command access to the selected counterparty;
-- optional local command execution is provided by `npm run agent` on the device that grants access.
+- command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
+- the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`.
 
 ## Layout
 
@@ -42,7 +43,9 @@ Default port: `8080`.
 
 ## Local Agent
 
-The PWA never runs OS commands by itself. On a device that should be controlled, run:
+The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. After the installer runs once, the agent starts with the OS and updates itself.
+
+For development, run:
 
 ```bash
 pnpm run agent

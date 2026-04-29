@@ -13,7 +13,7 @@ export function createHttpApp(distDir) {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' blob: data:",
       "font-src 'self'",
-      "connect-src 'self' wss://xn--n1afe0b.online ws://127.0.0.1:49424 ws://localhost:49424",
+      "connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ws://127.0.0.1:49424 ws://localhost:49424",
       "manifest-src 'self'",
       "worker-src 'self'",
       "frame-ancestors 'none'",

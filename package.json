@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "prebuild": "node scripts/build-agent-release.mjs",
     "build": "vite build",
     "preview": "node server/index.js",
     "start": "node server/index.js",
     "agent": "node scripts/soty-agent.mjs",
+    "agent:release": "node scripts/build-agent-release.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
