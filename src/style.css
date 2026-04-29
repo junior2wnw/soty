@@ -180,6 +180,7 @@ svg {
 
 .shell {
   --top: 168px;
+  --terminal-height: clamp(230px, 42vh, 480px);
   width: 100%;
   height: 100svh;
   display: grid;
@@ -244,8 +245,8 @@ svg {
   left: 50%;
   top: 50%;
   z-index: -1;
-  width: 2200px;
-  height: 1400px;
+  width: 3600px;
+  height: 2200px;
   transform: translate(-50%, -50%);
   background: rgba(251, 250, 246, 0.46);
   box-shadow:
@@ -257,10 +258,10 @@ svg {
 
 .hex {
   position: absolute;
-  left: calc(var(--x) - 40px);
-  top: calc(var(--y) - 35px);
-  width: 80px;
-  height: 70px;
+  left: calc(var(--x) - 43px);
+  top: calc(var(--y) - 38px);
+  width: 86px;
+  height: 76px;
   display: grid;
   grid-template-rows: 1fr auto;
   justify-items: center;
@@ -291,7 +292,7 @@ svg {
 
 .hex-cell {
   pointer-events: none;
-  opacity: 0.3;
+  opacity: 0.38;
 }
 
 .hex.filled {
@@ -314,8 +315,8 @@ svg {
 .hex.filled span {
   position: relative;
   z-index: 1;
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -597,12 +598,16 @@ svg {
 
 .terminal-panel {
   position: absolute;
-  inset: 0 max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  left: max(10px, env(safe-area-inset-left));
+  right: max(10px, env(safe-area-inset-right));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  height: var(--terminal-height);
   z-index: 7;
   display: none;
-  grid-template-rows: minmax(0, 1fr) 42px;
+  grid-template-rows: 34px minmax(0, 1fr) 42px;
   gap: 8px;
-  padding: 46px 12px 12px;
+  padding: 8px 12px 12px;
+  border-radius: 8px;
   background: #080807;
   color: #f8f7f2;
   box-shadow:
@@ -614,20 +619,78 @@ svg {
   display: grid;
 }
 
+.editor.terminal-host .terminal-panel {
+  grid-template-rows: 34px minmax(0, 1fr);
+}
+
 .editor.terminal-active textarea,
-.editor.terminal-active .text-paint,
+.editor.terminal-active .text-paint {
+  bottom: calc(var(--terminal-height) + max(20px, env(safe-area-inset-bottom)));
+}
+
 .editor.terminal-active .line-gutter,
-.editor.terminal-active .line-meta,
-.editor.terminal-active .writer-pop,
-.editor.terminal-active .file-rail {
-  opacity: 0;
-  pointer-events: none;
+.editor.terminal-active .line-meta {
+  bottom: calc(var(--terminal-height) + max(20px, env(safe-area-inset-bottom)));
+}
+
+.terminal-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 12px 34px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 9px;
+}
+
+.terminal-glyph {
+  color: rgba(248, 247, 242, 0.5);
+  font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+  font-size: 14px;
+}
+
+.terminal-led {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #b8b0a2;
+  box-shadow: 0 0 0 3px rgba(184, 176, 162, 0.12);
+}
+
+.terminal-panel[data-state="run"] .terminal-led {
+  background: #ffb000;
+  box-shadow: 0 0 0 3px rgba(255, 176, 0, 0.15);
+}
+
+.terminal-panel[data-state="ok"] .terminal-led {
+  background: #18a058;
+  box-shadow: 0 0 0 3px rgba(24, 160, 88, 0.15);
+}
+
+.terminal-panel[data-state="bad"],
+.terminal-panel[data-state="off"] {
+  box-shadow:
+    inset 0 0 0 1px rgba(216, 58, 46, 0.5),
+    inset 0 18px 42px rgba(255, 255, 255, 0.04);
+}
+
+.terminal-panel[data-state="bad"] .terminal-led,
+.terminal-panel[data-state="off"] .terminal-led {
+  background: #d83a2e;
+  box-shadow: 0 0 0 3px rgba(216, 58, 46, 0.15);
+}
+
+.terminal-peer {
+  width: 34px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 122, 0, 0.62);
+  border-radius: 7px;
+  color: #ffb000;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .terminal-close {
-  position: absolute;
-  right: 8px;
-  top: 8px;
   width: 30px;
   height: 30px;
   display: grid;
@@ -654,10 +717,14 @@ svg {
 
 .terminal-form {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr) 34px;
   align-items: center;
   gap: 6px;
   border-top: 1px solid rgba(255, 122, 0, 0.42);
+}
+
+.terminal-form[hidden] {
+  display: none;
 }
 
 .terminal-form input {
@@ -670,6 +737,21 @@ svg {
   caret-color: #ff7a00;
   font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
   font-size: 15px;
+}
+
+.terminal-form button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: #ff7a00;
+  color: #080807;
+}
+
+.terminal-form button svg {
+  width: 20px;
+  height: 20px;
 }
 
 .counterparty-menu {
@@ -784,6 +866,7 @@ svg {
 @media (max-width: 520px) {
   .shell {
     --top: 150px;
+    --terminal-height: min(54svh, 390px);
   }
 
   .editor textarea {

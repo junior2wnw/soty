@@ -45,7 +45,9 @@ Default port: `8080`.
 The PWA never runs OS commands by itself. On a device that should be controlled, run:
 
 ```bash
-npm run agent
+pnpm run agent
 ```
 
 Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`.
+
+On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.

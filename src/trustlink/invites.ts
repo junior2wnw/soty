@@ -163,7 +163,7 @@ export function decryptAcceptedJoin(privateKey: CryptoKey, payload: JoinAcceptPa
 
 function publicOrigin(): string {
   return window.location.hostname === "xn--n1afe0b.online"
-    ? "https://xn--n1afe0b.online"
+    ? "https://\u0441\u043e\u0442\u044b.online"
     : window.location.origin;
 }
 

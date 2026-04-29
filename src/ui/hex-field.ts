@@ -21,7 +21,13 @@ export function renderHexField(
   items: readonly HexItem[],
   actions: HexFieldActions
 ): void {
-  const positions = gridPositions(Math.max(7, Math.ceil(Math.sqrt(Math.max(items.length, 1))) + 4));
+  const rect = root.getBoundingClientRect();
+  const fieldRadius = Math.max(
+    5,
+    Math.ceil(Math.max(rect.width / 110, rect.height / 92)) + 2,
+    Math.ceil(Math.sqrt(Math.max(items.length, 1))) + 4
+  );
+  const positions = gridPositions(fieldRadius);
   const itemByIndex = new Map(items.map((item, index) => [index, item]));
   root.innerHTML = `<div class="hex-map"></div>`;
   const map = root.querySelector<HTMLDivElement>(".hex-map");
@@ -31,8 +37,8 @@ export function renderHexField(
   map.style.transform = `translate(${panX}px, ${panY}px)`;
   map.innerHTML = positions.map(([q, r], index) => {
     const item = itemByIndex.get(index);
-    const left = q * 60;
-    const top = (r + q / 2) * 70;
+    const left = q * 62;
+    const top = (r + q / 2) * 72;
     if (item) {
       return `
         <button class="hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"

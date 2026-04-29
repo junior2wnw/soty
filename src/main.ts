@@ -64,6 +64,7 @@ let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
+const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
 const writerLines = new Map<string, Map<number, {
   readonly nick: string;
   readonly deviceId: string;
@@ -314,7 +315,7 @@ function renderApp(): void {
   }
 
   const storedTop = Number.parseInt(localStorage.getItem("soty:split:v1") || "", 10);
-  const topHeight = Number.isFinite(storedTop) ? String(Math.max(72, Math.min(420, storedTop))) : "168";
+  const topHeight = Number.isFinite(storedTop) ? String(Math.max(96, Math.min(230, storedTop))) : "150";
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
     <section class="shell" style="--top:${topHeight}px">
@@ -331,11 +332,17 @@ function renderApp(): void {
         <div class="file-rail"></div>
         <textarea spellcheck="false" autocapitalize="sentences"></textarea>
         <div class="terminal-panel">
-          <button class="terminal-close" type="button" aria-label="close">${icon("close")}</button>
+          <div class="terminal-head">
+            <span class="terminal-led"></span>
+            <span class="terminal-peer"></span>
+            <span class="terminal-glyph">$</span>
+            <button class="terminal-close" type="button" aria-label="close">${icon("close")}</button>
+          </div>
           <div class="terminal-output"></div>
           <form class="terminal-form">
             <span>$</span>
             <input autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <button type="submit" aria-label="run">${icon("check")}</button>
           </form>
         </div>
         <input class="file-input" type="file" multiple />
@@ -448,6 +455,9 @@ function renderTiles(): void {
           const enabled = !remoteEnabled.has(id);
           remoteEnabled = setRemoteEnabled(id, enabled);
           syncs.get(id)?.grantRemote(enabled, "*");
+          terminalOpenId = enabled ? id : "";
+          setTerminalState(id, enabled ? "idle" : "ok");
+          renderTerminal();
           renderTiles();
         },
         close: () => closeTunnel(id)
@@ -635,6 +645,7 @@ function closeTunnel(id: string): void {
     terminalOpenId = "";
   }
   terminalLogs.delete(id);
+  terminalState.delete(id);
   writerLines.delete(id);
   activeWriters.delete(id);
   files.delete(id);
@@ -719,8 +730,10 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
   if (grant.enabled) {
     terminalOpenId = tunnelId;
+    setTerminalState(tunnelId, "idle");
   } else if (terminalOpenId === tunnelId) {
     terminalOpenId = "";
+    setTerminalState(tunnelId, "ok");
   }
   renderTiles();
   renderTerminal();
@@ -730,25 +743,26 @@ function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
   if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(command.targetDeviceId)) {
     return;
   }
+  terminalOpenId = tunnelId;
+  setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `< ${command.command}`);
   void runLocalAgentCommand(tunnelId, command);
-  if (tunnelId === selectedId) {
-    renderTerminal();
-  }
+  renderTerminal();
 }
 
 function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
   if (!device || !grantTargetsThisDevice(output.targetDeviceId)) {
     return;
   }
-  appendTerminalLine(tunnelId, output.text);
+  if (output.text.trim()) {
+    appendTerminalLine(tunnelId, output.text);
+  }
   if (typeof output.exitCode === "number") {
-    appendTerminalLine(tunnelId, `= ${output.exitCode}`);
+    setTerminalState(tunnelId, output.exitCode === 0 ? "ok" : output.exitCode === 127 ? "off" : "bad");
+    appendTerminalLine(tunnelId, `${output.exitCode === 0 ? "✓" : "!"} ${output.exitCode}`);
   }
   terminalOpenId = tunnelId;
-  if (tunnelId === selectedId) {
-    renderTerminal();
-  }
+  renderTerminal();
 }
 
 async function sendTerminalCommand(): Promise<void> {
@@ -765,23 +779,35 @@ async function sendTerminalCommand(): Promise<void> {
   if (input) {
     input.value = "";
   }
+  setTerminalState(selectedId, "run");
   appendTerminalLine(selectedId, `$ ${command}`);
-  await sync.sendRemoteCommand(hostDeviceId, command);
   renderTerminal();
+  await sync.sendRemoteCommand(hostDeviceId, command);
 }
 
 function renderTerminal(): void {
   const panel = app.querySelector<HTMLDivElement>(".terminal-panel");
   const output = app.querySelector<HTMLDivElement>(".terminal-output");
   const editor = app.querySelector<HTMLElement>(".editor");
-  if (!panel || !output || !editor) {
+  const form = app.querySelector<HTMLFormElement>(".terminal-form");
+  const peer = app.querySelector<HTMLSpanElement>(".terminal-peer");
+  if (!panel || !output || !editor || !form || !peer) {
     return;
   }
   if (!terminalOpenId && selectedId && remoteAccess.has(selectedId)) {
     terminalOpenId = selectedId;
   }
-  const active = Boolean(selectedId && terminalOpenId === selectedId && remoteAccess.has(selectedId));
+  const controller = Boolean(selectedId && terminalOpenId === selectedId && remoteAccess.has(selectedId));
+  const host = Boolean(selectedId && terminalOpenId === selectedId && remoteEnabled.has(selectedId));
+  const active = controller || host;
+  const state = terminalState.get(selectedId) ?? "idle";
   editor.classList.toggle("terminal-active", active);
+  editor.classList.toggle("terminal-controller", controller);
+  editor.classList.toggle("terminal-host", host && !controller);
+  panel.dataset.state = state;
+  form.hidden = !controller;
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  peer.textContent = tunnel ? initials(counterpartyLabel(tunnel)) : ".";
   output.innerHTML = (terminalLogs.get(selectedId) ?? [])
     .map((line) => `<pre>${escapeHtml(line || " ")}</pre>`)
     .join("");
@@ -792,8 +818,12 @@ function renderTerminal(): void {
 }
 
 function appendTerminalLine(tunnelId: string, line: string): void {
-  const next = [...(terminalLogs.get(tunnelId) ?? []), line].slice(-240);
+  const next = [...(terminalLogs.get(tunnelId) ?? []), line].slice(-600);
   terminalLogs.set(tunnelId, next);
+}
+
+function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad" | "off"): void {
+  terminalState.set(tunnelId, state);
 }
 
 function grantTargetsThisDevice(targetDeviceId: string): boolean {
@@ -806,20 +836,23 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     return;
   }
   let opened = false;
-  let failed = false;
+  let finished = false;
   const ws = new WebSocket("ws://127.0.0.1:49424");
   const fail = () => {
-    if (failed || opened) {
+    if (finished || opened) {
       return;
     }
-    failed = true;
+    finished = true;
+    setTerminalState(tunnelId, "off");
+    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
+    renderTerminal();
     window.clearTimeout(timer);
-    void sync.sendRemoteOutput(command.deviceId, command.id, "!", 127);
+    void sync.sendRemoteOutput(command.deviceId, command.id, "! 127.0.0.1:49424", 127);
   };
   const timer = window.setTimeout(() => {
     fail();
     ws.close();
-  }, 1200);
+  }, 2500);
   ws.onopen = () => {
     opened = true;
     window.clearTimeout(timer);
@@ -836,11 +869,34 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     } catch {
       return;
     }
-    if (message.type !== "data") {
+    if (message.type === "start") {
+      setTerminalState(tunnelId, "run");
+      renderTerminal();
+      return;
+    }
+    if (message.type === "error") {
+      finished = true;
+      setTerminalState(tunnelId, "bad");
+      const text = typeof message.text === "string" ? message.text : "!";
+      appendTerminalLine(tunnelId, text);
+      renderTerminal();
+      void sync.sendRemoteOutput(command.deviceId, command.id, text, 1);
+      return;
+    }
+    if (message.type !== "data" && message.type !== "exit") {
       return;
     }
     const text = typeof message.text === "string" ? message.text : "";
     const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+    if (text.trim()) {
+      appendTerminalLine(tunnelId, text);
+    }
+    if (typeof exitCode === "number") {
+      finished = true;
+      setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
+      appendTerminalLine(tunnelId, `${exitCode === 0 ? "✓" : "!"} ${exitCode}`);
+    }
+    renderTerminal();
     void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);
   };
   ws.onerror = () => fail();
