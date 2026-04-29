@@ -11,6 +11,8 @@ The browser side stays deliberately simple:
 - the upper field contains counterparties as movable hex cells;
 - the lower field is one shared text surface;
 - every character, deletion, line break, and file moves through the same tunnel;
+- direct WebRTC data channels are used when the devices and networks allow it;
+- the relay remains the reliable path for signaling, reconnects, history, and fallback delivery;
 - file transfer works from the counterparty menu and drag and drop;
 - the remote icon grants one-way command access to the selected counterparty;
 - optional local command execution is provided by `npm run agent` on the device that grants access.

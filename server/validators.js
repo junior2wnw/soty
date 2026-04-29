@@ -61,6 +61,23 @@ export function isRemoteOutput(value) {
     && (value.exitCode === undefined || isSafeRange(value.exitCode, -32768, 32767));
 }
 
+export function isP2pDescription(value, kind) {
+  return value
+    && isShortText(value.id, 140)
+    && isShortText(value.targetDeviceId, 140)
+    && value.kind === kind
+    && isShortText(value.sdp, 40_000);
+}
+
+export function isP2pCandidate(value) {
+  return value
+    && isShortText(value.id, 140)
+    && isShortText(value.targetDeviceId, 140)
+    && isShortText(value.candidate, 8_000)
+    && optionalShortText(value.sdpMid, 120)
+    && (value.sdpMLineIndex === null || value.sdpMLineIndex === undefined || isSafeRange(value.sdpMLineIndex, 0, 128));
+}
+
 export function isJoinRequest(value) {
   return value
     && isShortText(value.requestId, 120)
@@ -80,7 +97,7 @@ export function isPlainObject(value) {
 }
 
 function optionalShortText(value, max) {
-  return value === undefined || isShortText(value, max);
+  return value === undefined || value === null || isShortText(value, max);
 }
 
 function isSafeRange(value, min, max) {

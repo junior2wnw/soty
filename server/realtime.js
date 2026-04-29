@@ -3,6 +3,8 @@ import {
   isEncryptedUpdate,
   isJoinAccept,
   isJoinRequest,
+  isP2pCandidate,
+  isP2pDescription,
   isRemoteCommand,
   isRemoteGrant,
   isRemoteOutput,
@@ -120,6 +122,27 @@ async function handleMessage(room, peer, ws, store, raw) {
     broadcast(room, peer.id, {
       type: "remote.output",
       output: withPeer(peer, message.output)
+    });
+    return;
+  }
+  if (message.type === "p2p.offer" && isP2pDescription(message.signal, "offer")) {
+    sendTo(room, message.signal.targetDeviceId, {
+      type: "p2p.offer",
+      signal: withPeer(peer, message.signal)
+    });
+    return;
+  }
+  if (message.type === "p2p.answer" && isP2pDescription(message.signal, "answer")) {
+    sendTo(room, message.signal.targetDeviceId, {
+      type: "p2p.answer",
+      signal: withPeer(peer, message.signal)
+    });
+    return;
+  }
+  if (message.type === "p2p.candidate" && isP2pCandidate(message.signal)) {
+    sendTo(room, message.signal.targetDeviceId, {
+      type: "p2p.candidate",
+      signal: withPeer(peer, message.signal)
     });
     return;
   }
@@ -269,6 +292,13 @@ function broadcast(room, exceptDeviceId, message) {
     if (peer.id !== exceptDeviceId && peer.ws.readyState === 1) {
       peer.ws.send(json);
     }
+  }
+}
+
+function sendTo(room, deviceId, message) {
+  const peer = room.peers.get(deviceId);
+  if (peer?.ws.readyState === 1) {
+    peer.ws.send(JSON.stringify(message));
   }
 }
 

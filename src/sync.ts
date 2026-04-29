@@ -165,6 +165,37 @@ interface EncryptedRemoteOutput {
   readonly createdAt?: string;
 }
 
+interface P2pDescriptionSignal {
+  readonly id: string;
+  readonly kind: "offer" | "answer";
+  readonly targetDeviceId: string;
+  readonly sdp: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
+interface P2pCandidateSignal {
+  readonly id: string;
+  readonly targetDeviceId: string;
+  readonly candidate: string;
+  readonly sdpMid?: string | null;
+  readonly sdpMLineIndex?: number | null;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
+interface P2pPeer {
+  readonly id: string;
+  pc: RTCPeerConnection;
+  channel: RTCDataChannel | null;
+  pendingCandidates: RTCIceCandidateInit[];
+  retryTimer: number;
+}
+
 interface FileTransfer {
   readonly chunks: Uint8Array[];
   readonly seen: Set<number>;
@@ -187,6 +218,9 @@ type ServerMessage =
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput }
+  | { readonly type: "p2p.offer"; readonly signal: P2pDescriptionSignal }
+  | { readonly type: "p2p.answer"; readonly signal: P2pDescriptionSignal }
+  | { readonly type: "p2p.candidate"; readonly signal: P2pCandidateSignal }
   | { readonly type: "closed" };
 
 type UpdateKind = "update" | "snapshot";
@@ -204,11 +238,23 @@ type ControlMessage =
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
 
+type DirectMessage =
+  | { readonly type: "update"; readonly update: EncryptedUpdate }
+  | { readonly type: "file"; readonly file: EncryptedFile }
+  | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
+  | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
+  | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput };
+
 const heartbeatIntervalMs = 12_000;
 const staleConnectionMs = 42_000;
 const reconnectJitterMs = 750;
 const minReconnectDelayMs = 500;
 const maxReconnectDelayMs = 30_000;
+const p2pRetryMs = 6000;
+const p2pIceServers: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" }
+];
 
 export class TunnelSync {
   private readonly doc = new Y.Doc();
@@ -228,6 +274,12 @@ export class TunnelSync {
   private readonly pendingAcks = new Map<string, OutboundUpdate>();
   private readonly controlQueue: ControlMessage[] = [];
   private readonly fileTransfers = new Map<string, FileTransfer>();
+  private readonly p2pPeers = new Map<string, P2pPeer>();
+  private readonly seenUpdateIds = new Set<string>();
+  private readonly seenControlIds = new Set<string>();
+  private readonly completedFileIds = new Set<string>();
+  private readonly deletedFileIds = new Set<string>();
+  private readonly directSentUpdateIds = new Set<string>();
   private sendQueue = Promise.resolve();
   private readonly wakeReconnect = () => {
     this.recoverConnection();
@@ -429,6 +481,7 @@ export class TunnelSync {
     if (ws?.readyState === WebSocket.OPEN) {
       ws.close();
     }
+    this.closeP2pPeers();
     this.doc.destroy();
   }
 
@@ -509,7 +562,9 @@ export class TunnelSync {
     }
 
     if (message.type === "presence") {
-      this.callbacks.onPeers(message.peers.filter((peer) => peer.id !== this.device.id));
+      const peers = message.peers.filter((peer) => peer.id !== this.device.id);
+      this.callbacks.onPeers(peers);
+      this.syncP2pPeers(peers);
       return;
     }
 
@@ -527,15 +582,17 @@ export class TunnelSync {
 
     if (message.type === "hello") {
       if (message.snapshot) {
-        await this.applyEncrypted(message.snapshot);
+        await this.applyIncomingUpdate(message.snapshot);
       }
       for (const update of message.updates) {
-        await this.applyEncrypted(update);
+        await this.applyIncomingUpdate(update);
       }
       for (const file of message.files ?? []) {
         await this.applyFile(file);
       }
-      this.callbacks.onPeers(message.peers.filter((peer) => peer.id !== this.device.id));
+      const peers = message.peers.filter((peer) => peer.id !== this.device.id);
+      this.callbacks.onPeers(peers);
+      this.syncP2pPeers(peers);
       this.ready = true;
       this.reconnectDelay = minReconnectDelayMs;
       this.callbacks.onState("open");
@@ -548,7 +605,10 @@ export class TunnelSync {
 
     if (message.type === "update") {
       const before = this.text.toString();
-      await this.applyEncrypted(message.update);
+      const applied = await this.applyIncomingUpdate(message.update);
+      if (!applied) {
+        return;
+      }
       const after = this.text.toString();
       if (message.update.deviceId !== this.device.id) {
         this.callbacks.onRemoteChange({
@@ -565,27 +625,53 @@ export class TunnelSync {
       return;
     }
 
+    if (message.type === "p2p.offer" || message.type === "p2p.answer") {
+      await this.handleP2pDescription(message.signal);
+      return;
+    }
+
+    if (message.type === "p2p.candidate") {
+      await this.handleP2pCandidate(message.signal);
+      return;
+    }
+
     if (message.type === "remote.grant") {
-      if (message.grant.deviceId !== this.device.id) {
+      if (this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
         this.callbacks.onRemoteGrant(message.grant);
       }
       return;
     }
 
     if (message.type === "remote.command") {
-      if (message.command.deviceId !== this.device.id) {
+      if (this.rememberControl(message.command.id) && message.command.deviceId !== this.device.id) {
         await this.applyRemoteCommand(message.command);
       }
       return;
     }
 
     if (message.type === "remote.output") {
-      if (message.output.deviceId !== this.device.id) {
+      if (this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {
         await this.applyRemoteOutput(message.output);
       }
       return;
     }
 
+  }
+
+  private async applyIncomingUpdate(update: EncryptedUpdate): Promise<boolean> {
+    if (!this.rememberUpdate(update.id)) {
+      return false;
+    }
+    await this.applyEncrypted(update);
+    return true;
+  }
+
+  private rememberUpdate(id: string): boolean {
+    return rememberBounded(this.seenUpdateIds, id);
+  }
+
+  private rememberControl(id: string): boolean {
+    return rememberBounded(this.seenControlIds, id);
   }
 
   private async applyEncrypted(update: EncryptedUpdate): Promise<void> {
@@ -596,6 +682,8 @@ export class TunnelSync {
   private async applyFile(file: EncryptedFile): Promise<void> {
     if (file.kind === "delete") {
       this.fileTransfers.delete(file.fileId);
+      this.completedFileIds.delete(file.fileId);
+      rememberBounded(this.deletedFileIds, file.fileId);
       this.callbacks.onFileDeleted(file.fileId);
       return;
     }
@@ -604,6 +692,9 @@ export class TunnelSync {
     }
     if (file.kind === "chunk") {
       await this.applyFileChunk(file);
+      return;
+    }
+    if (this.completedFileIds.has(file.id) || this.deletedFileIds.has(file.id)) {
       return;
     }
     const [metaBytes, bodyBytes] = await Promise.all([
@@ -625,9 +716,13 @@ export class TunnelSync {
       deviceId: file.deviceId || "",
       createdAt: file.createdAt || new Date().toISOString()
     });
+    rememberBounded(this.completedFileIds, file.id);
   }
 
   private async applyFileChunk(file: EncryptedFileChunk): Promise<void> {
+    if (this.completedFileIds.has(file.fileId) || this.deletedFileIds.has(file.fileId)) {
+      return;
+    }
     if (file.index < 0 || file.index >= file.total || file.total < 1 || file.total > 8192) {
       return;
     }
@@ -676,6 +771,7 @@ export class TunnelSync {
       createdAt: transfer.createdAt || new Date().toISOString()
     });
     this.fileTransfers.delete(file.fileId);
+    rememberBounded(this.completedFileIds, file.fileId);
   }
 
   private async applyRemoteCommand(command: EncryptedRemoteCommand): Promise<void> {
@@ -721,6 +817,7 @@ export class TunnelSync {
   }
 
   private queueOutbound(item: OutboundUpdate): void {
+    void this.sendDirectUpdate(item);
     if (!this.ready || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       if (item.kind === "update") {
         this.offlineQueue.push(item);
@@ -745,15 +842,19 @@ export class TunnelSync {
       return;
     }
     const encrypted = await encryptForTunnel(this.tunnel, item.update);
+    const payload = {
+      id: item.id,
+      kind: item.kind,
+      deviceId: this.device.id,
+      deviceNick: this.device.nick,
+      createdAt: new Date().toISOString(),
+      ...encrypted
+    };
+    this.sendDirectUpdatePayload(payload);
     this.pendingAcks.set(item.id, item);
     ws.send(JSON.stringify({
       type: "update",
-      update: {
-        id: item.id,
-        kind: item.kind,
-        deviceNick: this.device.nick,
-        ...encrypted
-      }
+      update: payload
     }));
 
     if (item.kind === "update") {
@@ -761,6 +862,30 @@ export class TunnelSync {
       if (this.localUpdates % 64 === 0) {
         this.queueUpdate(Y.encodeStateAsUpdate(this.doc), "snapshot");
       }
+    }
+  }
+
+  private async sendDirectUpdate(item: OutboundUpdate): Promise<void> {
+    if (this.directSentUpdateIds.has(item.id) || !this.hasOpenDirectChannels()) {
+      return;
+    }
+    const encrypted = await encryptForTunnel(this.tunnel, item.update);
+    this.sendDirectUpdatePayload({
+      id: item.id,
+      kind: item.kind,
+      deviceId: this.device.id,
+      deviceNick: this.device.nick,
+      createdAt: new Date().toISOString(),
+      ...encrypted
+    });
+  }
+
+  private sendDirectUpdatePayload(update: EncryptedUpdate): void {
+    if (this.directSentUpdateIds.has(update.id)) {
+      return;
+    }
+    if (this.broadcastDirect({ type: "update", update })) {
+      rememberBounded(this.directSentUpdateIds, update.id);
     }
   }
 
@@ -810,12 +935,66 @@ export class TunnelSync {
   }
 
   private sendControl(message: ControlMessage): void {
+    this.sendDirectControl(message);
     const ws = this.ws;
     if (this.ready && ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
       return;
     }
     this.controlQueue.push(message);
+  }
+
+  private sendDirectControl(message: ControlMessage): void {
+    const createdAt = new Date().toISOString();
+    if (message.type === "file") {
+      this.broadcastDirect({
+        type: "file",
+        file: {
+          ...message.file,
+          deviceId: this.device.id,
+          deviceNick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
+    if (message.type === "remote.grant") {
+      this.broadcastDirect({
+        type: "remote.grant",
+        grant: {
+          ...message.grant,
+          deviceId: this.device.id,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
+    if (message.type === "remote.command") {
+      this.broadcastDirect({
+        type: "remote.command",
+        command: {
+          ...message.command,
+          deviceId: this.device.id,
+          deviceNick: this.device.nick,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
+    if (message.type === "remote.output") {
+      this.broadcastDirect({
+        type: "remote.output",
+        output: {
+          ...message.output,
+          deviceId: this.device.id,
+          deviceNick: this.device.nick,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+    }
   }
 
   private flushControls(): void {
@@ -826,6 +1005,294 @@ export class TunnelSync {
     for (const message of this.controlQueue.splice(0)) {
       ws.send(JSON.stringify(message));
     }
+  }
+
+  private syncP2pPeers(peers: readonly PeerInfo[]): void {
+    if (!("RTCPeerConnection" in window) || !("RTCDataChannel" in window)) {
+      return;
+    }
+    for (const peer of peers) {
+      if (!peer.id || peer.id === this.device.id) {
+        continue;
+      }
+      const link = this.ensureP2pPeer(peer.id);
+      if (this.device.id < peer.id && link.pc.signalingState === "stable" && link.channel?.readyState !== "open") {
+        void this.startP2pOffer(link);
+      }
+    }
+  }
+
+  private ensureP2pPeer(peerId: string): P2pPeer {
+    const existing = this.p2pPeers.get(peerId);
+    if (existing) {
+      return existing;
+    }
+    const pc = new RTCPeerConnection({ iceServers: p2pIceServers });
+    const link: P2pPeer = {
+      id: peerId,
+      pc,
+      channel: null,
+      pendingCandidates: [],
+      retryTimer: 0
+    };
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.sendP2pCandidate(peerId, event.candidate.toJSON());
+      }
+    };
+    pc.ondatachannel = (event) => {
+      this.attachP2pChannel(link, event.channel);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+        this.restartP2pLater(peerId);
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "failed") {
+        this.restartP2pLater(peerId);
+      }
+    };
+    if (this.device.id < peerId) {
+      this.attachP2pChannel(link, pc.createDataChannel("soty", { ordered: true }));
+    }
+    this.p2pPeers.set(peerId, link);
+    return link;
+  }
+
+  private attachP2pChannel(link: P2pPeer, channel: RTCDataChannel): void {
+    link.channel = channel;
+    channel.onopen = () => {
+      this.sendDirectSnapshot();
+    };
+    channel.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        void this.handleDirectMessage(event.data);
+      }
+    };
+    channel.onclose = () => {
+      if (link.channel === channel) {
+        link.channel = null;
+      }
+      this.restartP2pLater(link.id);
+    };
+    channel.onerror = () => {
+      this.restartP2pLater(link.id);
+    };
+  }
+
+  private async startP2pOffer(link: P2pPeer, iceRestart = false): Promise<void> {
+    if (this.destroyed || link.pc.signalingState !== "stable") {
+      return;
+    }
+    try {
+      const offer = await link.pc.createOffer({ iceRestart });
+      await link.pc.setLocalDescription(offer);
+      this.sendP2pDescription("p2p.offer", link.id, "offer", offer.sdp || "");
+    } catch {
+      this.restartP2pLater(link.id);
+    }
+  }
+
+  private async handleP2pDescription(signal: P2pDescriptionSignal): Promise<void> {
+    if (signal.targetDeviceId !== this.device.id || signal.deviceId === this.device.id || !signal.deviceId) {
+      return;
+    }
+    const link = this.ensureP2pPeer(signal.deviceId);
+    try {
+      if (signal.kind === "offer") {
+        await link.pc.setRemoteDescription({ type: "offer", sdp: signal.sdp });
+        await this.flushP2pCandidates(link);
+        const answer = await link.pc.createAnswer();
+        await link.pc.setLocalDescription(answer);
+        this.sendP2pDescription("p2p.answer", signal.deviceId, "answer", answer.sdp || "");
+        return;
+      }
+      if (link.pc.signalingState === "have-local-offer") {
+        await link.pc.setRemoteDescription({ type: "answer", sdp: signal.sdp });
+        await this.flushP2pCandidates(link);
+      }
+    } catch {
+      this.restartP2pLater(signal.deviceId);
+    }
+  }
+
+  private async handleP2pCandidate(signal: P2pCandidateSignal): Promise<void> {
+    if (signal.targetDeviceId !== this.device.id || signal.deviceId === this.device.id || !signal.deviceId) {
+      return;
+    }
+    const link = this.ensureP2pPeer(signal.deviceId);
+    const candidate: RTCIceCandidateInit = { candidate: signal.candidate };
+    if (signal.sdpMid !== undefined) {
+      candidate.sdpMid = signal.sdpMid;
+    }
+    if (signal.sdpMLineIndex !== undefined) {
+      candidate.sdpMLineIndex = signal.sdpMLineIndex;
+    }
+    if (!link.pc.remoteDescription) {
+      link.pendingCandidates.push(candidate);
+      return;
+    }
+    try {
+      await link.pc.addIceCandidate(candidate);
+    } catch {
+      this.restartP2pLater(signal.deviceId);
+    }
+  }
+
+  private async flushP2pCandidates(link: P2pPeer): Promise<void> {
+    for (const candidate of link.pendingCandidates.splice(0)) {
+      await link.pc.addIceCandidate(candidate).catch(() => undefined);
+    }
+  }
+
+  private sendP2pDescription(type: "p2p.offer" | "p2p.answer", targetDeviceId: string, kind: "offer" | "answer", sdp: string): void {
+    this.sendSignal(type, {
+      id: `p2p_${kind}_${crypto.randomUUID()}`,
+      kind,
+      targetDeviceId,
+      sdp
+    });
+  }
+
+  private sendP2pCandidate(targetDeviceId: string, candidate: RTCIceCandidateInit): void {
+    if (!candidate.candidate) {
+      return;
+    }
+    this.sendSignal("p2p.candidate", {
+      id: `p2p_candidate_${crypto.randomUUID()}`,
+      targetDeviceId,
+      candidate: candidate.candidate,
+      ...(candidate.sdpMid !== undefined ? { sdpMid: candidate.sdpMid } : {}),
+      ...(candidate.sdpMLineIndex !== undefined ? { sdpMLineIndex: candidate.sdpMLineIndex } : {})
+    });
+  }
+
+  private sendSignal(type: "p2p.offer" | "p2p.answer", signal: Omit<P2pDescriptionSignal, "deviceId" | "deviceNick" | "nick" | "createdAt">): void;
+  private sendSignal(type: "p2p.candidate", signal: Omit<P2pCandidateSignal, "deviceId" | "deviceNick" | "nick" | "createdAt">): void;
+  private sendSignal(
+    type: "p2p.offer" | "p2p.answer" | "p2p.candidate",
+    signal: Omit<P2pDescriptionSignal | P2pCandidateSignal, "deviceId" | "deviceNick" | "nick" | "createdAt">
+  ): void {
+    const ws = this.ws;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type, signal }));
+    }
+  }
+
+  private restartP2pLater(peerId: string): void {
+    if (this.destroyed) {
+      return;
+    }
+    const link = this.p2pPeers.get(peerId);
+    if (link) {
+      window.clearTimeout(link.retryTimer);
+      link.retryTimer = window.setTimeout(() => {
+        this.closeP2pPeer(peerId);
+        const next = this.ensureP2pPeer(peerId);
+        if (this.device.id < peerId) {
+          void this.startP2pOffer(next, true);
+        }
+      }, p2pRetryMs + Math.round(Math.random() * reconnectJitterMs));
+    }
+  }
+
+  private closeP2pPeer(peerId: string): void {
+    const link = this.p2pPeers.get(peerId);
+    if (!link) {
+      return;
+    }
+    window.clearTimeout(link.retryTimer);
+    link.channel?.close();
+    link.pc.close();
+    this.p2pPeers.delete(peerId);
+  }
+
+  private closeP2pPeers(): void {
+    for (const peerId of [...this.p2pPeers.keys()]) {
+      this.closeP2pPeer(peerId);
+    }
+  }
+
+  private hasOpenDirectChannels(): boolean {
+    for (const link of this.p2pPeers.values()) {
+      if (link.channel?.readyState === "open") {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private broadcastDirect(message: DirectMessage): boolean {
+    const json = JSON.stringify(message);
+    let sent = false;
+    for (const link of this.p2pPeers.values()) {
+      if (link.channel?.readyState === "open") {
+        try {
+          link.channel.send(json);
+          sent = true;
+        } catch {
+          this.restartP2pLater(link.id);
+        }
+      }
+    }
+    return sent;
+  }
+
+  private async handleDirectMessage(raw: string): Promise<void> {
+    let message: DirectMessage;
+    try {
+      message = JSON.parse(raw) as DirectMessage;
+    } catch {
+      return;
+    }
+    if (message.type === "update") {
+      const before = this.text.toString();
+      const applied = await this.applyIncomingUpdate(message.update);
+      if (!applied || message.update.deviceId === this.device.id) {
+        return;
+      }
+      const after = this.text.toString();
+      this.callbacks.onRemoteChange({
+        deviceId: message.update.deviceId ?? "",
+        nick: message.update.deviceNick ?? "",
+        index: diffIndex(before, after),
+        local: false
+      });
+      return;
+    }
+    if (message.type === "file") {
+      await this.applyFile(message.file);
+      return;
+    }
+    if (message.type === "remote.grant" && this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
+      this.callbacks.onRemoteGrant(message.grant);
+      return;
+    }
+    if (message.type === "remote.command" && this.rememberControl(message.command.id) && message.command.deviceId !== this.device.id) {
+      await this.applyRemoteCommand(message.command);
+      return;
+    }
+    if (message.type === "remote.output" && this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {
+      await this.applyRemoteOutput(message.output);
+    }
+  }
+
+  private sendDirectSnapshot(): void {
+    void (async () => {
+      if (!this.hasOpenDirectChannels()) {
+        return;
+      }
+      const encrypted = await encryptForTunnel(this.tunnel, Y.encodeStateAsUpdate(this.doc));
+      this.sendDirectUpdatePayload({
+        id: `direct_snapshot_${crypto.randomUUID()}`,
+        kind: "snapshot",
+        deviceId: this.device.id,
+        deviceNick: this.device.nick,
+        createdAt: new Date().toISOString(),
+        ...encrypted
+      });
+    })();
   }
 
   private recoverConnection(forcePing = false): void {
@@ -914,6 +1381,21 @@ function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
     offset += chunk.byteLength;
   }
   return result;
+}
+
+function rememberBounded(items: Set<string>, id: string, max = 4096): boolean {
+  if (items.has(id)) {
+    return false;
+  }
+  items.add(id);
+  while (items.size > max) {
+    const first = items.values().next().value;
+    if (typeof first !== "string") {
+      break;
+    }
+    items.delete(first);
+  }
+  return true;
 }
 
 function diffText(before: string, after: string): [number, number, string] {
