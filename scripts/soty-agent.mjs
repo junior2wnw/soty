@@ -3,17 +3,20 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.3";
+const agentVersion = "0.3.4";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
+const maxCommandChars = 8_000;
+const maxScriptChars = 1_000_000;
 const maxChunkBytes = 12_000;
-const maxFrameBytes = 64_000;
+const maxFrameBytes = 2_500_000;
 const active = new Map();
 const operatorRuns = new Map();
 let operatorBridge = null;
@@ -112,6 +115,10 @@ async function handleHttpRequest(request, response) {
     await handleOperatorHttpRun(request, response, headers);
     return;
   }
+  if (url.pathname === "/operator/script" && request.method === "POST") {
+    await handleOperatorHttpScript(request, response, headers);
+    return;
+  }
   response.writeHead(204, headers);
   response.end();
 }
@@ -145,7 +152,21 @@ function handleMessage(ws, raw) {
     return;
   }
 
-  if (message?.type !== "run" || !isSafeText(message.id, 160) || !isSafeText(message.command, 8000)) {
+  if (message?.type === "script" && isSafeText(message.id, 160) && isSafeText(message.script, maxScriptChars)) {
+    void runScript(
+      ws,
+      message.id,
+      {
+        name: typeof message.name === "string" ? message.name : "script",
+        shell: typeof message.shell === "string" ? message.shell : "",
+        script: message.script
+      },
+      Number.isSafeInteger(message.timeoutMs) ? message.timeoutMs : defaultTimeoutMs
+    );
+    return;
+  }
+
+  if (message?.type !== "run" || !isSafeText(message.id, 160) || !isSafeText(message.command, maxCommandChars)) {
     return;
   }
 
@@ -192,12 +213,50 @@ async function handleOperatorHttpRun(request, response, headers) {
     return;
   }
   const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
-  const command = typeof payload.command === "string" ? payload.command.slice(0, 8000) : "";
+  const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
   if (!operatorBridge?.open || !target || !command.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
   }
+  const id = registerOperatorRun(response, headers, timeoutMs);
+  sendRaw(operatorBridge, {
+    type: "operator.run",
+    id,
+    target,
+    command
+  });
+}
+
+async function handleOperatorHttpScript(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 2_200_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
+  const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
+  const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
+  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  if (!operatorBridge?.open || !target || !script.trim()) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, timeoutMs);
+  sendRaw(operatorBridge, {
+    type: "operator.script",
+    id,
+    target,
+    name,
+    shell,
+    script
+  });
+}
+
+function registerOperatorRun(response, headers, timeoutMs) {
   const id = `operator_${randomUUID()}`;
   let body = "";
   let done = false;
@@ -224,12 +283,7 @@ async function handleOperatorHttpRun(request, response, headers) {
     },
     finish
   });
-  sendRaw(operatorBridge, {
-    type: "operator.run",
-    id,
-    target,
-    command
-  });
+  return id;
 }
 
 function handleOperatorOutput(message) {
@@ -297,6 +351,69 @@ function runCommand(ws, id, command, timeoutMs) {
   child.on("close", (code) => {
     clearTimeout(timer);
     active.delete(id);
+    if (!timedOut) {
+      send(ws, id, "", Number.isSafeInteger(code) ? code : 0, "exit");
+    }
+    ws.close(1000, "done");
+  });
+}
+
+async function runScript(ws, id, payload, timeoutMs) {
+  const jobDir = join(tmpdir(), "soty-agent", safeFileName(id));
+  await mkdir(jobDir, { recursive: true });
+  const script = scriptSpec(payload, jobDir);
+  try {
+    await writeFile(script.path, script.content, { encoding: "utf8", mode: 0o700 });
+  } catch (error) {
+    send(ws, id, `${error instanceof Error ? error.message : String(error)}\n`, 127, "error");
+    ws.close(1011, "error");
+    await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+    return;
+  }
+
+  const child = spawn(script.file, script.args, {
+    cwd: process.cwd(),
+    env: process.env,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  active.set(id, child);
+  let timedOut = false;
+  send(ws, id, "", undefined, "start", {
+    cwd: process.cwd(),
+    pid: child.pid || 0,
+    name: script.name
+  });
+
+  const finish = async () => {
+    active.delete(id);
+    await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+  };
+
+  const timer = setTimeout(() => {
+    if (active.get(id) !== child) {
+      return;
+    }
+    timedOut = true;
+    child.kill();
+    send(ws, id, "!\n", 124, "exit");
+  }, Math.max(1000, timeoutMs));
+
+  const decodeStdout = createOutputDecoder();
+  const decodeStderr = createOutputDecoder();
+  child.stdout.on("data", (chunk) => sendChunks(ws, id, decodeStdout(chunk)));
+  child.stderr.on("data", (chunk) => sendChunks(ws, id, decodeStderr(chunk)));
+  child.stdout.on("end", () => sendChunks(ws, id, decodeStdout(Buffer.alloc(0), true)));
+  child.stderr.on("end", () => sendChunks(ws, id, decodeStderr(Buffer.alloc(0), true)));
+  child.on("error", (error) => {
+    clearTimeout(timer);
+    void finish();
+    send(ws, id, `${error.message}\n`, 127, "error");
+    ws.close(1011, "error");
+  });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    void finish();
     if (!timedOut) {
       send(ws, id, "", Number.isSafeInteger(code) ? code : 0, "exit");
     }
@@ -396,7 +513,30 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
-  process.stderr.write("sotyctl list | run <target> <command>\n");
+  if (command === "script") {
+    const target = args[1] || "";
+    const filePath = args[2] || "";
+    const shell = args[3] || "";
+    if (!target || !filePath) {
+      process.stderr.write("sotyctl script <target> <file> [shell]\n");
+      process.exit(2);
+    }
+    const script = await readFile(filePath, "utf8");
+    const response = await fetch(`http://127.0.0.1:${port}/operator/script`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, name: basename(filePath), shell, script })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
+  process.stderr.write("sotyctl list | run <target> <command> | script <target> <file> [shell]\n");
   process.exit(2);
 }
 
@@ -417,12 +557,53 @@ function shellSpec(command) {
     return { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`] };
   }
   const file = requestedShell || "powershell.exe";
-  const utf8 = "$__sotyUtf8 = New-Object System.Text.UTF8Encoding $false; [Console]::InputEncoding = $__sotyUtf8; [Console]::OutputEncoding = $__sotyUtf8; $OutputEncoding = $__sotyUtf8; chcp.com 65001 | Out-Null";
-  const wrapped = `${utf8}; ${command}; if ($global:LASTEXITCODE -ne $null) { exit $global:LASTEXITCODE }`;
+  const wrapped = `${powerShellUtf8Prelude()}; ${command}; if ($global:LASTEXITCODE -ne $null) { exit $global:LASTEXITCODE }`;
   return {
     file,
     args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", wrapped]
   };
+}
+
+function scriptSpec(payload, jobDir) {
+  const shell = String(payload.shell || "").toLowerCase();
+  const name = safeFileName(payload.name || "script");
+  const base = name.replace(/\.[A-Za-z0-9]{1,8}$/u, "") || "script";
+  if (shell.includes("node")) {
+    const path = join(jobDir, `${base}.mjs`);
+    return { name: basename(path), path, content: payload.script, file: process.execPath, args: [path] };
+  }
+  if (shell.includes("python")) {
+    const path = join(jobDir, `${base}.py`);
+    return { name: basename(path), path, content: payload.script, file: process.platform === "win32" ? "python.exe" : "python3", args: [path] };
+  }
+  if (process.platform === "win32") {
+    if (shell.includes("cmd")) {
+      const path = join(jobDir, `${base}.cmd`);
+      return {
+        name: basename(path),
+        path,
+        content: `@echo off\r\nchcp 65001>nul\r\n${payload.script}`,
+        file: process.env.ComSpec || "cmd.exe",
+        args: ["/d", "/s", "/c", path]
+      };
+    }
+    const path = join(jobDir, `${base}.ps1`);
+    const file = shell.includes("pwsh") ? "pwsh.exe" : (requestedShell || "powershell.exe");
+    return {
+      name: basename(path),
+      path,
+      content: `\uFEFF${powerShellUtf8Prelude()}\r\n${payload.script}`,
+      file,
+      args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
+    };
+  }
+  const path = join(jobDir, `${base}.sh`);
+  const file = shell.includes("bash") ? "bash" : (requestedShell || process.env.SHELL || "/bin/sh");
+  return { name: basename(path), path, content: payload.script, file, args: [path] };
+}
+
+function powerShellUtf8Prelude() {
+  return "$__sotyUtf8 = New-Object System.Text.UTF8Encoding $false; [Console]::InputEncoding = $__sotyUtf8; [Console]::OutputEncoding = $__sotyUtf8; $OutputEncoding = $__sotyUtf8; chcp.com 65001 | Out-Null";
 }
 
 function shellName() {
@@ -430,6 +611,14 @@ function shellName() {
     return requestedShell || process.env.SHELL || "/bin/sh";
   }
   return requestedShell || "powershell.exe";
+}
+
+function safeFileName(value) {
+  return String(value || "script")
+    .replace(/[^\-.0-9A-Z_a-z]/gu, "_")
+    .replace(/^\.+/u, "")
+    .slice(0, 80)
+    || "script";
 }
 
 function originAllowed(origin) {

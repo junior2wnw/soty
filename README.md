@@ -18,6 +18,7 @@ The browser side stays deliberately simple:
 - the remote icon grants one-way command access to the selected counterparty;
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
 - local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
+- long remote jobs can be staged as temporary scripts and launched without visible terminal windows;
 - the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`.
 
 ## Layout
@@ -63,13 +64,16 @@ Installed operator bridge:
 # Windows
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd list
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd run Phone "ping ya.ru"
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd script Phone .\job.ps1 powershell
 
 # macOS / Linux
 ~/.soty-agent/sotyctl list
 ~/.soty-agent/sotyctl run Phone "ping ya.ru"
+~/.soty-agent/sotyctl script Phone ./job.sh sh
 ```
 
 The bridge works when the PWA is open on the controlling device and that device has remote access to the named counterparty.
+Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
 
 ## Wake Pulse
 

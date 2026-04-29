@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteScript, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -682,6 +682,9 @@ function ensureSync(tunnel: TunnelRecord): void {
     onRemoteCommand: (command) => {
       applyRemoteCommand(tunnel.id, command);
     },
+    onRemoteScript: (script) => {
+      applyRemoteScript(tunnel.id, script);
+    },
     onRemoteOutput: (output) => {
       applyRemoteOutput(tunnel.id, output);
     },
@@ -903,6 +906,17 @@ function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
   renderTerminal();
 }
 
+function applyRemoteScript(tunnelId: string, script: RemoteScript): void {
+  if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(script.targetDeviceId)) {
+    return;
+  }
+  terminalOpenId = tunnelId;
+  setTerminalState(tunnelId, "run");
+  appendTerminalLine(tunnelId, `< ${script.name || "script"}`);
+  void runLocalAgentScript(tunnelId, script);
+  renderTerminal();
+}
+
 function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
   if (!device || !grantTargetsThisDevice(output.targetDeviceId)) {
     return;
@@ -966,7 +980,15 @@ async function ensureOperatorBridge(): Promise<void> {
     publishOperatorTargets();
   };
   ws.onmessage = (event) => {
-    let message: { readonly type?: string; readonly id?: string; readonly target?: string; readonly command?: string };
+    let message: {
+      readonly type?: string;
+      readonly id?: string;
+      readonly target?: string;
+      readonly command?: string;
+      readonly name?: string;
+      readonly shell?: string;
+      readonly script?: string;
+    };
     try {
       message = JSON.parse(event.data as string) as typeof message;
     } catch {
@@ -974,6 +996,9 @@ async function ensureOperatorBridge(): Promise<void> {
     }
     if (message.type === "operator.run") {
       void runOperatorCommand(message);
+    }
+    if (message.type === "operator.script") {
+      void runOperatorScript(message);
     }
   };
   ws.onclose = () => {
@@ -1046,6 +1071,51 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   renderTerminal();
   try {
     const commandId = await sync.sendRemoteCommand(hostDeviceId, command);
+    operatorPending.set(commandId, requestId);
+  } catch {
+    sendOperatorOutput(requestId, "! tunnel", 500);
+    setTerminalState(tunnel.id, "bad");
+    renderTerminal();
+  }
+}
+
+async function runOperatorScript(message: {
+  readonly id?: string;
+  readonly target?: string;
+  readonly name?: string;
+  readonly shell?: string;
+  readonly script?: string;
+}): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const script = typeof message.script === "string" ? message.script : "";
+  if (!requestId || !script.trim()) {
+    return;
+  }
+  const tunnel = findOperatorTarget(message.target || "");
+  if (!tunnel) {
+    sendOperatorOutput(requestId, "! target", 404);
+    return;
+  }
+  const hostDeviceId = remoteAccess.get(tunnel.id);
+  const sync = syncs.get(tunnel.id);
+  if (!hostDeviceId || !sync) {
+    sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  const name = cleanNick(message.name || "script") || "script";
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  terminalOpenId = tunnel.id;
+  setTerminalState(tunnel.id, "run");
+  appendTerminalLine(tunnel.id, `$ ${name}`);
+  renderTiles();
+  renderTerminal();
+  try {
+    const commandId = await sync.sendRemoteScript(hostDeviceId, {
+      name,
+      shell: message.shell || "",
+      script
+    });
     operatorPending.set(commandId, requestId);
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
@@ -1234,6 +1304,81 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     }
     renderTerminal();
     void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);
+  };
+  ws.onerror = () => fail();
+  ws.onclose = () => window.clearTimeout(timer);
+}
+
+function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
+  const sync = syncs.get(tunnelId);
+  if (!sync || !script.deviceId) {
+    return;
+  }
+  let opened = false;
+  let finished = false;
+  const ws = new WebSocket("ws://127.0.0.1:49424");
+  const fail = () => {
+    if (finished || opened) {
+      return;
+    }
+    finished = true;
+    setTerminalState(tunnelId, "off");
+    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
+    renderTerminal();
+    window.clearTimeout(timer);
+    void sync.sendRemoteOutput(script.deviceId, script.id, "! 127.0.0.1:49424", 127);
+  };
+  const timer = window.setTimeout(() => {
+    fail();
+    ws.close();
+  }, 2500);
+  ws.onopen = () => {
+    opened = true;
+    window.clearTimeout(timer);
+    ws.send(JSON.stringify({
+      type: "script",
+      id: script.id,
+      name: script.name,
+      shell: script.shell,
+      script: script.script
+    }));
+  };
+  ws.onmessage = (event) => {
+    let message: { readonly type?: string; readonly text?: string; readonly exitCode?: number };
+    try {
+      message = JSON.parse(event.data as string) as { readonly type?: string; readonly text?: string; readonly exitCode?: number };
+    } catch {
+      return;
+    }
+    if (message.type === "start") {
+      setTerminalState(tunnelId, "run");
+      renderTerminal();
+      return;
+    }
+    if (message.type === "error") {
+      finished = true;
+      setTerminalState(tunnelId, "bad");
+      const text = typeof message.text === "string" ? message.text : "!";
+      appendTerminalLine(tunnelId, text);
+      renderTerminal();
+      void sync.sendRemoteOutput(script.deviceId, script.id, text, 1);
+      return;
+    }
+    if (message.type !== "data" && message.type !== "exit") {
+      return;
+    }
+    const text = typeof message.text === "string" ? message.text : "";
+    const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+    if (text.trim()) {
+      appendTerminalLine(tunnelId, text);
+    }
+    if (typeof exitCode === "number") {
+      finished = true;
+      setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
+      appendTerminalLine(tunnelId, `${exitCode === 0 ? "+" : "!"} ${exitCode}`);
+    }
+    renderTerminal();
+    void sync.sendRemoteOutput(script.deviceId, script.id, text, exitCode);
   };
   ws.onerror = () => fail();
   ws.onclose = () => window.clearTimeout(timer);

@@ -25,6 +25,7 @@ export interface SyncCallbacks {
   readonly onKnock: (knock: NoticeKnock) => void;
   readonly onRemoteGrant: (grant: RemoteGrant) => void;
   readonly onRemoteCommand: (command: RemoteCommand) => void;
+  readonly onRemoteScript: (script: RemoteScript) => void;
   readonly onRemoteOutput: (output: RemoteOutput) => void;
   readonly onPeers: (peers: readonly PeerInfo[]) => void;
   readonly onJoinRequest: (request: JoinRequest) => void;
@@ -78,6 +79,17 @@ export interface RemoteGrant {
 export interface RemoteCommand {
   readonly id: string;
   readonly command: string;
+  readonly targetDeviceId: string;
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly createdAt: string;
+}
+
+export interface RemoteScript {
+  readonly id: string;
+  readonly name: string;
+  readonly shell: string;
+  readonly script: string;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -161,6 +173,17 @@ interface EncryptedRemoteCommand {
   readonly createdAt?: string;
 }
 
+interface EncryptedRemoteScript {
+  readonly id: string;
+  readonly targetDeviceId: string;
+  readonly nonce: string;
+  readonly ciphertext: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
 interface EncryptedRemoteOutput {
   readonly id: string;
   readonly commandId: string;
@@ -227,6 +250,7 @@ type ServerMessage =
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
+  | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput }
   | { readonly type: "p2p.offer"; readonly signal: P2pDescriptionSignal }
   | { readonly type: "p2p.answer"; readonly signal: P2pDescriptionSignal }
@@ -247,6 +271,7 @@ type ControlMessage =
   | { readonly type: "notice.knock"; readonly knock: { readonly id: string; readonly targetDeviceId: string } }
   | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
+  | { readonly type: "remote.script"; readonly script: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
 
 type DirectMessage =
@@ -255,6 +280,7 @@ type DirectMessage =
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
+  | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput };
 
 const heartbeatIntervalMs = 12_000;
@@ -461,6 +487,25 @@ export class TunnelSync {
     this.sendControl({
       type: "remote.command",
       command: {
+        id,
+        targetDeviceId,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    return id;
+  }
+
+  async sendRemoteScript(targetDeviceId: string, script: { readonly name?: string; readonly shell?: string; readonly script: string }): Promise<string> {
+    const id = `remote_script_${crypto.randomUUID()}`;
+    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({
+      name: script.name || "script",
+      shell: script.shell || "",
+      script: script.script.slice(0, 1_000_000)
+    })));
+    this.sendControl({
+      type: "remote.script",
+      script: {
         id,
         targetDeviceId,
         nonce: encrypted.nonce,
@@ -678,6 +723,13 @@ export class TunnelSync {
       return;
     }
 
+    if (message.type === "remote.script") {
+      if (this.rememberControl(message.script.id) && message.script.deviceId !== this.device.id) {
+        await this.applyRemoteScript(message.script);
+      }
+      return;
+    }
+
     if (message.type === "remote.output") {
       if (this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {
         await this.applyRemoteOutput(message.output);
@@ -817,6 +869,25 @@ export class TunnelSync {
       deviceId: command.deviceId || "",
       nick: command.deviceNick || command.nick || "",
       createdAt: command.createdAt || new Date().toISOString()
+    });
+  }
+
+  private async applyRemoteScript(script: EncryptedRemoteScript): Promise<void> {
+    const bytes = await decryptFromTunnel(this.tunnel, script.nonce, script.ciphertext);
+    const payload = JSON.parse(decode(bytes)) as { readonly name?: string; readonly shell?: string; readonly script?: string };
+    const text = typeof payload.script === "string" ? payload.script.slice(0, 1_000_000) : "";
+    if (!text.trim()) {
+      return;
+    }
+    this.callbacks.onRemoteScript({
+      id: script.id,
+      name: cleanFileName(payload.name || "script"),
+      shell: typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "",
+      script: text,
+      targetDeviceId: script.targetDeviceId,
+      deviceId: script.deviceId || "",
+      nick: script.deviceNick || script.nick || "",
+      createdAt: script.createdAt || new Date().toISOString()
     });
   }
 
@@ -1016,6 +1087,19 @@ export class TunnelSync {
         type: "remote.command",
         command: {
           ...message.command,
+          deviceId: this.device.id,
+          deviceNick: this.device.nick,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
+    if (message.type === "remote.script") {
+      this.broadcastDirect({
+        type: "remote.script",
+        script: {
+          ...message.script,
           deviceId: this.device.id,
           deviceNick: this.device.nick,
           nick: this.device.nick,
@@ -1316,6 +1400,10 @@ export class TunnelSync {
     }
     if (message.type === "remote.command" && this.rememberControl(message.command.id) && message.command.deviceId !== this.device.id) {
       await this.applyRemoteCommand(message.command);
+      return;
+    }
+    if (message.type === "remote.script" && this.rememberControl(message.script.id) && message.script.deviceId !== this.device.id) {
+      await this.applyRemoteScript(message.script);
       return;
     }
     if (message.type === "remote.output" && this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {

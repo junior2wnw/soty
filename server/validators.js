@@ -57,6 +57,14 @@ export function isRemoteCommand(value) {
     && isShortText(value.ciphertext, 20_000);
 }
 
+export function isRemoteScript(value) {
+  return value
+    && isShortText(value.id, 140)
+    && isShortText(value.targetDeviceId, 140)
+    && isShortText(value.nonce, 64)
+    && isShortText(value.ciphertext, 2_000_000);
+}
+
 export function isRemoteOutput(value) {
   return value
     && isShortText(value.id, 140)
