@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $AgentDir = Join-Path $env:LOCALAPPDATA "soty-agent"
@@ -17,45 +18,91 @@ New-Item -ItemType Directory -Force -Path $AgentDir | Out-Null
 Start-Transcript -Path $LogPath -Append | Out-Null
 
 try {
+  function Test-NodeRuntime {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+      & $Path -e "const v=process.versions.node.split('.').map(Number); process.exit(v[0] > 22 || (v[0] === 22 && v[1] >= 12) ? 0 : 1)"
+      return ($LASTEXITCODE -eq 0)
+    } catch {
+      return $false
+    }
+  }
+
+  function Get-NodeWindowsArch {
+    $archText = "$env:PROCESSOR_ARCHITECTURE $env:PROCESSOR_ARCHITEW6432".ToUpperInvariant()
+    if ($archText -match "ARM64") { return "win-arm64" }
+    if ($archText -match "AMD64") { return "win-x64" }
+    throw "Unsupported Windows architecture: $archText"
+  }
+
+  function Select-NodeRelease {
+    param([string]$Arch)
+    $fileKey = "$Arch-zip"
+    $index = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -UseBasicParsing
+    $release = $index | Where-Object { $_.lts -and ($_.files -contains $fileKey) } | Select-Object -First 1
+    if (-not $release) {
+      $release = $index | Where-Object { $_.files -contains $fileKey } | Select-Object -First 1
+    }
+    if (-not $release) { throw "No Node.js zip release for $fileKey" }
+    return $release
+  }
+
+  function Save-PortableNode {
+    param(
+      [string]$Arch,
+      [object]$Release
+    )
+    $zipName = "node-$($Release.version)-$Arch.zip"
+    $zipUrl = "https://nodejs.org/dist/$($Release.version)/$zipName"
+    $sumUrl = "https://nodejs.org/dist/$($Release.version)/SHASUMS256.txt"
+    $zipPath = Join-Path $AgentDir $zipName
+    $sumPath = Join-Path $AgentDir "SHASUMS256.txt"
+    $extractDir = Join-Path $AgentDir "node-download"
+    $nodeDir = Join-Path $AgentDir "node"
+
+    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri $zipUrl -UseBasicParsing -OutFile $zipPath
+    Invoke-WebRequest -Uri $sumUrl -UseBasicParsing -OutFile $sumPath
+    $expected = (Select-String -LiteralPath $sumPath -Pattern "  $([regex]::Escape($zipName))$").Line -replace "\s+.*$", ""
+    if (-not $expected) { throw "Node.js checksum is missing for $zipName" }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+    if ($actual -ne $expected.ToLowerInvariant()) { throw "Node.js checksum mismatch" }
+
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+    Remove-Item -LiteralPath $nodeDir -Recurse -Force -ErrorAction SilentlyContinue
+    $inner = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1
+    if (-not $inner) { throw "Node.js archive is empty" }
+    Move-Item -LiteralPath $inner.FullName -Destination $nodeDir
+    Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $sumPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    return (Join-Path $nodeDir "node.exe")
+  }
+
   function Resolve-Node {
     $node = Get-Command node -ErrorAction SilentlyContinue
-    if ($node) { return $node.Source }
+    if ($node -and (Test-NodeRuntime $node.Source)) { return $node.Source }
 
     $LocalNode = Join-Path $AgentDir "node\node.exe"
-    if (Test-Path $LocalNode) { return $LocalNode }
+    if (Test-NodeRuntime $LocalNode) { return $LocalNode }
 
-    $arch = "win-x64"
-    if ($env:PROCESSOR_ARCHITECTURE -match "ARM64") { $arch = "win-arm64" }
+    $arch = Get-NodeWindowsArch
 
     try {
-      $index = Invoke-RestMethod -Uri "https://nodejs.org/dist/index.json" -UseBasicParsing
-      $release = $index | Where-Object { $_.lts -and ($_.files -contains $arch) } | Select-Object -First 1
-      if (-not $release) { throw "No Node.js LTS release for $arch" }
-
-      $zipName = "node-$($release.version)-$arch.zip"
-      $zipUrl = "https://nodejs.org/dist/$($release.version)/$zipName"
-      $zipPath = Join-Path $AgentDir $zipName
-      $extractDir = Join-Path $AgentDir "node-download"
-      $nodeDir = Join-Path $AgentDir "node"
-
-      Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-      Invoke-WebRequest -Uri $zipUrl -UseBasicParsing -OutFile $zipPath
-      Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
-      Remove-Item -LiteralPath $nodeDir -Recurse -Force -ErrorAction SilentlyContinue
-      $inner = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1
-      if (-not $inner) { throw "Node.js archive is empty" }
-      Move-Item -LiteralPath $inner.FullName -Destination $nodeDir
-      Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
-      Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-      return (Join-Path $nodeDir "node.exe")
+      $release = Select-NodeRelease $arch
+      $portableNode = Save-PortableNode -Arch $arch -Release $release
+      if (Test-NodeRuntime $portableNode) { return $portableNode }
+      throw "Portable Node.js failed to start"
     } catch {
       $winget = Get-Command winget -ErrorAction SilentlyContinue
       if ($winget) {
         & winget install -e --id OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements
         $node = Get-Command node -ErrorAction SilentlyContinue
-        if ($node) { return $node.Source }
+        if ($node -and (Test-NodeRuntime $node.Source)) { return $node.Source }
+        $programNode = Join-Path $env:ProgramFiles "nodejs\node.exe"
+        if (Test-NodeRuntime $programNode) { return $programNode }
       }
-      Start-Process "https://nodejs.org/"
       throw
     }
   }
