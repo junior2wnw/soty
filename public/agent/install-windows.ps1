@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $AgentDir = Join-Path $env:LOCALAPPDATA "soty-agent"
 $AgentPath = Join-Path $AgentDir "soty-agent.mjs"
 $RunnerPath = Join-Path $AgentDir "start-agent.ps1"
+$CtlPath = Join-Path $AgentDir "sotyctl.cmd"
 $LogPath = Join-Path $AgentDir "install.log"
 $ManifestUrl = "$Base/manifest.json"
 $AgentUrl = "$Base/soty-agent.mjs"
@@ -129,6 +130,11 @@ while (`$true) {
   }
 }
 "@ | Set-Content -Path $RunnerPath -Encoding UTF8
+
+@"
+@echo off
+"$NodePath" "$AgentPath" ctl %*
+"@ | Set-Content -Path $CtlPath -Encoding ASCII
 
   $Autostart = Enable-AgentAutostart
   Start-Sleep -Milliseconds 700

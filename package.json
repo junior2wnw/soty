@@ -10,6 +10,7 @@
     "preview": "node server/index.js",
     "start": "node server/index.js",
     "agent": "node scripts/soty-agent.mjs",
+    "ctl": "node scripts/soty-agent.mjs ctl",
     "agent:release": "node scripts/build-agent-release.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

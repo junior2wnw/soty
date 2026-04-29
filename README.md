@@ -16,6 +16,7 @@ The browser side stays deliberately simple:
 - file transfer works from the counterparty menu and drag and drop;
 - the remote icon grants one-way command access to the selected counterparty;
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
+- local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
 - the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`.
 
 ## Layout
@@ -43,7 +44,7 @@ Default port: `8080`.
 
 ## Local Agent
 
-The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads `install-soty-agent.cmd`; the script installs the agent into the user profile, brings portable Node.js when needed, starts the agent, and registers autostart through the task scheduler, the current-user Run key, or the user Startup folder. After the installer runs once, the agent starts with the OS and updates itself.
+The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads `install-soty-agent.cmd`; the script installs the agent into the user profile, brings portable Node.js when needed, starts the agent, and registers autostart through the task scheduler, the current-user Run key, or the user Startup folder. On macOS and Linux, `install-macos-linux.sh` does the same with LaunchAgent, systemd user service, or desktop autostart. After the installer runs once, the agent starts with the OS and updates itself.
 
 For development, run:
 
@@ -54,3 +55,17 @@ pnpm run agent
 Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
+
+Installed operator bridge:
+
+```bash
+# Windows
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd list
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd run Phone "ping ya.ru"
+
+# macOS / Linux
+~/.soty-agent/sotyctl list
+~/.soty-agent/sotyctl run Phone "ping ya.ru"
+```
+
+The bridge works when the PWA is open on the controlling device and that device has remote access to the named counterparty.

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.2";
+const agentVersion = "0.3.3";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -15,11 +15,62 @@ const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MAN
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 64_000;
 const active = new Map();
+const operatorRuns = new Map();
+let operatorBridge = null;
+let operatorTargets = [];
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
 
-const server = createServer((request, response) => {
+if (process.argv[2] === "ctl") {
+  runControlCli(process.argv.slice(3)).catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+} else {
+  startServer();
+}
+
+function startServer() {
+  const server = createServer((request, response) => {
+    void handleHttpRequest(request, response);
+  });
+
+  server.on("upgrade", (request, socket) => {
+    const origin = String(request.headers.origin || "");
+    if (!originAllowed(origin)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const key = String(request.headers["sec-websocket-key"] || "");
+    if (!/^[+/0-9A-Za-z]{20,}={0,2}$/u.test(key)) {
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const accept = createHash("sha1")
+      .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write([
+      "HTTP/1.1 101 Switching Protocols",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      `Sec-WebSocket-Accept: ${accept}`,
+      "\r\n"
+    ].join("\r\n"));
+    const ws = new LocalWebSocket(socket);
+    ws.onMessage = (raw) => handleMessage(ws, raw);
+    ws.onClose = () => cleanupOperatorSocket(ws);
+  });
+
+  server.listen(port, "127.0.0.1", () => {
+    process.stdout.write(`soty-agent:${port}\n`);
+    scheduleUpdate();
+  });
+}
+
+async function handleHttpRequest(request, response) {
   const origin = String(request.headers.origin || "");
   if (!originAllowed(origin)) {
     response.writeHead(403, { "Cache-Control": "no-store" });
@@ -28,7 +79,7 @@ const server = createServer((request, response) => {
   }
   const headers = {
     "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Private-Network": "true",
     "Cache-Control": "no-store"
@@ -40,60 +91,41 @@ const server = createServer((request, response) => {
   }
   const url = new URL(request.url || "/", "http://127.0.0.1");
   if (url.pathname === "/health") {
-    response.writeHead(200, {
-      ...headers,
-      "Content-Type": "application/json; charset=utf-8"
-    });
-    response.end(JSON.stringify({
+    sendJson(response, 200, headers, {
       ok: true,
       managed,
       platform: process.platform,
       shell: shellName(),
       version: agentVersion
-    }));
+    });
+    return;
+  }
+  if (url.pathname === "/operator/targets" && request.method === "GET") {
+    sendJson(response, 200, headers, {
+      ok: true,
+      attached: Boolean(operatorBridge?.open),
+      targets: operatorTargets
+    });
+    return;
+  }
+  if (url.pathname === "/operator/run" && request.method === "POST") {
+    await handleOperatorHttpRun(request, response, headers);
     return;
   }
   response.writeHead(204, headers);
   response.end();
-});
-
-server.on("upgrade", (request, socket) => {
-  const origin = String(request.headers.origin || "");
-  if (!originAllowed(origin)) {
-    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-  const key = String(request.headers["sec-websocket-key"] || "");
-  if (!/^[+/0-9A-Za-z]{20,}={0,2}$/u.test(key)) {
-    socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-  const accept = createHash("sha1")
-    .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
-    .digest("base64");
-  socket.write([
-    "HTTP/1.1 101 Switching Protocols",
-    "Upgrade: websocket",
-    "Connection: Upgrade",
-    `Sec-WebSocket-Accept: ${accept}`,
-    "\r\n"
-  ].join("\r\n"));
-  const ws = new LocalWebSocket(socket);
-  ws.onMessage = (raw) => handleMessage(ws, raw);
-});
-
-server.listen(port, "127.0.0.1", () => {
-  process.stdout.write(`soty-agent:${port}\n`);
-  scheduleUpdate();
-});
+}
 
 function handleMessage(ws, raw) {
   let message;
   try {
     message = JSON.parse(raw);
   } catch {
+    return;
+  }
+
+  if (typeof message?.type === "string" && message.type.startsWith("operator.")) {
+    handleOperatorMessage(ws, message);
     return;
   }
 
@@ -123,6 +155,107 @@ function handleMessage(ws, raw) {
     message.command,
     Number.isSafeInteger(message.timeoutMs) ? message.timeoutMs : defaultTimeoutMs
   );
+}
+
+function handleOperatorMessage(ws, message) {
+  if (message.type === "operator.attach") {
+    operatorBridge = ws;
+    sendRaw(ws, { type: "operator.ready" });
+    return;
+  }
+  if (message.type === "operator.targets" && ws === operatorBridge) {
+    operatorTargets = sanitizeTargets(message.targets);
+    return;
+  }
+  if (message.type === "operator.output" && ws === operatorBridge && isSafeText(message.id, 160)) {
+    handleOperatorOutput(message);
+  }
+}
+
+function cleanupOperatorSocket(ws) {
+  if (operatorBridge === ws) {
+    operatorBridge = null;
+    operatorTargets = [];
+    for (const run of operatorRuns.values()) {
+      run.finish(127, "! bridge");
+    }
+    operatorRuns.clear();
+  }
+}
+
+async function handleOperatorHttpRun(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 16_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  const command = typeof payload.command === "string" ? payload.command.slice(0, 8000) : "";
+  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  if (!operatorBridge?.open || !target || !command.trim()) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = `operator_${randomUUID()}`;
+  let body = "";
+  let done = false;
+  const finish = (exitCode, extraText = "") => {
+    if (done) {
+      return;
+    }
+    done = true;
+    clearTimeout(timer);
+    operatorRuns.delete(id);
+    if (extraText) {
+      body += `${body ? "\n" : ""}${extraText}`;
+    }
+    sendJson(response, 200, headers, {
+      ok: exitCode === 0,
+      text: body,
+      exitCode
+    });
+  };
+  const timer = setTimeout(() => finish(124, "! timeout"), timeoutMs);
+  operatorRuns.set(id, {
+    append: (text) => {
+      body = `${body}${text}`.slice(-1_000_000);
+    },
+    finish
+  });
+  sendRaw(operatorBridge, {
+    type: "operator.run",
+    id,
+    target,
+    command
+  });
+}
+
+function handleOperatorOutput(message) {
+  const run = operatorRuns.get(message.id);
+  if (!run) {
+    return;
+  }
+  if (typeof message.text === "string") {
+    run.append(message.text);
+  }
+  if (typeof message.exitCode === "number") {
+    run.finish(message.exitCode);
+  }
+}
+
+function sanitizeTargets(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => ({
+      id: typeof item?.id === "string" ? item.id.slice(0, 160) : "",
+      label: typeof item?.label === "string" ? item.label.slice(0, 160) : ""
+    }))
+    .filter((item) => item.id && item.label)
+    .slice(0, 128);
 }
 
 function runCommand(ws, id, command, timeoutMs) {
@@ -188,6 +321,83 @@ function send(ws, id, text, exitCode, type = "data", extra = {}) {
     ...extra,
     ...(typeof exitCode === "number" ? { exitCode } : {})
   }));
+}
+
+function sendRaw(ws, payload) {
+  if (ws?.open) {
+    ws.send(JSON.stringify(payload));
+  }
+}
+
+function sendJson(response, status, headers, payload) {
+  response.writeHead(status, {
+    ...headers,
+    "Content-Type": "application/json; charset=utf-8"
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function readJsonBody(request, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error("large"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+async function runControlCli(args) {
+  const command = args[0] || "list";
+  if (command === "list") {
+    const response = await fetch(`http://127.0.0.1:${port}/operator/targets`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!payload.attached) {
+      process.stderr.write("sotyctl: pwa bridge is not attached\n");
+      process.exit(2);
+    }
+    for (const target of payload.targets || []) {
+      process.stdout.write(`${target.label}\t${target.id}\n`);
+    }
+    return;
+  }
+  if (command === "run") {
+    const target = args[1] || "";
+    const remoteCommand = args.slice(2).join(" ");
+    if (!target || !remoteCommand) {
+      process.stderr.write("sotyctl run <target> <command>\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, command: remoteCommand })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
+  process.stderr.write("sotyctl list | run <target> <command>\n");
+  process.exit(2);
 }
 
 function isSafeText(value, max) {
@@ -316,12 +526,15 @@ class LocalWebSocket {
     this.open = true;
     this.buffer = Buffer.alloc(0);
     this.onMessage = () => undefined;
+    this.onClose = () => undefined;
     socket.on("data", (chunk) => this.receive(chunk));
     socket.on("close", () => {
       this.open = false;
+      this.onClose();
     });
     socket.on("error", () => {
       this.open = false;
+      this.onClose();
     });
   }
 

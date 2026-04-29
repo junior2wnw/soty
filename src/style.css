@@ -901,12 +901,20 @@ svg {
 }
 
 .qr-modal .refresh-button {
+  right: 96px;
+}
+
+.qr-modal .copy-button {
   right: 42px;
 }
 
 .qr-modal .close-button,
-.qr-modal.persistent .refresh-button {
+.qr-modal.persistent .copy-button {
   right: -12px;
+}
+
+.qr-modal.persistent .refresh-button {
+  right: 42px;
 }
 
 @media (max-width: 520px) {

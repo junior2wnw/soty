@@ -84,6 +84,9 @@ let joinReconnectTimer = 0;
 let joinCompleted = false;
 let qrOverlay: HTMLDivElement | null = null;
 let qrMode: "modal" | "persistent" | null = null;
+let operatorSocket: WebSocket | null = null;
+let operatorReconnectTimer = 0;
+const operatorPending = new Map<string, string>();
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -413,6 +416,7 @@ function renderApp(): void {
   applySelectedText();
   renderFiles();
   renderTerminal();
+  void ensureOperatorBridge();
 }
 
 function renderTiles(): void {
@@ -548,6 +552,7 @@ function closeRemoteMode(tunnelId: string): void {
   setTerminalState(tunnelId, "ok");
   renderTerminal();
   renderTiles();
+  publishOperatorTargets();
 }
 
 function sortedVisibleTunnels(): TunnelRecord[] {
@@ -823,6 +828,8 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   }
   renderTiles();
   renderTerminal();
+  void ensureOperatorBridge();
+  publishOperatorTargets();
 }
 
 function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
@@ -847,6 +854,13 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
     setTerminalState(tunnelId, output.exitCode === 0 ? "ok" : output.exitCode === 127 ? "off" : "bad");
     appendTerminalLine(tunnelId, `${output.exitCode === 0 ? "+" : "!"} ${output.exitCode}`);
   }
+  const operatorId = operatorPending.get(output.commandId);
+  if (operatorId) {
+    sendOperatorOutput(operatorId, output.text, output.exitCode);
+    if (typeof output.exitCode === "number") {
+      operatorPending.delete(output.commandId);
+    }
+  }
   terminalOpenId = tunnelId;
   renderTerminal();
 }
@@ -869,6 +883,140 @@ async function sendTerminalCommand(): Promise<void> {
   appendTerminalLine(selectedId, `$ ${command}`);
   renderTerminal();
   await sync.sendRemoteCommand(hostDeviceId, command);
+}
+
+async function ensureOperatorBridge(): Promise<void> {
+  if (!hasOperatorTargets()) {
+    closeOperatorBridge();
+    return;
+  }
+  if (operatorSocket && (operatorSocket.readyState === WebSocket.OPEN || operatorSocket.readyState === WebSocket.CONNECTING)) {
+    publishOperatorTargets();
+    return;
+  }
+  window.clearTimeout(operatorReconnectTimer);
+  const agent = await checkLocalAgent(650);
+  if (!agent.ok || !hasOperatorTargets()) {
+    return;
+  }
+  const ws = new WebSocket("ws://127.0.0.1:49424");
+  operatorSocket = ws;
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "operator.attach" }));
+    publishOperatorTargets();
+  };
+  ws.onmessage = (event) => {
+    let message: { readonly type?: string; readonly id?: string; readonly target?: string; readonly command?: string };
+    try {
+      message = JSON.parse(event.data as string) as typeof message;
+    } catch {
+      return;
+    }
+    if (message.type === "operator.run") {
+      void runOperatorCommand(message);
+    }
+  };
+  ws.onclose = () => {
+    if (operatorSocket === ws) {
+      operatorSocket = null;
+    }
+    if (hasOperatorTargets()) {
+      operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(), 1800);
+    }
+  };
+  ws.onerror = () => {
+    ws.close();
+  };
+}
+
+function closeOperatorBridge(): void {
+  window.clearTimeout(operatorReconnectTimer);
+  operatorSocket?.close();
+  operatorSocket = null;
+  operatorPending.clear();
+}
+
+function hasOperatorTargets(): boolean {
+  return remoteAccess.size > 0;
+}
+
+function publishOperatorTargets(): void {
+  const ws = operatorSocket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: "operator.targets",
+    targets: operatorTargets()
+  }));
+}
+
+function operatorTargets(): Array<{ readonly id: string; readonly label: string }> {
+  return sortedVisibleTunnels()
+    .filter((tunnel) => remoteAccess.has(tunnel.id))
+    .map((tunnel) => ({
+      id: tunnel.id,
+      label: counterpartyLabel(tunnel)
+    }));
+}
+
+async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly command?: string }): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const command = typeof message.command === "string" ? message.command.trim() : "";
+  if (!requestId || !command) {
+    return;
+  }
+  const tunnel = findOperatorTarget(message.target || "");
+  if (!tunnel) {
+    sendOperatorOutput(requestId, "! target", 404);
+    return;
+  }
+  const hostDeviceId = remoteAccess.get(tunnel.id);
+  const sync = syncs.get(tunnel.id);
+  if (!hostDeviceId || !sync) {
+    sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  terminalOpenId = tunnel.id;
+  setTerminalState(tunnel.id, "run");
+  appendTerminalLine(tunnel.id, `$ ${command}`);
+  renderTiles();
+  renderTerminal();
+  try {
+    const commandId = await sync.sendRemoteCommand(hostDeviceId, command);
+    operatorPending.set(commandId, requestId);
+  } catch {
+    sendOperatorOutput(requestId, "! tunnel", 500);
+    setTerminalState(tunnel.id, "bad");
+    renderTerminal();
+  }
+}
+
+function findOperatorTarget(target: string): TunnelRecord | null {
+  const needle = cleanNick(target).toLowerCase();
+  if (!needle) {
+    return null;
+  }
+  const items = loadTunnels().filter((tunnel) => remoteAccess.has(tunnel.id));
+  return items.find((tunnel) => tunnel.id === target)
+    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
+    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
+    || null;
+}
+
+function sendOperatorOutput(id: string, text: string, exitCode?: number): void {
+  const ws = operatorSocket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: "operator.output",
+    id,
+    text,
+    ...(typeof exitCode === "number" ? { exitCode } : {})
+  }));
 }
 
 function renderTerminal(): void {
@@ -1194,6 +1342,7 @@ async function showQr(persistent: boolean): Promise<void> {
     <div class="qr-sheet">
       <canvas></canvas>
       <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
+      <button class="icon-button copy-button" type="button" aria-label="copy">${icon("copy")}</button>
       ${persistent ? "" : `<button class="icon-button close-button" type="button" aria-label="close">${icon("close")}</button>`}
     </div>
   `;
@@ -1201,11 +1350,13 @@ async function showQr(persistent: boolean): Promise<void> {
   qrOverlay = overlay;
   qrMode = persistent ? "persistent" : "modal";
   const canvas = overlay.querySelector("canvas");
+  let currentUrl = "";
   const draw = async (nextTunnel: TunnelRecord) => {
     if (!canvas) {
       return;
     }
     const url = await inviteUrl(nextTunnel, currentDevice);
+    currentUrl = url;
     await QRCode.toCanvas(canvas, url, {
       margin: 1,
       scale: 8,
@@ -1222,7 +1373,30 @@ async function showQr(persistent: boolean): Promise<void> {
       void draw(nextTunnel);
     }
   });
+  overlay.querySelector(".copy-button")?.addEventListener("click", () => {
+    void copyText(currentUrl);
+  });
   overlay.querySelector<HTMLButtonElement>(".close-button")?.addEventListener("click", () => closeQrOverlay());
+}
+
+async function copyText(value: string): Promise<void> {
+  if (!value) {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    return;
+  } catch {
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.append(input);
+    input.focus();
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
 }
 
 function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
