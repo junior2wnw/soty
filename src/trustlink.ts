@@ -178,12 +178,19 @@ export function touchTunnel(id: string): TunnelRecord[] {
 }
 
 export async function inviteUrl(tunnel: TunnelRecord, device: DeviceRecord): Promise<string> {
-  const url = new URL(window.location.origin);
-  url.searchParams.set("j", [
+  const origin = publicOrigin();
+  const join = [
     tunnel.id,
     toBase64Url(encode(device.nick))
-  ].join("."));
-  return url.toString();
+  ].join(".");
+  return `${origin}/?j=${join}`;
+}
+
+function publicOrigin(): string {
+  if (window.location.hostname === "xn--n1afe0b.online" || window.location.hostname === "соты.online") {
+    return "https://соты.online";
+  }
+  return window.location.origin;
 }
 
 export async function roomAuth(tunnel: TunnelRecord): Promise<string> {

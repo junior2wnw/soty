@@ -31,8 +31,8 @@ export function renderHexField(
   map.style.transform = `translate(${panX}px, ${panY}px)`;
   map.innerHTML = positions.map(([q, r], index) => {
     const item = itemByIndex.get(index);
-    const left = (q + r / 2) * 82;
-    const top = r * 72;
+    const left = q * 60;
+    const top = (r + q / 2) * 70;
     if (item) {
       return `
         <button class="hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"

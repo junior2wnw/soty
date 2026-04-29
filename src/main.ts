@@ -1,10 +1,10 @@
 import QRCode from "qrcode";
-import { JoinRequest, ReceivedFile, RemoteRequest, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { filesFrom, renderFileRail } from "./features/files";
-import { loadRemoteEnabled, setRemoteEnabled } from "./features/remote";
+import { loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import {
@@ -56,12 +56,14 @@ let textPaint: HTMLDivElement | null = null;
 let lineGutter: HTMLDivElement | null = null;
 let lineMeta: HTMLDivElement | null = null;
 let fileInput: HTMLInputElement | null = null;
-let deleteModeId = "";
 const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
 const files = new Map<string, ReceivedFile[]>();
 let remoteEnabled = loadRemoteEnabled();
+let remoteAccess = loadRemoteAccess();
+let terminalOpenId = "";
+const terminalLogs = new Map<string, string[]>();
 const writerLines = new Map<string, Map<number, {
   readonly nick: string;
   readonly deviceId: string;
@@ -328,6 +330,14 @@ function renderApp(): void {
         <div class="writer-pop"></div>
         <div class="file-rail"></div>
         <textarea spellcheck="false" autocapitalize="sentences"></textarea>
+        <div class="terminal-panel">
+          <button class="terminal-close" type="button" aria-label="close">${icon("close")}</button>
+          <div class="terminal-output"></div>
+          <form class="terminal-form">
+            <span>$</span>
+            <input autocomplete="off" autocapitalize="off" spellcheck="false" />
+          </form>
+        </div>
         <input class="file-input" type="file" multiple />
       </section>
     </section>
@@ -378,9 +388,18 @@ function renderApp(): void {
       fileInput.value = "";
     }
   });
+  app.querySelector<HTMLButtonElement>(".terminal-close")?.addEventListener("click", () => {
+    terminalOpenId = "";
+    renderTerminal();
+  });
+  app.querySelector<HTMLFormElement>(".terminal-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendTerminalCommand();
+  });
   setupSplitter();
   applySelectedText();
   renderFiles();
+  renderTerminal();
 }
 
 function renderTiles(): void {
@@ -426,7 +445,10 @@ function renderTiles(): void {
         remote: () => {
           selectedId = id;
           saveSelectedTunnelId(id);
-          syncs.get(id)?.requestRemote();
+          const enabled = !remoteEnabled.has(id);
+          remoteEnabled = setRemoteEnabled(id, enabled);
+          syncs.get(id)?.grantRemote(enabled, "*");
+          renderTiles();
         },
         close: () => closeTunnel(id)
       }, {
@@ -506,12 +528,20 @@ function ensureSync(tunnel: TunnelRecord): void {
       }
       renderTiles();
     },
-    onRemoteRequest: (request) => {
-      renderRemoteConfirm(tunnel, request);
+    onFileDeleted: (fileId) => {
+      files.set(tunnel.id, (files.get(tunnel.id) ?? []).filter((item) => item.id !== fileId));
+      if (tunnel.id === selectedId) {
+        renderFiles();
+      }
     },
-    onRemoteResponse: (response) => {
-      remoteEnabled = setRemoteEnabled(tunnel.id, response.accepted);
-      renderTiles();
+    onRemoteGrant: (grant) => {
+      applyRemoteGrant(tunnel.id, grant);
+    },
+    onRemoteCommand: (command) => {
+      applyRemoteCommand(tunnel.id, command);
+    },
+    onRemoteOutput: (output) => {
+      applyRemoteOutput(tunnel.id, output);
     },
     onPeers: (items) => {
       const label = items.map((item) => item.nick).filter(Boolean).join(" ");
@@ -595,45 +625,16 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
   document.body.append(overlay);
 }
 
-function renderRemoteConfirm(tunnel: TunnelRecord, request: RemoteRequest): void {
-  if (!device || request.deviceId === device.id) {
-    return;
-  }
-  const nick = cleanNick(request.nick);
-  const overlay = document.createElement("div");
-  overlay.className = "pair-modal";
-  overlay.innerHTML = `
-    <div class="pair-screen">
-      <div class="counterparty-mark">
-        <span>${icon("remote")}</span>
-        <b>${escapeHtml(nick)}</b>
-      </div>
-      <div class="pair-actions">
-        <button class="icon-button deny-button" type="button" aria-label="close">${icon("close")}</button>
-        <button class="icon-button accept-button" type="button" aria-label="ok">${icon("check")}</button>
-      </div>
-    </div>
-  `;
-  overlay.querySelector(".accept-button")?.addEventListener("click", () => {
-    remoteEnabled = setRemoteEnabled(tunnel.id, true);
-    syncs.get(tunnel.id)?.respondRemote(request.id, true);
-    renderTiles();
-    overlay.remove();
-  });
-  overlay.querySelector(".deny-button")?.addEventListener("click", () => {
-    remoteEnabled = setRemoteEnabled(tunnel.id, false);
-    syncs.get(tunnel.id)?.respondRemote(request.id, false);
-    renderTiles();
-    overlay.remove();
-  });
-  document.body.append(overlay);
-}
-
 function closeTunnel(id: string): void {
   const sync = syncs.get(id);
   sync?.closeForEveryone();
   syncs.delete(id);
   remoteEnabled = setRemoteEnabled(id, false);
+  remoteAccess = setRemoteAccess(id, "", false);
+  if (terminalOpenId === id) {
+    terminalOpenId = "";
+  }
+  terminalLogs.delete(id);
   writerLines.delete(id);
   activeWriters.delete(id);
   files.delete(id);
@@ -684,19 +685,8 @@ async function sendFiles(list?: FileList | null): Promise<void> {
     return;
   }
   for (const file of filesFrom(list)) {
-    await sync.sendFile(file);
-    const localFile: ReceivedFile = {
-      id: `local_${crypto.randomUUID()}`,
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-      bytes: new Uint8Array(),
-      url: URL.createObjectURL(file),
-      nick: device?.nick || "",
-      deviceId: device?.id || "",
-      createdAt: new Date().toISOString()
-    };
-    files.set(selectedId, [localFile, ...(files.get(selectedId) ?? [])]);
+    const localFile = await sync.sendFile(file);
+    files.set(selectedId, [localFile, ...(files.get(selectedId) ?? []).filter((item) => item.id !== localFile.id)]);
   }
   tunnels = touchTunnel(selectedId);
   renderTiles();
@@ -710,7 +700,151 @@ function renderFiles(): void {
   }
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
-  renderFileRail(rail, files.get(selectedId) ?? [], color);
+  renderFileRail(rail, files.get(selectedId) ?? [], color, deleteFile);
+}
+
+function deleteFile(fileId: string): void {
+  if (!selectedId) {
+    return;
+  }
+  files.set(selectedId, (files.get(selectedId) ?? []).filter((item) => item.id !== fileId));
+  syncs.get(selectedId)?.deleteFile(fileId);
+  renderFiles();
+}
+
+function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
+  if (!device || grant.deviceId === device.id || !grantTargetsThisDevice(grant.targetDeviceId)) {
+    return;
+  }
+  remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
+  if (grant.enabled) {
+    terminalOpenId = tunnelId;
+  } else if (terminalOpenId === tunnelId) {
+    terminalOpenId = "";
+  }
+  renderTiles();
+  renderTerminal();
+}
+
+function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
+  if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(command.targetDeviceId)) {
+    return;
+  }
+  appendTerminalLine(tunnelId, `< ${command.command}`);
+  void runLocalAgentCommand(tunnelId, command);
+  if (tunnelId === selectedId) {
+    renderTerminal();
+  }
+}
+
+function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
+  if (!device || !grantTargetsThisDevice(output.targetDeviceId)) {
+    return;
+  }
+  appendTerminalLine(tunnelId, output.text);
+  if (typeof output.exitCode === "number") {
+    appendTerminalLine(tunnelId, `= ${output.exitCode}`);
+  }
+  terminalOpenId = tunnelId;
+  if (tunnelId === selectedId) {
+    renderTerminal();
+  }
+}
+
+async function sendTerminalCommand(): Promise<void> {
+  if (!selectedId || !device) {
+    return;
+  }
+  const hostDeviceId = remoteAccess.get(selectedId);
+  const sync = syncs.get(selectedId);
+  const input = app.querySelector<HTMLInputElement>(".terminal-form input");
+  const command = input?.value.trim() || "";
+  if (!hostDeviceId || !sync || !command) {
+    return;
+  }
+  if (input) {
+    input.value = "";
+  }
+  appendTerminalLine(selectedId, `$ ${command}`);
+  await sync.sendRemoteCommand(hostDeviceId, command);
+  renderTerminal();
+}
+
+function renderTerminal(): void {
+  const panel = app.querySelector<HTMLDivElement>(".terminal-panel");
+  const output = app.querySelector<HTMLDivElement>(".terminal-output");
+  const editor = app.querySelector<HTMLElement>(".editor");
+  if (!panel || !output || !editor) {
+    return;
+  }
+  if (!terminalOpenId && selectedId && remoteAccess.has(selectedId)) {
+    terminalOpenId = selectedId;
+  }
+  const active = Boolean(selectedId && terminalOpenId === selectedId && remoteAccess.has(selectedId));
+  editor.classList.toggle("terminal-active", active);
+  output.innerHTML = (terminalLogs.get(selectedId) ?? [])
+    .map((line) => `<pre>${escapeHtml(line || " ")}</pre>`)
+    .join("");
+  if (active) {
+    output.scrollTop = output.scrollHeight;
+    window.setTimeout(() => app.querySelector<HTMLInputElement>(".terminal-form input")?.focus(), 0);
+  }
+}
+
+function appendTerminalLine(tunnelId: string, line: string): void {
+  const next = [...(terminalLogs.get(tunnelId) ?? []), line].slice(-240);
+  terminalLogs.set(tunnelId, next);
+}
+
+function grantTargetsThisDevice(targetDeviceId: string): boolean {
+  return targetDeviceId === "*" || targetDeviceId === device?.id;
+}
+
+function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
+  const sync = syncs.get(tunnelId);
+  if (!sync || !command.deviceId) {
+    return;
+  }
+  let opened = false;
+  let failed = false;
+  const ws = new WebSocket("ws://127.0.0.1:49424");
+  const fail = () => {
+    if (failed || opened) {
+      return;
+    }
+    failed = true;
+    window.clearTimeout(timer);
+    void sync.sendRemoteOutput(command.deviceId, command.id, "!", 127);
+  };
+  const timer = window.setTimeout(() => {
+    fail();
+    ws.close();
+  }, 1200);
+  ws.onopen = () => {
+    opened = true;
+    window.clearTimeout(timer);
+    ws.send(JSON.stringify({
+      type: "run",
+      id: command.id,
+      command: command.command
+    }));
+  };
+  ws.onmessage = (event) => {
+    let message: { readonly type?: string; readonly text?: string; readonly exitCode?: number };
+    try {
+      message = JSON.parse(event.data as string) as { readonly type?: string; readonly text?: string; readonly exitCode?: number };
+    } catch {
+      return;
+    }
+    if (message.type !== "data") {
+      return;
+    }
+    const text = typeof message.text === "string" ? message.text : "";
+    const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+    void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);
+  };
+  ws.onerror = () => fail();
+  ws.onclose = () => window.clearTimeout(timer);
 }
 
 function touchSelected(): void {
@@ -840,6 +974,14 @@ function normalizeLocalEdit(before: string, next: string, caret: number): { read
   if (!isFreshRemoteLine) {
     return { text: next, caret };
   }
+  const localLine = findFreshLineForDevice(selectedId, device.id);
+  if (localLine !== null) {
+    const localEnd = endOfLine(before, localLine);
+    return {
+      text: `${before.slice(0, localEnd)}${insertText}${before.slice(localEnd)}`,
+      caret: localEnd + insertText.length
+    };
+  }
   const lineEnd = endOfLine(before, line);
   const separator = insertText.startsWith("\n") || (lineEnd > 0 && before[lineEnd - 1] === "\n") ? "" : "\n";
   const text = `${before.slice(0, lineEnd)}${separator}${insertText}${before.slice(lineEnd)}`;
@@ -847,6 +989,23 @@ function normalizeLocalEdit(before: string, next: string, caret: number): { read
     text,
     caret: lineEnd + separator.length + insertText.length
   };
+}
+
+function findFreshLineForDevice(tunnelId: string, deviceId: string): number | null {
+  const lines = writerLines.get(tunnelId);
+  if (!lines) {
+    return null;
+  }
+  let bestLine: number | null = null;
+  let bestAt = 0;
+  const now = Date.now();
+  for (const [line, label] of lines) {
+    if (label.deviceId === deviceId && now - label.at < 8000 && label.at > bestAt) {
+      bestLine = line;
+      bestAt = label.at;
+    }
+  }
+  return bestLine;
 }
 
 function endOfLine(text: string, line: number): number {

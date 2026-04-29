@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "node server/index.js",
     "start": "node server/index.js",
+    "agent": "node scripts/soty-agent.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

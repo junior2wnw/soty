@@ -3,14 +3,17 @@ import {
   isEncryptedUpdate,
   isJoinAccept,
   isJoinRequest,
+  isRemoteCommand,
+  isRemoteGrant,
+  isRemoteOutput,
   isShortText
 } from "./validators.js";
 
 const rateWindowMs = 10_000;
 const maxMessagesPerWindow = 600;
 const maxBytesPerWindow = 70_000_000;
-const maxStoredFiles = 100;
-const maxStoredFileBytes = 200_000_000;
+const maxStoredFiles = 3000;
+const maxStoredFileBytes = 512_000_000;
 
 export function attachRealtime(wss, store) {
   wss.on("connection", async (ws, _request, roomId) => {
@@ -99,20 +102,24 @@ async function handleMessage(room, peer, ws, store, raw) {
     await storeFile(room, peer, ws, store, message.file);
     return;
   }
-  if (message.type === "remote.request" && isShortText(message.request?.id, 120)) {
+  if (message.type === "remote.grant" && isRemoteGrant(message.grant)) {
     broadcast(room, peer.id, {
-      type: "remote.request",
-      request: withPeer(peer, { id: message.request.id })
+      type: "remote.grant",
+      grant: withPeer(peer, message.grant)
     });
     return;
   }
-  if (message.type === "remote.response" && isShortText(message.response?.id, 120) && typeof message.response.accepted === "boolean") {
+  if (message.type === "remote.command" && isRemoteCommand(message.command)) {
     broadcast(room, peer.id, {
-      type: "remote.response",
-      response: withPeer(peer, {
-        id: message.response.id,
-        accepted: message.response.accepted
-      })
+      type: "remote.command",
+      command: withPeer(peer, message.command)
+    });
+    return;
+  }
+  if (message.type === "remote.output" && isRemoteOutput(message.output)) {
+    broadcast(room, peer.id, {
+      type: "remote.output",
+      output: withPeer(peer, message.output)
     });
     return;
   }
@@ -229,6 +236,13 @@ async function storeFile(room, peer, ws, store, file) {
     return;
   }
   room.seen.add(stored.id);
+  if (stored.kind === "delete") {
+    room.state.files = room.state.files.filter((item) => fileIdentity(item) !== stored.fileId);
+    await store.save(room);
+    ws.send(JSON.stringify({ type: "ack", id: stored.id }));
+    broadcast(room, peer.id, { type: "file", file: withPeer(peer, stored, true) });
+    return;
+  }
   room.state.files.push(stored);
   trimStoredFiles(room.state.files);
   await store.save(room);
@@ -260,6 +274,10 @@ function broadcast(room, exceptDeviceId, message) {
 
 function publicPeer(peer) {
   return { id: peer.id, nick: peer.nick };
+}
+
+function fileIdentity(file) {
+  return typeof file?.fileId === "string" ? file.fileId : file?.id;
 }
 
 function allowMessage(peer, raw) {

@@ -249,7 +249,7 @@ svg {
   transform: translate(-50%, -50%);
   background: rgba(251, 250, 246, 0.46);
   box-shadow:
-    inset 0 0 0 1px rgba(216, 211, 200, 0.64),
+    inset 0 0 0 1px rgba(255, 122, 0, 0.22),
     inset 0 16px 48px rgba(255, 255, 255, 0.36),
     inset 0 -16px 42px rgba(20, 20, 20, 0.035);
   backdrop-filter: blur(2px);
@@ -257,10 +257,10 @@ svg {
 
 .hex {
   position: absolute;
-  left: calc(var(--x) - 39px);
-  top: calc(var(--y) - 34px);
-  width: 78px;
-  height: 68px;
+  left: calc(var(--x) - 40px);
+  top: calc(var(--y) - 35px);
+  width: 80px;
+  height: 70px;
   display: grid;
   grid-template-rows: 1fr auto;
   justify-items: center;
@@ -276,16 +276,22 @@ svg {
   content: "";
   position: absolute;
   inset: 0;
-  clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%);
-  background: rgba(251, 250, 246, 0.64);
-  box-shadow:
-    inset 0 0 0 1px rgba(20, 20, 20, 0.13),
-    0 1px 10px rgba(20, 20, 20, 0.03);
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: #ff7a00;
+}
+
+.hex::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: rgba(251, 250, 246, 0.72);
+  box-shadow: inset 0 1px 10px rgba(20, 20, 20, 0.025);
 }
 
 .hex-cell {
   pointer-events: none;
-  opacity: 0.88;
+  opacity: 0.3;
 }
 
 .hex.filled {
@@ -297,9 +303,12 @@ svg {
 }
 
 .hex.active::before {
-  box-shadow:
-    inset 0 0 0 3px var(--color),
-    0 2px 14px rgba(20, 20, 20, 0.07);
+  background: #ff7a00;
+}
+
+.hex.active::after {
+  inset: 4px;
+  background: rgba(251, 250, 246, 0.84);
 }
 
 .hex.filled span {
@@ -330,6 +339,7 @@ svg {
 
 .hex i {
   position: absolute;
+  z-index: 2;
   right: 6px;
   top: 6px;
   width: 8px;
@@ -402,7 +412,7 @@ svg {
 }
 
 .editor textarea::selection {
-  background: rgba(20, 20, 20, 0.12);
+  background: transparent;
 }
 
 .text-paint {
@@ -492,28 +502,51 @@ svg {
 .file-rail {
   position: absolute;
   left: max(12px, env(safe-area-inset-left));
-  right: 64px;
+  right: max(12px, env(safe-area-inset-right));
   top: 8px;
   z-index: 5;
   display: flex;
   gap: 6px;
   overflow-x: auto;
+  overflow-y: hidden;
   padding-bottom: 3px;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  cursor: grab;
+  overscroll-behavior-inline: contain;
+}
+
+.file-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.file-rail:active {
+  cursor: grabbing;
 }
 
 .file-chip {
-  min-width: 0;
+  flex: 0 0 auto;
   max-width: 220px;
   height: 32px;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) 22px;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
+  gap: 4px;
+  padding: 0 4px 0 8px;
   border: 1px solid var(--color);
   border-radius: 8px;
   color: #141414;
   background: #fbfaf6;
+}
+
+.file-chip a {
+  min-width: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  color: #141414;
   text-decoration: none;
 }
 
@@ -521,6 +554,28 @@ svg {
   width: 18px;
   height: 18px;
   color: var(--color);
+}
+
+.file-chip button {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #141414;
+}
+
+.file-chip button:active {
+  background: #141414;
+  color: #f8f7f2;
+}
+
+.file-chip button svg {
+  width: 15px;
+  height: 15px;
+  color: currentColor;
 }
 
 .file-chip b {
@@ -538,6 +593,83 @@ svg {
 
 .file-input {
   display: none;
+}
+
+.terminal-panel {
+  position: absolute;
+  inset: 0 max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  z-index: 7;
+  display: none;
+  grid-template-rows: minmax(0, 1fr) 42px;
+  gap: 8px;
+  padding: 46px 12px 12px;
+  background: #080807;
+  color: #f8f7f2;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 122, 0, 0.42),
+    inset 0 18px 42px rgba(255, 255, 255, 0.04);
+}
+
+.editor.terminal-active .terminal-panel {
+  display: grid;
+}
+
+.editor.terminal-active textarea,
+.editor.terminal-active .text-paint,
+.editor.terminal-active .line-gutter,
+.editor.terminal-active .line-meta,
+.editor.terminal-active .writer-pop,
+.editor.terminal-active .file-rail {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.terminal-close {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: transparent;
+  color: #f8f7f2;
+}
+
+.terminal-output {
+  min-height: 0;
+  overflow: auto;
+  font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.4;
+  scrollbar-width: thin;
+}
+
+.terminal-output pre {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.terminal-form {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid rgba(255, 122, 0, 0.42);
+}
+
+.terminal-form input {
+  min-width: 0;
+  height: 38px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #f8f7f2;
+  caret-color: #ff7a00;
+  font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", Consolas, monospace;
+  font-size: 15px;
 }
 
 .counterparty-menu {

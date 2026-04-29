@@ -12,7 +12,8 @@ The browser side stays deliberately simple:
 - the lower field is one shared text surface;
 - every character, deletion, line break, and file moves through the same tunnel;
 - file transfer works from the counterparty menu and drag and drop;
-- the remote icon emits a remote-control intent for a native agent that can attach to the tunnel.
+- the remote icon grants one-way command access to the selected counterparty;
+- optional local command execution is provided by `npm run agent` on the device that grants access.
 
 ## Layout
 
@@ -35,3 +36,13 @@ pnpm start
 ```
 
 Default port: `8080`.
+
+## Local Agent
+
+The PWA never runs OS commands by itself. On a device that should be controlled, run:
+
+```bash
+npm run agent
+```
+
+Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`.

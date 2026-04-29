@@ -21,8 +21,10 @@ export interface SyncCallbacks {
   readonly onActivity: (activity: WriterActivity) => void;
   readonly onRemoteChange: (activity: WriterActivity) => void;
   readonly onFile: (file: ReceivedFile) => void;
-  readonly onRemoteRequest: (request: RemoteRequest) => void;
-  readonly onRemoteResponse: (response: RemoteResponse) => void;
+  readonly onFileDeleted: (fileId: string) => void;
+  readonly onRemoteGrant: (grant: RemoteGrant) => void;
+  readonly onRemoteCommand: (command: RemoteCommand) => void;
+  readonly onRemoteOutput: (output: RemoteOutput) => void;
   readonly onPeers: (peers: readonly PeerInfo[]) => void;
   readonly onJoinRequest: (request: JoinRequest) => void;
   readonly onClosed: () => void;
@@ -55,16 +57,30 @@ export interface ReceivedFile {
   readonly createdAt: string;
 }
 
-export interface RemoteRequest {
+export interface RemoteGrant {
   readonly id: string;
+  readonly enabled: boolean;
+  readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
   readonly createdAt: string;
 }
 
-export interface RemoteResponse {
+export interface RemoteCommand {
   readonly id: string;
-  readonly accepted: boolean;
+  readonly command: string;
+  readonly targetDeviceId: string;
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly createdAt: string;
+}
+
+export interface RemoteOutput {
+  readonly id: string;
+  readonly commandId: string;
+  readonly text: string;
+  readonly targetDeviceId: string;
+  readonly exitCode?: number;
   readonly deviceId: string;
   readonly nick: string;
   readonly createdAt: string;
@@ -80,7 +96,8 @@ interface EncryptedUpdate {
   readonly createdAt?: string;
 }
 
-interface EncryptedFile {
+interface EncryptedFileComplete {
+  readonly kind?: "complete";
   readonly id: string;
   readonly nonce: string;
   readonly ciphertext: string;
@@ -92,6 +109,73 @@ interface EncryptedFile {
   readonly createdAt?: string;
 }
 
+interface EncryptedFileChunk {
+  readonly kind: "chunk";
+  readonly id: string;
+  readonly fileId: string;
+  readonly index: number;
+  readonly total: number;
+  readonly totalBytes: number;
+  readonly nonce: string;
+  readonly ciphertext: string;
+  readonly metaNonce?: string;
+  readonly metaCiphertext?: string;
+  readonly bytes: number;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly createdAt?: string;
+}
+
+interface EncryptedFileDelete {
+  readonly kind: "delete";
+  readonly id: string;
+  readonly fileId: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly createdAt?: string;
+}
+
+type EncryptedFile = EncryptedFileComplete | EncryptedFileChunk | EncryptedFileDelete;
+type OutboundEncryptedFile =
+  | Omit<EncryptedFileComplete, "deviceId" | "deviceNick" | "createdAt">
+  | Omit<EncryptedFileChunk, "deviceId" | "deviceNick" | "createdAt">
+  | Omit<EncryptedFileDelete, "deviceId" | "deviceNick" | "createdAt">;
+
+interface EncryptedRemoteCommand {
+  readonly id: string;
+  readonly targetDeviceId: string;
+  readonly nonce: string;
+  readonly ciphertext: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
+interface EncryptedRemoteOutput {
+  readonly id: string;
+  readonly commandId: string;
+  readonly targetDeviceId: string;
+  readonly nonce: string;
+  readonly ciphertext: string;
+  readonly exitCode?: number;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
+interface FileTransfer {
+  readonly chunks: Uint8Array[];
+  readonly seen: Set<number>;
+  total: number;
+  totalBytes: number;
+  meta?: { readonly name?: string; readonly type?: string; readonly size?: number };
+  createdAt?: string;
+  deviceId?: string;
+  deviceNick?: string;
+}
+
 type ServerMessage =
   | { readonly type: "hello"; readonly snapshot: EncryptedUpdate | null; readonly updates: readonly EncryptedUpdate[]; readonly files?: readonly EncryptedFile[]; readonly peers: readonly PeerInfo[] }
   | { readonly type: "ack"; readonly id: string }
@@ -100,8 +184,9 @@ type ServerMessage =
   | { readonly type: "file"; readonly file: EncryptedFile }
   | { readonly type: "presence"; readonly peers: readonly PeerInfo[] }
   | { readonly type: "join.request"; readonly request: JoinRequest }
-  | { readonly type: "remote.request"; readonly request: RemoteRequest }
-  | { readonly type: "remote.response"; readonly response: RemoteResponse }
+  | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
+  | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
+  | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput }
   | { readonly type: "closed" };
 
 type UpdateKind = "update" | "snapshot";
@@ -114,9 +199,10 @@ interface OutboundUpdate {
 type ControlMessage =
   | { readonly type: "join.accept"; readonly requestId: string; readonly accept: JoinAcceptPayload }
   | { readonly type: "join.deny"; readonly requestId: string }
-  | { readonly type: "file"; readonly file: Omit<EncryptedFile, "deviceId" | "deviceNick" | "createdAt"> }
-  | { readonly type: "remote.request"; readonly request: { readonly id: string } }
-  | { readonly type: "remote.response"; readonly response: { readonly id: string; readonly accepted: boolean } };
+  | { readonly type: "file"; readonly file: OutboundEncryptedFile }
+  | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
+  | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
+  | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
 
 export class TunnelSync {
   private readonly doc = new Y.Doc();
@@ -135,6 +221,7 @@ export class TunnelSync {
   private readonly offlineQueue: OutboundUpdate[] = [];
   private readonly pendingAcks = new Map<string, OutboundUpdate>();
   private readonly controlQueue: ControlMessage[] = [];
+  private readonly fileTransfers = new Map<string, FileTransfer>();
   private sendQueue = Promise.resolve();
   private readonly wakeReconnect = () => {
     if (!this.destroyed && (!this.ws || this.ws.readyState >= WebSocket.CLOSING)) {
@@ -210,47 +297,108 @@ export class TunnelSync {
     this.sendControl({ type: "join.deny", requestId: request.requestId });
   }
 
-  async sendFile(file: File): Promise<void> {
+  async sendFile(file: File): Promise<ReceivedFile> {
+    const fileId = `file_${crypto.randomUUID()}`;
     const bytes = new Uint8Array(await file.arrayBuffer());
     const meta = encode(JSON.stringify({
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size
     }));
-    const [body, encryptedMeta] = await Promise.all([
-      encryptForTunnel(this.tunnel, bytes),
-      encryptForTunnel(this.tunnel, meta)
-    ]);
+    const encryptedMeta = await encryptForTunnel(this.tunnel, meta);
+    const chunkSize = 256_000;
+    const total = Math.max(1, Math.ceil(bytes.length / chunkSize));
+    for (let index = 0; index < total; index += 1) {
+      const chunk = bytes.slice(index * chunkSize, Math.min(bytes.length, (index + 1) * chunkSize));
+      const encrypted = await encryptForTunnel(this.tunnel, chunk);
+      this.sendControl({
+        type: "file",
+        file: {
+          kind: "chunk",
+          id: `${fileId}_${index}`,
+          fileId,
+          index,
+          total,
+          totalBytes: file.size,
+          bytes: chunk.byteLength,
+          nonce: encrypted.nonce,
+          ciphertext: encrypted.ciphertext,
+          ...(index === 0 ? {
+            metaNonce: encryptedMeta.nonce,
+            metaCiphertext: encryptedMeta.ciphertext
+          } : {})
+        }
+      });
+      if (total > 1) {
+        await wait(60);
+      }
+    }
+    return {
+      id: fileId,
+      name: file.name || "file",
+      type: file.type || "application/octet-stream",
+      size: file.size,
+      bytes: new Uint8Array(),
+      url: URL.createObjectURL(file),
+      nick: this.device.nick,
+      deviceId: this.device.id,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  deleteFile(fileId: string): void {
+    this.fileTransfers.delete(fileId);
     this.sendControl({
       type: "file",
       file: {
-        id: `file_${crypto.randomUUID()}`,
-        bytes: file.size,
-        nonce: body.nonce,
-        ciphertext: body.ciphertext,
-        metaNonce: encryptedMeta.nonce,
-        metaCiphertext: encryptedMeta.ciphertext
+        kind: "delete",
+        id: `file_delete_${crypto.randomUUID()}`,
+        fileId
       }
     });
   }
 
-  requestRemote(): void {
+  grantRemote(enabled: boolean, targetDeviceId = "*"): void {
     this.sendControl({
-      type: "remote.request",
-      request: {
-        id: `remote_${crypto.randomUUID()}`
+      type: "remote.grant",
+      grant: {
+        id: `remote_grant_${crypto.randomUUID()}`,
+        enabled,
+        targetDeviceId
       }
     });
   }
 
-  respondRemote(id: string, accepted: boolean): void {
+  async sendRemoteCommand(targetDeviceId: string, command: string): Promise<string> {
+    const id = `remote_cmd_${crypto.randomUUID()}`;
+    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({ command })));
     this.sendControl({
-      type: "remote.response",
-      response: {
+      type: "remote.command",
+      command: {
         id,
-        accepted
+        targetDeviceId,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
       }
     });
+    return id;
+  }
+
+  async sendRemoteOutput(targetDeviceId: string, commandId: string, text: string, exitCode?: number): Promise<string> {
+    const id = `remote_out_${crypto.randomUUID()}`;
+    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({ text })));
+    this.sendControl({
+      type: "remote.output",
+      output: {
+        id,
+        commandId,
+        targetDeviceId,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext,
+        ...(typeof exitCode === "number" ? { exitCode } : {})
+      }
+    });
+    return id;
   }
 
   destroy(): void {
@@ -402,18 +550,27 @@ export class TunnelSync {
       return;
     }
 
-    if (message.type === "remote.request") {
-      if (message.request.deviceId !== this.device.id) {
-        this.callbacks.onRemoteRequest(message.request);
+    if (message.type === "remote.grant") {
+      if (message.grant.deviceId !== this.device.id) {
+        this.callbacks.onRemoteGrant(message.grant);
       }
       return;
     }
 
-    if (message.type === "remote.response") {
-      if (message.response.deviceId !== this.device.id) {
-        this.callbacks.onRemoteResponse(message.response);
+    if (message.type === "remote.command") {
+      if (message.command.deviceId !== this.device.id) {
+        await this.applyRemoteCommand(message.command);
       }
+      return;
     }
+
+    if (message.type === "remote.output") {
+      if (message.output.deviceId !== this.device.id) {
+        await this.applyRemoteOutput(message.output);
+      }
+      return;
+    }
+
   }
 
   private async applyEncrypted(update: EncryptedUpdate): Promise<void> {
@@ -422,7 +579,16 @@ export class TunnelSync {
   }
 
   private async applyFile(file: EncryptedFile): Promise<void> {
+    if (file.kind === "delete") {
+      this.fileTransfers.delete(file.fileId);
+      this.callbacks.onFileDeleted(file.fileId);
+      return;
+    }
     if (file.deviceId === this.device.id) {
+      return;
+    }
+    if (file.kind === "chunk") {
+      await this.applyFileChunk(file);
       return;
     }
     const [metaBytes, bodyBytes] = await Promise.all([
@@ -443,6 +609,90 @@ export class TunnelSync {
       nick: file.deviceNick || "",
       deviceId: file.deviceId || "",
       createdAt: file.createdAt || new Date().toISOString()
+    });
+  }
+
+  private async applyFileChunk(file: EncryptedFileChunk): Promise<void> {
+    if (file.index < 0 || file.index >= file.total || file.total < 1 || file.total > 8192) {
+      return;
+    }
+    const transfer: FileTransfer = this.fileTransfers.get(file.fileId) ?? {
+      chunks: new Array<Uint8Array>(file.total),
+      seen: new Set<number>(),
+      total: file.total,
+      totalBytes: file.totalBytes
+    };
+    if (!transfer.createdAt && file.createdAt) {
+      transfer.createdAt = file.createdAt;
+    }
+    if (!transfer.deviceId && file.deviceId) {
+      transfer.deviceId = file.deviceId;
+    }
+    if (!transfer.deviceNick && file.deviceNick) {
+      transfer.deviceNick = file.deviceNick;
+    }
+    if (file.metaNonce && file.metaCiphertext) {
+      const metaBytes = await decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext);
+      transfer.meta = JSON.parse(decode(metaBytes)) as { readonly name?: string; readonly type?: string; readonly size?: number };
+    }
+    if (!transfer.seen.has(file.index)) {
+      transfer.chunks[file.index] = await decryptFromTunnel(this.tunnel, file.nonce, file.ciphertext);
+      transfer.seen.add(file.index);
+    }
+    transfer.total = file.total;
+    transfer.totalBytes = file.totalBytes;
+    this.fileTransfers.set(file.fileId, transfer);
+    if (transfer.seen.size !== transfer.total || !transfer.meta) {
+      return;
+    }
+    const bodyBytes = concatChunks(transfer.chunks);
+    const type = transfer.meta.type || "application/octet-stream";
+    const body = bodyBytes.buffer.slice(bodyBytes.byteOffset, bodyBytes.byteOffset + bodyBytes.byteLength) as ArrayBuffer;
+    const blob = new Blob([body], { type });
+    this.callbacks.onFile({
+      id: file.fileId,
+      name: cleanFileName(transfer.meta.name || "file"),
+      type,
+      size: transfer.meta.size || transfer.totalBytes,
+      bytes: bodyBytes,
+      url: URL.createObjectURL(blob),
+      nick: transfer.deviceNick || "",
+      deviceId: transfer.deviceId || "",
+      createdAt: transfer.createdAt || new Date().toISOString()
+    });
+    this.fileTransfers.delete(file.fileId);
+  }
+
+  private async applyRemoteCommand(command: EncryptedRemoteCommand): Promise<void> {
+    const bytes = await decryptFromTunnel(this.tunnel, command.nonce, command.ciphertext);
+    const payload = JSON.parse(decode(bytes)) as { readonly command?: string };
+    const text = typeof payload.command === "string" ? payload.command.slice(0, 8000) : "";
+    if (!text.trim()) {
+      return;
+    }
+    this.callbacks.onRemoteCommand({
+      id: command.id,
+      command: text,
+      targetDeviceId: command.targetDeviceId,
+      deviceId: command.deviceId || "",
+      nick: command.deviceNick || command.nick || "",
+      createdAt: command.createdAt || new Date().toISOString()
+    });
+  }
+
+  private async applyRemoteOutput(output: EncryptedRemoteOutput): Promise<void> {
+    const bytes = await decryptFromTunnel(this.tunnel, output.nonce, output.ciphertext);
+    const payload = JSON.parse(decode(bytes)) as { readonly text?: string };
+    const text = typeof payload.text === "string" ? payload.text.slice(0, 40_000) : "";
+    this.callbacks.onRemoteOutput({
+      id: output.id,
+      commandId: output.commandId,
+      text,
+      targetDeviceId: output.targetDeviceId,
+      ...(typeof output.exitCode === "number" ? { exitCode: output.exitCode } : {}),
+      deviceId: output.deviceId || "",
+      nick: output.deviceNick || output.nick || "",
+      createdAt: output.createdAt || new Date().toISOString()
     });
   }
 
@@ -578,6 +828,24 @@ export class TunnelSync {
 
 function cleanFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]/gu, "_").slice(0, 120) || "file";
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + (chunk?.byteLength ?? 0), 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (!chunk) {
+      continue;
+    }
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }
 
 function diffText(before: string, after: string): [number, number, string] {
