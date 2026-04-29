@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { JoinRequest, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -78,6 +78,8 @@ const writerLines = new Map<string, Map<number, {
   readonly at: number;
 }>>();
 const activeWriters = new Map<string, string>();
+const activeNoticeKeys = new Set<string>();
+const lastTypingNoticeAt = new Map<string, number>();
 const joinPrompts = new Set<string>();
 let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
@@ -100,6 +102,14 @@ window.addEventListener("appinstalled", () => {
   installPrompt = null;
   rememberAppRuntime();
   void boot();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && selectedId) {
+    clearTunnelNotices(selectedId);
+    tunnels = markTunnel(selectedId, false);
+    renderTiles();
+  }
 });
 
 void boot();
@@ -317,7 +327,7 @@ function renderApp(): void {
     tunnels = upsertTunnel(createTunnel());
     selectedId = tunnels[0]?.id || "";
   }
-  selectedId = selectedId || loadSelectedTunnelId() || tunnels[0]?.id || "";
+  normalizeSelectedTunnel();
   for (const tunnel of tunnels) {
     ensureSync(tunnel);
   }
@@ -425,6 +435,7 @@ function renderTiles(): void {
     return;
   }
   tunnels = loadTunnels();
+  normalizeSelectedTunnel();
   const sorted = sortedVisibleTunnels();
   if (sorted.length === 0) {
     renderHexField(field, [], {
@@ -447,10 +458,12 @@ function renderTiles(): void {
     select: (id) => {
       selectedId = id;
       saveSelectedTunnelId(id);
+      clearTunnelNotices(id);
       tunnels = markTunnel(id, false);
       renderTiles();
       applySelectedText(true);
       renderFiles();
+      renderTerminal();
     },
     menu: (id, x, y) => {
       openCounterpartyMenu(x, y, {
@@ -458,6 +471,13 @@ function renderTiles(): void {
           selectedId = id;
           saveSelectedTunnelId(id);
           fileInput?.click();
+        },
+        knock: () => {
+          selectedId = id;
+          saveSelectedTunnelId(id);
+          syncs.get(id)?.sendKnock("*");
+          tunnels = touchTunnel(id);
+          renderTiles();
         },
         remote: () => {
           selectedId = id;
@@ -567,6 +587,26 @@ function sortedVisibleTunnels(): TunnelRecord[] {
     });
 }
 
+function normalizeSelectedTunnel(): void {
+  const all = loadTunnels();
+  if (all.length === 0) {
+    selectedId = "";
+    return;
+  }
+  const visible = all.filter((tunnel) => hasCounterparty(tunnel));
+  const pool = visible.length > 0 ? visible : all;
+  const stored = loadSelectedTunnelId();
+  if (pool.some((tunnel) => tunnel.id === selectedId)) {
+    saveSelectedTunnelId(selectedId);
+    return;
+  }
+  const next = pool.find((tunnel) => tunnel.id === stored) ?? pool[0];
+  selectedId = next?.id || "";
+  if (selectedId) {
+    saveSelectedTunnelId(selectedId);
+  }
+}
+
 function hasCounterparty(tunnel: TunnelRecord): boolean {
   const label = cleanNick(peers.get(tunnel.id) || tunnel.label || "");
   return Boolean(tunnel.counterparty || peers.has(tunnel.id) || (label !== "." && label !== device?.nick));
@@ -596,6 +636,8 @@ function ensureSync(tunnel: TunnelRecord): void {
       }
     },
     onRemoteChange: (activity) => {
+      const hadNotice = tunnelHasNotice(tunnel.id);
+      maybeKnockForTyping(tunnel.id, activity, hadNotice);
       rememberWriter(tunnel.id, activity);
       activeWriters.set(tunnel.id, activity.nick);
       window.setTimeout(() => {
@@ -606,7 +648,7 @@ function ensureSync(tunnel: TunnelRecord): void {
           }
         }
       }, 1800);
-      if (tunnel.id !== selectedId) {
+      if (tunnel.id !== selectedId || document.visibilityState === "hidden") {
         tunnels = markTunnel(tunnel.id, true);
         renderTiles();
       } else {
@@ -631,6 +673,9 @@ function ensureSync(tunnel: TunnelRecord): void {
         renderFiles();
       }
     },
+    onKnock: (knock) => {
+      applyKnock(tunnel.id, knock);
+    },
     onRemoteGrant: (grant) => {
       applyRemoteGrant(tunnel.id, grant);
     },
@@ -648,6 +693,12 @@ function ensureSync(tunnel: TunnelRecord): void {
       }
     },
     onJoinRequest: (request) => {
+      const hadNotice = tunnelHasNotice(tunnel.id);
+      vibrateHiddenOnce(`join:${request.requestId}`, tunnel.id, hadNotice);
+      if (document.visibilityState === "hidden" && !hadNotice) {
+        tunnels = markTunnel(tunnel.id, true);
+        renderTiles();
+      }
       renderOwnerJoinConfirm(tunnel, request);
     },
     onClosed: () => {
@@ -656,7 +707,7 @@ function ensureSync(tunnel: TunnelRecord): void {
       writerLines.delete(tunnel.id);
       activeWriters.delete(tunnel.id);
       tunnels = removeTunnel(tunnel.id);
-      selectedId = loadSelectedTunnelId() || tunnels[0]?.id || "";
+      normalizeSelectedTunnel();
       renderApp();
     },
     onState: () => undefined
@@ -737,10 +788,7 @@ function closeTunnel(id: string): void {
   activeWriters.delete(id);
   files.delete(id);
   tunnels = removeTunnel(id);
-  selectedId = tunnels[0]?.id || "";
-  if (selectedId) {
-    saveSelectedTunnelId(selectedId);
-  }
+  normalizeSelectedTunnel();
   renderApp();
 }
 
@@ -808,6 +856,18 @@ function deleteFile(fileId: string): void {
   files.set(selectedId, (files.get(selectedId) ?? []).filter((item) => item.id !== fileId));
   syncs.get(selectedId)?.deleteFile(fileId);
   renderFiles();
+}
+
+function applyKnock(tunnelId: string, knock: NoticeKnock): void {
+  if (!device || knock.deviceId === device.id || !grantTargetsThisDevice(knock.targetDeviceId)) {
+    return;
+  }
+  const hadNotice = tunnelHasNotice(tunnelId);
+  vibrateHiddenOnce(`knock:${knock.deviceId || knock.nick}`, tunnelId, hadNotice);
+  tunnels = document.visibilityState === "hidden" || tunnelId !== selectedId
+    ? markTunnel(tunnelId, true)
+    : touchTunnel(tunnelId);
+  renderTiles();
 }
 
 function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
@@ -1062,6 +1122,48 @@ function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad"
 
 function grantTargetsThisDevice(targetDeviceId: string): boolean {
   return targetDeviceId === "*" || targetDeviceId === device?.id;
+}
+
+function tunnelHasNotice(tunnelId: string): boolean {
+  return loadTunnels().some((tunnel) => tunnel.id === tunnelId && tunnel.unread);
+}
+
+function vibrateHiddenOnce(reason: string, tunnelId: string, hadNotice: boolean): void {
+  if (document.visibilityState !== "hidden" || hadNotice) {
+    return;
+  }
+  const key = `${tunnelId}:${reason}`;
+  if (activeNoticeKeys.has(key)) {
+    return;
+  }
+  activeNoticeKeys.add(key);
+  navigator.vibrate?.([45, 70, 45]);
+}
+
+function clearTunnelNotices(tunnelId: string): void {
+  for (const key of [...activeNoticeKeys]) {
+    if (key.startsWith(`${tunnelId}:`)) {
+      activeNoticeKeys.delete(key);
+    }
+  }
+}
+
+function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNotice: boolean): void {
+  if (activity.local) {
+    return;
+  }
+  const writer = activity.deviceId || activity.nick;
+  if (!writer) {
+    return;
+  }
+  const key = `${tunnelId}:${writer}`;
+  const now = Date.now();
+  const last = lastTypingNoticeAt.get(key) || 0;
+  if (now - last < 60_000) {
+    return;
+  }
+  lastTypingNoticeAt.set(key, now);
+  vibrateHiddenOnce(`typing:${writer}`, tunnelId, hadNotice);
 }
 
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {

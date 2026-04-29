@@ -3,6 +3,7 @@ import {
   isEncryptedUpdate,
   isJoinAccept,
   isJoinRequest,
+  isNoticeKnock,
   isP2pCandidate,
   isP2pDescription,
   isRemoteCommand,
@@ -102,6 +103,13 @@ async function handleMessage(room, peer, ws, store, raw) {
   }
   if (message.type === "file" && isEncryptedFile(message.file)) {
     await storeFile(room, peer, ws, store, message.file);
+    return;
+  }
+  if (message.type === "notice.knock" && isNoticeKnock(message.knock)) {
+    broadcast(room, peer.id, {
+      type: "notice.knock",
+      knock: withPeer(peer, message.knock)
+    });
     return;
   }
   if (message.type === "remote.grant" && isRemoteGrant(message.grant)) {

@@ -1,4 +1,4 @@
-export type IconName = "install" | "qr" | "close" | "check" | "person" | "clip" | "remote" | "download" | "refresh" | "copy";
+export type IconName = "install" | "qr" | "close" | "check" | "person" | "clip" | "remote" | "download" | "refresh" | "copy" | "bell";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
@@ -10,7 +10,8 @@ const paths: Record<IconName, string> = {
   remote: "M3 4h18v12H3V4Zm2 2v8h14V6H5Zm4 12h6v2H9v-2Zm-4 2h14v2H5v-2Zm7-12 4 3-4 3V8Z",
   download: "M5 20h14v-2H5v2ZM13 4h-2v8H8l4 4 4-4h-3V4Z",
   refresh: "M17.7 6.3C16.2 4.9 14.2 4 12 4c-3.7 0-6.8 2.6-7.6 6h2.1c.7-2.3 2.9-4 5.5-4 1.7 0 3.3.7 4.4 1.8L13 11h8V3l-3.3 3.3ZM6.3 17.7C7.8 19.1 9.8 20 12 20c3.7 0 6.8-2.6 7.6-6h-2.1c-.7 2.3-2.9 4-5.5 4-1.7 0-3.3-.7-4.4-1.8L11 13H3v8l3.3-3.3Z",
-  copy: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 18H8V7h11v16Z"
+  copy: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 18H8V7h11v16Z",
+  bell: "M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2Zm6-6v-5c0-3.1-1.6-5.6-4.5-6.3V4c0-.8-.7-1.5-1.5-1.5S10.5 3.2 10.5 4v.7C7.6 5.4 6 7.9 6 11v5l-2 2v1h16v-1l-2-2Zm-2 1H8v-6c0-2.5 1.5-4.5 4-4.5s4 2 4 4.5v6Z"
 };
 
 export function icon(name: IconName): string {

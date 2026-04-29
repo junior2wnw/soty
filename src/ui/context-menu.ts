@@ -2,6 +2,7 @@ import { icon } from "../icons";
 
 export interface CounterpartyMenuActions {
   readonly attach: () => void;
+  readonly knock: () => void;
   readonly remote: () => void;
   readonly close: () => void;
 }
@@ -23,6 +24,7 @@ export function openCounterpartyMenu(
   menu.className = "counterparty-menu";
   menu.innerHTML = `
     <button type="button" data-action="attach" aria-label="attach">${icon("clip")}</button>
+    <button type="button" data-action="knock" aria-label="knock">${icon("bell")}</button>
     <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote">${icon("remote")}</button>
     <button type="button" data-action="close" aria-label="close">${icon("close")}</button>
   `;

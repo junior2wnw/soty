@@ -14,6 +14,7 @@ The browser side stays deliberately simple:
 - direct WebRTC data channels are used when the devices and networks allow it;
 - the relay remains the reliable path for signaling, reconnects, history, and fallback delivery;
 - file transfer works from the counterparty menu and drag and drop;
+- the bell icon sends one small wake pulse through the existing tunnel;
 - the remote icon grants one-way command access to the selected counterparty;
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
 - local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
@@ -69,3 +70,7 @@ Installed operator bridge:
 ```
 
 The bridge works when the PWA is open on the controlling device and that device has remote access to the named counterparty.
+
+## Wake Pulse
+
+The bell control and typing wake use the already-open tunnel. They can vibrate a hidden PWA once while the unread mark is active. A fully closed PWA cannot receive live browser events without Web Push.

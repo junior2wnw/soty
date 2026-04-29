@@ -43,6 +43,12 @@ export function isRemoteGrant(value) {
     && isShortText(value.targetDeviceId, 140);
 }
 
+export function isNoticeKnock(value) {
+  return value
+    && isShortText(value.id, 140)
+    && isShortText(value.targetDeviceId, 140);
+}
+
 export function isRemoteCommand(value) {
   return value
     && isShortText(value.id, 140)

@@ -22,6 +22,7 @@ export interface SyncCallbacks {
   readonly onRemoteChange: (activity: WriterActivity) => void;
   readonly onFile: (file: ReceivedFile) => void;
   readonly onFileDeleted: (fileId: string) => void;
+  readonly onKnock: (knock: NoticeKnock) => void;
   readonly onRemoteGrant: (grant: RemoteGrant) => void;
   readonly onRemoteCommand: (command: RemoteCommand) => void;
   readonly onRemoteOutput: (output: RemoteOutput) => void;
@@ -54,6 +55,14 @@ export interface ReceivedFile {
   readonly url: string;
   readonly nick: string;
   readonly deviceId: string;
+  readonly createdAt: string;
+}
+
+export interface NoticeKnock {
+  readonly id: string;
+  readonly targetDeviceId: string;
+  readonly deviceId: string;
+  readonly nick: string;
   readonly createdAt: string;
 }
 
@@ -215,6 +224,7 @@ type ServerMessage =
   | { readonly type: "file"; readonly file: EncryptedFile }
   | { readonly type: "presence"; readonly peers: readonly PeerInfo[] }
   | { readonly type: "join.request"; readonly request: JoinRequest }
+  | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput }
@@ -234,6 +244,7 @@ type ControlMessage =
   | { readonly type: "join.accept"; readonly requestId: string; readonly accept: JoinAcceptPayload }
   | { readonly type: "join.deny"; readonly requestId: string }
   | { readonly type: "file"; readonly file: OutboundEncryptedFile }
+  | { readonly type: "notice.knock"; readonly knock: { readonly id: string; readonly targetDeviceId: string } }
   | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
@@ -241,6 +252,7 @@ type ControlMessage =
 type DirectMessage =
   | { readonly type: "update"; readonly update: EncryptedUpdate }
   | { readonly type: "file"; readonly file: EncryptedFile }
+  | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput };
@@ -418,6 +430,16 @@ export class TunnelSync {
         kind: "delete",
         id: `file_delete_${crypto.randomUUID()}`,
         fileId
+      }
+    });
+  }
+
+  sendKnock(targetDeviceId = "*"): void {
+    this.sendControl({
+      type: "notice.knock",
+      knock: {
+        id: `knock_${crypto.randomUUID()}`,
+        targetDeviceId
       }
     });
   }
@@ -622,6 +644,13 @@ export class TunnelSync {
 
     if (message.type === "file") {
       await this.applyFile(message.file);
+      return;
+    }
+
+    if (message.type === "notice.knock") {
+      if (this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
+        this.callbacks.onKnock(message.knock);
+      }
       return;
     }
 
@@ -958,6 +987,18 @@ export class TunnelSync {
       });
       return;
     }
+    if (message.type === "notice.knock") {
+      this.broadcastDirect({
+        type: "notice.knock",
+        knock: {
+          ...message.knock,
+          deviceId: this.device.id,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
     if (message.type === "remote.grant") {
       this.broadcastDirect({
         type: "remote.grant",
@@ -1263,6 +1304,10 @@ export class TunnelSync {
     }
     if (message.type === "file") {
       await this.applyFile(message.file);
+      return;
+    }
+    if (message.type === "notice.knock" && this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
+      this.callbacks.onKnock(message.knock);
       return;
     }
     if (message.type === "remote.grant" && this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
