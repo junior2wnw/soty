@@ -59,6 +59,59 @@ try {
     }
   }
 
+  function Test-AgentHealth {
+    try {
+      Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 2 | Out-Null
+      return $true
+    } catch {
+      return $false
+    }
+  }
+
+  function Start-AgentNow {
+    if (Test-AgentHealth) { return }
+    Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$RunnerPath`""
+  }
+
+  function Enable-AgentAutostart {
+    $runCommand = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
+
+    try {
+      $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
+      $Trigger = New-ScheduledTaskTrigger -AtLogOn
+      $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
+      Register-ScheduledTask -TaskName "soty-agent" -Action $Action -Trigger $Trigger -Settings $Settings -Description "soty.online local agent" -Force | Out-Null
+      Start-ScheduledTask -TaskName "soty-agent"
+      Write-Output "soty-agent:autostart:task"
+      return "task"
+    } catch {
+      Write-Output "soty-agent:autostart:task-denied"
+    }
+
+    try {
+      $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+      New-Item -Path $runKey -Force | Out-Null
+      New-ItemProperty -Path $runKey -Name "soty-agent" -Value $runCommand -PropertyType String -Force | Out-Null
+      Write-Output "soty-agent:autostart:run"
+      return "run"
+    } catch {
+      Write-Output "soty-agent:autostart:run-denied"
+    }
+
+    $startupDir = [Environment]::GetFolderPath("Startup")
+    if (-not $startupDir) {
+      throw "No user startup folder"
+    }
+    $startupPath = Join-Path $startupDir "soty-agent.vbs"
+    $escapedCommand = $runCommand.Replace("""", """""")
+@"
+Set shell = CreateObject("WScript.Shell")
+shell.Run "$escapedCommand", 0, False
+"@ | Set-Content -Path $startupPath -Encoding ASCII
+    Write-Output "soty-agent:autostart:startup"
+    return "startup"
+  }
+
   $NodePath = Resolve-Node
   Invoke-WebRequest -Uri $ManifestUrl -UseBasicParsing -OutFile (Join-Path $AgentDir "manifest.json")
   Invoke-WebRequest -Uri $AgentUrl -UseBasicParsing -OutFile $AgentPath
@@ -77,20 +130,11 @@ while (`$true) {
 }
 "@ | Set-Content -Path $RunnerPath -Encoding UTF8
 
-  $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
-  $Trigger = New-ScheduledTaskTrigger -AtLogOn
-  $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
-  Register-ScheduledTask -TaskName "soty-agent" -Action $Action -Trigger $Trigger -Settings $Settings -Description "soty.online local agent" -Force | Out-Null
-  Start-ScheduledTask -TaskName "soty-agent"
-
+  $Autostart = Enable-AgentAutostart
   Start-Sleep -Milliseconds 700
-  try {
-    Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } | Out-Null
-  } catch {
-    Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$RunnerPath`""
-  }
+  Start-AgentNow
 
-  Write-Output "soty-agent:installed"
+  Write-Output "soty-agent:installed:$Autostart"
 } finally {
   Stop-Transcript | Out-Null
 }

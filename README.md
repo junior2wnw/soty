@@ -43,7 +43,7 @@ Default port: `8080`.
 
 ## Local Agent
 
-The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads `install-soty-agent.cmd`; the script installs the agent into the user profile, brings portable Node.js when needed, starts the agent, and registers autostart. After the installer runs once, the agent starts with the OS and updates itself.
+The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads `install-soty-agent.cmd`; the script installs the agent into the user profile, brings portable Node.js when needed, starts the agent, and registers autostart through the task scheduler, the current-user Run key, or the user Startup folder. After the installer runs once, the agent starts with the OS and updates itself.
 
 For development, run:
 
