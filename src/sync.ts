@@ -204,6 +204,12 @@ type ControlMessage =
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
 
+const heartbeatIntervalMs = 12_000;
+const staleConnectionMs = 42_000;
+const reconnectJitterMs = 750;
+const minReconnectDelayMs = 500;
+const maxReconnectDelayMs = 30_000;
+
 export class TunnelSync {
   private readonly doc = new Y.Doc();
   private readonly text = this.doc.getText("body");
@@ -212,7 +218,7 @@ export class TunnelSync {
   private ready = false;
   private localUpdates = 0;
   private reconnectTimer = 0;
-  private reconnectDelay = 500;
+  private reconnectDelay = minReconnectDelayMs;
   private snapshotTimer = 0;
   private heartbeatTimer = 0;
   private lastSeenAt = 0;
@@ -224,16 +230,20 @@ export class TunnelSync {
   private readonly fileTransfers = new Map<string, FileTransfer>();
   private sendQueue = Promise.resolve();
   private readonly wakeReconnect = () => {
-    if (!this.destroyed && (!this.ws || this.ws.readyState >= WebSocket.CLOSING)) {
-      window.clearTimeout(this.reconnectTimer);
-      this.connect();
-    }
+    this.recoverConnection();
   };
   private readonly visibleReconnect = () => {
     if (document.visibilityState === "visible") {
-      this.wakeReconnect();
+      this.recoverConnection(true);
+      return;
     }
+    this.queueSnapshotNow();
   };
+  private readonly offlineState = () => {
+    this.ready = false;
+    this.callbacks.onState("closed");
+  };
+  private readonly networkConnection = (navigator as Navigator & { connection?: EventTarget }).connection ?? null;
 
   constructor(
     private readonly tunnel: TunnelRecord,
@@ -252,10 +262,12 @@ export class TunnelSync {
       this.callbacks.onText(this.text.toString());
     });
     window.addEventListener("online", this.wakeReconnect);
+    window.addEventListener("offline", this.offlineState);
     window.addEventListener("focus", this.wakeReconnect);
     window.addEventListener("pageshow", this.wakeReconnect);
     document.addEventListener("visibilitychange", this.visibleReconnect);
-    this.heartbeatTimer = window.setInterval(() => this.checkConnection(), 2500);
+    this.networkConnection?.addEventListener("change", this.wakeReconnect);
+    this.heartbeatTimer = window.setInterval(() => this.checkConnection(), heartbeatIntervalMs);
     this.connect();
   }
 
@@ -407,9 +419,11 @@ export class TunnelSync {
     window.clearTimeout(this.snapshotTimer);
     window.clearInterval(this.heartbeatTimer);
     window.removeEventListener("online", this.wakeReconnect);
+    window.removeEventListener("offline", this.offlineState);
     window.removeEventListener("focus", this.wakeReconnect);
     window.removeEventListener("pageshow", this.wakeReconnect);
     document.removeEventListener("visibilitychange", this.visibleReconnect);
+    this.networkConnection?.removeEventListener("change", this.wakeReconnect);
     const ws = this.ws;
     this.ws = null;
     if (ws?.readyState === WebSocket.OPEN) {
@@ -437,7 +451,7 @@ export class TunnelSync {
       }
       this.lastSeenAt = Date.now();
       void this.auth.then((auth) => {
-        if (!this.destroyed && ws.readyState === WebSocket.OPEN) {
+        if (!this.destroyed && this.ws === ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: "hello",
             deviceId: this.device.id,
@@ -455,7 +469,7 @@ export class TunnelSync {
     };
 
     ws.onerror = () => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (this.ws === ws && ws.readyState < WebSocket.CLOSING) {
         ws.close();
       }
     };
@@ -467,8 +481,8 @@ export class TunnelSync {
       this.ready = false;
       this.callbacks.onState("closed");
       if (!this.destroyed) {
-        const delay = this.reconnectDelay + Math.round(Math.random() * 250);
-        this.reconnectDelay = Math.min(8000, Math.round(this.reconnectDelay * 1.7));
+        const delay = this.reconnectDelay + Math.round(Math.random() * reconnectJitterMs);
+        this.reconnectDelay = Math.min(maxReconnectDelayMs, Math.round(this.reconnectDelay * 1.7));
         this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
       }
     };
@@ -523,11 +537,12 @@ export class TunnelSync {
       }
       this.callbacks.onPeers(message.peers.filter((peer) => peer.id !== this.device.id));
       this.ready = true;
-      this.reconnectDelay = 500;
+      this.reconnectDelay = minReconnectDelayMs;
       this.callbacks.onState("open");
       this.callbacks.onText(this.text.toString());
       this.flushOfflineQueue();
       this.flushControls();
+      this.scheduleSnapshot();
       return;
     }
 
@@ -784,6 +799,16 @@ export class TunnelSync {
     }, 350);
   }
 
+  private queueSnapshotNow(): void {
+    if (!this.ready) {
+      this.needsSnapshot = true;
+      return;
+    }
+    window.clearTimeout(this.snapshotTimer);
+    this.needsSnapshot = false;
+    this.queueUpdate(Y.encodeStateAsUpdate(this.doc), "snapshot");
+  }
+
   private sendControl(message: ControlMessage): void {
     const ws = this.ws;
     if (this.ready && ws?.readyState === WebSocket.OPEN) {
@@ -803,6 +828,29 @@ export class TunnelSync {
     }
   }
 
+  private recoverConnection(forcePing = false): void {
+    if (this.destroyed) {
+      return;
+    }
+    window.clearTimeout(this.reconnectTimer);
+    const ws = this.ws;
+    if (!ws || ws.readyState >= WebSocket.CLOSING) {
+      this.ready = false;
+      this.connect();
+      return;
+    }
+    if (ws.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+    if (ws.readyState !== WebSocket.OPEN) {
+      this.closeAndReconnect(ws);
+      return;
+    }
+    if (forcePing || Date.now() - this.lastSeenAt > staleConnectionMs) {
+      this.safePing(ws);
+    }
+  }
+
   private checkConnection(): void {
     if (this.destroyed) {
       return;
@@ -815,14 +863,34 @@ export class TunnelSync {
     if (ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    if (Date.now() - this.lastSeenAt > 5500) {
-      this.ready = false;
-      this.ws = null;
-      ws.close();
-      this.connect();
+    if (Date.now() - this.lastSeenAt > staleConnectionMs) {
+      this.closeAndReconnect(ws);
       return;
     }
-    ws.send(JSON.stringify({ type: "ping" }));
+    this.safePing(ws);
+  }
+
+  private closeAndReconnect(ws: WebSocket): void {
+    if (this.ws !== ws) {
+      return;
+    }
+    this.ready = false;
+    this.ws = null;
+    this.callbacks.onState("connecting");
+    try {
+      ws.close();
+    } catch {
+      // The browser can throw when a network switch leaves the socket half-dead.
+    }
+    this.connect();
+  }
+
+  private safePing(ws: WebSocket): void {
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      this.closeAndReconnect(ws);
+    }
   }
 }
 
