@@ -1,4 +1,4 @@
-# соты.online
+# soty.online
 
 A small PWA surface for a long-lived byte tunnel between counterparties.
 
@@ -20,13 +20,14 @@ The browser side stays deliberately simple:
 ## Layout
 
 - `src/main.ts` wires the app lifecycle.
-- `src/trustlink.ts` keeps local identity, tunnel records, QR joining, and tunnel payload helpers.
+- `src/trustlink/*` keeps the app adapters for runtime, local storage, device records, QR joining, room records, and encrypted payload calls.
 - `src/sync.ts` owns realtime text, files, pairing, remote intents, snapshots, and reconnect transport.
 - `src/ui/*` contains UI primitives such as the honeycomb field and counterparty menu.
 - `src/features/*` contains optional tunnel features.
 - `src/core/*` contains tiny shared helpers.
 - `server/*` is the relay: HTTP shell, room store, validators, and WebSocket routing.
 - `public/*` is the PWA manifest, service worker, and icon.
+- `trustlink-kernel` is the separate SDK for room secrets, compact join codes, byte encoding, and web crypto primitives.
 
 ## Run
 
