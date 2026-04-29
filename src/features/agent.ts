@@ -45,7 +45,7 @@ export function agentInstallUrl(): string {
   const nav = navigator as Navigator & { readonly userAgentData?: { readonly platform?: string } };
   const platform = `${nav.userAgentData?.platform || navigator.platform || navigator.userAgent}`.toLowerCase();
   return platform.includes("win")
-    ? "/agent/install-windows.ps1"
+    ? "/agent/install-windows.cmd"
     : "/agent/install-macos-linux.sh";
 }
 
@@ -53,7 +53,9 @@ export function downloadAgentInstaller(): void {
   const link = document.createElement("a");
   const url = agentInstallUrl();
   link.href = url;
-  link.download = url.endsWith(".ps1") ? "install-soty-agent.ps1" : "install-soty-agent.sh";
+  link.download = url.endsWith(".cmd")
+    ? "install-soty-agent.cmd"
+    : "install-soty-agent.sh";
   document.body.append(link);
   link.click();
   link.remove();
