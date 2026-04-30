@@ -141,15 +141,11 @@ try {
   function Stop-ExistingSotyAgentsForMachine {
     if ($Scope -ne "Machine") { return }
     try {
-      $escapedMachineAgent = [regex]::Escape($AgentPath)
-      $escapedMachineRunner = [regex]::Escape($RunnerPath)
       $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
           $_.CommandLine -and
           ($_.CommandLine -match "soty-agent") -and
-          (($_.CommandLine -match "soty-agent\.mjs") -or ($_.CommandLine -match "start-agent\.ps1")) -and
-          ($_.CommandLine -notmatch $escapedMachineAgent) -and
-          ($_.CommandLine -notmatch $escapedMachineRunner)
+          (($_.CommandLine -match "soty-agent\.mjs") -or ($_.CommandLine -match "start-agent\.ps1"))
         }
       foreach ($process in @($processes)) {
         try {
@@ -181,8 +177,26 @@ try {
     } catch {}
   }
 
+  function Wait-AgentHealth {
+    param([int]$Seconds = 18)
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+      if (Test-AgentHealth) { return $true }
+      Start-Sleep -Milliseconds 700
+    } while ((Get-Date) -lt $deadline)
+    return $false
+  }
+
   function Start-AgentNow {
     if (Test-AgentHealth) { return }
+    if ($Scope -eq "Machine") {
+      try { Start-ScheduledTask -TaskName "soty-agent-machine" -ErrorAction SilentlyContinue } catch {}
+      if (Wait-AgentHealth) {
+        Write-Output "soty-agent:health:machine"
+        return
+      }
+      throw "Soty machine task did not report SYSTEM health on 127.0.0.1:49424"
+    }
     Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$RunnerPath`""
   }
 
@@ -192,6 +206,7 @@ try {
     if ($Scope -eq "Machine") {
       Disable-CurrentUserAgentAutostart
       Stop-ExistingSotyAgentsForMachine
+      try { Stop-ScheduledTask -TaskName "soty-agent-machine" -ErrorAction SilentlyContinue } catch {}
       $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
       $Trigger = New-ScheduledTaskTrigger -AtStartup
       $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable

@@ -85,13 +85,13 @@ The bridge works when the PWA is open on the controlling device. `run` and `scri
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
 Use `say` to write into the shared text surface through the PWA with small typing delays and occasional corrected typos. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, remote settings, current shared text, and file metadata.
 
-Managed Windows recovery installs the companion for the whole machine. The PWA remains the primary control plane, but Windows still requires one explicit UAC/admin grant before a browser-connected user agent can become a machine worker. After that grant, the worker runs as `SYSTEM`, reports `scope: "Machine"` and `maintenance: true` from `/health`, and can handle admin tasks such as backups, boot-media preparation, and reinstall staging through the same PWA tunnel.
+Managed Windows recovery uses the same companion and the same loopback port, but installs it for the whole machine. The PWA remains the primary control plane; the browser itself cannot click or approve UAC because Windows intentionally keeps UAC outside the browser sandbox. One explicit UAC/admin grant is still required before the user-scope worker can hand off to the machine-scope worker. After that grant, the worker must run as `SYSTEM`, report `scope: "Machine"`, `system: true`, and `maintenance: true` from `/health`, and can handle admin tasks such as backups, boot-media preparation, and reinstall staging through the same PWA tunnel.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Scope Machine -LaunchAppAtLogon
 ```
 
-From an operator workstation, `sotyctl install-machine <target>` asks the target Windows desktop for that one UAC grant and `sotyctl machine-status <target>` verifies that the active loopback worker is the machine worker. The installer stops current-user Soty agent processes before starting the machine task so the worker owns `127.0.0.1:49424`.
+From an operator workstation, `sotyctl install-machine <target>` asks the target Windows desktop for that one UAC grant and `sotyctl machine-status <target>` verifies that the active loopback worker is the machine worker. The installer stops current-user Soty agent processes before starting the machine task so the machine worker owns `127.0.0.1:49424`; there should not be two active agents competing for the port.
 
 This keeps the PWA as the primary operator channel after reinstall: the local loopback worker starts at boot, and Windows opens the Soty PWA at user logon.
 

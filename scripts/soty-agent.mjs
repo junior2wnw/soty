@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.10";
+const agentVersion = "0.3.11";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -524,6 +524,9 @@ function readJsonBody(request, maxBytes) {
 }
 
 async function runControlCli(args) {
+  if (args[0] === "--") {
+    args = args.slice(1);
+  }
   const command = args[0] || "list";
   if (command === "health") {
     const response = await fetch(`http://127.0.0.1:${port}/health`, { cache: "no-store" });
