@@ -22,6 +22,17 @@ The browser side stays deliberately simple:
 - the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`;
 - Windows maintenance work uses the same PWA channel plus a machine-scope Soty Worker when admin/SYSTEM actions are required.
 
+## Boundary
+
+Soty is the application shell: UI, install flows, relay wiring, companion-agent
+handoff, and user-facing behavior live here.
+
+The technology core lives in the public `trustlink-kernel` repository
+(`junior2wnw/4-2-rf`). Protocol, crypto, room secrets, byte envelopes,
+permission/session logic, discovery, recovery, path ranking, audit, and other
+generic reliability primitives belong there. Soty should depend on that kernel
+instead of turning those primitives into a separate legal or technology surface.
+
 ## Layout
 
 - `src/main.ts` wires the app lifecycle.
