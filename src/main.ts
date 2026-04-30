@@ -3,7 +3,7 @@ import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, Rem
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { checkLocalAgent, downloadAgentInstaller } from "./features/agent";
+import { checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -570,6 +570,7 @@ function renderAgentInstall(tunnelId: string): void {
     <div class="agent-sheet${localAgent.ok ? " is-ok" : ""}">
       <span class="agent-mark">${icon("remote")}</span>
       <button class="icon-button download-button" type="button" aria-label="download">${icon("download")}</button>
+      ${isWindowsPlatform() ? `<button class="icon-button machine-button" type="button" aria-label="machine">${icon("shield")}</button>` : ""}
       <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
       <button class="icon-button close-button" type="button" aria-label="close">${icon("close")}</button>
     </div>
@@ -577,6 +578,9 @@ function renderAgentInstall(tunnelId: string): void {
   document.body.append(overlay);
   overlay.querySelector(".download-button")?.addEventListener("click", () => {
     downloadAgentInstaller();
+  });
+  overlay.querySelector(".machine-button")?.addEventListener("click", () => {
+    downloadAgentInstaller("machine");
   });
   overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
     void (async () => {

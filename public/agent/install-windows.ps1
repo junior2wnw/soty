@@ -128,11 +128,57 @@ try {
 
   function Test-AgentHealth {
     try {
-      Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 2 | Out-Null
+      $health = Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 2
+      if ($Scope -eq "Machine") {
+        return (($health.scope -eq "Machine") -and ($health.system -eq $true))
+      }
       return $true
     } catch {
       return $false
     }
+  }
+
+  function Stop-ExistingSotyAgentsForMachine {
+    if ($Scope -ne "Machine") { return }
+    try {
+      $escapedMachineAgent = [regex]::Escape($AgentPath)
+      $escapedMachineRunner = [regex]::Escape($RunnerPath)
+      $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.CommandLine -and
+          ($_.CommandLine -match "soty-agent") -and
+          (($_.CommandLine -match "soty-agent\.mjs") -or ($_.CommandLine -match "start-agent\.ps1")) -and
+          ($_.CommandLine -notmatch $escapedMachineAgent) -and
+          ($_.CommandLine -notmatch $escapedMachineRunner)
+        }
+      foreach ($process in @($processes)) {
+        try {
+          Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+          Write-Output "soty-agent:stopped-user-process:$($process.ProcessId)"
+        } catch {}
+      }
+    } catch {
+      Write-Output "soty-agent:stop-user-agent-skipped"
+    }
+  }
+
+  function Disable-CurrentUserAgentAutostart {
+    if ($Scope -ne "Machine") { return }
+    try {
+      Unregister-ScheduledTask -TaskName "soty-agent" -Confirm:$false -ErrorAction SilentlyContinue
+      Write-Output "soty-agent:user-task-disabled"
+    } catch {}
+    try {
+      Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "soty-agent" -ErrorAction SilentlyContinue
+      Write-Output "soty-agent:user-run-disabled"
+    } catch {}
+    try {
+      $startupDir = [Environment]::GetFolderPath("Startup")
+      if ($startupDir) {
+        Remove-Item -LiteralPath (Join-Path $startupDir "soty-agent.vbs") -Force -ErrorAction SilentlyContinue
+        Write-Output "soty-agent:user-startup-disabled"
+      }
+    } catch {}
   }
 
   function Start-AgentNow {
@@ -144,6 +190,8 @@ try {
     $runCommand = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
 
     if ($Scope -eq "Machine") {
+      Disable-CurrentUserAgentAutostart
+      Stop-ExistingSotyAgentsForMachine
       $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
       $Trigger = New-ScheduledTaskTrigger -AtStartup
       $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
@@ -221,6 +269,7 @@ shell.Run "$escapedCommand", 0, False
 
 @"
 `$env:SOTY_AGENT_MANAGED = "1"
+`$env:SOTY_AGENT_SCOPE = "$Scope"
 `$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
 while (`$true) {
   & "$NodePath" "$AgentPath"

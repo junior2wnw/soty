@@ -804,7 +804,8 @@ svg {
 
 .agent-sheet {
   display: grid;
-  grid-template-columns: repeat(4, 54px);
+  grid-auto-flow: column;
+  grid-auto-columns: 54px;
   align-items: center;
   gap: 8px;
   padding: 8px;

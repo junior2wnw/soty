@@ -19,7 +19,8 @@ The browser side stays deliberately simple:
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
 - local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
 - long remote jobs can be staged as temporary scripts and launched without visible terminal windows;
-- the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`.
+- the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`;
+- Windows maintenance work uses the same PWA channel plus a machine-scope Soty Worker when admin/SYSTEM actions are required.
 
 ## Layout
 
@@ -65,6 +66,8 @@ Installed operator bridge:
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd list
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd run Phone "ping ya.ru"
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd script Phone .\job.ps1 powershell
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd install-machine Phone
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd machine-status Phone
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd say Phone "Пишу как живой оператор."
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd say --fast Phone "Короткий статус."
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd export soty-backup.json
@@ -82,13 +85,15 @@ The bridge works when the PWA is open on the controlling device. `run` and `scri
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
 Use `say` to write into the shared text surface through the PWA with small typing delays and occasional corrected typos. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, remote settings, current shared text, and file metadata.
 
-Managed Windows recovery can install the companion for the whole machine:
+Managed Windows recovery installs the companion for the whole machine. The PWA remains the primary control plane, but Windows still requires one explicit UAC/admin grant before a browser-connected user agent can become a machine worker. After that grant, the worker runs as `SYSTEM`, reports `scope: "Machine"` and `maintenance: true` from `/health`, and can handle admin tasks such as backups, boot-media preparation, and reinstall staging through the same PWA tunnel.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Scope Machine -LaunchAppAtLogon
 ```
 
-This keeps the PWA as the primary operator channel after reinstall: the local loopback agent starts at boot, and Windows opens the Soty PWA at user logon.
+From an operator workstation, `sotyctl install-machine <target>` asks the target Windows desktop for that one UAC grant and `sotyctl machine-status <target>` verifies that the active loopback worker is the machine worker. The installer stops current-user Soty agent processes before starting the machine task so the worker owns `127.0.0.1:49424`.
+
+This keeps the PWA as the primary operator channel after reinstall: the local loopback worker starts at boot, and Windows opens the Soty PWA at user logon.
 
 ## Wake Pulse
 

@@ -7,12 +7,13 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.6";
+const agentVersion = "0.3.7";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
+const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
 const maxScriptChars = 1_000_000;
 const maxChatChars = 12_000;
@@ -97,10 +98,7 @@ async function handleHttpRequest(request, response) {
   if (url.pathname === "/health") {
     sendJson(response, 200, headers, {
       ok: true,
-      managed,
-      platform: process.platform,
-      shell: shellName(),
-      version: agentVersion
+      ...runtimeHealth()
     });
     return;
   }
@@ -148,10 +146,7 @@ function handleMessage(ws, raw) {
   if (message?.type === "hello") {
     send(ws, message.id || "hello", "", undefined, "ready", {
       cwd: process.cwd(),
-      managed,
-      platform: process.platform,
-      shell: shellName(),
-      version: agentVersion
+      ...runtimeHealth()
     });
     return;
   }
@@ -529,6 +524,12 @@ function readJsonBody(request, maxBytes) {
 
 async function runControlCli(args) {
   const command = args[0] || "list";
+  if (command === "health") {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, { cache: "no-store" });
+    const payload = await response.json();
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+    process.exit(response.ok ? 0 : 1);
+  }
   if (command === "list") {
     const response = await fetch(`http://127.0.0.1:${port}/operator/targets`, { cache: "no-store" });
     const payload = await response.json();
@@ -552,6 +553,46 @@ async function runControlCli(args) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target, command: remoteCommand })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
+  if (command === "install-machine" || command === "elevate-machine") {
+    const target = args[1] || "";
+    if (!target) {
+      process.stderr.write("sotyctl install-machine <target>\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, command: machineInstallCommand(), timeoutMs: 60_000 })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
+  if (command === "machine-status" || command === "maintenance-status") {
+    const target = args[1] || "";
+    if (!target) {
+      process.stderr.write("sotyctl machine-status <target>\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, command: machineStatusCommand(), timeoutMs: 20_000 })
     });
     const payload = await response.json();
     if (payload.text) {
@@ -634,8 +675,41 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl list | run <target> <command> | script <target> <file> [shell] | say [--fast|--slow] <target> <text> | export [file]\n");
+  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | say [--fast|--slow] <target> <text> | export [file]\n");
   process.exit(2);
+}
+
+function machineInstallCommand() {
+  const installerUrl = "https://xn--n1afe0b.online/agent/install-windows.ps1";
+  return [
+    "$ErrorActionPreference='Stop'",
+    "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+    "$dir=Join-Path $env:TEMP 'soty-agent-machine'",
+    "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+    "$script=Join-Path $dir 'install-windows.ps1'",
+    `Invoke-WebRequest -Uri ${psQuote(installerUrl)} -UseBasicParsing -OutFile $script`,
+    "$args='-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Scope Machine -LaunchAppAtLogon'",
+    "Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $args",
+    "Write-Output 'soty-agent-machine:uac-started'"
+  ].join("; ");
+}
+
+function machineStatusCommand() {
+  return [
+    "$ErrorActionPreference='Stop'",
+    "try {",
+    "$h=Invoke-RestMethod -Uri 'http://127.0.0.1:49424/health' -Headers @{ Origin='https://xn--n1afe0b.online' } -TimeoutSec 2",
+    "$h | ConvertTo-Json -Compress",
+    "} catch {",
+    "$m=$_.Exception.Message.Replace('\"','')",
+    "Write-Output ('{\"ok\":false,\"error\":\"' + $m + '\"}')",
+    "exit 1",
+    "}"
+  ].join("; ");
+}
+
+function psQuote(value) {
+  return `'${String(value).replace(/'/gu, "''")}'`;
 }
 
 function isSafeText(value, max) {
@@ -709,6 +783,39 @@ function shellName() {
     return requestedShell || process.env.SHELL || "/bin/sh";
   }
   return requestedShell || "powershell.exe";
+}
+
+function runtimeHealth() {
+  return {
+    managed,
+    scope: agentScope,
+    platform: process.platform,
+    shell: shellName(),
+    version: agentVersion,
+    ...(process.platform === "win32" ? {
+      windowsUser: windowsUserName(),
+      system: isWindowsSystem(),
+      maintenance: agentScope === "Machine" && isWindowsSystem()
+    } : {})
+  };
+}
+
+function windowsUserName() {
+  const domain = process.env.USERDOMAIN || "";
+  const user = process.env.USERNAME || "";
+  return domain && user ? `${domain}\\${user}` : user;
+}
+
+function isWindowsSystem() {
+  return (process.env.USERNAME || "").toLowerCase() === "system";
+}
+
+function safeScope(value) {
+  const text = String(value || "").trim();
+  if (text === "Machine" || text === "CurrentUser" || text === "Dev") {
+    return text;
+  }
+  return "CurrentUser";
 }
 
 function safeFileName(value) {
