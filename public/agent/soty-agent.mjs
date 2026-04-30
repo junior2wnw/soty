@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.5";
+const agentVersion = "0.3.6";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -586,16 +586,23 @@ async function runControlCli(args) {
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
   if (command === "say" || command === "chat") {
-    const target = args[1] || "";
-    const text = args.slice(2).join(" ");
+    const sayArgs = args.slice(1);
+    let speed = "";
+    if (sayArgs[0] === "--fast" || sayArgs[0] === "--slow") {
+      speed = sayArgs.shift().slice(2);
+    } else if (sayArgs[0]?.startsWith("--speed=")) {
+      speed = sayArgs.shift().slice("--speed=".length);
+    }
+    const target = sayArgs[0] || "";
+    const text = sayArgs.slice(1).join(" ");
     if (!target || !text) {
-      process.stderr.write("sotyctl say <target> <text>\n");
+      process.stderr.write("sotyctl say [--fast|--slow|--speed=fast] <target> <text>\n");
       process.exit(2);
     }
     const response = await fetch(`http://127.0.0.1:${port}/operator/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, text, persona: "sysadmin" })
+      body: JSON.stringify({ target, text, speed, persona: "sysadmin" })
     });
     const payload = await response.json();
     if (payload.text) {
@@ -627,7 +634,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl list | run <target> <command> | script <target> <file> [shell] | say <target> <text> | export [file]\n");
+  process.stderr.write("sotyctl list | run <target> <command> | script <target> <file> [shell] | say [--fast|--slow] <target> <text> | export [file]\n");
   process.exit(2);
 }
 

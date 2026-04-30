@@ -66,6 +66,7 @@ Installed operator bridge:
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd run Phone "ping ya.ru"
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd script Phone .\job.ps1 powershell
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd say Phone "Пишу как живой оператор."
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd say --fast Phone "Короткий статус."
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd export soty-backup.json
 
 # macOS / Linux
@@ -73,6 +74,7 @@ Installed operator bridge:
 ~/.soty-agent/sotyctl run Phone "ping ya.ru"
 ~/.soty-agent/sotyctl script Phone ./job.sh sh
 ~/.soty-agent/sotyctl say Phone "Пишу как живой оператор."
+~/.soty-agent/sotyctl say --fast Phone "Короткий статус."
 ~/.soty-agent/sotyctl export soty-backup.json
 ```
 
