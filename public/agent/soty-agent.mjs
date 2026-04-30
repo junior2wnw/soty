@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.8";
+const agentVersion = "0.3.9";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -23,6 +23,7 @@ const active = new Map();
 const operatorRuns = new Map();
 let operatorBridge = null;
 let operatorTargets = [];
+let cachedWindowsWhoami = "";
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
@@ -812,13 +813,39 @@ function runtimeHealth() {
 }
 
 function windowsUserName() {
+  const actual = windowsWhoami();
+  if (actual) {
+    return actual;
+  }
   const domain = process.env.USERDOMAIN || "";
   const user = process.env.USERNAME || "";
   return domain && user ? `${domain}\\${user}` : user;
 }
 
 function isWindowsSystem() {
-  return (process.env.USERNAME || "").toLowerCase() === "system";
+  const actual = windowsWhoami().toLowerCase();
+  return actual === "nt authority\\system"
+    || actual === "nt authority\\система"
+    || (agentScope === "Machine" && (process.env.USERNAME || "").endsWith("$"));
+}
+
+function windowsWhoami() {
+  if (process.platform !== "win32") {
+    return "";
+  }
+  if (cachedWindowsWhoami) {
+    return cachedWindowsWhoami;
+  }
+  try {
+    cachedWindowsWhoami = execFileSync("whoami.exe", {
+      encoding: "utf8",
+      timeout: 1000,
+      windowsHide: true
+    }).trim();
+  } catch {
+    cachedWindowsWhoami = "";
+  }
+  return cachedWindowsWhoami;
 }
 
 function safeScope(value) {
