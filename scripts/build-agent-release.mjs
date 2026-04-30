@@ -10,20 +10,20 @@ const outputDir = join(root, "public", "agent");
 const outputPath = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
 
-const source = await readFile(sourcePath);
-const sourceText = source.toString("utf8");
+const source = await readFile(sourcePath, "utf8");
+const sourceText = source.replace(/\r\n/g, "\n");
 const version = sourceText.match(/agentVersion\s*=\s*"([^"]+)"/u)?.[1];
 if (!version) {
   throw new Error("Agent version not found");
 }
 
 await mkdir(outputDir, { recursive: true });
-await writeFile(outputPath, source, { mode: 0o755 });
+await writeFile(outputPath, sourceText, { mode: 0o755 });
 
 const manifest = {
   version,
   agentUrl: "/agent/soty-agent.mjs",
-  sha256: createHash("sha256").update(source).digest("hex")
+  sha256: createHash("sha256").update(sourceText).digest("hex")
 };
 
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
