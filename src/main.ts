@@ -6,7 +6,7 @@ import { clock } from "./core/time";
 import { checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
-import { loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
+import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import {
@@ -31,6 +31,7 @@ import {
   publicJoinJwk,
   removeTunnel,
   rememberAppRuntime,
+  resetLocalSotyState,
   saveSelectedTunnelId,
   saveTunnels,
   touchTunnel,
@@ -118,6 +119,16 @@ void boot();
 let serviceWorkerReloading = false;
 
 async function boot(): Promise<void> {
+  if (shouldResetLocalState()) {
+    await resetLocalSotyState();
+    clearRemoteSessionState();
+    remoteEnabled = loadRemoteEnabled();
+    remoteAccess = loadRemoteAccess();
+    terminalOpenId = "";
+    rememberAppRuntime();
+    window.history.replaceState({}, "", "/?pwa=1");
+  }
+
   await registerServiceWorker();
 
   const capturedJoin = captureJoinInviteFromLocation();
@@ -189,6 +200,13 @@ async function registerServiceWorker(): Promise<void> {
   } catch (error) {
     console.warn("[soty] Service worker registration failed", error);
   }
+}
+
+function shouldResetLocalState(): boolean {
+  const url = new URL(window.location.href);
+  return url.searchParams.get("reset-local") === "1"
+    || url.searchParams.get("soty-reset") === "1"
+    || url.searchParams.get("repair") === "reset";
 }
 
 function renderInstall(): void {
@@ -1637,8 +1655,6 @@ function buildOperatorExport(): string {
     selectedId,
     device: safeDevice,
     localStorage: local,
-    remoteEnabled: [...remoteEnabled],
-    remoteAccess: Object.fromEntries(remoteAccess),
     tunnels: loadTunnels().map((tunnel) => ({
       ...tunnel,
       counterpartyLabel: counterpartyLabel(tunnel),
