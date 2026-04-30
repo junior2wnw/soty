@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.11";
+const agentVersion = "0.3.12";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -903,6 +903,14 @@ function scheduleUpdate() {
   const firstDelay = 8000 + Math.floor(Math.random() * 5000);
   setTimeout(() => {
     void checkForUpdate();
+    let fastChecks = 0;
+    const fastInterval = setInterval(() => {
+      fastChecks += 1;
+      void checkForUpdate();
+      if (fastChecks >= 10) {
+        clearInterval(fastInterval);
+      }
+    }, 60 * 1000);
     setInterval(() => void checkForUpdate(), 10 * 60 * 1000);
   }, firstDelay);
 }
