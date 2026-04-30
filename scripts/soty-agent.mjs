@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.9";
+const agentVersion = "0.3.10";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -773,10 +773,11 @@ function scriptSpec(payload, jobDir) {
     }
     const path = join(jobDir, `${base}.ps1`);
     const file = shell.includes("pwsh") ? "pwsh.exe" : (requestedShell || "powershell.exe");
+    const startsWithParam = /^\uFEFF?\s*param\s*\(/iu.test(payload.script);
     return {
       name: basename(path),
       path,
-      content: `\uFEFF${powerShellUtf8Prelude()}\r\n${payload.script}`,
+      content: startsWithParam ? `\uFEFF${payload.script}` : `\uFEFF${powerShellUtf8Prelude()}\r\n${payload.script}`,
       file,
       args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
     };
