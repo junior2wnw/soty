@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.7";
+const agentVersion = "0.3.8";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -680,18 +680,25 @@ async function runControlCli(args) {
 }
 
 function machineInstallCommand() {
-  const installerUrl = "https://xn--n1afe0b.online/agent/install-windows.ps1";
+  const encoded = psEncoded(machineInstallLauncherScript());
   return [
     "$ErrorActionPreference='Stop'",
-    "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
-    "$dir=Join-Path $env:TEMP 'soty-agent-machine'",
-    "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
-    "$script=Join-Path $dir 'install-windows.ps1'",
-    `Invoke-WebRequest -Uri ${psQuote(installerUrl)} -UseBasicParsing -OutFile $script`,
-    "$args='-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Scope Machine -LaunchAppAtLogon'",
-    "Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $args",
-    "Write-Output 'soty-agent-machine:uac-started'"
+    `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList ${psQuote(`-NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`)}`,
+    "Write-Output 'soty-agent-machine:uac-launcher-started'"
   ].join("; ");
+}
+
+function machineInstallLauncherScript() {
+  return [
+    "$ErrorActionPreference='Stop'",
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+    "$dir = Join-Path $env:TEMP 'soty-agent-machine'",
+    "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+    "$script = Join-Path $dir 'install-windows.ps1'",
+    "Invoke-WebRequest -Uri 'https://xn--n1afe0b.online/agent/install-windows.ps1' -UseBasicParsing -OutFile $script",
+    "$args = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Scope Machine -LaunchAppAtLogon'",
+    "Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $args"
+  ].join("\r\n");
 }
 
 function machineStatusCommand() {
@@ -710,6 +717,10 @@ function machineStatusCommand() {
 
 function psQuote(value) {
   return `'${String(value).replace(/'/gu, "''")}'`;
+}
+
+function psEncoded(value) {
+  return Buffer.from(String(value), "utf16le").toString("base64");
 }
 
 function isSafeText(value, max) {
