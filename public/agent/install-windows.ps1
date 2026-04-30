@@ -1,12 +1,31 @@
 param(
-  [string]$Base = "https://xn--n1afe0b.online/agent"
+  [string]$Base = "https://xn--n1afe0b.online/agent",
+  [ValidateSet("CurrentUser", "Machine")]
+  [string]$Scope = "CurrentUser",
+  [string]$InstallDir = "",
+  [switch]$LaunchAppAtLogon,
+  [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1"
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$AgentDir = Join-Path $env:LOCALAPPDATA "soty-agent"
+function Resolve-AgentDir {
+  if (-not [string]::IsNullOrWhiteSpace($InstallDir)) {
+    return $InstallDir
+  }
+  if ($Scope -eq "Machine") {
+    return (Join-Path $env:ProgramData "soty-agent")
+  }
+  $local = $env:LOCALAPPDATA
+  if ([string]::IsNullOrWhiteSpace($local)) {
+    $local = Join-Path $HOME "AppData\Local"
+  }
+  return (Join-Path $local "soty-agent")
+}
+
+$AgentDir = Resolve-AgentDir
 $AgentPath = Join-Path $AgentDir "soty-agent.mjs"
 $RunnerPath = Join-Path $AgentDir "start-agent.ps1"
 $CtlPath = Join-Path $AgentDir "sotyctl.cmd"
@@ -124,6 +143,17 @@ try {
   function Enable-AgentAutostart {
     $runCommand = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
 
+    if ($Scope -eq "Machine") {
+      $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
+      $Trigger = New-ScheduledTaskTrigger -AtStartup
+      $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
+      $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+      Register-ScheduledTask -TaskName "soty-agent-machine" -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description "soty.online machine local agent" -Force | Out-Null
+      Start-ScheduledTask -TaskName "soty-agent-machine"
+      Write-Output "soty-agent:autostart:machine-task"
+      return "machine-task"
+    }
+
     try {
       $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
       $Trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -160,6 +190,31 @@ shell.Run "$escapedCommand", 0, False
     return "startup"
   }
 
+  function Enable-AppLaunchAtLogon {
+    if (-not $LaunchAppAtLogon) { return }
+    $edge = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
+    if (-not (Test-Path -LiteralPath $edge)) {
+      $edge = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
+    }
+    $command = if (Test-Path -LiteralPath $edge) {
+      "`"$edge`" --app=`"$AppUrl`""
+    } else {
+      "cmd.exe /c start `"`" `"$AppUrl`""
+    }
+    $runKey = if ($Scope -eq "Machine") {
+      "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+    } else {
+      "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    }
+    try {
+      New-Item -Path $runKey -Force | Out-Null
+      New-ItemProperty -Path $runKey -Name "soty-pwa" -Value $command -PropertyType String -Force | Out-Null
+      Write-Output "soty-pwa:autostart:run"
+    } catch {
+      Write-Output "soty-pwa:autostart:run-denied"
+    }
+  }
+
   $NodePath = Resolve-Node
   Invoke-WebRequest -Uri $ManifestUrl -UseBasicParsing -OutFile (Join-Path $AgentDir "manifest.json")
   Invoke-WebRequest -Uri $AgentUrl -UseBasicParsing -OutFile $AgentPath
@@ -184,6 +239,7 @@ while (`$true) {
 "@ | Set-Content -Path $CtlPath -Encoding ASCII
 
   $Autostart = Enable-AgentAutostart
+  Enable-AppLaunchAtLogon
   Start-Sleep -Milliseconds 700
   Start-AgentNow
 

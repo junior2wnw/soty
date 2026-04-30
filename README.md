@@ -80,6 +80,14 @@ The bridge works when the PWA is open on the controlling device. `run` and `scri
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
 Use `say` to write into the shared text surface through the PWA with small typing delays and occasional corrected typos. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, remote settings, current shared text, and file metadata.
 
+Managed Windows recovery can install the companion for the whole machine:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Scope Machine -LaunchAppAtLogon
+```
+
+This keeps the PWA as the primary operator channel after reinstall: the local loopback agent starts at boot, and Windows opens the Soty PWA at user logon.
+
 ## Wake Pulse
 
 The bell control and typing wake use the already-open tunnel. They can vibrate a hidden PWA once while the unread mark is active. A fully closed PWA cannot receive live browser events without Web Push.
