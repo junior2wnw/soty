@@ -92,6 +92,7 @@ https://xn--n1afe0b.online/?pwa=1&reset-local=1
 ```
 
 Open that URL on a damaged device to clear only Soty browser-origin state, service-worker cache, and local room/device data, then pair it again. Use this after a browser profile copy, reinstall restore, or visibly inverted remote-access state.
+The same local repair is also available as a service gesture: click or tap the QR code canvas ten times within a few seconds.
 
 Managed Windows recovery uses the same companion and the same loopback port, but installs it for the whole machine. The PWA remains the primary control plane; the browser itself cannot click or approve UAC because Windows intentionally keeps UAC outside the browser sandbox. One explicit UAC/admin grant is still required before the user-scope worker can hand off to the machine-scope worker. After that grant, the worker must run as `SYSTEM`, report `scope: "Machine"`, `system: true`, and `maintenance: true` from `/health`, and can handle admin tasks such as backups, boot-media preparation, and reinstall staging through the same PWA tunnel.
 

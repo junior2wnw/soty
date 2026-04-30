@@ -87,6 +87,8 @@ let joinReconnectTimer = 0;
 let joinCompleted = false;
 let qrOverlay: HTMLDivElement | null = null;
 let qrMode: "modal" | "persistent" | null = null;
+let qrResetClicks = 0;
+let qrResetTimer = 0;
 let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 const operatorPending = new Map<string, string>();
@@ -1847,6 +1849,9 @@ async function showQr(persistent: boolean): Promise<void> {
   qrOverlay = overlay;
   qrMode = persistent ? "persistent" : "modal";
   const canvas = overlay.querySelector("canvas");
+  if (canvas) {
+    attachQrResetGesture(canvas);
+  }
   let currentUrl = "";
   const draw = async (nextTunnel: TunnelRecord) => {
     if (!canvas) {
@@ -1874,6 +1879,26 @@ async function showQr(persistent: boolean): Promise<void> {
     void copyText(currentUrl);
   });
   overlay.querySelector<HTMLButtonElement>(".close-button")?.addEventListener("click", () => closeQrOverlay());
+}
+
+function attachQrResetGesture(canvas: HTMLCanvasElement): void {
+  canvas.addEventListener("click", (event) => {
+    event.preventDefault();
+    window.clearTimeout(qrResetTimer);
+    qrResetClicks += 1;
+    if (qrResetClicks >= 10) {
+      resetQrResetGesture();
+      window.location.assign("/?pwa=1&reset-local=1");
+      return;
+    }
+    qrResetTimer = window.setTimeout(resetQrResetGesture, 6500);
+  });
+}
+
+function resetQrResetGesture(): void {
+  qrResetClicks = 0;
+  window.clearTimeout(qrResetTimer);
+  qrResetTimer = 0;
 }
 
 async function copyText(value: string): Promise<void> {
@@ -1924,6 +1949,7 @@ function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
 }
 
 function closeQrOverlay(): void {
+  resetQrResetGesture();
   qrOverlay?.remove();
   qrOverlay = null;
   qrMode = null;
