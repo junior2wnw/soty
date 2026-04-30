@@ -65,15 +65,20 @@ Installed operator bridge:
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd list
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd run Phone "ping ya.ru"
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd script Phone .\job.ps1 powershell
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd say Phone "Пишу как живой оператор."
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd export soty-backup.json
 
 # macOS / Linux
 ~/.soty-agent/sotyctl list
 ~/.soty-agent/sotyctl run Phone "ping ya.ru"
 ~/.soty-agent/sotyctl script Phone ./job.sh sh
+~/.soty-agent/sotyctl say Phone "Пишу как живой оператор."
+~/.soty-agent/sotyctl export soty-backup.json
 ```
 
-The bridge works when the PWA is open on the controlling device and that device has remote access to the named counterparty.
+The bridge works when the PWA is open on the controlling device. `run` and `script` also require remote access to the named counterparty.
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
+Use `say` to write into the shared text surface through the PWA with small typing delays and occasional corrected typos. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, remote settings, current shared text, and file metadata.
 
 ## Wake Pulse
 

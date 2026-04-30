@@ -89,6 +89,7 @@ let qrMode: "modal" | "persistent" | null = null;
 let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 const operatorPending = new Map<string, string>();
+const operatorChatQueues = new Map<string, Promise<void>>();
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -114,10 +115,10 @@ document.addEventListener("visibilitychange", () => {
 
 void boot();
 
+let serviceWorkerReloading = false;
+
 async function boot(): Promise<void> {
-  if ("serviceWorker" in navigator) {
-    await navigator.serviceWorker.register("/sw.js");
-  }
+  await registerServiceWorker();
 
   const capturedJoin = captureJoinInviteFromLocation();
   const appRuntime = isAppRuntime();
@@ -152,6 +153,42 @@ async function boot(): Promise<void> {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
+}
+
+async function registerServiceWorker(): Promise<void> {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  try {
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    const registration = await navigator.serviceWorker.register("/sw.js");
+
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController || serviceWorkerReloading) {
+        return;
+      }
+      serviceWorkerReloading = true;
+      window.location.reload();
+    });
+
+    if (registration.waiting) {
+      registration.waiting.postMessage({ type: "skipWaiting" });
+    }
+
+    registration.addEventListener("updatefound", () => {
+      const worker = registration.installing;
+      worker?.addEventListener("statechange", () => {
+        if (worker.state === "installed" && navigator.serviceWorker.controller) {
+          worker.postMessage({ type: "skipWaiting" });
+        }
+      });
+    });
+
+    void registration.update();
+  } catch (error) {
+    console.warn("[soty] Service worker registration failed", error);
+  }
 }
 
 function renderInstall(): void {
@@ -988,6 +1025,9 @@ async function ensureOperatorBridge(): Promise<void> {
       readonly name?: string;
       readonly shell?: string;
       readonly script?: string;
+      readonly text?: string;
+      readonly speed?: string;
+      readonly persona?: string;
     };
     try {
       message = JSON.parse(event.data as string) as typeof message;
@@ -999,6 +1039,12 @@ async function ensureOperatorBridge(): Promise<void> {
     }
     if (message.type === "operator.script") {
       void runOperatorScript(message);
+    }
+    if (message.type === "operator.chat") {
+      void runOperatorChat(message);
+    }
+    if (message.type === "operator.export") {
+      runOperatorExport(message);
     }
   };
   ws.onclose = () => {
@@ -1022,7 +1068,7 @@ function closeOperatorBridge(): void {
 }
 
 function hasOperatorTargets(): boolean {
-  return remoteAccess.size > 0;
+  return operatorTargets().length > 0;
 }
 
 function publishOperatorTargets(): void {
@@ -1038,7 +1084,6 @@ function publishOperatorTargets(): void {
 
 function operatorTargets(): Array<{ readonly id: string; readonly label: string }> {
   return sortedVisibleTunnels()
-    .filter((tunnel) => remoteAccess.has(tunnel.id))
     .map((tunnel) => ({
       id: tunnel.id,
       label: counterpartyLabel(tunnel)
@@ -1124,12 +1169,76 @@ async function runOperatorScript(message: {
   }
 }
 
+async function runOperatorChat(message: {
+  readonly id?: string;
+  readonly target?: string;
+  readonly text?: string;
+  readonly speed?: string;
+  readonly persona?: string;
+}): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const text = typeof message.text === "string" ? message.text.slice(0, 12_000) : "";
+  if (!requestId || !text.trim()) {
+    return;
+  }
+  const tunnel = findVisibleOperatorTarget(message.target || "");
+  if (!tunnel) {
+    sendOperatorOutput(requestId, "! target", 404);
+    return;
+  }
+  const sync = syncs.get(tunnel.id);
+  if (!sync) {
+    sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  renderTiles();
+  applySelectedText();
+  sendOperatorOutput(requestId, "typing\n");
+  const previous = operatorChatQueues.get(tunnel.id) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(() => typeOperatorChat(tunnel.id, text, message.speed || ""));
+  operatorChatQueues.set(tunnel.id, next);
+  try {
+    await next;
+    sendOperatorOutput(requestId, "sent\n", 0);
+  } catch {
+    sendOperatorOutput(requestId, "! chat", 500);
+  } finally {
+    if (operatorChatQueues.get(tunnel.id) === next) {
+      operatorChatQueues.delete(tunnel.id);
+    }
+  }
+}
+
+function runOperatorExport(message: { readonly id?: string }): void {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  if (!requestId) {
+    return;
+  }
+  sendOperatorOutput(requestId, buildOperatorExport(), 0);
+}
+
 function findOperatorTarget(target: string): TunnelRecord | null {
   const needle = cleanNick(target).toLowerCase();
   if (!needle) {
     return null;
   }
   const items = loadTunnels().filter((tunnel) => remoteAccess.has(tunnel.id));
+  return items.find((tunnel) => tunnel.id === target)
+    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
+    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
+    || null;
+}
+
+function findVisibleOperatorTarget(target: string): TunnelRecord | null {
+  const needle = cleanNick(target).toLowerCase();
+  if (!needle) {
+    return null;
+  }
+  const items = sortedVisibleTunnels();
   return items.find((tunnel) => tunnel.id === target)
     || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
     || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
@@ -1423,6 +1532,127 @@ function applySelectedText(focus = false): void {
   renderWriterPop();
 }
 
+async function typeOperatorChat(tunnelId: string, rawText: string, speed: string): Promise<void> {
+  const text = rawText.trimEnd();
+  if (!text) {
+    return;
+  }
+  const initial = texts.get(tunnelId) || "";
+  const prefix = initial.length > 0 && !initial.endsWith("\n") ? "\n" : "";
+  const suffix = text.endsWith("\n") ? "" : "\n";
+  const chars = Array.from(`${prefix}${text}${suffix}`);
+  for (let index = 0; index < chars.length; index += 1) {
+    const char = chars[index] || "";
+    const typo = index > 2 && shouldMistype(char, index) ? typoFor(char) : "";
+    if (typo) {
+      appendOperatorChatText(tunnelId, typo);
+      await wait(operatorDelay(typo, speed) + 90);
+      removeOperatorChatSuffix(tunnelId, typo);
+      await wait(45 + Math.round(Math.random() * 90));
+    }
+    appendOperatorChatText(tunnelId, char);
+    await wait(operatorDelay(char, speed));
+  }
+}
+
+function appendOperatorChatText(tunnelId: string, text: string): void {
+  const sync = syncs.get(tunnelId);
+  if (!sync || !text) {
+    return;
+  }
+  const next = `${texts.get(tunnelId) || ""}${text}`;
+  sync.setText(next);
+  texts.set(tunnelId, next);
+  if (tunnelId === selectedId && textarea) {
+    textarea.value = next;
+    textarea.setSelectionRange(next.length, next.length);
+    renderLineTags();
+    renderTextPaint();
+  }
+  tunnels = touchTunnel(tunnelId);
+  renderTiles();
+}
+
+function removeOperatorChatSuffix(tunnelId: string, suffix: string): void {
+  const sync = syncs.get(tunnelId);
+  const current = texts.get(tunnelId) || "";
+  if (!sync || !suffix || !current.endsWith(suffix)) {
+    return;
+  }
+  const next = current.slice(0, -suffix.length);
+  sync.setText(next);
+  texts.set(tunnelId, next);
+  if (tunnelId === selectedId && textarea) {
+    textarea.value = next;
+    textarea.setSelectionRange(next.length, next.length);
+    renderLineTags();
+    renderTextPaint();
+  }
+}
+
+function shouldMistype(char: string, index: number): boolean {
+  return /[0-9A-Za-zА-Яа-яЁё]/u.test(char) && index % 17 === 9 && Math.random() < 0.55;
+}
+
+function typoFor(char: string): string {
+  const lower = char.toLowerCase();
+  const ru = "йцукенгшщзхъфывапролджэячсмитьбю";
+  const en = "qwertyuiopasdfghjklzxcvbnm";
+  const source = ru.includes(lower) ? ru : en.includes(lower) ? en : "";
+  if (!source) {
+    return "";
+  }
+  const at = source.indexOf(lower);
+  const next = source[Math.min(source.length - 1, at + 1)] || "";
+  return char === lower ? next : next.toUpperCase();
+}
+
+function operatorDelay(char: string, speed: string): number {
+  const multiplier = speed === "fast" ? 0.55 : speed === "slow" ? 1.6 : 1;
+  const base = char === "\n" ? 260 : /[.!?,:;]/u.test(char) ? 135 : char === " " ? 48 : 34;
+  return Math.round((base + Math.random() * base) * multiplier);
+}
+
+function buildOperatorExport(): string {
+  const local: Record<string, string> = {};
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index) || "";
+    if (key === "device" || key.startsWith("soty:")) {
+      local[key] = localStorage.getItem(key) || "";
+    }
+  }
+  const safeDevice = device ? {
+    id: device.id,
+    nick: device.nick,
+    publicJwk: device.publicJwk,
+    createdAt: device.createdAt
+  } : null;
+  const payload = {
+    schema: "soty.operator-export.v1",
+    exportedAt: new Date().toISOString(),
+    selectedId,
+    device: safeDevice,
+    localStorage: local,
+    remoteEnabled: [...remoteEnabled],
+    remoteAccess: Object.fromEntries(remoteAccess),
+    tunnels: loadTunnels().map((tunnel) => ({
+      ...tunnel,
+      counterpartyLabel: counterpartyLabel(tunnel),
+      text: texts.get(tunnel.id) || "",
+      files: (files.get(tunnel.id) || []).map((file) => ({
+        id: file.id,
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        nick: file.nick,
+        deviceId: file.deviceId,
+        createdAt: file.createdAt
+      }))
+    }))
+  };
+  return `${JSON.stringify(payload, null, 2)}\n`;
+}
+
 function rememberWriter(tunnelId: string, activity: WriterActivity): void {
   const label = cleanNick(activity.nick);
   const text = tunnelId === selectedId && textarea ? textarea.value : texts.get(tunnelId) || "";
@@ -1714,6 +1944,10 @@ function escapeHtml(value: string): string {
     "\"": "&quot;",
     "'": "&#39;"
   })[char] || char);
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function initials(value: string): string {

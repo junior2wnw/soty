@@ -1,6 +1,7 @@
 ﻿node_modules/
 dist/
 data/
+backups/
 .codex-work/
 *.log
 .env

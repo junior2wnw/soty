@@ -1,4 +1,4 @@
-const cacheName = "soty-online-v8";
+const cacheName = "soty-online-v9";
 const shell = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -13,6 +13,12 @@ self.addEventListener("activate", (event) => {
     )
   );
   self.clients.claim();
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "skipWaiting") {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener("fetch", (event) => {

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.4";
+const agentVersion = "0.3.5";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -15,6 +15,7 @@ const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_U
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
 const maxCommandChars = 8_000;
 const maxScriptChars = 1_000_000;
+const maxChatChars = 12_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const active = new Map();
@@ -117,6 +118,14 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/script" && request.method === "POST") {
     await handleOperatorHttpScript(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/chat" && request.method === "POST") {
+    await handleOperatorHttpChat(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/export" && (request.method === "GET" || request.method === "POST")) {
+    await handleOperatorHttpExport(response, headers);
     return;
   }
   response.writeHead(204, headers);
@@ -253,6 +262,46 @@ async function handleOperatorHttpScript(request, response, headers) {
     name,
     shell,
     script
+  });
+}
+
+async function handleOperatorHttpChat(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 80_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
+  const speed = typeof payload.speed === "string" ? payload.speed.slice(0, 20) : "";
+  const persona = typeof payload.persona === "string" ? payload.persona.slice(0, 80) : "";
+  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  if (!operatorBridge?.open || !target || !text.trim()) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, timeoutMs);
+  sendRaw(operatorBridge, {
+    type: "operator.chat",
+    id,
+    target,
+    text,
+    speed,
+    persona
+  });
+}
+
+async function handleOperatorHttpExport(response, headers) {
+  if (!operatorBridge?.open) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, 60_000);
+  sendRaw(operatorBridge, {
+    type: "operator.export",
+    id
   });
 }
 
@@ -536,7 +585,49 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
-  process.stderr.write("sotyctl list | run <target> <command> | script <target> <file> [shell]\n");
+  if (command === "say" || command === "chat") {
+    const target = args[1] || "";
+    const text = args.slice(2).join(" ");
+    if (!target || !text) {
+      process.stderr.write("sotyctl say <target> <text>\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, text, persona: "sysadmin" })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
+  if (command === "export") {
+    const filePath = args[1] || "";
+    const response = await fetch(`http://127.0.0.1:${port}/operator/export`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!payload.ok) {
+      if (payload.text) {
+        process.stderr.write(`${payload.text}\n`);
+      }
+      process.exit(typeof payload.exitCode === "number" ? payload.exitCode : 1);
+    }
+    const text = payload.text || "";
+    if (filePath) {
+      await writeFile(filePath, text, "utf8");
+    } else {
+      process.stdout.write(text);
+      if (!text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(0);
+  }
+  process.stderr.write("sotyctl list | run <target> <command> | script <target> <file> [shell] | say <target> <text> | export [file]\n");
   process.exit(2);
 }
 
@@ -670,6 +761,9 @@ async function checkForUpdate() {
     if (!isSafeManifest(manifest)) {
       return;
     }
+    if (compareVersion(manifest.version, agentVersion) <= 0) {
+      return;
+    }
     const scriptPath = fileURLToPath(import.meta.url);
     const currentHash = sha256(await readFile(scriptPath));
     if (manifest.sha256 === currentHash) {
@@ -703,6 +797,29 @@ function isSafeManifest(value) {
     && typeof value.agentUrl === "string"
     && value.agentUrl.length <= 300
     && /^[a-f0-9]{64}$/u.test(value.sha256);
+}
+
+function compareVersion(left, right) {
+  const leftParts = parseVersion(left);
+  const rightParts = parseVersion(right);
+  if (!leftParts || !rightParts) {
+    return 0;
+  }
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const delta = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (delta !== 0) {
+      return delta > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function parseVersion(value) {
+  const text = String(value || "").trim();
+  if (!/^\d+(?:\.\d+){0,3}$/u.test(text)) {
+    return null;
+  }
+  return text.split(".").map((part) => Number.parseInt(part, 10));
 }
 
 function sha256(bytes) {
