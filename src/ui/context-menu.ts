@@ -21,12 +21,12 @@ export function openCounterpartyMenu(
 ): void {
   closeCounterpartyMenu();
   const menu = document.createElement("div");
-  menu.className = "counterparty-menu";
+  menu.className = "counterparty-menu retro-menu";
   menu.innerHTML = `
-    <button type="button" data-action="attach" aria-label="attach">${icon("clip")}</button>
-    <button type="button" data-action="knock" aria-label="knock">${icon("bell")}</button>
-    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote">${icon("remote")}</button>
-    <button type="button" data-action="close" aria-label="close">${icon("close")}</button>
+    <button type="button" data-action="attach" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}</button>
+    <button type="button" data-action="knock" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}</button>
+    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote" data-tooltip="Удаленное подключение">${icon("remote")}</button>
+    <button type="button" data-action="close" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}</button>
   `;
   document.body.append(menu);
   const rect = menu.getBoundingClientRect();

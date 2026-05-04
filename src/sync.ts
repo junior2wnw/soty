@@ -23,6 +23,7 @@ export interface SyncCallbacks {
   readonly onFile: (file: ReceivedFile) => void;
   readonly onFileDeleted: (fileId: string) => void;
   readonly onKnock: (knock: NoticeKnock) => void;
+  readonly onRemoteRequest: (request: RemoteRequest) => void;
   readonly onRemoteGrant: (grant: RemoteGrant) => void;
   readonly onRemoteCommand: (command: RemoteCommand) => void;
   readonly onRemoteScript: (script: RemoteScript) => void;
@@ -45,6 +46,8 @@ export interface WriterActivity {
   readonly nick: string;
   readonly index: number;
   readonly local: boolean;
+  readonly action: "write" | "erase" | "edit";
+  readonly preview: string;
 }
 
 export interface ReceivedFile {
@@ -70,6 +73,14 @@ export interface NoticeKnock {
 export interface RemoteGrant {
   readonly id: string;
   readonly enabled: boolean;
+  readonly targetDeviceId: string;
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly createdAt: string;
+}
+
+export interface RemoteRequest {
+  readonly id: string;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -248,6 +259,7 @@ type ServerMessage =
   | { readonly type: "presence"; readonly peers: readonly PeerInfo[] }
   | { readonly type: "join.request"; readonly request: JoinRequest }
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
+  | { readonly type: "remote.request"; readonly request: RemoteRequest }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
@@ -269,6 +281,7 @@ type ControlMessage =
   | { readonly type: "join.deny"; readonly requestId: string }
   | { readonly type: "file"; readonly file: OutboundEncryptedFile }
   | { readonly type: "notice.knock"; readonly knock: { readonly id: string; readonly targetDeviceId: string } }
+  | { readonly type: "remote.request"; readonly request: { readonly id: string; readonly targetDeviceId: string } }
   | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.script"; readonly script: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
@@ -278,6 +291,7 @@ type DirectMessage =
   | { readonly type: "update"; readonly update: EncryptedUpdate }
   | { readonly type: "file"; readonly file: EncryptedFile }
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
+  | { readonly type: "remote.request"; readonly request: RemoteRequest }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
@@ -367,11 +381,14 @@ export class TunnelSync {
       return;
     }
     const [start, deleteCount, insertText] = diffText(current, next);
+    const activity = describeActivity(current, start, deleteCount, insertText);
     this.callbacks.onActivity({
       deviceId: this.device.id,
       nick: this.device.nick,
       index: start,
-      local: true
+      local: true,
+      action: activity.action,
+      preview: activity.preview
     });
     this.doc.transact(() => {
       if (deleteCount > 0) {
@@ -465,6 +482,16 @@ export class TunnelSync {
       type: "notice.knock",
       knock: {
         id: `knock_${crypto.randomUUID()}`,
+        targetDeviceId
+      }
+    });
+  }
+
+  requestRemote(targetDeviceId = "*"): void {
+    this.sendControl({
+      type: "remote.request",
+      request: {
+        id: `remote_request_${crypto.randomUUID()}`,
         targetDeviceId
       }
     });
@@ -678,11 +705,15 @@ export class TunnelSync {
       }
       const after = this.text.toString();
       if (message.update.deviceId !== this.device.id) {
+        const [index, deleteCount, insertText] = diffText(before, after);
+        const activity = describeActivity(before, index, deleteCount, insertText);
         this.callbacks.onRemoteChange({
           deviceId: message.update.deviceId ?? "",
           nick: message.update.deviceNick ?? "",
-          index: diffIndex(before, after),
-          local: false
+          index,
+          local: false,
+          action: activity.action,
+          preview: activity.preview
         });
       }
     }
@@ -695,6 +726,13 @@ export class TunnelSync {
     if (message.type === "notice.knock") {
       if (this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
         this.callbacks.onKnock(message.knock);
+      }
+      return;
+    }
+
+    if (message.type === "remote.request") {
+      if (this.rememberControl(message.request.id) && message.request.deviceId !== this.device.id) {
+        this.callbacks.onRemoteRequest(message.request);
       }
       return;
     }
@@ -1070,6 +1108,18 @@ export class TunnelSync {
       });
       return;
     }
+    if (message.type === "remote.request") {
+      this.broadcastDirect({
+        type: "remote.request",
+        request: {
+          ...message.request,
+          deviceId: this.device.id,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
     if (message.type === "remote.grant") {
       this.broadcastDirect({
         type: "remote.grant",
@@ -1378,11 +1428,15 @@ export class TunnelSync {
         return;
       }
       const after = this.text.toString();
+      const [index, deleteCount, insertText] = diffText(before, after);
+      const activity = describeActivity(before, index, deleteCount, insertText);
       this.callbacks.onRemoteChange({
         deviceId: message.update.deviceId ?? "",
         nick: message.update.deviceNick ?? "",
-        index: diffIndex(before, after),
-        local: false
+        index,
+        local: false,
+        action: activity.action,
+        preview: activity.preview
       });
       return;
     }
@@ -1392,6 +1446,10 @@ export class TunnelSync {
     }
     if (message.type === "notice.knock" && this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
       this.callbacks.onKnock(message.knock);
+      return;
+    }
+    if (message.type === "remote.request" && this.rememberControl(message.request.id) && message.request.deviceId !== this.device.id) {
+      this.callbacks.onRemoteRequest(message.request);
       return;
     }
     if (message.type === "remote.grant" && this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
@@ -1545,10 +1603,16 @@ function diffText(before: string, after: string): [number, number, string] {
   return [start, beforeEnd - start, after.slice(start, afterEnd)];
 }
 
-function diffIndex(before: string, after: string): number {
-  let index = 0;
-  while (index < before.length && index < after.length && before[index] === after[index]) {
-    index += 1;
-  }
-  return index;
+function describeActivity(
+  before: string,
+  start: number,
+  deleteCount: number,
+  insertText: string
+): { readonly action: WriterActivity["action"]; readonly preview: string } {
+  const action = deleteCount > 0 && !insertText ? "erase" : deleteCount > 0 && insertText ? "edit" : "write";
+  const raw = insertText || before.slice(start, start + deleteCount);
+  return {
+    action,
+    preview: raw.replace(/\s+/gu, " ").trim().slice(0, 48)
+  };
 }

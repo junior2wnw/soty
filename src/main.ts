@@ -1,5 +1,6 @@
 import QRCode from "qrcode";
-import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteScript, TunnelSync, WriterActivity } from "./sync";
+import jsQR from "jsqr";
+import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -9,6 +10,7 @@ import { filesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
+import { installTooltips } from "./ui/tooltips";
 import {
   DeviceRecord,
   JoinInvite,
@@ -44,17 +46,29 @@ interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
 }
 
+type BarcodeResult = {
+  readonly rawValue?: string;
+};
+
+type BarcodeDetectorLike = {
+  detect(source: HTMLVideoElement): Promise<BarcodeResult[]>;
+};
+
+type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorLike;
+
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
   throw new Error("App root missing");
 }
 const app: HTMLDivElement = root;
+installTooltips();
 
 let installPrompt: BeforeInstallPromptEvent | null = null;
 let device: DeviceRecord | null = null;
 let tunnels: TunnelRecord[] = [];
 let selectedId = "";
 let textarea: HTMLTextAreaElement | null = null;
+let composer: HTMLTextAreaElement | null = null;
 let textPaint: HTMLDivElement | null = null;
 let lineGutter: HTMLDivElement | null = null;
 let lineMeta: HTMLDivElement | null = null;
@@ -63,6 +77,7 @@ const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
 const files = new Map<string, ReceivedFile[]>();
+const localDrafts = new Map<string, string>();
 let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
 let terminalOpenId = "";
@@ -71,14 +86,19 @@ const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
 let localAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
 let agentProbe: Promise<LocalAgentStatus> | null = null;
-const writerLines = new Map<string, Map<number, {
+type WriterLine = {
   readonly nick: string;
   readonly deviceId: string;
   readonly color: string;
   readonly time: string;
   readonly at: number;
-}>>();
-const activeWriters = new Map<string, string>();
+  readonly action: WriterActivity["action"];
+  readonly preview: string;
+};
+
+const writerLines = new Map<string, Map<number, WriterLine>>();
+const activeActivities = new Map<string, WriterActivity>();
+const activeActivityTicks = new Map<string, number>();
 const activeNoticeKeys = new Set<string>();
 const lastTypingNoticeAt = new Map<string, number>();
 const joinPrompts = new Set<string>();
@@ -86,9 +106,11 @@ let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
 let joinCompleted = false;
 let qrOverlay: HTMLDivElement | null = null;
-let qrMode: "modal" | "persistent" | null = null;
+let qrMode: "manual" | "auto" | null = null;
 let qrResetClicks = 0;
 let qrResetTimer = 0;
+let qrScanStream: MediaStream | null = null;
+let qrScanFrame = 0;
 let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 const operatorPending = new Map<string, string>();
@@ -215,7 +237,7 @@ function renderInstall(): void {
   app.innerHTML = `
     <section class="install">
       <div class="install-mark">${icon("install")}</div>
-      <button class="install-button" type="button" aria-label="install">${icon("install")}</button>
+      <button class="install-button" type="button" aria-label="install" data-tooltip="Установить Соты как приложение">${icon("install")}</button>
     </section>
   `;
   app.querySelector("button")?.addEventListener("click", () => {
@@ -234,7 +256,7 @@ function renderNick(): void {
       <form class="nick-form">
         <span>${icon("person")}</span>
         <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
-        <button type="submit" aria-label="ok">${icon("check")}</button>
+        <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
       </form>
     </section>
   `;
@@ -288,7 +310,7 @@ function renderJoinWaiting(invite: JoinInvite): void {
         <b>${escapeHtml(nick)}</b>
       </div>
       <div class="pair-actions">
-        <button class="icon-button deny-button" type="button" aria-label="close">${icon("close")}</button>
+        <button class="icon-button deny-button" type="button" aria-label="close" data-tooltip="Отменить подключение">${icon("close")}</button>
       </div>
     </section>
   `;
@@ -389,77 +411,110 @@ function renderApp(): void {
     ensureSync(tunnel);
   }
 
-  const storedTop = Number.parseInt(localStorage.getItem("soty:split:v1") || "", 10);
-  const topHeight = Number.isFinite(storedTop) ? String(Math.max(96, Math.min(230, storedTop))) : "150";
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
-    <section class="shell" style="--top:${topHeight}px">
-      <header class="tiles${hasVisibleTunnels ? "" : " empty"}">
+    <section class="shell retro-shell">
+      <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}">
+        <div class="retro-brand">
+          <span class="retro-brand-mark">S</span>
+          <span>
+            <b>SOTY</b>
+            <small>LIVE TUNNELS</small>
+          </span>
+        </div>
+        <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
         <div class="hex-field"></div>
-      </header>
-      <button class="qr-open" type="button" aria-label="qr">${icon("qr")}</button>
-      <button class="splitter" type="button" aria-label="resize"></button>
-      <section class="editor">
-        <div class="text-paint" aria-hidden="true"><div class="text-paint-inner"></div></div>
-        <div class="line-gutter"></div>
-        <div class="line-meta"></div>
-        <div class="writer-pop"></div>
-        <div class="file-rail"></div>
-        <textarea spellcheck="false" autocapitalize="sentences"></textarea>
-        <div class="terminal-panel">
+      </aside>
+      <main class="dialog-shell">
+        <header class="dialog-head">
+          <span class="dialog-avatar">.</span>
+          <span class="dialog-copy">
+            <b class="dialog-name">.</b>
+            <small class="dialog-state">OFFLINE</small>
+          </span>
+          <span class="dialog-id">0000</span>
+        </header>
+        <section class="editor retro-screen">
+          <div class="chat-scroll">
+            <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
+          </div>
+          <div class="line-gutter" aria-hidden="true"></div>
+          <div class="line-meta" aria-hidden="true"></div>
+          <textarea class="dialog-buffer" spellcheck="false" autocapitalize="sentences" aria-hidden="true" tabindex="-1"></textarea>
+          <form class="composer-bar">
+            <button class="composer-attach retro-icon-button" type="button" aria-label="attach" data-tooltip="Прикрепить файл">${icon("clip")}</button>
+            <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
+            <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
+          </form>
+        <div class="terminal-panel" data-tooltip="Окно удаленных команд" data-tooltip-side="top">
           <div class="terminal-head">
             <span class="terminal-led"></span>
             <span class="terminal-peer"></span>
             <span class="terminal-glyph">$</span>
-            <button class="terminal-close" type="button" aria-label="close">${icon("close")}</button>
+            <button class="terminal-close" type="button" aria-label="close" data-tooltip="Закрыть удаленные команды">${icon("close")}</button>
           </div>
           <div class="terminal-output"></div>
           <form class="terminal-form">
             <span>$</span>
-            <input autocomplete="off" autocapitalize="off" spellcheck="false" />
-            <button type="submit" aria-label="run">${icon("check")}</button>
+            <input autocomplete="off" autocapitalize="off" spellcheck="false" data-tooltip="off" />
+            <button type="submit" aria-label="run" data-tooltip="Выполнить команду">${icon("check")}</button>
           </form>
         </div>
         <input class="file-input" type="file" multiple />
       </section>
+      </main>
+      <aside class="side-panel">
+        <section class="side-block live-block">
+          <h2>LIVE</h2>
+          <div class="writer-pop"></div>
+        </section>
+        <section class="side-block file-block">
+          <h2>FILES</h2>
+          <div class="file-rail"></div>
+        </section>
+        <section class="side-block action-block">
+          <h2>TOOLS</h2>
+          <div class="side-actions">
+            <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>FILE</span></button>
+            <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
+            <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>LINK</span></button>
+            <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
+          </div>
+        </section>
+      </aside>
     </section>
   `;
 
-  textarea = app.querySelector("textarea");
+  textarea = app.querySelector(".dialog-buffer");
+  composer = app.querySelector(".chat-composer");
   textPaint = app.querySelector<HTMLDivElement>(".text-paint-inner");
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
-    void showQr(false);
+    void showQr();
   });
   renderTiles();
-  textarea?.addEventListener("input", () => {
-    const sync = syncs.get(selectedId);
-    if (sync && textarea) {
-      const current = texts.get(selectedId) ?? "";
-      const normalized = normalizeLocalEdit(current, textarea.value, textarea.selectionStart);
-      if (normalized.text !== textarea.value) {
-        textarea.value = normalized.text;
-        textarea.setSelectionRange(normalized.caret, normalized.caret);
-      }
-      sync.setText(textarea.value);
-      touchSelected();
-      renderTextPaint();
+  composer?.addEventListener("input", () => syncComposerDraft());
+  composer?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      finalizeComposerDraft();
     }
   });
-  textarea?.addEventListener("scroll", () => {
-    renderLineTags();
-    renderTextPaint();
+  app.querySelector<HTMLFormElement>(".composer-bar")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    finalizeComposerDraft();
   });
-  textarea?.addEventListener("dragover", (event) => {
+  app.querySelector<HTMLButtonElement>(".composer-attach")?.addEventListener("click", () => fileInput?.click());
+  app.querySelector<HTMLElement>(".editor")?.addEventListener("dragover", (event) => {
     event.preventDefault();
     app.querySelector(".editor")?.classList.add("dropping");
   });
-  textarea?.addEventListener("dragleave", () => {
+  app.querySelector<HTMLElement>(".editor")?.addEventListener("dragleave", () => {
     app.querySelector(".editor")?.classList.remove("dropping");
   });
-  textarea?.addEventListener("drop", (event) => {
+  app.querySelector<HTMLElement>(".editor")?.addEventListener("drop", (event) => {
     event.preventDefault();
     app.querySelector(".editor")?.classList.remove("dropping");
     void sendFiles(event.dataTransfer?.files);
@@ -478,6 +533,25 @@ function renderApp(): void {
   app.querySelector<HTMLFormElement>(".terminal-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     void sendTerminalCommand();
+  });
+  app.querySelector<HTMLButtonElement>(".attach-action")?.addEventListener("click", () => fileInput?.click());
+  app.querySelector<HTMLButtonElement>(".knock-action")?.addEventListener("click", () => {
+    if (!selectedId) {
+      return;
+    }
+    syncs.get(selectedId)?.sendKnock("*");
+    tunnels = touchTunnel(selectedId);
+    renderTiles();
+  });
+  app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
+    if (selectedId) {
+      void toggleRemoteGrant(selectedId);
+    }
+  });
+  app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
+    if (selectedId) {
+      closeTunnel(selectedId);
+    }
   });
   setupSplitter();
   applySelectedText();
@@ -499,10 +573,11 @@ function renderTiles(): void {
       select: () => undefined,
       menu: () => undefined
     });
+    renderDialogChrome();
     void showQr(true);
     return;
   }
-  if (qrMode === "persistent") {
+  if (qrMode === "auto") {
     closeQrOverlay();
   }
   renderHexField(field, sorted.map((tunnel) => ({
@@ -547,6 +622,7 @@ function renderTiles(): void {
       });
     }
   });
+  renderDialogChrome();
 }
 
 async function toggleRemoteGrant(id: string): Promise<void> {
@@ -569,6 +645,13 @@ async function toggleRemoteGrant(id: string): Promise<void> {
   renderTiles();
 }
 
+function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
+  if (!remoteEnabled.has(tunnelId)) {
+    return;
+  }
+  syncs.get(tunnelId)?.grantRemote(true, targetDeviceId);
+}
+
 async function refreshLocalAgent(): Promise<LocalAgentStatus> {
   window.clearTimeout(agentProbeTimer);
   agentProbe = agentProbe || checkLocalAgent().finally(() => {
@@ -587,12 +670,12 @@ function renderAgentInstall(tunnelId: string): void {
   const overlay = document.createElement("div");
   overlay.className = "agent-modal";
   overlay.innerHTML = `
-    <div class="agent-sheet${localAgent.ok ? " is-ok" : ""}">
-      <span class="agent-mark">${icon("remote")}</span>
-      <button class="icon-button download-button" type="button" aria-label="download">${icon("download")}</button>
-      ${isWindowsPlatform() ? `<button class="icon-button machine-button" type="button" aria-label="machine">${icon("shield")}</button>` : ""}
-      <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
-      <button class="icon-button close-button" type="button" aria-label="close">${icon("close")}</button>
+    <div class="agent-sheet${localAgent.ok ? " is-ok" : ""}" data-tooltip="Панель установки локального Soty-агента" data-tooltip-side="bottom">
+      <span class="agent-mark" data-tooltip="Локальный агент нужен для команд Windows">${icon("remote")}</span>
+      <button class="icon-button download-button" type="button" aria-label="download" data-tooltip="Скачать обычный установщик">${icon("download")}</button>
+      ${isWindowsPlatform() ? `<button class="icon-button machine-button" type="button" aria-label="machine" data-tooltip="Установить с правами администратора">${icon("shield")}</button>` : ""}
+      <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Проверить, запущен ли агент">${icon("refresh")}</button>
+      <button class="icon-button close-button" type="button" aria-label="close" data-tooltip="Закрыть панель">${icon("close")}</button>
     </div>
   `;
   document.body.append(overlay);
@@ -677,6 +760,43 @@ function counterpartyLabel(tunnel: TunnelRecord): string {
   return cleanNick(peers.get(tunnel.id) || tunnel.label || ".");
 }
 
+function renderDialogChrome(): void {
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const label = tunnel ? counterpartyLabel(tunnel) : ".";
+  const color = tunnel ? safeColor(tunnel.color, label + tunnel.id) : "#67e8f9";
+  const avatar = app.querySelector<HTMLElement>(".dialog-avatar");
+  const name = app.querySelector<HTMLElement>(".dialog-name");
+  const state = app.querySelector<HTMLElement>(".dialog-state");
+  const id = app.querySelector<HTMLElement>(".dialog-id");
+  const shell = app.querySelector<HTMLElement>(".dialog-shell");
+  const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
+  if (shell) {
+    shell.style.setProperty("--peer-color", color);
+  }
+  if (avatar) {
+    avatar.textContent = initials(label);
+  }
+  if (name) {
+    name.textContent = label;
+  }
+  if (state) {
+    const remote = remoteAccess.has(selectedId) ? "REMOTE READY" : remoteEnabled.has(selectedId) ? "HOST LINK" : "LIVE TEXT";
+    state.textContent = remote;
+  }
+  if (id) {
+    id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
+  }
+  if (remoteButton) {
+    remoteButton.classList.toggle("is-on", remoteEnabled.has(selectedId));
+    remoteButton.classList.toggle("has-access", remoteAccess.has(selectedId));
+    remoteButton.dataset.tooltip = remoteEnabled.has(selectedId)
+      ? "Выключить удаленное подключение"
+      : remoteAccess.has(selectedId)
+        ? "Открыть удаленные команды"
+        : "Включить удаленное подключение";
+  }
+}
+
 function ensureSync(tunnel: TunnelRecord): void {
   if (!device || syncs.has(tunnel.id)) {
     return;
@@ -690,22 +810,40 @@ function ensureSync(tunnel: TunnelRecord): void {
     },
     onActivity: (activity) => {
       rememberWriter(tunnel.id, activity);
+      activeActivities.set(tunnel.id, activity);
+      const tick = Date.now();
+      activeActivityTicks.set(tunnel.id, tick);
+      window.setTimeout(() => {
+        if (activeActivityTicks.get(tunnel.id) === tick) {
+          activeActivities.delete(tunnel.id);
+          activeActivityTicks.delete(tunnel.id);
+          if (tunnel.id === selectedId) {
+            renderWriterPop();
+            renderTextPaint();
+          }
+        }
+      }, 1800);
       touchSelected();
       if (tunnel.id === selectedId) {
         renderLineTags();
         renderTextPaint();
+        renderWriterPop();
       }
     },
     onRemoteChange: (activity) => {
       const hadNotice = tunnelHasNotice(tunnel.id);
       maybeKnockForTyping(tunnel.id, activity, hadNotice);
       rememberWriter(tunnel.id, activity);
-      activeWriters.set(tunnel.id, activity.nick);
+      activeActivities.set(tunnel.id, activity);
+      const tick = Date.now();
+      activeActivityTicks.set(tunnel.id, tick);
       window.setTimeout(() => {
-        if (activeWriters.get(tunnel.id) === activity.nick) {
-          activeWriters.delete(tunnel.id);
+        if (activeActivityTicks.get(tunnel.id) === tick) {
+          activeActivities.delete(tunnel.id);
+          activeActivityTicks.delete(tunnel.id);
           if (tunnel.id === selectedId) {
             renderWriterPop();
+            renderTextPaint();
           }
         }
       }, 1800);
@@ -740,6 +878,9 @@ function ensureSync(tunnel: TunnelRecord): void {
     onRemoteGrant: (grant) => {
       applyRemoteGrant(tunnel.id, grant);
     },
+    onRemoteRequest: (request) => {
+      applyRemoteRequest(tunnel.id, request);
+    },
     onRemoteCommand: (command) => {
       applyRemoteCommand(tunnel.id, command);
     },
@@ -769,12 +910,17 @@ function ensureSync(tunnel: TunnelRecord): void {
       syncs.get(tunnel.id)?.destroy();
       syncs.delete(tunnel.id);
       writerLines.delete(tunnel.id);
-      activeWriters.delete(tunnel.id);
+      activeActivities.delete(tunnel.id);
+      activeActivityTicks.delete(tunnel.id);
       tunnels = removeTunnel(tunnel.id);
       normalizeSelectedTunnel();
       renderApp();
     },
-    onState: () => undefined
+    onState: (state) => {
+      if (state === "open") {
+        announceRemoteGrant(tunnel.id);
+      }
+    }
   }));
 }
 
@@ -812,8 +958,8 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
         <b>${escapeHtml(nick)}</b>
       </div>
       <div class="pair-actions">
-        <button class="icon-button deny-button" type="button" aria-label="close">${icon("close")}</button>
-        <button class="icon-button accept-button" type="button" aria-label="ok">${icon("check")}</button>
+        <button class="icon-button deny-button" type="button" aria-label="close" data-tooltip="Отклонить подключение">${icon("close")}</button>
+        <button class="icon-button accept-button" type="button" aria-label="ok" data-tooltip="Разрешить подключение">${icon("check")}</button>
       </div>
     </div>
   `;
@@ -849,7 +995,9 @@ function closeTunnel(id: string): void {
   terminalLogs.delete(id);
   terminalState.delete(id);
   writerLines.delete(id);
-  activeWriters.delete(id);
+  activeActivities.delete(id);
+  activeActivityTicks.delete(id);
+  localDrafts.delete(id);
   files.delete(id);
   tunnels = removeTunnel(id);
   normalizeSelectedTunnel();
@@ -867,7 +1015,8 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     sync?.closeForEveryone();
     syncs.delete(tunnel.id);
     writerLines.delete(tunnel.id);
-    activeWriters.delete(tunnel.id);
+    activeActivities.delete(tunnel.id);
+    activeActivityTicks.delete(tunnel.id);
     files.delete(tunnel.id);
   }
   const tunnel = createTunnel();
@@ -932,6 +1081,59 @@ function applyKnock(tunnelId: string, knock: NoticeKnock): void {
     ? markTunnel(tunnelId, true)
     : touchTunnel(tunnelId);
   renderTiles();
+}
+
+function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
+  if (!device || request.deviceId === device.id || !grantTargetsThisDevice(request.targetDeviceId)) {
+    return;
+  }
+  const sync = syncs.get(tunnelId);
+  if (remoteEnabled.has(tunnelId)) {
+    sync?.grantRemote(true, request.deviceId);
+    return;
+  }
+  selectedId = tunnelId;
+  saveSelectedTunnelId(tunnelId);
+  renderRemoteRequest(tunnelId, request);
+}
+
+function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
+  document.querySelector(".access-modal")?.remove();
+  const tunnel = tunnels.find((item) => item.id === tunnelId);
+  const requester = cleanNick(request.nick || (tunnel ? counterpartyLabel(tunnel) : ""));
+  const overlay = document.createElement("div");
+  overlay.className = "access-modal";
+  overlay.innerHTML = `
+    <div class="access-sheet">
+      <span class="access-mark">${icon("remote")}</span>
+      <b>Удалённое управление</b>
+      <p>${escapeHtml(requester || "Оператор")} просит доступ к этому компьютеру.</p>
+      <div class="access-actions">
+        <button class="access-accept" type="button">Разрешить</button>
+        <button class="access-deny" type="button">Не сейчас</button>
+      </div>
+    </div>
+  `;
+  document.body.append(overlay);
+  overlay.querySelector(".access-accept")?.addEventListener("click", () => {
+    void (async () => {
+      const agent = await refreshLocalAgent();
+      if (!agent.ok) {
+        overlay.remove();
+        renderAgentInstall(tunnelId);
+        return;
+      }
+      remoteEnabled = setRemoteEnabled(tunnelId, true);
+      syncs.get(tunnelId)?.grantRemote(true, request.deviceId);
+      terminalOpenId = tunnelId;
+      setTerminalState(tunnelId, "idle");
+      overlay.remove();
+      renderTiles();
+      renderTerminal();
+      publishOperatorTargets();
+    })();
+  });
+  overlay.querySelector(".access-deny")?.addEventListener("click", () => overlay.remove());
 }
 
 function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
@@ -1066,6 +1268,9 @@ async function ensureOperatorBridge(): Promise<void> {
     }
     if (message.type === "operator.chat") {
       void runOperatorChat(message);
+    }
+    if (message.type === "operator.access") {
+      runOperatorAccess(message);
     }
     if (message.type === "operator.export") {
       runOperatorExport(message);
@@ -1221,9 +1426,10 @@ async function runOperatorChat(message: {
   applySelectedText();
   sendOperatorOutput(requestId, "typing\n");
   const previous = operatorChatQueues.get(tunnel.id) ?? Promise.resolve();
+  const displayText = formatOperatorChat(text, message.persona || "operator");
   const next = previous
     .catch(() => undefined)
-    .then(() => typeOperatorChat(tunnel.id, text, message.speed || ""));
+    .then(() => typeOperatorChat(tunnel.id, displayText, message.speed || ""));
   operatorChatQueues.set(tunnel.id, next);
   try {
     await next;
@@ -1235,6 +1441,41 @@ async function runOperatorChat(message: {
       operatorChatQueues.delete(tunnel.id);
     }
   }
+}
+
+function formatOperatorChat(text: string, persona: string): string {
+  const name = persona === "sysadmin" ? "Codex" : cleanNick(persona || "Оператор") || "Оператор";
+  const body = text.trim();
+  if (!body) {
+    return "";
+  }
+  return [
+    `${name} · ${clock()}`,
+    ...body.split("\n"),
+    "Ответ:"
+  ].join("\n");
+}
+
+function runOperatorAccess(message: { readonly id?: string; readonly target?: string }): void {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  if (!requestId) {
+    return;
+  }
+  const tunnel = findVisibleOperatorTarget(message.target || "");
+  if (!tunnel) {
+    sendOperatorOutput(requestId, "! target", 404);
+    return;
+  }
+  const sync = syncs.get(tunnel.id);
+  if (!sync) {
+    sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  sync.requestRemote("*");
+  renderTiles();
+  sendOperatorOutput(requestId, "requested\n", 0);
 }
 
 function runOperatorExport(message: { readonly id?: string }): void {
@@ -1523,6 +1764,100 @@ function touchSelected(): void {
   }
 }
 
+function syncComposerDraft(): void {
+  if (!selectedId || !composer || !textarea) {
+    return;
+  }
+  const sync = syncs.get(selectedId);
+  if (!sync) {
+    return;
+  }
+  const draft = composer.value;
+  const previous = localDrafts.get(selectedId) ?? "";
+  if (!draft && !previous) {
+    resizeComposer();
+    return;
+  }
+  const current = texts.get(selectedId) ?? "";
+  let next = current;
+  if (previous) {
+    const start = findDraftStart(current, previous);
+    if (start >= 0) {
+      next = `${current.slice(0, start)}${draft}${current.slice(start + previous.length)}`;
+    } else {
+      const separator = current.length > 0 && !current.endsWith("\n") && draft ? "\n" : "";
+      next = `${current}${separator}${draft}`;
+    }
+  } else if (draft) {
+    const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+    next = `${current}${separator}${draft}`;
+  }
+  if (draft) {
+    localDrafts.set(selectedId, draft);
+  } else {
+    localDrafts.delete(selectedId);
+  }
+  textarea.value = next;
+  texts.set(selectedId, next);
+  sync.setText(next);
+  touchSelected();
+  resizeComposer();
+  renderTiles();
+  renderTextPaint();
+  renderWriterPop();
+}
+
+function finalizeComposerDraft(): void {
+  if (!selectedId || !composer || !textarea) {
+    return;
+  }
+  const sync = syncs.get(selectedId);
+  if (!sync) {
+    return;
+  }
+  const draft = localDrafts.get(selectedId) ?? composer.value;
+  if (!draft.trim()) {
+    if (draft) {
+      composer.value = "";
+      syncComposerDraft();
+    }
+    return;
+  }
+  let next = texts.get(selectedId) ?? textarea.value;
+  if (!next.endsWith("\n")) {
+    next = `${next}\n`;
+    textarea.value = next;
+    texts.set(selectedId, next);
+    sync.setText(next);
+  }
+  localDrafts.delete(selectedId);
+  composer.value = "";
+  touchSelected();
+  resizeComposer();
+  renderTiles();
+  renderTextPaint();
+  renderWriterPop();
+}
+
+function findDraftStart(text: string, draft: string): number {
+  if (!draft) {
+    return -1;
+  }
+  if (text.endsWith(draft)) {
+    return text.length - draft.length;
+  }
+  return text.lastIndexOf(draft);
+}
+
+function resizeComposer(): void {
+  if (!composer) {
+    return;
+  }
+  composer.style.height = "auto";
+  const next = Math.max(42, Math.min(148, composer.scrollHeight));
+  composer.style.height = `${next}px`;
+}
+
 function applySelectedText(focus = false): void {
   if (!textarea) {
     return;
@@ -1549,7 +1884,11 @@ function applySelectedText(focus = false): void {
     );
   }
   if (focus) {
-    textarea.focus();
+    composer?.focus();
+  }
+  if (composer) {
+    composer.value = localDrafts.get(selectedId) ?? "";
+    resizeComposer();
   }
   renderLineTags();
   renderTextPaint();
@@ -1567,7 +1906,7 @@ async function typeOperatorChat(tunnelId: string, rawText: string, speed: string
   const chars = Array.from(`${prefix}${text}${suffix}`);
   for (let index = 0; index < chars.length; index += 1) {
     const char = chars[index] || "";
-    const typo = index > 2 && shouldMistype(char, index) ? typoFor(char) : "";
+    const typo = speed === "human" && index > 2 && shouldMistype(char, index) ? typoFor(char) : "";
     if (typo) {
       appendOperatorChatText(tunnelId, typo);
       await wait(operatorDelay(typo, speed) + 90);
@@ -1680,58 +2019,204 @@ function rememberWriter(tunnelId: string, activity: WriterActivity): void {
   const text = tunnelId === selectedId && textarea ? textarea.value : texts.get(tunnelId) || "";
   const line = lineFromIndex(text, activity.index);
   const color = colorFor(`${label}:${activity.deviceId || tunnelId}`);
-  const lines = writerLines.get(tunnelId) ?? new Map<number, {
-    readonly nick: string;
-    readonly deviceId: string;
-    readonly color: string;
-    readonly time: string;
-    readonly at: number;
-  }>();
+  const lines = writerLines.get(tunnelId) ?? new Map<number, WriterLine>();
   lines.set(line, {
     nick: label,
     deviceId: activity.deviceId,
     color,
     time: clock(),
-    at: Date.now()
+    at: Date.now(),
+    action: activity.action,
+    preview: activity.preview
   });
   writerLines.set(tunnelId, lines);
 }
 
 function renderLineTags(): void {
-  if (!textarea || !lineGutter || !lineMeta) {
+  if (!lineGutter || !lineMeta) {
     return;
   }
-  const text = textarea.value;
-  const scrollTop = textarea.scrollTop;
-  const count = Math.max(1, text.split("\n").length);
-  const labels = writerLines.get(selectedId) ?? new Map<number, { readonly nick: string; readonly color: string; readonly time: string }>();
-  const lineHeight = Number.parseFloat(getComputedStyle(textarea).lineHeight) || 26;
-  lineGutter.innerHTML = Array.from({ length: count }, (_item, line) => {
-    const label = labels.get(line);
-    return label
-      ? `<span style="top:${line * lineHeight - scrollTop}px;--color:${label.color}">${escapeHtml(initials(label.nick))}</span>`
-      : "";
-  }).join("");
-  lineMeta.innerHTML = Array.from({ length: count }, (_item, line) => {
-    const label = labels.get(line);
-    return label
-      ? `<span style="top:${line * lineHeight - scrollTop}px;--color:${label.color}">${escapeHtml(label.time)}</span>`
-      : "";
-  }).join("");
+  const labels = writerLines.get(selectedId) ?? new Map();
+  const last = [...labels.values()].sort((a, b) => b.at - a.at)[0];
+  lineGutter.innerHTML = last ? `<span style="--color:${last.color}">${escapeHtml(activityCode(last.action))}</span>` : "";
+  lineMeta.innerHTML = last ? `<span style="--color:${last.color}">${escapeHtml(last.time)}</span>` : "";
 }
 
 function renderTextPaint(): void {
   if (!textarea || !textPaint) {
     return;
   }
+  renderDialogChrome();
+  const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
+  const stickToBottom = scroll ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 180 : false;
   const labels = writerLines.get(selectedId) ?? new Map();
-  const lines = textarea.value.split("\n");
-  textPaint.style.transform = `translateY(${-textarea.scrollTop}px)`;
-  textPaint.innerHTML = lines.map((line, index) => {
+  const text = textarea.value;
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  const active = activeActivities.get(selectedId);
+  const activeLine = active ? lineFromIndex(text, active.index) : -1;
+  textPaint.style.transform = "";
+  if (!text.trim()) {
+    textPaint.innerHTML = `
+      <div class="chat-empty">
+        <span>READY</span>
+        <b>${escapeHtml(counterpartyLabelForSelected())}</b>
+      </div>
+    `;
+    return;
+  }
+  let operatorBlock = false;
+  const bubbles: {
+    key: string;
+    side: string;
+    nick: string;
+    color: string;
+    time: string;
+    className: string;
+    lines: string[];
+    live: WriterActivity | null;
+  }[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
     const label = labels.get(index);
-    const color = label?.color || "#141414";
-    return `<span class="paint-line" style="--line-color:${color}">${line ? escapeHtml(line) : "&nbsp;"}</span>`;
+    const state = classifyChatLine(line, operatorBlock);
+    operatorBlock = state.operatorBlock;
+    if (!line.trim() && !label) {
+      if (bubbles.length > 0) {
+        bubbles[bubbles.length - 1]?.lines.push("");
+      }
+      continue;
+    }
+    const speaker = speakerForLine(line, state.className, label);
+    const live = active && index === activeLine ? active : null;
+    const key = `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}`;
+    const current = bubbles[bubbles.length - 1];
+    if (current && current.key === key && !live) {
+      current.lines.push(line);
+      continue;
+    }
+    bubbles.push({
+      key,
+      side: speaker.side,
+      nick: speaker.nick,
+      color: speaker.color,
+      time: label?.time || clock(),
+      className: state.className,
+      lines: [line],
+      live
+    });
+  }
+  textPaint.innerHTML = bubbles.map((bubble) => {
+    const body = bubble.lines
+      .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
+      .join("");
+    const live = bubble.live
+      ? `<em class="live-chip">${escapeHtml(activityCode(bubble.live.action))}${bubble.live.preview ? ` ${escapeHtml(compactPreview(bubble.live.preview))}` : ""}</em>`
+      : "";
+    return `
+      <article class="chat-bubble ${bubble.side} ${bubble.className}" style="--bubble-color:${bubble.color}">
+        <div class="bubble-meta">
+          <span>${escapeHtml(initials(bubble.nick))}</span>
+          <b>${escapeHtml(bubble.nick)}</b>
+          <small>${escapeHtml(bubble.time)}</small>
+          ${live}
+        </div>
+        <p>${body}</p>
+      </article>
+    `;
   }).join("");
+  if (scroll && stickToBottom) {
+    window.setTimeout(() => {
+      scroll.scrollTop = scroll.scrollHeight;
+    }, 0);
+  }
+}
+
+function speakerForLine(
+  line: string,
+  className: string,
+  label?: {
+    readonly nick: string;
+    readonly deviceId: string;
+    readonly color: string;
+    readonly time: string;
+  }
+): { readonly nick: string; readonly deviceId: string; readonly color: string; readonly side: string } {
+  if (label) {
+    return {
+      nick: label.nick || counterpartyLabelForSelected(),
+      deviceId: label.deviceId,
+      color: label.color,
+      side: label.deviceId && label.deviceId === device?.id ? "local" : "remote"
+    };
+  }
+  const operator = operatorNameFromLine(line);
+  if (operator || className.startsWith("is-operator")) {
+    const nick = operator || "Operator";
+    return {
+      nick,
+      deviceId: "operator",
+      color: colorFor(`operator:${nick}`),
+      side: "remote"
+    };
+  }
+  const nick = counterpartyLabelForSelected();
+  return {
+    nick,
+    deviceId: "",
+    color: safeColor(undefined, `${nick}:${selectedId}`),
+    side: "surface"
+  };
+}
+
+function operatorNameFromLine(line: string): string {
+  const match = line.trim().match(/^(.+?)\s+В·\s+\d{1,2}:\d{2}$/u);
+  return cleanNick(match?.[1] || "");
+}
+
+function counterpartyLabelForSelected(): string {
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  return tunnel ? counterpartyLabel(tunnel) : ".";
+}
+
+function activityCode(action: WriterActivity["action"]): string {
+  if (action === "erase") {
+    return "DEL";
+  }
+  if (action === "edit") {
+    return "EDIT";
+  }
+  return "TYPE";
+}
+
+function compactPreview(value: string): string {
+  return value.replace(/\s+/gu, " ").trim().slice(0, 24);
+}
+
+function classifyChatLine(line: string, inOperatorBlock: boolean): { readonly className: string; readonly operatorBlock: boolean } {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return { className: "is-empty", operatorBlock: inOperatorBlock };
+  }
+  if (isOperatorHeader(trimmed)) {
+    return { className: "is-operator-head", operatorBlock: true };
+  }
+  if (trimmed === "Ответ:" || trimmed === "Ответьте ниже:" || trimmed === "Reply:") {
+    return { className: "is-operator-reply", operatorBlock: false };
+  }
+  if (trimmed.startsWith("┌ ")) {
+    return { className: "is-operator-head", operatorBlock: true };
+  }
+  if (trimmed.startsWith("│ ")) {
+    return { className: "is-operator-body", operatorBlock: true };
+  }
+  if (trimmed.startsWith("└ ")) {
+    return { className: "is-operator-reply", operatorBlock: false };
+  }
+  return { className: inOperatorBlock ? "is-operator-body" : "is-user-line", operatorBlock: inOperatorBlock };
+}
+
+function isOperatorHeader(line: string): boolean {
+  return /^(Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
 }
 
 function renderWriterPop(): void {
@@ -1739,8 +2224,41 @@ function renderWriterPop(): void {
   if (!pop) {
     return;
   }
-  const nick = activeWriters.get(selectedId);
-  pop.innerHTML = nick ? `<span>${escapeHtml(initials(nick))}</span><b>${escapeHtml(nick)}</b>` : "";
+  const latest = latestWriterLine(selectedId);
+  const activity = activeActivities.get(selectedId) ?? (latest && Date.now() - latest.at < 4200
+    ? {
+      deviceId: latest.deviceId,
+      nick: latest.nick,
+      index: 0,
+      local: latest.deviceId === device?.id,
+      action: latest.action,
+      preview: latest.preview
+    }
+    : null);
+  if (!activity) {
+    pop.innerHTML = `<span class="idle-dot"></span><b>IDLE</b>`;
+    return;
+  }
+  const nick = cleanNick(activity.nick) || counterpartyLabelForSelected();
+  pop.innerHTML = `
+    <span>${escapeHtml(initials(nick))}</span>
+    <b>${escapeHtml(nick)}</b>
+    <small>${escapeHtml(activityCode(activity.action))}</small>
+  `;
+}
+
+function latestWriterLine(tunnelId: string): WriterLine | null {
+  const lines = writerLines.get(tunnelId);
+  if (!lines) {
+    return null;
+  }
+  let latest: WriterLine | null = null;
+  for (const line of lines.values()) {
+    if (!latest || line.at > latest.at) {
+      latest = line;
+    }
+  }
+  return latest;
 }
 
 function lineFromIndex(text: string, index: number): number {
@@ -1824,7 +2342,7 @@ function diffPlain(before: string, after: string): [number, number, string] {
   return [start, beforeEnd - start, after.slice(start, afterEnd)];
 }
 
-async function showQr(persistent: boolean): Promise<void> {
+async function showQr(autoOpened = false): Promise<void> {
   if (!device) {
     return;
   }
@@ -1836,18 +2354,23 @@ async function showQr(persistent: boolean): Promise<void> {
   }
   closeQrOverlay();
   const overlay = document.createElement("div");
-  overlay.className = `qr-modal${persistent ? " persistent" : ""}`;
+  overlay.className = "qr-modal";
   overlay.innerHTML = `
-    <div class="qr-sheet">
-      <canvas></canvas>
-      <button class="icon-button refresh-button" type="button" aria-label="refresh">${icon("refresh")}</button>
-      <button class="icon-button copy-button" type="button" aria-label="copy">${icon("copy")}</button>
-      ${persistent ? "" : `<button class="icon-button close-button" type="button" aria-label="close">${icon("close")}</button>`}
+    <div class="qr-sheet" data-tooltip="Окно приглашения по QR-коду" data-tooltip-side="bottom">
+      <canvas data-tooltip="Покажи этот QR на втором устройстве"></canvas>
+      <div class="qr-scanner" aria-live="polite">
+        <video playsinline muted></video>
+        <div class="qr-scan-status">Наведи камеру на QR</div>
+      </div>
+      <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Создать новый QR">${icon("refresh")}</button>
+      <button class="icon-button scan-button" type="button" aria-label="scan" data-tooltip="Сканировать QR камерой">${icon("scan")}</button>
+      <button class="icon-button copy-button" type="button" aria-label="copy" data-tooltip="Скопировать ссылку подключения">${icon("copy")}</button>
+      <button class="icon-button close-button" type="button" aria-label="close" data-tooltip="Закрыть QR">${icon("close")}</button>
     </div>
   `;
   document.body.append(overlay);
   qrOverlay = overlay;
-  qrMode = persistent ? "persistent" : "modal";
+  qrMode = autoOpened ? "auto" : "manual";
   const canvas = overlay.querySelector("canvas");
   if (canvas) {
     attachQrResetGesture(canvas);
@@ -1878,7 +2401,128 @@ async function showQr(persistent: boolean): Promise<void> {
   overlay.querySelector(".copy-button")?.addEventListener("click", () => {
     void copyText(currentUrl);
   });
+  overlay.querySelector(".scan-button")?.addEventListener("click", () => {
+    if (qrScanStream) {
+      stopQrScanner();
+      return;
+    }
+    void startQrScanner(overlay);
+  });
   overlay.querySelector<HTMLButtonElement>(".close-button")?.addEventListener("click", () => closeQrOverlay());
+}
+
+async function startQrScanner(overlay: HTMLDivElement): Promise<void> {
+  const scanner = overlay.querySelector<HTMLElement>(".qr-scanner");
+  const video = overlay.querySelector<HTMLVideoElement>(".qr-scanner video");
+  const status = overlay.querySelector<HTMLElement>(".qr-scan-status");
+  const Detector = (window as Window & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
+  if (!scanner || !video || !status) {
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    status.textContent = "Камера недоступна";
+    overlay.classList.add("is-scanning");
+    return;
+  }
+
+  stopQrScanner();
+  overlay.classList.add("is-scanning");
+  status.textContent = "Наведи камеру на QR";
+  try {
+    qrScanStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" }
+      }
+    });
+    video.srcObject = qrScanStream;
+    await video.play();
+  } catch {
+    status.textContent = "Не удалось открыть камеру";
+    stopQrScanner();
+    overlay.classList.add("is-scanning");
+    return;
+  }
+
+  const detector = Detector ? new Detector({ formats: ["qr_code"] }) : null;
+  const frame = document.createElement("canvas");
+  const scan = async () => {
+    if (qrOverlay !== overlay || !qrScanStream) {
+      return;
+    }
+    try {
+      const raw = await detectQrFromVideo(video, detector, frame);
+      const joinCode = joinCodeFromScannedQr(raw);
+      if (joinCode) {
+        status.textContent = "QR найден";
+        stopQrScanner();
+        window.location.assign(`/?j=${encodeURIComponent(joinCode)}`);
+        return;
+      }
+      if (raw) {
+        status.textContent = "Это не QR Соты";
+      }
+    } catch {
+      status.textContent = "Ищу QR";
+    }
+    qrScanFrame = window.requestAnimationFrame(scan);
+  };
+  qrScanFrame = window.requestAnimationFrame(scan);
+}
+
+function stopQrScanner(): void {
+  if (qrScanFrame) {
+    window.cancelAnimationFrame(qrScanFrame);
+    qrScanFrame = 0;
+  }
+  qrScanStream?.getTracks().forEach((track) => track.stop());
+  qrScanStream = null;
+  qrOverlay?.classList.remove("is-scanning");
+  const video = qrOverlay?.querySelector<HTMLVideoElement>(".qr-scanner video");
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+  }
+}
+
+async function detectQrFromVideo(
+  video: HTMLVideoElement,
+  detector: BarcodeDetectorLike | null,
+  frame: HTMLCanvasElement
+): Promise<string> {
+  if (detector) {
+    const codes = await detector.detect(video);
+    const raw = codes.find((item) => item.rawValue)?.rawValue || "";
+    if (raw) {
+      return raw;
+    }
+  }
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (width <= 0 || height <= 0) {
+    return "";
+  }
+  frame.width = width;
+  frame.height = height;
+  const context = frame.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    return "";
+  }
+  context.drawImage(video, 0, 0, width, height);
+  const image = context.getImageData(0, 0, width, height);
+  return jsQR(image.data, width, height)?.data || "";
+}
+
+function joinCodeFromScannedQr(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    return new URL(trimmed, window.location.origin).searchParams.get("j") || "";
+  } catch {
+    return "";
+  }
 }
 
 function attachQrResetGesture(canvas: HTMLCanvasElement): void {
@@ -1950,6 +2594,7 @@ function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
 
 function closeQrOverlay(): void {
   resetQrResetGesture();
+  stopQrScanner();
   qrOverlay?.remove();
   qrOverlay = null;
   qrMode = null;

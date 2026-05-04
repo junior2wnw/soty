@@ -77,6 +77,7 @@ Installed operator bridge:
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd list
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd run Phone "ping ya.ru"
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd script Phone .\job.ps1 powershell
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd access Phone
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd install-machine Phone
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd machine-status Phone
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd say Phone "Пишу как живой оператор."
@@ -87,6 +88,7 @@ Installed operator bridge:
 ~/.soty-agent/sotyctl list
 ~/.soty-agent/sotyctl run Phone "ping ya.ru"
 ~/.soty-agent/sotyctl script Phone ./job.sh sh
+~/.soty-agent/sotyctl access Phone
 ~/.soty-agent/sotyctl say Phone "Пишу как живой оператор."
 ~/.soty-agent/sotyctl say --fast Phone "Короткий статус."
 ~/.soty-agent/sotyctl export soty-backup.json
@@ -94,7 +96,7 @@ Installed operator bridge:
 
 The bridge works when the PWA is open on the controlling device. `run` and `script` also require remote access to the named counterparty.
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
-Use `say` to write into the shared text surface through the PWA with small typing delays and occasional corrected typos. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Remote command grants are session-only and are intentionally not backed up or restored.
+Use `say` to queue live typing into the shared text surface through the PWA; it returns after the message is queued so long operator notes do not hold the HTTP request open. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Remote command grants are session-only and are intentionally not backed up or restored.
 
 Emergency local repair:
 

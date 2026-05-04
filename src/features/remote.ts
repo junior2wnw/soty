@@ -4,12 +4,11 @@ export const accessKey = "soty:remote-access:v1";
 let memoryRemoteEnabled = new Set<string>();
 let memoryRemoteAccess = new Map<string, string>();
 
-function clearLegacyLocalState(): void {
+function readStored(key: string): string | null {
   try {
-    localStorage.removeItem(remoteKey);
-    localStorage.removeItem(accessKey);
+    return localStorage.getItem(key) ?? sessionStorage.getItem(key);
   } catch {
-    // Ignore blocked storage; remote grants are runtime-only.
+    return readSession(key);
   }
 }
 
@@ -30,10 +29,18 @@ function writeSession(key: string, value: string): boolean {
   }
 }
 
-export function loadRemoteEnabled(): Set<string> {
-  clearLegacyLocalState();
+function writeStored(key: string, value: string): void {
   try {
-    const parsed = JSON.parse(readSession(remoteKey) || "[]") as string[];
+    localStorage.setItem(key, value);
+  } catch {
+    // Keep a runtime fallback for locked-down browsers.
+  }
+  writeSession(key, value);
+}
+
+export function loadRemoteEnabled(): Set<string> {
+  try {
+    const parsed = JSON.parse(readStored(remoteKey) || "[]") as string[];
     memoryRemoteEnabled = new Set(parsed.filter((item) => typeof item === "string" && item.length > 0));
     return new Set(memoryRemoteEnabled);
   } catch {
@@ -49,14 +56,13 @@ export function setRemoteEnabled(tunnelId: string, enabled: boolean): Set<string
     items.delete(tunnelId);
   }
   memoryRemoteEnabled = new Set(items);
-  writeSession(remoteKey, JSON.stringify([...items]));
+  writeStored(remoteKey, JSON.stringify([...items]));
   return items;
 }
 
 export function loadRemoteAccess(): Map<string, string> {
-  clearLegacyLocalState();
   try {
-    const parsed = JSON.parse(readSession(accessKey) || "{}") as Record<string, unknown>;
+    const parsed = JSON.parse(readStored(accessKey) || "{}") as Record<string, unknown>;
     memoryRemoteAccess = new Map(Object.entries(parsed)
       .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0));
     return new Map(memoryRemoteAccess);
@@ -73,7 +79,7 @@ export function setRemoteAccess(tunnelId: string, hostDeviceId: string, enabled:
     items.delete(tunnelId);
   }
   memoryRemoteAccess = new Map(items);
-  writeSession(accessKey, JSON.stringify(Object.fromEntries(items)));
+  writeStored(accessKey, JSON.stringify(Object.fromEntries(items)));
   return items;
 }
 

@@ -23,7 +23,7 @@ export function createHttpApp(distDir) {
     res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
     res.setHeader("Origin-Agent-Cluster", "?1");
     res.setHeader("Permissions-Policy", [
-      "camera=()",
+      "camera=(self)",
       "microphone=()",
       "geolocation=()",
       "payment=()",

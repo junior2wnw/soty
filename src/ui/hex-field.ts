@@ -41,15 +41,16 @@ export function renderHexField(
     const top = (r + q / 2) * 72;
     if (item) {
       return `
-        <button class="hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"
-          style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="counterparty">
-          <span>${escapeHtml(initials(item.label))}</span>
+        <button class="retro-hex hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"
+          style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="${escapeHtml(item.label)}" data-tooltip="Открыть ${escapeHtml(item.label)}">
+          <span class="hex-core"><span>${escapeHtml(initials(item.label))}</span></span>
           <b>${escapeHtml(item.label)}</b>
+          <em></em>
           ${item.unread ? "<i></i>" : ""}
         </button>
       `;
     }
-    return `<div class="hex hex-cell" style="--x:${left}px;--y:${top}px"></div>`;
+    return `<div class="retro-hex hex hex-cell" style="--x:${left}px;--y:${top}px"><em></em></div>`;
   }).join("");
 
   installPan(root, map);

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.12";
+const agentVersion = "0.3.13";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -121,6 +121,10 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/chat" && request.method === "POST") {
     await handleOperatorHttpChat(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/access" && request.method === "POST") {
+    await handleOperatorHttpAccess(request, response, headers);
     return;
   }
   if (url.pathname === "/operator/export" && (request.method === "GET" || request.method === "POST")) {
@@ -273,12 +277,15 @@ async function handleOperatorHttpChat(request, response, headers) {
   const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
   const speed = typeof payload.speed === "string" ? payload.speed.slice(0, 20) : "";
   const persona = typeof payload.persona === "string" ? payload.persona.slice(0, 80) : "";
-  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
   if (!operatorBridge?.open || !target || !text.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
   }
-  const id = registerOperatorRun(response, headers, timeoutMs);
+  if (!hasKnownOperatorTarget(target)) {
+    sendJson(response, 404, headers, { ok: false, text: "! target", exitCode: 404 });
+    return;
+  }
+  const id = `operator_${randomUUID()}`;
   sendRaw(operatorBridge, {
     type: "operator.chat",
     id,
@@ -286,6 +293,32 @@ async function handleOperatorHttpChat(request, response, headers) {
     text,
     speed,
     persona
+  });
+  sendJson(response, 200, headers, { ok: true, text: "queued\n", exitCode: 0, id });
+}
+
+async function handleOperatorHttpAccess(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 16_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  if (!operatorBridge?.open || !target) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  if (!hasKnownOperatorTarget(target)) {
+    sendJson(response, 404, headers, { ok: false, text: "! target", exitCode: 404 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, 20_000);
+  sendRaw(operatorBridge, {
+    type: "operator.access",
+    id,
+    target
   });
 }
 
@@ -355,6 +388,17 @@ function sanitizeTargets(value) {
     }))
     .filter((item) => item.id && item.label)
     .slice(0, 128);
+}
+
+function hasKnownOperatorTarget(target) {
+  const needle = String(target || "").trim().toLowerCase();
+  if (!needle) {
+    return false;
+  }
+  return operatorTargets.some((item) => item.id === target
+    || item.id.toLowerCase() === needle
+    || item.label.toLowerCase() === needle
+    || item.label.toLowerCase().includes(needle));
 }
 
 function runCommand(ws, id, command, timeoutMs) {
@@ -630,6 +674,26 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
+  if (command === "access" || command === "request-access") {
+    const target = args[1] || "";
+    if (!target) {
+      process.stderr.write("sotyctl access <target>\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/access`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
   if (command === "say" || command === "chat") {
     const sayArgs = args.slice(1);
     let speed = "";
@@ -679,7 +743,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | say [--fast|--slow] <target> <text> | export [file]\n");
+  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | export [file]\n");
   process.exit(2);
 }
 

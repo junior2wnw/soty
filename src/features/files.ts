@@ -16,14 +16,25 @@ export function renderFileRail(
 ): void {
   root.innerHTML = files.map((file) => `
     <div class="file-chip" style="--color:${color}" data-id="${escapeHtml(file.id)}">
-      <a href="${file.url}" download="${escapeHtml(file.name)}" draggable="false">
+      <a href="${file.url}" download="${escapeHtml(file.name)}" draggable="false" data-id="${escapeHtml(file.id)}" data-tooltip="Скачать файл">
         <span>${icon("download")}</span>
         <b>${escapeHtml(file.name)}</b>
         <small>${escapeHtml(clock(new Date(file.createdAt)))}</small>
       </a>
-      <button type="button" aria-label="close" data-id="${escapeHtml(file.id)}">${icon("close")}</button>
+      <button type="button" aria-label="close" data-tooltip="Убрать файл из списка" data-id="${escapeHtml(file.id)}">${icon("close")}</button>
     </div>
   `).join("");
+  const byId = new Map(files.map((file) => [file.id, file]));
+  root.querySelectorAll<HTMLAnchorElement>("a[data-id]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const file = byId.get(link.dataset.id || "");
+      if (file) {
+        downloadReceivedFile(file);
+      }
+    });
+  });
   root.querySelectorAll<HTMLButtonElement>("button[data-id]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -35,6 +46,21 @@ export function renderFileRail(
     });
   });
   installRailScroll(root);
+}
+
+function downloadReceivedFile(file: ReceivedFile): void {
+  const body = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
+  const blob = new Blob([body], { type: file.type || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.name || "file";
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 function installRailScroll(root: HTMLElement): void {
@@ -55,7 +81,7 @@ function installRailScroll(root: HTMLElement): void {
     if (event.button !== 0) {
       return;
     }
-    if (event.target instanceof Element && event.target.closest("button")) {
+    if (event.target instanceof Element && event.target.closest("a,button")) {
       return;
     }
     dragging = true;

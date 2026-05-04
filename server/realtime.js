@@ -9,6 +9,7 @@ import {
   isRemoteCommand,
   isRemoteGrant,
   isRemoteOutput,
+  isRemoteRequest,
   isRemoteScript,
   isShortText
 } from "./validators.js";
@@ -117,6 +118,13 @@ async function handleMessage(room, peer, ws, store, raw) {
     broadcast(room, peer.id, {
       type: "remote.grant",
       grant: withPeer(peer, message.grant)
+    });
+    return;
+  }
+  if (message.type === "remote.request" && isRemoteRequest(message.request)) {
+    broadcast(room, peer.id, {
+      type: "remote.request",
+      request: withPeer(peer, message.request)
     });
     return;
   }
