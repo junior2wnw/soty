@@ -6,7 +6,7 @@ import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
-import { filesFrom, renderFileRail } from "./features/files";
+import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
@@ -98,6 +98,7 @@ const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
 const files = new Map<string, ReceivedFile[]>();
+const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
 const localDrafts = new Map<string, string>();
 const liveDrafts = new Map<string, Map<string, LiveDraftState>>();
 const liveDraftTimers = new Map<string, number>();
@@ -1303,9 +1304,12 @@ function ensureSync(tunnel: TunnelRecord): void {
       applyRemoteOutput(tunnel.id, output);
     },
     onPeers: (items) => {
+      const accessChanged = syncRemoteAccessWithPeers(tunnel.id, items);
       const label = items.map((item) => item.nick).filter(Boolean).join(" ");
       if (label) {
         setTunnelCounterparty(tunnel.id, label);
+        renderTiles();
+      } else if (accessChanged) {
         renderTiles();
       }
     },
@@ -1353,6 +1357,21 @@ function setTunnelCounterparty(tunnelId: string, label: string): void {
     : item);
   saveTunnels(next);
   tunnels = next;
+}
+
+function syncRemoteAccessWithPeers(tunnelId: string, items: readonly { readonly id: string }[]): boolean {
+  const hostDeviceId = remoteAccess.get(tunnelId);
+  if (!hostDeviceId || items.some((item) => item.id === hostDeviceId)) {
+    return false;
+  }
+  remoteAccess = setRemoteAccess(tunnelId, "", false);
+  if (terminalOpenId === tunnelId) {
+    terminalOpenId = "";
+  }
+  setTerminalState(tunnelId, "off");
+  renderTerminal();
+  publishOperatorTargets();
+  return true;
 }
 
 function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): void {
@@ -1419,6 +1438,7 @@ function closeTunnel(id: string): void {
   agentThinking.delete(id);
   localDrafts.delete(id);
   files.delete(id);
+  fileNotices.delete(id);
   tunnels = removeTunnel(id);
   normalizeSelectedTunnel();
   renderApp();
@@ -1440,6 +1460,7 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     clearLiveDraftState(tunnel.id);
     agentThinking.delete(tunnel.id);
     files.delete(tunnel.id);
+    fileNotices.delete(tunnel.id);
   }
   const tunnel = createTunnel();
   const counterparties = current.filter((item) => item.counterparty);
@@ -1461,17 +1482,34 @@ async function sendFiles(list?: FileList | null): Promise<void> {
   if (!selectedId) {
     return;
   }
-  const sync = syncs.get(selectedId);
+  const tunnelId = selectedId;
+  const sync = syncs.get(tunnelId);
   if (!sync) {
     return;
   }
-  for (const file of filesFrom(list)) {
-    const localFile = await sync.sendFile(file);
-    files.set(selectedId, [localFile, ...(files.get(selectedId) ?? []).filter((item) => item.id !== localFile.id)]);
+  const accepted = filesFrom(list);
+  const oversized = oversizedFilesFrom(list);
+  let failed = 0;
+  for (const file of accepted) {
+    try {
+      const localFile = await sync.sendFile(file);
+      files.set(tunnelId, [localFile, ...(files.get(tunnelId) ?? []).filter((item) => item.id !== localFile.id)]);
+    } catch {
+      failed += 1;
+    }
   }
-  tunnels = touchTunnel(selectedId);
+  if (oversized.length > 0 || failed > 0) {
+    const parts = [
+      oversized.length > 0 ? `Слишком большой файл: максимум ${formatFileSize(maxFileBytes)}` : "",
+      failed > 0 ? "Не отправилось, связь восстановится и можно повторить" : ""
+    ].filter(Boolean);
+    setFileNotice(tunnelId, parts.join(". "));
+  }
+  tunnels = touchTunnel(tunnelId);
   renderTiles();
-  renderFiles();
+  if (tunnelId === selectedId) {
+    renderFiles();
+  }
 }
 
 function renderFiles(): void {
@@ -1482,6 +1520,36 @@ function renderFiles(): void {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
   renderFileRail(rail, files.get(selectedId) ?? [], color, deleteFile);
+  renderFileNotice(rail, color);
+}
+
+function setFileNotice(tunnelId: string, text: string): void {
+  fileNotices.set(tunnelId, { text, until: Date.now() + 9000 });
+  window.setTimeout(() => {
+    const notice = fileNotices.get(tunnelId);
+    if (notice && notice.until <= Date.now()) {
+      fileNotices.delete(tunnelId);
+      if (tunnelId === selectedId) {
+        renderFiles();
+      }
+    }
+  }, 9200);
+}
+
+function renderFileNotice(rail: HTMLDivElement, color: string): void {
+  const notice = fileNotices.get(selectedId);
+  if (!notice) {
+    return;
+  }
+  if (notice.until <= Date.now()) {
+    fileNotices.delete(selectedId);
+    return;
+  }
+  const chip = document.createElement("div");
+  chip.className = "file-chip file-notice";
+  chip.style.setProperty("--color", color);
+  chip.textContent = notice.text;
+  rail.prepend(chip);
 }
 
 function deleteFile(fileId: string): void {
@@ -1750,12 +1818,29 @@ function publishOperatorTargets(): void {
 function operatorTargets(): LocalAgentOperatorTarget[] {
   return sortedVisibleTunnels()
     .filter((tunnel) => !isAgentTunnel(tunnel))
-    .map((tunnel) => ({
+    .map((tunnel, index) => ({
       id: tunnel.id,
       label: counterpartyLabel(tunnel),
       access: remoteAccess.has(tunnel.id),
-      host: remoteEnabled.has(tunnel.id)
+      host: remoteEnabled.has(tunnel.id),
+      selected: tunnel.id === selectedId,
+      rank: index + 1,
+      lastActionAt: tunnel.lastActionAt || tunnel.updatedAt
     }));
+}
+
+function preferredAgentOperatorTarget(): LocalAgentOperatorTarget | null {
+  const targets = operatorTargets();
+  const sourceNick = cleanNick(device?.nick || "").toLowerCase();
+  const accessTargets = targets.filter((target) => target.access === true);
+  if (sourceNick) {
+    const sameLabel = targets.filter((target) => cleanNick(target.label).toLowerCase() === sourceNick);
+    return sameLabel.find((target) => target.access === true)
+      || (sameLabel.length === 1 ? sameLabel[0] ?? null : null)
+      || (accessTargets.length === 1 ? accessTargets[0] ?? null : null)
+      || null;
+  }
+  return accessTargets.length === 1 ? accessTargets[0] ?? null : null;
 }
 
 async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly command?: string }): Promise<void> {
@@ -1779,11 +1864,15 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  const keepCurrentDialog = isAgentTunnelId(selectedId);
+  if (!keepCurrentDialog) {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+  }
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${command}`);
+  tunnels = keepCurrentDialog ? markTunnel(tunnel.id, true) : tunnels;
   renderTiles();
   renderTerminal();
   try {
@@ -1824,11 +1913,15 @@ async function runOperatorScript(message: {
     return;
   }
   const name = cleanNick(message.name || "script") || "script";
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  const keepCurrentDialog = isAgentTunnelId(selectedId);
+  if (!keepCurrentDialog) {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+  }
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${name}`);
+  tunnels = keepCurrentDialog ? markTunnel(tunnel.id, true) : tunnels;
   renderTiles();
   renderTerminal();
   try {
@@ -1952,7 +2045,7 @@ function findOperatorTarget(target: string): TunnelRecord | null {
   if (!needle) {
     return null;
   }
-  const items = loadTunnels().filter((tunnel) => remoteAccess.has(tunnel.id));
+  const items = sortedVisibleTunnels().filter((tunnel) => remoteAccess.has(tunnel.id));
   return items.find((tunnel) => tunnel.id === target)
     || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
     || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
@@ -2302,12 +2395,15 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
     return;
   }
   const context = (texts.get(tunnelId) || "").slice(-16_000);
+  const preferredTarget = preferredAgentOperatorTarget();
   const source: LocalAgentRequestSource = {
     tunnelId,
     tunnelLabel: counterpartyLabel(tunnel),
     deviceId: device?.id || "",
     deviceNick: device?.nick || "",
     appOrigin: window.location.origin,
+    preferredTargetId: preferredTarget?.id || "",
+    preferredTargetLabel: preferredTarget?.label || "",
     operatorTargets: operatorTargets()
   };
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
@@ -2321,12 +2417,12 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       } finally {
         setAgentThinking(tunnelId, false);
       }
-      const body = reply.text.trim()
+      const body = normalizeChatMessage(reply.text)
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
       if (shouldOfferAgentInstall(reply)) {
         renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox);
       }
-      await typeOperatorChat(tunnelId, body, "fast");
+      await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
     });
   agentReplyQueues.set(tunnelId, next);
   void next.finally(() => {
@@ -2868,7 +2964,15 @@ function speakerForLine(
   }
 ): { readonly nick: string; readonly deviceId: string; readonly color: string; readonly side: string } {
   const operator = operatorNameFromLine(line);
-  if (operator || className === "is-operator-head" || className === "is-operator-reply" || label?.deviceId === "operator") {
+  if (label && label.deviceId !== "operator" && className !== "is-operator-head" && className !== "is-operator-reply") {
+    return {
+      nick: label.nick || counterpartyLabelForSelected(),
+      deviceId: label.deviceId,
+      color: label.color,
+      side: label.deviceId && label.deviceId === device?.id ? "local" : "remote"
+    };
+  }
+  if (operator || className === "is-operator-head" || className === "is-operator-body" || className === "is-operator-reply" || label?.deviceId === "operator") {
     const nick = operator || label?.nick || (isAgentTunnelId(selectedId) ? agentDialogLabel : "Operator");
     return {
       nick,
@@ -2886,6 +2990,15 @@ function speakerForLine(
     };
   }
   const nick = counterpartyLabelForSelected();
+  if (isAgentTunnelId(selectedId)) {
+    const localNick = cleanNick(device?.nick || "") || "Я";
+    return {
+      nick: localNick,
+      deviceId: device?.id || "",
+      color: colorFor(`local:${device?.id || selectedId}`),
+      side: "local"
+    };
+  }
   return {
     nick,
     deviceId: "",
@@ -2895,7 +3008,7 @@ function speakerForLine(
 }
 
 function operatorNameFromLine(line: string): string {
-  const match = line.trim().match(/^(.+?)\s+В·\s+\d{1,2}:\d{2}$/u);
+  const match = line.trim().match(/^(.+?)\s+·\s+\d{1,2}:\d{2}$/u);
   return cleanNick(match?.[1] || "");
 }
 

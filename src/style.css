@@ -1040,6 +1040,16 @@ svg {
   font-weight: 700;
 }
 
+.file-chip.file-notice {
+  grid-template-columns: 1fr;
+  min-height: 34px;
+  padding: 7px 9px;
+  border-style: dashed;
+  color: color-mix(in srgb, var(--ink) 86%, var(--amber));
+  font-size: 12px;
+  line-height: 1.25;
+}
+
 .file-input {
   display: none;
 }

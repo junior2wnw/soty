@@ -8,6 +8,23 @@ export function filesFrom(list?: FileList | null): File[] {
   return list ? Array.from(list).filter((file) => file.size <= maxFileBytes) : [];
 }
 
+export function oversizedFilesFrom(list?: FileList | null): File[] {
+  return list ? Array.from(list).filter((file) => file.size > maxFileBytes) : [];
+}
+
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1_000_000_000) {
+    return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  }
+  if (bytes >= 1_000_000) {
+    return `${Math.round(bytes / 1_000_000)} MB`;
+  }
+  if (bytes >= 1000) {
+    return `${Math.round(bytes / 1000)} KB`;
+  }
+  return `${bytes} B`;
+}
+
 export function renderFileRail(
   root: HTMLElement,
   files: readonly ReceivedFile[],

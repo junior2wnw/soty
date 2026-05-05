@@ -314,6 +314,7 @@ type ControlMessage =
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.script"; readonly script: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
+type FileControlMessage = Extract<ControlMessage, { readonly type: "file" }>;
 
 type DirectMessage =
   | { readonly type: "update"; readonly update: EncryptedUpdate }
@@ -353,6 +354,7 @@ export class TunnelSync {
   private readonly auth: Promise<string>;
   private readonly offlineQueue: OutboundUpdate[] = [];
   private readonly pendingAcks = new Map<string, OutboundUpdate>();
+  private readonly pendingFileControls = new Map<string, FileControlMessage>();
   private readonly controlQueue: ControlMessage[] = [];
   private readonly fileTransfers = new Map<string, FileTransfer>();
   private readonly p2pPeers = new Map<string, P2pPeer>();
@@ -718,6 +720,7 @@ export class TunnelSync {
 
     if (message.type === "ack") {
       this.pendingAcks.delete(message.id);
+      this.pendingFileControls.delete(message.id);
       return;
     }
 
@@ -1163,6 +1166,9 @@ export class TunnelSync {
 
   private sendControl(message: ControlMessage): void {
     this.sendDirectControl(message);
+    if (message.type === "file") {
+      this.pendingFileControls.set(message.file.id, message);
+    }
     const ws = this.ws;
     if (this.ready && ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
@@ -1279,7 +1285,17 @@ export class TunnelSync {
     if (ws?.readyState !== WebSocket.OPEN) {
       return;
     }
-    for (const message of this.controlQueue.splice(0)) {
+    const sent = new Set<string>();
+    const pendingFiles = [...this.pendingFileControls.values()];
+    const queued = this.controlQueue.splice(0);
+    for (const message of [...pendingFiles, ...queued]) {
+      const id = controlMessageId(message);
+      if (id && sent.has(id)) {
+        continue;
+      }
+      if (id) {
+        sent.add(id);
+      }
       ws.send(JSON.stringify(message));
     }
   }
@@ -1661,6 +1677,13 @@ export class TunnelSync {
       this.closeAndReconnect(ws);
     }
   }
+}
+
+function controlMessageId(message: ControlMessage): string {
+  if (message.type === "file") {
+    return message.file.id;
+  }
+  return "";
 }
 
 function cleanFileName(value: string): string {

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.29";
+const agentVersion = "0.3.30";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -786,6 +786,10 @@ function buildAgentPrompt(text, context, source = {}) {
     "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. If access is unknown and the user says they already granted access, do not ask again first; try the route once or explain that you will try it, and ask for access only after a clear ! access / no-grant result.",
     "When the request source device nick or tunnel label matches a known operator target, treat that source device as the intended computer. For device-specific tasks like reinstalling Windows, do not ask which computer; say that you will work on the source device and continue with that target. If several targets have the same label, prefer the one with access=true.",
     "If exactly one known operator target has access=true and the user asks to work on 'this computer', 'this device', or similar, assume that target instead of asking for clarification.",
+    "Use the exact full target id from Known operator targets or Preferred operator target for commands. Labels can repeat, so prefer ids over labels whenever a full id is available.",
+    "The command route from this Codex session to a Soty device is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --timeout=20000 \"<target-id-or-label>\" \"<command>\". For scripts use: <local-agent-ctl> script --timeout=60000 \"<target-id-or-label>\" \"<file>\" powershell.",
+    "For an access=true target, first prove the route with a safe command such as whoami, hostname, or a read-only PowerShell check. If one duplicate-label target times out, try another access=true full id with the same label once before falling back. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! access, ! tunnel, all matching targets time out, or a non-zero proof failure.",
+    "For destructive work like Windows reset or reinstall, use only safe proof commands first, then ask for one final confirmation before any destructive step. Do not fall back to manual Windows settings while an access=true ctl route is still untested.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
     operatorContext ? `Known operator targets:\n${operatorContext}` : "",
@@ -806,6 +810,8 @@ function sanitizeAgentSource(value) {
     deviceId: clean(value.deviceId),
     deviceNick: clean(value.deviceNick),
     appOrigin: clean(value.appOrigin),
+    preferredTargetId: clean(value.preferredTargetId),
+    preferredTargetLabel: clean(value.preferredTargetLabel),
     operatorTargets: sanitizeTargets(value.operatorTargets)
   };
 }
@@ -818,6 +824,8 @@ function formatAgentSource(source) {
     ["Soty tunnel label", safe.tunnelLabel],
     ["Soty tunnel id", safe.tunnelId],
     ["App origin", safe.appOrigin],
+    ["Preferred operator target", safe.preferredTargetId ? `${safe.preferredTargetLabel || "target"} (${safe.preferredTargetId})` : ""],
+    ["Local agent ctl", `${quoteForPrompt(process.execPath)} ${quoteForPrompt(scriptPath)} ctl`],
     ["Local agent relay id", agentRelayId ? `${agentRelayId.slice(0, 10)}...` : ""],
     ["Local agent scope", agentScope],
     ["Local agent platform", process.platform]
@@ -842,8 +850,14 @@ function formatOperatorTargets(source) {
   }
   return targets
     .map((target) => {
-      const id = target.id.length > 14 ? `${target.id.slice(0, 10)}...` : target.id;
-      return `- ${target.label} (${id}) access=${formatTargetFlag(target.access)} host=${formatTargetFlag(target.host)}`;
+      const flags = [
+        `access=${formatTargetFlag(target.access)}`,
+        `host=${formatTargetFlag(target.host)}`,
+        target.selected === true ? "selected=true" : "",
+        Number.isSafeInteger(target.rank) ? `rank=${target.rank}` : "",
+        target.lastActionAt ? `lastActionAt=${target.lastActionAt}` : ""
+      ].filter(Boolean).join(" ");
+      return `- ${target.label} (${target.id}) ${flags}`;
     })
     .join("\n");
 }
@@ -863,6 +877,10 @@ function asciiJsonString(value) {
     const low = 0xdc00 + (value & 0x3ff);
     return `\\u${high.toString(16)}\\u${low.toString(16)}`;
   });
+}
+
+function quoteForPrompt(value) {
+  return `"${String(value || "").replace(/"/gu, "\\\"")}"`;
 }
 
 function agentFailureText(details) {
@@ -1167,7 +1185,10 @@ function sanitizeTargets(value) {
       id: typeof item?.id === "string" ? item.id.slice(0, 160) : "",
       label: typeof item?.label === "string" ? item.label.slice(0, 160) : "",
       access: typeof item?.access === "boolean" ? item.access : undefined,
-      host: typeof item?.host === "boolean" ? item.host : undefined
+      host: typeof item?.host === "boolean" ? item.host : undefined,
+      selected: typeof item?.selected === "boolean" ? item.selected : undefined,
+      rank: Number.isSafeInteger(item?.rank) ? Math.max(1, Math.min(item.rank, 999)) : undefined,
+      lastActionAt: typeof item?.lastActionAt === "string" ? item.lastActionAt.slice(0, 80) : ""
     }))
     .filter((item) => item.id && item.label)
     .slice(0, 128);
@@ -1422,16 +1443,17 @@ async function runControlCli(args) {
     return;
   }
   if (command === "run") {
-    const target = args[1] || "";
-    const remoteCommand = args.slice(2).join(" ");
+    const parsed = parseCtlTimeout(args.slice(1));
+    const target = parsed.args[0] || "";
+    const remoteCommand = parsed.args.slice(1).join(" ");
     if (!target || !remoteCommand) {
-      process.stderr.write("sotyctl run <target> <command>\n");
+      process.stderr.write("sotyctl run [--timeout=ms] <target> <command>\n");
       process.exit(2);
     }
     const response = await fetch(`http://127.0.0.1:${port}/operator/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, command: remoteCommand })
+      body: JSON.stringify({ target, command: remoteCommand, ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {}) })
     });
     const payload = await response.json();
     if (payload.text) {
@@ -1483,18 +1505,19 @@ async function runControlCli(args) {
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
   if (command === "script") {
-    const target = args[1] || "";
-    const filePath = args[2] || "";
-    const shell = args[3] || "";
+    const parsed = parseCtlTimeout(args.slice(1));
+    const target = parsed.args[0] || "";
+    const filePath = parsed.args[1] || "";
+    const shell = parsed.args[2] || "";
     if (!target || !filePath) {
-      process.stderr.write("sotyctl script <target> <file> [shell]\n");
+      process.stderr.write("sotyctl script [--timeout=ms] <target> <file> [shell]\n");
       process.exit(2);
     }
     const script = await readFile(filePath, "utf8");
     const response = await fetch(`http://127.0.0.1:${port}/operator/script`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, name: basename(filePath), shell, script })
+      body: JSON.stringify({ target, name: basename(filePath), shell, script, ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {}) })
     });
     const payload = await response.json();
     if (payload.text) {
@@ -1635,8 +1658,33 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file] | import <file>\n");
+  process.stderr.write("sotyctl health | list | run [--timeout=ms] <target> <command> | script [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file] | import <file>\n");
   process.exit(2);
+}
+
+function parseCtlTimeout(args) {
+  const rest = [...args];
+  let timeoutMs = 0;
+  while (rest.length > 0) {
+    const head = rest[0] || "";
+    if (head.startsWith("--timeout=")) {
+      timeoutMs = safeCtlTimeout(head.slice("--timeout=".length));
+      rest.shift();
+      continue;
+    }
+    if (head === "--timeout" && rest.length > 1) {
+      timeoutMs = safeCtlTimeout(rest[1]);
+      rest.splice(0, 2);
+      continue;
+    }
+    break;
+  }
+  return { timeoutMs, args: rest };
+}
+
+function safeCtlTimeout(value) {
+  const timeoutMs = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(timeoutMs) ? Math.max(1000, Math.min(timeoutMs, defaultTimeoutMs)) : 0;
 }
 
 function machineInstallCommand() {

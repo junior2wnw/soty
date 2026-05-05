@@ -23,6 +23,9 @@ export interface LocalAgentOperatorTarget {
   readonly label: string;
   readonly access?: boolean;
   readonly host?: boolean;
+  readonly selected?: boolean;
+  readonly rank?: number;
+  readonly lastActionAt?: string;
 }
 
 export interface LocalAgentRequestSource {
@@ -31,6 +34,8 @@ export interface LocalAgentRequestSource {
   readonly deviceId?: string;
   readonly deviceNick?: string;
   readonly appOrigin?: string;
+  readonly preferredTargetId?: string;
+  readonly preferredTargetLabel?: string;
   readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
 }
 
