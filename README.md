@@ -82,8 +82,8 @@ Installed operator bridge:
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd machine-status Phone
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd say Phone "Пишу как живой оператор."
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd say --fast Phone "Короткий статус."
-%LOCALAPPDATA%\soty-agent\sotyctl.cmd read Codex
-%LOCALAPPDATA%\soty-agent\sotyctl.cmd listen Codex
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd read Агент
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd listen Агент
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd export soty-backup.json
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd import soty-backup.json
 
@@ -94,8 +94,8 @@ Installed operator bridge:
 ~/.soty-agent/sotyctl access Phone
 ~/.soty-agent/sotyctl say Phone "Пишу как живой оператор."
 ~/.soty-agent/sotyctl say --fast Phone "Короткий статус."
-~/.soty-agent/sotyctl read Codex
-~/.soty-agent/sotyctl listen Codex
+~/.soty-agent/sotyctl read Агент
+~/.soty-agent/sotyctl listen Агент
 ~/.soty-agent/sotyctl export soty-backup.json
 ~/.soty-agent/sotyctl import soty-backup.json
 ```

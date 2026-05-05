@@ -80,6 +80,10 @@ if (!root) {
 const app: HTMLDivElement = root;
 installTooltips();
 
+const agentDialogLabel = "Агент";
+const legacyAgentDialogLabel = "Codex";
+const agentDialogMinVersion = "0.3.15";
+
 let installPrompt: BeforeInstallPromptEvent | null = null;
 let device: DeviceRecord | null = null;
 let tunnels: TunnelRecord[] = [];
@@ -896,12 +900,16 @@ async function refreshLocalAgent(): Promise<LocalAgentStatus> {
   return localAgent;
 }
 
-function renderAgentInstall(tunnelId: string, onReady?: () => void): void {
+function renderAgentInstall(
+  tunnelId: string,
+  onReady?: () => void,
+  isReady: (agent: LocalAgentStatus) => boolean = (agent) => agent.ok
+): void {
   document.querySelector(".agent-modal")?.remove();
   const overlay = document.createElement("div");
   overlay.className = "agent-modal";
   overlay.innerHTML = `
-    <div class="agent-sheet${localAgent.ok ? " is-ok" : ""}" data-tooltip="Панель установки локального Soty-агента" data-tooltip-side="bottom">
+    <div class="agent-sheet${isReady(localAgent) ? " is-ok" : ""}" data-tooltip="Панель установки локального Soty-агента" data-tooltip-side="bottom">
       <span class="agent-mark" data-tooltip="Локальный агент нужен для команд Windows">${icon("remote")}</span>
       <button class="icon-button download-button" type="button" aria-label="download" data-tooltip="Скачать обычный установщик">${icon("download")}</button>
       ${isWindowsPlatform() ? `<button class="icon-button machine-button" type="button" aria-label="machine" data-tooltip="Установить с правами администратора">${icon("shield")}</button>` : ""}
@@ -919,7 +927,7 @@ function renderAgentInstall(tunnelId: string, onReady?: () => void): void {
   overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
     void (async () => {
       const agent = await refreshLocalAgent();
-      if (agent.ok) {
+      if (isReady(agent)) {
         overlay.remove();
         if (onReady) {
           onReady();
@@ -992,7 +1000,11 @@ function hasCounterparty(tunnel: TunnelRecord): boolean {
 }
 
 function counterpartyLabel(tunnel: TunnelRecord): string {
-  return cleanNick(peers.get(tunnel.id) || tunnel.label || ".");
+  const label = rawCounterpartyLabel(tunnel);
+  if (tunnel.agent === true || label.toLowerCase() === legacyAgentDialogLabel.toLowerCase()) {
+    return agentDialogLabel;
+  }
+  return label;
 }
 
 function startFreshDialog(): void {
@@ -1006,8 +1018,9 @@ function startFreshDialog(): void {
 async function startAgentDialog(): Promise<void> {
   let tunnel = findActiveAgentDialog();
   if (!tunnel) {
-    tunnel = createFreshDialog("Codex", { agent: true, archiveCurrent: false });
+    tunnel = createFreshDialog(agentDialogLabel, { agent: true, archiveCurrent: false });
   } else {
+    tunnel = normalizeAgentDialog(tunnel.id) || tunnel;
     selectedId = tunnel.id;
     saveSelectedTunnelId(tunnel.id);
     tunnels = markTunnel(tunnel.id, false);
@@ -1017,12 +1030,12 @@ async function startAgentDialog(): Promise<void> {
   }
   renderApp();
   const agent = await refreshLocalAgent();
-  if (!agent.ok) {
+  if (!agentSupportsDialogInbox(agent)) {
     renderAgentInstall(tunnel.id, () => {
       void ensureOperatorBridge();
       publishOperatorTargets();
       composer?.focus();
-    });
+    }, agentSupportsDialogInbox);
     return;
   }
   await ensureOperatorBridge();
@@ -1037,7 +1050,7 @@ function findActiveAgentDialog(): TunnelRecord | null {
 }
 
 function isAgentTunnel(tunnel: TunnelRecord): boolean {
-  return tunnel.agent === true || counterpartyLabel(tunnel).toLowerCase() === "codex";
+  return tunnel.agent === true || rawCounterpartyLabel(tunnel).toLowerCase() === legacyAgentDialogLabel.toLowerCase();
 }
 
 function createFreshDialog(
@@ -1052,7 +1065,7 @@ function createFreshDialog(
   const activeLabel = cleanNick(active ? counterpartyLabel(active) : "");
   const rawRequestedLabel = cleanNick(labelOverride);
   const requestedLabel = rawRequestedLabel === "." ? "" : rawRequestedLabel;
-  const label = requestedLabel || (activeLabel && activeLabel !== "." && activeLabel !== device.nick ? activeLabel : "Codex");
+  const label = requestedLabel || (activeLabel && activeLabel !== "." && activeLabel !== device.nick ? activeLabel : agentDialogLabel);
   const now = new Date().toISOString();
   const isAgent = options.agent === true || (!requestedLabel && active?.agent === true);
   const archiveCurrent = options.archiveCurrent !== false;
@@ -1075,6 +1088,54 @@ function createFreshDialog(
   texts.set(fresh.id, "");
   ensureSync(fresh);
   return fresh;
+}
+
+function rawCounterpartyLabel(tunnel: TunnelRecord): string {
+  return cleanNick(peers.get(tunnel.id) || tunnel.label || ".");
+}
+
+function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
+  const current = loadTunnels();
+  const now = new Date().toISOString();
+  let normalized: TunnelRecord | null = null;
+  const next = current.map((tunnel) => {
+    if (tunnel.id !== tunnelId) {
+      return tunnel;
+    }
+    if (tunnel.agent === true && tunnel.label === agentDialogLabel) {
+      normalized = tunnel;
+      return tunnel;
+    }
+    normalized = {
+      ...tunnel,
+      agent: true,
+      label: agentDialogLabel,
+      updatedAt: now
+    };
+    return normalized;
+  });
+  if (normalized) {
+    saveTunnels(next);
+    tunnels = next;
+  }
+  return normalized;
+}
+
+function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
+  return agent.ok && compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0;
+}
+
+function compareVersion(left: string, right: string): number {
+  const a = left.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] || 0) - (b[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
 }
 
 function renderDialogChrome(): void {
@@ -1769,7 +1830,7 @@ async function runOperatorChat(message: {
 }
 
 function formatOperatorChat(text: string, persona: string): string {
-  const name = persona === "sysadmin" ? "Codex" : cleanNick(persona || "Оператор") || "Оператор";
+  const name = persona === "sysadmin" ? agentDialogLabel : cleanNick(persona || "Оператор") || "Оператор";
   const body = text.trim();
   if (!body) {
     return "";
@@ -2532,7 +2593,7 @@ function classifyChatLine(line: string, inOperatorBlock: boolean): { readonly cl
 }
 
 function isOperatorHeader(line: string): boolean {
-  return /^(Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
+  return /^(Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
 }
 
 function renderWriterPop(): void {
