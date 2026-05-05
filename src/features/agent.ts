@@ -34,8 +34,8 @@ export async function askLocalAgentReply(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, context }),
       signal: controller.signal,
-      targetAddressSpace: "local"
-    } as RequestInit & { readonly targetAddressSpace: "local" });
+      targetAddressSpace: "loopback"
+    } as RequestInit & { readonly targetAddressSpace: "loopback" });
     const payload = await response.json() as {
       readonly ok?: boolean;
       readonly text?: string;
@@ -64,8 +64,8 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
     const response = await fetch("http://127.0.0.1:49424/health", {
       cache: "no-store",
       signal: controller.signal,
-      targetAddressSpace: "local"
-    } as RequestInit & { readonly targetAddressSpace: "local" });
+      targetAddressSpace: "loopback"
+    } as RequestInit & { readonly targetAddressSpace: "loopback" });
     if (!response.ok) {
       return { ok: false };
     }
