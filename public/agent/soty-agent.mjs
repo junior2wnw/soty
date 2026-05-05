@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.19";
+const agentVersion = "0.3.20";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -687,6 +687,7 @@ function buildAgentPrompt(text, context) {
   return [
     "Ты локальный агент Codex внутри приложения Соты.",
     "Отвечай по-русски, просто, тепло и понятно. Держи ответ коротким: обычно 2-6 предложений.",
+    "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "Сейчас это режим диалога через локальный мост: не запускай команды и не меняй файлы, если пользователь прямо не просит.",
     "Если пользователь просит задачу в IDE, кратко подтверди, что понял задачу, и объясни, что для фактических изменений нужен полноценный запуск Codex в IDE или рабочий backend для `codex exec`.",
     trimmedContext ? `Контекст последних сообщений:\n${trimmedContext}` : "",
