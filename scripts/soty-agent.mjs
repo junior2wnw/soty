@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.22";
+const agentVersion = "0.3.23";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -685,15 +685,28 @@ async function askCodexForAgentReply(text, context) {
 function buildAgentPrompt(text, context) {
   const trimmedContext = String(context || "").trim();
   return [
-    "Ты локальный агент Codex внутри приложения Соты.",
-    "Отвечай по-русски, просто, тепло и понятно. Держи ответ коротким: обычно 2-6 предложений.",
+    "You are the local Codex agent inside the Soty app.",
+    "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
-    "Сейчас это режим диалога через локальный мост: не запускай команды и не меняй файлы, если пользователь прямо не просит.",
-    "Если пользователь просит задачу в IDE, кратко подтверди, что понял задачу, и объясни, что для фактических изменений нужен полноценный запуск Codex в IDE или рабочий backend для `codex exec`.",
-    trimmedContext ? `Контекст последних сообщений:\n${trimmedContext}` : "",
-    `Сообщение пользователя:\n${String(text || "").trim()}`,
-    "Ответ:"
+    "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
+    "If the user asks for IDE work, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
+    trimmedContext ? `Recent chat context as a JSON string with Unicode escapes. Decode it before using it:\n${asciiJsonString(trimmedContext)}` : "",
+    `User message as a JSON string with Unicode escapes. Decode it before answering:\n${asciiJsonString(String(text || "").trim())}`,
+    "Answer in Russian:"
   ].filter(Boolean).join("\n\n");
+}
+
+function asciiJsonString(value) {
+  return JSON.stringify(String(value || "")).replace(/[^\x00-\x7f]/gu, (char) => {
+    const code = char.codePointAt(0) || 0;
+    if (code <= 0xffff) {
+      return `\\u${code.toString(16).padStart(4, "0")}`;
+    }
+    const value = code - 0x10000;
+    const high = 0xd800 + (value >> 10);
+    const low = 0xdc00 + (value & 0x3ff);
+    return `\\u${high.toString(16)}\\u${low.toString(16)}`;
+  });
 }
 
 function agentFailureText(details) {
