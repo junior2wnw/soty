@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.21";
+const agentVersion = "0.3.22";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -641,10 +641,8 @@ async function askCodexForAgentReply(text, context) {
   }
 
   const jobDir = join(tmpdir(), "soty-agent-codex", randomUUID());
-  const promptPath = join(jobDir, "prompt.txt");
   const outPath = join(jobDir, "reply.txt");
   await mkdir(jobDir, { recursive: true });
-  await writeFile(promptPath, buildAgentPrompt(text, context), "utf8");
   const codexHome = chooseCodexHome();
   const childEnv = {
     ...process.env,
@@ -659,11 +657,11 @@ async function askCodexForAgentReply(text, context) {
     process.env.SOTY_CODEX_CWD || process.cwd(),
     "-o",
     outPath,
-    `Read the UTF-8 prompt file at ${promptPath} and follow its instructions. Answer only with the final reply.`
+    "-"
   ];
 
   try {
-    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs);
+    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, buildAgentPrompt(text, context));
     const reply = existsSync(outPath) ? (await readFile(outPath, "utf8")).trim() : "";
     if (result.exitCode === 0 && reply) {
       return { ok: true, text: reply.slice(0, maxChatChars), exitCode: 0 };
@@ -846,13 +844,13 @@ function chooseCodexHome() {
   return existsSync(home) ? home : "";
 }
 
-function runChildForText(file, args, env, timeoutMs) {
+function runChildForText(file, args, env, timeoutMs, input = "") {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, {
       cwd: process.env.SOTY_CODEX_CWD || process.cwd(),
       env,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: [input ? "pipe" : "ignore", "pipe", "pipe"]
     });
     let stdout = "";
     let stderr = "";
@@ -882,6 +880,9 @@ function runChildForText(file, args, env, timeoutMs) {
     child.stderr.on("data", (chunk) => {
       stderr = `${stderr}${chunk.toString("utf8")}`.slice(-24_000);
     });
+    if (input && child.stdin) {
+      child.stdin.end(input, "utf8");
+    }
     child.on("error", (error) => {
       if (done) {
         return;
