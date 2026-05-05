@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.28";
+const agentVersion = "0.3.29";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -784,6 +784,8 @@ function buildAgentPrompt(text, context, source = {}) {
     "Use the request source below to understand which Soty device/tunnel contacted you. Do not assume the current Codex host is the same device that wrote the message.",
     "Use the known operator targets below to decide whether Soty remote access is already available. access=true means commands can already be routed to that target; do not ask for operator access again for that target. access=false means the target is only visible and needs the remote access flow before remote commands. access=unknown means an older browser bridge did not report the access state. host=true means this local browser is sharing its own computer; it is not permission to control that target.",
     "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. If access is unknown and the user says they already granted access, do not ask again first; try the route once or explain that you will try it, and ask for access only after a clear ! access / no-grant result.",
+    "When the request source device nick or tunnel label matches a known operator target, treat that source device as the intended computer. For device-specific tasks like reinstalling Windows, do not ask which computer; say that you will work on the source device and continue with that target. If several targets have the same label, prefer the one with access=true.",
+    "If exactly one known operator target has access=true and the user asks to work on 'this computer', 'this device', or similar, assume that target instead of asking for clarification.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
     operatorContext ? `Known operator targets:\n${operatorContext}` : "",

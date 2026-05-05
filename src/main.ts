@@ -1892,7 +1892,7 @@ async function runOperatorChat(message: {
 
 function formatOperatorChat(text: string, persona: string): string {
   const name = persona === "sysadmin" ? agentDialogLabel : cleanNick(persona || "Оператор") || "Оператор";
-  const body = text.trim();
+  const body = normalizeChatMessage(text);
   if (!body) {
     return "";
   }
@@ -2265,7 +2265,8 @@ function finalizeComposerDraft(): void {
     return;
   }
   const draft = composer.value || localDrafts.get(selectedId) || "";
-  if (!draft.trim()) {
+  const message = normalizeChatMessage(draft);
+  if (!message) {
     if (draft) {
       composer.value = "";
       rememberComposerDraft();
@@ -2274,7 +2275,7 @@ function finalizeComposerDraft(): void {
   }
   const current = texts.get(selectedId) ?? textarea.value;
   const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-  const next = `${current}${separator}${draft.trimEnd()}\n`;
+  const next = `${current}${separator}${message}\n`;
   textarea.value = next;
   texts.set(selectedId, next);
   sync.setText(next);
@@ -2284,8 +2285,8 @@ function finalizeComposerDraft(): void {
     liveDraftSendTimers.delete(selectedId);
   }
   void sync.sendLiveDraft("");
-  sendOperatorUserMessage(selectedId, draft.trimEnd());
-  sendAgentDialogMessage(selectedId, draft.trimEnd());
+  sendOperatorUserMessage(selectedId, message);
+  sendAgentDialogMessage(selectedId, message);
   localDrafts.delete(selectedId);
   composer.value = "";
   touchSelected();
@@ -2347,6 +2348,16 @@ function setAgentThinking(tunnelId: string, active: boolean): void {
   }
 }
 
+function normalizeChatMessage(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/\n{2,}/gu, "\n")
+    .trim();
+}
+
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
   if (reply.ok || (reply.exitCode !== 124 && reply.exitCode !== 127)) {
     return false;
@@ -2401,7 +2412,7 @@ function applySelectedText(focus = false): void {
 }
 
 async function typeOperatorChat(tunnelId: string, rawText: string, speed: string): Promise<void> {
-  const text = rawText.trimEnd();
+  const text = normalizeChatMessage(rawText);
   if (!text) {
     return;
   }
@@ -2428,9 +2439,23 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
   if (!sync || !text) {
     return;
   }
-  const next = `${texts.get(tunnelId) || ""}${text}`;
+  const before = texts.get(tunnelId) || "";
+  const next = `${before}${text}`;
   sync.setText(next);
   texts.set(tunnelId, next);
+  rememberWriter(tunnelId, {
+    deviceId: "operator",
+    nick: isAgentTunnelId(tunnelId) ? agentDialogLabel : "Operator",
+    index: before.length,
+    local: false,
+    action: "write",
+    preview: text.replace(/\s+/gu, " ").trim().slice(0, 48),
+    insertText: text,
+    deleteCount: 0,
+    startLine: lineFromIndex(before, before.length),
+    startColumn: columnFromIndex(before, before.length),
+    lineDelta: 0
+  });
   if (tunnelId === selectedId && textarea) {
     textarea.value = next;
     textarea.setSelectionRange(next.length, next.length);
@@ -2444,7 +2469,8 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
 function sendOperatorUserMessage(tunnelId: string, text: string): void {
   const ws = operatorSocket;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  if (!ws || ws.readyState !== WebSocket.OPEN || !tunnel || !text.trim()) {
+  const message = normalizeChatMessage(text);
+  if (!ws || ws.readyState !== WebSocket.OPEN || !tunnel || !message) {
     return;
   }
   ws.send(JSON.stringify({
@@ -2452,7 +2478,7 @@ function sendOperatorUserMessage(tunnelId: string, text: string): void {
     id: `user_${crypto.randomUUID()}`,
     target: tunnelId,
     label: counterpartyLabel(tunnel),
-    text: text.slice(0, 12_000),
+    text: message.slice(0, 12_000),
     createdAt: new Date().toISOString()
   }));
 }
@@ -2842,8 +2868,8 @@ function speakerForLine(
   }
 ): { readonly nick: string; readonly deviceId: string; readonly color: string; readonly side: string } {
   const operator = operatorNameFromLine(line);
-  if (operator || className.startsWith("is-operator")) {
-    const nick = operator || (loadTunnels().some((item) => item.id === selectedId && isAgentTunnel(item)) ? agentDialogLabel : "Operator");
+  if (operator || className === "is-operator-head" || className === "is-operator-reply" || label?.deviceId === "operator") {
+    const nick = operator || label?.nick || (isAgentTunnelId(selectedId) ? agentDialogLabel : "Operator");
     return {
       nick,
       deviceId: "operator",
@@ -2876,6 +2902,11 @@ function operatorNameFromLine(line: string): string {
 function counterpartyLabelForSelected(): string {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   return tunnel ? counterpartyLabel(tunnel) : ".";
+}
+
+function isAgentTunnelId(tunnelId: string): boolean {
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  return Boolean(tunnel && isAgentTunnel(tunnel));
 }
 
 function activityCode(action: WriterActivity["action"]): string {
@@ -2989,6 +3020,12 @@ function lineFromIndex(text: string, index: number): number {
   const safeIndex = Math.max(0, Math.min(index, text.length));
   const adjusted = text[safeIndex] === "\n" ? safeIndex + 1 : safeIndex;
   return text.slice(0, adjusted).split("\n").length - 1;
+}
+
+function columnFromIndex(text: string, index: number): number {
+  const safeIndex = Math.max(0, Math.min(index, text.length));
+  const lineStart = text.lastIndexOf("\n", Math.max(0, safeIndex - 1)) + 1;
+  return safeIndex - lineStart;
 }
 
 function normalizeLocalEdit(before: string, next: string, caret: number): { readonly text: string; readonly caret: number } {
