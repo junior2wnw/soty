@@ -477,7 +477,7 @@ svg {
 .dialog-head {
   min-width: 0;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr) 42px 42px auto;
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -512,6 +512,20 @@ svg {
   border: 1px solid #3d515f;
   background: #0b1015;
   color: var(--amber);
+}
+
+.agent-dialog-button,
+.clear-dialog-button {
+  width: 42px;
+  height: 40px;
+}
+
+.agent-dialog-button {
+  color: var(--green);
+}
+
+.clear-dialog-button {
+  color: var(--cyan);
 }
 
 .editor {
@@ -1360,7 +1374,7 @@ svg {
   }
 
   .dialog-head {
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: 40px minmax(0, 1fr) 40px 40px;
   }
 
   .dialog-avatar {
@@ -1370,6 +1384,12 @@ svg {
 
   .dialog-id {
     display: none;
+  }
+
+  .agent-dialog-button,
+  .clear-dialog-button {
+    width: 40px;
+    height: 36px;
   }
 
   .chat-scroll {

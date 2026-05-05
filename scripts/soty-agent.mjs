@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.13";
+const agentVersion = "0.3.14";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -21,6 +21,8 @@ const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const active = new Map();
 const operatorRuns = new Map();
+const operatorMessages = [];
+const operatorMessageWaiters = new Set();
 let operatorBridge = null;
 let operatorTargets = [];
 let cachedWindowsWhoami = "";
@@ -123,6 +125,10 @@ async function handleHttpRequest(request, response) {
     await handleOperatorHttpChat(request, response, headers);
     return;
   }
+  if (url.pathname === "/operator/messages" && request.method === "GET") {
+    handleOperatorHttpMessages(url, response, headers);
+    return;
+  }
   if (url.pathname === "/operator/access" && request.method === "POST") {
     await handleOperatorHttpAccess(request, response, headers);
     return;
@@ -195,6 +201,10 @@ function handleOperatorMessage(ws, message) {
   }
   if (message.type === "operator.targets" && ws === operatorBridge) {
     operatorTargets = sanitizeTargets(message.targets);
+    return;
+  }
+  if (message.type === "operator.message" && ws === operatorBridge) {
+    handleOperatorIncomingMessage(message);
     return;
   }
   if (message.type === "operator.output" && ws === operatorBridge && isSafeText(message.id, 160)) {
@@ -297,6 +307,32 @@ async function handleOperatorHttpChat(request, response, headers) {
   sendJson(response, 200, headers, { ok: true, text: "queued\n", exitCode: 0, id });
 }
 
+function handleOperatorHttpMessages(url, response, headers) {
+  const target = url.searchParams.get("target") || "";
+  const after = url.searchParams.get("after") || "";
+  const wait = url.searchParams.get("wait") === "1";
+  const messages = filterOperatorMessages(target, after);
+  if (messages.length > 0 || !wait) {
+    sendJson(response, 200, headers, { ok: true, messages });
+    return;
+  }
+  const waiter = {
+    target,
+    after,
+    response,
+    headers,
+    timer: setTimeout(() => {
+      operatorMessageWaiters.delete(waiter);
+      sendJson(response, 200, headers, { ok: true, messages: [] });
+    }, 30000)
+  };
+  response.on("close", () => {
+    clearTimeout(waiter.timer);
+    operatorMessageWaiters.delete(waiter);
+  });
+  operatorMessageWaiters.add(waiter);
+}
+
 async function handleOperatorHttpAccess(request, response, headers) {
   let payload;
   try {
@@ -374,6 +410,54 @@ function handleOperatorOutput(message) {
   }
   if (typeof message.exitCode === "number") {
     run.finish(message.exitCode);
+  }
+}
+
+function handleOperatorIncomingMessage(message) {
+  const text = typeof message.text === "string" ? message.text.slice(0, maxChatChars) : "";
+  const target = typeof message.target === "string" ? message.target.slice(0, 160) : "";
+  if (!target || !text.trim()) {
+    return;
+  }
+  const item = {
+    id: typeof message.id === "string" && message.id.length > 0 && message.id.length <= 160 ? message.id : `operator_message_${randomUUID()}`,
+    target,
+    label: typeof message.label === "string" ? message.label.slice(0, 160) : "",
+    text,
+    createdAt: typeof message.createdAt === "string" && message.createdAt.length <= 80 ? message.createdAt : new Date().toISOString()
+  };
+  operatorMessages.push(item);
+  while (operatorMessages.length > 500) {
+    operatorMessages.shift();
+  }
+  flushOperatorMessageWaiters();
+}
+
+function filterOperatorMessages(target, after) {
+  const targetNeedle = String(target || "").trim().toLowerCase();
+  let messages = operatorMessages;
+  if (after) {
+    const index = messages.findIndex((item) => item.id === after);
+    messages = index >= 0 ? messages.slice(index + 1) : messages;
+  }
+  if (!targetNeedle) {
+    return messages;
+  }
+  return messages.filter((item) => item.target === target
+    || item.target.toLowerCase() === targetNeedle
+    || item.label.toLowerCase() === targetNeedle
+    || item.label.toLowerCase().includes(targetNeedle));
+}
+
+function flushOperatorMessageWaiters() {
+  for (const waiter of [...operatorMessageWaiters]) {
+    const messages = filterOperatorMessages(waiter.target, waiter.after);
+    if (messages.length === 0) {
+      continue;
+    }
+    clearTimeout(waiter.timer);
+    operatorMessageWaiters.delete(waiter);
+    sendJson(waiter.response, 200, waiter.headers, { ok: true, messages });
   }
 }
 
@@ -769,6 +853,42 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
+  if (command === "read" || command === "inbox" || command === "messages") {
+    const target = args[1] || "";
+    const url = new URL(`http://127.0.0.1:${port}/operator/messages`);
+    if (target) {
+      url.searchParams.set("target", target);
+    }
+    const response = await fetch(url, { cache: "no-store" });
+    const payload = await response.json();
+    for (const message of payload.messages || []) {
+      process.stdout.write(`${message.createdAt}\t${message.label || message.target}\t${message.text.replace(/\n/gu, "\\n")}\t${message.id}\n`);
+    }
+    process.exit(response.ok ? 0 : 1);
+  }
+  if (command === "listen") {
+    const target = args[1] || "";
+    let after = args[2] || "";
+    for (;;) {
+      const url = new URL(`http://127.0.0.1:${port}/operator/messages`);
+      url.searchParams.set("wait", "1");
+      if (target) {
+        url.searchParams.set("target", target);
+      }
+      if (after) {
+        url.searchParams.set("after", after);
+      }
+      const response = await fetch(url, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        process.exit(response.ok ? 1 : response.status);
+      }
+      for (const message of payload.messages || []) {
+        process.stdout.write(`${JSON.stringify(message)}\n`);
+        after = message.id || after;
+      }
+    }
+  }
   if (command === "export") {
     const filePath = args[1] || "";
     const response = await fetch(`http://127.0.0.1:${port}/operator/export`, { cache: "no-store" });
@@ -790,7 +910,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | export [file]\n");
+  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file]\n");
   process.exit(2);
 }
 

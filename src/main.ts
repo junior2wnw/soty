@@ -432,6 +432,8 @@ function renderApp(): void {
             <b class="dialog-name">.</b>
             <small class="dialog-state">OFFLINE</small>
           </span>
+          <button class="agent-dialog-button retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
+          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="new dialog" data-tooltip="Новый чистый диалог">${icon("refresh")}</button>
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
@@ -477,6 +479,7 @@ function renderApp(): void {
           <div class="side-actions">
             <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>FILE</span></button>
             <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
+            <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
             <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>LINK</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
           </div>
@@ -494,8 +497,14 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
   });
+  app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
+    startFreshDialog();
+  });
+  app.querySelector<HTMLButtonElement>(".agent-dialog-button")?.addEventListener("click", () => {
+    void startAgentDialog();
+  });
   renderTiles();
-  composer?.addEventListener("input", () => syncComposerDraft());
+  composer?.addEventListener("input", () => rememberComposerDraft());
   composer?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
@@ -542,6 +551,9 @@ function renderApp(): void {
     syncs.get(selectedId)?.sendKnock("*");
     tunnels = touchTunnel(selectedId);
     renderTiles();
+  });
+  app.querySelector<HTMLButtonElement>(".agent-action")?.addEventListener("click", () => {
+    void startAgentDialog();
   });
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
     if (selectedId) {
@@ -665,7 +677,7 @@ async function refreshLocalAgent(): Promise<LocalAgentStatus> {
   return localAgent;
 }
 
-function renderAgentInstall(tunnelId: string): void {
+function renderAgentInstall(tunnelId: string, onReady?: () => void): void {
   document.querySelector(".agent-modal")?.remove();
   const overlay = document.createElement("div");
   overlay.className = "agent-modal";
@@ -690,6 +702,10 @@ function renderAgentInstall(tunnelId: string): void {
       const agent = await refreshLocalAgent();
       if (agent.ok) {
         overlay.remove();
+        if (onReady) {
+          onReady();
+          return;
+        }
         void toggleRemoteGrant(tunnelId);
       }
     })();
@@ -721,7 +737,7 @@ function closeRemoteMode(tunnelId: string): void {
 
 function sortedVisibleTunnels(): TunnelRecord[] {
   return loadTunnels()
-    .filter((tunnel) => hasCounterparty(tunnel))
+    .filter((tunnel) => !tunnel.archived && hasCounterparty(tunnel))
     .sort((a, b) => {
       const score = (b.score ?? 0) - (a.score ?? 0);
       if (score !== 0) {
@@ -737,7 +753,7 @@ function normalizeSelectedTunnel(): void {
     selectedId = "";
     return;
   }
-  const visible = all.filter((tunnel) => hasCounterparty(tunnel));
+  const visible = all.filter((tunnel) => !tunnel.archived && hasCounterparty(tunnel));
   const pool = visible.length > 0 ? visible : all;
   const stored = loadSelectedTunnelId();
   if (pool.some((tunnel) => tunnel.id === selectedId)) {
@@ -758,6 +774,64 @@ function hasCounterparty(tunnel: TunnelRecord): boolean {
 
 function counterpartyLabel(tunnel: TunnelRecord): string {
   return cleanNick(peers.get(tunnel.id) || tunnel.label || ".");
+}
+
+function startFreshDialog(): void {
+  const fresh = createFreshDialog();
+  if (!fresh) {
+    return;
+  }
+  renderApp();
+}
+
+async function startAgentDialog(): Promise<void> {
+  const fresh = createFreshDialog("Codex");
+  if (!fresh) {
+    return;
+  }
+  renderApp();
+  const agent = await refreshLocalAgent();
+  if (!agent.ok) {
+    renderAgentInstall(fresh.id, () => {
+      void ensureOperatorBridge();
+      publishOperatorTargets();
+      composer?.focus();
+    });
+    return;
+  }
+  await ensureOperatorBridge();
+  publishOperatorTargets();
+  composer?.focus();
+}
+
+function createFreshDialog(labelOverride = ""): TunnelRecord | null {
+  if (!device) {
+    return null;
+  }
+  const current = loadTunnels();
+  const active = current.find((tunnel) => tunnel.id === selectedId);
+  const activeLabel = cleanNick(active ? counterpartyLabel(active) : "");
+  const requestedLabel = cleanNick(labelOverride);
+  const label = requestedLabel || (activeLabel && activeLabel !== "." && activeLabel !== device.nick ? activeLabel : "Codex");
+  const now = new Date().toISOString();
+  const fresh = {
+    ...createTunnel(label, true),
+    color: active?.color || colorFor(`${label}:${now}`)
+  };
+  const next = [
+    fresh,
+    ...current.map((tunnel) => tunnel.id === selectedId
+      ? { ...tunnel, archived: true, unread: false, updatedAt: now, lastActionAt: now }
+      : tunnel)
+  ];
+  saveTunnels(next);
+  selectedId = fresh.id;
+  saveSelectedTunnelId(fresh.id);
+  tunnels = next;
+  localDrafts.delete(active?.id || "");
+  texts.set(fresh.id, "");
+  ensureSync(fresh);
+  return fresh;
 }
 
 function renderDialogChrome(): void {
@@ -1764,47 +1838,18 @@ function touchSelected(): void {
   }
 }
 
-function syncComposerDraft(): void {
-  if (!selectedId || !composer || !textarea) {
+function rememberComposerDraft(): void {
+  if (!selectedId || !composer) {
     return;
   }
-  const sync = syncs.get(selectedId);
-  if (!sync) {
-    return;
-  }
+  // Drafts stay local; Enter or the send button is the only publish path.
   const draft = composer.value;
-  const previous = localDrafts.get(selectedId) ?? "";
-  if (!draft && !previous) {
-    resizeComposer();
-    return;
-  }
-  const current = texts.get(selectedId) ?? "";
-  let next = current;
-  if (previous) {
-    const start = findDraftStart(current, previous);
-    if (start >= 0) {
-      next = `${current.slice(0, start)}${draft}${current.slice(start + previous.length)}`;
-    } else {
-      const separator = current.length > 0 && !current.endsWith("\n") && draft ? "\n" : "";
-      next = `${current}${separator}${draft}`;
-    }
-  } else if (draft) {
-    const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-    next = `${current}${separator}${draft}`;
-  }
   if (draft) {
     localDrafts.set(selectedId, draft);
   } else {
     localDrafts.delete(selectedId);
   }
-  textarea.value = next;
-  texts.set(selectedId, next);
-  sync.setText(next);
-  touchSelected();
   resizeComposer();
-  renderTiles();
-  renderTextPaint();
-  renderWriterPop();
 }
 
 function finalizeComposerDraft(): void {
@@ -1815,21 +1860,21 @@ function finalizeComposerDraft(): void {
   if (!sync) {
     return;
   }
-  const draft = localDrafts.get(selectedId) ?? composer.value;
+  const draft = composer.value || localDrafts.get(selectedId) || "";
   if (!draft.trim()) {
     if (draft) {
       composer.value = "";
-      syncComposerDraft();
+      rememberComposerDraft();
     }
     return;
   }
-  let next = texts.get(selectedId) ?? textarea.value;
-  if (!next.endsWith("\n")) {
-    next = `${next}\n`;
-    textarea.value = next;
-    texts.set(selectedId, next);
-    sync.setText(next);
-  }
+  const current = texts.get(selectedId) ?? textarea.value;
+  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const next = `${current}${separator}${draft.trimEnd()}\n`;
+  textarea.value = next;
+  texts.set(selectedId, next);
+  sync.setText(next);
+  sendOperatorUserMessage(selectedId, draft.trimEnd());
   localDrafts.delete(selectedId);
   composer.value = "";
   touchSelected();
@@ -1837,16 +1882,6 @@ function finalizeComposerDraft(): void {
   renderTiles();
   renderTextPaint();
   renderWriterPop();
-}
-
-function findDraftStart(text: string, draft: string): number {
-  if (!draft) {
-    return -1;
-  }
-  if (text.endsWith(draft)) {
-    return text.length - draft.length;
-  }
-  return text.lastIndexOf(draft);
 }
 
 function resizeComposer(): void {
@@ -1934,6 +1969,22 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
   }
   tunnels = touchTunnel(tunnelId);
   renderTiles();
+}
+
+function sendOperatorUserMessage(tunnelId: string, text: string): void {
+  const ws = operatorSocket;
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  if (!ws || ws.readyState !== WebSocket.OPEN || !tunnel || !text.trim()) {
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: "operator.message",
+    id: `user_${crypto.randomUUID()}`,
+    target: tunnelId,
+    label: counterpartyLabel(tunnel),
+    text: text.slice(0, 12_000),
+    createdAt: new Date().toISOString()
+  }));
 }
 
 function removeOperatorChatSuffix(tunnelId: string, suffix: string): void {
