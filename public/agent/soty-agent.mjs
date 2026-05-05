@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.27";
+const agentVersion = "0.3.28";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -782,8 +782,8 @@ function buildAgentPrompt(text, context, source = {}) {
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
     "Use the request source below to understand which Soty device/tunnel contacted you. Do not assume the current Codex host is the same device that wrote the message.",
-    "Use the known operator targets below to decide whether Soty remote access is already available. access=true means commands can already be routed to that target; do not ask for operator access again for that target. access=false means the target is only visible and needs the remote access flow before remote commands. host=true means this local browser is sharing its own computer; it is not permission to control that target.",
-    "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. Ask for missing remote access only when it is actually needed.",
+    "Use the known operator targets below to decide whether Soty remote access is already available. access=true means commands can already be routed to that target; do not ask for operator access again for that target. access=false means the target is only visible and needs the remote access flow before remote commands. access=unknown means an older browser bridge did not report the access state. host=true means this local browser is sharing its own computer; it is not permission to control that target.",
+    "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. If access is unknown and the user says they already granted access, do not ask again first; try the route once or explain that you will try it, and ask for access only after a clear ! access / no-grant result.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
     operatorContext ? `Known operator targets:\n${operatorContext}` : "",
@@ -841,9 +841,13 @@ function formatOperatorTargets(source) {
   return targets
     .map((target) => {
       const id = target.id.length > 14 ? `${target.id.slice(0, 10)}...` : target.id;
-      return `- ${target.label} (${id}) access=${target.access ? "true" : "false"} host=${target.host ? "true" : "false"}`;
+      return `- ${target.label} (${id}) access=${formatTargetFlag(target.access)} host=${formatTargetFlag(target.host)}`;
     })
     .join("\n");
+}
+
+function formatTargetFlag(value) {
+  return typeof value === "boolean" ? (value ? "true" : "false") : "unknown";
 }
 
 function asciiJsonString(value) {
@@ -1160,8 +1164,8 @@ function sanitizeTargets(value) {
     .map((item) => ({
       id: typeof item?.id === "string" ? item.id.slice(0, 160) : "",
       label: typeof item?.label === "string" ? item.label.slice(0, 160) : "",
-      access: item?.access === true,
-      host: item?.host === true
+      access: typeof item?.access === "boolean" ? item.access : undefined,
+      host: typeof item?.host === "boolean" ? item.host : undefined
     }))
     .filter((item) => item.id && item.label)
     .slice(0, 128);
@@ -1410,7 +1414,7 @@ async function runControlCli(args) {
       process.exit(2);
     }
     for (const target of payload.targets || []) {
-      const status = target.access ? "access" : target.host ? "host" : "visible";
+      const status = target.access === true ? "access" : target.host === true ? "host" : target.access === false ? "visible" : "unknown";
       process.stdout.write(`${target.label}\t${target.id}\t${status}\n`);
     }
     return;
