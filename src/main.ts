@@ -4,8 +4,8 @@ import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, Rem
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { askLocalAgentReply, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
-import type { LocalAgentStatus } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
+import type { LocalAgentReply, LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
@@ -166,6 +166,8 @@ void boot();
 let serviceWorkerReloading = false;
 
 async function boot(): Promise<void> {
+  adoptAgentRelayFromUrl();
+
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
     clearRemoteSessionState();
@@ -1031,6 +1033,13 @@ async function startAgentDialog(): Promise<void> {
   }
   renderApp();
   const agent = await refreshLocalAgent();
+  if (agent.ok && !agent.relay) {
+    void bindLocalAgentRelay().then((bound) => {
+      if (bound) {
+        void refreshLocalAgent();
+      }
+    });
+  }
   if (!agentSupportsDialogInbox(agent)) {
     renderAgentInstall(tunnel.id, () => {
       void ensureOperatorBridge();
@@ -2225,7 +2234,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       const reply = await askLocalAgentReply(text, context);
       const body = reply.text.trim()
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
-      if (!reply.ok && (reply.exitCode === 124 || reply.exitCode === 127)) {
+      if (shouldOfferAgentInstall(reply)) {
         renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox);
       }
       await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
@@ -2236,6 +2245,13 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       agentReplyQueues.delete(tunnelId);
     }
   });
+}
+
+function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
+  if (reply.ok || (reply.exitCode !== 124 && reply.exitCode !== 127)) {
+    return false;
+  }
+  return !/\bcodex\b/iu.test(reply.text);
 }
 
 function resizeComposer(): void {

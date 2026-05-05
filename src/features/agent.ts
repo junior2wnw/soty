@@ -18,7 +18,24 @@ export interface LocalAgentReply {
 }
 
 const relayStorageKey = "soty:agent:relay-id";
+const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const localAgentBlockedText = "Сообщение отправлено, но браузер пока не смог достучаться до локального агента. Я включил серверный мост, но агент еще не подключился к нему. Нажми установку агента один раз и потом обнови проверку.";
+
+export function adoptAgentRelayFromUrl(): boolean {
+  const url = new URL(window.location.href);
+  const relayId = relayParamNames
+    .map((name) => sanitizeRelayId(url.searchParams.get(name) || ""))
+    .find(Boolean) || "";
+  if (!relayId) {
+    return false;
+  }
+  localStorage.setItem(relayStorageKey, relayId);
+  for (const name of relayParamNames) {
+    url.searchParams.delete(name);
+  }
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  return true;
+}
 
 export async function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus> {
   if (readAgentRelayId()) {
@@ -74,6 +91,34 @@ export function ensureAgentRelayId(): string {
   const relayId = createRelayId();
   localStorage.setItem(relayStorageKey, relayId);
   return relayId;
+}
+
+export function agentRelayInviteUrl(): string {
+  const relayId = ensureAgentRelayId();
+  const url = new URL(window.location.href);
+  url.searchParams.set("agent", relayId);
+  return url.toString();
+}
+
+export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
+  const relayId = ensureAgentRelayId();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("http://127.0.0.1:49424/agent/relay", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relayId, relayBaseUrl: window.location.origin }),
+      signal: controller.signal,
+      targetAddressSpace: "loopback"
+    } as RequestInit & { readonly targetAddressSpace: "loopback" });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function askLocalAgentReplyHttp(
@@ -354,10 +399,15 @@ function downloadText(filename: string, content: string, type: string): void {
 function readAgentRelayId(): string {
   try {
     const value = localStorage.getItem(relayStorageKey) || "";
-    return /^[A-Za-z0-9_-]{32,192}$/u.test(value) ? value : "";
+    return sanitizeRelayId(value);
   } catch {
     return "";
   }
+}
+
+function sanitizeRelayId(value: string): string {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
 }
 
 function createRelayId(): string {

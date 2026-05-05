@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.17";
+const agentVersion = "0.3.18";
+const scriptPath = fileURLToPath(import.meta.url);
+const agentDir = dirname(scriptPath);
+const agentConfigPath = join(agentDir, "agent-config.json");
+const persistedAgentConfig = loadAgentConfig();
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
-const agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || "");
-const agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
+let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
+let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
 const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
@@ -31,9 +35,22 @@ const operatorMessageWaiters = new Set();
 let operatorBridge = null;
 let operatorTargets = [];
 let cachedWindowsWhoami = "";
+let agentRelayStarted = false;
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
+
+function loadAgentConfig() {
+  try {
+    const parsed = JSON.parse(readFileSync(agentConfigPath, "utf8"));
+    return {
+      relayId: typeof parsed?.relayId === "string" ? parsed.relayId : "",
+      relayBaseUrl: typeof parsed?.relayBaseUrl === "string" ? parsed.relayBaseUrl : ""
+    };
+  } catch {
+    return { relayId: "", relayBaseUrl: "" };
+  }
+}
 
 if (process.argv[2] === "ctl") {
   runControlCli(process.argv.slice(3)).catch((error) => {
@@ -137,6 +154,10 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/agent/reply" && request.method === "POST") {
     await handleAgentReply(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/agent/relay" && request.method === "POST") {
+    await handleAgentRelayBind(request, response, headers);
     return;
   }
   if (url.pathname === "/operator/access" && request.method === "POST") {
@@ -514,10 +535,39 @@ async function handleAgentReply(request, response, headers) {
   sendJson(response, result.ok ? 200 : 502, headers, result);
 }
 
+async function handleAgentRelayBind(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 16_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false });
+    return;
+  }
+  const relayId = safeRelayId(payload?.relayId || "");
+  const relayBaseUrl = safeHttpBaseUrl(payload?.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
+  if (!relayId || !relayBaseUrl) {
+    sendJson(response, 400, headers, { ok: false });
+    return;
+  }
+  agentRelayId = relayId;
+  agentRelayBaseUrl = relayBaseUrl;
+  await writeFile(agentConfigPath, JSON.stringify({ relayId, relayBaseUrl }, null, 2), "utf8")
+    .catch(() => undefined);
+  startAgentRelay();
+  sendJson(response, 200, headers, {
+    ok: true,
+    ...runtimeHealth()
+  });
+}
+
 function startAgentRelay() {
   if (!agentRelayId || !agentRelayBaseUrl) {
     return;
   }
+  if (agentRelayStarted) {
+    return;
+  }
+  agentRelayStarted = true;
   void runAgentRelayLoop();
 }
 
@@ -583,7 +633,7 @@ async function askCodexForAgentReply(text, context) {
     return {
       ok: false,
       text: "Я вижу сообщение, но на этом компьютере не нашел исполняемый Codex. Открой IDE и проверь, что команда `codex` доступна в терминале.",
-      exitCode: 127
+      exitCode: 126
     };
   }
 
@@ -665,26 +715,89 @@ function findCodexBinary() {
     return explicit;
   }
   if (process.platform === "win32") {
-    const cursorExtensionRoot = join(homedir(), ".cursor", "extensions");
-    try {
-      const entries = readdirSync(cursorExtensionRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && entry.name.startsWith("openai.chatgpt-"))
-        .map((entry) => join(cursorExtensionRoot, entry.name, "bin", "windows-x86_64", "codex.exe"))
-        .filter((candidate) => existsSync(candidate))
-        .sort()
-        .reverse();
-      if (entries[0]) {
-        return entries[0];
-      }
-    } catch {
-      // Fall through to PATH lookup.
-    }
-    const pathHit = whichOnPath("codex.exe") || whichOnPath("codex.cmd");
+    const pathHit = [
+      ...cursorCodexCandidates(),
+      ...nodeCodexCandidates(),
+      process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps", "codex.exe") : "",
+      whichOnPath("codex.exe"),
+      whichOnPath("codex.cmd"),
+      whichOnPath("codex")
+    ].find((candidate) => candidate && existsSync(candidate));
     if (pathHit) {
       return pathHit;
     }
   }
   return whichOnPath("codex");
+}
+
+function cursorCodexCandidates() {
+  const roots = userProfileRoots()
+    .map((profile) => join(profile, ".cursor", "extensions"));
+  const candidates = [];
+  for (const root of roots) {
+    try {
+      candidates.push(...readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith("openai.chatgpt-"))
+        .map((entry) => join(root, entry.name, "bin", "windows-x86_64", "codex.exe"))
+        .filter((candidate) => existsSync(candidate))
+        .sort()
+        .reverse());
+    } catch {
+      // Ignore inaccessible user profiles.
+    }
+  }
+  return candidates;
+}
+
+function nodeCodexCandidates() {
+  const candidates = [];
+  const exeDir = dirname(process.execPath || "");
+  for (const dir of [
+    exeDir,
+    process.env.APPDATA ? join(process.env.APPDATA, "npm") : "",
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Packages") : ""
+  ].filter(Boolean)) {
+    candidates.push(join(dir, "codex.cmd"), join(dir, "codex.exe"), join(dir, "codex"));
+  }
+  const wingetRoot = process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "Microsoft", "WinGet", "Packages") : "";
+  try {
+    if (!wingetRoot) {
+      return candidates;
+    }
+    for (const packageDir of readdirSync(wingetRoot, { withFileTypes: true })) {
+      if (!packageDir.isDirectory() || !packageDir.name.startsWith("OpenJS.NodeJS.")) {
+        continue;
+      }
+      const packageRoot = join(wingetRoot, packageDir.name);
+      for (const nodeDir of readdirSync(packageRoot, { withFileTypes: true })) {
+        if (nodeDir.isDirectory() && nodeDir.name.startsWith("node-")) {
+          candidates.push(
+            join(packageRoot, nodeDir.name, "codex.cmd"),
+            join(packageRoot, nodeDir.name, "codex.exe"),
+            join(packageRoot, nodeDir.name, "codex")
+          );
+        }
+      }
+    }
+  } catch {
+    // PATH lookup below still covers normal installs.
+  }
+  return candidates;
+}
+
+function userProfileRoots() {
+  const roots = new Set([homedir(), process.env.USERPROFILE || ""]);
+  const systemDrive = process.env.SystemDrive || "C:";
+  try {
+    for (const entry of readdirSync(join(systemDrive, "Users"), { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        roots.add(join(systemDrive, "Users", entry.name));
+      }
+    }
+  } catch {
+    // Single-user systems may not expose C:\Users to the agent.
+  }
+  return [...roots].filter(Boolean);
 }
 
 function whichOnPath(name) {
