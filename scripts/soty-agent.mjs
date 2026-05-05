@@ -2,13 +2,13 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.23";
+const agentVersion = "0.3.24";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -28,6 +28,10 @@ const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "120000", 10);
+const skillSyncRepoUrl = process.env.SOTY_CODEX_SKILL_SYNC_REPO || "https://github.com/junior2wnw/universal-install-ops-skill.git";
+const skillSyncRef = process.env.SOTY_CODEX_SKILL_SYNC_REF || "main";
+const skillSyncName = process.env.SOTY_CODEX_SKILL_SYNC_NAME || "universal-install-ops";
+const skillSyncIntervalMs = Number.parseInt(process.env.SOTY_CODEX_SKILL_SYNC_INTERVAL_MS || "0", 10);
 const active = new Map();
 const operatorRuns = new Map();
 const operatorMessages = [];
@@ -37,6 +41,9 @@ let operatorTargets = [];
 let cachedWindowsWhoami = "";
 let cachedCodexProbeAt = 0;
 let cachedCodexAvailable = false;
+let skillSyncInFlight = null;
+let lastSkillSyncAt = 0;
+let lastSkillSyncStatus = { ok: false, detail: "not-run", revision: "", at: 0 };
 let agentRelayStarted = false;
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
@@ -644,6 +651,7 @@ async function askCodexForAgentReply(text, context) {
   const outPath = join(jobDir, "reply.txt");
   await mkdir(jobDir, { recursive: true });
   const codexHome = chooseCodexHome();
+  await maybeSyncCodexSkills(codexHome);
   const childEnv = {
     ...process.env,
     ...(codexHome ? { CODEX_HOME: codexHome } : {})
@@ -855,6 +863,100 @@ function chooseCodexHome() {
   }
   const home = join(homedir(), ".codex");
   return existsSync(home) ? home : "";
+}
+
+async function maybeSyncCodexSkills(codexHome) {
+  if (!codexHome || process.env.SOTY_CODEX_SKILL_SYNC_DISABLED === "1") {
+    return;
+  }
+  if (!skillSyncRepoUrl || !skillSyncName) {
+    return;
+  }
+  const now = Date.now();
+  if (skillSyncIntervalMs > 0 && now - lastSkillSyncAt < skillSyncIntervalMs) {
+    return;
+  }
+  if (!skillSyncInFlight) {
+    skillSyncInFlight = syncCodexSkills(codexHome).finally(() => {
+      skillSyncInFlight = null;
+    });
+  }
+  await skillSyncInFlight;
+}
+
+async function syncCodexSkills(codexHome) {
+  lastSkillSyncAt = Date.now();
+  const sourceDir = resolve(process.env.SOTY_CODEX_SKILL_SYNC_SOURCE || join(agentDir, "skill-sources", "universal-install-ops-skill"));
+  const sourceParent = resolve(dirname(sourceDir));
+  const skillsRoot = resolve(codexHome, "skills");
+  const destDir = resolve(skillsRoot, skillSyncName);
+  try {
+    if (!isPathInside(sourceDir, resolve(agentDir)) && !process.env.SOTY_CODEX_SKILL_SYNC_SOURCE) {
+      throw new Error("skill source path is outside agent dir");
+    }
+    if (!isPathInside(destDir, skillsRoot)) {
+      throw new Error("skill destination path is outside CODEX_HOME skills");
+    }
+    if (sourceDir === destDir) {
+      throw new Error("skill source and destination are the same path");
+    }
+    await mkdir(sourceParent, { recursive: true });
+    if (existsSync(join(sourceDir, ".git"))) {
+      runGit(["-C", sourceDir, "fetch", "--depth", "1", "origin", skillSyncRef], 20_000);
+      runGit(["-C", sourceDir, "reset", "--hard", `origin/${skillSyncRef}`], 20_000);
+    } else if (!existsSync(sourceDir)) {
+      runGit(["clone", "--depth", "1", "--branch", skillSyncRef, skillSyncRepoUrl, sourceDir], 45_000);
+    } else {
+      throw new Error("skill source exists but is not a git checkout");
+    }
+    if (!existsSync(join(sourceDir, "SKILL.md")) || !existsSync(join(sourceDir, "scripts", "ops.py"))) {
+      throw new Error("skill source missing SKILL.md or scripts/ops.py");
+    }
+    await installSkillCopy(sourceDir, destDir);
+    const revision = runGit(["-C", sourceDir, "rev-parse", "--short", "HEAD"], 5000).trim();
+    lastSkillSyncStatus = { ok: true, detail: "synced", revision, at: Date.now() };
+  } catch (error) {
+    lastSkillSyncStatus = {
+      ok: false,
+      detail: error instanceof Error ? error.message.slice(0, 240) : String(error).slice(0, 240),
+      revision: "",
+      at: Date.now()
+    };
+  }
+}
+
+function runGit(args, timeoutMs) {
+  return execFileSync("git", args, {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+}
+
+async function installSkillCopy(sourceDir, destDir) {
+  await mkdir(destDir, { recursive: true });
+  for (const entry of readdirSync(destDir, { withFileTypes: true })) {
+    if (entry.name === ".skill-memory") {
+      continue;
+    }
+    await rm(join(destDir, entry.name), { recursive: true, force: true });
+  }
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    if (entry.name === ".git" || entry.name === ".skill-memory") {
+      continue;
+    }
+    await cp(join(sourceDir, entry.name), join(destDir, entry.name), {
+      recursive: entry.isDirectory(),
+      force: true,
+      dereference: false
+    });
+  }
+}
+
+function isPathInside(child, parent) {
+  const delta = relative(parent, child);
+  return delta === "" || (!delta.startsWith("..") && !isAbsolute(delta));
 }
 
 function runChildForText(file, args, env, timeoutMs, input = "") {
@@ -1513,6 +1615,7 @@ function runtimeHealth() {
     version: agentVersion,
     relay: Boolean(agentRelayId),
     codex: hasCodexBinary(),
+    skillSync: lastSkillSyncStatus,
     ...(process.platform === "win32" ? {
       windowsUser: windowsUserName(),
       system: isWindowsSystem(),

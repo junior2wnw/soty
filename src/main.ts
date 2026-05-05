@@ -2238,7 +2238,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       if (shouldOfferAgentInstall(reply)) {
         renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox);
       }
-      await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
+      await typeOperatorChat(tunnelId, body, "fast");
     });
   agentReplyQueues.set(tunnelId, next);
   void next.finally(() => {
@@ -2472,6 +2472,7 @@ function renderTextPaint(): void {
   const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
   const stickToBottom = scroll ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 180 : false;
   const labels = writerLines.get(selectedId) ?? new Map();
+  const hideAgentChrome = loadTunnels().some((item) => item.id === selectedId && isAgentTunnel(item));
   const text = textarea.value;
   const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
   const active = activeActivities.get(selectedId);
@@ -2502,6 +2503,9 @@ function renderTextPaint(): void {
     const label = labels.get(index);
     const state = classifyChatLine(line, operatorBlock);
     operatorBlock = state.operatorBlock;
+    if (hideAgentChrome && isAgentChromeLineClass(state.className)) {
+      continue;
+    }
     if (!line.trim() && !label) {
       if (bubbles.length > 0) {
         bubbles[bubbles.length - 1]?.lines.push("");
@@ -2635,6 +2639,10 @@ function classifyChatLine(line: string, inOperatorBlock: boolean): { readonly cl
     return { className: "is-operator-reply", operatorBlock: false };
   }
   return { className: inOperatorBlock ? "is-operator-body" : "is-user-line", operatorBlock: inOperatorBlock };
+}
+
+function isAgentChromeLineClass(className: string): boolean {
+  return className === "is-operator-head" || className === "is-operator-reply";
 }
 
 function isOperatorHeader(line: string): boolean {
