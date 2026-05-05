@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.20";
+const agentVersion = "0.3.21";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -641,8 +641,10 @@ async function askCodexForAgentReply(text, context) {
   }
 
   const jobDir = join(tmpdir(), "soty-agent-codex", randomUUID());
+  const promptPath = join(jobDir, "prompt.txt");
   const outPath = join(jobDir, "reply.txt");
   await mkdir(jobDir, { recursive: true });
+  await writeFile(promptPath, buildAgentPrompt(text, context), "utf8");
   const codexHome = chooseCodexHome();
   const childEnv = {
     ...process.env,
@@ -657,7 +659,7 @@ async function askCodexForAgentReply(text, context) {
     process.env.SOTY_CODEX_CWD || process.cwd(),
     "-o",
     outPath,
-    buildAgentPrompt(text, context)
+    `Read the UTF-8 prompt file at ${promptPath} and follow its instructions. Answer only with the final reply.`
   ];
 
   try {
