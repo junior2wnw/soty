@@ -1133,7 +1133,9 @@ function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
 }
 
 function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
-  return agent.ok && (agent.relay === true || compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0);
+  return agent.ok
+    && agent.codex !== false
+    && (agent.relay === true || compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0);
 }
 
 function compareVersion(left: string, right: string): number {

@@ -31,7 +31,8 @@ export function attachAgentRelay(app) {
       connected: true,
       relayId,
       lastSeenAt: new Date(channel.lastPollAt).toISOString(),
-      version: channel.agentVersion || ""
+      version: channel.agentVersion || "",
+      codex: true
     });
   });
 
@@ -62,21 +63,23 @@ export function attachAgentRelay(app) {
       return;
     }
     cleanupChannels();
-    const channel = getChannel(relayId);
+    const target = resolveRequestChannel(relayId);
+    const channel = getChannel(target.relayId);
     const job = {
       id: `agent_${randomUUID()}`,
       text,
       context,
       createdAt: Date.now(),
       leaseUntil: 0,
-      reply: null
+      reply: null,
+      clientRelayId: target.clientRelayId
     };
     channel.jobs.push(job);
     while (channel.jobs.length > maxJobsPerChannel) {
       channel.jobs.shift();
     }
-    flushPollWaiters(relayId);
-    res.json({ ok: true, id: job.id });
+    flushPollWaiters(target.relayId);
+    res.json({ ok: true, id: job.id, relayId: target.relayId });
   });
 
   app.get("/api/agent/relay/poll", (req, res) => {
@@ -119,6 +122,9 @@ export function attachAgentRelay(app) {
     };
     job.leaseUntil = 0;
     flushReplyWaiters(relayId, id);
+    if (job.clientRelayId) {
+      flushReplyWaiters(job.clientRelayId, id);
+    }
     res.json({ ok: true });
   });
 
@@ -163,6 +169,26 @@ function getChannel(relayId) {
   return channel;
 }
 
+function resolveRequestChannel(relayId) {
+  const requested = channels.get(relayId);
+  const requestedConnected = Date.now() - (requested?.lastPollAt || 0) < connectedMs;
+  if (requested?.codex === true && requestedConnected) {
+    return { relayId, clientRelayId: "" };
+  }
+  const current = currentCodexEntry();
+  if (!current || current[0] === relayId) {
+    return { relayId, clientRelayId: "" };
+  }
+  return { relayId: current[0], clientRelayId: relayId };
+}
+
+function currentCodexEntry() {
+  const now = Date.now();
+  return Array.from(channels.entries())
+    .filter(([, channel]) => channel.codex === true && now - (channel.lastPollAt || 0) < connectedMs)
+    .sort((left, right) => (right[1].lastPollAt || 0) - (left[1].lastPollAt || 0))[0] || null;
+}
+
 function leasePendingJobs(channel) {
   const now = Date.now();
   const jobs = channel.jobs
@@ -180,7 +206,10 @@ function leasePendingJobs(channel) {
 }
 
 function findReply(relayId, id) {
-  const job = channels.get(relayId)?.jobs.find((item) => item.id === id);
+  const job = channels.get(relayId)?.jobs.find((item) => item.id === id)
+    || Array.from(channels.values())
+      .flatMap((channel) => channel.jobs)
+      .find((item) => item.id === id && item.clientRelayId === relayId);
   return job?.reply || null;
 }
 
