@@ -5,7 +5,7 @@ import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
-import type { LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
+import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
@@ -1744,11 +1744,14 @@ function publishOperatorTargets(): void {
   }));
 }
 
-function operatorTargets(): Array<{ readonly id: string; readonly label: string }> {
+function operatorTargets(): LocalAgentOperatorTarget[] {
   return sortedVisibleTunnels()
+    .filter((tunnel) => !isAgentTunnel(tunnel))
     .map((tunnel) => ({
       id: tunnel.id,
-      label: counterpartyLabel(tunnel)
+      label: counterpartyLabel(tunnel),
+      access: remoteAccess.has(tunnel.id),
+      host: remoteEnabled.has(tunnel.id)
     }));
 }
 
@@ -1765,8 +1768,12 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   }
   const hostDeviceId = remoteAccess.get(tunnel.id);
   const sync = syncs.get(tunnel.id);
-  if (!hostDeviceId || !sync) {
+  if (!sync) {
     sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  if (!hostDeviceId) {
+    sendOperatorOutput(requestId, "! access", 409);
     return;
   }
   selectedId = tunnel.id;
@@ -1805,8 +1812,12 @@ async function runOperatorScript(message: {
   }
   const hostDeviceId = remoteAccess.get(tunnel.id);
   const sync = syncs.get(tunnel.id);
-  if (!hostDeviceId || !sync) {
+  if (!sync) {
     sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  if (!hostDeviceId) {
+    sendOperatorOutput(requestId, "! access", 409);
     return;
   }
   const name = cleanNick(message.name || "script") || "script";
@@ -2292,7 +2303,8 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
     tunnelLabel: counterpartyLabel(tunnel),
     deviceId: device?.id || "",
     deviceNick: device?.nick || "",
-    appOrigin: window.location.origin
+    appOrigin: window.location.origin,
+    operatorTargets: operatorTargets()
   };
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const next = previous

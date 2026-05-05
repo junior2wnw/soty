@@ -18,12 +18,20 @@ export interface LocalAgentReply {
   readonly exitCode?: number;
 }
 
+export interface LocalAgentOperatorTarget {
+  readonly id: string;
+  readonly label: string;
+  readonly access?: boolean;
+  readonly host?: boolean;
+}
+
 export interface LocalAgentRequestSource {
   readonly tunnelId?: string;
   readonly tunnelLabel?: string;
   readonly deviceId?: string;
   readonly deviceNick?: string;
   readonly appOrigin?: string;
+  readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
 }
 
 const relayStorageKey = "soty:agent:relay-id";

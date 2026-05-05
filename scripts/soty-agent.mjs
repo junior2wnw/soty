@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.26";
+const agentVersion = "0.3.27";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -775,15 +775,18 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
 function buildAgentPrompt(text, context, source = {}) {
   const trimmedContext = String(context || "").trim();
   const sourceContext = formatAgentSource(source);
+  const operatorContext = formatOperatorTargets(source);
   return [
     "You are the local Codex agent inside the Soty app.",
     "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
     "Use the request source below to understand which Soty device/tunnel contacted you. Do not assume the current Codex host is the same device that wrote the message.",
-    "If the user asks for work on that device, name the source device and say the work should be routed through the matching Soty remote/operator target. Ask for missing remote access only when it is actually needed.",
+    "Use the known operator targets below to decide whether Soty remote access is already available. access=true means commands can already be routed to that target; do not ask for operator access again for that target. access=false means the target is only visible and needs the remote access flow before remote commands. host=true means this local browser is sharing its own computer; it is not permission to control that target.",
+    "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. Ask for missing remote access only when it is actually needed.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
+    operatorContext ? `Known operator targets:\n${operatorContext}` : "",
     trimmedContext ? `Recent chat context as a JSON string with Unicode escapes. Decode it before using it:\n${asciiJsonString(trimmedContext)}` : "",
     `User message as a JSON string with Unicode escapes. Decode it before answering:\n${asciiJsonString(String(text || "").trim())}`,
     "Answer in Russian:"
@@ -800,7 +803,8 @@ function sanitizeAgentSource(value) {
     tunnelLabel: clean(value.tunnelLabel),
     deviceId: clean(value.deviceId),
     deviceNick: clean(value.deviceNick),
-    appOrigin: clean(value.appOrigin)
+    appOrigin: clean(value.appOrigin),
+    operatorTargets: sanitizeTargets(value.operatorTargets)
   };
 }
 
@@ -819,6 +823,27 @@ function formatAgentSource(source) {
     .filter(([, value]) => value)
     .map(([name, value]) => `${name}: ${value}`);
   return lines.join("\n");
+}
+
+function formatOperatorTargets(source) {
+  const sourceTargets = sanitizeTargets(source?.operatorTargets);
+  const merged = new Map();
+  for (const target of sourceTargets) {
+    merged.set(target.id, target);
+  }
+  for (const target of operatorTargets) {
+    merged.set(target.id, target);
+  }
+  const targets = [...merged.values()].slice(0, 16);
+  if (targets.length === 0) {
+    return "No Soty operator targets are currently attached to the local agent.";
+  }
+  return targets
+    .map((target) => {
+      const id = target.id.length > 14 ? `${target.id.slice(0, 10)}...` : target.id;
+      return `- ${target.label} (${id}) access=${target.access ? "true" : "false"} host=${target.host ? "true" : "false"}`;
+    })
+    .join("\n");
 }
 
 function asciiJsonString(value) {
@@ -1134,7 +1159,9 @@ function sanitizeTargets(value) {
   return value
     .map((item) => ({
       id: typeof item?.id === "string" ? item.id.slice(0, 160) : "",
-      label: typeof item?.label === "string" ? item.label.slice(0, 160) : ""
+      label: typeof item?.label === "string" ? item.label.slice(0, 160) : "",
+      access: item?.access === true,
+      host: item?.host === true
     }))
     .filter((item) => item.id && item.label)
     .slice(0, 128);
@@ -1383,7 +1410,8 @@ async function runControlCli(args) {
       process.exit(2);
     }
     for (const target of payload.targets || []) {
-      process.stdout.write(`${target.label}\t${target.id}\n`);
+      const status = target.access ? "access" : target.host ? "host" : "visible";
+      process.stdout.write(`${target.label}\t${target.id}\t${status}\n`);
     }
     return;
   }
