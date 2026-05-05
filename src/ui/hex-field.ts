@@ -57,6 +57,8 @@ export function renderHexField(
   map.querySelectorAll<HTMLButtonElement>(".hex.filled").forEach((button) => {
     let timer = 0;
     let held = false;
+    let pressX = 0;
+    let pressY = 0;
     const id = button.dataset.id || "";
     const open = (x: number, y: number) => actions.menu(id, x, y);
     button.addEventListener("contextmenu", (event) => {
@@ -66,13 +68,16 @@ export function renderHexField(
     button.addEventListener("pointerdown", (event) => {
       held = false;
       movedDuringPointer = false;
+      pressX = event.clientX;
+      pressY = event.clientY;
       timer = window.setTimeout(() => {
         held = true;
         open(event.clientX, event.clientY);
       }, 560);
     });
-    button.addEventListener("pointermove", () => {
-      if (movedDuringPointer) {
+    button.addEventListener("pointermove", (event) => {
+      if (Math.abs(event.clientX - pressX) + Math.abs(event.clientY - pressY) >= 5) {
+        movedDuringPointer = true;
         window.clearTimeout(timer);
       }
     });
@@ -97,6 +102,9 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   let baseX = 0;
   let baseY = 0;
   const down = (event: PointerEvent) => {
+    if (event.target instanceof Element && event.target.closest(".hex.filled")) {
+      return;
+    }
     dragging = true;
     movedDuringPointer = false;
     startX = event.clientX;

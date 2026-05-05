@@ -801,8 +801,7 @@ function renderTiles(): void {
     unread: tunnel.unread
   })), {
     select: (id) => {
-      selectedId = id;
-      saveSelectedTunnelId(id);
+      selectTunnel(id);
       clearTunnelNotices(id);
       tunnels = markTunnel(id, false);
       renderTiles();
@@ -813,20 +812,17 @@ function renderTiles(): void {
     menu: (id, x, y) => {
       openCounterpartyMenu(x, y, {
         attach: () => {
-          selectedId = id;
-          saveSelectedTunnelId(id);
+          selectTunnel(id);
           fileInput?.click();
         },
         knock: () => {
-          selectedId = id;
-          saveSelectedTunnelId(id);
+          selectTunnel(id);
           syncs.get(id)?.sendKnock("*");
           tunnels = touchTunnel(id);
           renderTiles();
         },
         remote: () => {
-          selectedId = id;
-          saveSelectedTunnelId(id);
+          selectTunnel(id);
           void toggleRemoteGrant(id);
         },
         close: () => closeTunnel(id)
@@ -995,6 +991,19 @@ function normalizeSelectedTunnel(): void {
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
+}
+
+function selectTunnel(id: string): void {
+  selectedId = id;
+  saveSelectedTunnelId(id);
+}
+
+function hasVisibleSelection(id = selectedId): boolean {
+  return Boolean(id && loadTunnels().some((tunnel) => !tunnel.archived && tunnel.id === id && hasCounterparty(tunnel)));
+}
+
+function shouldAutoSelectTunnel(id: string): boolean {
+  return selectedId === id || !hasVisibleSelection();
 }
 
 function hasCounterparty(tunnel: TunnelRecord): boolean {
@@ -1214,8 +1223,8 @@ function ensureSync(tunnel: TunnelRecord): void {
           }
         }
       }, 1800);
-      touchSelected();
       if (tunnel.id === selectedId) {
+        touchSelected();
         renderLineTags();
         renderTextPaint();
         renderWriterPop();
@@ -1359,12 +1368,18 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
     overlay.remove();
   };
   overlay.querySelector(".accept-button")?.addEventListener("click", () => {
+    const shouldFocus = shouldAutoSelectTunnel(tunnel.id);
     setTunnelCounterparty(tunnel.id, nick);
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(selectedId);
+    if (shouldFocus) {
+      selectTunnel(tunnel.id);
+    } else {
+      tunnels = markTunnel(tunnel.id, true);
+    }
     syncs.get(tunnel.id)?.acceptJoin(request, device?.nick || ".");
     renderTiles();
-    applySelectedText();
+    if (shouldFocus) {
+      applySelectedText();
+    }
     remove();
   });
   overlay.querySelector(".deny-button")?.addEventListener("click", () => {
@@ -1483,8 +1498,14 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
     sync?.grantRemote(true, request.deviceId);
     return;
   }
-  selectedId = tunnelId;
-  saveSelectedTunnelId(tunnelId);
+  if (shouldAutoSelectTunnel(tunnelId)) {
+    selectTunnel(tunnelId);
+    renderTiles();
+    applySelectedText();
+  } else {
+    tunnels = markTunnel(tunnelId, true);
+    renderTiles();
+  }
   renderRemoteRequest(tunnelId, request);
 }
 
