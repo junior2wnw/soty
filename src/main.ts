@@ -2517,10 +2517,22 @@ function buildOperatorExport(): string {
 function rememberWriter(tunnelId: string, activity: WriterActivity): void {
   const label = cleanNick(activity.nick);
   const text = tunnelId === selectedId && textarea ? textarea.value : texts.get(tunnelId) || "";
-  const line = lineFromIndex(text, activity.index);
   const color = colorFor(`${label}:${activity.deviceId || tunnelId}`);
-  const lines = writerLines.get(tunnelId) ?? new Map<number, WriterLine>();
-  lines.set(line, {
+  const startLine = Number.isSafeInteger(activity.startLine)
+    ? Math.max(0, Number(activity.startLine))
+    : lineFromIndex(text, activity.index);
+  const lineDelta = Number.isSafeInteger(activity.lineDelta) ? Number(activity.lineDelta) : 0;
+  const shiftFrom = Number(activity.startColumn || 0) === 0 ? startLine : startLine + 1;
+  const lines = rebaseWriterLines(tunnelId, shiftFrom, lineDelta);
+  if (activity.action === "erase" && !(activity.insertText || "").trim()) {
+    writerLines.set(tunnelId, lines);
+    return;
+  }
+  const startColumn = Number(activity.startColumn || 0);
+  const insertText = activity.insertText || "";
+  const labelStartLine = startLine + (startColumn > 0 && insertText.startsWith("\n") ? 1 : 0);
+  const span = insertedLineSpan(insertText || activity.preview, startColumn > 0);
+  const writer: WriterLine = {
     nick: label,
     deviceId: activity.deviceId,
     color,
@@ -2528,8 +2540,42 @@ function rememberWriter(tunnelId: string, activity: WriterActivity): void {
     at: Date.now(),
     action: activity.action,
     preview: activity.preview
-  });
+  };
+  for (let offset = 0; offset < span; offset += 1) {
+    lines.set(labelStartLine + offset, writer);
+  }
   writerLines.set(tunnelId, lines);
+}
+
+function rebaseWriterLines(tunnelId: string, fromLine: number, lineDelta: number): Map<number, WriterLine> {
+  const current = writerLines.get(tunnelId) ?? new Map<number, WriterLine>();
+  if (lineDelta === 0 || current.size === 0) {
+    return current;
+  }
+  const shifted = new Map<number, WriterLine>();
+  for (const [line, writer] of current) {
+    if (line < fromLine) {
+      shifted.set(line, writer);
+      continue;
+    }
+    const nextLine = line + lineDelta;
+    if (nextLine >= 0) {
+      shifted.set(nextLine, writer);
+    }
+  }
+  return shifted;
+}
+
+function insertedLineSpan(text: string, dropLeadingBreak = false): number {
+  if (!text) {
+    return 1;
+  }
+  const withoutLeading = dropLeadingBreak && text.startsWith("\n") ? text.slice(1) : text;
+  const body = withoutLeading.endsWith("\n") ? withoutLeading.slice(0, -1) : withoutLeading;
+  if (!body) {
+    return 1;
+  }
+  return body.split("\n").length;
 }
 
 function applyLiveDraft(tunnelId: string, draft: LiveDraft): void {
@@ -2760,22 +2806,22 @@ function speakerForLine(
     readonly time: string;
   }
 ): { readonly nick: string; readonly deviceId: string; readonly color: string; readonly side: string } {
+  const operator = operatorNameFromLine(line);
+  if (operator || className.startsWith("is-operator")) {
+    const nick = operator || (loadTunnels().some((item) => item.id === selectedId && isAgentTunnel(item)) ? agentDialogLabel : "Operator");
+    return {
+      nick,
+      deviceId: "operator",
+      color: colorFor(`operator:${nick}`),
+      side: "remote"
+    };
+  }
   if (label) {
     return {
       nick: label.nick || counterpartyLabelForSelected(),
       deviceId: label.deviceId,
       color: label.color,
       side: label.deviceId && label.deviceId === device?.id ? "local" : "remote"
-    };
-  }
-  const operator = operatorNameFromLine(line);
-  if (operator || className.startsWith("is-operator")) {
-    const nick = operator || "Operator";
-    return {
-      nick,
-      deviceId: "operator",
-      color: colorFor(`operator:${nick}`),
-      side: "remote"
     };
   }
   const nick = counterpartyLabelForSelected();

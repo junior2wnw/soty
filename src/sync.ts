@@ -49,6 +49,11 @@ export interface WriterActivity {
   readonly local: boolean;
   readonly action: "write" | "erase" | "edit";
   readonly preview: string;
+  readonly insertText?: string;
+  readonly deleteCount?: number;
+  readonly startLine?: number;
+  readonly startColumn?: number;
+  readonly lineDelta?: number;
 }
 
 export interface LiveDraft {
@@ -413,7 +418,12 @@ export class TunnelSync {
       index: start,
       local: true,
       action: activity.action,
-      preview: activity.preview
+      preview: activity.preview,
+      insertText,
+      deleteCount,
+      startLine: lineFromIndex(current, start),
+      startColumn: columnFromIndex(current, start),
+      lineDelta: lineBreakCount(insertText) - lineBreakCount(current.slice(start, start + deleteCount))
     });
     this.doc.transact(() => {
       if (deleteCount > 0) {
@@ -757,7 +767,12 @@ export class TunnelSync {
           index,
           local: false,
           action: activity.action,
-          preview: activity.preview
+          preview: activity.preview,
+          insertText,
+          deleteCount,
+          startLine: lineFromIndex(before, index),
+          startColumn: columnFromIndex(before, index),
+          lineDelta: lineBreakCount(insertText) - lineBreakCount(before.slice(index, index + deleteCount))
         });
       }
     }
@@ -1523,7 +1538,12 @@ export class TunnelSync {
         index,
         local: false,
         action: activity.action,
-        preview: activity.preview
+        preview: activity.preview,
+        insertText,
+        deleteCount,
+        startLine: lineFromIndex(before, index),
+        startColumn: columnFromIndex(before, index),
+        lineDelta: lineBreakCount(insertText) - lineBreakCount(before.slice(index, index + deleteCount))
       });
       return;
     }
@@ -1706,4 +1726,20 @@ function describeActivity(
     action,
     preview: raw.replace(/\s+/gu, " ").trim().slice(0, 48)
   };
+}
+
+function lineFromIndex(text: string, index: number): number {
+  const safeIndex = Math.max(0, Math.min(index, text.length));
+  const adjusted = text[safeIndex] === "\n" ? safeIndex + 1 : safeIndex;
+  return text.slice(0, adjusted).split("\n").length - 1;
+}
+
+function columnFromIndex(text: string, index: number): number {
+  const safeIndex = Math.max(0, Math.min(index, text.length));
+  const lineStart = text.lastIndexOf("\n", Math.max(0, safeIndex - 1)) + 1;
+  return safeIndex - lineStart;
+}
+
+function lineBreakCount(text: string): number {
+  return (text.match(/\n/gu) ?? []).length;
 }
