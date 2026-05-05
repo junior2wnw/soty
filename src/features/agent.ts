@@ -20,8 +20,9 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
   try {
     const response = await fetch("http://127.0.0.1:49424/health", {
       cache: "no-store",
-      signal: controller.signal
-    });
+      signal: controller.signal,
+      targetAddressSpace: "local"
+    } as RequestInit & { readonly targetAddressSpace: "local" });
     if (!response.ok) {
       return { ok: false };
     }
