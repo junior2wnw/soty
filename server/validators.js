@@ -55,6 +55,13 @@ export function isNoticeKnock(value) {
     && isShortText(value.targetDeviceId, 140);
 }
 
+export function isLiveDraft(value) {
+  return value
+    && isShortText(value.id, 140)
+    && isShortText(value.nonce, 64)
+    && isShortText(value.ciphertext, 20_000);
+}
+
 export function isRemoteCommand(value) {
   return value
     && isShortText(value.id, 140)

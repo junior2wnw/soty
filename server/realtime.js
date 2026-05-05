@@ -3,6 +3,7 @@ import {
   isEncryptedUpdate,
   isJoinAccept,
   isJoinRequest,
+  isLiveDraft,
   isNoticeKnock,
   isP2pCandidate,
   isP2pDescription,
@@ -111,6 +112,13 @@ async function handleMessage(room, peer, ws, store, raw) {
     broadcast(room, peer.id, {
       type: "notice.knock",
       knock: withPeer(peer, message.knock)
+    });
+    return;
+  }
+  if (message.type === "live.draft" && isLiveDraft(message.draft)) {
+    broadcast(room, peer.id, {
+      type: "live.draft",
+      draft: withPeer(peer, message.draft)
     });
     return;
   }

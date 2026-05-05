@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
-import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -99,6 +99,9 @@ const texts = new Map<string, string>();
 const peers = new Map<string, string>();
 const files = new Map<string, ReceivedFile[]>();
 const localDrafts = new Map<string, string>();
+const liveDrafts = new Map<string, Map<string, LiveDraftState>>();
+const liveDraftTimers = new Map<string, number>();
+const liveDraftSendTimers = new Map<string, number>();
 let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
 let terminalOpenId = "";
@@ -115,6 +118,11 @@ type WriterLine = {
   readonly at: number;
   readonly action: WriterActivity["action"];
   readonly preview: string;
+};
+
+type LiveDraftState = LiveDraft & {
+  readonly at: number;
+  readonly color: string;
 };
 
 const writerLines = new Map<string, Map<number, WriterLine>>();
@@ -1230,6 +1238,9 @@ function ensureSync(tunnel: TunnelRecord): void {
         renderWriterPop();
       }
     },
+    onLiveDraft: (draft) => {
+      applyLiveDraft(tunnel.id, draft);
+    },
     onRemoteChange: (activity) => {
       const hadNotice = tunnelHasNotice(tunnel.id);
       maybeKnockForTyping(tunnel.id, activity, hadNotice);
@@ -1403,6 +1414,7 @@ function closeTunnel(id: string): void {
   writerLines.delete(id);
   activeActivities.delete(id);
   activeActivityTicks.delete(id);
+  clearLiveDraftState(id);
   localDrafts.delete(id);
   files.delete(id);
   tunnels = removeTunnel(id);
@@ -1423,6 +1435,7 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     writerLines.delete(tunnel.id);
     activeActivities.delete(tunnel.id);
     activeActivityTicks.delete(tunnel.id);
+    clearLiveDraftState(tunnel.id);
     files.delete(tunnel.id);
   }
   const tunnel = createTunnel();
@@ -2209,7 +2222,24 @@ function rememberComposerDraft(): void {
   } else {
     localDrafts.delete(selectedId);
   }
+  scheduleLiveDraft(selectedId, draft);
   resizeComposer();
+}
+
+function scheduleLiveDraft(tunnelId: string, draft: string): void {
+  const sync = syncs.get(tunnelId);
+  if (!sync) {
+    return;
+  }
+  const previous = liveDraftSendTimers.get(tunnelId);
+  if (previous) {
+    window.clearTimeout(previous);
+  }
+  const timer = window.setTimeout(() => {
+    liveDraftSendTimers.delete(tunnelId);
+    void sync.sendLiveDraft(draft);
+  }, 90);
+  liveDraftSendTimers.set(tunnelId, timer);
 }
 
 function finalizeComposerDraft(): void {
@@ -2234,6 +2264,12 @@ function finalizeComposerDraft(): void {
   textarea.value = next;
   texts.set(selectedId, next);
   sync.setText(next);
+  const pendingLiveDraftTimer = liveDraftSendTimers.get(selectedId);
+  if (pendingLiveDraftTimer) {
+    window.clearTimeout(pendingLiveDraftTimer);
+    liveDraftSendTimers.delete(selectedId);
+  }
+  void sync.sendLiveDraft("");
   sendOperatorUserMessage(selectedId, draft.trimEnd());
   sendAgentDialogMessage(selectedId, draft.trimEnd());
   localDrafts.delete(selectedId);
@@ -2484,6 +2520,94 @@ function rememberWriter(tunnelId: string, activity: WriterActivity): void {
   writerLines.set(tunnelId, lines);
 }
 
+function applyLiveDraft(tunnelId: string, draft: LiveDraft): void {
+  if (draft.deviceId && draft.deviceId === device?.id) {
+    return;
+  }
+  const key = draft.deviceId || draft.nick || "remote";
+  const current = liveDrafts.get(tunnelId) ?? new Map<string, LiveDraftState>();
+  const existing = current.get(key);
+  if (existing && draft.seq > 0 && existing.seq > draft.seq) {
+    return;
+  }
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  const fallbackNick = tunnel ? counterpartyLabel(tunnel) : counterpartyLabelForSelected();
+  const nick = cleanNick(draft.nick) || fallbackNick;
+  const timerKey = `${tunnelId}:${key}`;
+  const previousTimer = liveDraftTimers.get(timerKey);
+  if (previousTimer) {
+    window.clearTimeout(previousTimer);
+  }
+  if (!draft.active || !draft.text.trim()) {
+    current.set(key, {
+      ...draft,
+      text: "",
+      active: false,
+      nick,
+      at: Date.now(),
+      color: existing?.color || colorFor(`${nick}:${draft.deviceId || tunnelId}`)
+    });
+    const timer = window.setTimeout(() => {
+      const latest = liveDrafts.get(tunnelId)?.get(key);
+      if (latest && latest.seq === draft.seq) {
+        liveDrafts.get(tunnelId)?.delete(key);
+        if (liveDrafts.get(tunnelId)?.size === 0) {
+          liveDrafts.delete(tunnelId);
+        }
+      }
+      liveDraftTimers.delete(timerKey);
+    }, 6500);
+    liveDraftTimers.set(timerKey, timer);
+  } else {
+    current.set(key, {
+      ...draft,
+      nick,
+      at: Date.now(),
+      color: colorFor(`${nick}:${draft.deviceId || tunnelId}`)
+    });
+    const timer = window.setTimeout(() => {
+      const latest = liveDrafts.get(tunnelId)?.get(key);
+      if (latest && latest.seq === draft.seq) {
+        liveDrafts.get(tunnelId)?.delete(key);
+        if (liveDrafts.get(tunnelId)?.size === 0) {
+          liveDrafts.delete(tunnelId);
+        }
+        if (tunnelId === selectedId) {
+          renderTextPaint();
+          renderWriterPop();
+        }
+      }
+      liveDraftTimers.delete(timerKey);
+    }, 6500);
+    liveDraftTimers.set(timerKey, timer);
+  }
+  if (current.size > 0) {
+    liveDrafts.set(tunnelId, current);
+  } else {
+    liveDrafts.delete(tunnelId);
+  }
+  if (tunnelId === selectedId) {
+    renderTextPaint();
+    renderWriterPop();
+  }
+}
+
+function clearLiveDraftState(tunnelId: string): void {
+  liveDrafts.delete(tunnelId);
+  const sendTimer = liveDraftSendTimers.get(tunnelId);
+  if (sendTimer) {
+    window.clearTimeout(sendTimer);
+    liveDraftSendTimers.delete(tunnelId);
+  }
+  const timerPrefix = `${tunnelId}:`;
+  for (const [key, timer] of liveDraftTimers) {
+    if (key.startsWith(timerPrefix)) {
+      window.clearTimeout(timer);
+      liveDraftTimers.delete(key);
+    }
+  }
+}
+
 function renderLineTags(): void {
   if (!lineGutter || !lineMeta) {
     return;
@@ -2507,8 +2631,9 @@ function renderTextPaint(): void {
   const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
   const active = activeActivities.get(selectedId);
   const activeLine = active ? lineFromIndex(text, active.index) : -1;
+  const drafts = liveDraftsForSelected();
   textPaint.style.transform = "";
-  if (!text.trim()) {
+  if (!text.trim() && drafts.length === 0) {
     textPaint.innerHTML = `
       <div class="chat-empty">
         <span>READY</span>
@@ -2561,6 +2686,26 @@ function renderTextPaint(): void {
       live
     });
   }
+  for (const draft of drafts) {
+    const nick = cleanNick(draft.nick) || counterpartyLabelForSelected();
+    bubbles.push({
+      key: `live:${draft.deviceId || nick}`,
+      side: draft.deviceId === device?.id ? "local" : "remote",
+      nick,
+      color: draft.color,
+      time: clock(new Date(draft.createdAt)),
+      className: "is-live-draft",
+      lines: draft.text.split("\n"),
+      live: {
+        deviceId: draft.deviceId,
+        nick,
+        index: draft.index,
+        local: draft.deviceId === device?.id,
+        action: "write",
+        preview: draft.text
+      }
+    });
+  }
   textPaint.innerHTML = bubbles.map((bubble) => {
     const body = bubble.lines
       .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
@@ -2585,6 +2730,12 @@ function renderTextPaint(): void {
       scroll.scrollTop = scroll.scrollHeight;
     }, 0);
   }
+}
+
+function liveDraftsForSelected(): LiveDraftState[] {
+  return [...(liveDrafts.get(selectedId)?.values() ?? [])]
+    .filter((draft) => draft.active && draft.text.trim())
+    .sort((a, b) => a.at - b.at);
 }
 
 function speakerForLine(
@@ -2684,8 +2835,18 @@ function renderWriterPop(): void {
   if (!pop) {
     return;
   }
+  const draft = latestLiveDraft(selectedId);
   const latest = latestWriterLine(selectedId);
-  const activity = activeActivities.get(selectedId) ?? (latest && Date.now() - latest.at < 4200
+  const activity = activeActivities.get(selectedId) ?? (draft
+    ? {
+      deviceId: draft.deviceId,
+      nick: draft.nick,
+      index: draft.index,
+      local: draft.deviceId === device?.id,
+      action: "write" as const,
+      preview: draft.text
+    }
+    : latest && Date.now() - latest.at < 4200
     ? {
       deviceId: latest.deviceId,
       nick: latest.nick,
@@ -2705,6 +2866,16 @@ function renderWriterPop(): void {
     <b>${escapeHtml(nick)}</b>
     <small>${escapeHtml(activityCode(activity.action))}</small>
   `;
+}
+
+function latestLiveDraft(tunnelId: string): LiveDraftState | null {
+  return liveDraftsForTunnel(tunnelId)
+    .sort((a, b) => b.at - a.at)[0] ?? null;
+}
+
+function liveDraftsForTunnel(tunnelId: string): LiveDraftState[] {
+  return [...(liveDrafts.get(tunnelId)?.values() ?? [])]
+    .filter((draft) => draft.active && draft.text.trim());
 }
 
 function latestWriterLine(tunnelId: string): WriterLine | null {

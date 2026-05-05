@@ -686,6 +686,26 @@ svg {
   box-shadow: inset 3px 0 0 var(--amber);
 }
 
+.chat-bubble.is-live-draft {
+  border-style: dashed;
+  background: rgba(12, 18, 24, 0.74);
+}
+
+.chat-bubble.is-live-draft p {
+  color: color-mix(in srgb, var(--ink) 72%, var(--muted));
+}
+
+.chat-bubble.is-live-draft p::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1.15em;
+  margin-left: 2px;
+  vertical-align: -0.16em;
+  background: var(--bubble-color);
+  animation: blink 1s steps(2, start) infinite;
+}
+
 .bubble-meta {
   min-width: 0;
   display: grid;

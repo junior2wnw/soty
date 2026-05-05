@@ -20,6 +20,7 @@ export interface SyncCallbacks {
   readonly onText: (text: string) => void;
   readonly onActivity: (activity: WriterActivity) => void;
   readonly onRemoteChange: (activity: WriterActivity) => void;
+  readonly onLiveDraft: (draft: LiveDraft) => void;
   readonly onFile: (file: ReceivedFile) => void;
   readonly onFileDeleted: (fileId: string) => void;
   readonly onKnock: (knock: NoticeKnock) => void;
@@ -48,6 +49,16 @@ export interface WriterActivity {
   readonly local: boolean;
   readonly action: "write" | "erase" | "edit";
   readonly preview: string;
+}
+
+export interface LiveDraft {
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly text: string;
+  readonly index: number;
+  readonly active: boolean;
+  readonly seq: number;
+  readonly createdAt: string;
 }
 
 export interface ReceivedFile {
@@ -173,6 +184,16 @@ type OutboundEncryptedFile =
   | Omit<EncryptedFileChunk, "deviceId" | "deviceNick" | "createdAt">
   | Omit<EncryptedFileDelete, "deviceId" | "deviceNick" | "createdAt">;
 
+interface EncryptedLiveDraft {
+  readonly id: string;
+  readonly nonce: string;
+  readonly ciphertext: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
 interface EncryptedRemoteCommand {
   readonly id: string;
   readonly targetDeviceId: string;
@@ -259,6 +280,7 @@ type ServerMessage =
   | { readonly type: "presence"; readonly peers: readonly PeerInfo[] }
   | { readonly type: "join.request"; readonly request: JoinRequest }
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
+  | { readonly type: "live.draft"; readonly draft: EncryptedLiveDraft }
   | { readonly type: "remote.request"; readonly request: RemoteRequest }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
@@ -281,6 +303,7 @@ type ControlMessage =
   | { readonly type: "join.deny"; readonly requestId: string }
   | { readonly type: "file"; readonly file: OutboundEncryptedFile }
   | { readonly type: "notice.knock"; readonly knock: { readonly id: string; readonly targetDeviceId: string } }
+  | { readonly type: "live.draft"; readonly draft: { readonly id: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.request"; readonly request: { readonly id: string; readonly targetDeviceId: string } }
   | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
@@ -291,6 +314,7 @@ type DirectMessage =
   | { readonly type: "update"; readonly update: EncryptedUpdate }
   | { readonly type: "file"; readonly file: EncryptedFile }
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
+  | { readonly type: "live.draft"; readonly draft: EncryptedLiveDraft }
   | { readonly type: "remote.request"; readonly request: RemoteRequest }
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
@@ -332,6 +356,7 @@ export class TunnelSync {
   private readonly completedFileIds = new Set<string>();
   private readonly deletedFileIds = new Set<string>();
   private readonly directSentUpdateIds = new Set<string>();
+  private liveDraftSeq = 0;
   private sendQueue = Promise.resolve();
   private readonly wakeReconnect = () => {
     this.recoverConnection();
@@ -398,6 +423,25 @@ export class TunnelSync {
         this.text.insert(start, insertText);
       }
     }, "local");
+  }
+
+  async sendLiveDraft(text: string): Promise<void> {
+    const body = String(text || "").slice(0, 4000);
+    const payload = {
+      text: body,
+      index: this.text.toString().length,
+      active: body.length > 0,
+      seq: ++this.liveDraftSeq
+    };
+    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify(payload)));
+    this.sendControl({
+      type: "live.draft",
+      draft: {
+        id: `live_${crypto.randomUUID()}`,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
   }
 
   closeForEveryone(): void {
@@ -730,6 +774,13 @@ export class TunnelSync {
       return;
     }
 
+    if (message.type === "live.draft") {
+      if (this.rememberControl(message.draft.id) && message.draft.deviceId !== this.device.id) {
+        await this.applyLiveDraft(message.draft);
+      }
+      return;
+    }
+
     if (message.type === "remote.request") {
       if (this.rememberControl(message.request.id) && message.request.deviceId !== this.device.id) {
         this.callbacks.onRemoteRequest(message.request);
@@ -891,6 +942,29 @@ export class TunnelSync {
     });
     this.fileTransfers.delete(file.fileId);
     rememberBounded(this.completedFileIds, file.fileId);
+  }
+
+  private async applyLiveDraft(draft: EncryptedLiveDraft): Promise<void> {
+    const bytes = await decryptFromTunnel(this.tunnel, draft.nonce, draft.ciphertext);
+    const payload = JSON.parse(decode(bytes)) as {
+      readonly text?: string;
+      readonly index?: number;
+      readonly active?: boolean;
+      readonly seq?: number;
+    };
+    const text = typeof payload.text === "string" ? payload.text.slice(0, 4000) : "";
+    const active = payload.active === true && text.length > 0;
+    const index = Number.isSafeInteger(payload.index) ? Math.max(0, Number(payload.index)) : this.text.toString().length;
+    const seq = Number.isSafeInteger(payload.seq) ? Math.max(0, Number(payload.seq)) : 0;
+    this.callbacks.onLiveDraft({
+      deviceId: draft.deviceId || "",
+      nick: draft.deviceNick || draft.nick || "",
+      text,
+      index,
+      active,
+      seq,
+      createdAt: draft.createdAt || new Date().toISOString()
+    });
   }
 
   private async applyRemoteCommand(command: EncryptedRemoteCommand): Promise<void> {
@@ -1102,6 +1176,19 @@ export class TunnelSync {
         knock: {
           ...message.knock,
           deviceId: this.device.id,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
+    if (message.type === "live.draft") {
+      this.broadcastDirect({
+        type: "live.draft",
+        draft: {
+          ...message.draft,
+          deviceId: this.device.id,
+          deviceNick: this.device.nick,
           nick: this.device.nick,
           createdAt
         }
@@ -1446,6 +1533,10 @@ export class TunnelSync {
     }
     if (message.type === "notice.knock" && this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
       this.callbacks.onKnock(message.knock);
+      return;
+    }
+    if (message.type === "live.draft" && this.rememberControl(message.draft.id) && message.draft.deviceId !== this.device.id) {
+      await this.applyLiveDraft(message.draft);
       return;
     }
     if (message.type === "remote.request" && this.rememberControl(message.request.id) && message.request.deviceId !== this.device.id) {
