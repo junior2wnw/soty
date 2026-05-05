@@ -157,7 +157,7 @@ function handleMessage(ws, raw) {
   }
 
   if (message?.type === "stop" && isSafeText(message.id, 160)) {
-    active.get(message.id)?.kill();
+    killProcessTree(active.get(message.id));
     return;
   }
 
@@ -421,9 +421,16 @@ function runCommand(ws, id, command, timeoutMs) {
       return;
     }
     timedOut = true;
-    child.kill();
+    killProcessTree(child);
     send(ws, id, "!\n", 124, "exit");
   }, Math.max(1000, timeoutMs));
+  addCloseHandler(ws, () => {
+    if (active.get(id) === child) {
+      clearTimeout(timer);
+      active.delete(id);
+      killProcessTree(child);
+    }
+  });
 
   const decodeStdout = createOutputDecoder();
   const decodeStderr = createOutputDecoder();
@@ -484,9 +491,16 @@ async function runScript(ws, id, payload, timeoutMs) {
       return;
     }
     timedOut = true;
-    child.kill();
+    killProcessTree(child);
     send(ws, id, "!\n", 124, "exit");
   }, Math.max(1000, timeoutMs));
+  addCloseHandler(ws, () => {
+    if (active.get(id) === child) {
+      clearTimeout(timer);
+      void finish();
+      killProcessTree(child);
+    }
+  });
 
   const decodeStdout = createOutputDecoder();
   const decodeStderr = createOutputDecoder();
@@ -513,6 +527,39 @@ async function runScript(ws, id, payload, timeoutMs) {
 function sendChunks(ws, id, text) {
   for (let index = 0; index < text.length; index += maxChunkBytes) {
     send(ws, id, text.slice(index, index + maxChunkBytes));
+  }
+}
+
+function addCloseHandler(ws, handler) {
+  const previous = ws.onClose;
+  ws.onClose = () => {
+    try {
+      previous();
+    } finally {
+      handler();
+    }
+  };
+}
+
+function killProcessTree(child) {
+  if (!child || !child.pid) {
+    return;
+  }
+  if (process.platform === "win32") {
+    try {
+      spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore"
+      });
+      return;
+    } catch {
+      // Fall back to child.kill below.
+    }
+  }
+  try {
+    child.kill();
+  } catch {
+    // Best-effort cleanup; process may already be gone.
   }
 }
 
