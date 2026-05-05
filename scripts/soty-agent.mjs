@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.14";
+const agentVersion = "0.3.15";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -17,6 +17,7 @@ const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "Current
 const maxCommandChars = 8_000;
 const maxScriptChars = 1_000_000;
 const maxChatChars = 12_000;
+const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const active = new Map();
@@ -135,6 +136,10 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/export" && (request.method === "GET" || request.method === "POST")) {
     await handleOperatorHttpExport(response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/import" && request.method === "POST") {
+    await handleOperatorHttpImport(request, response, headers);
     return;
   }
   response.writeHead(204, headers);
@@ -367,6 +372,27 @@ async function handleOperatorHttpExport(response, headers) {
   sendRaw(operatorBridge, {
     type: "operator.export",
     id
+  });
+}
+
+async function handleOperatorHttpImport(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, maxImportChars + 1000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const text = typeof payload.text === "string" ? payload.text.slice(0, maxImportChars) : "";
+  if (!operatorBridge?.open || !text.trim()) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, 60_000);
+  sendRaw(operatorBridge, {
+    type: "operator.import",
+    id,
+    text
   });
 }
 
@@ -910,7 +936,32 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file]\n");
+  if (command === "import") {
+    const filePath = args[1] || "";
+    if (!filePath) {
+      process.stderr.write("import needs a backup JSON file\n");
+      process.exit(2);
+    }
+    const text = await readFile(filePath, "utf8");
+    const response = await fetch(`http://127.0.0.1:${port}/operator/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text })
+    });
+    const payload = await response.json();
+    if (!payload.ok) {
+      if (payload.text) {
+        process.stderr.write(`${payload.text}\n`);
+      }
+      process.exit(typeof payload.exitCode === "number" ? payload.exitCode : 1);
+    }
+    process.stdout.write(payload.text || "restored\n");
+    if (!String(payload.text || "").endsWith("\n")) {
+      process.stdout.write("\n");
+    }
+    process.exit(0);
+  }
+  process.stderr.write("sotyctl health | list | run <target> <command> | script <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file] | import <file>\n");
   process.exit(2);
 }
 

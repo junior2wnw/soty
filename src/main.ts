@@ -34,9 +34,11 @@ import {
   removeTunnel,
   rememberAppRuntime,
   resetLocalSotyState,
+  selectedKey,
   saveSelectedTunnelId,
   saveTunnels,
   touchTunnel,
+  tunnelsKey,
   tunnelFromAcceptedJoin,
   upsertTunnel
 } from "./trustlink";
@@ -55,6 +57,21 @@ type BarcodeDetectorLike = {
 };
 
 type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorLike;
+
+interface OperatorExportPayload {
+  readonly schema?: string;
+  readonly selectedId?: string;
+  readonly device?: {
+    readonly nick?: string;
+  } | null;
+  readonly localStorage?: Readonly<Record<string, unknown>>;
+  readonly tunnels?: readonly unknown[];
+}
+
+interface RestoreResult {
+  readonly count: number;
+  readonly texts: Map<string, string>;
+}
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
@@ -113,6 +130,7 @@ let qrScanStream: MediaStream | null = null;
 let qrScanFrame = 0;
 let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
+let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 
@@ -256,32 +274,207 @@ function renderNick(): void {
       <form class="nick-form">
         <span>${icon("person")}</span>
         <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
+        <button class="restore-button" type="button" aria-label="restore" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
         <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
+        <input class="restore-file" type="file" accept="application/json,.json" />
       </form>
     </section>
   `;
   const form = app.querySelector<HTMLFormElement>("form");
   const input = app.querySelector<HTMLInputElement>("input");
+  const restoreButton = app.querySelector<HTMLButtonElement>(".restore-button");
+  const restoreFile = app.querySelector<HTMLInputElement>(".restore-file");
   input?.focus();
+  void ensureOperatorBridge(true);
+  restoreButton?.addEventListener("click", () => {
+    restoreFile?.click();
+  });
+  restoreFile?.addEventListener("change", () => {
+    const file = restoreFile.files?.[0];
+    if (file) {
+      void restoreFromOperatorExportText(file.text(), input);
+    }
+    restoreFile.value = "";
+  });
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const nick = cleanNick(new FormData(form).get("nick")?.toString() || "");
     device = await createDevice(nick);
-    const pending = loadPendingJoin();
-    if (pending) {
-      renderJoinWaiting(pending);
-      return;
-    }
-    tunnels = loadTunnels();
-    if (tunnels.length === 0) {
-      tunnels = upsertTunnel(createTunnel());
-    }
-    selectedId = tunnels[0]?.id || "";
-    if (selectedId) {
-      saveSelectedTunnelId(selectedId);
-    }
-    renderApp();
+    finishDeviceBoot();
   });
+}
+
+function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
+  operatorBridgeAllowEmpty = false;
+  const pending = loadPendingJoin();
+  if (pending) {
+    renderJoinWaiting(pending);
+    return;
+  }
+  tunnels = loadTunnels();
+  if (tunnels.length === 0) {
+    tunnels = upsertTunnel(createTunnel());
+  }
+  selectedId = loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
+  if (selectedId) {
+    saveSelectedTunnelId(selectedId);
+  }
+  renderApp();
+  applyRestoredTextSnapshots(restoredTexts);
+}
+
+async function restoreFromOperatorExportText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {
+  try {
+    const payload = parseOperatorExportPayload(await textOrPromise);
+    const restored = await restoreOperatorExportPayload(payload);
+    finishDeviceBoot(restored.texts);
+    return restored;
+  } catch (error) {
+    console.warn("[soty] operator export restore failed", error);
+    if (nickInput) {
+      nickInput.value = "";
+      nickInput.placeholder = "backup?";
+      nickInput.focus();
+    }
+    return null;
+  }
+}
+
+async function restoreOperatorExportPayload(payload: OperatorExportPayload): Promise<RestoreResult> {
+  if (!device) {
+    device = await createDevice(cleanNick(payload.device?.nick || "Soty"));
+  }
+
+  const restored = restoredTunnelsFromPayload(payload);
+  if (restored.tunnels.length > 0) {
+    saveTunnels(restored.tunnels);
+    const selected = restoredSelectedId(payload, restored.tunnels) || restored.tunnels[0]?.id || "";
+    selectedId = selected;
+    if (selected) {
+      saveSelectedTunnelId(selected);
+    }
+  }
+
+  rememberAppRuntime();
+  clearRemoteSessionState();
+  remoteEnabled = loadRemoteEnabled();
+  remoteAccess = loadRemoteAccess();
+  terminalOpenId = "";
+  return {
+    count: restored.tunnels.length,
+    texts: restored.texts
+  };
+}
+
+function parseOperatorExportPayload(text: string): OperatorExportPayload {
+  const parsed: unknown = JSON.parse(text);
+  if (!isRecord(parsed) || parsed.schema !== "soty.operator-export.v1") {
+    throw new Error("Unsupported Soty backup file");
+  }
+  return parsed as OperatorExportPayload;
+}
+
+function restoredTunnelsFromPayload(payload: OperatorExportPayload): { readonly tunnels: TunnelRecord[]; readonly texts: Map<string, string> } {
+  const rawTunnels = payload.tunnels?.length
+    ? payload.tunnels
+    : parseStoredTunnelList(recordString(payload.localStorage, tunnelsKey));
+  const now = new Date().toISOString();
+  const seen = new Set<string>();
+  const textsByTunnel = new Map<string, string>();
+  const tunnelsToRestore: TunnelRecord[] = [];
+
+  for (const raw of rawTunnels) {
+    const tunnel = normalizeImportedTunnel(raw, now);
+    if (!tunnel || seen.has(tunnel.id)) {
+      continue;
+    }
+    seen.add(tunnel.id);
+    tunnelsToRestore.push(tunnel);
+    if (isRecord(raw) && typeof raw.text === "string" && raw.text.length > 0) {
+      textsByTunnel.set(tunnel.id, raw.text.slice(0, 200_000));
+    }
+  }
+
+  return {
+    tunnels: tunnelsToRestore,
+    texts: textsByTunnel
+  };
+}
+
+function parseStoredTunnelList(value: string): readonly unknown[] {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeImportedTunnel(raw: unknown, now: string): TunnelRecord | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const id = recordString(raw, "id");
+  const key = recordString(raw, "key");
+  if (!id || !key || id.length > 256 || key.length > 2048) {
+    return null;
+  }
+  const label = cleanNick(recordString(raw, "label") || recordString(raw, "counterpartyLabel") || ".");
+  const color = recordString(raw, "color");
+  const score = typeof raw.score === "number" && Number.isFinite(raw.score)
+    ? Math.max(0, Math.min(Math.round(raw.score), 1_000_000))
+    : 0;
+  const counterparty = typeof raw.counterparty === "boolean" ? raw.counterparty : label !== ".";
+  return {
+    id,
+    key,
+    label,
+    ...(color ? { color } : {}),
+    counterparty,
+    archived: raw.archived === true,
+    ...(raw.agent === true ? { agent: true } : {}),
+    score,
+    lastActionAt: recordString(raw, "lastActionAt") || now,
+    createdAt: recordString(raw, "createdAt") || now,
+    updatedAt: recordString(raw, "updatedAt") || now,
+    unread: raw.unread === true
+  };
+}
+
+function restoredSelectedId(payload: OperatorExportPayload, restoredTunnels: readonly TunnelRecord[]): string {
+  const wanted = payload.selectedId || recordString(payload.localStorage, selectedKey);
+  if (wanted && restoredTunnels.some((tunnel) => tunnel.id === wanted)) {
+    return wanted;
+  }
+  return "";
+}
+
+function applyRestoredTextSnapshots(restoredTexts: Map<string, string>): void {
+  if (restoredTexts.size === 0) {
+    return;
+  }
+  for (const [tunnelId, text] of restoredTexts) {
+    texts.set(tunnelId, text);
+    syncs.get(tunnelId)?.setText(text);
+  }
+  if (selectedId && restoredTexts.has(selectedId)) {
+    applySelectedText();
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function recordString(value: unknown, key: string): string {
+  if (!isRecord(value)) {
+    return "";
+  }
+  const item = value[key];
+  return typeof item === "string" ? item : "";
 }
 
 function continueWithoutPending(): void {
@@ -422,6 +615,7 @@ function renderApp(): void {
             <small>LIVE TUNNELS</small>
           </span>
         </div>
+        <button class="agent-open retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
         <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
@@ -432,8 +626,7 @@ function renderApp(): void {
             <b class="dialog-name">.</b>
             <small class="dialog-state">OFFLINE</small>
           </span>
-          <button class="agent-dialog-button retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
-          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="new dialog" data-tooltip="Новый чистый диалог">${icon("refresh")}</button>
+          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
@@ -497,11 +690,11 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
   });
+  app.querySelector<HTMLButtonElement>(".agent-open")?.addEventListener("click", () => {
+    void startAgentDialog();
+  });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
-  });
-  app.querySelector<HTMLButtonElement>(".agent-dialog-button")?.addEventListener("click", () => {
-    void startAgentDialog();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -585,6 +778,7 @@ function renderTiles(): void {
       select: () => undefined,
       menu: () => undefined
     });
+    renderEmptyHiveActions(field);
     renderDialogChrome();
     void showQr(true);
     return;
@@ -635,6 +829,31 @@ function renderTiles(): void {
     }
   });
   renderDialogChrome();
+}
+
+function renderEmptyHiveActions(field: HTMLDivElement): void {
+  const actions = document.createElement("div");
+  actions.className = "empty-hive-actions";
+  actions.innerHTML = `
+    <button class="empty-hive-action empty-agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">
+      ${icon("person")}
+      <span>AGENT</span>
+    </button>
+    <button class="empty-hive-action empty-qr-action" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">
+      ${icon("qr")}
+      <span>QR</span>
+    </button>
+  `;
+  field.append(actions);
+  actions.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+  });
+  actions.querySelector<HTMLButtonElement>(".empty-agent-action")?.addEventListener("click", () => {
+    void startAgentDialog();
+  });
+  actions.querySelector<HTMLButtonElement>(".empty-qr-action")?.addEventListener("click", () => {
+    void showQr();
+  });
 }
 
 async function toggleRemoteGrant(id: string): Promise<void> {
@@ -785,14 +1004,21 @@ function startFreshDialog(): void {
 }
 
 async function startAgentDialog(): Promise<void> {
-  const fresh = createFreshDialog("Codex");
-  if (!fresh) {
+  let tunnel = findActiveAgentDialog();
+  if (!tunnel) {
+    tunnel = createFreshDialog("Codex", { agent: true, archiveCurrent: false });
+  } else {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+    tunnels = markTunnel(tunnel.id, false);
+  }
+  if (!tunnel) {
     return;
   }
   renderApp();
   const agent = await refreshLocalAgent();
   if (!agent.ok) {
-    renderAgentInstall(fresh.id, () => {
+    renderAgentInstall(tunnel.id, () => {
       void ensureOperatorBridge();
       publishOperatorTargets();
       composer?.focus();
@@ -804,24 +1030,41 @@ async function startAgentDialog(): Promise<void> {
   composer?.focus();
 }
 
-function createFreshDialog(labelOverride = ""): TunnelRecord | null {
+function findActiveAgentDialog(): TunnelRecord | null {
+  return sortedVisibleTunnels().find((tunnel) => isAgentTunnel(tunnel))
+    || loadTunnels().find((tunnel) => !tunnel.archived && isAgentTunnel(tunnel))
+    || null;
+}
+
+function isAgentTunnel(tunnel: TunnelRecord): boolean {
+  return tunnel.agent === true || counterpartyLabel(tunnel).toLowerCase() === "codex";
+}
+
+function createFreshDialog(
+  labelOverride = "",
+  options: { readonly agent?: boolean; readonly archiveCurrent?: boolean } = {}
+): TunnelRecord | null {
   if (!device) {
     return null;
   }
   const current = loadTunnels();
   const active = current.find((tunnel) => tunnel.id === selectedId);
   const activeLabel = cleanNick(active ? counterpartyLabel(active) : "");
-  const requestedLabel = cleanNick(labelOverride);
+  const rawRequestedLabel = cleanNick(labelOverride);
+  const requestedLabel = rawRequestedLabel === "." ? "" : rawRequestedLabel;
   const label = requestedLabel || (activeLabel && activeLabel !== "." && activeLabel !== device.nick ? activeLabel : "Codex");
   const now = new Date().toISOString();
+  const isAgent = options.agent === true || (!requestedLabel && active?.agent === true);
+  const archiveCurrent = options.archiveCurrent !== false;
   const fresh = {
     ...createTunnel(label, true),
-    color: active?.color || colorFor(`${label}:${now}`)
+    ...(isAgent ? { agent: true } : {}),
+    color: (archiveCurrent ? active?.color : "") || colorFor(`${label}:${now}`)
   };
   const next = [
     fresh,
     ...current.map((tunnel) => tunnel.id === selectedId
-      ? { ...tunnel, archived: true, unread: false, updatedAt: now, lastActionAt: now }
+      ? { ...tunnel, archived: archiveCurrent, unread: false, updatedAt: now, lastActionAt: now }
       : tunnel)
   ];
   saveTunnels(next);
@@ -1296,8 +1539,9 @@ async function sendTerminalCommand(): Promise<void> {
   await sync.sendRemoteCommand(hostDeviceId, command);
 }
 
-async function ensureOperatorBridge(): Promise<void> {
-  if (!hasOperatorTargets()) {
+async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
+  operatorBridgeAllowEmpty = operatorBridgeAllowEmpty || allowEmpty;
+  if (!operatorBridgeAllowEmpty && !hasOperatorTargets()) {
     closeOperatorBridge();
     return;
   }
@@ -1307,7 +1551,10 @@ async function ensureOperatorBridge(): Promise<void> {
   }
   window.clearTimeout(operatorReconnectTimer);
   const agent = await checkLocalAgent(650);
-  if (!agent.ok || !hasOperatorTargets()) {
+  if (!agent.ok || (!operatorBridgeAllowEmpty && !hasOperatorTargets())) {
+    if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
+      operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
+    }
     return;
   }
   const ws = new WebSocket("ws://127.0.0.1:49424");
@@ -1349,13 +1596,16 @@ async function ensureOperatorBridge(): Promise<void> {
     if (message.type === "operator.export") {
       runOperatorExport(message);
     }
+    if (message.type === "operator.import") {
+      void runOperatorImport(message);
+    }
   };
   ws.onclose = () => {
     if (operatorSocket === ws) {
       operatorSocket = null;
     }
-    if (hasOperatorTargets()) {
-      operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(), 1800);
+    if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
+      operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
     }
   };
   ws.onerror = () => {
@@ -1367,6 +1617,7 @@ function closeOperatorBridge(): void {
   window.clearTimeout(operatorReconnectTimer);
   operatorSocket?.close();
   operatorSocket = null;
+  operatorBridgeAllowEmpty = false;
   operatorPending.clear();
 }
 
@@ -1558,6 +1809,20 @@ function runOperatorExport(message: { readonly id?: string }): void {
     return;
   }
   sendOperatorOutput(requestId, buildOperatorExport(), 0);
+}
+
+async function runOperatorImport(message: { readonly id?: string; readonly text?: string }): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const text = typeof message.text === "string" ? message.text : "";
+  if (!requestId || !text.trim()) {
+    return;
+  }
+  const restored = await restoreFromOperatorExportText(text);
+  if (!restored) {
+    sendOperatorOutput(requestId, "! import", 500);
+    return;
+  }
+  sendOperatorOutput(requestId, `restored ${restored.count}\n`, 0);
 }
 
 function findOperatorTarget(target: string): TunnelRecord | null {

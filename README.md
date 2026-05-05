@@ -85,6 +85,7 @@ Installed operator bridge:
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd read Codex
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd listen Codex
 %LOCALAPPDATA%\soty-agent\sotyctl.cmd export soty-backup.json
+%LOCALAPPDATA%\soty-agent\sotyctl.cmd import soty-backup.json
 
 # macOS / Linux
 ~/.soty-agent/sotyctl list
@@ -96,11 +97,12 @@ Installed operator bridge:
 ~/.soty-agent/sotyctl read Codex
 ~/.soty-agent/sotyctl listen Codex
 ~/.soty-agent/sotyctl export soty-backup.json
+~/.soty-agent/sotyctl import soty-backup.json
 ```
 
 The bridge works when the PWA is open on the controlling device. `run` and `script` also require remote access to the named counterparty.
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
-Use `say` to queue live typing into the shared text surface through the PWA; it returns after the message is queued so long operator notes do not hold the HTTP request open. Use `read` to fetch messages sent from the PWA after Enter, or `listen` to long-poll them as JSON lines for an IDE-side assistant loop. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Remote command grants are session-only and are intentionally not backed up or restored.
+Use `say` to queue live typing into the shared text surface through the PWA; it returns after the message is queued so long operator notes do not hold the HTTP request open. Use `read` to fetch messages sent from the PWA after Enter, or `listen` to long-poll them as JSON lines for an IDE-side assistant loop. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Use `import` on a fresh PWA to create a new local device from that backup and restore rooms/text snapshots. Remote command grants are session-only and are intentionally not backed up or restored.
 
 Emergency local repair:
 
