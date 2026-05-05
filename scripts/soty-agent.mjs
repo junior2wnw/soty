@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.24";
+const agentVersion = "0.3.25";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -640,6 +640,10 @@ async function postAgentRelayReply(id, result) {
 async function askCodexForAgentReply(text, context) {
   const codexBin = findCodexBinary();
   if (!codexBin) {
+    const relay = await askCodexRelayFallback(text, context);
+    if (relay) {
+      return relay;
+    }
     return {
       ok: false,
       text: "Я вижу сообщение, но на этом компьютере не нашел исполняемый Codex. Открой IDE и проверь, что команда `codex` доступна в терминале.",
@@ -688,6 +692,80 @@ async function askCodexForAgentReply(text, context) {
   } finally {
     await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function askCodexRelayFallback(text, context) {
+  const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
+  if (!relayBaseUrl) {
+    return null;
+  }
+  const requestRelayId = agentRelayId || await currentCodexRelayId(relayBaseUrl);
+  if (!requestRelayId) {
+    return null;
+  }
+  try {
+    const request = await fetch(new URL("/api/agent/relay/request", relayBaseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        relayId: requestRelayId,
+        text: String(text || "").slice(0, maxChatChars),
+        context: String(context || "").slice(-16_000)
+      })
+    });
+    const created = await request.json();
+    if (!request.ok || !created?.ok || !isSafeText(created.id, 160)) {
+      return null;
+    }
+    const replyRelayId = safeRelayId(created.relayId || requestRelayId);
+    return await waitForCodexRelayFallbackReply(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs);
+  } catch {
+    return null;
+  }
+}
+
+async function currentCodexRelayId(relayBaseUrl) {
+  try {
+    const response = await fetch(new URL("/api/agent/relay/current", relayBaseUrl), { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload?.connected || payload.codex === false) {
+      return "";
+    }
+    return safeRelayId(payload.relayId || "");
+  } catch {
+    return "";
+  }
+}
+
+async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeoutMs) {
+  if (!relayId || !id) {
+    return null;
+  }
+  const deadline = Date.now() + Math.max(5000, timeoutMs || 120000);
+  while (Date.now() < deadline) {
+    const url = new URL("/api/agent/relay/reply", relayBaseUrl);
+    url.searchParams.set("relayId", relayId);
+    url.searchParams.set("id", id);
+    url.searchParams.set("wait", "1");
+    try {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) {
+        return null;
+      }
+      const payload = await response.json();
+      if (payload?.reply) {
+        return {
+          ok: Boolean(payload.reply.ok),
+          text: String(payload.reply.text || "").slice(0, maxChatChars),
+          ...(Number.isSafeInteger(payload.reply.exitCode) ? { exitCode: payload.reply.exitCode } : {})
+        };
+      }
+    } catch {
+      // Keep waiting until the outer timeout; transient network switches are common on remote devices.
+    }
+  }
+  return null;
 }
 
 function buildAgentPrompt(text, context) {
