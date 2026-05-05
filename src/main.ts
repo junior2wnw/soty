@@ -5,7 +5,7 @@ import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
-import type { LocalAgentReply, LocalAgentStatus } from "./features/agent";
+import type { LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
@@ -2251,11 +2251,18 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
     return;
   }
   const context = (texts.get(tunnelId) || "").slice(-16_000);
+  const source: LocalAgentRequestSource = {
+    tunnelId,
+    tunnelLabel: counterpartyLabel(tunnel),
+    deviceId: device?.id || "",
+    deviceNick: device?.nick || "",
+    appOrigin: window.location.origin
+  };
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
     .then(async () => {
-      const reply = await askLocalAgentReply(text, context);
+      const reply = await askLocalAgentReply(text, context, source);
       const body = reply.text.trim()
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
       if (shouldOfferAgentInstall(reply)) {

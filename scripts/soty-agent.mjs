@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.25";
+const agentVersion = "0.3.26";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -27,6 +27,7 @@ const maxChatChars = 12_000;
 const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
+const maxSourceChars = 180;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "120000", 10);
 const skillSyncRepoUrl = process.env.SOTY_CODEX_SKILL_SYNC_REPO || "https://github.com/junior2wnw/universal-install-ops-skill.git";
 const skillSyncRef = process.env.SOTY_CODEX_SKILL_SYNC_REF || "main";
@@ -536,11 +537,12 @@ async function handleAgentReply(request, response, headers) {
   }
   const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
   const context = typeof payload.context === "string" ? payload.context.slice(-16_000) : "";
+  const source = sanitizeAgentSource(payload.source);
   if (!text.trim()) {
     sendJson(response, 400, headers, { ok: false, text: "! text", exitCode: 400 });
     return;
   }
-  const result = await askCodexForAgentReply(text, context);
+  const result = await askCodexForAgentReply(text, context, source);
   sendJson(response, result.ok ? 200 : 502, headers, result);
 }
 
@@ -615,7 +617,8 @@ async function pollAgentRelay() {
 async function handleAgentRelayJob(job) {
   const result = await askCodexForAgentReply(
     String(job.text || "").slice(0, maxChatChars),
-    String(job.context || "").slice(-16_000)
+    String(job.context || "").slice(-16_000),
+    sanitizeAgentSource(job.source)
   );
   await postAgentRelayReply(job.id, result);
 }
@@ -637,10 +640,10 @@ async function postAgentRelayReply(id, result) {
   }
 }
 
-async function askCodexForAgentReply(text, context) {
+async function askCodexForAgentReply(text, context, source = {}) {
   const codexBin = findCodexBinary();
   if (!codexBin) {
-    const relay = await askCodexRelayFallback(text, context);
+    const relay = await askCodexRelayFallback(text, context, source);
     if (relay) {
       return relay;
     }
@@ -673,7 +676,7 @@ async function askCodexForAgentReply(text, context) {
   ];
 
   try {
-    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, buildAgentPrompt(text, context));
+    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, buildAgentPrompt(text, context, source));
     const reply = existsSync(outPath) ? (await readFile(outPath, "utf8")).trim() : "";
     if (result.exitCode === 0 && reply) {
       return { ok: true, text: reply.slice(0, maxChatChars), exitCode: 0 };
@@ -694,7 +697,7 @@ async function askCodexForAgentReply(text, context) {
   }
 }
 
-async function askCodexRelayFallback(text, context) {
+async function askCodexRelayFallback(text, context, source = {}) {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
   if (!relayBaseUrl) {
     return null;
@@ -711,7 +714,8 @@ async function askCodexRelayFallback(text, context) {
       body: JSON.stringify({
         relayId: requestRelayId,
         text: String(text || "").slice(0, maxChatChars),
-        context: String(context || "").slice(-16_000)
+        context: String(context || "").slice(-16_000),
+        source: sanitizeAgentSource(source)
       })
     });
     const created = await request.json();
@@ -768,18 +772,53 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
   return null;
 }
 
-function buildAgentPrompt(text, context) {
+function buildAgentPrompt(text, context, source = {}) {
   const trimmedContext = String(context || "").trim();
+  const sourceContext = formatAgentSource(source);
   return [
     "You are the local Codex agent inside the Soty app.",
     "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
-    "If the user asks for IDE work, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
+    "Use the request source below to understand which Soty device/tunnel contacted you. Do not assume the current Codex host is the same device that wrote the message.",
+    "If the user asks for work on that device, name the source device and say the work should be routed through the matching Soty remote/operator target. Ask for missing remote access only when it is actually needed.",
+    "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
+    sourceContext ? `Request source:\n${sourceContext}` : "",
     trimmedContext ? `Recent chat context as a JSON string with Unicode escapes. Decode it before using it:\n${asciiJsonString(trimmedContext)}` : "",
     `User message as a JSON string with Unicode escapes. Decode it before answering:\n${asciiJsonString(String(text || "").trim())}`,
     "Answer in Russian:"
   ].filter(Boolean).join("\n\n");
+}
+
+function sanitizeAgentSource(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const clean = (field) => String(field || "").trim().slice(0, maxSourceChars);
+  return {
+    tunnelId: clean(value.tunnelId),
+    tunnelLabel: clean(value.tunnelLabel),
+    deviceId: clean(value.deviceId),
+    deviceNick: clean(value.deviceNick),
+    appOrigin: clean(value.appOrigin)
+  };
+}
+
+function formatAgentSource(source) {
+  const safe = sanitizeAgentSource(source);
+  const lines = [
+    ["Soty device nick", safe.deviceNick],
+    ["Soty device id", safe.deviceId],
+    ["Soty tunnel label", safe.tunnelLabel],
+    ["Soty tunnel id", safe.tunnelId],
+    ["App origin", safe.appOrigin],
+    ["Local agent relay id", agentRelayId ? `${agentRelayId.slice(0, 10)}...` : ""],
+    ["Local agent scope", agentScope],
+    ["Local agent platform", process.platform]
+  ]
+    .filter(([, value]) => value)
+    .map(([name, value]) => `${name}: ${value}`);
+  return lines.join("\n");
 }
 
 function asciiJsonString(value) {

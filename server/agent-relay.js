@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 const maxChatChars = 12_000;
 const maxContextChars = 16_000;
 const maxReplyChars = 12_000;
+const maxSourceChars = 180;
 const leaseMs = 180_000;
 const connectedMs = 70_000;
 const requestTtlMs = 15 * 60_000;
@@ -58,6 +59,7 @@ export function attachAgentRelay(app) {
     const relayId = normalizeRelayId(req.body?.relayId);
     const text = cleanText(req.body?.text, maxChatChars);
     const context = cleanText(req.body?.context, maxContextChars);
+    const source = cleanAgentSource(req.body?.source);
     if (!relayId || !text.trim()) {
       res.status(400).json({ ok: false });
       return;
@@ -69,6 +71,7 @@ export function attachAgentRelay(app) {
       id: `agent_${randomUUID()}`,
       text,
       context,
+      source,
       createdAt: Date.now(),
       leaseUntil: 0,
       reply: null,
@@ -201,8 +204,22 @@ function leasePendingJobs(channel) {
     id: job.id,
     text: job.text,
     context: job.context,
+    source: job.source || {},
     createdAt: new Date(job.createdAt).toISOString()
   }));
+}
+
+function cleanAgentSource(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return {
+    tunnelId: cleanText(value.tunnelId, maxSourceChars),
+    tunnelLabel: cleanText(value.tunnelLabel, maxSourceChars),
+    deviceId: cleanText(value.deviceId, maxSourceChars),
+    deviceNick: cleanText(value.deviceNick, maxSourceChars),
+    appOrigin: cleanText(value.appOrigin, maxSourceChars)
+  };
 }
 
 function findReply(relayId, id) {

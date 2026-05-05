@@ -18,6 +18,14 @@ export interface LocalAgentReply {
   readonly exitCode?: number;
 }
 
+export interface LocalAgentRequestSource {
+  readonly tunnelId?: string;
+  readonly tunnelLabel?: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly appOrigin?: string;
+}
+
 const relayStorageKey = "soty:agent:relay-id";
 const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const localAgentBlockedText = "Сообщение отправлено, но браузер пока не смог достучаться до локального агента. Я включил серверный мост, но агент еще не подключился к нему. Нажми установку агента один раз и потом обнови проверку.";
@@ -71,30 +79,31 @@ export async function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus
 export async function askLocalAgentReply(
   text: string,
   context: string,
+  source: LocalAgentRequestSource = {},
   timeoutMs = 130_000
 ): Promise<LocalAgentReply> {
   if (readAgentRelayId()) {
     const relayStatus = await checkAgentRelay(1200);
     if (relayStatus.ok && relayStatus.codex !== false) {
-      return await askAgentRelayReply(text, context, timeoutMs) || {
+      return await askAgentRelayReply(text, context, source, timeoutMs) || {
         ok: false,
         text: "Серверный мост агента подключен, но не вернул ответ.",
         exitCode: 124
       };
     }
     if (relayStatus.ok && relayStatus.codex === false && await adoptCurrentAgentRelay(1500, true)) {
-      const relay = await askAgentRelayReply(text, context, timeoutMs);
+      const relay = await askAgentRelayReply(text, context, source, timeoutMs);
       if (relay) {
         return relay;
       }
     }
   }
-  const direct = await askLocalAgentReplyHttp(text, context, timeoutMs);
+  const direct = await askLocalAgentReplyHttp(text, context, source, timeoutMs);
   if (direct && !isCodexMissingReply(direct)) {
     return direct;
   }
   if (await adoptCurrentAgentRelay(1500, true)) {
-    const relay = await askAgentRelayReply(text, context, timeoutMs);
+    const relay = await askAgentRelayReply(text, context, source, timeoutMs);
     if (relay) {
       return relay;
     }
@@ -102,7 +111,7 @@ export async function askLocalAgentReply(
   if (direct) {
     return direct;
   }
-  const relay = await askAgentRelayReply(text, context, timeoutMs);
+  const relay = await askAgentRelayReply(text, context, source, timeoutMs);
   return relay || {
     ok: false,
     text: localAgentBlockedText,
@@ -187,6 +196,7 @@ export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
 async function askLocalAgentReplyHttp(
   text: string,
   context: string,
+  source: LocalAgentRequestSource,
   timeoutMs: number
 ): Promise<LocalAgentReply | null> {
   const controller = new AbortController();
@@ -196,7 +206,7 @@ async function askLocalAgentReplyHttp(
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, context }),
+      body: JSON.stringify({ text, context, source }),
       signal: controller.signal,
       targetAddressSpace: "loopback"
     } as RequestInit & { readonly targetAddressSpace: "loopback" });
@@ -220,6 +230,7 @@ async function askLocalAgentReplyHttp(
 async function askAgentRelayReply(
   text: string,
   context: string,
+  source: LocalAgentRequestSource,
   timeoutMs: number
 ): Promise<LocalAgentReply | null> {
   const relayId = readAgentRelayId();
@@ -231,7 +242,7 @@ async function askAgentRelayReply(
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relayId, text, context })
+      body: JSON.stringify({ relayId, text, context, source })
     });
     const created = await request.json() as { readonly ok?: boolean; readonly id?: string };
     if (!request.ok || !created.ok || typeof created.id !== "string") {
