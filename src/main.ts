@@ -4,7 +4,7 @@ import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, Rem
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
+import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentReply, LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -1032,6 +1032,7 @@ async function startAgentDialog(): Promise<void> {
     return;
   }
   renderApp();
+  await adoptCurrentAgentRelay();
   const agent = await refreshLocalAgent();
   if (agent.ok && !agent.relay) {
     void bindLocalAgentRelay().then((bound) => {

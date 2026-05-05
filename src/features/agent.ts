@@ -100,6 +100,37 @@ export function agentRelayInviteUrl(): string {
   return url.toString();
 }
 
+export async function adoptCurrentAgentRelay(timeoutMs = 1200): Promise<boolean> {
+  if (readAgentRelayId()) {
+    return false;
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("/api/agent/relay/current", {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const payload = await response.json() as {
+      readonly connected?: boolean;
+      readonly relayId?: string;
+    };
+    const relayId = sanitizeRelayId(payload.relayId || "");
+    if (!payload.connected || !relayId) {
+      return false;
+    }
+    localStorage.setItem(relayStorageKey, relayId);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
   const relayId = ensureAgentRelayId();
   const controller = new AbortController();

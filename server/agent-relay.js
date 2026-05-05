@@ -15,6 +15,26 @@ const replyWaiters = new Map();
 const jsonParser = express.json({ limit: "180kb", type: "application/json" });
 
 export function attachAgentRelay(app) {
+  app.get("/api/agent/relay/current", (_req, res) => {
+    cleanupChannels();
+    const now = Date.now();
+    const current = Array.from(channels.entries())
+      .filter(([, channel]) => now - (channel.lastPollAt || 0) < connectedMs)
+      .sort((left, right) => (right[1].lastPollAt || 0) - (left[1].lastPollAt || 0))[0];
+    if (!current) {
+      res.json({ ok: true, connected: false, relayId: "", lastSeenAt: "", version: "" });
+      return;
+    }
+    const [relayId, channel] = current;
+    res.json({
+      ok: true,
+      connected: true,
+      relayId,
+      lastSeenAt: new Date(channel.lastPollAt).toISOString(),
+      version: channel.agentVersion || ""
+    });
+  });
+
   app.get("/api/agent/relay/status", (req, res) => {
     const relayId = normalizeRelayId(req.query.relayId);
     if (!relayId) {
