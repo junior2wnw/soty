@@ -706,6 +706,70 @@ svg {
   animation: blink 1s steps(2, start) infinite;
 }
 
+.chat-bubble.is-agent-thinking {
+  min-width: 174px;
+  border-color: color-mix(in srgb, var(--amber) 76%, var(--cyan));
+  background:
+    linear-gradient(135deg, rgba(255, 203, 98, 0.14), transparent 44%),
+    #121923;
+  box-shadow:
+    inset 3px 0 0 var(--amber),
+    0 0 0 1px rgba(103, 232, 249, 0.16),
+    0 14px 34px rgba(0, 0, 0, 0.24);
+  animation: thinking-hop 720ms cubic-bezier(.2, .9, .25, 1.35) infinite;
+}
+
+.chat-bubble.is-agent-thinking .bubble-meta small {
+  color: var(--amber);
+}
+
+.chat-bubble.is-agent-thinking p {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+}
+
+.thinking-label {
+  color: var(--cream);
+}
+
+.thinking-rig {
+  height: 22px;
+  display: grid;
+  grid-template-columns: repeat(5, 10px);
+  align-items: end;
+  gap: 4px;
+}
+
+.thinking-rig i {
+  height: 7px;
+  display: block;
+  background: var(--green);
+  transform-origin: 50% 100%;
+  animation: thinking-kick 620ms steps(4, end) infinite;
+}
+
+.thinking-rig i:nth-child(2) {
+  background: var(--cyan);
+  animation-delay: 80ms;
+}
+
+.thinking-rig i:nth-child(3) {
+  background: var(--amber);
+  animation-delay: 160ms;
+}
+
+.thinking-rig i:nth-child(4) {
+  background: var(--red);
+  animation-delay: 240ms;
+}
+
+.thinking-rig i:nth-child(5) {
+  background: var(--cream);
+  animation-delay: 320ms;
+}
+
 .bubble-meta {
   min-width: 0;
   display: grid;
@@ -1242,18 +1306,18 @@ svg {
 }
 
 .access-sheet {
-  width: min(380px, 100%);
+  width: min(340px, 100%);
   display: grid;
   justify-items: center;
-  gap: 12px;
-  padding: 18px;
+  gap: 7px;
+  padding: 11px 12px 12px;
   color: var(--ink);
   text-align: center;
 }
 
 .access-mark {
-  width: 56px;
-  height: 52px;
+  width: 38px;
+  height: 35px;
   display: grid;
   place-items: center;
   clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
@@ -1262,14 +1326,15 @@ svg {
 }
 
 .access-sheet b {
-  font-size: 18px;
+  font-size: 15px;
 }
 
 .access-sheet p {
-  max-width: 290px;
+  max-width: 280px;
   margin: 0;
   color: var(--muted);
-  line-height: 1.35;
+  line-height: 1.2;
+  font-size: 13px;
 }
 
 .access-actions {
@@ -1280,7 +1345,7 @@ svg {
 }
 
 .access-actions button {
-  min-height: 44px;
+  min-height: 34px;
   border: 1px solid #3d515f;
   background: #17202a;
   color: var(--ink);
@@ -1401,6 +1466,39 @@ svg {
 @keyframes blink {
   50% {
     opacity: 0.34;
+  }
+}
+
+@keyframes thinking-hop {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+
+  35% {
+    transform: translateY(-2px) rotate(-0.7deg);
+  }
+
+  70% {
+    transform: translateY(1px) rotate(0.7deg);
+  }
+}
+
+@keyframes thinking-kick {
+  0%,
+  100% {
+    height: 7px;
+    transform: skewX(0deg) scaleY(1);
+  }
+
+  35% {
+    height: 22px;
+    transform: skewX(-12deg) scaleY(1.05);
+  }
+
+  70% {
+    height: 13px;
+    transform: skewX(10deg) scaleY(0.9);
   }
 }
 

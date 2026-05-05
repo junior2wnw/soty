@@ -146,6 +146,7 @@ let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 const agentReplyQueues = new Map<string, Promise<void>>();
+const agentThinking = new Set<string>();
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -1415,6 +1416,7 @@ function closeTunnel(id: string): void {
   activeActivities.delete(id);
   activeActivityTicks.delete(id);
   clearLiveDraftState(id);
+  agentThinking.delete(id);
   localDrafts.delete(id);
   files.delete(id);
   tunnels = removeTunnel(id);
@@ -1436,6 +1438,7 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     activeActivities.delete(tunnel.id);
     activeActivityTicks.delete(tunnel.id);
     clearLiveDraftState(tunnel.id);
+    agentThinking.delete(tunnel.id);
     files.delete(tunnel.id);
   }
   const tunnel = createTunnel();
@@ -2310,7 +2313,13 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
   const next = previous
     .catch(() => undefined)
     .then(async () => {
-      const reply = await askLocalAgentReply(text, context, source);
+      setAgentThinking(tunnelId, true);
+      let reply: LocalAgentReply;
+      try {
+        reply = await askLocalAgentReply(text, context, source);
+      } finally {
+        setAgentThinking(tunnelId, false);
+      }
       const body = reply.text.trim()
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
       if (shouldOfferAgentInstall(reply)) {
@@ -2324,6 +2333,18 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       agentReplyQueues.delete(tunnelId);
     }
   });
+}
+
+function setAgentThinking(tunnelId: string, active: boolean): void {
+  if (active) {
+    agentThinking.add(tunnelId);
+  } else {
+    agentThinking.delete(tunnelId);
+  }
+  if (tunnelId === selectedId) {
+    renderTextPaint();
+    renderWriterPop();
+  }
 }
 
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
@@ -2744,6 +2765,18 @@ function renderTextPaint(): void {
       live
     });
   }
+  if (agentThinking.has(selectedId)) {
+    bubbles.push({
+      key: "agent-thinking",
+      side: "remote",
+      nick: agentDialogLabel,
+      color: colorFor(`agent-thinking:${selectedId}`),
+      time: clock(),
+      className: "is-agent-thinking",
+      lines: ["думаю"],
+      live: null
+    });
+  }
   for (const draft of drafts) {
     const nick = cleanNick(draft.nick) || counterpartyLabelForSelected();
     bubbles.push({
@@ -2765,9 +2798,11 @@ function renderTextPaint(): void {
     });
   }
   textPaint.innerHTML = bubbles.map((bubble) => {
-    const body = bubble.lines
-      .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
-      .join("");
+    const body = bubble.className === "is-agent-thinking"
+      ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
+      : bubble.lines
+        .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
+        .join("");
     const live = bubble.live
       ? `<em class="live-chip">${escapeHtml(activityCode(bubble.live.action))}${bubble.live.preview ? ` ${escapeHtml(compactPreview(bubble.live.preview))}` : ""}</em>`
       : "";
