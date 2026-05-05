@@ -19,7 +19,7 @@ export function attachAgentRelay(app) {
     cleanupChannels();
     const now = Date.now();
     const current = Array.from(channels.entries())
-      .filter(([, channel]) => now - (channel.lastPollAt || 0) < connectedMs)
+      .filter(([, channel]) => channel.codex === true && now - (channel.lastPollAt || 0) < connectedMs)
       .sort((left, right) => (right[1].lastPollAt || 0) - (left[1].lastPollAt || 0))[0];
     if (!current) {
       res.json({ ok: true, connected: false, relayId: "", lastSeenAt: "", version: "" });
@@ -48,7 +48,8 @@ export function attachAgentRelay(app) {
       ok: true,
       connected: Date.now() - lastPollAt < connectedMs,
       lastSeenAt: lastPollAt ? new Date(lastPollAt).toISOString() : "",
-      version: channel?.agentVersion || ""
+      version: channel?.agentVersion || "",
+      codex: channel?.codex === true
     });
   });
 
@@ -88,6 +89,7 @@ export function attachAgentRelay(app) {
     const channel = getChannel(relayId);
     channel.lastPollAt = Date.now();
     channel.agentVersion = cleanText(req.query.version, 32);
+    channel.codex = req.query.codex === "1";
     const jobs = leasePendingJobs(channel);
     if (jobs.length > 0 || req.query.wait !== "1") {
       res.json({ ok: true, jobs });
@@ -152,6 +154,7 @@ function getChannel(relayId) {
       jobs: [],
       lastPollAt: 0,
       agentVersion: "",
+      codex: false,
       touchedAt: Date.now()
     };
     channels.set(relayId, channel);

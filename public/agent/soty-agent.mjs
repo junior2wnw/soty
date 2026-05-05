@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.18";
+const agentVersion = "0.3.19";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -35,6 +35,8 @@ const operatorMessageWaiters = new Set();
 let operatorBridge = null;
 let operatorTargets = [];
 let cachedWindowsWhoami = "";
+let cachedCodexProbeAt = 0;
+let cachedCodexAvailable = false;
 let agentRelayStarted = false;
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
@@ -591,6 +593,7 @@ async function pollAgentRelay() {
   const url = new URL("/api/agent/relay/poll", agentRelayBaseUrl);
   url.searchParams.set("relayId", agentRelayId);
   url.searchParams.set("version", agentVersion);
+  url.searchParams.set("codex", hasCodexBinary() ? "1" : "0");
   url.searchParams.set("wait", "1");
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -728,6 +731,16 @@ function findCodexBinary() {
     }
   }
   return whichOnPath("codex");
+}
+
+function hasCodexBinary() {
+  const now = Date.now();
+  if (now - cachedCodexProbeAt < 30_000) {
+    return cachedCodexAvailable;
+  }
+  cachedCodexProbeAt = now;
+  cachedCodexAvailable = Boolean(findCodexBinary());
+  return cachedCodexAvailable;
 }
 
 function cursorCodexCandidates() {
@@ -1482,6 +1495,7 @@ function runtimeHealth() {
     shell: shellName(),
     version: agentVersion,
     relay: Boolean(agentRelayId),
+    codex: hasCodexBinary(),
     ...(process.platform === "win32" ? {
       windowsUser: windowsUserName(),
       system: isWindowsSystem(),
