@@ -1123,7 +1123,7 @@ function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
 }
 
 function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
-  return agent.ok && compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0;
+  return agent.ok && (agent.relay === true || compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0);
 }
 
 function compareVersion(left: string, right: string): number {
@@ -2225,6 +2225,9 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       const reply = await askLocalAgentReply(text, context);
       const body = reply.text.trim()
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
+      if (!reply.ok && (reply.exitCode === 124 || reply.exitCode === 127)) {
+        renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox);
+      }
       await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
     });
   agentReplyQueues.set(tunnelId, next);

@@ -2,11 +2,16 @@
 set -eu
 
 BASE="${1:-https://xn--n1afe0b.online/agent}"
+RELAY_ID="${2:-}"
 AGENT_DIR="${HOME}/.soty-agent"
 AGENT_PATH="${AGENT_DIR}/soty-agent.mjs"
 RUNNER_PATH="${AGENT_DIR}/start-agent.sh"
 CTL_PATH="${AGENT_DIR}/sotyctl"
 MANIFEST_URL="${BASE}/manifest.json"
+
+case "$RELAY_ID" in
+  ""|*[!A-Za-z0-9_-]*) RELAY_ID="" ;;
+esac
 
 fetch_file() {
   url="$1"
@@ -116,6 +121,8 @@ cat > "${RUNNER_PATH}" <<EOF
 #!/usr/bin/env sh
 export SOTY_AGENT_MANAGED=1
 export SOTY_AGENT_UPDATE_URL="${MANIFEST_URL}"
+export SOTY_AGENT_RELAY_ID="${RELAY_ID}"
+export SOTY_AGENT_RELAY_URL="https://xn--n1afe0b.online"
 while true; do
   "${NODE_PATH}" "${AGENT_PATH}"
   code=\$?

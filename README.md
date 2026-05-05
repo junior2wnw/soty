@@ -20,6 +20,7 @@ The browser side stays deliberately simple:
 - local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
 - long remote jobs can be staged as temporary scripts and launched without visible terminal windows;
 - the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`;
+- when Chrome/Edge blocks direct loopback access, the app can pair the companion with a secret server relay and keep agent chat working without browser local-network permission;
 - Windows maintenance work uses the same PWA channel plus a machine-scope Soty Worker when admin/SYSTEM actions are required.
 
 ## Boundary
@@ -66,7 +67,7 @@ For development, run:
 pnpm run agent
 ```
 
-Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`.
+Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. Agent chat first tries that loopback bridge and then falls back to the paired server relay when the browser blocks local-network access.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 

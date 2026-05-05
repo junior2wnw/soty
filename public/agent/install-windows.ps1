@@ -4,7 +4,8 @@ param(
   [string]$Scope = "CurrentUser",
   [string]$InstallDir = "",
   [switch]$LaunchAppAtLogon,
-  [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1"
+  [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1",
+  [string]$RelayId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -278,7 +279,50 @@ shell.Run "$escapedCommand", 0, False
     }
   }
 
+  function Enable-BrowserLocalNetworkAccessPolicy {
+    $origins = @(
+      "https://xn--n1afe0b.online",
+      "https://соты.online"
+    )
+    $browserPolicyRoots = @(
+      "Software\Policies\Google\Chrome",
+      "Software\Policies\Microsoft\Edge"
+    )
+    $registryHive = if ($Scope -eq "Machine") { "HKLM:" } else { "HKCU:" }
+
+    foreach ($root in $browserPolicyRoots) {
+      $path = Join-Path (Join-Path $registryHive $root) "LocalNetworkAccessAllowedForUrls"
+      try {
+        New-Item -Path $path -Force | Out-Null
+        for ($index = 0; $index -lt $origins.Count; $index++) {
+          New-ItemProperty -Path $path -Name ([string]($index + 1)) -Value $origins[$index] -PropertyType String -Force | Out-Null
+        }
+        Write-Output "soty-browser:local-network-policy:$path"
+      } catch {
+        Write-Output "soty-browser:local-network-policy-denied:$path"
+      }
+    }
+  }
+
+  function Normalize-AgentRelayId {
+    param([string]$Value)
+    $text = ([string]$Value).Trim()
+    if ($text -match '^[A-Za-z0-9_-]{32,192}$') {
+      return $text
+    }
+    return ""
+  }
+
   $NodePath = Resolve-Node
+  $SafeRelayId = Normalize-AgentRelayId $RelayId
+  $RelayEnv = if ($SafeRelayId) {
+@"
+`$env:SOTY_AGENT_RELAY_ID = "$SafeRelayId"
+`$env:SOTY_AGENT_RELAY_URL = "https://xn--n1afe0b.online"
+"@
+  } else {
+    ""
+  }
   Invoke-WebRequest -Uri $ManifestUrl -UseBasicParsing -OutFile (Join-Path $AgentDir "manifest.json")
   Invoke-WebRequest -Uri $AgentUrl -UseBasicParsing -OutFile $AgentPath
 
@@ -286,6 +330,7 @@ shell.Run "$escapedCommand", 0, False
 `$env:SOTY_AGENT_MANAGED = "1"
 `$env:SOTY_AGENT_SCOPE = "$Scope"
 `$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
+$RelayEnv
 while (`$true) {
   & "$NodePath" "$AgentPath"
   `$code = `$LASTEXITCODE
@@ -303,6 +348,7 @@ while (`$true) {
 "@ | Set-Content -Path $CtlPath -Encoding ASCII
 
   $Autostart = Enable-AgentAutostart
+  Enable-BrowserLocalNetworkAccessPolicy
   Enable-AppLaunchAtLogon
   Start-Sleep -Milliseconds 700
   Start-AgentNow

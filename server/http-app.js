@@ -1,5 +1,6 @@
 import express from "express";
 import path from "node:path";
+import { attachAgentRelay } from "./agent-relay.js";
 
 export function createHttpApp(distDir) {
   const app = express();
@@ -39,6 +40,7 @@ export function createHttpApp(distDir) {
     next();
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  attachAgentRelay(app);
   app.use(express.static(distDir, {
     etag: true,
     index: false,

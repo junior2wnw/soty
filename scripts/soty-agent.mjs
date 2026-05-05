@@ -8,11 +8,13 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.16";
+const agentVersion = "0.3.17";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
+const agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || "");
+const agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
 const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
@@ -78,6 +80,7 @@ function startServer() {
   server.listen(port, "127.0.0.1", () => {
     process.stdout.write(`soty-agent:${port}\n`);
     scheduleUpdate();
+    startAgentRelay();
   });
 }
 
@@ -509,6 +512,69 @@ async function handleAgentReply(request, response, headers) {
   }
   const result = await askCodexForAgentReply(text, context);
   sendJson(response, result.ok ? 200 : 502, headers, result);
+}
+
+function startAgentRelay() {
+  if (!agentRelayId || !agentRelayBaseUrl) {
+    return;
+  }
+  void runAgentRelayLoop();
+}
+
+async function runAgentRelayLoop() {
+  let retryMs = 1000;
+  while (true) {
+    try {
+      const jobs = await pollAgentRelay();
+      retryMs = 1000;
+      for (const job of jobs) {
+        await handleAgentRelayJob(job);
+      }
+    } catch {
+      await sleep(retryMs);
+      retryMs = Math.min(30_000, Math.round(retryMs * 1.6));
+    }
+  }
+}
+
+async function pollAgentRelay() {
+  const url = new URL("/api/agent/relay/poll", agentRelayBaseUrl);
+  url.searchParams.set("relayId", agentRelayId);
+  url.searchParams.set("version", agentVersion);
+  url.searchParams.set("wait", "1");
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`relay poll ${response.status}`);
+  }
+  const payload = await response.json();
+  return Array.isArray(payload.jobs)
+    ? payload.jobs.filter((job) => isSafeText(job?.id, 160) && isSafeText(job?.text, maxChatChars))
+    : [];
+}
+
+async function handleAgentRelayJob(job) {
+  const result = await askCodexForAgentReply(
+    String(job.text || "").slice(0, maxChatChars),
+    String(job.context || "").slice(-16_000)
+  );
+  await postAgentRelayReply(job.id, result);
+}
+
+async function postAgentRelayReply(id, result) {
+  const response = await fetch(new URL("/api/agent/relay/reply", agentRelayBaseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      relayId: agentRelayId,
+      id,
+      ok: Boolean(result.ok),
+      text: String(result.text || "").slice(0, maxChatChars),
+      ...(typeof result.exitCode === "number" ? { exitCode: result.exitCode } : {})
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`relay reply ${response.status}`);
+  }
 }
 
 async function askCodexForAgentReply(text, context) {
@@ -1302,6 +1368,7 @@ function runtimeHealth() {
     platform: process.platform,
     shell: shellName(),
     version: agentVersion,
+    relay: Boolean(agentRelayId),
     ...(process.platform === "win32" ? {
       windowsUser: windowsUserName(),
       system: isWindowsSystem(),
@@ -1352,6 +1419,35 @@ function safeScope(value) {
     return text;
   }
   return "CurrentUser";
+}
+
+function safeRelayId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
+}
+
+function safeHttpBaseUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return "";
+    }
+    return url.origin;
+  } catch {
+    return "";
+  }
+}
+
+function originFromUrl(value) {
+  try {
+    return new URL(String(value || "")).origin;
+  } catch {
+    return "";
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function safeFileName(value) {
