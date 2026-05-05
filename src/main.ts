@@ -4,7 +4,7 @@ import { JoinRequest, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, Rem
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
+import { askLocalAgentReply, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentStatus } from "./features/agent";
 import { filesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -82,7 +82,7 @@ installTooltips();
 
 const agentDialogLabel = "Агент";
 const legacyAgentDialogLabel = "Codex";
-const agentDialogMinVersion = "0.3.15";
+const agentDialogMinVersion = "0.3.16";
 
 let installPrompt: BeforeInstallPromptEvent | null = null;
 let device: DeviceRecord | null = null;
@@ -137,6 +137,7 @@ let operatorReconnectTimer = 0;
 let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
 const operatorChatQueues = new Map<string, Promise<void>>();
+const agentReplyQueues = new Map<string, Promise<void>>();
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -2201,6 +2202,7 @@ function finalizeComposerDraft(): void {
   texts.set(selectedId, next);
   sync.setText(next);
   sendOperatorUserMessage(selectedId, draft.trimEnd());
+  sendAgentDialogMessage(selectedId, draft.trimEnd());
   localDrafts.delete(selectedId);
   composer.value = "";
   touchSelected();
@@ -2208,6 +2210,29 @@ function finalizeComposerDraft(): void {
   renderTiles();
   renderTextPaint();
   renderWriterPop();
+}
+
+function sendAgentDialogMessage(tunnelId: string, text: string): void {
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  if (!tunnel || !isAgentTunnel(tunnel) || !text.trim()) {
+    return;
+  }
+  const context = (texts.get(tunnelId) || "").slice(-16_000);
+  const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const reply = await askLocalAgentReply(text, context);
+      const body = reply.text.trim()
+        || "Сообщение дошло, но локальный агент вернул пустой ответ.";
+      await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
+    });
+  agentReplyQueues.set(tunnelId, next);
+  void next.finally(() => {
+    if (agentReplyQueues.get(tunnelId) === next) {
+      agentReplyQueues.delete(tunnelId);
+    }
+  });
 }
 
 function resizeComposer(): void {

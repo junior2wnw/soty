@@ -10,8 +10,51 @@ export interface LocalAgentStatus {
   readonly maintenance?: boolean;
 }
 
+export interface LocalAgentReply {
+  readonly ok: boolean;
+  readonly text: string;
+  readonly exitCode?: number;
+}
+
 export function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus> {
   return checkLocalAgentHttp(timeoutMs);
+}
+
+export async function askLocalAgentReply(
+  text: string,
+  context: string,
+  timeoutMs = 130_000
+): Promise<LocalAgentReply> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("http://127.0.0.1:49424/agent/reply", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, context }),
+      signal: controller.signal,
+      targetAddressSpace: "local"
+    } as RequestInit & { readonly targetAddressSpace: "local" });
+    const payload = await response.json() as {
+      readonly ok?: boolean;
+      readonly text?: string;
+      readonly exitCode?: number;
+    };
+    return {
+      ok: Boolean(payload.ok && response.ok),
+      text: typeof payload.text === "string" ? payload.text : "",
+      ...(typeof payload.exitCode === "number" ? { exitCode: payload.exitCode } : {})
+    };
+  } catch {
+    return {
+      ok: false,
+      text: "Сообщение отправлено, но браузер пока не смог достучаться до локального агента. Проверь разрешение на локальную сеть для Сот и что Soty Agent запущен.",
+      exitCode: 127
+    };
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus> {

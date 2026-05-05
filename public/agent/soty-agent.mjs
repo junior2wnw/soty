@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.15";
+const agentVersion = "0.3.16";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
@@ -20,6 +21,7 @@ const maxChatChars = 12_000;
 const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
+const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "120000", 10);
 const active = new Map();
 const operatorRuns = new Map();
 const operatorMessages = [];
@@ -128,6 +130,10 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/messages" && request.method === "GET") {
     handleOperatorHttpMessages(url, response, headers);
+    return;
+  }
+  if (url.pathname === "/agent/reply" && request.method === "POST") {
+    await handleAgentReply(request, response, headers);
     return;
   }
   if (url.pathname === "/operator/access" && request.method === "POST") {
@@ -485,6 +491,212 @@ function flushOperatorMessageWaiters() {
     operatorMessageWaiters.delete(waiter);
     sendJson(waiter.response, 200, waiter.headers, { ok: true, messages });
   }
+}
+
+async function handleAgentReply(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 120_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
+  const context = typeof payload.context === "string" ? payload.context.slice(-16_000) : "";
+  if (!text.trim()) {
+    sendJson(response, 400, headers, { ok: false, text: "! text", exitCode: 400 });
+    return;
+  }
+  const result = await askCodexForAgentReply(text, context);
+  sendJson(response, result.ok ? 200 : 502, headers, result);
+}
+
+async function askCodexForAgentReply(text, context) {
+  const codexBin = findCodexBinary();
+  if (!codexBin) {
+    return {
+      ok: false,
+      text: "Я вижу сообщение, но на этом компьютере не нашел исполняемый Codex. Открой IDE и проверь, что команда `codex` доступна в терминале.",
+      exitCode: 127
+    };
+  }
+
+  const jobDir = join(tmpdir(), "soty-agent-codex", randomUUID());
+  const outPath = join(jobDir, "reply.txt");
+  await mkdir(jobDir, { recursive: true });
+  const codexHome = chooseCodexHome();
+  const childEnv = {
+    ...process.env,
+    ...(codexHome ? { CODEX_HOME: codexHome } : {})
+  };
+  const args = [
+    "exec",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    process.env.SOTY_CODEX_CWD || process.cwd(),
+    "-o",
+    outPath,
+    buildAgentPrompt(text, context)
+  ];
+
+  try {
+    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs);
+    const reply = existsSync(outPath) ? (await readFile(outPath, "utf8")).trim() : "";
+    if (result.exitCode === 0 && reply) {
+      return { ok: true, text: reply.slice(0, maxChatChars), exitCode: 0 };
+    }
+    return {
+      ok: false,
+      text: agentFailureText(`${result.stderr}\n${result.stdout}`),
+      exitCode: result.exitCode || 1
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      text: agentFailureText(error instanceof Error ? error.message : String(error)),
+      exitCode: 1
+    };
+  } finally {
+    await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function buildAgentPrompt(text, context) {
+  const trimmedContext = String(context || "").trim();
+  return [
+    "Ты локальный агент Codex внутри приложения Соты.",
+    "Отвечай по-русски, просто, тепло и понятно. Держи ответ коротким: обычно 2-6 предложений.",
+    "Сейчас это режим диалога через локальный мост: не запускай команды и не меняй файлы, если пользователь прямо не просит.",
+    "Если пользователь просит задачу в IDE, кратко подтверди, что понял задачу, и объясни, что для фактических изменений нужен полноценный запуск Codex в IDE или рабочий backend для `codex exec`.",
+    trimmedContext ? `Контекст последних сообщений:\n${trimmedContext}` : "",
+    `Сообщение пользователя:\n${String(text || "").trim()}`,
+    "Ответ:"
+  ].filter(Boolean).join("\n\n");
+}
+
+function agentFailureText(details) {
+  const value = String(details || "");
+  let reason = "локальный Codex не смог получить ответ из backend.";
+  if (value.includes("Missing environment variable")) {
+    reason = "для фонового запуска Codex не найден API-ключ в переменных окружения.";
+  } else if (value.includes("403 Forbidden") || value.includes("Unable to load site")) {
+    reason = "ChatGPT/Codex backend сейчас отвечает 403 с этого компьютера.";
+  } else if (value.includes("timeout")) {
+    reason = "Codex слишком долго не отвечал.";
+  }
+  return [
+    "Сообщение дошло до локального агента, я не молчу.",
+    `Но ${reason}`,
+    "Самый быстрый фикс: добиться, чтобы команда `codex exec \"привет\"` работала в обычном терминале, либо добавить рабочий API-ключ для Codex."
+  ].join(" ");
+}
+
+function findCodexBinary() {
+  const explicit = process.env.SOTY_CODEX_BIN || "";
+  if (explicit && existsSync(explicit)) {
+    return explicit;
+  }
+  if (process.platform === "win32") {
+    const cursorExtensionRoot = join(homedir(), ".cursor", "extensions");
+    try {
+      const entries = readdirSync(cursorExtensionRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith("openai.chatgpt-"))
+        .map((entry) => join(cursorExtensionRoot, entry.name, "bin", "windows-x86_64", "codex.exe"))
+        .filter((candidate) => existsSync(candidate))
+        .sort()
+        .reverse();
+      if (entries[0]) {
+        return entries[0];
+      }
+    } catch {
+      // Fall through to PATH lookup.
+    }
+    const pathHit = whichOnPath("codex.exe") || whichOnPath("codex.cmd");
+    if (pathHit) {
+      return pathHit;
+    }
+  }
+  return whichOnPath("codex");
+}
+
+function whichOnPath(name) {
+  const pathEnv = process.env.PATH || "";
+  const parts = pathEnv.split(process.platform === "win32" ? ";" : ":").filter(Boolean);
+  for (const part of parts) {
+    const candidate = join(part, name);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function chooseCodexHome() {
+  const explicit = process.env.SOTY_CODEX_HOME || process.env.CODEX_HOME || "";
+  if (explicit && existsSync(explicit)) {
+    return explicit;
+  }
+  const localAppData = process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
+  const proxyApiHome = join(localAppData, "OpenAI", "CodexProxyAPI");
+  if (process.env.PROXYAPI_KEY && existsSync(proxyApiHome)) {
+    return proxyApiHome;
+  }
+  const gonkaHome = join(localAppData, "OpenAI", "CodexGonka");
+  if (process.env.GONKA_API_KEY && existsSync(gonkaHome)) {
+    return gonkaHome;
+  }
+  const home = join(homedir(), ".codex");
+  return existsSync(home) ? home : "";
+}
+
+function runChildForText(file, args, env, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, {
+      cwd: process.env.SOTY_CODEX_CWD || process.cwd(),
+      env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (exitCode) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      resolve({
+        exitCode: Number.isSafeInteger(exitCode) ? exitCode : 0,
+        stdout: stdout.slice(-12_000),
+        stderr: stderr.slice(-12_000)
+      });
+    };
+    const timer = setTimeout(() => {
+      if (done) {
+        return;
+      }
+      killProcessTree(child);
+      reject(new Error("timeout"));
+    }, Math.max(5000, timeoutMs || 120000));
+    child.stdout.on("data", (chunk) => {
+      stdout = `${stdout}${chunk.toString("utf8")}`.slice(-24_000);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-24_000);
+    });
+    child.on("error", (error) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", finish);
+  });
 }
 
 function sanitizeTargets(value) {
