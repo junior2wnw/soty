@@ -903,8 +903,8 @@ async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<bool
 async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   const relay = await currentAgentRelay(1500);
   const controllerDeviceId = relay.deviceId || "";
-  const target = controllerDeviceId ? agentRemoteGrantTarget(controllerDeviceId) : null;
-  if (!target) {
+  const grant = agentRemoteGrantTarget(controllerDeviceId);
+  if (!grant) {
     await typeOperatorChat(
       agentTunnelId,
       formatOperatorChat("LINK не нашёл отдельный диалог с компьютером-оператором. Открой соту этого компьютера и включи LINK там, либо переподключи устройство к нему.", "sysadmin"),
@@ -912,7 +912,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
     );
     return;
   }
-  await enableRemoteGrant(target.id, controllerDeviceId);
+  await enableRemoteGrant(grant.tunnel.id, grant.targetDeviceId);
 }
 
 function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
@@ -1906,15 +1906,20 @@ function preferredAgentOperatorTarget(sourceDeviceId = ""): LocalAgentOperatorTa
     || null;
 }
 
-function agentRemoteGrantTarget(controllerDeviceId: string): TunnelRecord | null {
+function agentRemoteGrantTarget(controllerDeviceId: string): { readonly tunnel: TunnelRecord; readonly targetDeviceId: string } | null {
   const controllerId = controllerDeviceId.trim();
-  if (!controllerId) {
-    return null;
+  const candidates = sortedVisibleTunnels().filter((tunnel) => !isAgentTunnel(tunnel));
+  if (controllerId) {
+    const exact = candidates
+      .find((tunnel) => (peerDevices.get(tunnel.id) ?? []).some((peer) => peer.id === controllerId));
+    return exact ? { tunnel: exact, targetDeviceId: controllerId } : null;
   }
-  return sortedVisibleTunnels()
-    .filter((tunnel) => !isAgentTunnel(tunnel))
-    .find((tunnel) => (peerDevices.get(tunnel.id) ?? []).some((peer) => peer.id === controllerId))
-    || null;
+  const singlePeerCandidates = candidates
+    .map((tunnel) => ({ tunnel, peers: peerDevices.get(tunnel.id) ?? [] }))
+    .filter((item) => item.peers.length === 1);
+  const fallback = singlePeerCandidates.length === 1 ? singlePeerCandidates[0] : null;
+  const peer = fallback?.peers[0];
+  return fallback && peer ? { tunnel: fallback.tunnel, targetDeviceId: peer.id } : null;
 }
 
 async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string }): Promise<void> {
