@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.30";
+const agentVersion = "0.3.32";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -16,6 +16,7 @@ const persistedAgentConfig = loadAgentConfig();
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
+const codexSandbox = process.env.SOTY_CODEX_SANDBOX || "danger-full-access";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
 let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
@@ -667,7 +668,7 @@ async function askCodexForAgentReply(text, context, source = {}) {
     "exec",
     "--skip-git-repo-check",
     "--sandbox",
-    "read-only",
+    codexSandbox,
     "--cd",
     process.env.SOTY_CODEX_CWD || process.cwd(),
     "-o",
@@ -782,6 +783,8 @@ function buildAgentPrompt(text, context, source = {}) {
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
     "Use the request source below to understand which Soty device/tunnel contacted you. Do not assume the current Codex host is the same device that wrote the message.",
+    "If Request source says Local browser reached agent directly=true, the message came from a browser on this same computer. For requests phrased as 'у меня', 'на этом компьютере', 'мой комп', or matching the Soty device nick, treat the current OS as the target and use safe local read-only commands directly. Do not ask for Soty remote access to the current computer in that case.",
+    "If Local browser reached agent directly is not true, do not run local commands for the user's device unless a matching operator target has access=true.",
     "Use the known operator targets below to decide whether Soty remote access is already available. access=true means commands can already be routed to that target; do not ask for operator access again for that target. access=false means the target is only visible and needs the remote access flow before remote commands. access=unknown means an older browser bridge did not report the access state. host=true means this local browser is sharing its own computer; it is not permission to control that target.",
     "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. If access is unknown and the user says they already granted access, do not ask again first; try the route once or explain that you will try it, and ask for access only after a clear ! access / no-grant result.",
     "When the request source device nick or tunnel label matches a known operator target, treat that source device as the intended computer. For device-specific tasks like reinstalling Windows, do not ask which computer; say that you will work on the source device and continue with that target. If several targets have the same label, prefer the one with access=true.",
@@ -812,6 +815,7 @@ function sanitizeAgentSource(value) {
     appOrigin: clean(value.appOrigin),
     preferredTargetId: clean(value.preferredTargetId),
     preferredTargetLabel: clean(value.preferredTargetLabel),
+    localAgentDirect: value.localAgentDirect === true,
     operatorTargets: sanitizeTargets(value.operatorTargets)
   };
 }
@@ -824,6 +828,7 @@ function formatAgentSource(source) {
     ["Soty tunnel label", safe.tunnelLabel],
     ["Soty tunnel id", safe.tunnelId],
     ["App origin", safe.appOrigin],
+    ["Local browser reached agent directly", safe.localAgentDirect ? "true" : ""],
     ["Preferred operator target", safe.preferredTargetId ? `${safe.preferredTargetLabel || "target"} (${safe.preferredTargetId})` : ""],
     ["Local agent ctl", `${quoteForPrompt(process.execPath)} ${quoteForPrompt(scriptPath)} ctl`],
     ["Local agent relay id", agentRelayId ? `${agentRelayId.slice(0, 10)}...` : ""],

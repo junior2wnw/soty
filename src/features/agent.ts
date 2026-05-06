@@ -36,6 +36,7 @@ export interface LocalAgentRequestSource {
   readonly appOrigin?: string;
   readonly preferredTargetId?: string;
   readonly preferredTargetLabel?: string;
+  readonly localAgentDirect?: boolean;
   readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
 }
 
@@ -95,6 +96,16 @@ export async function askLocalAgentReply(
   source: LocalAgentRequestSource = {},
   timeoutMs = 130_000
 ): Promise<LocalAgentReply> {
+  const directStatus = await checkLocalAgentHttp(900);
+  if (directStatus.ok && directStatus.codex !== false) {
+    const direct = await askLocalAgentReplyHttp(text, context, {
+      ...source,
+      localAgentDirect: true
+    }, timeoutMs);
+    if (direct && !isCodexMissingReply(direct)) {
+      return direct;
+    }
+  }
   if (readAgentRelayId()) {
     const relayStatus = await checkAgentRelay(1200);
     if (relayStatus.ok && relayStatus.codex !== false) {
