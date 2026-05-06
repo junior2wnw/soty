@@ -103,9 +103,17 @@ export async function askLocalAgentReply(
   timeoutMs = 130_000
 ): Promise<LocalAgentReply> {
   await adoptCurrentAgentRelay(1500);
-  const relay = await askAgentRelayReply(text, context, source, timeoutMs);
-  if (relay) {
-    return relay;
+  if (readAgentRelayId()) {
+    const relayStatus = await checkAgentRelay(1500);
+    const relayReady = relayStatus.ok && relayStatus.codex !== false
+      ? true
+      : await adoptCurrentAgentRelay(1500, true);
+    if (relayReady) {
+      const relay = await askAgentRelayReply(text, context, source, timeoutMs);
+      if (relay) {
+        return relay;
+      }
+    }
   }
 
   const directStatus = await checkLocalAgentHttp(900);
