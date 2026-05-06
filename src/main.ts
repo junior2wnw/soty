@@ -1900,6 +1900,9 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     if (message.type === "operator.chat") {
       void runOperatorChat(message);
     }
+    if (message.type === "operator.agent-message") {
+      void runOperatorAgentMessage(message);
+    }
     if (message.type === "operator.access") {
       runOperatorAccess(message);
     }
@@ -2131,6 +2134,52 @@ async function runOperatorChat(message: {
   }
 }
 
+async function runOperatorAgentMessage(message: {
+  readonly id?: string;
+  readonly target?: string;
+  readonly text?: string;
+}): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const body = normalizeChatMessage(typeof message.text === "string" ? message.text : "");
+  if (!requestId || !body) {
+    return;
+  }
+  const tunnel = findAgentOperatorTarget(message.target || "");
+  if (!tunnel) {
+    sendOperatorOutput(requestId, "! agent-target", 404);
+    return;
+  }
+  ensureSync(tunnel);
+  const sync = syncs.get(tunnel.id);
+  if (!sync) {
+    sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  const current = texts.get(tunnel.id) || "";
+  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const next = `${current}${separator}${body}\n`;
+  texts.set(tunnel.id, next);
+  sync.setText(next);
+  localDrafts.delete(tunnel.id);
+  clearLiveDraftState(tunnel.id);
+  void sync.sendLiveDraft("");
+  sendOperatorUserMessage(tunnel.id, body);
+  touchSelected();
+  renderTiles();
+  applySelectedText();
+  renderTextPaint();
+  renderWriterPop();
+  sendOperatorOutput(requestId, "sent\n");
+  try {
+    await sendAgentDialogMessage(tunnel.id, body);
+    sendOperatorOutput(requestId, "reply\n", 0);
+  } catch {
+    sendOperatorOutput(requestId, "! agent-reply", 500);
+  }
+}
+
 function formatOperatorChat(text: string, persona: string): string {
   const name = persona === "sysadmin" ? agentDialogLabel : cleanNick(persona || "Оператор") || "Оператор";
   const body = normalizeChatMessage(text);
@@ -2185,6 +2234,20 @@ async function runOperatorImport(message: { readonly id?: string; readonly text?
     return;
   }
   sendOperatorOutput(requestId, `restored ${restored.count}\n`, 0);
+}
+
+function findAgentOperatorTarget(target: string): TunnelRecord | null {
+  const needle = cleanNick(target).toLowerCase();
+  const items = loadTunnels().filter((tunnel) => !tunnel.archived && isAgentTunnel(tunnel));
+  if (needle) {
+    const found = items.find((tunnel) => tunnel.id === target)
+      || items.find((tunnel) => tunnel.id.toLowerCase() === needle)
+      || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle);
+    if (found) {
+      return found;
+    }
+  }
+  return findActiveAgentDialog();
 }
 
 function findOperatorTarget(target: string): TunnelRecord | null {
@@ -2682,7 +2745,7 @@ function finalizeComposerDraft(): void {
   }
   void sync.sendLiveDraft("");
   sendOperatorUserMessage(selectedId, message);
-  sendAgentDialogMessage(selectedId, message);
+  void sendAgentDialogMessage(selectedId, message);
   localDrafts.delete(selectedId);
   composer.value = "";
   touchSelected();
@@ -2692,10 +2755,10 @@ function finalizeComposerDraft(): void {
   renderWriterPop();
 }
 
-function sendAgentDialogMessage(tunnelId: string, text: string): void {
+function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   if (!tunnel || !isAgentTunnel(tunnel) || !text.trim()) {
-    return;
+    return Promise.resolve();
   }
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const preferredTarget = preferredAgentOperatorTarget(device?.id || "");
@@ -2733,6 +2796,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       agentReplyQueues.delete(tunnelId);
     }
   });
+  return next;
 }
 
 function setAgentThinking(tunnelId: string, active: boolean): void {

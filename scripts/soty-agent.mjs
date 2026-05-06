@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.39";
+const agentVersion = "0.3.40";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -163,6 +163,10 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/chat" && request.method === "POST") {
     await handleOperatorHttpChat(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/agent-message" && request.method === "POST") {
+    await handleOperatorHttpAgentMessage(request, response, headers);
     return;
   }
   if (url.pathname === "/operator/messages" && request.method === "GET") {
@@ -567,6 +571,30 @@ async function handleOperatorHttpChat(request, response, headers) {
     persona
   });
   sendJson(response, 200, headers, { ok: true, text: "queued\n", exitCode: 0, id });
+}
+
+async function handleOperatorHttpAgentMessage(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 80_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
+  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  if (!operatorBridge?.open || !text.trim()) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, timeoutMs);
+  sendRaw(operatorBridge, {
+    type: "operator.agent-message",
+    id,
+    target,
+    text
+  });
 }
 
 function handleOperatorHttpMessages(url, response, headers) {
@@ -1923,6 +1951,32 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
+  if (command === "agent-message" || command === "agent-chat") {
+    const parsed = parseCtlOptions(args.slice(1));
+    const target = parsed.args.length > 1 ? parsed.args[0] || "" : "";
+    const text = (target ? parsed.args.slice(1) : parsed.args).join(" ");
+    if (!text) {
+      process.stderr.write("sotyctl agent-message [--timeout=ms] [agent-tunnel-id] <text>\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/agent-message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target,
+        text,
+        ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {})
+      })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
   if (command === "read" || command === "inbox" || command === "messages") {
     const target = args[1] || "";
     const url = new URL(`http://127.0.0.1:${port}/operator/messages`);
@@ -2005,7 +2059,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file] | import <file>\n");
+  process.stderr.write("sotyctl health | list | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | import <file>\n");
   process.exit(2);
 }
 
