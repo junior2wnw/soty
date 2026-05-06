@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.33";
+const agentVersion = "0.3.34";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -17,6 +17,10 @@ const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const codexSandbox = process.env.SOTY_CODEX_SANDBOX || "danger-full-access";
+const codexReplyReasoningEffort = (process.env.SOTY_CODEX_REASONING_EFFORT || "low").trim();
+const codexReplyModel = (process.env.SOTY_CODEX_MODEL || "").trim();
+const codexReplyEphemeral = process.env.SOTY_CODEX_EPHEMERAL !== "0";
+const codexDisableGithubPlugin = process.env.SOTY_CODEX_DISABLE_GITHUB_PLUGIN !== "0";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
 let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
@@ -29,7 +33,7 @@ const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
-const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "120000", 10);
+const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
 const skillSyncRepoUrl = process.env.SOTY_CODEX_SKILL_SYNC_REPO || "https://github.com/junior2wnw/universal-install-ops-skill.git";
 const skillSyncRef = process.env.SOTY_CODEX_SKILL_SYNC_REF || "main";
 const skillSyncName = process.env.SOTY_CODEX_SKILL_SYNC_NAME || "universal-install-ops";
@@ -758,9 +762,21 @@ async function askCodexForAgentReply(text, context, source = {}) {
     "--cd",
     process.env.SOTY_CODEX_CWD || process.cwd(),
     "-o",
-    outPath,
-    "-"
+    outPath
   ];
+  if (codexReplyEphemeral) {
+    args.push("--ephemeral");
+  }
+  if (codexReplyModel) {
+    args.push("--model", codexReplyModel);
+  }
+  if (codexReplyReasoningEffort && codexReplyReasoningEffort !== "inherit") {
+    args.push("-c", `model_reasoning_effort=${JSON.stringify(codexReplyReasoningEffort)}`);
+  }
+  if (codexDisableGithubPlugin) {
+    args.push("-c", 'plugins."github@openai-curated".enabled=false');
+  }
+  args.push("-");
 
   try {
     const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, buildAgentPrompt(text, context, source));
@@ -993,18 +1009,21 @@ function quoteForPrompt(value) {
 
 function agentFailureText(details) {
   const value = String(details || "");
-  let reason = "локальный Codex не смог получить ответ из backend.";
+  let reason = "локальный Codex не смог собрать текстовый ответ.";
+  let next = "Команды через Soty могли уже уйти в окно удаленных команд; это отдельный канал, и удаленному устройству Codex не нужен.";
   if (value.includes("Missing environment variable")) {
-    reason = "для фонового запуска Codex не найден API-ключ в переменных окружения.";
+    reason = "на компьютере-операторе фоновому запуску Codex не хватает авторизации или API-ключа.";
+    next = "Проверять нужно только компьютер-оператор, где открыт рабочий Codex, а не удаленное устройство.";
   } else if (value.includes("403 Forbidden") || value.includes("Unable to load site")) {
-    reason = "ChatGPT/Codex backend сейчас отвечает 403 с этого компьютера.";
+    reason = "фоновые запросы Codex или его плагинов получили 403 с компьютера-оператора.";
+    next = "Это не значит, что удаленное устройство потеряло доступ; основной маршрут команд Soty остается отдельным.";
   } else if (value.includes("timeout")) {
-    reason = "Codex слишком долго не отвечал.";
+    reason = "Codex не уложился в лимит ожидания текстового ответа.";
   }
   return [
-    "Сообщение дошло до локального агента, я не молчу.",
-    `Но ${reason}`,
-    "Самый быстрый фикс: добиться, чтобы команда `codex exec \"привет\"` работала в обычном терминале, либо добавить рабочий API-ключ для Codex."
+    "Сообщение дошло до локального агента.",
+    `Проблема не в удаленном компьютере и не в окне команд: ${reason}`,
+    next
   ].join(" ");
 }
 

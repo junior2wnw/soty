@@ -113,7 +113,7 @@ export async function askLocalAgentReply(
   text: string,
   context: string,
   source: LocalAgentRequestSource = {},
-  timeoutMs = 130_000
+  timeoutMs = 310_000
 ): Promise<LocalAgentReply> {
   await adoptCurrentAgentRelay(1500);
   if (readAgentRelayId()) {
