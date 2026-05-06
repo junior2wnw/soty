@@ -21,6 +21,8 @@ export interface LocalAgentReply {
 export interface LocalAgentOperatorTarget {
   readonly id: string;
   readonly label: string;
+  readonly deviceIds?: readonly string[];
+  readonly hostDeviceId?: string;
   readonly access?: boolean;
   readonly host?: boolean;
   readonly selected?: boolean;

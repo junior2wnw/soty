@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.32";
+const agentVersion = "0.3.33";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -278,6 +278,7 @@ async function handleOperatorHttpRun(request, response, headers) {
     return;
   }
   const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  const sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
   if (!operatorBridge?.open || !target || !command.trim()) {
@@ -289,6 +290,7 @@ async function handleOperatorHttpRun(request, response, headers) {
     type: "operator.run",
     id,
     target,
+    sourceDeviceId,
     command
   });
 }
@@ -302,6 +304,7 @@ async function handleOperatorHttpScript(request, response, headers) {
     return;
   }
   const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  const sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
@@ -315,6 +318,7 @@ async function handleOperatorHttpScript(request, response, headers) {
     type: "operator.script",
     id,
     target,
+    sourceDeviceId,
     name,
     shell,
     script
@@ -782,16 +786,14 @@ function buildAgentPrompt(text, context, source = {}) {
     "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
-    "Use the request source below to understand which Soty device/tunnel contacted you. Do not assume the current Codex host is the same device that wrote the message.",
-    "If Request source says Local browser reached agent directly=true, the message came from a browser on this same computer. For requests phrased as 'у меня', 'на этом компьютере', 'мой комп', or matching the Soty device nick, treat the current OS as the target and use safe local read-only commands directly. Do not ask for Soty remote access to the current computer in that case.",
-    "If Local browser reached agent directly is not true, do not run local commands for the user's device unless a matching operator target has access=true.",
-    "Use the known operator targets below to decide whether Soty remote access is already available. access=true means commands can already be routed to that target; do not ask for operator access again for that target. access=false means the target is only visible and needs the remote access flow before remote commands. access=unknown means an older browser bridge did not report the access state. host=true means this local browser is sharing its own computer; it is not permission to control that target.",
-    "If the user asks for work on a known target with access=true, proceed naturally or explain the next command route instead of asking them to grant access again. If access is unknown and the user says they already granted access, do not ask again first; try the route once or explain that you will try it, and ask for access only after a clear ! access / no-grant result.",
-    "When the request source device nick or tunnel label matches a known operator target, treat that source device as the intended computer. For device-specific tasks like reinstalling Windows, do not ask which computer; say that you will work on the source device and continue with that target. If several targets have the same label, prefer the one with access=true.",
-    "If exactly one known operator target has access=true and the user asks to work on 'this computer', 'this device', or similar, assume that target instead of asking for clarification.",
-    "Use the exact full target id from Known operator targets or Preferred operator target for commands. Labels can repeat, so prefer ids over labels whenever a full id is available.",
-    "The command route from this Codex session to a Soty device is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --timeout=20000 \"<target-id-or-label>\" \"<command>\". For scripts use: <local-agent-ctl> script --timeout=60000 \"<target-id-or-label>\" \"<file>\" powershell.",
-    "For an access=true target, first prove the route with a safe command such as whoami, hostname, or a read-only PowerShell check. If one duplicate-label target times out, try another access=true full id with the same label once before falling back. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! access, ! tunnel, all matching targets time out, or a non-zero proof failure.",
+    "Use the request source below to understand which Soty device contacted you. Do not assume the current Codex host, the last selected Soty tile, or any similarly named device is the same computer.",
+    "Security rule: Soty command execution is source-scoped. Known operator targets below are already filtered to the source device id. Never use, mention as a command target, or fall back to any other Soty device by label, last selection, single access target, memory, or convenience.",
+    "If Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
+    "If the user explicitly asks to do something through Soty, the Soty console, or remote control, do not use direct local shell commands even when Local browser reached agent directly=true.",
+    "If Local browser reached agent directly=true and the user did not ask for the Soty console/remote-control route, the message came from this same computer; safe local read-only commands are allowed for the current OS.",
+    "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat.",
+    "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell.",
+    "For an access=true target, first prove the route with a safe command such as whoami, hostname, or a read-only PowerShell check. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! source-target, ! access, ! tunnel, timeout, or a non-zero proof failure.",
     "For destructive work like Windows reset or reinstall, use only safe proof commands first, then ask for one final confirmation before any destructive step. Do not fall back to manual Windows settings while an access=true ctl route is still untested.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
@@ -849,15 +851,23 @@ function formatOperatorTargets(source) {
   for (const target of operatorTargets) {
     merged.set(target.id, target);
   }
-  const targets = [...merged.values()].slice(0, 16);
+  const safe = sanitizeAgentSource(source);
+  const sourceDeviceId = safe.deviceId;
+  const targets = [...merged.values()]
+    .filter((target) => targetMatchesSourceDevice(target, sourceDeviceId))
+    .slice(0, 16);
   if (targets.length === 0) {
-    return "No Soty operator targets are currently attached to the local agent.";
+    return sourceDeviceId
+      ? `No authorized Soty operator target is currently attached for source device id ${sourceDeviceId}. Other Soty devices are intentionally hidden for safety.`
+      : "No source-scoped Soty operator target is available because the request source has no device id.";
   }
   return targets
     .map((target) => {
       const flags = [
         `access=${formatTargetFlag(target.access)}`,
         `host=${formatTargetFlag(target.host)}`,
+        target.hostDeviceId ? `hostDeviceId=${target.hostDeviceId}` : "",
+        target.deviceIds.length > 0 ? `deviceIds=${target.deviceIds.join(",")}` : "",
         target.selected === true ? "selected=true" : "",
         Number.isSafeInteger(target.rank) ? `rank=${target.rank}` : "",
         target.lastActionAt ? `lastActionAt=${target.lastActionAt}` : ""
@@ -865,6 +875,14 @@ function formatOperatorTargets(source) {
       return `- ${target.label} (${target.id}) ${flags}`;
     })
     .join("\n");
+}
+
+function targetMatchesSourceDevice(target, sourceDeviceId) {
+  const sourceId = String(sourceDeviceId || "").trim();
+  if (!sourceId) {
+    return false;
+  }
+  return target.hostDeviceId === sourceId || target.deviceIds.includes(sourceId);
 }
 
 function formatTargetFlag(value) {
@@ -1189,6 +1207,14 @@ function sanitizeTargets(value) {
     .map((item) => ({
       id: typeof item?.id === "string" ? item.id.slice(0, 160) : "",
       label: typeof item?.label === "string" ? item.label.slice(0, 160) : "",
+      deviceIds: Array.isArray(item?.deviceIds)
+        ? [...new Set(item.deviceIds
+          .filter((value) => typeof value === "string")
+          .map((value) => value.slice(0, maxSourceChars))
+          .filter(Boolean))]
+          .slice(0, 16)
+        : [],
+      hostDeviceId: typeof item?.hostDeviceId === "string" ? item.hostDeviceId.slice(0, maxSourceChars) : "",
       access: typeof item?.access === "boolean" ? item.access : undefined,
       host: typeof item?.host === "boolean" ? item.host : undefined,
       selected: typeof item?.selected === "boolean" ? item.selected : undefined,
@@ -1448,17 +1474,22 @@ async function runControlCli(args) {
     return;
   }
   if (command === "run") {
-    const parsed = parseCtlTimeout(args.slice(1));
+    const parsed = parseCtlOptions(args.slice(1));
     const target = parsed.args[0] || "";
     const remoteCommand = parsed.args.slice(1).join(" ");
     if (!target || !remoteCommand) {
-      process.stderr.write("sotyctl run [--timeout=ms] <target> <command>\n");
+      process.stderr.write("sotyctl run [--source-device=id] [--timeout=ms] <target> <command>\n");
       process.exit(2);
     }
     const response = await fetch(`http://127.0.0.1:${port}/operator/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, command: remoteCommand, ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {}) })
+      body: JSON.stringify({
+        target,
+        command: remoteCommand,
+        ...(parsed.sourceDeviceId ? { sourceDeviceId: parsed.sourceDeviceId } : {}),
+        ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {})
+      })
     });
     const payload = await response.json();
     if (payload.text) {
@@ -1510,19 +1541,26 @@ async function runControlCli(args) {
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
   if (command === "script") {
-    const parsed = parseCtlTimeout(args.slice(1));
+    const parsed = parseCtlOptions(args.slice(1));
     const target = parsed.args[0] || "";
     const filePath = parsed.args[1] || "";
     const shell = parsed.args[2] || "";
     if (!target || !filePath) {
-      process.stderr.write("sotyctl script [--timeout=ms] <target> <file> [shell]\n");
+      process.stderr.write("sotyctl script [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
       process.exit(2);
     }
     const script = await readFile(filePath, "utf8");
     const response = await fetch(`http://127.0.0.1:${port}/operator/script`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, name: basename(filePath), shell, script, ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {}) })
+      body: JSON.stringify({
+        target,
+        name: basename(filePath),
+        shell,
+        script,
+        ...(parsed.sourceDeviceId ? { sourceDeviceId: parsed.sourceDeviceId } : {}),
+        ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {})
+      })
     });
     const payload = await response.json();
     if (payload.text) {
@@ -1663,13 +1701,14 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run [--timeout=ms] <target> <command> | script [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file] | import <file>\n");
+  process.stderr.write("sotyctl health | list | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | read [target] | listen [target] | export [file] | import <file>\n");
   process.exit(2);
 }
 
-function parseCtlTimeout(args) {
+function parseCtlOptions(args) {
   const rest = [...args];
   let timeoutMs = 0;
+  let sourceDeviceId = "";
   while (rest.length > 0) {
     const head = rest[0] || "";
     if (head.startsWith("--timeout=")) {
@@ -1682,9 +1721,23 @@ function parseCtlTimeout(args) {
       rest.splice(0, 2);
       continue;
     }
+    if (head.startsWith("--source-device=")) {
+      sourceDeviceId = String(head.slice("--source-device=".length) || "").slice(0, maxSourceChars);
+      rest.shift();
+      continue;
+    }
+    if (head === "--source-device" && rest.length > 1) {
+      sourceDeviceId = String(rest[1] || "").slice(0, maxSourceChars);
+      rest.splice(0, 2);
+      continue;
+    }
     break;
   }
-  return { timeoutMs, args: rest };
+  return { timeoutMs, sourceDeviceId, args: rest };
+}
+
+function parseCtlTimeout(args) {
+  return parseCtlOptions(args);
 }
 
 function safeCtlTimeout(value) {

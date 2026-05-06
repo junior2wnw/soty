@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
-import { JoinRequest, LiveDraft, NoticeKnock, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -97,6 +97,7 @@ let fileInput: HTMLInputElement | null = null;
 const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
+const peerDevices = new Map<string, readonly PeerInfo[]>();
 const files = new Map<string, ReceivedFile[]>();
 const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
 const localDrafts = new Map<string, string>();
@@ -1304,6 +1305,7 @@ function ensureSync(tunnel: TunnelRecord): void {
       applyRemoteOutput(tunnel.id, output);
     },
     onPeers: (items) => {
+      peerDevices.set(tunnel.id, items);
       const accessChanged = syncRemoteAccessWithPeers(tunnel.id, items);
       const label = items.map((item) => item.nick).filter(Boolean).join(" ");
       if (label) {
@@ -1325,6 +1327,7 @@ function ensureSync(tunnel: TunnelRecord): void {
     onClosed: () => {
       syncs.get(tunnel.id)?.destroy();
       syncs.delete(tunnel.id);
+      peerDevices.delete(tunnel.id);
       writerLines.delete(tunnel.id);
       activeActivities.delete(tunnel.id);
       activeActivityTicks.delete(tunnel.id);
@@ -1747,6 +1750,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
       readonly type?: string;
       readonly id?: string;
       readonly target?: string;
+      readonly sourceDeviceId?: string;
       readonly command?: string;
       readonly name?: string;
       readonly shell?: string;
@@ -1818,40 +1822,49 @@ function publishOperatorTargets(): void {
 function operatorTargets(): LocalAgentOperatorTarget[] {
   return sortedVisibleTunnels()
     .filter((tunnel) => !isAgentTunnel(tunnel))
-    .map((tunnel, index) => ({
-      id: tunnel.id,
-      label: counterpartyLabel(tunnel),
-      access: remoteAccess.has(tunnel.id),
-      host: remoteEnabled.has(tunnel.id),
-      selected: tunnel.id === selectedId,
-      rank: index + 1,
-      lastActionAt: tunnel.lastActionAt || tunnel.updatedAt
-    }));
+    .map((tunnel, index) => {
+      const deviceIds = [...new Set((peerDevices.get(tunnel.id) ?? []).map((peer) => peer.id).filter(Boolean))];
+      const hostDeviceId = remoteAccess.get(tunnel.id) || "";
+      return {
+        id: tunnel.id,
+        label: counterpartyLabel(tunnel),
+        deviceIds,
+        hostDeviceId,
+        access: remoteAccess.has(tunnel.id),
+        host: remoteEnabled.has(tunnel.id),
+        selected: tunnel.id === selectedId,
+        rank: index + 1,
+        lastActionAt: tunnel.lastActionAt || tunnel.updatedAt
+      };
+    });
 }
 
-function preferredAgentOperatorTarget(): LocalAgentOperatorTarget | null {
+function preferredAgentOperatorTarget(sourceDeviceId = ""): LocalAgentOperatorTarget | null {
   const targets = operatorTargets();
-  const sourceNick = cleanNick(device?.nick || "").toLowerCase();
-  const accessTargets = targets.filter((target) => target.access === true);
-  if (sourceNick) {
-    const sameLabel = targets.filter((target) => cleanNick(target.label).toLowerCase() === sourceNick);
-    return sameLabel.find((target) => target.access === true)
-      || (sameLabel.length === 1 ? sameLabel[0] ?? null : null)
-      || (accessTargets.length === 1 ? accessTargets[0] ?? null : null)
-      || null;
+  const sourceId = sourceDeviceId.trim();
+  if (!sourceId) {
+    return null;
   }
-  return accessTargets.length === 1 ? accessTargets[0] ?? null : null;
+  const matches = targets.filter((target) => operatorTargetMatchesDevice(target.id, sourceId));
+  return matches.find((target) => target.access === true)
+    || (matches.length === 1 ? matches[0] ?? null : null)
+    || null;
 }
 
-async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly command?: string }): Promise<void> {
+async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
   const command = typeof message.command === "string" ? message.command.trim() : "";
+  const sourceDeviceId = typeof message.sourceDeviceId === "string" ? message.sourceDeviceId.trim() : "";
   if (!requestId || !command) {
     return;
   }
   const tunnel = findOperatorTarget(message.target || "");
   if (!tunnel) {
     sendOperatorOutput(requestId, "! target", 404);
+    return;
+  }
+  if (sourceDeviceId && !operatorTargetMatchesDevice(tunnel.id, sourceDeviceId)) {
+    sendOperatorOutput(requestId, "! source-target", 403);
     return;
   }
   const hostDeviceId = remoteAccess.get(tunnel.id);
@@ -1888,18 +1901,24 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
 async function runOperatorScript(message: {
   readonly id?: string;
   readonly target?: string;
+  readonly sourceDeviceId?: string;
   readonly name?: string;
   readonly shell?: string;
   readonly script?: string;
 }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
   const script = typeof message.script === "string" ? message.script : "";
+  const sourceDeviceId = typeof message.sourceDeviceId === "string" ? message.sourceDeviceId.trim() : "";
   if (!requestId || !script.trim()) {
     return;
   }
   const tunnel = findOperatorTarget(message.target || "");
   if (!tunnel) {
     sendOperatorOutput(requestId, "! target", 404);
+    return;
+  }
+  if (sourceDeviceId && !operatorTargetMatchesDevice(tunnel.id, sourceDeviceId)) {
+    sendOperatorOutput(requestId, "! source-target", 403);
     return;
   }
   const hostDeviceId = remoteAccess.get(tunnel.id);
@@ -2050,6 +2069,18 @@ function findOperatorTarget(target: string): TunnelRecord | null {
     || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
     || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
     || null;
+}
+
+function operatorTargetMatchesDevice(tunnelId: string, sourceDeviceId: string): boolean {
+  const sourceId = sourceDeviceId.trim();
+  if (!sourceId) {
+    return false;
+  }
+  const hostDeviceId = remoteAccess.get(tunnelId);
+  if (hostDeviceId === sourceId) {
+    return true;
+  }
+  return (peerDevices.get(tunnelId) ?? []).some((peer) => peer.id === sourceId);
 }
 
 function findVisibleOperatorTarget(target: string): TunnelRecord | null {
@@ -2395,7 +2426,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
     return;
   }
   const context = (texts.get(tunnelId) || "").slice(-16_000);
-  const preferredTarget = preferredAgentOperatorTarget();
+  const preferredTarget = preferredAgentOperatorTarget(device?.id || "");
   const source: LocalAgentRequestSource = {
     tunnelId,
     tunnelLabel: counterpartyLabel(tunnel),
