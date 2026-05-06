@@ -33,7 +33,9 @@ export function attachAgentRelay(app) {
       relayId,
       lastSeenAt: new Date(channel.lastPollAt).toISOString(),
       version: channel.agentVersion || "",
-      codex: true
+      codex: true,
+      deviceId: channel.deviceId || "",
+      deviceNick: channel.deviceNick || ""
     });
   });
 
@@ -51,7 +53,9 @@ export function attachAgentRelay(app) {
       connected: Date.now() - lastPollAt < connectedMs,
       lastSeenAt: lastPollAt ? new Date(lastPollAt).toISOString() : "",
       version: channel?.agentVersion || "",
-      codex: channel?.codex === true
+      codex: channel?.codex === true,
+      deviceId: channel?.deviceId || "",
+      deviceNick: channel?.deviceNick || ""
     });
   });
 
@@ -96,6 +100,8 @@ export function attachAgentRelay(app) {
     channel.lastPollAt = Date.now();
     channel.agentVersion = cleanText(req.query.version, 32);
     channel.codex = req.query.codex === "1";
+    channel.deviceId = cleanText(req.query.deviceId, maxSourceChars) || channel.deviceId || "";
+    channel.deviceNick = cleanText(req.query.deviceNick, maxSourceChars) || channel.deviceNick || "";
     const jobs = leasePendingJobs(channel);
     if (jobs.length > 0 || req.query.wait !== "1") {
       res.json({ ok: true, jobs });

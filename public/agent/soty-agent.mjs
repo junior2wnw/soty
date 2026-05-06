@@ -40,6 +40,8 @@ const operatorMessages = [];
 const operatorMessageWaiters = new Set();
 let operatorBridge = null;
 let operatorTargets = [];
+let operatorDeviceId = "";
+let operatorDeviceNick = "";
 let cachedWindowsWhoami = "";
 let cachedCodexProbeAt = 0;
 let cachedCodexAvailable = false;
@@ -247,6 +249,8 @@ function handleOperatorMessage(ws, message) {
   }
   if (message.type === "operator.targets" && ws === operatorBridge) {
     operatorTargets = sanitizeTargets(message.targets);
+    operatorDeviceId = safeSourceText(message.deviceId);
+    operatorDeviceNick = safeSourceText(message.deviceNick);
     return;
   }
   if (message.type === "operator.message" && ws === operatorBridge) {
@@ -262,6 +266,8 @@ function cleanupOperatorSocket(ws) {
   if (operatorBridge === ws) {
     operatorBridge = null;
     operatorTargets = [];
+    operatorDeviceId = "";
+    operatorDeviceNick = "";
     for (const run of operatorRuns.values()) {
       run.finish(127, "! bridge");
     }
@@ -608,6 +614,12 @@ async function pollAgentRelay() {
   url.searchParams.set("relayId", agentRelayId);
   url.searchParams.set("version", agentVersion);
   url.searchParams.set("codex", hasCodexBinary() ? "1" : "0");
+  if (operatorDeviceId) {
+    url.searchParams.set("deviceId", operatorDeviceId);
+  }
+  if (operatorDeviceNick) {
+    url.searchParams.set("deviceNick", operatorDeviceNick);
+  }
   url.searchParams.set("wait", "1");
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -1792,6 +1804,10 @@ function psEncoded(value) {
 
 function isSafeText(value, max) {
   return typeof value === "string" && value.length > 0 && value.length <= max;
+}
+
+function safeSourceText(value) {
+  return typeof value === "string" ? value.trim().slice(0, maxSourceChars) : "";
 }
 
 function arg(name) {

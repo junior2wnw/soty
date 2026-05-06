@@ -10,6 +10,10 @@ export interface LocalAgentStatus {
   readonly maintenance?: boolean;
   readonly relay?: boolean;
   readonly codex?: boolean;
+  readonly relayId?: string;
+  readonly lastSeenAt?: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
 }
 
 export interface LocalAgentReply {
@@ -116,17 +120,6 @@ export async function askLocalAgentReply(
     }
   }
 
-  const directStatus = await checkLocalAgentHttp(900);
-  if (directStatus.ok && directStatus.codex !== false) {
-    const direct = await askLocalAgentReplyHttp(text, context, {
-      ...source,
-      localAgentDirect: true
-    }, timeoutMs);
-    if (direct && !isCodexMissingReply(direct)) {
-      return direct;
-    }
-  }
-
   if (await adoptCurrentAgentRelay(1500, true)) {
     const currentRelay = await askAgentRelayReply(text, context, source, timeoutMs);
     if (currentRelay) {
@@ -166,6 +159,15 @@ export async function adoptCurrentAgentRelay(timeoutMs = 1200, force = false): P
   if (!force && readAgentRelayId()) {
     return false;
   }
+  const payload = await currentAgentRelay(timeoutMs);
+  if (!payload.ok || !payload.relayId || payload.codex === false) {
+    return false;
+  }
+  localStorage.setItem(relayStorageKey, payload.relayId);
+  return true;
+}
+
+export async function currentAgentRelay(timeoutMs = 1200): Promise<LocalAgentStatus> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -174,21 +176,32 @@ export async function adoptCurrentAgentRelay(timeoutMs = 1200, force = false): P
       signal: controller.signal
     });
     if (!response.ok) {
-      return false;
+      return { ok: false };
     }
     const payload = await response.json() as {
       readonly connected?: boolean;
       readonly relayId?: string;
+      readonly lastSeenAt?: string;
+      readonly version?: string;
       readonly codex?: boolean;
+      readonly deviceId?: string;
+      readonly deviceNick?: string;
     };
     const relayId = sanitizeRelayId(payload.relayId || "");
-    if (!payload.connected || !relayId || payload.codex === false) {
-      return false;
-    }
-    localStorage.setItem(relayStorageKey, relayId);
-    return true;
+    return {
+      ok: Boolean(payload.connected && relayId),
+      relay: true,
+      managed: true,
+      scope: "Relay",
+      relayId,
+      ...(typeof payload.lastSeenAt === "string" ? { lastSeenAt: payload.lastSeenAt } : {}),
+      ...(typeof payload.version === "string" ? { version: payload.version } : {}),
+      ...(typeof payload.codex === "boolean" ? { codex: payload.codex } : {}),
+      ...(typeof payload.deviceId === "string" ? { deviceId: payload.deviceId } : {}),
+      ...(typeof payload.deviceNick === "string" ? { deviceNick: payload.deviceNick } : {})
+    };
   } catch {
-    return false;
+    return { ok: false };
   } finally {
     window.clearTimeout(timer);
   }

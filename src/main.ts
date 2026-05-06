@@ -4,7 +4,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteComm
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
+import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, currentAgentRelay, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -769,7 +769,11 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
     if (selectedId) {
-      void toggleRemoteGrant(selectedId);
+      if (isAgentTunnelId(selectedId)) {
+        void toggleAgentRemoteGrant(selectedId);
+      } else {
+        void toggleRemoteGrant(selectedId);
+      }
     }
   });
   app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
@@ -877,18 +881,38 @@ async function toggleRemoteGrant(id: string): Promise<void> {
     return;
   }
 
+  await enableRemoteGrant(id);
+}
+
+async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<boolean> {
   const agent = await refreshLocalCompanion();
   if (!agent.ok) {
     renderAgentInstall(id);
-    return;
+    return false;
   }
 
   remoteEnabled = setRemoteEnabled(id, true);
-  syncs.get(id)?.grantRemote(true, "*");
+  syncs.get(id)?.grantRemote(true, targetDeviceId);
   terminalOpenId = id;
   setTerminalState(id, "idle");
   renderTerminal();
   renderTiles();
+  return true;
+}
+
+async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
+  const relay = await currentAgentRelay(1500);
+  const controllerDeviceId = relay.deviceId || "";
+  const target = controllerDeviceId ? agentRemoteGrantTarget(controllerDeviceId) : null;
+  if (!target) {
+    await typeOperatorChat(
+      agentTunnelId,
+      formatOperatorChat("LINK не нашёл отдельный диалог с компьютером-оператором. Открой соту этого компьютера и включи LINK там, либо переподключи устройство к нему.", "sysadmin"),
+      "fast"
+    );
+    return;
+  }
+  await enableRemoteGrant(target.id, controllerDeviceId);
 }
 
 function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
@@ -1676,9 +1700,16 @@ function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
   if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(command.targetDeviceId)) {
     return;
   }
+  selectedId = tunnelId;
+  saveSelectedTunnelId(tunnelId);
   terminalOpenId = tunnelId;
   setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `< ${command.command}`);
+  clearTunnelNotices(tunnelId);
+  tunnels = markTunnel(tunnelId, false);
+  renderTiles();
+  applySelectedText(true);
+  renderFiles();
   void runLocalAgentCommand(tunnelId, command);
   renderTerminal();
 }
@@ -1687,9 +1718,16 @@ function applyRemoteScript(tunnelId: string, script: RemoteScript): void {
   if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(script.targetDeviceId)) {
     return;
   }
+  selectedId = tunnelId;
+  saveSelectedTunnelId(tunnelId);
   terminalOpenId = tunnelId;
   setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `< ${script.name || "script"}`);
+  clearTunnelNotices(tunnelId);
+  tunnels = markTunnel(tunnelId, false);
+  renderTiles();
+  applySelectedText(true);
+  renderFiles();
   void runLocalAgentScript(tunnelId, script);
   renderTerminal();
 }
@@ -1830,6 +1868,8 @@ function publishOperatorTargets(): void {
   }
   ws.send(JSON.stringify({
     type: "operator.targets",
+    deviceId: device?.id || "",
+    deviceNick: device?.nick || "",
     targets: operatorTargets()
   }));
 }
@@ -1863,6 +1903,17 @@ function preferredAgentOperatorTarget(sourceDeviceId = ""): LocalAgentOperatorTa
   const matches = targets.filter((target) => operatorTargetMatchesDevice(target.id, sourceId));
   return matches.find((target) => target.access === true)
     || (matches.length === 1 ? matches[0] ?? null : null)
+    || null;
+}
+
+function agentRemoteGrantTarget(controllerDeviceId: string): TunnelRecord | null {
+  const controllerId = controllerDeviceId.trim();
+  if (!controllerId) {
+    return null;
+  }
+  return sortedVisibleTunnels()
+    .filter((tunnel) => !isAgentTunnel(tunnel))
+    .find((tunnel) => (peerDevices.get(tunnel.id) ?? []).some((peer) => peer.id === controllerId))
     || null;
 }
 
