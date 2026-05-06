@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.43";
+const agentVersion = "0.3.44";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -16,11 +16,12 @@ const persistedAgentConfig = loadAgentConfig();
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
-const codexSandbox = process.env.SOTY_CODEX_SANDBOX || "danger-full-access";
+const codexSandbox = process.env.SOTY_CODEX_SANDBOX || "read-only";
 const codexReplyReasoningEffort = (process.env.SOTY_CODEX_REASONING_EFFORT || "low").trim();
 const codexReplyModel = (process.env.SOTY_CODEX_MODEL || "").trim();
 const codexReplyEphemeral = process.env.SOTY_CODEX_EPHEMERAL !== "0";
 const codexDisableGithubPlugin = process.env.SOTY_CODEX_DISABLE_GITHUB_PLUGIN !== "0";
+const codexDisableLocalTools = process.env.SOTY_CODEX_DISABLE_LOCAL_TOOLS !== "0";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
 let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
@@ -34,6 +35,8 @@ const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
+const codexBridgeMaxTurns = Number.parseInt(process.env.SOTY_CODEX_BRIDGE_MAX_TURNS || "4", 10);
+const codexBridgeMaxCommands = Number.parseInt(process.env.SOTY_CODEX_BRIDGE_MAX_COMMANDS || "6", 10);
 const skillSyncRepoUrl = process.env.SOTY_CODEX_SKILL_SYNC_REPO || "https://github.com/junior2wnw/universal-install-ops-skill.git";
 const skillSyncRef = process.env.SOTY_CODEX_SKILL_SYNC_REF || "main";
 const skillSyncName = process.env.SOTY_CODEX_SKILL_SYNC_NAME || "universal-install-ops";
@@ -892,7 +895,7 @@ async function askCodexForAgentReply(text, context, source = {}) {
   }
 
   const jobDir = join(tmpdir(), "soty-agent-codex", randomUUID());
-  const outPath = join(jobDir, "reply.txt");
+  const schemaPath = join(jobDir, "reply-schema.json");
   await mkdir(jobDir, { recursive: true });
   const codexHome = chooseCodexHome();
   await maybeSyncCodexSkills(codexHome);
@@ -900,6 +903,123 @@ async function askCodexForAgentReply(text, context, source = {}) {
     ...process.env,
     ...(codexHome ? { CODEX_HOME: codexHome } : {})
   };
+  await writeFile(schemaPath, JSON.stringify(agentBridgeOutputSchema()), "utf8");
+
+  try {
+    return await runCodexBridgeLoop({
+      codexBin,
+      childEnv,
+      jobDir,
+      schemaPath,
+      text,
+      context,
+      source
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      text: agentFailureText(error instanceof Error ? error.message : String(error)),
+      exitCode: 1
+    };
+  } finally {
+    await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function runCodexBridgeLoop({ codexBin, childEnv, jobDir, schemaPath, text, context, source }) {
+  const safeSource = sanitizeAgentSource(source);
+  const target = resolveAgentBridgeTarget(safeSource);
+  const history = [];
+  const commandCache = new Map();
+  let lastChat = "";
+  let lastEmittedChat = "";
+  let commandCount = 0;
+  const destructiveConfirmed = hasDestructiveAgentConfirmation(text, context);
+  const maxTurns = Math.max(1, Math.min(codexBridgeMaxTurns || 4, 8));
+  const maxCommands = Math.max(1, Math.min(codexBridgeMaxCommands || 6, 16));
+
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    const prompt = await buildAgentPrompt(text, context, safeSource, formatAgentExecutionHistory(history));
+    const reply = await runCodexBridgeTurn(codexBin, childEnv, jobDir, schemaPath, prompt, turn);
+    if (!reply.ok) {
+      if (lastChat) {
+        return { ok: true, text: lastChat.slice(0, maxChatChars), exitCode: 0 };
+      }
+      return reply;
+    }
+
+    const chat = cleanAgentChatReply(reply.chat || "");
+    if (chat) {
+      lastChat = chat;
+    }
+    const commands = sanitizeCodexBridgeCommands(reply.commands);
+    if (reply.done || commands.length === 0) {
+      const finalChat = lastChat && lastChat !== lastEmittedChat ? lastChat : "Готово.";
+      return {
+        ok: true,
+        text: finalChat.slice(0, maxChatChars),
+        exitCode: 0
+      };
+    }
+
+    if (chat && chat !== lastEmittedChat) {
+      await postLocalOperatorChat(safeSource.tunnelId, chat);
+      lastEmittedChat = chat;
+    }
+
+    const batch = [];
+    for (const command of commands) {
+      if (commandCount >= maxCommands) {
+        batch.push({
+          ok: false,
+          exitCode: 124,
+          type: command.type,
+          command: command.command || command.name || "script",
+          text: "! bridge-command-limit"
+        });
+        continue;
+      }
+      const signature = codexBridgeCommandSignature(command);
+      if (commandCache.has(signature)) {
+        batch.push(commandResult(command, false, 409, `! duplicate-command\n${commandCache.get(signature)?.text || ""}`));
+        continue;
+      }
+      commandCount += 1;
+      const commandRun = await executeCodexBridgeCommand(command, target, safeSource, destructiveConfirmed);
+      commandCache.set(signature, commandRun);
+      batch.push(commandRun);
+    }
+    history.push({
+      turn: turn + 1,
+      chat,
+      commands: batch
+    });
+  }
+
+  return {
+    ok: true,
+    text: bridgeLoopFallbackText(history, lastChat, lastEmittedChat).slice(0, maxChatChars),
+    exitCode: 0
+  };
+}
+
+async function runCodexBridgeTurn(codexBin, childEnv, jobDir, schemaPath, prompt, turn) {
+  const outPath = join(jobDir, `reply-${turn}.json`);
+  const args = codexBridgeArgs(schemaPath, outPath);
+  const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, prompt);
+  const raw = existsSync(outPath) ? (await readFile(outPath, "utf8")).trim() : "";
+  const parsed = parseCodexBridgeReply(raw || result.stdout);
+  if (result.exitCode === 0 && parsed) {
+    return { ok: true, ...parsed, exitCode: 0 };
+  }
+  return {
+    ok: false,
+    text: agentFailureText(`${result.stderr}\n${result.stdout}\n${raw}`),
+    exitCode: result.exitCode || 1
+  };
+}
+
+function codexBridgeArgs(schemaPath, outPath) {
   const args = [
     "exec",
     "--skip-git-repo-check",
@@ -907,9 +1027,17 @@ async function askCodexForAgentReply(text, context, source = {}) {
     codexSandbox,
     "--cd",
     process.env.SOTY_CODEX_CWD || process.cwd(),
+    "--json",
+    "--output-schema",
+    schemaPath,
     "-o",
     outPath
   ];
+  if (codexDisableLocalTools) {
+    for (const feature of ["shell_tool", "browser_use", "computer_use", "in_app_browser", "image_generation", "plugins"]) {
+      args.push("--disable", feature);
+    }
+  }
   if (codexReplyEphemeral) {
     args.push("--ephemeral");
   }
@@ -923,28 +1051,184 @@ async function askCodexForAgentReply(text, context, source = {}) {
     args.push("-c", 'plugins."github@openai-curated".enabled=false');
   }
   args.push("-");
+  return args;
+}
 
-  try {
-    const prompt = await buildAgentPrompt(text, context, source);
-    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, prompt);
-    const reply = existsSync(outPath) ? (await readFile(outPath, "utf8")).trim() : "";
-    if (result.exitCode === 0 && reply) {
-      return { ok: true, text: cleanAgentChatReply(reply).slice(0, maxChatChars), exitCode: 0 };
-    }
-    return {
-      ok: false,
-      text: agentFailureText(`${result.stderr}\n${result.stdout}`),
-      exitCode: result.exitCode || 1
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      text: agentFailureText(error instanceof Error ? error.message : String(error)),
-      exitCode: 1
-    };
-  } finally {
-    await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+function agentBridgeOutputSchema() {
+  return {
+    type: "object",
+    properties: {
+      chat: { type: "string" },
+      commands: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["run", "script"] },
+            command: { type: "string" },
+            script: { type: "string" },
+            name: { type: "string" },
+            shell: { type: "string" },
+            timeoutMs: { type: "integer" }
+          },
+          required: ["type", "command", "script", "name", "shell", "timeoutMs"],
+          additionalProperties: false
+        }
+      },
+      done: { type: "boolean" }
+    },
+    required: ["chat", "commands", "done"],
+    additionalProperties: false
+  };
+}
+
+function parseCodexBridgeReply(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
   }
+  const candidates = [text];
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    candidates.push(text.slice(start, end + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      return {
+        chat: typeof parsed?.chat === "string" ? parsed.chat : "",
+        commands: Array.isArray(parsed?.commands) ? parsed.commands : [],
+        done: parsed?.done === true
+      };
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+function sanitizeCodexBridgeCommands(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      const type = item?.type === "script" ? "script" : item?.type === "run" ? "run" : "";
+      const command = typeof item?.command === "string" ? item.command.slice(0, maxCommandChars).trim() : "";
+      const script = typeof item?.script === "string" ? item.script.slice(0, maxScriptChars).trim() : "";
+      const name = typeof item?.name === "string" ? item.name.slice(0, 120).trim() : "";
+      const shell = typeof item?.shell === "string" ? item.shell.slice(0, 40).trim() : "";
+      const timeoutMs = Number.isSafeInteger(item?.timeoutMs)
+        ? Math.max(1000, Math.min(item.timeoutMs, 600_000))
+        : (type === "script" ? 60_000 : 30_000);
+      return { type, command, script, name, shell, timeoutMs };
+    })
+    .filter((item) => (item.type === "run" && item.command) || (item.type === "script" && item.script))
+    .slice(0, 4);
+}
+
+function resolveAgentBridgeTarget(source) {
+  const safe = sanitizeAgentSource(source);
+  const listed = sourceAgentLinkTargets(safe)[0];
+  if (listed) {
+    return listed;
+  }
+  if (!safe.deviceId) {
+    return null;
+  }
+  return {
+    id: `agent-source:${safe.deviceId}`,
+    label: safe.deviceNick || "source device",
+    deviceIds: [safe.deviceId],
+    hostDeviceId: safe.deviceId,
+    access: true,
+    host: true
+  };
+}
+
+async function executeCodexBridgeCommand(command, target, source, destructiveConfirmed = false) {
+  if (!target || !source?.deviceId) {
+    return commandResult(command, false, 409, "! agent-source");
+  }
+  if (!destructiveConfirmed && isBlockedAgentBridgeCommand(command)) {
+    return commandResult(command, false, 409, "! destructive-confirmation-required");
+  }
+  const result = command.type === "script"
+    ? await postLocalOperatorScript(target.id, source.deviceId, command, command.timeoutMs)
+    : await postLocalOperatorRun(target.id, source.deviceId, command.command, command.timeoutMs);
+  return commandResult(command, Boolean(result?.ok), Number.isSafeInteger(result?.exitCode) ? result.exitCode : 1, result?.text || "");
+}
+
+function commandResult(command, ok, exitCode, text) {
+  return {
+    ok,
+    exitCode,
+    type: command.type,
+    command: command.type === "script" ? (command.name || "script") : command.command,
+    text: String(text || "").slice(-5000)
+  };
+}
+
+function codexBridgeCommandSignature(command) {
+  return [
+    command.type,
+    String(command.command || "").trim(),
+    String(command.script || "").trim(),
+    String(command.shell || "").trim()
+  ].join("\n");
+}
+
+function bridgeLoopFallbackText(history, lastChat, lastEmittedChat) {
+  if (lastChat && lastChat !== lastEmittedChat) {
+    return lastChat;
+  }
+  const latest = [...history]
+    .reverse()
+    .flatMap((step) => [...(step.commands || [])].reverse())
+    .find((item) => item && item.ok && String(item.text || "").trim());
+  if (latest) {
+    const output = String(latest.text || "").trim().split(/\r?\n/u).slice(-8).join("\n");
+    return `Готово. Команда выполнилась на этом устройстве.\n${output}`;
+  }
+  return "Я уперся во внутренний лимит шагов. Напиши коротко, что продолжить, и я пойду дальше тем же маршрутом.";
+}
+
+function isBlockedAgentBridgeCommand(command) {
+  const value = `${command.command || ""}\n${command.script || ""}`.toLowerCase();
+  if (!value.trim()) {
+    return true;
+  }
+  return /\b(format|diskpart|clean|delete\s+partition|convert\s+gpt|bcdedit|reagentc|systemreset|shutdown|restart-computer|reset-computer|setup\.exe)\b/u.test(value)
+    || /remove-item\b[\s\S]*\b-recurse\b/u.test(value)
+    || /\b(del|erase|rd|rmdir)\s+\/s\b/u.test(value);
+}
+
+function hasDestructiveAgentConfirmation(text, context) {
+  const body = `${String(context || "").slice(-8000)}\n${String(text || "")}`.toLowerCase();
+  const confirmation = /подтверждаю|можно стирать|стирай|удаляй всё|удаляй все|удалить всё|удалить все|полная очистка|без бэкапа|без backup|без сохранения/u.test(body);
+  const destructive = /переустанов|сброс|reset|reinstall|format|удалить всё|удалить все|стереть|снести/u.test(body);
+  return confirmation && destructive;
+}
+
+function formatAgentExecutionHistory(history) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return "";
+  }
+  return history
+    .slice(-4)
+    .map((step) => [
+      `bridgeTurn=${step.turn}`,
+      step.chat ? `chat=${asciiJsonString(step.chat).slice(0, 1200)}` : "chat=",
+      ...step.commands.map((item, index) => [
+        `command${index + 1}.type=${item.type}`,
+        `command${index + 1}.ok=${Boolean(item.ok)}`,
+        `command${index + 1}.exitCode=${Number.isSafeInteger(item.exitCode) ? item.exitCode : 1}`,
+        `command${index + 1}.command=${asciiJsonString(item.command || "").slice(0, 1200)}`,
+        `command${index + 1}.output=${asciiJsonString(String(item.text || "").slice(-3000))}`
+      ].join("\n"))
+    ].join("\n"))
+    .join("\n\n");
 }
 
 function cleanAgentChatReply(value) {
@@ -1039,7 +1323,7 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
   return null;
 }
 
-async function buildAgentPrompt(text, context, source = {}) {
+async function buildAgentPrompt(text, context, source = {}, executionHistory = "") {
   const trimmedContext = String(context || "").trim();
   const sourceContext = formatAgentSource(source);
   const operatorContext = formatOperatorTargets(source);
@@ -1049,33 +1333,38 @@ async function buildAgentPrompt(text, context, source = {}) {
     "You are the local Codex agent inside the Soty app.",
     "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
-    "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
+    "For greetings, small talk, planning, explanations, or questions that do not require touching the user's computer, do not mention LINK, targets, Codex binaries, or the remote console.",
+    "This is a chat mode through a Soty bridge: do not request local Codex tools. Your tools are the structured source-scoped commands you return in JSON, and the bridge executes them only on the current user's LINK device.",
     "Use the request source below to understand which Soty device contacted you. Do not assume the current Codex host, the last selected Soty tile, or any similarly named device is the same computer.",
-    "Architecture rule: Codex decides and talks; Soty remote console executes. User/device computer tasks must go only through the source-scoped Soty operator ctl route, even if this Codex host also has local shell access or the browser reached a local agent directly.",
-    "Conversation rule: never ask questions, give confirmations, or write user-facing explanations through command stdout/stderr, Write-Output, echo, Read-Host, or the Soty remote console. The console is only for commands and technical execution output; all human dialogue must be in your final chat answer.",
+    "Architecture rule: Codex decides and talks; Soty remote console executes. Shell, PowerShell, scripts, browser launches, browser automation, file checks, app control, and OS tasks must go only through the source-scoped Soty operator route for this dialog, even if this Codex host also has local shell/browser access or the browser reached a local agent directly.",
+    "Conversation rule: never ask questions, give confirmations, or write user-facing explanations through command stdout/stderr, Write-Output, echo, Read-Host, or the Soty remote console. The console is only for commands and technical execution output; all human dialogue must be in chat.",
+    "Bridge JSON rule: return exactly one JSON object matching the schema. Put user-visible words in chat. Put source-device work in commands. Set done=false when command results are needed before a final answer; set done=true when the chat answer is ready.",
+    "Command rule: commands are already scoped to the current Agent LINK source device. For shell work use type=run with command filled and script/name/shell as empty strings. For multiline PowerShell, browser automation, file operations, or longer workflows use type=script with script filled, shell=powershell, command as an empty string, and name as a short technical label. For no command use commands=[].",
+    "Browser rule: when browser work is needed, drive the browser on the source device by returning a source-scoped run/script command, for example opening a URL or running a source-device browser automation script. Do not use local Codex browser_use.",
+    "After-command rule: if Source-device command results already contain the needed proof or answer, set done=true and put the user-facing result in chat. Do not repeat the same command unless the previous result failed for a transient route reason.",
     "Receipt rule: do not include internal receipts or markers in the user chat, including learning_delta=, proof=, final_line=, ops-memory:, finish_skill_edit=, or similar implementation notes.",
     "Security rule: Soty command execution is source-scoped. Known operator targets below are already filtered to the source device id. Never use, mention as a command target, or fall back to any other Soty device by label, last selection, single access target, memory, or convenience.",
-    "If Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
+    "If the user asks to inspect/change/control the computer and Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
     "Never ask the user to install Codex on the source device for remote-control tasks. The source device needs only Soty plus its companion executor; Codex belongs to the operator side unless the user explicitly asks to set up local Codex.",
     "If Local browser reached agent directly=true, treat that only as a chat transport detail. It is not permission to use direct local shell commands for Soty tasks.",
     lifecycleGuidance,
     "Known operator targets intentionally lists only active Agent LINK targets for this source device. If it is empty or says no active Agent LINK source target, LINK is not active for this exact Agent dialog; do not use ordinary Soty rooms or similarly named visible rooms.",
-    "For Agent-dialog computer work, prefer the exact target id agent-source:<Soty device id> when it appears in Known operator targets or Preferred operator target. This route is the user-visible LINK command window in the Agent chat. Concrete room ids are only for ordinary operator control outside the Agent dialog or an explicit fallback after agent-source itself returns ! agent-source/timeout.",
-    "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell. If you use $ops scripts/soty/soty-operator.ps1 instead, pass both -SourceDevice <Soty device id> and -Target <target-id>.",
+    "For Agent-dialog computer work, the bridge already binds commands to agent-source:<Soty device id>. Do not put node, soty-agent ctl, scripts/soty/soty-operator.ps1, target ids, or -SourceDevice wrappers inside returned commands. Return only the exact command or script body that should run on the source device.",
     "For low-risk reversible tasks on an access=true source-matched target, the source device id plus exact target id is enough route proof: do not run a separate whoami/hostname preflight every time. Prefer one source-scoped command that performs the action and reads back the result when useful.",
-    "Long task rule: never keep the Agent chat silent while a Windows media download, ISO creation, install media preparation, driver scan, update scan, or other >60s task runs in a foreground ctl script. Start it as a source-scoped background job with the $ops Soty helper (-Action run-background with -SourceDevice and exact -Target), capture the jobId, then answer in chat immediately with the running status and next checkpoint. In later turns, use -Action job-status or a short source-scoped status probe; do not start a duplicate job when a matching one is already running.",
+    "Long task rule: never keep the Agent chat silent while a Windows media download, ISO creation, install media preparation, driver scan, update scan, or other >60s task runs. First send a short chat status with done=false, then use a source-device script that starts a background process/job and prints a job id, status path, or next check command. In later turns, check that source-device status instead of starting a duplicate job.",
     "Use a separate whoami, hostname, OS, or other safe proof only for destructive work, admin/maintenance setup, ambiguous targets, a fresh route after reconnect, or after a command route failed. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! source-target, ! access, ! tunnel, timeout, or a non-zero proof failure.",
-    "After a successful nontrivial source-scoped command, make sure the reusable route is recorded. The ctl layer may auto-record sanitized command-family memory; if you have route details it cannot infer, add $ops --remember with expected, actual, proof, and environment before the final answer.",
-    "If a source-scoped command fails, record the reusable failure with $ops --remember including expected, actual, proof, and environment before retrying broadly or ending. Do not expose ops receipts or learning_delta lines in the user chat unless the user asks for internals.",
-    "Never answer that you did not save the route for a command you just ran successfully. If memory recording was automatic, say that the reusable route was captured without exposing the receipt.",
+    "After a successful nontrivial source-scoped command, the bridge may record sanitized command-family memory automatically. Do not try to run $ops or emit learning receipts from the source device.",
+    "If a source-scoped command fails, retry only when the failure proof shows a transient route issue. Do not switch by label to another device. Do not expose ops receipts or learning_delta lines in the user chat unless the user asks for internals.",
     "For destructive work like Windows reset or reinstall, always use safe proof commands first, then ask for one final confirmation before any destructive step. Do not fall back to manual Windows settings while an access=true ctl route is still untested.",
+    "The bridge hard-blocks destructive commands until the chat context contains an explicit destructive confirmation. If the user has not clearly confirmed wiping/resetting/reinstalling, ask in chat and return no destructive command.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
     operatorContext ? `Known operator targets:\n${operatorContext}` : "",
     deterministicFacts ? `Deterministic source facts:\n${deterministicFacts}` : "",
+    executionHistory ? `Source-device command results from this Codex turn:\n${executionHistory}` : "",
     trimmedContext ? `Recent chat context as a JSON string with Unicode escapes. Decode it before using it:\n${asciiJsonString(trimmedContext)}` : "",
     `User message as a JSON string with Unicode escapes. Decode it before answering:\n${asciiJsonString(String(text || "").trim())}`,
-    "Answer in Russian:"
+    "Return the JSON object now:"
   ].filter(Boolean).join("\n\n");
 }
 
@@ -1126,6 +1415,66 @@ async function postLocalOperatorRun(target, sourceDeviceId, command, timeoutMs) 
       text: error instanceof Error ? error.message : String(error),
       exitCode: 1
     };
+  }
+}
+
+async function postLocalOperatorScript(target, sourceDeviceId, payload, timeoutMs) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/operator/script`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://xn--n1afe0b.online"
+      },
+      body: JSON.stringify({
+        target,
+        sourceDeviceId,
+        script: String(payload?.script || ""),
+        name: String(payload?.name || "script"),
+        shell: String(payload?.shell || ""),
+        timeoutMs
+      })
+    });
+    const data = await response.json();
+    return {
+      ok: Boolean(response.ok && data?.ok),
+      text: String(data?.text || ""),
+      ...(Number.isSafeInteger(data?.exitCode) ? { exitCode: data.exitCode } : { exitCode: response.status || 1 })
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      text: error instanceof Error ? error.message : String(error),
+      exitCode: 1
+    };
+  }
+}
+
+async function postLocalOperatorChat(target, text) {
+  const safeTarget = String(target || "").slice(0, 160);
+  const message = cleanAgentChatReply(text);
+  if (!safeTarget || !message) {
+    return false;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/operator/chat`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://xn--n1afe0b.online"
+      },
+      body: JSON.stringify({
+        target: safeTarget,
+        text: message.slice(0, maxChatChars),
+        speed: "fast",
+        persona: "sysadmin"
+      })
+    });
+    return response.ok;
+  } catch {
+    return false;
   }
 }
 
@@ -1184,10 +1533,9 @@ function lifecycleOpsGuidance(text, context) {
   if (!isWindowsReinstallRequest(text, context)) {
     return "";
   }
-  const opsPath = findOpsScriptPath();
   return [
     "Windows reinstall/reset mode is active.",
-    opsPath ? `Use $ops first: run ${quoteForPrompt(process.env.SOTY_PYTHON || process.env.PYTHON || "python")} ${quoteForPrompt(opsPath)} "<decoded user task>" before planning or acting.` : "Use $ops first if available; if it is unavailable, say that the reinstall workflow route is blocked.",
+    "Use the $ops operating policy as guidance: target proof, power/awake proof, backup/return path, safe preflight, one exact final destructive confirmation, then execute through the source-scoped Soty bridge. Do not run a local ops.py path on the source device unless the source-device command itself proves it exists there.",
     "Do not offer Settings -> System -> Recovery -> Reset this PC as the primary path from Soty Agent. That is only a last-resort manual fallback if the user explicitly asks for manual steps.",
     "If no active Agent LINK agent-source target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
     "If an active Agent LINK agent-source target is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
@@ -1229,7 +1577,6 @@ function formatAgentSource(source) {
     ["App origin", safe.appOrigin],
     ["Local browser reached agent directly", safe.localAgentDirect ? "true" : ""],
     ["Preferred operator target", safe.preferredTargetId ? `${safe.preferredTargetLabel || "target"} (${safe.preferredTargetId})` : ""],
-    ["Local agent ctl", `${quoteForPrompt(process.execPath)} ${quoteForPrompt(scriptPath)} ctl`],
     ["Local agent relay id", agentRelayId ? `${agentRelayId.slice(0, 10)}...` : ""],
     ["Local agent scope", agentScope],
     ["Local agent platform", process.platform]
