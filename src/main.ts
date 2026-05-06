@@ -1892,16 +1892,16 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
-  const keepCurrentDialog = isAgentTunnelId(selectedId);
-  if (!keepCurrentDialog) {
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${command}`);
-  tunnels = keepCurrentDialog ? markTunnel(tunnel.id, true) : tunnels;
+  clearTunnelNotices(tunnel.id);
+  tunnels = markTunnel(tunnel.id, false);
   renderTiles();
+  applySelectedText(true);
+  renderFiles();
   renderTerminal();
   try {
     const commandId = await sync.sendRemoteCommand(hostDeviceId, command);
@@ -1947,16 +1947,16 @@ async function runOperatorScript(message: {
     return;
   }
   const name = cleanNick(message.name || "script") || "script";
-  const keepCurrentDialog = isAgentTunnelId(selectedId);
-  if (!keepCurrentDialog) {
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${name}`);
-  tunnels = keepCurrentDialog ? markTunnel(tunnel.id, true) : tunnels;
+  clearTunnelNotices(tunnel.id);
+  tunnels = markTunnel(tunnel.id, false);
   renderTiles();
+  applySelectedText(true);
+  renderFiles();
   renderTerminal();
   try {
     const commandId = await sync.sendRemoteScript(hostDeviceId, {
