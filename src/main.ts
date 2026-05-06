@@ -2137,8 +2137,7 @@ function formatOperatorChat(text: string, persona: string): string {
   }
   return [
     `${name} · ${clock()}`,
-    ...body.split("\n"),
-    "Ответ:"
+    ...body.split("\n")
   ].join("\n");
 }
 
@@ -2696,7 +2695,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
   if (!tunnel || !isAgentTunnel(tunnel) || !text.trim()) {
     return;
   }
-  const context = (texts.get(tunnelId) || "").slice(-16_000);
+  const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const preferredTarget = preferredAgentOperatorTarget(device?.id || "");
   const source: LocalAgentRequestSource = {
     tunnelId,
@@ -3158,7 +3157,10 @@ function renderTextPaint(): void {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     const label = labels.get(index);
-    const state = classifyChatLine(line, operatorBlock);
+    let state = classifyChatLine(line, operatorBlock);
+    if (label && label.deviceId !== "operator" && !isAgentChromeLineClass(state.className)) {
+      state = { className: "is-user-line", operatorBlock: false };
+    }
     operatorBlock = state.operatorBlock;
     if (hideAgentChrome && isAgentChromeLineClass(state.className)) {
       continue;
@@ -3366,6 +3368,26 @@ function isAgentChromeLineClass(className: string): boolean {
 
 function isOperatorHeader(line: string): boolean {
   return /^(Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
+}
+
+function cleanAgentContext(value: string): string {
+  return value
+    .split(/\r?\n/u)
+    .filter((line) => !isAgentContextChromeLine(line))
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+function isAgentContextChromeLine(line: string): boolean {
+  const trimmed = line.trim();
+  return isOperatorHeader(trimmed)
+    || trimmed === "Ответ:"
+    || trimmed === "Ответьте ниже:"
+    || trimmed === "Reply:"
+    || trimmed === "TYPE"
+    || trimmed === "EDIT"
+    || trimmed === "DEL";
 }
 
 function renderWriterPop(): void {

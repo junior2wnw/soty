@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.36";
+const agentVersion = "0.3.37";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -358,6 +358,7 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
     command,
     timeoutMs
   });
+  rememberAgentSourceOutcome({ kind: "run", command, result });
   sendJson(response, 200, headers, result);
 }
 
@@ -376,6 +377,7 @@ async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, time
     ...payload,
     timeoutMs
   });
+  rememberAgentSourceOutcome({ kind: "script", command: payload.script, result });
   sendJson(response, 200, headers, result);
 }
 
@@ -402,6 +404,111 @@ async function postAgentSourceJob(path, body) {
     };
   } catch {
     return { ok: false, text: "! agent-source", exitCode: 127 };
+  }
+}
+
+function rememberAgentSourceOutcome({ kind, command, result }) {
+  if (process.env.SOTY_AGENT_REMEMBER_OUTCOMES === "0") {
+    return;
+  }
+  const family = classifySourceCommand(command);
+  const exitCode = Number.isSafeInteger(result?.exitCode) ? result.exitCode : (result?.ok ? 0 : 1);
+  const ok = Boolean(result?.ok && exitCode === 0);
+  if (ok && family === "generic") {
+    return;
+  }
+  if (ok && family === "identity-probe") {
+    return;
+  }
+  const opsPath = findOpsScriptPath();
+  if (!opsPath) {
+    return;
+  }
+  const remember = ok
+    ? `Soty Agent ${family} ${kind} succeeded through source-scoped ctl; future low-risk reversible ${family} tasks should use one agent-source action+readback command and answer plainly.`
+    : `Soty Agent source-scoped ${family} ${kind} failed; keep retries source-scoped, do not switch by label to another device, and report the exact Soty route blocker.`;
+  const proof = ok
+    ? `exitCode=0; family=${family}; output=${sourceOutputShape(result?.text)}`
+    : `exitCode=${exitCode}; proof=${sourceFailureProof(result?.text)}`;
+  const env = `soty-agent ${agentVersion}; target=agent-source; sourceDevice=present; kind=${kind}`;
+  spawnDetached(process.env.SOTY_PYTHON || process.env.PYTHON || "python", [
+    opsPath,
+    "Soty Agent source-scoped command outcome",
+    "--remember",
+    remember,
+    "--proof",
+    proof,
+    "--env",
+    env
+  ], dirname(opsPath));
+}
+
+function classifySourceCommand(command) {
+  const lower = String(command || "").toLowerCase();
+  if (/\b(whoami|hostname)\b|computername|username/u.test(lower)) {
+    return "identity-probe";
+  }
+  if (/volume|mute|audio|sound|endpointvolume|nircmd|sndvol|speaker|mic|микрофон|звук|громк/u.test(lower)) {
+    return /mute|muted|выключ/u.test(lower) ? "audio-mute" : "audio-volume";
+  }
+  if (/driver|pnputil|devmgmt|device manager|драйвер/u.test(lower)) {
+    return "driver-check";
+  }
+  if (/battery|powercfg|sleep|lid|заряд|питан/u.test(lower)) {
+    return "power-check";
+  }
+  if (/winget|choco|scoop|msiexec|install|установ/u.test(lower)) {
+    return "package-install";
+  }
+  if (/get-service|systemctl|service|служб/u.test(lower)) {
+    return "service-check";
+  }
+  return "generic";
+}
+
+function sourceOutputShape(text) {
+  const value = String(text || "");
+  const volume = value.match(/\b(volume|vol|громкость)\s*[:=]\s*([0-9]{1,3})\b/iu);
+  const muted = value.match(/\b(muted|mute)\s*[:=]\s*(true|false|0|1)\b/iu);
+  const parts = [
+    volume ? `volume=${volume[2]}` : "",
+    muted ? `muted=${muted[2]}` : "",
+    value.trim() ? "nonempty" : "empty"
+  ].filter(Boolean);
+  return parts.join("; ");
+}
+
+function sourceFailureProof(text) {
+  const value = String(text || "");
+  const known = value.match(/!\s*(target|bridge|source-target|access|tunnel|timeout|agent-source|relay|request)\b/iu);
+  if (known) {
+    return `! ${known[1].toLowerCase()}`;
+  }
+  return value.trim() ? "nonzero-output" : "empty-output";
+}
+
+function findOpsScriptPath() {
+  const explicit = process.env.SOTY_OPS_SCRIPT || "";
+  const codexHome = chooseCodexHome();
+  const candidates = [
+    explicit,
+    codexHome ? join(codexHome, "skills", skillSyncName, "scripts", "ops.py") : "",
+    join(agentDir, "skill-sources", "universal-install-ops-skill", "scripts", "ops.py")
+  ].filter(Boolean);
+  return candidates.find((candidate) => existsSync(candidate)) || "";
+}
+
+function spawnDetached(file, args, cwd) {
+  try {
+    const child = spawn(file, args, {
+      cwd,
+      detached: true,
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    child.unref();
+  } catch {
+    // Learning must never block the user's command route.
   }
 }
 
@@ -895,7 +1002,9 @@ function buildAgentPrompt(text, context, source = {}) {
     "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell. If you use $ops scripts/soty/soty-operator.ps1 instead, pass both -SourceDevice <Soty device id> and -Target <target-id>.",
     "For low-risk reversible tasks on an access=true agent-source target, the source device id plus agent-source target is enough route proof: do not run a separate whoami/hostname preflight every time. Prefer one source-scoped command that performs the action and reads back the result when useful.",
     "Use a separate whoami, hostname, OS, or other safe proof only for destructive work, admin/maintenance setup, ambiguous targets, a fresh route after reconnect, or after a command route failed. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! source-target, ! access, ! tunnel, timeout, or a non-zero proof failure.",
+    "After a successful nontrivial source-scoped command, make sure the reusable route is recorded. The ctl layer may auto-record sanitized command-family memory; if you have route details it cannot infer, add $ops --remember with expected, actual, proof, and environment before the final answer.",
     "If a source-scoped command fails, record the reusable failure with $ops --remember including expected, actual, proof, and environment before retrying broadly or ending. Do not expose ops receipts or learning_delta lines in the user chat unless the user asks for internals.",
+    "Never answer that you did not save the route for a command you just ran successfully. If memory recording was automatic, say that the reusable route was captured without exposing the receipt.",
     "For destructive work like Windows reset or reinstall, always use safe proof commands first, then ask for one final confirmation before any destructive step. Do not fall back to manual Windows settings while an access=true ctl route is still untested.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
