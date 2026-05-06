@@ -557,10 +557,8 @@ async function handleOperatorHttpChat(request, response, headers) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
   }
-  if (!hasKnownOperatorTarget(target)) {
-    sendJson(response, 404, headers, { ok: false, text: "! target", exitCode: 404 });
-    return;
-  }
+  // Let the PWA validate the final visible target. Agent dialogs are not remote
+  // command targets, but they are valid chat targets for operator status notes.
   const id = `operator_${randomUUID()}`;
   sendRaw(operatorBridge, {
     type: "operator.chat",
