@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.40";
+const agentVersion = "0.3.41";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1047,6 +1047,7 @@ function buildAgentPrompt(text, context, source = {}) {
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
     "Use the request source below to understand which Soty device contacted you. Do not assume the current Codex host, the last selected Soty tile, or any similarly named device is the same computer.",
     "Architecture rule: Codex decides and talks; Soty remote console executes. User/device computer tasks must go only through the source-scoped Soty operator ctl route, even if this Codex host also has local shell access or the browser reached a local agent directly.",
+    "Conversation rule: never ask questions, give confirmations, or write user-facing explanations through command stdout/stderr, Write-Output, echo, Read-Host, or the Soty remote console. The console is only for commands and technical execution output; all human dialogue must be in your final chat answer.",
     "Security rule: Soty command execution is source-scoped. Known operator targets below are already filtered to the source device id. Never use, mention as a command target, or fall back to any other Soty device by label, last selection, single access target, memory, or convenience.",
     "If Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
     "Never ask the user to install Codex on the source device for remote-control tasks. The source device needs only Soty plus its companion executor; Codex belongs to the operator side unless the user explicitly asks to set up local Codex.",

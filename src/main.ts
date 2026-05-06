@@ -2171,10 +2171,11 @@ async function runOperatorAgentMessage(message: {
   applySelectedText();
   renderTextPaint();
   renderWriterPop();
-  sendOperatorOutput(requestId, "sent\n");
   try {
     await sendAgentDialogMessage(tunnel.id, body);
-    sendOperatorOutput(requestId, "reply\n", 0);
+    // Agent dialog injection is a transport action. Keep the remote command
+    // window quiet so only actual execution output appears there.
+    sendOperatorOutput(requestId, "", 0);
   } catch {
     sendOperatorOutput(requestId, "! agent-reply", 500);
   }
