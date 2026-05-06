@@ -117,14 +117,14 @@ export async function askLocalAgentReply(
 ): Promise<LocalAgentReply> {
   await adoptCurrentAgentRelay(1500);
   if (readAgentRelayId()) {
-    const relayStatus = await checkAgentRelay(1500);
-    const relayReady = relayStatus.ok && relayStatus.codex !== false
-      ? true
-      : await adoptCurrentAgentRelay(1500, true);
-    if (relayReady) {
-      const relay = await askAgentRelayReply(text, context, source, timeoutMs);
-      if (relay) {
-        return relay;
+    const relay = await askAgentRelayReply(text, context, source, timeoutMs);
+    if (relay) {
+      return relay;
+    }
+    if (await adoptCurrentAgentRelay(1500, true)) {
+      const currentRelay = await askAgentRelayReply(text, context, source, timeoutMs);
+      if (currentRelay) {
+        return currentRelay;
       }
     }
   }
