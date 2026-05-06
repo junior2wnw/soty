@@ -1100,12 +1100,46 @@ async function collectDeterministicAgentFacts(text, context, source = {}) {
   if (!safe.deviceId) {
     return "windowsReinstallPreflight=not-run; reason=no-source-device-id";
   }
-  const result = await postAgentSourceJob("/api/agent/source/run", {
-    deviceId: safe.deviceId,
-    command: windowsReinstallPreflightCommand(),
-    timeoutMs: 45_000
-  });
+  const target = sourceMatchedOperatorTargets(source)[0] || {
+    id: `agent-source:${safe.deviceId}`,
+    label: "source device",
+    deviceIds: [safe.deviceId],
+    hostDeviceId: safe.deviceId,
+    access: true
+  };
+  const result = await postLocalOperatorRun(target.id, safe.deviceId, windowsReinstallPreflightCommand(), 45_000);
   return formatWindowsReinstallPreflightFacts(result);
+}
+
+async function postLocalOperatorRun(target, sourceDeviceId, command, timeoutMs) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/operator/run`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://xn--n1afe0b.online"
+      },
+      body: JSON.stringify({
+        target,
+        sourceDeviceId,
+        command,
+        timeoutMs
+      })
+    });
+    const payload = await response.json();
+    return {
+      ok: Boolean(response.ok && payload?.ok),
+      text: String(payload?.text || ""),
+      ...(Number.isSafeInteger(payload?.exitCode) ? { exitCode: payload.exitCode } : { exitCode: response.status || 1 })
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      text: error instanceof Error ? error.message : String(error),
+      exitCode: 1
+    };
+  }
 }
 
 function windowsReinstallPreflightCommand() {
@@ -1219,20 +1253,9 @@ function formatAgentSource(source) {
 }
 
 function formatOperatorTargets(source) {
-  const sourceTargets = sanitizeTargets(source?.operatorTargets);
-  const merged = new Map();
-  for (const target of sourceTargets) {
-    merged.set(target.id, target);
-  }
-  for (const target of operatorTargets) {
-    merged.set(target.id, target);
-  }
   const safe = sanitizeAgentSource(source);
   const sourceDeviceId = safe.deviceId;
-  const targets = [...merged.values()]
-    .filter((target) => targetMatchesSourceDevice(target, sourceDeviceId))
-    .filter((target) => target.access === true)
-    .slice(0, 16);
+  const targets = sourceMatchedOperatorTargets(source).slice(0, 16);
   if (targets.length === 0) {
     return sourceDeviceId
       ? `No authorized Soty operator target is currently attached for source device id ${sourceDeviceId}. Other Soty devices are intentionally hidden for safety.`
@@ -1252,6 +1275,22 @@ function formatOperatorTargets(source) {
       return `- ${target.label} (${target.id}) ${flags}`;
     })
     .join("\n");
+}
+
+function sourceMatchedOperatorTargets(source) {
+  const safe = sanitizeAgentSource(source);
+  const sourceDeviceId = safe.deviceId;
+  const merged = new Map();
+  for (const target of sanitizeTargets(source?.operatorTargets)) {
+    merged.set(target.id, target);
+  }
+  for (const target of operatorTargets) {
+    merged.set(target.id, target);
+  }
+  return [...merged.values()]
+    .filter((target) => targetMatchesSourceDevice(target, sourceDeviceId))
+    .filter((target) => target.access === true)
+    .sort((left, right) => operatorSourceTargetScore(right, sourceDeviceId) - operatorSourceTargetScore(left, sourceDeviceId));
 }
 
 function targetMatchesSourceDevice(target, sourceDeviceId) {
