@@ -92,6 +92,10 @@ export async function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus
   return direct.ok ? direct : relay;
 }
 
+export async function checkLocalCompanionAgent(timeoutMs = 850): Promise<LocalAgentStatus> {
+  return await checkLocalAgentHttp(timeoutMs);
+}
+
 export async function askLocalAgentReply(
   text: string,
   context: string,

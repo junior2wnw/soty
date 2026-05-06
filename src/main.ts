@@ -4,7 +4,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteComm
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
+import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
 import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -112,6 +112,7 @@ const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
 let localAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
 let agentProbe: Promise<LocalAgentStatus> | null = null;
+let companionProbe: Promise<LocalAgentStatus> | null = null;
 type WriterLine = {
   readonly nick: string;
   readonly deviceId: string;
@@ -876,7 +877,7 @@ async function toggleRemoteGrant(id: string): Promise<void> {
     return;
   }
 
-  const agent = await refreshLocalAgent();
+  const agent = await refreshLocalCompanion();
   if (!agent.ok) {
     renderAgentInstall(id);
     return;
@@ -910,10 +911,24 @@ async function refreshLocalAgent(): Promise<LocalAgentStatus> {
   return localAgent;
 }
 
+async function refreshLocalCompanion(): Promise<LocalAgentStatus> {
+  window.clearTimeout(agentProbeTimer);
+  companionProbe = companionProbe || checkLocalCompanionAgent().finally(() => {
+    companionProbe = null;
+  });
+  localAgent = await companionProbe;
+  document.querySelector(".agent-sheet")?.classList.toggle("is-ok", localAgent.ok);
+  if (localAgent.ok) {
+    agentProbeTimer = window.setTimeout(() => void refreshLocalCompanion(), 30_000);
+  }
+  return localAgent;
+}
+
 function renderAgentInstall(
   tunnelId: string,
   onReady?: () => void,
-  isReady: (agent: LocalAgentStatus) => boolean = (agent) => agent.ok
+  isReady: (agent: LocalAgentStatus) => boolean = (agent) => agent.ok,
+  refresh: () => Promise<LocalAgentStatus> = refreshLocalCompanion
 ): void {
   document.querySelector(".agent-modal")?.remove();
   const overlay = document.createElement("div");
@@ -936,7 +951,7 @@ function renderAgentInstall(
   });
   overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
     void (async () => {
-      const agent = await refreshLocalAgent();
+      const agent = await refresh();
       if (isReady(agent)) {
         overlay.remove();
         if (onReady) {
@@ -1066,7 +1081,7 @@ async function startAgentDialog(): Promise<void> {
       void ensureOperatorBridge();
       publishOperatorTargets();
       composer?.focus();
-    }, agentSupportsDialogInbox);
+    }, agentSupportsDialogInbox, refreshLocalAgent);
     return;
   }
   await ensureOperatorBridge();
@@ -1616,7 +1631,7 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
   document.body.append(overlay);
   overlay.querySelector(".access-accept")?.addEventListener("click", () => {
     void (async () => {
-      const agent = await refreshLocalAgent();
+      const agent = await refreshLocalCompanion();
       if (!agent.ok) {
         overlay.remove();
         renderAgentInstall(tunnelId);
@@ -1732,7 +1747,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     return;
   }
   window.clearTimeout(operatorReconnectTimer);
-  const agent = await checkLocalAgent(650);
+  const agent = await checkLocalCompanionAgent(650);
   if (!agent.ok || (!operatorBridgeAllowEmpty && !hasOperatorTargets())) {
     if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
       operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
@@ -2211,6 +2226,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
+    renderAgentInstall(tunnelId);
     window.clearTimeout(timer);
     void sync.sendRemoteOutput(command.deviceId, command.id, "! 127.0.0.1:49424", 127);
   };
@@ -2284,6 +2300,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
+    renderAgentInstall(tunnelId);
     window.clearTimeout(timer);
     void sync.sendRemoteOutput(script.deviceId, script.id, "! 127.0.0.1:49424", 127);
   };
@@ -2451,7 +2468,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): void {
       const body = normalizeChatMessage(reply.text)
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
       if (shouldOfferAgentInstall(reply)) {
-        renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox);
+        renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox, refreshLocalAgent);
       }
       await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
     });
