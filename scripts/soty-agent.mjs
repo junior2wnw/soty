@@ -301,14 +301,8 @@ async function handleOperatorHttpRun(request, response, headers) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    const resolved = resolveOperatorTargetForSourceDevice(deviceId);
-    if (resolved && operatorBridge?.open) {
-      target = resolved.id;
-      sourceDeviceId = deviceId;
-    } else {
-      await handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers);
-      return;
-    }
+    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers);
+    return;
   }
   if (!operatorBridge?.open || !target || !command.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
@@ -344,14 +338,8 @@ async function handleOperatorHttpScript(request, response, headers) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    const resolved = resolveOperatorTargetForSourceDevice(deviceId);
-    if (resolved && operatorBridge?.open) {
-      target = resolved.id;
-      sourceDeviceId = deviceId;
-    } else {
-      await handleAgentSourceHttpScript(target, sourceDeviceId, { script, name, shell }, timeoutMs, response, headers);
-      return;
-    }
+    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell }, timeoutMs, response, headers);
+    return;
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
@@ -1071,8 +1059,8 @@ async function buildAgentPrompt(text, context, source = {}) {
     "Never ask the user to install Codex on the source device for remote-control tasks. The source device needs only Soty plus its companion executor; Codex belongs to the operator side unless the user explicitly asks to set up local Codex.",
     "If Local browser reached agent directly=true, treat that only as a chat transport detail. It is not permission to use direct local shell commands for Soty tasks.",
     lifecycleGuidance,
-    "Known operator targets intentionally lists only access=true targets. If it is empty or says no authorized target, LINK is not active for this exact Agent dialog; do not use similarly named visible rooms.",
-    "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat. Prefer a concrete non-agent-source target id with the matching hostDeviceId/deviceIds when it is listed; agent-source:<device-id> is an alias, not a reason to ignore a working concrete Soty command window.",
+    "Known operator targets intentionally lists only active Agent LINK targets for this source device. If it is empty or says no active Agent LINK source target, LINK is not active for this exact Agent dialog; do not use ordinary Soty rooms or similarly named visible rooms.",
+    "For Agent-dialog computer work, prefer the exact target id agent-source:<Soty device id> when it appears in Known operator targets or Preferred operator target. This route is the user-visible LINK command window in the Agent chat. Concrete room ids are only for ordinary operator control outside the Agent dialog or an explicit fallback after agent-source itself returns ! agent-source/timeout.",
     "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell. If you use $ops scripts/soty/soty-operator.ps1 instead, pass both -SourceDevice <Soty device id> and -Target <target-id>.",
     "For low-risk reversible tasks on an access=true source-matched target, the source device id plus exact target id is enough route proof: do not run a separate whoami/hostname preflight every time. Prefer one source-scoped command that performs the action and reads back the result when useful.",
     "Long task rule: never keep the Agent chat silent while a Windows media download, ISO creation, install media preparation, driver scan, update scan, or other >60s task runs in a foreground ctl script. Start it as a source-scoped background job with the $ops Soty helper (-Action run-background with -SourceDevice and exact -Target), capture the jobId, then answer in chat immediately with the running status and next checkpoint. In later turns, use -Action job-status or a short source-scoped status probe; do not start a duplicate job when a matching one is already running.",
@@ -1099,7 +1087,7 @@ async function collectDeterministicAgentFacts(text, context, source = {}) {
   if (!safe.deviceId) {
     return "windowsReinstallPreflight=not-run; reason=no-source-device-id";
   }
-  const target = sourceMatchedOperatorTargets(source)[0] || {
+  const target = sourceAgentLinkTargets(source)[0] || {
     id: `agent-source:${safe.deviceId}`,
     label: "source device",
     deviceIds: [safe.deviceId],
@@ -1201,8 +1189,8 @@ function lifecycleOpsGuidance(text, context) {
     "Windows reinstall/reset mode is active.",
     opsPath ? `Use $ops first: run ${quoteForPrompt(process.env.SOTY_PYTHON || process.env.PYTHON || "python")} ${quoteForPrompt(opsPath)} "<decoded user task>" before planning or acting.` : "Use $ops first if available; if it is unavailable, say that the reinstall workflow route is blocked.",
     "Do not offer Settings -> System -> Recovery -> Reset this PC as the primary path from Soty Agent. That is only a last-resort manual fallback if the user explicitly asks for manual steps.",
-    "If no access=true source-matched target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
-    "If an access=true source-matched target is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
+    "If no active Agent LINK agent-source target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
+    "If an active Agent LINK agent-source target is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
     "If that preflight already proves machine-status scope=Machine, system=true, and maintenance=true, treat the Soty machine worker as ready and do not ask the user to enable maintenance again.",
     "For privileged reinstall staging, prefer Soty machine worker proof: install-machine/elevate only after explaining one UAC approval, then require machine-status scope=Machine system=true maintenance=true before destructive prep."
   ].join("\n");
@@ -1254,10 +1242,10 @@ function formatAgentSource(source) {
 function formatOperatorTargets(source) {
   const safe = sanitizeAgentSource(source);
   const sourceDeviceId = safe.deviceId;
-  const targets = sourceMatchedOperatorTargets(source).slice(0, 16);
+  const targets = sourceAgentLinkTargets(source).slice(0, 16);
   if (targets.length === 0) {
     return sourceDeviceId
-      ? `No authorized Soty operator target is currently attached for source device id ${sourceDeviceId}. Other Soty devices are intentionally hidden for safety.`
+      ? `No active Agent LINK source target is currently attached for source device id ${sourceDeviceId}. Ordinary Soty rooms are intentionally hidden for Agent-dialog computer work.`
       : "No source-scoped Soty operator target is available because the request source has no device id.";
   }
   return targets
@@ -1290,6 +1278,11 @@ function sourceMatchedOperatorTargets(source) {
     .filter((target) => targetMatchesSourceDevice(target, sourceDeviceId))
     .filter((target) => target.access === true)
     .sort((left, right) => operatorSourceTargetScore(right, sourceDeviceId) - operatorSourceTargetScore(left, sourceDeviceId));
+}
+
+function sourceAgentLinkTargets(source) {
+  return sourceMatchedOperatorTargets(source)
+    .filter((target) => isAgentSourceTarget(target.id));
 }
 
 function targetMatchesSourceDevice(target, sourceDeviceId) {
@@ -1654,18 +1647,11 @@ function hasKnownOperatorTarget(target) {
     || item.label.toLowerCase().includes(needle));
 }
 
-function resolveOperatorTargetForSourceDevice(sourceDeviceId) {
-  const deviceId = String(sourceDeviceId || "").trim();
-  if (!deviceId) {
-    return null;
-  }
-  return operatorTargets
-    .filter((target) => target.access === true && targetMatchesSourceDevice(target, deviceId))
-    .sort((left, right) => operatorSourceTargetScore(right, deviceId) - operatorSourceTargetScore(left, deviceId))[0] || null;
-}
-
 function operatorSourceTargetScore(target, sourceDeviceId) {
   let score = 0;
+  if (isAgentSourceTarget(target.id)) {
+    score += 10_000;
+  }
   if (target.selected === true) {
     score += 1000;
   }
