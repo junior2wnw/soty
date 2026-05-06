@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.37";
+const agentVersion = "0.3.38";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -453,6 +453,9 @@ function classifySourceCommand(command) {
   }
   if (/driver|pnputil|devmgmt|device manager|драйвер/u.test(lower)) {
     return "driver-check";
+  }
+  if (/reinstall|reset this pc|windows reset|winre|recovery|bcd|boot\.wim|setupcomplete|переустанов|сброс|восстановлен|вернуть компьютер|удалить всё|удалить все/u.test(lower)) {
+    return "windows-reinstall";
   }
   if (/battery|powercfg|sleep|lid|заряд|питан/u.test(lower)) {
     return "power-check";
@@ -986,6 +989,7 @@ function buildAgentPrompt(text, context, source = {}) {
   const trimmedContext = String(context || "").trim();
   const sourceContext = formatAgentSource(source);
   const operatorContext = formatOperatorTargets(source);
+  const lifecycleGuidance = lifecycleOpsGuidance(text, trimmedContext);
   return [
     "You are the local Codex agent inside the Soty app.",
     "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
@@ -997,6 +1001,7 @@ function buildAgentPrompt(text, context, source = {}) {
     "If Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
     "Never ask the user to install Codex on the source device for remote-control tasks. The source device needs only Soty plus its companion executor; Codex belongs to the operator side unless the user explicitly asks to set up local Codex.",
     "If Local browser reached agent directly=true, treat that only as a chat transport detail. It is not permission to use direct local shell commands for Soty tasks.",
+    lifecycleGuidance,
     "Known operator targets intentionally lists only access=true targets. If it is empty or says no authorized target, LINK is not active for this exact Agent dialog; do not use similarly named visible rooms.",
     "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat. If the target id starts with agent-source:, it is the preferred and only correct target for this request.",
     "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell. If you use $ops scripts/soty/soty-operator.ps1 instead, pass both -SourceDevice <Soty device id> and -Target <target-id>.",
@@ -1013,6 +1018,23 @@ function buildAgentPrompt(text, context, source = {}) {
     `User message as a JSON string with Unicode escapes. Decode it before answering:\n${asciiJsonString(String(text || "").trim())}`,
     "Answer in Russian:"
   ].filter(Boolean).join("\n\n");
+}
+
+function lifecycleOpsGuidance(text, context) {
+  const body = `${String(text || "")}\n${String(context || "").slice(-4000)}`.toLowerCase();
+  const reinstall = /reinstall|reset this pc|windows reset|winre|recovery|boot\.wim|setupcomplete|переустанов|сброс|восстановлен|вернуть компьютер|удалить всё|удалить все|установить\s+винд|винд\w*\s+заново|снести\s+винд/u.test(body);
+  if (!reinstall) {
+    return "";
+  }
+  const opsPath = findOpsScriptPath();
+  return [
+    "Windows reinstall/reset mode is active.",
+    opsPath ? `Use $ops first: run ${quoteForPrompt(process.env.SOTY_PYTHON || process.env.PYTHON || "python")} ${quoteForPrompt(opsPath)} "<decoded user task>" before planning or acting.` : "Use $ops first if available; if it is unavailable, say that the reinstall workflow route is blocked.",
+    "Do not offer Settings -> System -> Recovery -> Reset this PC as the primary path from Soty Agent. That is only a last-resort manual fallback if the user explicitly asks for manual steps.",
+    "If no access=true agent-source target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
+    "If access=true agent-source is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
+    "For privileged reinstall staging, prefer Soty machine worker proof: install-machine/elevate only after explaining one UAC approval, then require machine-status scope=Machine system=true maintenance=true before destructive prep."
+  ].join("\n");
 }
 
 function sanitizeAgentSource(value) {
