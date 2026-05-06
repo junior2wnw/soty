@@ -1771,7 +1771,7 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
   }
   if (typeof output.exitCode === "number") {
     setTerminalState(tunnelId, output.exitCode === 0 ? "ok" : output.exitCode === 127 ? "off" : "bad");
-    appendTerminalLine(tunnelId, `${output.exitCode === 0 ? "+" : "!"} ${output.exitCode}`);
+    appendTerminalExitLine(tunnelId, output.exitCode);
   }
   const operatorId = operatorPending.get(output.commandId);
   if (operatorId) {
@@ -2230,6 +2230,12 @@ function appendTerminalLine(tunnelId: string, line: string): void {
   terminalLogs.set(tunnelId, next);
 }
 
+function appendTerminalExitLine(tunnelId: string, exitCode: number): void {
+  if (exitCode !== 0) {
+    appendTerminalLine(tunnelId, `! ${exitCode}`);
+  }
+}
+
 function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad" | "off"): void {
   terminalState.set(tunnelId, state);
 }
@@ -2407,7 +2413,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     if (typeof exitCode === "number") {
       finished = true;
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalLine(tunnelId, `${exitCode === 0 ? "+" : "!"} ${exitCode}`);
+      appendTerminalExitLine(tunnelId, exitCode);
     }
     renderTerminal();
     void sendAgentSourceOutput(device.id, job.id, text, exitCode);
@@ -2481,7 +2487,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     if (typeof exitCode === "number") {
       finished = true;
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalLine(tunnelId, `${exitCode === 0 ? "+" : "!"} ${exitCode}`);
+      appendTerminalExitLine(tunnelId, exitCode);
     }
     renderTerminal();
     void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);
@@ -2557,7 +2563,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     if (typeof exitCode === "number") {
       finished = true;
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalLine(tunnelId, `${exitCode === 0 ? "+" : "!"} ${exitCode}`);
+      appendTerminalExitLine(tunnelId, exitCode);
     }
     renderTerminal();
     void sync.sendRemoteOutput(script.deviceId, script.id, text, exitCode);

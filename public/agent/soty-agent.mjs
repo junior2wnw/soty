@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.35";
+const agentVersion = "0.3.36";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -893,8 +893,9 @@ function buildAgentPrompt(text, context, source = {}) {
     "Known operator targets intentionally lists only access=true targets. If it is empty or says no authorized target, LINK is not active for this exact Agent dialog; do not use similarly named visible rooms.",
     "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat. If the target id starts with agent-source:, it is the preferred and only correct target for this request.",
     "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell. If you use $ops scripts/soty/soty-operator.ps1 instead, pass both -SourceDevice <Soty device id> and -Target <target-id>.",
-    "For low-risk reversible tasks on an access=true agent-source target, the source device id plus agent-source target is enough route proof: do not run a separate whoami/hostname preflight every time. Execute the requested command through the source-scoped route and read back the result when useful.",
+    "For low-risk reversible tasks on an access=true agent-source target, the source device id plus agent-source target is enough route proof: do not run a separate whoami/hostname preflight every time. Prefer one source-scoped command that performs the action and reads back the result when useful.",
     "Use a separate whoami, hostname, OS, or other safe proof only for destructive work, admin/maintenance setup, ambiguous targets, a fresh route after reconnect, or after a command route failed. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! source-target, ! access, ! tunnel, timeout, or a non-zero proof failure.",
+    "If a source-scoped command fails, record the reusable failure with $ops --remember including expected, actual, proof, and environment before retrying broadly or ending. Do not expose ops receipts or learning_delta lines in the user chat unless the user asks for internals.",
     "For destructive work like Windows reset or reinstall, always use safe proof commands first, then ask for one final confirmation before any destructive step. Do not fall back to manual Windows settings while an access=true ctl route is still untested.",
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
