@@ -2312,7 +2312,7 @@ function renderTerminal(): void {
   if (!panel || !output || !editor || !form || !peer) {
     return;
   }
-  if (!terminalOpenId && selectedId && remoteAccess.has(selectedId)) {
+  if (!terminalOpenId && selectedId && (remoteAccess.has(selectedId) || isAgentLinkedTunnel(selectedId))) {
     terminalOpenId = selectedId;
   }
   const controller = Boolean(selectedId && terminalOpenId === selectedId && remoteAccess.has(selectedId));
@@ -2333,6 +2333,10 @@ function renderTerminal(): void {
     output.scrollTop = output.scrollHeight;
     window.setTimeout(() => app.querySelector<HTMLInputElement>(".terminal-form input")?.focus(), 0);
   }
+}
+
+function isAgentLinkedTunnel(tunnelId: string): boolean {
+  return isAgentTunnelId(tunnelId) && remoteEnabled.has(tunnelId);
 }
 
 function appendTerminalLine(tunnelId: string, line: string): void {
@@ -2483,9 +2487,13 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     fail();
     ws.close();
   }, 2500);
+  selectedId = tunnelId;
+  saveSelectedTunnelId(tunnelId);
   terminalOpenId = tunnelId;
   setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `< ${job.type === "script" ? job.name || "script" : job.command || ""}`);
+  renderTiles();
+  applySelectedText();
   renderTerminal();
   ws.onopen = () => {
     opened = true;
