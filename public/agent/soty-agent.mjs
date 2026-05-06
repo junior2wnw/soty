@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.38";
+const agentVersion = "0.3.39";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -287,13 +287,24 @@ async function handleOperatorHttpRun(request, response, headers) {
     sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
     return;
   }
-  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
-  const sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
+  let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
   if (isAgentSourceTarget(target)) {
-    await handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers);
-    return;
+    const deviceId = agentSourceDeviceId(target);
+    if (sourceDeviceId && sourceDeviceId !== deviceId) {
+      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+      return;
+    }
+    const resolved = resolveOperatorTargetForSourceDevice(deviceId);
+    if (resolved && operatorBridge?.open) {
+      target = resolved.id;
+      sourceDeviceId = deviceId;
+    } else {
+      await handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers);
+      return;
+    }
   }
   if (!operatorBridge?.open || !target || !command.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
@@ -317,15 +328,26 @@ async function handleOperatorHttpScript(request, response, headers) {
     sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
     return;
   }
-  const target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
-  const sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
+  let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
+  let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
   if (isAgentSourceTarget(target)) {
-    await handleAgentSourceHttpScript(target, sourceDeviceId, { script, name, shell }, timeoutMs, response, headers);
-    return;
+    const deviceId = agentSourceDeviceId(target);
+    if (sourceDeviceId && sourceDeviceId !== deviceId) {
+      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+      return;
+    }
+    const resolved = resolveOperatorTargetForSourceDevice(deviceId);
+    if (resolved && operatorBridge?.open) {
+      target = resolved.id;
+      sourceDeviceId = deviceId;
+    } else {
+      await handleAgentSourceHttpScript(target, sourceDeviceId, { script, name, shell }, timeoutMs, response, headers);
+      return;
+    }
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
@@ -1003,9 +1025,9 @@ function buildAgentPrompt(text, context, source = {}) {
     "If Local browser reached agent directly=true, treat that only as a chat transport detail. It is not permission to use direct local shell commands for Soty tasks.",
     lifecycleGuidance,
     "Known operator targets intentionally lists only access=true targets. If it is empty or says no authorized target, LINK is not active for this exact Agent dialog; do not use similarly named visible rooms.",
-    "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat. If the target id starts with agent-source:, it is the preferred and only correct target for this request.",
+    "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat. Prefer a concrete non-agent-source target id with the matching hostDeviceId/deviceIds when it is listed; agent-source:<device-id> is an alias, not a reason to ignore a working concrete Soty command window.",
     "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell. If you use $ops scripts/soty/soty-operator.ps1 instead, pass both -SourceDevice <Soty device id> and -Target <target-id>.",
-    "For low-risk reversible tasks on an access=true agent-source target, the source device id plus agent-source target is enough route proof: do not run a separate whoami/hostname preflight every time. Prefer one source-scoped command that performs the action and reads back the result when useful.",
+    "For low-risk reversible tasks on an access=true source-matched target, the source device id plus exact target id is enough route proof: do not run a separate whoami/hostname preflight every time. Prefer one source-scoped command that performs the action and reads back the result when useful.",
     "Use a separate whoami, hostname, OS, or other safe proof only for destructive work, admin/maintenance setup, ambiguous targets, a fresh route after reconnect, or after a command route failed. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! source-target, ! access, ! tunnel, timeout, or a non-zero proof failure.",
     "After a successful nontrivial source-scoped command, make sure the reusable route is recorded. The ctl layer may auto-record sanitized command-family memory; if you have route details it cannot infer, add $ops --remember with expected, actual, proof, and environment before the final answer.",
     "If a source-scoped command fails, record the reusable failure with $ops --remember including expected, actual, proof, and environment before retrying broadly or ending. Do not expose ops receipts or learning_delta lines in the user chat unless the user asks for internals.",
@@ -1031,8 +1053,8 @@ function lifecycleOpsGuidance(text, context) {
     "Windows reinstall/reset mode is active.",
     opsPath ? `Use $ops first: run ${quoteForPrompt(process.env.SOTY_PYTHON || process.env.PYTHON || "python")} ${quoteForPrompt(opsPath)} "<decoded user task>" before planning or acting.` : "Use $ops first if available; if it is unavailable, say that the reinstall workflow route is blocked.",
     "Do not offer Settings -> System -> Recovery -> Reset this PC as the primary path from Soty Agent. That is only a last-resort manual fallback if the user explicitly asks for manual steps.",
-    "If no access=true agent-source target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
-    "If access=true agent-source is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
+    "If no access=true source-matched target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
+    "If an access=true source-matched target is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
     "For privileged reinstall staging, prefer Soty machine worker proof: install-machine/elevate only after explaining one UAC approval, then require machine-status scope=Machine system=true maintenance=true before destructive prep."
   ].join("\n");
 }
@@ -1471,6 +1493,39 @@ function hasKnownOperatorTarget(target) {
     || item.id.toLowerCase() === needle
     || item.label.toLowerCase() === needle
     || item.label.toLowerCase().includes(needle));
+}
+
+function resolveOperatorTargetForSourceDevice(sourceDeviceId) {
+  const deviceId = String(sourceDeviceId || "").trim();
+  if (!deviceId) {
+    return null;
+  }
+  return operatorTargets
+    .filter((target) => target.access === true && targetMatchesSourceDevice(target, deviceId))
+    .sort((left, right) => operatorSourceTargetScore(right, deviceId) - operatorSourceTargetScore(left, deviceId))[0] || null;
+}
+
+function operatorSourceTargetScore(target, sourceDeviceId) {
+  let score = 0;
+  if (target.selected === true) {
+    score += 1000;
+  }
+  if (target.hostDeviceId === sourceDeviceId) {
+    score += 200;
+  }
+  if (target.deviceIds.includes(sourceDeviceId)) {
+    score += 100;
+  }
+  if (target.lastActionAt) {
+    const time = Date.parse(target.lastActionAt);
+    if (Number.isFinite(time)) {
+      score += Math.max(0, Math.min(99, Math.floor((time - Date.now() + 24 * 60 * 60 * 1000) / (15 * 60 * 1000))));
+    }
+  }
+  if (Number.isSafeInteger(target.rank)) {
+    score += Math.max(0, 50 - target.rank);
+  }
+  return score;
 }
 
 function isAgentSourceTarget(target) {
