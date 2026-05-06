@@ -1100,11 +1100,53 @@ function counterpartyLabel(tunnel: TunnelRecord): string {
 }
 
 function startFreshDialog(): void {
+  const active = loadTunnels().find((tunnel) => tunnel.id === selectedId);
+  if (active && !isAgentTunnel(active) && hasCounterparty(active)) {
+    clearCurrentDialog(active.id);
+    return;
+  }
   const fresh = createFreshDialog();
   if (!fresh) {
     return;
   }
   renderApp();
+}
+
+function clearCurrentDialog(tunnelId: string): void {
+  let sync = syncs.get(tunnelId);
+  if (!sync) {
+    const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+    if (tunnel) {
+      ensureSync(tunnel);
+      sync = syncs.get(tunnelId);
+    }
+  }
+  if (!sync) {
+    return;
+  }
+  sync.setText("");
+  texts.set(tunnelId, "");
+  localDrafts.delete(tunnelId);
+  writerLines.delete(tunnelId);
+  activeActivities.delete(tunnelId);
+  activeActivityTicks.delete(tunnelId);
+  clearLiveDraftState(tunnelId);
+  agentThinking.delete(tunnelId);
+  void sync.sendLiveDraft("");
+  if (tunnelId === selectedId) {
+    if (textarea) {
+      textarea.value = "";
+    }
+    if (composer) {
+      composer.value = "";
+      resizeComposer();
+    }
+    applySelectedText(true);
+  }
+  tunnels = touchTunnel(tunnelId);
+  renderTiles();
+  renderTextPaint();
+  renderWriterPop();
 }
 
 async function startAgentDialog(): Promise<void> {
