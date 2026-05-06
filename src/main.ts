@@ -1854,6 +1854,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
   }
   if (operatorSocket && (operatorSocket.readyState === WebSocket.OPEN || operatorSocket.readyState === WebSocket.CONNECTING)) {
     publishOperatorTargets();
+    resumeAgentSourceControl();
     return;
   }
   window.clearTimeout(operatorReconnectTimer);
@@ -1869,6 +1870,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: "operator.attach" }));
     publishOperatorTargets();
+    resumeAgentSourceControl();
   };
   ws.onmessage = (event) => {
     let message: {
