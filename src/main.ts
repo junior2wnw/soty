@@ -4,8 +4,8 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteComm
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, currentAgentRelay, downloadAgentInstaller, isWindowsPlatform } from "./features/agent";
-import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
+import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, isWindowsPlatform, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
+import type { AgentSourceCommand, LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
@@ -150,6 +150,9 @@ const operatorPending = new Map<string, string>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 const agentReplyQueues = new Map<string, Promise<void>>();
 const agentThinking = new Set<string>();
+let agentSourceControlTunnelId = "";
+let agentSourcePollTimer = 0;
+let agentSourcePolling = false;
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -786,6 +789,7 @@ function renderApp(): void {
   renderFiles();
   renderTerminal();
   void ensureOperatorBridge();
+  resumeAgentSourceControl();
 }
 
 function renderTiles(): void {
@@ -839,7 +843,11 @@ function renderTiles(): void {
         },
         remote: () => {
           selectTunnel(id);
-          void toggleRemoteGrant(id);
+          if (isAgentTunnelId(id)) {
+            void toggleAgentRemoteGrant(id);
+          } else {
+            void toggleRemoteGrant(id);
+          }
         },
         close: () => closeTunnel(id)
       }, {
@@ -901,18 +909,36 @@ async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<bool
 }
 
 async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
-  const relay = await currentAgentRelay(1500);
-  const controllerDeviceId = relay.deviceId || "";
-  const grant = agentRemoteGrantTarget(controllerDeviceId);
-  if (!grant) {
+  if (remoteEnabled.has(agentTunnelId)) {
+    closeRemoteMode(agentTunnelId);
+    return;
+  }
+  if (!device) {
+    return;
+  }
+  const agent = await refreshLocalCompanion();
+  if (!agent.ok) {
+    renderAgentInstall(agentTunnelId, () => {
+      void toggleAgentRemoteGrant(agentTunnelId);
+    });
+    return;
+  }
+  const granted = await grantAgentSourceAccess(device.id, device.nick, true);
+  if (!granted) {
     await typeOperatorChat(
       agentTunnelId,
-      formatOperatorChat("LINK не нашёл отдельный диалог с компьютером-оператором. Открой соту этого компьютера и включи LINK там, либо переподключи устройство к нему.", "sysadmin"),
+      formatOperatorChat("LINK не смог подключить командный канал агента. Проверь интернет и попробуй нажать LINK ещё раз.", "sysadmin"),
       "fast"
     );
     return;
   }
-  await enableRemoteGrant(grant.tunnel.id, grant.targetDeviceId);
+  remoteEnabled = setRemoteEnabled(agentTunnelId, true);
+  terminalOpenId = agentTunnelId;
+  setTerminalState(agentTunnelId, "idle");
+  appendTerminalLine(agentTunnelId, "+ agent link");
+  renderTerminal();
+  renderTiles();
+  startAgentSourceControl(agentTunnelId);
 }
 
 function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
@@ -995,6 +1021,10 @@ function closeRemoteMode(tunnelId: string): void {
   if (remoteEnabled.has(tunnelId)) {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
     sync?.grantRemote(false, "*");
+    if (isAgentTunnelId(tunnelId) && device) {
+      void grantAgentSourceAccess(device.id, device.nick, false);
+      stopAgentSourceControl(tunnelId);
+    }
   }
   if (hostDeviceId) {
     remoteAccess = setRemoteAccess(tunnelId, "", false);
@@ -1906,22 +1936,6 @@ function preferredAgentOperatorTarget(sourceDeviceId = ""): LocalAgentOperatorTa
     || null;
 }
 
-function agentRemoteGrantTarget(controllerDeviceId: string): { readonly tunnel: TunnelRecord; readonly targetDeviceId: string } | null {
-  const controllerId = controllerDeviceId.trim();
-  const candidates = sortedVisibleTunnels().filter((tunnel) => !isAgentTunnel(tunnel));
-  if (controllerId) {
-    const exact = candidates
-      .find((tunnel) => (peerDevices.get(tunnel.id) ?? []).some((peer) => peer.id === controllerId));
-    return exact ? { tunnel: exact, targetDeviceId: controllerId } : null;
-  }
-  const singlePeerCandidates = candidates
-    .map((tunnel) => ({ tunnel, peers: peerDevices.get(tunnel.id) ?? [] }))
-    .filter((item) => item.peers.length === 1);
-  const fallback = singlePeerCandidates.length === 1 ? singlePeerCandidates[0] : null;
-  const peer = fallback?.peers[0];
-  return fallback && peer ? { tunnel: fallback.tunnel, targetDeviceId: peer.id } : null;
-}
-
 async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
   const command = typeof message.command === "string" ? message.command.trim() : "";
@@ -2264,6 +2278,142 @@ function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNoti
   }
   lastTypingNoticeAt.set(key, now);
   vibrateHiddenOnce(`typing:${writer}`, tunnelId, hadNotice);
+}
+
+function startAgentSourceControl(tunnelId: string): void {
+  agentSourceControlTunnelId = tunnelId;
+  window.clearTimeout(agentSourcePollTimer);
+  void pollAgentSourceControl();
+}
+
+function resumeAgentSourceControl(): void {
+  if (!device) {
+    return;
+  }
+  const agentTunnel = sortedVisibleTunnels().find((tunnel) => remoteEnabled.has(tunnel.id) && isAgentTunnel(tunnel));
+  if (!agentTunnel) {
+    return;
+  }
+  terminalOpenId = terminalOpenId || agentTunnel.id;
+  setTerminalState(agentTunnel.id, "idle");
+  void grantAgentSourceAccess(device.id, device.nick, true);
+  startAgentSourceControl(agentTunnel.id);
+}
+
+function stopAgentSourceControl(tunnelId: string): void {
+  if (agentSourceControlTunnelId === tunnelId) {
+    agentSourceControlTunnelId = "";
+  }
+  window.clearTimeout(agentSourcePollTimer);
+}
+
+async function pollAgentSourceControl(): Promise<void> {
+  if (agentSourcePolling || !device || !agentSourceControlTunnelId || !remoteEnabled.has(agentSourceControlTunnelId)) {
+    return;
+  }
+  const tunnelId = agentSourceControlTunnelId;
+  agentSourcePolling = true;
+  try {
+    const jobs = await pollAgentSourceCommands(device.id);
+    for (const job of jobs) {
+      runAgentSourceJob(tunnelId, job);
+    }
+  } finally {
+    agentSourcePolling = false;
+    if (device && agentSourceControlTunnelId === tunnelId && remoteEnabled.has(tunnelId)) {
+      agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(), 250);
+    }
+  }
+}
+
+function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
+  if (!device) {
+    return;
+  }
+  let opened = false;
+  let finished = false;
+  const ws = new WebSocket("ws://127.0.0.1:49424");
+  const fail = () => {
+    if (finished || opened || !device) {
+      return;
+    }
+    finished = true;
+    setTerminalState(tunnelId, "off");
+    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
+    renderTerminal();
+    renderAgentInstall(tunnelId);
+    window.clearTimeout(timer);
+    void sendAgentSourceOutput(device.id, job.id, "! 127.0.0.1:49424", 127);
+  };
+  const timer = window.setTimeout(() => {
+    fail();
+    ws.close();
+  }, 2500);
+  terminalOpenId = tunnelId;
+  setTerminalState(tunnelId, "run");
+  appendTerminalLine(tunnelId, `< ${job.type === "script" ? job.name || "script" : job.command || ""}`);
+  renderTerminal();
+  ws.onopen = () => {
+    opened = true;
+    window.clearTimeout(timer);
+    if (job.type === "script") {
+      ws.send(JSON.stringify({
+        type: "script",
+        id: job.id,
+        name: job.name || "script",
+        shell: job.shell || "",
+        script: job.script || ""
+      }));
+      return;
+    }
+    ws.send(JSON.stringify({
+      type: "run",
+      id: job.id,
+      command: job.command || ""
+    }));
+  };
+  ws.onmessage = (event) => {
+    if (!device) {
+      return;
+    }
+    let message: { readonly type?: string; readonly text?: string; readonly exitCode?: number };
+    try {
+      message = JSON.parse(event.data as string) as { readonly type?: string; readonly text?: string; readonly exitCode?: number };
+    } catch {
+      return;
+    }
+    if (message.type === "start") {
+      setTerminalState(tunnelId, "run");
+      renderTerminal();
+      return;
+    }
+    if (message.type === "error") {
+      finished = true;
+      setTerminalState(tunnelId, "bad");
+      const text = typeof message.text === "string" ? message.text : "!";
+      appendTerminalLine(tunnelId, text);
+      renderTerminal();
+      void sendAgentSourceOutput(device.id, job.id, text, 1);
+      return;
+    }
+    if (message.type !== "data" && message.type !== "exit") {
+      return;
+    }
+    const text = typeof message.text === "string" ? message.text : "";
+    const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+    if (text.trim()) {
+      appendTerminalLine(tunnelId, text);
+    }
+    if (typeof exitCode === "number") {
+      finished = true;
+      setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
+      appendTerminalLine(tunnelId, `${exitCode === 0 ? "+" : "!"} ${exitCode}`);
+    }
+    renderTerminal();
+    void sendAgentSourceOutput(device.id, job.id, text, exitCode);
+  };
+  ws.onerror = () => fail();
+  ws.onclose = () => window.clearTimeout(timer);
 }
 
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {

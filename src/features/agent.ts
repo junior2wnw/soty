@@ -46,6 +46,15 @@ export interface LocalAgentRequestSource {
   readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
 }
 
+export interface AgentSourceCommand {
+  readonly id: string;
+  readonly type: "run" | "script";
+  readonly command?: string;
+  readonly script?: string;
+  readonly name?: string;
+  readonly shell?: string;
+}
+
 const relayStorageKey = "soty:agent:relay-id";
 const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const localAgentBlockedText = "Сообщение отправлено, но браузер пока не смог достучаться до локального агента. Я включил серверный мост, но агент еще не подключился к нему. Нажми установку агента один раз и потом обнови проверку.";
@@ -226,6 +235,94 @@ export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
   } finally {
     window.clearTimeout(timer);
   }
+}
+
+export async function grantAgentSourceAccess(deviceId: string, deviceNick: string, enabled: boolean, timeoutMs = 1500): Promise<boolean> {
+  await adoptCurrentAgentRelay(timeoutMs, true);
+  const relayId = readAgentRelayId();
+  if (!relayId || !deviceId) {
+    return false;
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("/api/agent/source/grant", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relayId, deviceId, deviceNick, enabled }),
+      signal: controller.signal
+    });
+    const payload = await response.json() as { readonly ok?: boolean };
+    return response.ok && payload.ok === true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function pollAgentSourceCommands(deviceId: string, timeoutMs = 35_000): Promise<AgentSourceCommand[]> {
+  const relayId = readAgentRelayId();
+  if (!relayId || !deviceId) {
+    return [];
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs + 3000);
+  try {
+    const url = `/api/agent/source/poll?relayId=${encodeURIComponent(relayId)}&deviceId=${encodeURIComponent(deviceId)}&wait=1`;
+    const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json() as { readonly jobs?: readonly unknown[] };
+    return Array.isArray(payload.jobs)
+      ? payload.jobs.map(agentSourceCommandFrom).filter((item): item is AgentSourceCommand => Boolean(item))
+      : [];
+  } catch {
+    return [];
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function sendAgentSourceOutput(deviceId: string, id: string, text: string, exitCode?: number): Promise<void> {
+  const relayId = readAgentRelayId();
+  if (!relayId || !deviceId || !id) {
+    return;
+  }
+  await fetch("/api/agent/source/output", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      relayId,
+      deviceId,
+      id,
+      text,
+      ...(typeof exitCode === "number" ? { exitCode } : {})
+    })
+  }).catch(() => undefined);
+}
+
+function agentSourceCommandFrom(value: unknown): AgentSourceCommand | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+  const id = typeof item.id === "string" ? item.id : "";
+  const type = item.type === "script" ? "script" : item.type === "run" ? "run" : "";
+  if (!id || !type) {
+    return null;
+  }
+  return {
+    id,
+    type,
+    ...(typeof item.command === "string" ? { command: item.command } : {}),
+    ...(typeof item.script === "string" ? { script: item.script } : {}),
+    ...(typeof item.name === "string" ? { name: item.name } : {}),
+    ...(typeof item.shell === "string" ? { shell: item.shell } : {})
+  };
 }
 
 async function askLocalAgentReplyHttp(

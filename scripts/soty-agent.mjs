@@ -287,6 +287,10 @@ async function handleOperatorHttpRun(request, response, headers) {
   const sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  if (isAgentSourceTarget(target)) {
+    await handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers);
+    return;
+  }
   if (!operatorBridge?.open || !target || !command.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
@@ -315,6 +319,10 @@ async function handleOperatorHttpScript(request, response, headers) {
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  if (isAgentSourceTarget(target)) {
+    await handleAgentSourceHttpScript(target, sourceDeviceId, { script, name, shell }, timeoutMs, response, headers);
+    return;
+  }
   if (!operatorBridge?.open || !target || !script.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
@@ -329,6 +337,68 @@ async function handleOperatorHttpScript(request, response, headers) {
     shell,
     script
   });
+}
+
+async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers) {
+  const deviceId = agentSourceDeviceId(target);
+  if (!deviceId || !command.trim()) {
+    sendJson(response, 400, headers, { ok: false, text: "! request", exitCode: 400 });
+    return;
+  }
+  if (sourceDeviceId && sourceDeviceId !== deviceId) {
+    sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+    return;
+  }
+  const result = await postAgentSourceJob("/api/agent/source/run", {
+    deviceId,
+    command,
+    timeoutMs
+  });
+  sendJson(response, 200, headers, result);
+}
+
+async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers) {
+  const deviceId = agentSourceDeviceId(target);
+  if (!deviceId || !String(payload.script || "").trim()) {
+    sendJson(response, 400, headers, { ok: false, text: "! request", exitCode: 400 });
+    return;
+  }
+  if (sourceDeviceId && sourceDeviceId !== deviceId) {
+    sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+    return;
+  }
+  const result = await postAgentSourceJob("/api/agent/source/script", {
+    deviceId,
+    ...payload,
+    timeoutMs
+  });
+  sendJson(response, 200, headers, result);
+}
+
+async function postAgentSourceJob(path, body) {
+  const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
+  if (!relayBaseUrl || !agentRelayId) {
+    return { ok: false, text: "! relay", exitCode: 409 };
+  }
+  try {
+    const response = await fetch(new URL(path, relayBaseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        relayId: agentRelayId,
+        ...body
+      })
+    });
+    const payload = await response.json();
+    return {
+      ok: Boolean(response.ok && payload?.ok),
+      text: String(payload?.text || "").slice(0, maxChatChars),
+      exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.ok ? 0 : response.status)
+    };
+  } catch {
+    return { ok: false, text: "! agent-source", exitCode: 127 };
+  }
 }
 
 async function handleOperatorHttpChat(request, response, headers) {
@@ -1247,6 +1317,18 @@ function hasKnownOperatorTarget(target) {
     || item.id.toLowerCase() === needle
     || item.label.toLowerCase() === needle
     || item.label.toLowerCase().includes(needle));
+}
+
+function isAgentSourceTarget(target) {
+  return agentSourceDeviceId(target) !== "";
+}
+
+function agentSourceDeviceId(target) {
+  const text = String(target || "").trim();
+  if (!text.startsWith("agent-source:")) {
+    return "";
+  }
+  return text.slice("agent-source:".length, "agent-source:".length + maxSourceChars);
 }
 
 function runCommand(ws, id, command, timeoutMs) {

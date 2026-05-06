@@ -9,10 +9,15 @@ const leaseMs = 180_000;
 const connectedMs = 70_000;
 const requestTtlMs = 15 * 60_000;
 const idleChannelTtlMs = 30 * 60_000;
+const sourceConnectedMs = 90_000;
+const sourceJobTtlMs = 10 * 60_000;
 const maxJobsPerChannel = 80;
 const channels = new Map();
+const agentSources = new Map();
 const pollWaiters = new Map();
 const replyWaiters = new Map();
+const sourcePollWaiters = new Map();
+const sourceReplyWaiters = new Map();
 const jsonParser = express.json({ limit: "180kb", type: "application/json" });
 
 export function attachAgentRelay(app) {
@@ -63,13 +68,14 @@ export function attachAgentRelay(app) {
     const relayId = normalizeRelayId(req.body?.relayId);
     const text = cleanText(req.body?.text, maxChatChars);
     const context = cleanText(req.body?.context, maxContextChars);
-    const source = cleanAgentSource(req.body?.source);
+    let source = cleanAgentSource(req.body?.source);
     if (!relayId || !text.trim()) {
       res.status(400).json({ ok: false });
       return;
     }
     cleanupChannels();
     const target = resolveRequestChannel(relayId);
+    source = enrichAgentSource(target.relayId, relayId, source);
     const channel = getChannel(target.relayId);
     const job = {
       id: `agent_${randomUUID()}`,
@@ -153,6 +159,123 @@ export function attachAgentRelay(app) {
     addWaiter(replyWaiters, replyKey(relayId, id), req, res, () => ({ ok: true, reply: findReply(relayId, id) }));
   });
 
+  app.post("/api/agent/source/grant", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
+    if (!relayId || !deviceId) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    const source = getAgentSource(relayId, deviceId);
+    source.access = req.body?.enabled !== false;
+    source.deviceNick = cleanText(req.body?.deviceNick, maxSourceChars) || source.deviceNick || "";
+    touchAgentSource(source);
+    flushPollWaiters(relayId);
+    res.json({ ok: true, target: publicAgentSourceTarget(source) });
+  });
+
+  app.get("/api/agent/source/targets", (req, res) => {
+    const relayId = normalizeRelayId(req.query.relayId);
+    if (!relayId) {
+      res.status(400).json({ ok: false, targets: [] });
+      return;
+    }
+    cleanupAgentSources();
+    res.json({
+      ok: true,
+      targets: connectedAgentSources(relayId).map(publicAgentSourceTarget)
+    });
+  });
+
+  app.get("/api/agent/source/poll", (req, res) => {
+    const relayId = normalizeRelayId(req.query.relayId);
+    const deviceId = cleanText(req.query.deviceId, maxSourceChars);
+    if (!relayId || !deviceId) {
+      res.status(400).json({ ok: false, jobs: [] });
+      return;
+    }
+    const source = getAgentSource(relayId, deviceId);
+    touchAgentSource(source);
+    const jobs = leasePendingSourceJobs(source);
+    if (jobs.length > 0 || req.query.wait !== "1") {
+      res.json({ ok: true, jobs });
+      return;
+    }
+    addWaiter(sourcePollWaiters, source.key, req, res, () => ({ ok: true, jobs: leasePendingSourceJobs(source) }));
+  });
+
+  app.post("/api/agent/source/output", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
+    const id = cleanText(req.body?.id, 120);
+    if (!relayId || !deviceId || !id) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    const source = findAgentSource(relayId, deviceId);
+    const job = source?.jobs.find((item) => item.id === id);
+    if (!source || !job) {
+      res.status(404).json({ ok: false });
+      return;
+    }
+    touchAgentSource(source);
+    job.text = `${job.text || ""}${cleanText(req.body?.text, maxReplyChars)}`.slice(-maxReplyChars);
+    if (Number.isSafeInteger(req.body?.exitCode)) {
+      job.exitCode = req.body.exitCode;
+      flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
+    }
+    res.json({ ok: true });
+  });
+
+  app.post("/api/agent/source/run", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
+    const command = cleanText(req.body?.command, 8_000);
+    const timeoutMs = safeTimeout(req.body?.timeoutMs);
+    const source = findRunnableAgentSource(relayId, deviceId);
+    if (!relayId || !deviceId || !command.trim()) {
+      res.status(400).json({ ok: false, text: "! request", exitCode: 400 });
+      return;
+    }
+    if (!source) {
+      res.status(404).json({ ok: false, text: "! agent-source", exitCode: 404 });
+      return;
+    }
+    const job = createSourceJob(source, { type: "run", command });
+    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), timeoutMs);
+  });
+
+  app.post("/api/agent/source/script", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
+    const script = cleanText(req.body?.script, 1_000_000);
+    const timeoutMs = safeTimeout(req.body?.timeoutMs);
+    const source = findRunnableAgentSource(relayId, deviceId);
+    if (!relayId || !deviceId || !script.trim()) {
+      res.status(400).json({ ok: false, text: "! request", exitCode: 400 });
+      return;
+    }
+    if (!source) {
+      res.status(404).json({ ok: false, text: "! agent-source", exitCode: 404 });
+      return;
+    }
+    const job = createSourceJob(source, {
+      type: "script",
+      script,
+      name: cleanText(req.body?.name, 120) || "script",
+      shell: cleanText(req.body?.shell, 40)
+    });
+    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), timeoutMs);
+  });
+
+  app.use("/api/agent/source", (error, _req, res, _next) => {
+    if (error) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    res.status(404).json({ ok: false });
+  });
+
   app.use("/api/agent/relay", (error, _req, res, _next) => {
     if (error) {
       res.status(400).json({ ok: false });
@@ -215,6 +338,149 @@ function leasePendingJobs(channel) {
   }));
 }
 
+function getAgentSource(relayId, deviceId) {
+  const key = sourceKey(relayId, deviceId);
+  let source = agentSources.get(key);
+  if (!source) {
+    source = {
+      key,
+      relayId,
+      deviceId,
+      deviceNick: "",
+      access: false,
+      lastSeenAt: 0,
+      jobs: []
+    };
+    agentSources.set(key, source);
+  }
+  return source;
+}
+
+function findAgentSource(relayId, deviceId) {
+  return agentSources.get(sourceKey(relayId, deviceId))
+    || [...agentSources.values()].find((source) => source.deviceId === deviceId && source.access === true)
+    || null;
+}
+
+function findRunnableAgentSource(relayId, deviceId) {
+  const source = findAgentSource(relayId, deviceId);
+  return source && source.access === true && Date.now() - source.lastSeenAt < sourceConnectedMs ? source : null;
+}
+
+function connectedAgentSources(relayId) {
+  const now = Date.now();
+  return [...agentSources.values()]
+    .filter((source) => source.relayId === relayId && source.access === true && now - source.lastSeenAt < sourceConnectedMs);
+}
+
+function touchAgentSource(source) {
+  source.lastSeenAt = Date.now();
+  source.jobs = source.jobs.filter((job) => source.lastSeenAt - job.createdAt < sourceJobTtlMs);
+}
+
+function enrichAgentSource(targetRelayId, clientRelayId, source) {
+  if (!source.deviceId) {
+    return source;
+  }
+  const agentSource = findRunnableAgentSource(targetRelayId, source.deviceId)
+    || findRunnableAgentSource(clientRelayId, source.deviceId);
+  if (!agentSource) {
+    return source;
+  }
+  const target = publicAgentSourceTarget(agentSource);
+  const existing = Array.isArray(source.operatorTargets) ? source.operatorTargets : [];
+  return {
+    ...source,
+    preferredTargetId: target.id,
+    preferredTargetLabel: target.label,
+    operatorTargets: [
+      target,
+      ...existing.filter((item) => item.id !== target.id)
+    ]
+  };
+}
+
+function publicAgentSourceTarget(source) {
+  return {
+    id: agentSourceTargetId(source.deviceId),
+    label: source.deviceNick || "Agent device",
+    deviceIds: [source.deviceId],
+    hostDeviceId: source.deviceId,
+    access: true,
+    host: true,
+    selected: true,
+    rank: 0,
+    lastActionAt: source.lastSeenAt ? new Date(source.lastSeenAt).toISOString() : ""
+  };
+}
+
+function createSourceJob(source, payload) {
+  touchAgentSource(source);
+  const job = {
+    id: `source_${randomUUID()}`,
+    createdAt: Date.now(),
+    leaseUntil: 0,
+    text: "",
+    ...payload
+  };
+  source.jobs.push(job);
+  while (source.jobs.length > maxJobsPerChannel) {
+    source.jobs.shift();
+  }
+  flushSourcePollWaiters(source);
+  return job;
+}
+
+function leasePendingSourceJobs(source) {
+  const now = Date.now();
+  const jobs = source.jobs
+    .filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil < now))
+    .slice(0, 2);
+  for (const job of jobs) {
+    job.leaseUntil = now + leaseMs;
+  }
+  return jobs.map((job) => ({
+    id: job.id,
+    type: job.type,
+    command: job.command || "",
+    script: job.script || "",
+    name: job.name || "",
+    shell: job.shell || "",
+    createdAt: new Date(job.createdAt).toISOString()
+  }));
+}
+
+function sourceJobReply(job) {
+  const exitCode = Number.isSafeInteger(job.exitCode) ? job.exitCode : 124;
+  return {
+    ok: exitCode === 0,
+    text: job.text || (exitCode === 124 ? "! timeout" : ""),
+    exitCode
+  };
+}
+
+function flushSourcePollWaiters(source) {
+  flushWaiters(sourcePollWaiters, source.key, () => ({ ok: true, jobs: leasePendingSourceJobs(source) }));
+}
+
+function cleanupAgentSources() {
+  const now = Date.now();
+  for (const [key, source] of agentSources) {
+    source.jobs = source.jobs.filter((job) => now - job.createdAt < sourceJobTtlMs);
+    if (now - source.lastSeenAt > idleChannelTtlMs && source.jobs.length === 0) {
+      agentSources.delete(key);
+    }
+  }
+}
+
+function sourceKey(relayId, deviceId) {
+  return `${relayId}:${deviceId}`;
+}
+
+function agentSourceTargetId(deviceId) {
+  return `agent-source:${deviceId}`;
+}
+
 function cleanAgentSource(value) {
   if (!value || typeof value !== "object") {
     return {};
@@ -262,15 +528,18 @@ function findReply(relayId, id) {
   return job?.reply || null;
 }
 
-function addWaiter(map, key, req, res, buildPayload) {
+function addWaiter(map, key, req, res, buildPayload, timeoutMs = 30_000) {
   const waiter = {
     res,
     timer: setTimeout(() => {
       removeWaiter(map, key, waiter);
       res.json(buildPayload());
-    }, 30_000)
+    }, Math.max(1000, timeoutMs))
   };
-  req.on("close", () => {
+  res.on("close", () => {
+    if (res.writableEnded) {
+      return;
+    }
     clearTimeout(waiter.timer);
     removeWaiter(map, key, waiter);
   });
@@ -323,6 +592,7 @@ function cleanupChannels() {
       channels.delete(relayId);
     }
   }
+  cleanupAgentSources();
 }
 
 function replyKey(relayId, id) {
@@ -336,4 +606,8 @@ function normalizeRelayId(value) {
 
 function cleanText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function safeTimeout(value) {
+  return Number.isSafeInteger(value) ? Math.max(1000, Math.min(value, 600_000)) : 60_000;
 }
