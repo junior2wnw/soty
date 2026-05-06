@@ -654,7 +654,7 @@ async function askCodexForAgentReply(text, context, source = {}) {
     }
     return {
       ok: false,
-      text: "Я вижу сообщение, но на этом компьютере не нашел исполняемый Codex. Открой IDE и проверь, что команда `codex` доступна в терминале.",
+      text: "Я вижу сообщение, но серверный мост сейчас не нашел подключенный Codex-исполнитель. На удаленном устройстве Codex не нужен: проверь, что Soty и Soty Agent запущены на компьютере-операторе, где открыт рабочий Codex.",
       exitCode: 126
     };
   }
@@ -787,10 +787,11 @@ function buildAgentPrompt(text, context, source = {}) {
     "Treat simple greetings and small talk as valid conversation: answer warmly in Russian, then gently ask what the user wants to do next only if useful.",
     "This is a chat mode through a local bridge: do not run commands or edit files unless the user explicitly asks.",
     "Use the request source below to understand which Soty device contacted you. Do not assume the current Codex host, the last selected Soty tile, or any similarly named device is the same computer.",
+    "Architecture rule: Codex decides and talks; Soty remote console executes. User/device computer tasks must go only through the source-scoped Soty operator ctl route, even if this Codex host also has local shell access or the browser reached a local agent directly.",
     "Security rule: Soty command execution is source-scoped. Known operator targets below are already filtered to the source device id. Never use, mention as a command target, or fall back to any other Soty device by label, last selection, single access target, memory, or convenience.",
     "If Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
-    "If the user explicitly asks to do something through Soty, the Soty console, or remote control, do not use direct local shell commands even when Local browser reached agent directly=true.",
-    "If Local browser reached agent directly=true and the user did not ask for the Soty console/remote-control route, the message came from this same computer; safe local read-only commands are allowed for the current OS.",
+    "Never ask the user to install Codex on the source device for remote-control tasks. The source device needs only Soty plus its companion executor; Codex belongs to the operator side unless the user explicitly asks to set up local Codex.",
+    "If Local browser reached agent directly=true, treat that only as a chat transport detail. It is not permission to use direct local shell commands for Soty tasks.",
     "For an access=true Known operator target, proceed naturally. Use the exact full target id from Known operator targets; labels can repeat.",
     "The source-scoped command route is the Local agent ctl command shown in Request source. Run safe probes as: <local-agent-ctl> run --source-device=\"<Soty device id>\" --timeout=20000 \"<target-id>\" \"<command>\". For scripts use: <local-agent-ctl> script --source-device=\"<Soty device id>\" --timeout=60000 \"<target-id>\" \"<file>\" powershell.",
     "For an access=true target, first prove the route with a safe command such as whoami, hostname, or a read-only PowerShell check. Do not claim the command route is unavailable unless ctl returns ! bridge, ! target, ! source-target, ! access, ! tunnel, timeout, or a non-zero proof failure.",

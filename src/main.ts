@@ -2503,10 +2503,9 @@ function normalizeChatMessage(value: string): string {
 }
 
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
-  if (reply.ok || (reply.exitCode !== 124 && reply.exitCode !== 127)) {
-    return false;
-  }
-  return !/\bcodex\b/iu.test(reply.text);
+  return !reply.ok
+    && reply.exitCode === 127
+    && /127\.0\.0\.1:49424/u.test(reply.text);
 }
 
 function resizeComposer(): void {

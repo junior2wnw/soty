@@ -218,8 +218,34 @@ function cleanAgentSource(value) {
     tunnelLabel: cleanText(value.tunnelLabel, maxSourceChars),
     deviceId: cleanText(value.deviceId, maxSourceChars),
     deviceNick: cleanText(value.deviceNick, maxSourceChars),
-    appOrigin: cleanText(value.appOrigin, maxSourceChars)
+    appOrigin: cleanText(value.appOrigin, maxSourceChars),
+    preferredTargetId: cleanText(value.preferredTargetId, maxSourceChars),
+    preferredTargetLabel: cleanText(value.preferredTargetLabel, maxSourceChars),
+    localAgentDirect: value.localAgentDirect === true,
+    operatorTargets: cleanOperatorTargets(value.operatorTargets)
   };
+}
+
+function cleanOperatorTargets(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => ({
+      id: cleanText(item?.id, maxSourceChars),
+      label: cleanText(item?.label, maxSourceChars),
+      deviceIds: Array.isArray(item?.deviceIds)
+        ? [...new Set(item.deviceIds.map((entry) => cleanText(entry, maxSourceChars)).filter(Boolean))].slice(0, 16)
+        : [],
+      hostDeviceId: cleanText(item?.hostDeviceId, maxSourceChars),
+      access: typeof item?.access === "boolean" ? item.access : undefined,
+      host: typeof item?.host === "boolean" ? item.host : undefined,
+      selected: typeof item?.selected === "boolean" ? item.selected : undefined,
+      rank: Number.isSafeInteger(item?.rank) ? Math.max(1, Math.min(item.rank, 999)) : undefined,
+      lastActionAt: cleanText(item?.lastActionAt, 80)
+    }))
+    .filter((item) => item.id && item.label)
+    .slice(0, 32);
 }
 
 function findReply(relayId, id) {

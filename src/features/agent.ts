@@ -102,6 +102,12 @@ export async function askLocalAgentReply(
   source: LocalAgentRequestSource = {},
   timeoutMs = 130_000
 ): Promise<LocalAgentReply> {
+  await adoptCurrentAgentRelay(1500);
+  const relay = await askAgentRelayReply(text, context, source, timeoutMs);
+  if (relay) {
+    return relay;
+  }
+
   const directStatus = await checkLocalAgentHttp(900);
   if (directStatus.ok && directStatus.codex !== false) {
     const direct = await askLocalAgentReplyHttp(text, context, {
@@ -112,37 +118,15 @@ export async function askLocalAgentReply(
       return direct;
     }
   }
-  if (readAgentRelayId()) {
-    const relayStatus = await checkAgentRelay(1200);
-    if (relayStatus.ok && relayStatus.codex !== false) {
-      return await askAgentRelayReply(text, context, source, timeoutMs) || {
-        ok: false,
-        text: "Серверный мост агента подключен, но не вернул ответ.",
-        exitCode: 124
-      };
-    }
-    if (relayStatus.ok && relayStatus.codex === false && await adoptCurrentAgentRelay(1500, true)) {
-      const relay = await askAgentRelayReply(text, context, source, timeoutMs);
-      if (relay) {
-        return relay;
-      }
-    }
-  }
-  const direct = await askLocalAgentReplyHttp(text, context, source, timeoutMs);
-  if (direct && !isCodexMissingReply(direct)) {
-    return direct;
-  }
+
   if (await adoptCurrentAgentRelay(1500, true)) {
-    const relay = await askAgentRelayReply(text, context, source, timeoutMs);
-    if (relay) {
-      return relay;
+    const currentRelay = await askAgentRelayReply(text, context, source, timeoutMs);
+    if (currentRelay) {
+      return currentRelay;
     }
   }
-  if (direct) {
-    return direct;
-  }
-  const relay = await askAgentRelayReply(text, context, source, timeoutMs);
-  return relay || {
+
+  return {
     ok: false,
     text: localAgentBlockedText,
     exitCode: 127
