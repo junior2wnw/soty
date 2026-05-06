@@ -2784,7 +2784,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
       } finally {
         setAgentThinking(tunnelId, false);
       }
-      const body = normalizeChatMessage(reply.text)
+      const body = normalizeChatMessage(cleanAgentReplyText(reply.text))
         || "Сообщение дошло, но локальный агент вернул пустой ответ.";
       if (shouldOfferAgentInstall(reply)) {
         renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox, refreshLocalAgent);
@@ -2810,6 +2810,23 @@ function setAgentThinking(tunnelId: string, active: boolean): void {
     renderTextPaint();
     renderWriterPop();
   }
+}
+
+function cleanAgentReplyText(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .filter((line) => !isInternalAgentReceiptLine(line))
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+function isInternalAgentReceiptLine(line: string): boolean {
+  const text = line.trim();
+  return /^`?(learning_delta|proof|final_line|finish_skill_edit)\s*=/iu.test(text)
+    || /^`?ops-memory\s*:/iu.test(text)
+    || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text);
 }
 
 function normalizeChatMessage(value: string): string {

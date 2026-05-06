@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.41";
+const agentVersion = "0.3.42";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -939,10 +939,11 @@ async function askCodexForAgentReply(text, context, source = {}) {
   args.push("-");
 
   try {
-    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, buildAgentPrompt(text, context, source));
+    const prompt = await buildAgentPrompt(text, context, source);
+    const result = await runChildForText(codexBin, args, childEnv, agentReplyTimeoutMs, prompt);
     const reply = existsSync(outPath) ? (await readFile(outPath, "utf8")).trim() : "";
     if (result.exitCode === 0 && reply) {
-      return { ok: true, text: reply.slice(0, maxChatChars), exitCode: 0 };
+      return { ok: true, text: cleanAgentChatReply(reply).slice(0, maxChatChars), exitCode: 0 };
     }
     return {
       ok: false,
@@ -958,6 +959,23 @@ async function askCodexForAgentReply(text, context, source = {}) {
   } finally {
     await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+function cleanAgentChatReply(value) {
+  return String(value || "")
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .filter((line) => !isInternalAgentReceiptLine(line))
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+function isInternalAgentReceiptLine(line) {
+  const text = String(line || "").trim();
+  return /^`?(learning_delta|proof|final_line|finish_skill_edit)\s*=/iu.test(text)
+    || /^`?ops-memory\s*:/iu.test(text)
+    || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text);
 }
 
 async function askCodexRelayFallback(text, context, source = {}) {
@@ -1024,7 +1042,7 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
       if (payload?.reply) {
         return {
           ok: Boolean(payload.reply.ok),
-          text: String(payload.reply.text || "").slice(0, maxChatChars),
+          text: cleanAgentChatReply(payload.reply.text || "").slice(0, maxChatChars),
           ...(Number.isSafeInteger(payload.reply.exitCode) ? { exitCode: payload.reply.exitCode } : {})
         };
       }
@@ -1035,11 +1053,12 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
   return null;
 }
 
-function buildAgentPrompt(text, context, source = {}) {
+async function buildAgentPrompt(text, context, source = {}) {
   const trimmedContext = String(context || "").trim();
   const sourceContext = formatAgentSource(source);
   const operatorContext = formatOperatorTargets(source);
   const lifecycleGuidance = lifecycleOpsGuidance(text, trimmedContext);
+  const deterministicFacts = await collectDeterministicAgentFacts(text, trimmedContext, source);
   return [
     "You are the local Codex agent inside the Soty app.",
     "Answer in Russian. Keep it simple, warm, and clear. Usually 2-6 sentences.",
@@ -1048,6 +1067,7 @@ function buildAgentPrompt(text, context, source = {}) {
     "Use the request source below to understand which Soty device contacted you. Do not assume the current Codex host, the last selected Soty tile, or any similarly named device is the same computer.",
     "Architecture rule: Codex decides and talks; Soty remote console executes. User/device computer tasks must go only through the source-scoped Soty operator ctl route, even if this Codex host also has local shell access or the browser reached a local agent directly.",
     "Conversation rule: never ask questions, give confirmations, or write user-facing explanations through command stdout/stderr, Write-Output, echo, Read-Host, or the Soty remote console. The console is only for commands and technical execution output; all human dialogue must be in your final chat answer.",
+    "Receipt rule: do not include internal receipts or markers in the user chat, including learning_delta=, proof=, final_line=, ops-memory:, finish_skill_edit=, or similar implementation notes.",
     "Security rule: Soty command execution is source-scoped. Known operator targets below are already filtered to the source device id. Never use, mention as a command target, or fall back to any other Soty device by label, last selection, single access target, memory, or convenience.",
     "If Known operator targets says there is no authorized target for the source device id, do not run Soty commands and do not use another visible device. Say plainly that Soty remote access for this exact device is not visible yet.",
     "Never ask the user to install Codex on the source device for remote-control tasks. The source device needs only Soty plus its companion executor; Codex belongs to the operator side unless the user explicitly asks to set up local Codex.",
@@ -1065,16 +1085,82 @@ function buildAgentPrompt(text, context, source = {}) {
     "If the user asks for IDE work on the Codex host, briefly acknowledge the task and explain that real code changes need the full Codex session in the IDE or a working backend for codex exec.",
     sourceContext ? `Request source:\n${sourceContext}` : "",
     operatorContext ? `Known operator targets:\n${operatorContext}` : "",
+    deterministicFacts ? `Deterministic source facts:\n${deterministicFacts}` : "",
     trimmedContext ? `Recent chat context as a JSON string with Unicode escapes. Decode it before using it:\n${asciiJsonString(trimmedContext)}` : "",
     `User message as a JSON string with Unicode escapes. Decode it before answering:\n${asciiJsonString(String(text || "").trim())}`,
     "Answer in Russian:"
   ].filter(Boolean).join("\n\n");
 }
 
+async function collectDeterministicAgentFacts(text, context, source = {}) {
+  if (!isWindowsReinstallRequest(text, context)) {
+    return "";
+  }
+  const safe = sanitizeAgentSource(source);
+  if (!safe.deviceId) {
+    return "windowsReinstallPreflight=not-run; reason=no-source-device-id";
+  }
+  const result = await postAgentSourceJob("/api/agent/source/run", {
+    deviceId: safe.deviceId,
+    command: windowsReinstallPreflightCommand(),
+    timeoutMs: 45_000
+  });
+  return formatWindowsReinstallPreflightFacts(result);
+}
+
+function windowsReinstallPreflightCommand() {
+  return [
+    "$ErrorActionPreference='Continue'",
+    "$ProgressPreference='SilentlyContinue'",
+    "$health=$null",
+    "try { $health=Invoke-RestMethod -Uri 'http://127.0.0.1:49424/health' -Headers @{ Origin='https://xn--n1afe0b.online' } -TimeoutSec 2 } catch {}",
+    "$os=$null",
+    "try { $os=Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,CSName } catch {}",
+    "$computer=$null",
+    "try { $computer=Get-CimInstance Win32_ComputerSystem | Select-Object Name,Manufacturer,Model,PCSystemType } catch {}",
+    "$battery=@()",
+    "try { $battery=@(Get-CimInstance Win32_Battery | Select-Object Name,BatteryStatus,EstimatedChargeRemaining) } catch {}",
+    "$volumes=@()",
+    "try { $volumes=@(Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,VolumeName,DriveType,Size,FreeSpace) } catch {}",
+    "[pscustomobject]@{schema='soty.agent.windows-reinstall-preflight.v1';health=$health;os=$os;computer=$computer;battery=$battery;volumes=$volumes;collectedAt=(Get-Date).ToString('o')} | ConvertTo-Json -Compress -Depth 8"
+  ].join("; ");
+}
+
+function formatWindowsReinstallPreflightFacts(result) {
+  const exitCode = Number.isSafeInteger(result?.exitCode) ? result.exitCode : (result?.ok ? 0 : 1);
+  const text = String(result?.text || "").trim();
+  const parsed = extractJsonObject(text);
+  const health = parsed && typeof parsed === "object" ? parsed.health : null;
+  const machineReady = Boolean(health
+    && health.scope === "Machine"
+    && health.system === true
+    && health.maintenance === true);
+  const parts = [
+    "windowsReinstallPreflight=read-only",
+    `ok=${Boolean(result?.ok && exitCode === 0)}`,
+    `exitCode=${exitCode}`,
+    `machineWorkerReady=${machineReady}`,
+    parsed ? `json=${JSON.stringify(parsed).slice(0, 6000)}` : `raw=${text.slice(0, 1000)}`
+  ];
+  return parts.join("\n");
+}
+
+function extractJsonObject(value) {
+  const text = String(value || "").trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return null;
+  }
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
 function lifecycleOpsGuidance(text, context) {
-  const body = `${String(text || "")}\n${String(context || "").slice(-4000)}`.toLowerCase();
-  const reinstall = /reinstall|reset this pc|windows reset|winre|recovery|boot\.wim|setupcomplete|переустанов|сброс|восстановлен|вернуть компьютер|удалить всё|удалить все|установить\s+винд|винд\w*\s+заново|снести\s+винд/u.test(body);
-  if (!reinstall) {
+  if (!isWindowsReinstallRequest(text, context)) {
     return "";
   }
   const opsPath = findOpsScriptPath();
@@ -1084,8 +1170,14 @@ function lifecycleOpsGuidance(text, context) {
     "Do not offer Settings -> System -> Recovery -> Reset this PC as the primary path from Soty Agent. That is only a last-resort manual fallback if the user explicitly asks for manual steps.",
     "If no access=true source-matched target is visible, the right answer is: LINK for this exact Agent dialog is not active yet; press LINK and keep Soty open. Do not switch to another visible device or tell the user to start Windows reset manually.",
     "If an access=true source-matched target is visible, start with safe preflight only: source target identity, power/awake/lid, current OS, Soty machine-worker status, backup/return path. Do not wipe, reboot into recovery, reset, format USB, edit BCD, or launch setup until one exact final destructive confirmation is accepted.",
+    "If that preflight already proves machine-status scope=Machine, system=true, and maintenance=true, treat the Soty machine worker as ready and do not ask the user to enable maintenance again.",
     "For privileged reinstall staging, prefer Soty machine worker proof: install-machine/elevate only after explaining one UAC approval, then require machine-status scope=Machine system=true maintenance=true before destructive prep."
   ].join("\n");
+}
+
+function isWindowsReinstallRequest(text, context = "") {
+  const body = `${String(text || "")}\n${String(context || "").slice(-4000)}`.toLowerCase();
+  return /reinstall|reset this pc|windows reset|winre|recovery|boot\.wim|setupcomplete|переустанов|сброс|восстановлен|вернуть компьютер|удалить всё|удалить все|установить\s+винд|винд\w*\s+заново|снести\s+винд/u.test(body);
 }
 
 function sanitizeAgentSource(value) {
