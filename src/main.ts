@@ -113,6 +113,8 @@ let localAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
 let agentProbe: Promise<LocalAgentStatus> | null = null;
 let companionProbe: Promise<LocalAgentStatus> | null = null;
+let agentSourceGrantRefreshAt = 0;
+const agentSourceGrantRefreshMs = 30_000;
 type WriterLine = {
   readonly nick: string;
   readonly deviceId: string;
@@ -933,6 +935,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
     return;
   }
   remoteEnabled = setRemoteEnabled(agentTunnelId, true);
+  agentSourceGrantRefreshAt = Date.now() + agentSourceGrantRefreshMs;
   terminalOpenId = agentTunnelId;
   setTerminalState(agentTunnelId, "idle");
   appendTerminalLine(agentTunnelId, "+ agent link");
@@ -2396,6 +2399,7 @@ function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNoti
 function startAgentSourceControl(tunnelId: string): void {
   agentSourceControlTunnelId = tunnelId;
   window.clearTimeout(agentSourcePollTimer);
+  agentSourceGrantRefreshAt = 0;
   void pollAgentSourceControl();
 }
 
@@ -2417,6 +2421,7 @@ function stopAgentSourceControl(tunnelId: string): void {
   if (agentSourceControlTunnelId === tunnelId) {
     agentSourceControlTunnelId = "";
   }
+  agentSourceGrantRefreshAt = 0;
   window.clearTimeout(agentSourcePollTimer);
 }
 
@@ -2427,6 +2432,7 @@ async function pollAgentSourceControl(): Promise<void> {
   const tunnelId = agentSourceControlTunnelId;
   agentSourcePolling = true;
   try {
+    await refreshAgentSourceGrant(tunnelId);
     const jobs = await pollAgentSourceCommands(device.id);
     for (const job of jobs) {
       runAgentSourceJob(tunnelId, job);
@@ -2436,6 +2442,21 @@ async function pollAgentSourceControl(): Promise<void> {
     if (device && agentSourceControlTunnelId === tunnelId && remoteEnabled.has(tunnelId)) {
       agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(), 250);
     }
+  }
+}
+
+async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
+  if (!device || !remoteEnabled.has(tunnelId)) {
+    return;
+  }
+  const now = Date.now();
+  if (agentSourceGrantRefreshAt > now) {
+    return;
+  }
+  agentSourceGrantRefreshAt = now + agentSourceGrantRefreshMs;
+  const ok = await grantAgentSourceAccess(device.id, device.nick, true);
+  if (!ok) {
+    agentSourceGrantRefreshAt = now + 5000;
   }
 }
 
