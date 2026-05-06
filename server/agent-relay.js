@@ -5,7 +5,7 @@ const maxChatChars = 12_000;
 const maxContextChars = 16_000;
 const maxReplyChars = 12_000;
 const maxSourceChars = 180;
-const leaseMs = 180_000;
+const leaseMs = 10 * 60_000;
 const connectedMs = 70_000;
 const requestTtlMs = 15 * 60_000;
 const idleChannelTtlMs = 30 * 60_000;
@@ -25,8 +25,8 @@ export function attachAgentRelay(app) {
     cleanupChannels();
     const now = Date.now();
     const current = Array.from(channels.entries())
-      .filter(([, channel]) => channel.codex === true && now - (channel.lastPollAt || 0) < connectedMs)
-      .sort((left, right) => (right[1].lastPollAt || 0) - (left[1].lastPollAt || 0))[0];
+      .filter(([, channel]) => channel.codex === true && isCodexChannelConnected(channel, now))
+      .sort((left, right) => channelActivityAt(right[1], now) - channelActivityAt(left[1], now))[0];
     if (!current) {
       res.json({ ok: true, connected: false, relayId: "", lastSeenAt: "", version: "" });
       return;
@@ -36,7 +36,7 @@ export function attachAgentRelay(app) {
       ok: true,
       connected: true,
       relayId,
-      lastSeenAt: new Date(channel.lastPollAt).toISOString(),
+      lastSeenAt: new Date(channelActivityAt(channel, now)).toISOString(),
       version: channel.agentVersion || "",
       codex: true,
       deviceId: channel.deviceId || "",
@@ -53,10 +53,11 @@ export function attachAgentRelay(app) {
     cleanupChannels();
     const channel = channels.get(relayId);
     const lastPollAt = channel?.lastPollAt || 0;
+    const now = Date.now();
     res.json({
       ok: true,
-      connected: Date.now() - lastPollAt < connectedMs,
-      lastSeenAt: lastPollAt ? new Date(lastPollAt).toISOString() : "",
+      connected: Boolean(channel && isCodexChannelConnected(channel, now)),
+      lastSeenAt: channel ? new Date(channelActivityAt(channel, now)).toISOString() : "",
       version: channel?.agentVersion || "",
       codex: channel?.codex === true,
       deviceId: channel?.deviceId || "",
@@ -303,7 +304,7 @@ function getChannel(relayId) {
 
 function resolveRequestChannel(relayId) {
   const requested = channels.get(relayId);
-  const requestedConnected = Date.now() - (requested?.lastPollAt || 0) < connectedMs;
+  const requestedConnected = requested ? isCodexChannelConnected(requested, Date.now()) : false;
   if (requested?.codex === true && requestedConnected) {
     return { relayId, clientRelayId: "" };
   }
@@ -317,8 +318,23 @@ function resolveRequestChannel(relayId) {
 function currentCodexEntry() {
   const now = Date.now();
   return Array.from(channels.entries())
-    .filter(([, channel]) => channel.codex === true && now - (channel.lastPollAt || 0) < connectedMs)
-    .sort((left, right) => (right[1].lastPollAt || 0) - (left[1].lastPollAt || 0))[0] || null;
+    .filter(([, channel]) => channel.codex === true && isCodexChannelConnected(channel, now))
+    .sort((left, right) => channelActivityAt(right[1], now) - channelActivityAt(left[1], now))[0] || null;
+}
+
+function isCodexChannelConnected(channel, now = Date.now()) {
+  return now - (channel.lastPollAt || 0) < connectedMs || hasActiveLeasedJob(channel, now);
+}
+
+function hasActiveLeasedJob(channel, now = Date.now()) {
+  return channel.jobs.some((job) => !job.reply && job.leaseUntil && job.leaseUntil > now);
+}
+
+function channelActivityAt(channel, now = Date.now()) {
+  const activeLeaseUntil = channel.jobs
+    .filter((job) => !job.reply && job.leaseUntil && job.leaseUntil > now)
+    .reduce((latest, job) => Math.max(latest, job.leaseUntil || 0), 0);
+  return Math.max(channel.lastPollAt || 0, activeLeaseUntil ? Math.min(activeLeaseUntil, now) : 0);
 }
 
 function leasePendingJobs(channel) {
