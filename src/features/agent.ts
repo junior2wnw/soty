@@ -125,10 +125,10 @@ export async function askLocalAgentReply(
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler
 ): Promise<LocalAgentReply> {
-  await adoptCurrentAgentRelay(1500);
+  await adoptCurrentAgentRelay(1500, true);
   if (readAgentRelayId()) {
     const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal);
-    if (relay) {
+    if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
     }
     if (await adoptCurrentAgentRelay(1500, true)) {
@@ -136,6 +136,9 @@ export async function askLocalAgentReply(
       if (currentRelay) {
         return currentRelay;
       }
+    }
+    if (relay) {
+      return relay;
     }
   }
 
@@ -151,6 +154,10 @@ export async function askLocalAgentReply(
     text: localAgentBlockedText,
     exitCode: 127
   };
+}
+
+function shouldRetryAgentRelayReply(reply: LocalAgentReply): boolean {
+  return !reply.ok && reply.text.trim().startsWith("! agent-relay:");
 }
 
 export function hasAgentRelayId(): boolean {
