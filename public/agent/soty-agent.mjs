@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.107";
+const agentVersion = "0.3.108";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2557,6 +2557,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- If the $ops body is needed, use the Soty MCP tool `soty_skill_read` with skill `ops` and path `SKILL.md`.",
     "- Keep $ops, route selection, helper names, preflight/gate language, MCP names, and bridge/source-scoped mechanics internal unless the user explicitly asks for technical details.",
     "- Write like a practical IDE Codex: concise, warm, decisive, and action-oriented. The user should see what you did or need next, not how the routing machinery works.",
+    "- Do not show raw tool errors or codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets in user-facing chat; translate them into one plain sentence.",
     "- Before tools, either act silently or send one short plain-language progress line. Do not narrate every probe, retry, helper, or memory lookup.",
     "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
     "- For work on a paired user device, use Soty MCP tools: soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
@@ -2612,6 +2613,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- local_shell_scope: server agent runtime only; use Soty MCP for paired device work.",
     "- ops_rule: use $ops first for system/device/install/repair/package/service/skill/memory work; read it with soty_skill_read skill=ops path=SKILL.md when needed.",
     "- communication_rule: keep $ops/router/helper/preflight/gate/MCP/bridge/source-scoped details internal; answer in short plain language like IDE Codex.",
+    "- error_translation_rule: do not show raw tool errors/codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets; translate to a human sentence.",
     "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use timeoutMs up to 7200000 only for real long-running jobs after the target is proven.",
     "- reinstall_rule: for Windows reinstall/reset, ask at most one plain question at a time and do not ask for destructive confirmation until control, backup/data intent, USB scope, BitLocker/recovery safety, and return path are proven.",
