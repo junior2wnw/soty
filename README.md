@@ -67,7 +67,7 @@ For development, run:
 pnpm run agent
 ```
 
-Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. Agent chat first tries that loopback bridge and then falls back to the paired server relay when the browser blocks local-network access.
+Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. Agent chat first tries that loopback bridge and then falls back only to the explicitly paired server relay when the browser blocks local-network access; it must not auto-switch to a global "latest" agent from another device.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 

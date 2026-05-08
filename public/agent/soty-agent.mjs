@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.103";
+const agentVersion = "0.3.104";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -42,6 +42,7 @@ const audioWarmupTimeoutMs = 45_000;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
+const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK === "1";
 const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v4-runtime-context";
 const active = new Map();
 const operatorRuns = new Map();
@@ -1647,7 +1648,9 @@ async function postAgentRelayEvent(id, message, type = "agent_message") {
 async function askCodexForAgentReply(text, context, source = {}, onMessage = null, onTerminal = null) {
   const codexBin = hasCodexBinary() ? findCodexBinary() : "";
   if (!codexBin) {
-    const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal);
+    const relay = codexRelayFallback
+      ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal)
+      : null;
     if (relay) {
       return relay;
     }
@@ -2346,7 +2349,7 @@ async function askCodexRelayFallback(text, context, source = {}, onMessage = nul
   if (!relayBaseUrl) {
     return null;
   }
-  const requestRelayId = agentRelayId || await currentCodexRelayId(relayBaseUrl);
+  const requestRelayId = agentRelayId;
   if (!requestRelayId) {
     return null;
   }
@@ -2423,19 +2426,6 @@ async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, timeoutM
     } catch {
       await sleep(1000);
     }
-  }
-}
-
-async function currentCodexRelayId(relayBaseUrl) {
-  try {
-    const response = await fetch(new URL("/api/agent/relay/current", relayBaseUrl), { cache: "no-store" });
-    const payload = await response.json();
-    if (!response.ok || !payload?.connected || payload.codex === false) {
-      return "";
-    }
-    return safeRelayId(payload.relayId || "");
-  } catch {
-    return "";
   }
 }
 

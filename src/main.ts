@@ -4,7 +4,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteComm
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, adoptCurrentAgentRelay, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, isWindowsPlatform, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, isWindowsPlatform, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
 import type { AgentSourceCommand, LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -1188,7 +1188,6 @@ async function startAgentDialog(): Promise<void> {
     return;
   }
   renderApp();
-  await adoptCurrentAgentRelay();
   const agent = await refreshLocalAgent();
   if (agent.ok && !agent.relay) {
     void bindLocalAgentRelay().then((bound) => {

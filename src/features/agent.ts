@@ -84,33 +84,20 @@ export function adoptAgentRelayFromUrl(): boolean {
 }
 
 export async function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus> {
+  const direct = await checkLocalAgentHttp(timeoutMs);
+  if (direct.ok && direct.codex !== false) {
+    return direct;
+  }
+
   if (readAgentRelayId()) {
     const relay = await checkAgentRelay(timeoutMs);
     if (relay.ok && relay.codex !== false) {
       return relay;
     }
-    if (relay.ok && relay.codex === false && await adoptCurrentAgentRelay(timeoutMs, true)) {
-      const current = await checkAgentRelay(timeoutMs);
-      if (current.ok) {
-        return current;
-      }
-    }
+    return direct.ok ? direct : relay;
   }
-  const direct = await checkLocalAgentHttp(timeoutMs);
-  if (direct.ok && direct.codex !== false) {
-    return direct;
-  }
-  const relay = await checkAgentRelay(timeoutMs);
-  if (relay.ok && relay.codex !== false) {
-    return relay;
-  }
-  if (await adoptCurrentAgentRelay(timeoutMs, true)) {
-    const current = await checkAgentRelay(timeoutMs);
-    if (current.ok) {
-      return current;
-    }
-  }
-  return direct.ok ? direct : relay;
+
+  return direct;
 }
 
 export async function checkLocalCompanionAgent(timeoutMs = 850): Promise<LocalAgentStatus> {
@@ -125,27 +112,29 @@ export async function askLocalAgentReply(
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler
 ): Promise<LocalAgentReply> {
-  await adoptCurrentAgentRelay(1500, true);
+  const direct = await askLocalAgentReplyHttp(
+    text,
+    context,
+    { ...source, localAgentDirect: true },
+    timeoutMs
+  );
+  if (direct) {
+    for (const message of direct.messages ?? []) {
+      onMessage?.(message);
+    }
+    for (const message of direct.terminal ?? []) {
+      onTerminal?.(message);
+    }
+    return direct;
+  }
+
   if (readAgentRelayId()) {
     const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal);
     if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
     }
-    if (await adoptCurrentAgentRelay(1500, true)) {
-      const currentRelay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal);
-      if (currentRelay) {
-        return currentRelay;
-      }
-    }
     if (relay) {
       return relay;
-    }
-  }
-
-  if (await adoptCurrentAgentRelay(1500, true)) {
-    const currentRelay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal);
-    if (currentRelay) {
-      return currentRelay;
     }
   }
 
@@ -181,62 +170,6 @@ export function agentRelayInviteUrl(): string {
   return url.toString();
 }
 
-export async function adoptCurrentAgentRelay(timeoutMs = 1200, force = false): Promise<boolean> {
-  if (!force && readAgentRelayId()) {
-    return false;
-  }
-  const payload = await currentAgentRelay(timeoutMs);
-  if (!payload.ok || !payload.relayId || payload.codex === false) {
-    return false;
-  }
-  localStorage.setItem(relayStorageKey, payload.relayId);
-  return true;
-}
-
-export async function currentAgentRelay(timeoutMs = 1200): Promise<LocalAgentStatus> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch("/api/agent/relay/current", {
-      cache: "no-store",
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      return { ok: false };
-    }
-    const payload = await response.json() as {
-      readonly connected?: boolean;
-      readonly relayId?: string;
-      readonly lastSeenAt?: string;
-      readonly version?: string;
-      readonly codex?: boolean;
-      readonly codexBinary?: boolean;
-      readonly codexAuth?: boolean;
-      readonly deviceId?: string;
-      readonly deviceNick?: string;
-    };
-    const relayId = sanitizeRelayId(payload.relayId || "");
-    return {
-      ok: Boolean(payload.connected && relayId),
-      relay: true,
-      managed: true,
-      scope: "Relay",
-      relayId,
-      ...(typeof payload.lastSeenAt === "string" ? { lastSeenAt: payload.lastSeenAt } : {}),
-      ...(typeof payload.version === "string" ? { version: payload.version } : {}),
-      ...(typeof payload.codex === "boolean" ? { codex: payload.codex } : {}),
-      ...(typeof payload.codexBinary === "boolean" ? { codexBinary: payload.codexBinary } : {}),
-      ...(typeof payload.codexAuth === "boolean" ? { codexAuth: payload.codexAuth } : {}),
-      ...(typeof payload.deviceId === "string" ? { deviceId: payload.deviceId } : {}),
-      ...(typeof payload.deviceNick === "string" ? { deviceNick: payload.deviceNick } : {})
-    };
-  } catch {
-    return { ok: false };
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
 export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
   const relayId = ensureAgentRelayId();
   const controller = new AbortController();
@@ -259,7 +192,6 @@ export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
 }
 
 export async function grantAgentSourceAccess(deviceId: string, deviceNick: string, enabled: boolean, timeoutMs = 1500): Promise<boolean> {
-  await adoptCurrentAgentRelay(timeoutMs, true);
   const relayId = readAgentRelayId();
   if (!relayId || !deviceId) {
     return false;
@@ -407,7 +339,13 @@ async function askAgentRelayReply(
     });
     const created = await request.json() as { readonly ok?: boolean; readonly id?: string };
     if (!request.ok || !created.ok || typeof created.id !== "string") {
-      return relayFailure("! agent-relay: request rejected", 502);
+      const error = typeof (created as { readonly error?: unknown }).error === "string"
+        ? (created as { readonly error: string }).error
+        : "";
+      return relayFailure(
+        error === "relay-not-connected" ? localAgentBlockedText : "! agent-relay: request rejected",
+        request.status || 502
+      );
     }
     let stopEvents = false;
     const eventStream = onMessage || onTerminal

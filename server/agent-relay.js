@@ -23,29 +23,6 @@ const sourceReplyWaiters = new Map();
 const jsonParser = express.json({ limit: "180kb", type: "application/json" });
 
 export function attachAgentRelay(app) {
-  app.get("/api/agent/relay/current", (_req, res) => {
-    cleanupChannels();
-    const now = Date.now();
-    const current = Array.from(channels.entries())
-      .filter(([, channel]) => channel.codex === true && isCodexChannelConnected(channel, now))
-      .sort((left, right) => channelActivityAt(right[1], now) - channelActivityAt(left[1], now))[0];
-    if (!current) {
-      res.json({ ok: true, connected: false, relayId: "", lastSeenAt: "", version: "" });
-      return;
-    }
-    const [relayId, channel] = current;
-    res.json({
-      ok: true,
-      connected: true,
-      relayId,
-      lastSeenAt: new Date(channelActivityAt(channel, now)).toISOString(),
-      version: channel.agentVersion || "",
-      codex: true,
-      deviceId: channel.deviceId || "",
-      deviceNick: channel.deviceNick || ""
-    });
-  });
-
   app.get("/api/agent/relay/status", (req, res) => {
     const relayId = normalizeRelayId(req.query.relayId);
     if (!relayId) {
@@ -78,6 +55,10 @@ export function attachAgentRelay(app) {
     }
     cleanupChannels();
     const target = resolveRequestChannel(relayId);
+    if (!target.connected) {
+      res.status(409).json({ ok: false, error: "relay-not-connected" });
+      return;
+    }
     source = enrichAgentSource(target.relayId, relayId, source, text);
     const channel = getChannel(target.relayId);
     const job = {
@@ -367,20 +348,9 @@ function resolveRequestChannel(relayId) {
   const requested = channels.get(relayId);
   const requestedConnected = requested ? isCodexChannelConnected(requested, Date.now()) : false;
   if (requested?.codex === true && requestedConnected) {
-    return { relayId, clientRelayId: "" };
+    return { relayId, clientRelayId: "", connected: true };
   }
-  const current = currentCodexEntry();
-  if (!current || current[0] === relayId) {
-    return { relayId, clientRelayId: "" };
-  }
-  return { relayId: current[0], clientRelayId: relayId };
-}
-
-function currentCodexEntry() {
-  const now = Date.now();
-  return Array.from(channels.entries())
-    .filter(([, channel]) => channel.codex === true && isCodexChannelConnected(channel, now))
-    .sort((left, right) => channelActivityAt(right[1], now) - channelActivityAt(left[1], now))[0] || null;
+  return { relayId, clientRelayId: "", connected: false };
 }
 
 function isCodexChannelConnected(channel, now = Date.now()) {
@@ -434,9 +404,7 @@ function getAgentSource(relayId, deviceId) {
 }
 
 function findAgentSource(relayId, deviceId) {
-  return agentSources.get(sourceKey(relayId, deviceId))
-    || [...agentSources.values()].find((source) => source.deviceId === deviceId && source.access === true)
-    || null;
+  return agentSources.get(sourceKey(relayId, deviceId)) || null;
 }
 
 function findRunnableAgentSource(relayId, deviceId) {
