@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.102";
+const agentVersion = "0.3.103";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -30,6 +30,8 @@ const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "Current
 const maxCommandChars = 8_000;
 const maxScriptChars = 1_000_000;
 const maxChatChars = 12_000;
+const maxAgentContextChars = 16_000;
+const maxAgentRuntimePromptChars = 48_000;
 const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
@@ -40,7 +42,7 @@ const audioWarmupTimeoutMs = 45_000;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
-const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v3";
+const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v4-runtime-context";
 const active = new Map();
 const operatorRuns = new Map();
 const operatorMessages = [];
@@ -57,6 +59,8 @@ let operatorDeviceNick = "";
 let cachedWindowsWhoami = "";
 let cachedCodexProbeAt = 0;
 let cachedCodexAvailable = false;
+let cachedCodexLearningMemoryAt = 0;
+let cachedCodexLearningMemoryText = "";
 let agentRelayStarted = false;
 let audioWarmupStarted = false;
 const allowedOrigins = new Set([
@@ -1331,7 +1335,7 @@ function handleOperatorIncomingMessage(message) {
     sourceDeviceNick: safeSourceText(message.sourceDeviceNick || message.deviceNick),
     agent: message.agent === true,
     text,
-    context: typeof message.context === "string" ? message.context.slice(-16_000) : "",
+    context: typeof message.context === "string" ? message.context.slice(-maxAgentContextChars) : "",
     createdAt: typeof message.createdAt === "string" && message.createdAt.length <= 80 ? message.createdAt : new Date().toISOString()
   };
   operatorMessages.push(item);
@@ -1489,7 +1493,7 @@ async function handleAgentReply(request, response, headers) {
     return;
   }
   const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
-  const context = typeof payload.context === "string" ? payload.context.slice(-16_000) : "";
+  const context = typeof payload.context === "string" ? payload.context.slice(-maxAgentContextChars) : "";
   const source = sanitizeAgentSource(payload.source);
   if (!text.trim()) {
     sendJson(response, 400, headers, { ok: false, text: "! text", exitCode: 400 });
@@ -1592,7 +1596,7 @@ async function pollAgentRelay() {
 async function handleAgentRelayJob(job) {
   const result = await askCodexForAgentReply(
     String(job.text || "").slice(0, maxChatChars),
-    String(job.context || "").slice(-16_000),
+    String(job.context || "").slice(-maxAgentContextChars),
     sanitizeAgentSource(job.source),
     (message) => postAgentRelayEvent(job.id, message),
     (message) => postAgentRelayEvent(job.id, message, "agent_terminal")
@@ -1666,6 +1670,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       codexBin,
       childEnv,
       text,
+      context,
       source,
       onMessage,
       onTerminal
@@ -1679,7 +1684,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
   }
 }
 
-async function runCodexSotySessionTurn({ codexBin, childEnv, text, source, onMessage, onTerminal }) {
+async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
   const sourceTargets = await activeAgentSourceTargets();
@@ -1691,7 +1696,17 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, source, onMes
   }
   const sessionRecord = usableCodexSessionRecord(persistedCodexSessions[sessionKey]);
   const jobDir = await prepareCodexWorkspace(sessionKey, sessionRecord);
-  const prompt = buildAgentPrompt(text, safeSource, target);
+  const runtimeContext = await buildAgentRuntimeContext({
+    text,
+    context,
+    source: safeSource,
+    target,
+    sourceTargets,
+    sessionRecord,
+    jobDir
+  });
+  await writeCodexRuntimeFiles(jobDir, runtimeContext);
+  const prompt = buildAgentPrompt(text, context, runtimeContext);
   const outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
   const taskFamily = classifyTaskFamily(text, target);
   const args = codexSotySessionArgs({
@@ -1708,7 +1723,31 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, source, onMes
     terminal: [],
     terminalKeys: new Set()
   };
-  const result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, onMessage, onTerminal);
+  let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, onMessage, onTerminal);
+  if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
+    const freshState = {
+      threadId: "",
+      lastMessage: "",
+      messages: [],
+      terminal: [],
+      terminalKeys: new Set()
+    };
+    const freshArgs = codexSotySessionArgs({
+      jobDir,
+      target,
+      source: safeSource,
+      outPath,
+      threadId: ""
+    });
+    delete persistedCodexSessions[sessionKey];
+    await saveCodexSessions();
+    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, onMessage, onTerminal);
+    state.threadId = freshState.threadId;
+    state.lastMessage = freshState.lastMessage;
+    state.messages = freshState.messages;
+    state.terminal = freshState.terminal;
+    state.terminalKeys = freshState.terminalKeys;
+  }
   const lastFromFile = existsSync(outPath) ? cleanAgentChatReply(await readFile(outPath, "utf8")) : "";
   const messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   const finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
@@ -1811,22 +1850,19 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "" }
   }
   const targetId = target?.id || "";
   const sourceDeviceId = bridgeSourceDeviceId(target, source);
+  const mcpArgs = [
+    scriptPath,
+    "mcp",
+    "--port",
+    String(port)
+  ];
   if (targetId && sourceDeviceId) {
-    const mcpArgs = [
-      scriptPath,
-      "mcp",
-      "--port",
-      String(port),
-      "--target",
-      targetId,
-      "--source-device",
-      sourceDeviceId
-    ];
-    args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
-    args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-    for (const tool of ["soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
-      args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
-    }
+    mcpArgs.push("--target", targetId, "--source-device", sourceDeviceId);
+  }
+  args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
+  args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
+  for (const tool of ["soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
+    args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
   }
   if (outPath) {
     args.push("-o", outPath);
@@ -1836,6 +1872,17 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "" }
   }
   args.push("-");
   return args;
+}
+
+function shouldRetryCodexWithoutResume(result, state) {
+  if (!result || result.exitCode === 0) {
+    return false;
+  }
+  if (state?.messages?.length || state?.terminal?.length) {
+    return false;
+  }
+  const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
+  return /resume|session|thread|conversation|not found|missing|invalid|no such/u.test(details);
 }
 
 function codexSessionKey(source, target = null) {
@@ -2311,7 +2358,7 @@ async function askCodexRelayFallback(text, context, source = {}, onMessage = nul
       body: JSON.stringify({
         relayId: requestRelayId,
         text: String(text || "").slice(0, maxChatChars),
-        context: String(context || "").slice(-16_000),
+        context: String(context || "").slice(-maxAgentContextChars),
         source: sanitizeAgentSource(source)
       })
     });
@@ -2425,21 +2472,181 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
   return null;
 }
 
-function buildAgentPrompt(text, source = {}, target = null) {
-  const body = String(text || "").trim();
-  if (!target?.id) {
-    return body;
+async function buildAgentRuntimeContext({ text, context = "", source = {}, target = null, sourceTargets = [], sessionRecord = null, jobDir = "" }) {
+  const safeSource = sanitizeAgentSource(source);
+  const sourceDeviceId = promptInline(bridgeSourceDeviceId(target, safeSource) || safeSource.deviceId || "");
+  const targetLabel = promptInline(target?.label || safeSource.preferredTargetLabel || "");
+  const targetId = promptInline(target?.id || safeSource.preferredTargetId || "");
+  const activeTargets = sanitizeTargets(sourceTargets)
+    .slice(0, 8)
+    .map((item) => `${promptInline(item.label)} (${promptInline(item.id)})${item.access ? " access=true" : ""}`)
+    .join("\n");
+  return {
+    userText: String(text || "").trim().slice(0, maxChatChars),
+    visibleContext: cleanPromptBlock(context, maxAgentContextChars),
+    source: {
+      tunnelId: promptInline(safeSource.tunnelId),
+      tunnelLabel: promptInline(safeSource.tunnelLabel),
+      deviceId: promptInline(safeSource.deviceId),
+      deviceNick: promptInline(safeSource.deviceNick),
+      appOrigin: promptInline(safeSource.appOrigin)
+    },
+    target: {
+      id: targetId,
+      label: targetLabel,
+      sourceDeviceId
+    },
+    activeTargets,
+    session: {
+      resumed: Boolean(sessionRecord?.threadId),
+      threadId: safeCodexThreadId(sessionRecord?.threadId || ""),
+      mode: codexSessionMode,
+      workspaceDir: promptInline(jobDir)
+    },
+    memory: await codexLearningMemoryPrompt()
+  };
+}
+
+async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
+  if (!jobDir) {
+    return;
   }
-  const label = promptInline(target.label || source?.preferredTargetLabel || "source device");
-  const targetId = promptInline(target.id);
-  const sourceDeviceId = promptInline(bridgeSourceDeviceId(target, source));
-  const prefix = [
-    `Soty target context: the requested device is "${label}" (${targetId}).`,
-    sourceDeviceId ? `Soty source device id for MCP calls: ${sourceDeviceId}.` : "",
-    "For any command, check, file, browser, desktop, install, repair, or OS action on that device, use the Soty MCP tools (soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url).",
-    "Do not use the local shell for target-device actions; the local shell is only the agent runtime. If a Soty MCP tool fails, report the exact failure."
-  ].filter(Boolean).join("\n");
-  return `${prefix}\n\nUser message:\n${body}`;
+  await mkdir(jobDir, { recursive: true });
+  const agents = [
+    "# Soty Codex Runtime",
+    "",
+    "This is a generated Soty server-Codex workspace. It is not automatically the user's project checkout.",
+    "",
+    "Operating contract:",
+    "- Read the current prompt's Soty runtime packet before acting.",
+    "- Answer in the user's language unless they ask otherwise.",
+    "- For install, reinstall, repair, reset, recovery, boot-media, flashing, OS, package, service, shell, SSH, device, MCP, Codex skill, skill sync, or operational memory tasks, use $ops first.",
+    "- $ops is one canonical skill at skills/universal-install-ops; `ops` is a name/alias, not a second package copy.",
+    "- If the $ops body is needed, use the Soty MCP tool `soty_skill_read` with skill `ops` and path `SKILL.md`.",
+    "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
+    "- For work on a paired user device, use Soty MCP tools: soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
+    "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, name the exact blocker.",
+    "- For project work, detect the real project/root before editing. If the project is on the source device, operate through Soty MCP; if it is the server checkout, state that boundary.",
+    "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
+    "- Verify changes with the smallest useful proof, record reusable learning when behavior changes, and keep user-facing explanations simple.",
+    "",
+    "Useful local files:",
+    "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn."
+  ].join("\n");
+  const context = [
+    "# Soty Runtime Packet",
+    "",
+    `session_mode: ${runtimeContext.session.mode}`,
+    `session_resumed: ${runtimeContext.session.resumed ? "true" : "false"}`,
+    `source_device: ${runtimeContext.source.deviceNick || "unknown"} (${runtimeContext.source.deviceId || "no-id"})`,
+    `target: ${runtimeContext.target.label || "none"} (${runtimeContext.target.id || "none"})`,
+    `target_source_device_id: ${runtimeContext.target.sourceDeviceId || "none"}`,
+    "",
+    "## Learning Memory",
+    runtimeContext.memory || "unavailable",
+    "",
+    "## Active Soty Targets",
+    runtimeContext.activeTargets || "none",
+    "",
+    "## Visible Soty Shared Text Context",
+    runtimeContext.visibleContext || "none"
+  ].join("\n").slice(0, maxAgentRuntimePromptChars);
+  await writeFile(join(jobDir, "AGENTS.md"), `${agents}\n`, "utf8");
+  await writeFile(join(jobDir, "SOTY_CONTEXT.md"), `${context}\n`, "utf8");
+}
+
+function buildAgentPrompt(text, context = "", runtimeContext = null) {
+  const body = String(text || "").trim();
+  const runtime = runtimeContext || {
+    source: {},
+    target: {},
+    session: { resumed: false, mode: codexSessionMode },
+    activeTargets: "",
+    visibleContext: cleanPromptBlock(context, maxAgentContextChars),
+    memory: ""
+  };
+  const lines = [
+    "Soty runtime packet:",
+    `- session_mode: ${runtime.session?.mode || codexSessionMode}`,
+    `- session_resumed: ${runtime.session?.resumed ? "true" : "false"}`,
+    `- source_device: ${runtime.source?.deviceNick || "unknown"} (${runtime.source?.deviceId || "no-id"})`,
+    `- target: ${runtime.target?.label || "none"} (${runtime.target?.id || "none"})`,
+    `- target_source_device_id: ${runtime.target?.sourceDeviceId || "none"}`,
+    "- local_shell_scope: server agent runtime only; use Soty MCP for paired device work.",
+    "- ops_rule: use $ops first for system/device/install/repair/package/service/skill/memory work; read it with soty_skill_read skill=ops path=SKILL.md when needed.",
+    "- project_rule: detect the real project/root before editing; do not assume this generated workspace is the user's project.",
+    "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
+    "",
+    "Learning memory snapshot:",
+    runtime.memory || "unavailable",
+    "",
+    "Active Soty targets:",
+    runtime.activeTargets || "none",
+    "",
+    "Visible Soty shared-text context:",
+    runtime.visibleContext || cleanPromptBlock(context, maxAgentContextChars) || "none",
+    "",
+    "User message:",
+    body
+  ];
+  return lines.join("\n").slice(0, maxAgentRuntimePromptChars);
+}
+
+async function codexLearningMemoryPrompt() {
+  const now = Date.now();
+  if (cachedCodexLearningMemoryText && now - cachedCodexLearningMemoryAt < 5 * 60_000) {
+    return cachedCodexLearningMemoryText;
+  }
+  if (!agentRelayBaseUrl) {
+    cachedCodexLearningMemoryAt = now;
+    cachedCodexLearningMemoryText = "server learning unavailable: relay is not configured";
+    return cachedCodexLearningMemoryText;
+  }
+  const report = await Promise.race([
+    fetchLearningTeacherReport(500).catch((error) => ({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    })),
+    sleep(2500).then(() => ({ ok: false, error: "teacher timeout" }))
+  ]);
+  cachedCodexLearningMemoryAt = now;
+  cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, 4000);
+  return cachedCodexLearningMemoryText;
+}
+
+function formatCodexLearningMemory(report) {
+  if (!report?.ok) {
+    return `server learning unavailable: ${cleanLearningText(report?.error || "unknown", 160)}`;
+  }
+  const lines = [
+    `teacher=${report.schema || "soty.learning.teacher"} receipts=${Number(report.receipts || 0)} source=${cleanLearningText(report.source || "", 80)}`,
+    `scope=${formatLearningScope(report)}`,
+    `publish=${formatLearningPublishModel(report)}`
+  ];
+  const recommendations = Array.isArray(report.recommendations) ? report.recommendations.slice(0, 4) : [];
+  if (recommendations.length > 0) {
+    lines.push("recommendations:");
+    for (const item of recommendations) {
+      lines.push(`- ${cleanLearningText(item.priority || "normal", 20)} ${cleanLearningText(item.family || "generic", 80)}: ${cleanLearningText(item.title || item.action || "review route", 220)}`);
+    }
+  }
+  const candidates = Array.isArray(report.candidates) ? report.candidates.slice(0, 4) : [];
+  if (candidates.length > 0) {
+    lines.push("candidate memory:");
+    for (const item of candidates) {
+      lines.push(`- ${cleanLearningText(item.scope || "candidate", 40)} ${cleanLearningText(item.family || "generic", 80)}: ${cleanLearningText(item.marker || "", 260)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function cleanPromptBlock(value, max = maxAgentContextChars) {
+  return String(value || "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .replace(/\n{6,}/gu, "\n\n\n")
+    .trim()
+    .slice(-Math.max(0, max));
 }
 
 function promptInline(value) {
@@ -4487,6 +4694,8 @@ function runtimeHealth() {
     codexBinary: Boolean(findCodexBinary()),
     codexAuth: hasCodexAuth(),
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
+    codexSessionMode,
+    codexRuntimeContext: "prompt+AGENTS+SOTY_CONTEXT+learning-memory+always-on-soty-mcp",
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
     learning: learningStatus(),
