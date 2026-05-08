@@ -13,12 +13,14 @@ export function attachAgentLearning(app, { dataDir } = {}) {
 
   app.get("/api/agent/learning/health", async (_req, res) => {
     const files = await learningFiles(learningDir).catch(() => []);
-    const receipts = await readRecentLearningReceiptsFromDir(learningDir, 500).catch(() => []);
+    const lines = await readRecentLearningReceiptsFromDir(learningDir, 500).catch(() => []);
+    const receipts = lines.map(parseReceiptLine).filter(Boolean);
     res.json({
       ok: true,
       enabled: true,
       files: files.length,
       receipts: receipts.length,
+      scope: summarizeLearningScope(receipts),
       teacherUrl: "/api/agent/learning/teacher",
       dir: path.basename(learningDir)
     });
@@ -102,13 +104,15 @@ function buildTeacherReport(receipts, { limit = 800 } = {}) {
     ].join("|"));
   const recommendations = buildRecommendations(rows, topFailures);
   const candidates = buildPromotionCandidates(rows, topFailures, topSuccesses);
+  const scope = summarizeLearningScope(rows);
   return {
     ok: true,
     schema: "soty.learning.teacher.v1",
     generatedAt: new Date().toISOString(),
-    source: "sanitized-receipts",
+    source: "server-global-sanitized-receipts",
     limit,
     receipts: rows.length,
+    scope,
     families: topEntries(familyCounts, 12),
     results: topEntries(resultCounts, 8),
     routes: topEntries(routeCounts, 8),
@@ -117,7 +121,8 @@ function buildTeacherReport(receipts, { limit = 800 } = {}) {
     recommendations,
     candidates,
     oneCommand: "sotyctl learn doctor",
-    reviewMergeCommand: "sotyctl learn review-merge"
+    reviewMergeCommand: "sotyctl learn review-merge",
+    publishModel: "reviewed-ops-patch-then-build-release-deploy"
   };
 }
 
@@ -178,6 +183,33 @@ function groupRows(rows, keyFn) {
   }
   return Array.from(groups.values())
     .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
+}
+
+function summarizeLearningScope(rows) {
+  const timestamps = rows
+    .map((item) => cleanIso(item.createdAt) || cleanIso(item.receivedAt) || "")
+    .filter(Boolean)
+    .sort();
+  return {
+    kind: "server-global-sanitized-receipts",
+    deviceCount: uniqueCount(rows, (item) => item.installHash),
+    platformCounts: topEntries(countBy(rows, (item) => item.platform || "unknown"), 8),
+    agentVersions: topEntries(countBy(rows, (item) => item.agentVersion || "unknown"), 8),
+    skillBundles: topEntries(countBy(rows, (item) => item.skillSha ? String(item.skillSha).slice(0, 12) : "unknown"), 8),
+    firstSeenAt: timestamps[0] || "",
+    lastSeenAt: timestamps.at(-1) || ""
+  };
+}
+
+function uniqueCount(rows, keyFn) {
+  const values = new Set();
+  for (const row of rows) {
+    const key = cleanText(keyFn(row), 120);
+    if (key && key !== "unknown") {
+      values.add(key);
+    }
+  }
+  return values.size;
 }
 
 function buildRecommendations(rows, topFailures) {

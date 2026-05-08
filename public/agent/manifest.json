@@ -1,17 +1,16 @@
 {
-  "version": "0.3.90",
+  "version": "0.3.91",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "0ed5683e44317e8471be5e4f58b4b5dd49c3afcfd84869e3b946ccbfacee795f",
+  "sha256": "ed50c943b0640a663e9ec89062ba81df00af7272c1ba1ac38c2b02a91b51a444",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "3fce108ef4c29dd5531f81fbf00b11a3c787921c788313941870895208870f06",
-    "zipBytes": 1199986,
+    "zipSha256": "265c6f948e4a5ff56191700e033d49a09bf9f2abcc55509f9bc49b06ecf9da42",
+    "zipBytes": 1201798,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "cfa735dfa505ce870d46d535068c73c808a07298e029cd00ad55baea4eb248c1",
-    "tarBytes": 295422,
-    "revision": "ecd733ec433131d2eed7c5a7d658598998cff4b0",
-    "dirty": true
+    "tarSha256": "cfbe707786139e45f2a06b1d09117dccb21744be6cb2e25876b8788ec67ac868",
+    "tarBytes": 296010,
+    "revision": "15cac046041305c3d9fda1556d6da3cbe47e908f"
   }
 }

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.90";
+const agentVersion = "0.3.91";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -737,7 +737,9 @@ function formatLearningTeacherReport(sync, report) {
   }
   const lines = [
     `soty-learning-doctor: ok=true receipts=${report.receipts || 0} sent=${sync?.sent || 0} pending=${sync?.pending || 0}`,
-    `teacher: ${report.schema || "soty.learning.teacher"} generated=${report.generatedAt || ""}`
+    `teacher: ${report.schema || "soty.learning.teacher"} generated=${report.generatedAt || ""}`,
+    `scope: ${formatLearningScope(report)}`,
+    `publish: ${formatLearningPublishModel(report)}`
   ];
   const recommendations = Array.isArray(report.recommendations) ? report.recommendations.slice(0, 5) : [];
   if (recommendations.length > 0) {
@@ -760,7 +762,34 @@ function formatLearningTeacherReport(sync, report) {
   if (report.oneCommand) {
     lines.push(`one command: ${report.oneCommand}`);
   }
+  if (report.reviewMergeCommand) {
+    lines.push(`review command: ${report.reviewMergeCommand}`);
+  }
   return lines.join("\n");
+}
+
+function formatLearningScope(report) {
+  const scope = report?.scope || {};
+  const platforms = formatLearningCountList(scope.platformCounts);
+  const versions = formatLearningCountList(scope.agentVersions);
+  const deviceCount = Number(scope.deviceCount || 0);
+  const kind = cleanLearningText(scope.kind || report?.source || "server-global-sanitized-receipts", 80) || "server-global-sanitized-receipts";
+  return `${kind} devices=${deviceCount} platforms=${platforms || "unknown"} agentVersions=${versions || "unknown"}`;
+}
+
+function formatLearningPublishModel(report) {
+  return cleanLearningText(report?.publishModel || "reviewed-ops-patch-then-build-release-deploy", 120)
+    || "reviewed-ops-patch-then-build-release-deploy";
+}
+
+function formatLearningCountList(entries, limit = 3) {
+  if (!Array.isArray(entries)) {
+    return "";
+  }
+  return entries
+    .slice(0, limit)
+    .map((item) => `${cleanLearningText(item?.key || "unknown", 40)}:${Number(item?.count || 0)}`)
+    .join(",");
 }
 
 async function runLearningReviewMerge(rest = []) {
@@ -954,11 +983,12 @@ function formatLearningReviewMergeReport(report) {
   }
   const decisions = report.compile?.decision_counts || {};
   const lines = [
-    `soty-learning-review-merge: ok=true mode=${report.mode}`,
-    `teacher: receipts=${report.teacher?.receipts || 0} sent=${report.sync?.sent || 0} pending=${report.sync?.pending || 0}`,
+    `soty-learning-review-merge: ok=true mode=${report.mode} scope=server-global`,
+    `teacher: receipts=${report.teacher?.receipts || 0} devices=${Number(report.teacher?.scope?.deviceCount || 0)} sent=${report.sync?.sent || 0} pending=${report.sync?.pending || 0}`,
     `ingest: accepted=${report.ingest?.accepted_count || 0} skipped=${report.ingest?.skipped_count || 0}`,
     `compile: promote=${decisions.promote || 0} keep=${decisions.keep || 0} review=${decisions.review || 0} covered=${decisions.covered || 0}`,
-    `queue: ${report.ingest?.queue || ""}`
+    `queue: ${report.ingest?.queue || ""}`,
+    `publish: ${formatLearningPublishModel(report.teacher)}`
   ];
   if (report.blockedByReview) {
     lines.push("next: review rows block automatic promotion; patch only reviewed shelf/hot/helper/profile/eval changes.");
@@ -3975,7 +4005,7 @@ async function runControlCli(args) {
     }
     process.exit(sync.ok && report.ok ? 0 : 1);
   }
-  if (command === "learn-review-merge" || command === "learning-review-merge" || (command === "learn" && (args[1] === "review-merge" || args[1] === "merge"))) {
+  if (command === "learn-review-merge" || command === "learning-review-merge" || command === "learn-global-review" || command === "learning-global-review" || (command === "learn" && (args[1] === "review-merge" || args[1] === "merge" || args[1] === "global-review" || args[1] === "global-review-merge"))) {
     const rest = command === "learn" ? args.slice(2) : args.slice(1);
     const options = parseLearningReviewMergeOptions(rest);
     const report = await runLearningReviewMerge(rest);
@@ -4011,7 +4041,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge [--dry-run] [--strict] | import <file>\n");
+  process.stderr.write("sotyctl health | list | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge|global-review [--dry-run] [--strict] | import <file>\n");
   process.exit(2);
 }
 
