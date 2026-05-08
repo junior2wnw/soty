@@ -110,7 +110,7 @@ export async function askLocalAgentReply(
   text: string,
   context: string,
   source: LocalAgentRequestSource = {},
-  timeoutMs = 310_000,
+  timeoutMs = 60 * 60_000,
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler
 ): Promise<LocalAgentReply> {

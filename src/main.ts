@@ -2930,7 +2930,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
       const streamedTerminal: string[] = [];
       try {
         await prepareAgentSourceForDialog(tunnelId, tunnel);
-        reply = await askLocalAgentReply(text, context, source, 310_000, (message) => {
+        reply = await askLocalAgentReply(text, context, source, 60 * 60_000, (message) => {
           const streamed = normalizeChatMessage(cleanAgentReplyText(message));
           if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
             return;

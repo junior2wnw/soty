@@ -6,12 +6,14 @@ const maxContextChars = 16_000;
 const maxReplyChars = 12_000;
 const maxReplyMessages = 64;
 const maxSourceChars = 180;
-const leaseMs = 10 * 60_000;
+const maxTaskTimeoutMs = 2 * 60 * 60_000;
+const defaultSourceTimeoutMs = 10 * 60_000;
+const leaseMs = maxTaskTimeoutMs + 10 * 60_000;
 const connectedMs = 70_000;
-const requestTtlMs = 15 * 60_000;
+const requestTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const idleChannelTtlMs = 30 * 60_000;
 const sourceConnectedMs = 90_000;
-const sourceJobTtlMs = 10 * 60_000;
+const sourceJobTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const maxJobsPerChannel = 80;
 const channels = new Map();
 const agentSources = new Map();
@@ -812,9 +814,9 @@ function cleanReplyTerminal(value) {
 }
 
 function safeTimeout(value) {
-  return Number.isSafeInteger(value) ? Math.max(1000, Math.min(value, 600_000)) : 60_000;
+  return Number.isSafeInteger(value) ? Math.max(1000, Math.min(value, maxTaskTimeoutMs)) : defaultSourceTimeoutMs;
 }
 
 function sourceReplyWaitTimeout(value) {
-  return Math.min(605_000, safeTimeout(value) + 5000);
+  return Math.min(maxTaskTimeoutMs + 60_000, safeTimeout(value) + 30_000);
 }

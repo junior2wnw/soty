@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.105";
+const agentVersion = "0.3.106";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -19,7 +19,8 @@ const learningSentPath = join(agentDir, "learning-sent.jsonl");
 const persistedAgentConfig = loadAgentConfig();
 const persistedCodexSessions = loadCodexSessions();
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
-const defaultTimeoutMs = Number.parseInt(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS || "600000", 10);
+const maxLongTaskTimeoutMs = 2 * 60 * 60_000;
+const defaultTimeoutMs = safeDurationMs(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS, 30 * 60_000, maxLongTaskTimeoutMs);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
@@ -41,7 +42,10 @@ const configuredAgentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_N
 const maxCodexDialogMessages = 64;
 const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
-const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
+const agentReplyTimeoutMs = Math.max(
+  60 * 60_000,
+  safeDurationMs(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS, 60 * 60_000, maxLongTaskTimeoutMs)
+);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -275,7 +279,7 @@ function handleMessage(ws, raw) {
         shell: typeof message.shell === "string" ? message.shell : "",
         script: message.script
       },
-      Number.isSafeInteger(message.timeoutMs) ? message.timeoutMs : defaultTimeoutMs
+      safeRunTimeoutMs(message.timeoutMs)
     );
     return;
   }
@@ -288,7 +292,7 @@ function handleMessage(ws, raw) {
     ws,
     message.id,
     message.command,
-    Number.isSafeInteger(message.timeoutMs) ? message.timeoutMs : defaultTimeoutMs
+    safeRunTimeoutMs(message.timeoutMs)
   );
 }
 
@@ -345,7 +349,7 @@ async function handleOperatorHttpRun(request, response, headers) {
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
-  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   const blocked = blockedManualWindowsRecoveryHandoff(command);
   if (blocked) {
     recordBlockedWindowsReinstallHandoff({ kind: "run", command });
@@ -390,7 +394,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
-  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   const blocked = blockedManualWindowsRecoveryHandoff(script);
   if (blocked) {
     recordBlockedWindowsReinstallHandoff({ kind: "script", command: script });
@@ -1186,7 +1190,7 @@ async function handleOperatorHttpAgentMessage(request, response, headers) {
   const sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const sourceDeviceNick = typeof payload.sourceDeviceNick === "string" ? payload.sourceDeviceNick.slice(0, maxSourceChars) : "";
   const text = typeof payload.text === "string" ? payload.text.slice(0, maxChatChars) : "";
-  const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
+  const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   if (!operatorBridge?.open || !text.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
@@ -2552,6 +2556,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- If the $ops body is needed, use the Soty MCP tool `soty_skill_read` with skill `ops` and path `SKILL.md`.",
     "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
     "- For work on a paired user device, use Soty MCP tools: soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
+    "- For long installs, downloads, repairs, reset/reinstall prep, scans, or staged scripts, pass an explicit long timeoutMs up to 7200000 and keep progress visible instead of abandoning the task.",
     "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, name the exact blocker.",
     "- For project work, detect the real project/root before editing. If the project is on the source device, operate through Soty MCP; if it is the server checkout, state that boundary.",
     "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
@@ -2601,6 +2606,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     `- target_source_device_id: ${runtime.target?.sourceDeviceId || "none"}`,
     "- local_shell_scope: server agent runtime only; use Soty MCP for paired device work.",
     "- ops_rule: use $ops first for system/device/install/repair/package/service/skill/memory work; read it with soty_skill_read skill=ops path=SKILL.md when needed.",
+    "- long_task_rule: for installs/downloads/repairs/scans/reset/reinstall/staged scripts, pass explicit timeoutMs up to 7200000 and continue from visible proof instead of stopping early.",
     "- project_rule: detect the real project/root before editing; do not assume this generated workspace is the user's project.",
     "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
     "",
@@ -3116,7 +3122,7 @@ function runMcpServer() {
           type: "object",
           properties: {
             command: { type: "string", description: "Exact command to run on the source device. Do not include Soty target wrappers." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000. Use a long timeout for install, download, repair, reset, or reinstall work." }
           },
           required: ["command"],
           additionalProperties: false
@@ -3131,7 +3137,7 @@ function runMcpServer() {
             script: { type: "string", description: "Script body to run on the source device." },
             shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
             name: { type: "string", description: "Short technical label shown in the LINK console." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000. Use a long timeout for install, download, repair, reset, or reinstall work." }
           },
           required: ["script"],
           additionalProperties: false
@@ -3144,7 +3150,7 @@ function runMcpServer() {
           type: "object",
           properties: {
             url: { type: "string", description: "URL to open on the source device." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000." }
           },
           required: ["url"],
           additionalProperties: false
@@ -3166,7 +3172,7 @@ function runMcpServer() {
             recursive: { type: "boolean", description: "Recurse for list/search/delete directory. Default false except search." },
             maxResults: { type: "integer", description: "Maximum list/search results, 1-500." },
             maxChars: { type: "integer", description: "Maximum characters returned for read/search, 1000-12000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000." }
           },
           required: ["action", "path"],
           additionalProperties: false
@@ -3185,7 +3191,7 @@ function runMcpServer() {
             selector: { type: "string", description: "CSS selector for type/eval helper actions." },
             headless: { type: "boolean", description: "Launch browser headless. Default false so the user can see it." },
             maxChars: { type: "integer", description: "Maximum returned text, 1000-12000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000." }
           },
           required: ["action"],
           additionalProperties: false
@@ -3204,7 +3210,7 @@ function runMcpServer() {
             button: { type: "string", description: "left or right. Default left." },
             text: { type: "string", description: "Text for type action." },
             keys: { type: "string", description: "SendKeys pattern for key action, for example ^l or %{F4}." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000." }
           },
           required: ["action"],
           additionalProperties: false
@@ -3218,7 +3224,7 @@ function runMcpServer() {
           properties: {
             volumePercent: { type: "integer", description: "Optional output volume percent, 0-100." },
             muted: { type: "boolean", description: "Optional mute state. true mutes output; false unmutes output." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000. Default is 120000 to survive cold Windows audio startup." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000. Default is 120000 to survive cold Windows audio startup." }
           },
           additionalProperties: false
         }
@@ -3258,7 +3264,7 @@ function runMcpServer() {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         command,
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 30000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
     }
@@ -3273,7 +3279,7 @@ function runMcpServer() {
         script,
         shell: String(args.shell || ""),
         name: String(args.name || "script"),
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
     }
@@ -3289,7 +3295,7 @@ function runMcpServer() {
         script: sourceFileScript(args),
         shell: "powershell",
         name: `soty-file-${action}`.slice(0, 120),
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
     }
@@ -3304,7 +3310,7 @@ function runMcpServer() {
         script: sourceBrowserScript(args),
         shell: "powershell",
         name: `soty-browser-${action}`.slice(0, 120),
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 90000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 10 * 60_000)
       });
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
     }
@@ -3319,7 +3325,7 @@ function runMcpServer() {
         script: sourceDesktopScript(args),
         shell: "powershell",
         name: `soty-desktop-${action}`.slice(0, 120),
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 30000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
     }
@@ -3332,7 +3338,7 @@ function runMcpServer() {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         command: `Start-Process ${quotePowerShell(url)}`,
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 20000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
       return mcpToolText(result.text || "opened", !result.ok, result.exitCode);
     }
@@ -3457,7 +3463,7 @@ function runMcpServer() {
   }
 
   function mcpSafeTimeout(value, fallback) {
-    return Number.isSafeInteger(value) ? Math.max(1000, Math.min(value, 600000)) : fallback;
+    return Number.isSafeInteger(value) ? Math.max(1000, Math.min(value, maxLongTaskTimeoutMs)) : fallback;
   }
 
   function quotePowerShell(value) {
@@ -4587,9 +4593,17 @@ function parseCtlTimeout(args) {
   return parseCtlOptions(args);
 }
 
-function safeCtlTimeout(value) {
+function safeDurationMs(value, fallback, max = maxLongTaskTimeoutMs) {
   const timeoutMs = Number.parseInt(String(value || ""), 10);
-  return Number.isSafeInteger(timeoutMs) ? Math.max(1000, Math.min(timeoutMs, defaultTimeoutMs)) : 0;
+  return Number.isSafeInteger(timeoutMs) ? Math.max(1000, Math.min(timeoutMs, max)) : fallback;
+}
+
+function safeRunTimeoutMs(value) {
+  return safeDurationMs(value, defaultTimeoutMs, maxLongTaskTimeoutMs);
+}
+
+function safeCtlTimeout(value) {
+  return safeDurationMs(value, 0, maxLongTaskTimeoutMs);
 }
 
 function machineInstallCommand() {
