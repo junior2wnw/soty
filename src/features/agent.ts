@@ -59,6 +59,7 @@ export interface AgentSourceCommand {
   readonly script?: string;
   readonly name?: string;
   readonly shell?: string;
+  readonly timeoutMs?: number;
 }
 
 const relayStorageKey = "soty:agent:relay-id";

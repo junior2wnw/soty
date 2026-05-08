@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.96";
+const agentVersion = "0.3.97";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -35,6 +35,8 @@ const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
 const maxCodexDialogMessages = 64;
+const audioToolTimeoutMs = 120_000;
+const audioWarmupTimeoutMs = 45_000;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -56,6 +58,7 @@ let cachedWindowsWhoami = "";
 let cachedCodexProbeAt = 0;
 let cachedCodexAvailable = false;
 let agentRelayStarted = false;
+let audioWarmupStarted = false;
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
@@ -141,6 +144,7 @@ function startServer() {
 
   server.listen(port, "127.0.0.1", () => {
     process.stdout.write(`soty-agent:${port}\n`);
+    scheduleWindowsAudioWarmup();
     scheduleUpdate();
     startAgentRelay();
   });
@@ -2915,7 +2919,8 @@ function runMcpServer() {
           type: "object",
           properties: {
             volumePercent: { type: "integer", description: "Optional output volume percent, 0-100." },
-            muted: { type: "boolean", description: "Optional mute state. true mutes output; false unmutes output." }
+            muted: { type: "boolean", description: "Optional mute state. true mutes output; false unmutes output." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-600000. Default is 120000 to survive cold Windows audio startup." }
           },
           additionalProperties: false
         }
@@ -3033,14 +3038,24 @@ function runMcpServer() {
       const rawVolume = Number(args.volumePercent);
       const volumePercent = Number.isFinite(rawVolume) ? Math.max(0, Math.min(100, Math.round(rawVolume))) : -1;
       const muteMode = typeof args.muted === "boolean" ? (args.muted ? 1 : 0) : -1;
-      const result = await mcpPostOperator("/operator/script", {
+      const timeoutMs = mcpSafeTimeout(args.timeoutMs, audioToolTimeoutMs);
+      const audioPayload = {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         script: windowsAudioScript(volumePercent, muteMode),
         shell: "powershell",
         name: "soty-audio",
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60000)
-      });
+        timeoutMs
+      };
+      let result = await mcpPostOperator("/operator/script", audioPayload);
+      if (isAudioTimeoutResult(result)) {
+        await sleep(800);
+        result = await mcpPostOperator("/operator/script", {
+          ...audioPayload,
+          timeoutMs: Math.max(timeoutMs, audioToolTimeoutMs),
+          name: "soty-audio-retry"
+        });
+      }
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
     }
     if (name === "soty_skill_read") {
@@ -3194,6 +3209,41 @@ namespace SotyAudio {
 Add-Type -TypeDefinition $code -Language CSharp
 [SotyAudio.Endpoint]::Apply(${safeVolume}, ${safeMute})
 `.trim();
+}
+
+function isAudioTimeoutResult(result) {
+  return result?.exitCode === 124 || /(^|\n)!\s*timeout\b/iu.test(String(result?.text || ""));
+}
+
+function scheduleWindowsAudioWarmup() {
+  if (process.platform !== "win32" || audioWarmupStarted) {
+    return;
+  }
+  audioWarmupStarted = true;
+  setTimeout(() => {
+    runWindowsAudioWarmup();
+  }, 1500);
+}
+
+function runWindowsAudioWarmup() {
+  const child = spawn("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    windowsAudioScript(-1, -1)
+  ], {
+    cwd: process.cwd(),
+    env: process.env,
+    windowsHide: true,
+    stdio: "ignore"
+  });
+  const timer = setTimeout(() => {
+    killProcessTree(child);
+  }, audioWarmupTimeoutMs);
+  child.on("error", () => clearTimeout(timer));
+  child.on("close", () => clearTimeout(timer));
 }
 
 function sourceFileScript(args) {

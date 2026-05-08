@@ -302,8 +302,8 @@ export function attachAgentRelay(app) {
       res.status(404).json({ ok: false, text: "! agent-source", exitCode: 404 });
       return;
     }
-    const job = createSourceJob(source, { type: "run", command });
-    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), timeoutMs);
+    const job = createSourceJob(source, { type: "run", command, timeoutMs });
+    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), sourceReplyWaitTimeout(timeoutMs));
   });
 
   app.post("/api/agent/source/script", jsonParser, (req, res) => {
@@ -324,9 +324,10 @@ export function attachAgentRelay(app) {
       type: "script",
       script,
       name: cleanText(req.body?.name, 120) || "script",
-      shell: cleanText(req.body?.shell, 40)
+      shell: cleanText(req.body?.shell, 40),
+      timeoutMs
     });
-    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), timeoutMs);
+    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), sourceReplyWaitTimeout(timeoutMs));
   });
 
   app.use("/api/agent/source", (error, _req, res, _next) => {
@@ -581,6 +582,7 @@ function leasePendingSourceJobs(source) {
     script: job.script || "",
     name: job.name || "",
     shell: job.shell || "",
+    timeoutMs: safeTimeout(job.timeoutMs),
     createdAt: new Date(job.createdAt).toISOString()
   }));
 }
@@ -804,4 +806,8 @@ function cleanReplyTerminal(value) {
 
 function safeTimeout(value) {
   return Number.isSafeInteger(value) ? Math.max(1000, Math.min(value, 600_000)) : 60_000;
+}
+
+function sourceReplyWaitTimeout(value) {
+  return Math.min(605_000, safeTimeout(value) + 5000);
 }

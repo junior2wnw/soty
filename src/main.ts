@@ -2588,14 +2588,16 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
         id: job.id,
         name: job.name || "script",
         shell: job.shell || "",
-        script: job.script || ""
+        script: job.script || "",
+        timeoutMs: job.timeoutMs
       }));
       return;
     }
     ws.send(JSON.stringify({
       type: "run",
       id: job.id,
-      command: job.command || ""
+      command: job.command || "",
+      timeoutMs: job.timeoutMs
     }));
   };
   ws.onmessage = (event) => {
