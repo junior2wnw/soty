@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.108";
+const agentVersion = "0.3.109";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2564,6 +2564,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- For quick identity, health, and readiness probes, pass a short timeoutMs such as 15000-45000. Reserve timeoutMs up to 7200000 for real long-running installs, downloads, repairs, scans, or staged scripts after the target is proven.",
     "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, repair or prove the narrow channel once, then name one plain blocker and one next action.",
     "- For Windows reinstall/reset, do not ask for destructive confirmations until target identity, control channel, backup/data intent, USB scope if needed, BitLocker/recovery safety, and return path are proven. Ask at most one plain question at a time.",
+    "- If a Windows reinstall/reset is blocked only because the target Soty channel is unavailable, answer in no more than three short sentences: `Переустановку не начал. Я пока не вижу <device> через Soty. Открой/перезапусти Soty Agent на этом ПК и напиши «готово».`",
     "- For project work, detect the real project/root before editing. If the project is on the source device, operate through Soty MCP; if it is the server checkout, state that boundary.",
     "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
     "- Verify changes with the smallest useful proof, record reusable learning when behavior changes, and keep user-facing explanations simple.",
@@ -2617,6 +2618,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use timeoutMs up to 7200000 only for real long-running jobs after the target is proven.",
     "- reinstall_rule: for Windows reinstall/reset, ask at most one plain question at a time and do not ask for destructive confirmation until control, backup/data intent, USB scope, BitLocker/recovery safety, and return path are proven.",
+    "- missing_channel_reinstall_rule: if reinstall/reset is blocked only by an unavailable target Soty channel, answer in <=3 short sentences: not started; cannot see <device> through Soty; open/restart Soty Agent there and reply ready.",
     "- project_rule: detect the real project/root before editing; do not assume this generated workspace is the user's project.",
     "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
     "",
