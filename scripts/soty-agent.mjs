@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.101";
+const agentVersion = "0.3.102";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3006,6 +3006,10 @@ function runMcpServer() {
   async function callSotyMcpTool(params) {
     const name = String(params.name || "");
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
+    if (name === "soty_skill_read") {
+      const result = await readCodexSkillFile(args);
+      return mcpToolText(result.text, !result.ok, result.exitCode);
+    }
     if (!mcpTarget || !mcpSourceDeviceId) {
       return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
     }
@@ -3119,10 +3123,6 @@ function runMcpServer() {
         });
       }
       return mcpToolText(result.text || "", !result.ok, result.exitCode);
-    }
-    if (name === "soty_skill_read") {
-      const result = await readCodexSkillFile(args);
-      return mcpToolText(result.text, !result.ok, result.exitCode);
     }
     return mcpToolText(`! unknown tool ${name}`, true);
   }
