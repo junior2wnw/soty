@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.95";
+const agentVersion = "0.3.96";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3872,13 +3872,26 @@ async function runControlCli(args) {
     process.exit(response.ok ? 0 : 1);
   }
   if (command === "list") {
-    const response = await fetch(`http://127.0.0.1:${port}/operator/targets`, { cache: "no-store" });
-    const payload = await response.json();
-    if (!payload.attached) {
+    const [operatorResult, sourceTargets] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/operator/targets`, { cache: "no-store" })
+        .then(async (response) => ({ ok: response.ok, payload: await response.json() }))
+        .catch(() => ({ ok: false, payload: {} })),
+      activeAgentSourceTargets()
+    ]);
+    const payload = operatorResult.payload || {};
+    if (!payload.attached && sourceTargets.length === 0) {
       process.stderr.write("sotyctl: pwa bridge is not attached\n");
       process.exit(2);
     }
+    const printed = new Set();
+    for (const target of sourceTargets) {
+      printed.add(target.id);
+      process.stdout.write(`${target.label}\t${target.id}\tsource\n`);
+    }
     for (const target of payload.targets || []) {
+      if (printed.has(target.id)) {
+        continue;
+      }
       const status = target.access === true ? "access" : target.host === true ? "host" : target.access === false ? "visible" : "unknown";
       process.stdout.write(`${target.label}\t${target.id}\t${status}\n`);
     }
