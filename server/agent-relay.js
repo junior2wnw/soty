@@ -455,26 +455,54 @@ function touchAgentSource(source) {
 }
 
 function enrichAgentSource(targetRelayId, clientRelayId, source, text = "") {
+  const mentionedSource = findMentionedAgentSource(targetRelayId, clientRelayId, text);
   if (!source.deviceId) {
-    return source;
+    return mentionedSource ? enrichWithAgentSourceTarget(source, mentionedSource, true) : source;
   }
-  const agentSource = findRunnableAgentSource(targetRelayId, source.deviceId)
+  const agentSource = mentionedSource
+    || findRunnableAgentSource(targetRelayId, source.deviceId)
     || findRunnableAgentSource(clientRelayId, source.deviceId);
   if (!agentSource) {
     return source;
   }
+  return enrichWithAgentSourceTarget(source, agentSource, Boolean(mentionedSource), text);
+}
+
+function enrichWithAgentSourceTarget(source, agentSource, forcePreferred, text = "") {
   const target = publicAgentSourceTarget(agentSource);
   const existing = Array.isArray(source.operatorTargets) ? source.operatorTargets : [];
   const hasPreferred = preferredTargetMentioned(text, source, existing);
   return {
     ...source,
-    preferredTargetId: hasPreferred ? source.preferredTargetId : target.id,
-    preferredTargetLabel: hasPreferred ? source.preferredTargetLabel : target.label,
+    preferredTargetId: !forcePreferred && hasPreferred ? source.preferredTargetId : target.id,
+    preferredTargetLabel: !forcePreferred && hasPreferred ? source.preferredTargetLabel : target.label,
     operatorTargets: [
       ...existing.filter((item) => item.id !== target.id),
       target
     ]
   };
+}
+
+function findMentionedAgentSource(targetRelayId, clientRelayId, text) {
+  const prefix = targetPrefix(text);
+  if (!prefix) {
+    return null;
+  }
+  const merged = new Map();
+  for (const source of [...connectedAgentSources(targetRelayId), ...connectedAgentSources(clientRelayId)]) {
+    merged.set(sourceKey(source.relayId, source.deviceId), source);
+  }
+  return [...merged.values()]
+    .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
+    .find((source) => agentSourceMatchesPrefix(source, prefix)) || null;
+}
+
+function agentSourceMatchesPrefix(source, prefix) {
+  const nick = normalizeTargetText(source?.deviceNick);
+  const deviceId = normalizeTargetText(source?.deviceId);
+  return (nick && (prefix === nick || nick.includes(prefix) || prefix.includes(nick)))
+    || (deviceId && prefix === deviceId)
+    || (deviceId && prefix === `agent-source:${deviceId}`);
 }
 
 function preferredTargetMentioned(text, source, targets) {

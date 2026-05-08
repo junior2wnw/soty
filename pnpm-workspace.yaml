@@ -4,3 +4,7 @@ packages:
 onlyBuiltDependencies:
   - esbuild
   - trustlink-kernel
+
+allowBuilds:
+  esbuild: true
+  trustlink-kernel: true

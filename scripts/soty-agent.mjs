@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.91";
+const agentVersion = "0.3.95";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -38,7 +38,7 @@ const maxCodexDialogMessages = 64;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
-const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v2";
+const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v3";
 const active = new Map();
 const operatorRuns = new Map();
 const operatorMessages = [];
@@ -48,6 +48,7 @@ const recentAgentOperatorMessageKeys = new Map();
 const recentCodexTurnKeys = new Map();
 let learningSyncTimer = null;
 let operatorBridge = null;
+let operatorBridgeVisible = false;
 let operatorTargets = [];
 let operatorDeviceId = "";
 let operatorDeviceNick = "";
@@ -278,7 +279,13 @@ function handleMessage(ws, raw) {
 
 function handleOperatorMessage(ws, message) {
   if (message.type === "operator.attach") {
+    const visible = message.visible === true;
+    if (operatorBridge?.open && operatorBridge !== ws && operatorBridgeVisible && !visible) {
+      sendRaw(ws, { type: "operator.ready", accepted: false });
+      return;
+    }
     operatorBridge = ws;
+    operatorBridgeVisible = visible;
     sendRaw(ws, { type: "operator.ready" });
     return;
   }
@@ -300,6 +307,7 @@ function handleOperatorMessage(ws, message) {
 function cleanupOperatorSocket(ws) {
   if (operatorBridge === ws) {
     operatorBridge = null;
+    operatorBridgeVisible = false;
     operatorTargets = [];
     operatorDeviceId = "";
     operatorDeviceNick = "";
@@ -328,6 +336,7 @@ async function handleOperatorHttpRun(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
+  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -371,6 +380,7 @@ async function handleOperatorHttpScript(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
+  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -413,6 +423,59 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
   });
   rememberAgentSourceOutcome({ kind: "run", command, result });
   sendJson(response, 200, headers, result);
+}
+
+async function normalizeOperatorHttpTarget(target, sourceDeviceId) {
+  if (isAgentSourceTarget(target)) {
+    return { target, sourceDeviceId };
+  }
+  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, await activeAgentSourceTargets());
+  if (!sourceTarget) {
+    return { target, sourceDeviceId };
+  }
+  const deviceId = agentSourceDeviceId(sourceTarget.id);
+  return {
+    target: sourceTarget.id,
+    sourceDeviceId: deviceId || sourceDeviceId || ""
+  };
+}
+
+function operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets) {
+  const sources = sanitizeTargets(sourceTargets);
+  if (sources.length === 0) {
+    return null;
+  }
+  const targetText = String(target || "").trim();
+  const needle = cleanTargetNeedle(targetText);
+  const requestedDeviceId = String(sourceDeviceId || "").trim();
+  const operatorTarget = operatorTargetByText(targetText);
+  const operatorDeviceId = requestedDeviceId
+    || operatorTarget?.hostDeviceId
+    || (operatorTarget?.deviceIds?.length === 1 ? operatorTarget.deviceIds[0] : "");
+  if (operatorDeviceId) {
+    const byDevice = sources.find((item) => item.hostDeviceId === operatorDeviceId || item.deviceIds.includes(operatorDeviceId));
+    if (byDevice) {
+      return byDevice;
+    }
+  }
+  if (!needle) {
+    return null;
+  }
+  return sources.find((item) => cleanTargetNeedle(item.label) === needle)
+    || sources.find((item) => item.id.toLowerCase() === needle)
+    || sources.find((item) => cleanTargetNeedle(item.label).includes(needle))
+    || null;
+}
+
+function operatorTargetByText(target) {
+  const needle = cleanTargetNeedle(target);
+  if (!needle) {
+    return null;
+  }
+  return operatorTargets.find((item) => item.id === target || item.id.toLowerCase() === needle)
+    || operatorTargets.find((item) => cleanTargetNeedle(item.label) === needle)
+    || operatorTargets.find((item) => cleanTargetNeedle(item.label).includes(needle))
+    || null;
 }
 
 async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers) {
@@ -1613,15 +1676,16 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
 async function runCodexSotySessionTurn({ codexBin, childEnv, text, source, onMessage, onTerminal }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
-  const target = resolveAgentBridgeTarget(safeSource);
-  const sessionKey = codexSessionKey(safeSource);
+  const sourceTargets = await activeAgentSourceTargets();
+  const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
+  const sessionKey = codexSessionKey(safeSource, target);
   const turnKey = codexTurnDedupeKey(sessionKey, text);
   if (isDuplicateCodexTurn(turnKey)) {
     return { ok: true, text: "", messages: [], exitCode: 0 };
   }
   const sessionRecord = usableCodexSessionRecord(persistedCodexSessions[sessionKey]);
   const jobDir = await prepareCodexWorkspace(sessionKey, sessionRecord);
-  const prompt = buildAgentPrompt(text);
+  const prompt = buildAgentPrompt(text, safeSource, target);
   const outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
   const taskFamily = classifyTaskFamily(text, target);
   const args = codexSotySessionArgs({
@@ -1768,9 +1832,11 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "" }
   return args;
 }
 
-function codexSessionKey(source) {
+function codexSessionKey(source, target = null) {
   const safe = sanitizeAgentSource(source);
-  return (safe.tunnelId || safe.deviceId || "default").replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 180);
+  const targetId = String(target?.id || safe.preferredTargetId || "").trim();
+  const key = [safe.tunnelId || safe.deviceId || "default", targetId].filter(Boolean).join("@");
+  return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 180);
 }
 
 function classifyTaskFamily(text, target = null) {
@@ -2085,8 +2151,12 @@ function compactTerminalMessages(value) {
     .slice(-maxCodexDialogMessages);
 }
 
-function resolveAgentBridgeTarget(source) {
+function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   const safe = sanitizeAgentSource(source);
+  const mentionedSource = targetMentionedAtStart(text, sourceTargets);
+  if (mentionedSource) {
+    return mentionedSource;
+  }
   const preferred = preferredOperatorTarget(safe);
   if (preferred) {
     return preferred;
@@ -2106,6 +2176,31 @@ function resolveAgentBridgeTarget(source) {
     return linked;
   }
   return null;
+}
+
+async function activeAgentSourceTargets() {
+  const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
+  if (!relayBaseUrl || !agentRelayId) {
+    return [];
+  }
+  try {
+    const url = new URL("/api/agent/source/targets", relayBaseUrl);
+    url.searchParams.set("relayId", agentRelayId);
+    const response = await fetch(url, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload?.ok) {
+      return [];
+    }
+    return sanitizeTargets(payload.targets)
+      .sort((left, right) => targetLastActionMs(right) - targetLastActionMs(left));
+  } catch {
+    return [];
+  }
+}
+
+function targetLastActionMs(target) {
+  const time = Date.parse(target?.lastActionAt || "");
+  return Number.isFinite(time) ? time : 0;
 }
 
 function preferredOperatorTarget(source) {
@@ -2129,6 +2224,26 @@ function preferredOperatorTarget(source) {
     }
   }
   return null;
+}
+
+function targetMentionedAtStart(text, targets) {
+  const match = /^([^:\n]{1,80})\s*:/u.exec(String(text || "").trim());
+  if (!match) {
+    return null;
+  }
+  const needle = cleanTargetNeedle(match[1]);
+  if (!needle) {
+    return null;
+  }
+  const sorted = sanitizeTargets(targets);
+  return sorted.find((target) => cleanTargetNeedle(target.label) === needle)
+    || sorted.find((target) => target.id.toLowerCase() === needle)
+    || sorted.find((target) => cleanTargetNeedle(target.label).includes(needle))
+    || null;
+}
+
+function cleanTargetNeedle(value) {
+  return String(value || "").replace(/\s+/gu, " ").trim().toLowerCase();
 }
 
 function bridgeSourceDeviceId(target, source) {
@@ -2304,8 +2419,25 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
   return null;
 }
 
-function buildAgentPrompt(text) {
-  return String(text || "").trim();
+function buildAgentPrompt(text, source = {}, target = null) {
+  const body = String(text || "").trim();
+  if (!target?.id) {
+    return body;
+  }
+  const label = promptInline(target.label || source?.preferredTargetLabel || "source device");
+  const targetId = promptInline(target.id);
+  const sourceDeviceId = promptInline(bridgeSourceDeviceId(target, source));
+  const prefix = [
+    `Soty target context: the requested device is "${label}" (${targetId}).`,
+    sourceDeviceId ? `Soty source device id for MCP calls: ${sourceDeviceId}.` : "",
+    "For any command, check, file, browser, desktop, install, repair, or OS action on that device, use the Soty MCP tools (soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url).",
+    "Do not use the local shell for target-device actions; the local shell is only the agent runtime. If a Soty MCP tool fails, report the exact failure."
+  ].filter(Boolean).join("\n");
+  return `${prefix}\n\nUser message:\n${body}`;
+}
+
+function promptInline(value) {
+  return String(value || "").replace(/\s+/gu, " ").trim().slice(0, maxSourceChars);
 }
 
 async function postLocalOperatorRun(target, sourceDeviceId, command, timeoutMs) {

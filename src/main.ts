@@ -1902,7 +1902,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
   const ws = new WebSocket("ws://127.0.0.1:49424");
   operatorSocket = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: "operator.attach" }));
+    ws.send(JSON.stringify({ type: "operator.attach", visible: document.visibilityState === "visible" }));
     publishOperatorTargets();
     resumeAgentSourceControl();
   };
@@ -2012,7 +2012,9 @@ function preferredAgentOperatorTargetForDialog(
   text: string,
   targets: readonly LocalAgentOperatorTarget[]
 ): LocalAgentOperatorTarget | null {
-  const byPrefix = targetMentionedAtStart(text, targets);
+  const accessTargets = targets.filter((target) => target.access === true);
+  const byPrefix = targetMentionedAtStart(text, accessTargets)
+    || targetMentionedAtStart(text, targets);
   if (byPrefix?.access === true) {
     return byPrefix;
   }
@@ -2163,7 +2165,7 @@ async function runOperatorChat(message: {
   if (!requestId || !text.trim()) {
     return;
   }
-  const tunnel = findVisibleOperatorTarget(message.target || "");
+  const tunnel = findVisibleOperatorTarget(message.target || "") || findAgentOperatorTarget(message.target || "");
   if (!tunnel) {
     sendOperatorOutput(requestId, "! target", 404);
     return;
@@ -2229,27 +2231,15 @@ async function runOperatorAgentMessage(message: {
   localDrafts.delete(tunnel.id);
   clearLiveDraftState(tunnel.id);
   void sync.sendLiveDraft("");
-  const handedToOperatorBridge = sendOperatorUserMessage(tunnel.id, body, current, {
-    deviceId: typeof message.sourceDeviceId === "string" ? message.sourceDeviceId : "",
-    deviceNick: typeof message.sourceDeviceNick === "string" ? message.sourceDeviceNick : ""
-  });
+  void sendAgentDialogMessage(tunnel.id, body);
   touchSelected();
   renderTiles();
   applySelectedText();
   renderTextPaint();
   renderWriterPop();
-  if (handedToOperatorBridge) {
-    sendOperatorOutput(requestId, "", 0);
-    return;
-  }
-  try {
-    await sendAgentDialogMessage(tunnel.id, body);
-    // Agent dialog injection is a transport action. Keep the remote command
-    // window quiet so only actual execution output appears there.
-    sendOperatorOutput(requestId, "", 0);
-  } catch {
-    sendOperatorOutput(requestId, "! agent-reply", 500);
-  }
+  // Agent dialog injection is a transport action. Keep the remote command
+  // window quiet so only actual execution output appears there.
+  sendOperatorOutput(requestId, "", 0);
 }
 
 function runOperatorTerminal(message: {
@@ -2873,9 +2863,13 @@ async function finalizeComposerDraft(): Promise<void> {
   if (tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
   }
-  const handedToOperatorBridge = sendOperatorUserMessage(tunnelId, message, current);
-  if (!handedToOperatorBridge) {
+  if (tunnel && isAgentTunnel(tunnel)) {
     void sendAgentDialogMessage(tunnelId, message);
+  } else {
+    const handedToOperatorBridge = sendOperatorUserMessage(tunnelId, message, current);
+    if (!handedToOperatorBridge) {
+      void sendAgentDialogMessage(tunnelId, message);
+    }
   }
   localDrafts.delete(tunnelId);
   composer.value = "";
