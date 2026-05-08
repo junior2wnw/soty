@@ -3110,7 +3110,15 @@ function isInternalAgentReceiptLine(line: string): boolean {
   const text = line.trim();
   return /^`?(learning_delta|proof|final_line|finish_skill_edit)\s*=/iu.test(text)
     || /^`?ops-memory\s*:/iu.test(text)
-    || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text);
+    || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text)
+    || isInternalAgentRouteLine(text);
+}
+
+function isInternalAgentRouteLine(text: string): boolean {
+  if (!text) {
+    return false;
+  }
+  return /(?:использую\s+`?\$ops`?|`?\$ops`?\s+подтвердил|горячий маршрут|маршрутизатор|action_packet|helper_fit|source-scoped|soty\s+mcp|operator(?:ский)?\s+bridge|preflight|managed\s+staging|рантайм|серверном рантайме|ворот[ауы]? готовности|маршрут требует|маршрут подтвердил|точный технический блокер)/iu.test(text);
 }
 
 function normalizeChatMessage(value: string): string {
