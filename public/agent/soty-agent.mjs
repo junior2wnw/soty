@@ -2,13 +2,13 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { appendFile, copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.97";
+const agentVersion = "0.3.98";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -144,6 +144,7 @@ function startServer() {
 
   server.listen(port, "127.0.0.1", () => {
     process.stdout.write(`soty-agent:${port}\n`);
+    void ensureCtlLauncher();
     scheduleWindowsAudioWarmup();
     scheduleUpdate();
     startAgentRelay();
@@ -1653,11 +1654,11 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
   }
 
   const codexHome = await preparePersistentStockCodexHome();
-  const childEnv = {
+  const childEnv = withAgentToolPath({
     ...process.env,
     ...codexNetworkProxyEnv(),
     CODEX_HOME: codexHome
-  };
+  });
 
   try {
     return await runCodexSotySessionTurn({
@@ -2720,6 +2721,55 @@ function stockCodexPathCandidates() {
     }
   }
   return candidates;
+}
+
+function withAgentToolPath(env) {
+  const next = { ...env };
+  const key = pathEnvKey(next);
+  next[key] = prependPathEntries(String(next[key] || ""), agentToolPathEntries());
+  return next;
+}
+
+function pathEnvKey(env) {
+  return Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
+}
+
+function prependPathEntries(currentPath, entries) {
+  const delimiter = process.platform === "win32" ? ";" : ":";
+  const existing = String(currentPath || "")
+    .split(delimiter)
+    .filter(Boolean);
+  const seen = new Set(existing.map((entry) => entry.toLowerCase()));
+  const prefix = entries.filter((entry) => entry && !seen.has(entry.toLowerCase()));
+  return [...prefix, ...existing].join(delimiter);
+}
+
+function agentToolPathEntries() {
+  return process.platform === "win32"
+    ? [agentDir]
+    : [agentDir, "/usr/local/bin"];
+}
+
+async function ensureCtlLauncher() {
+  try {
+    if (process.platform === "win32") {
+      const ctlPath = join(agentDir, "sotyctl.cmd");
+      await writeFile(ctlPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" ctl %*\r\n`, "utf8");
+      return;
+    }
+    const launcher = `#!/bin/sh\nexec ${quoteSh(process.execPath)} ${quoteSh(scriptPath)} ctl "$@"\n`;
+    const localPath = join(agentDir, "sotyctl");
+    await writeFile(localPath, launcher, { encoding: "utf8", mode: 0o755 });
+    await chmod(localPath, 0o755).catch(() => undefined);
+    await writeFile("/usr/local/bin/sotyctl", launcher, { encoding: "utf8", mode: 0o755 }).catch(() => undefined);
+    await chmod("/usr/local/bin/sotyctl", 0o755).catch(() => undefined);
+  } catch {
+    // PATH launchers are convenience only; direct node /agent/soty-agent.mjs ctl must still work.
+  }
+}
+
+function quoteSh(value) {
+  return `'${String(value).replace(/'/gu, "'\"'\"'")}'`;
 }
 
 function runMcpServer() {
