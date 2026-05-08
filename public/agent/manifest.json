@@ -6,11 +6,11 @@
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "265c6f948e4a5ff56191700e033d49a09bf9f2abcc55509f9bc49b06ecf9da42",
-    "zipBytes": 1201798,
+    "zipSha256": "5fdbc79b117a961ddfd63caff8f8a3a036e5cceeb64015ea8bfe579c5fcf7fda",
+    "zipBytes": 1202238,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "98daf5ff7f69851be3fa36638cd12f11cb2ed63e283458a1508eea5ec3e39ac1",
-    "tarBytes": 296012,
-    "revision": "15cac046041305c3d9fda1556d6da3cbe47e908f"
+    "tarSha256": "335a7bc8e466382366fddd03d7c1d05deaa886d4ae126e0c7c348a54ef82d56b",
+    "tarBytes": 296153,
+    "revision": "79d263678cc7bf5f76e93fccb37197c23fb1c4cb"
   }
 }
