@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.98";
+const agentVersion = "0.3.99";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2593,18 +2593,20 @@ async function installOpsSkillForCodexHome(codexHome) {
     return false;
   }
   const skillsDir = join(codexHome, "skills");
-  const target = join(skillsDir, "universal-install-ops");
   await mkdir(skillsDir, { recursive: true });
-  await rm(target, { recursive: true, force: true }).catch(() => undefined);
-  await cp(source, target, {
-    recursive: true,
-    force: true,
-    filter: (path) => {
-      const normalized = String(path || "").replace(/\\/gu, "/");
-      return !/(^|\/)(\.git|\.skill-memory|__pycache__)(\/|$)/u.test(normalized)
-        && !/\.pyc$/iu.test(normalized);
-    }
-  });
+  for (const skillName of ["universal-install-ops", "ops"]) {
+    const target = join(skillsDir, skillName);
+    await rm(target, { recursive: true, force: true }).catch(() => undefined);
+    await cp(source, target, {
+      recursive: true,
+      force: true,
+      filter: (path) => {
+        const normalized = String(path || "").replace(/\\/gu, "/");
+        return !/(^|\/)(\.git|\.skill-memory|__pycache__)(\/|$)/u.test(normalized)
+          && !/\.pyc$/iu.test(normalized);
+      }
+    });
+  }
   return true;
 }
 
@@ -3125,8 +3127,10 @@ function runMcpServer() {
     if (relativePath.includes("\0") || /(^|[\\/])\.\.([\\/]|$)/u.test(relativePath)) {
       return { ok: false, text: "! skill-path", exitCode: 2 };
     }
-    const skillsRoot = join(chooseCodexAuthHome(), "skills");
-    const skillRoot = resolve(skillsRoot, skillName);
+    const skillRoot = mcpSkillRoot(skillName);
+    if (!skillRoot) {
+      return { ok: false, text: "! skill-read: skill is not installed", exitCode: 1 };
+    }
     const fullPath = resolve(skillRoot, relativePath);
     const rel = relative(skillRoot, fullPath);
     if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
@@ -3154,6 +3158,15 @@ function runMcpServer() {
       return "universal-install-ops";
     }
     return text;
+  }
+
+  function mcpSkillRoot(skillName) {
+    if (skillName === "universal-install-ops") {
+      return opsSkillSourceDir() || "";
+    }
+    const skillsRoot = join(chooseCodexAuthHome(), "skills");
+    const root = resolve(skillsRoot, skillName);
+    return existsSync(join(root, "SKILL.md")) ? root : "";
   }
 
   async function mcpPostOperator(path, body) {
