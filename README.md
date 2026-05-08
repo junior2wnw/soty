@@ -71,7 +71,7 @@ Then open the counterparty menu in the PWA and toggle the remote icon. Commands 
 
 Remote command transcripts are part of the encrypted tunnel document, not page-local scratch state. Reloading one browser tab must not clear another device's command window, and a refreshed tab should recover the terminal transcript from the server snapshot.
 
-Long agent tasks are expected to survive ordinary install/download/repair waits. The browser waits up to an hour for a Codex turn, the server relay keeps source jobs for up to two hours, and Soty MCP tools accept `timeoutMs` up to `7200000` for long scripts instead of cutting work at the old five-to-ten-minute ceiling.
+Long agent tasks are expected to survive ordinary install/download/repair waits. The browser and server-side Codex turn wait up to two hours, the server relay keeps source jobs through that window, and Soty MCP tools accept `timeoutMs` up to `7200000` for long scripts instead of cutting work at the old five-to-ten-minute ceiling.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 

@@ -43,8 +43,8 @@ const maxCodexDialogMessages = 64;
 const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
 const agentReplyTimeoutMs = Math.max(
-  60 * 60_000,
-  safeDurationMs(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS, 60 * 60_000, maxLongTaskTimeoutMs)
+  maxLongTaskTimeoutMs,
+  safeDurationMs(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS, maxLongTaskTimeoutMs, maxLongTaskTimeoutMs)
 );
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
