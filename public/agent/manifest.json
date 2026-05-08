@@ -9,8 +9,8 @@
     "zipSha256": "265c6f948e4a5ff56191700e033d49a09bf9f2abcc55509f9bc49b06ecf9da42",
     "zipBytes": 1201798,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "f7b992cfd2ad38ced12db570d10a149aac573c5c471d52480a526c54eca95969",
-    "tarBytes": 296018,
+    "tarSha256": "8a6db22c493bf92af336263b86b0d98be7b96916a0ed35220ac909878bc1bea2",
+    "tarBytes": 296015,
     "revision": "15cac046041305c3d9fda1556d6da3cbe47e908f"
   }
 }
