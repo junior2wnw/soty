@@ -1,0 +1,370 @@
+import express from "express";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+
+const maxReceiptsPerRequest = 80;
+const maxReceiptText = 900;
+const signatureMaxSource = 2000;
+const jsonParser = express.json({ limit: "320kb", type: "application/json" });
+
+export function attachAgentLearning(app, { dataDir } = {}) {
+  const learningDir = process.env.SOTY_LEARNING_DIR || path.join(dataDir || process.cwd(), "learning");
+
+  app.get("/api/agent/learning/health", async (_req, res) => {
+    const files = await learningFiles(learningDir).catch(() => []);
+    const receipts = await readRecentLearningReceiptsFromDir(learningDir, 500).catch(() => []);
+    res.json({
+      ok: true,
+      enabled: true,
+      files: files.length,
+      receipts: receipts.length,
+      teacherUrl: "/api/agent/learning/teacher",
+      dir: path.basename(learningDir)
+    });
+  });
+
+  app.get("/api/agent/learning/teacher", async (req, res) => {
+    const limit = safeLimit(req.query?.limit, 800);
+    const lines = await readRecentLearningReceiptsFromDir(learningDir, limit).catch(() => []);
+    const receipts = lines.map(parseReceiptLine).filter(Boolean);
+    res.json(buildTeacherReport(receipts, { limit }));
+  });
+
+  app.post("/api/agent/learning/receipts", jsonParser, async (req, res) => {
+    const envelope = cleanEnvelope(req.body);
+    const receipts = cleanReceipts(req.body?.receipts);
+    if (receipts.length === 0) {
+      res.status(400).json({ ok: false, accepted: 0 });
+      return;
+    }
+
+    const now = new Date();
+    const partition = now.toISOString().slice(0, 10);
+    const file = path.join(learningDir, `${partition}.jsonl`);
+    await mkdir(learningDir, { recursive: true, mode: 0o700 });
+    const lines = receipts.map((receipt) => JSON.stringify({
+      schema: "soty.learning.receipt.v1",
+      id: `learn_${randomUUID()}`,
+      receivedAt: now.toISOString(),
+      installHash: hashShort(envelope.installId || envelope.relayId || "unknown"),
+      agentVersion: envelope.agentVersion,
+      ...receipt
+    }));
+    await appendFile(file, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+    res.json({ ok: true, accepted: receipts.length });
+  });
+}
+
+async function learningFiles(dir) {
+  const items = await readdir(dir, { withFileTypes: true });
+  return items.filter((item) => item.isFile() && item.name.endsWith(".jsonl"));
+}
+
+export async function readRecentLearningReceipts(dataDir, limit = 50) {
+  const learningDir = process.env.SOTY_LEARNING_DIR || path.join(dataDir || process.cwd(), "learning");
+  return await readRecentLearningReceiptsFromDir(learningDir, limit);
+}
+
+async function readRecentLearningReceiptsFromDir(learningDir, limit = 50) {
+  const files = (await learningFiles(learningDir))
+    .map((item) => item.name)
+    .sort()
+    .slice(-7);
+  const lines = [];
+  for (const file of files) {
+    const text = await readFile(path.join(learningDir, file), "utf8").catch(() => "");
+    for (const line of text.split(/\r?\n/u)) {
+      if (line.trim()) {
+        lines.push(line);
+      }
+    }
+  }
+  return lines.slice(-Math.max(1, Math.min(2000, limit)));
+}
+
+function buildTeacherReport(receipts, { limit = 800 } = {}) {
+  const rows = receipts.filter((item) => item && typeof item === "object");
+  const familyCounts = countBy(rows, (item) => item.family || "generic");
+  const resultCounts = countBy(rows, (item) => item.result || "unknown");
+  const routeCounts = countBy(rows, (item) => item.route || "unknown");
+  const topFailures = groupRows(rows
+    .filter((item) => ["failed", "blocked", "timeout", "partial"].includes(item.result)), (item) => [
+      item.family || "generic",
+      item.result || "failed",
+      item.route || "unknown",
+      Number.isSafeInteger(item.exitCode) ? String(item.exitCode) : "no-exit"
+    ].join("|"));
+  const topSuccesses = groupRows(rows
+    .filter((item) => item.result === "ok"), (item) => [
+      item.family || "generic",
+      item.route || "unknown"
+    ].join("|"));
+  const recommendations = buildRecommendations(rows, topFailures);
+  const candidates = buildPromotionCandidates(rows, topFailures, topSuccesses);
+  return {
+    ok: true,
+    schema: "soty.learning.teacher.v1",
+    generatedAt: new Date().toISOString(),
+    source: "sanitized-receipts",
+    limit,
+    receipts: rows.length,
+    families: topEntries(familyCounts, 12),
+    results: topEntries(resultCounts, 8),
+    routes: topEntries(routeCounts, 8),
+    topFailures: topFailures.slice(0, 12),
+    topSuccesses: topSuccesses.slice(0, 8),
+    recommendations,
+    candidates,
+    oneCommand: "sotyctl learn doctor",
+    reviewMergeCommand: "sotyctl learn review-merge"
+  };
+}
+
+function parseReceiptLine(line) {
+  try {
+    const value = JSON.parse(line);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeLimit(value, fallback) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(2000, parsed));
+}
+
+function countBy(rows, keyFn) {
+  const counts = new Map();
+  for (const row of rows) {
+    const key = cleanText(keyFn(row), 120) || "unknown";
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+
+function topEntries(counts, limit) {
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([key, count]) => ({ key, count }));
+}
+
+function groupRows(rows, keyFn) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = cleanText(keyFn(row), 240) || "unknown";
+    const current = groups.get(key) || {
+      key,
+      count: 0,
+      family: cleanText(row.family, 80) || "generic",
+      result: cleanText(row.result, 40),
+      route: cleanText(row.route, 120),
+      exitCode: Number.isSafeInteger(row.exitCode) ? row.exitCode : undefined,
+      firstSeenAt: cleanIso(row.createdAt) || cleanIso(row.receivedAt) || "",
+      lastSeenAt: "",
+      proofShape: proofShape(row.proof)
+    };
+    current.count += 1;
+    current.lastSeenAt = cleanIso(row.createdAt) || cleanIso(row.receivedAt) || current.lastSeenAt;
+    if (!current.proofShape && row.proof) {
+      current.proofShape = proofShape(row.proof);
+    }
+    groups.set(key, current);
+  }
+  return Array.from(groups.values())
+    .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
+}
+
+function buildRecommendations(rows, topFailures) {
+  const recommendations = [];
+  const windowsRows = rows.filter((item) => item.family === "windows-reinstall");
+  const windowsFailures = windowsRows.filter((item) => item.result !== "ok");
+  if (windowsRows.length > 0) {
+    if (windowsFailures.length > 0) {
+      recommendations.push({
+        priority: "high",
+        family: "windows-reinstall",
+        title: "Do not start destructive reinstall until gates are proven",
+        action: "Run the Soty/ops reinstall fast-lane gates first: exact target, data boundary, machine worker, trusted media, return path, and explicit destructive confirmation. Missing gates mean readiness-building, not manual reset."
+      });
+    } else {
+      recommendations.push({
+        priority: "normal",
+        family: "windows-reinstall",
+        title: "Promote the proven reinstall route into the device profile",
+        action: "Store the working route, proof, and timing in windows-reinstall-profile.py so the next run starts from the proven path."
+      });
+    }
+  }
+  for (const failure of topFailures.slice(0, 5)) {
+    if (failure.count >= 2) {
+      recommendations.push({
+        priority: failure.family === "windows-reinstall" ? "high" : "normal",
+        family: failure.family,
+        title: `Repeated ${failure.result} on ${failure.family}`,
+        action: `Review ${failure.route || "unknown-route"} and promote a hot-route, helper fix, or stop gate. Evidence count: ${failure.count}.`
+      });
+    }
+  }
+  if (recommendations.length === 0) {
+    recommendations.push({
+      priority: "normal",
+      family: "learning",
+      title: "No repeated blocker yet",
+      action: "Keep syncing receipts. One-off events stay as candidates; repeated proof becomes a route/profile patch."
+    });
+  }
+  return recommendations.slice(0, 8);
+}
+
+function buildPromotionCandidates(rows, failures, successes) {
+  const candidates = [];
+  for (const failure of failures.slice(0, 6)) {
+    const scope = failure.count >= 2 ? "promote" : "candidate";
+    candidates.push({
+      scope,
+      family: failure.family,
+      marker: `ops-memory: goal=Soty ${failure.family} ${failure.result} route | actual=${failure.result} via ${failure.route || "unknown-route"} | success=${failure.proofShape || "sanitized receipt"} | env=soty.learning.teacher count=${failure.count}`
+    });
+  }
+  for (const success of successes.filter((item) => item.count >= 2).slice(0, 4)) {
+    candidates.push({
+      scope: "profile",
+      family: success.family,
+      marker: `ops-memory: goal=Soty ${success.family} proven route | actual=ok via ${success.route || "unknown-route"} | success=${success.proofShape || "sanitized receipt"} | env=soty.learning.teacher count=${success.count}`
+    });
+  }
+  return candidates.slice(0, 10);
+}
+
+function proofShape(value) {
+  const text = redactLearningText(value).slice(0, 300).toLowerCase();
+  if (!text) {
+    return "";
+  }
+  if (text.includes("blocked-manual-windows-reinstall-handoff")) {
+    return "blocked manual reinstall handoff";
+  }
+  if (text.includes("! agent-source")) {
+    return "! agent-source";
+  }
+  if (text.includes("timeout")) {
+    return "timeout";
+  }
+  if (text.includes("exitcode=0")) {
+    return "exitCode=0";
+  }
+  if (text.includes("no final") || text.includes("final=empty")) {
+    return "no final assistant message";
+  }
+  if (text.includes("nonempty")) {
+    return "nonempty output";
+  }
+  return text.slice(0, 120);
+}
+
+function cleanEnvelope(value) {
+  const record = value && typeof value === "object" ? value : {};
+  return {
+    installId: cleanText(record.installId, 120),
+    relayId: cleanText(record.relayId, 192),
+    agentVersion: cleanText(record.agentVersion, 40)
+  };
+}
+
+function cleanReceipts(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map(cleanReceipt)
+    .filter(Boolean)
+    .slice(0, maxReceiptsPerRequest);
+}
+
+function cleanReceipt(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const kind = cleanEnum(value.kind, ["codex-turn", "source-command", "agent-runtime"], "agent-runtime");
+  const result = cleanEnum(value.result, ["ok", "failed", "partial", "blocked", "timeout"], "failed");
+  const exitCode = Number.isSafeInteger(value.exitCode) ? Math.max(-32768, Math.min(32767, value.exitCode)) : undefined;
+  return {
+    kind,
+    result,
+    family: cleanText(value.family, 80),
+    platform: cleanText(value.platform, 40),
+    codexMode: cleanText(value.codexMode, 80),
+    route: cleanText(value.route, 120),
+    commandSig: cleanSignature(value.commandSig, cleanText(value.family, 80)),
+    taskSig: cleanTaskSignature(value.taskSig),
+    proof: redactLearningText(value.proof).slice(0, maxReceiptText),
+    durationMs: Number.isSafeInteger(value.durationMs) ? Math.max(0, Math.min(86_400_000, value.durationMs)) : undefined,
+    ...(exitCode === undefined ? {} : { exitCode }),
+    skillSha: cleanText(value.skillSha, 80),
+    createdAt: cleanIso(value.createdAt) || new Date().toISOString()
+  };
+}
+
+function cleanEnum(value, allowed, fallback) {
+  const text = String(value || "").trim();
+  return allowed.includes(text) ? text : fallback;
+}
+
+function cleanText(value, max) {
+  return String(value || "")
+    .replace(/[\u0000-\u001F\u007F]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, max);
+}
+
+function cleanSignature(value, family = "") {
+  const text = cleanText(value, 160);
+  if (/^[a-z][a-z0-9_-]{0,39}:[a-f0-9]{16,64}$/iu.test(text)) {
+    return text.toLowerCase();
+  }
+  const normalized = redactLearningText(value).toLowerCase().slice(0, signatureMaxSource);
+  const prefix = cleanText(family, 32).toLowerCase().replace(/[^a-z0-9_-]+/gu, "") || "generic";
+  return `${prefix}:${hashShort(normalized).slice(0, 16)}`;
+}
+
+function cleanTaskSignature(value) {
+  const text = cleanText(value, 160);
+  if (/^task:[a-f0-9]{16,64}$/iu.test(text)) {
+    return text.toLowerCase();
+  }
+  const normalized = redactLearningText(value).toLowerCase().slice(0, signatureMaxSource);
+  return `task:${hashShort(normalized).slice(0, 16)}`;
+}
+
+function redactLearningText(value) {
+  return cleanText(value, signatureMaxSource)
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, "<email>")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/gu, "<ip>")
+    .replace(/\b[0-9A-F]{2}(?::[0-9A-F]{2}){5}\b/giu, "<mac>")
+    .replace(/[A-Za-z]:\\[^\s'"]+/gu, "<path>")
+    .replace(/\/(?:Users|home)\/[^\s'"]+/giu, "<path>")
+    .replace(/\b[A-Za-z0-9_-]{48,}\b/gu, "<id>")
+    .replace(/\b(?:sk|sess|key|token|secret|password|pwd)[-_A-Za-z0-9]*\b\s*[:=]\s*['"]?[^'"\s]+/giu, "<secret>")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function cleanIso(value) {
+  const text = cleanText(value, 80);
+  if (!text) {
+    return "";
+  }
+  const time = Date.parse(text);
+  return Number.isFinite(time) ? new Date(time).toISOString() : "";
+}
+
+function hashShort(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex").slice(0, 24);
+}

@@ -8,3 +8,9 @@ backups/
 .env.*
 .DS_Store
 Thumbs.db
+.codex-run/
+.klava-canonical-skill.json
+install-op-cases/
+/soty-export-after-reinstall.json
+/soty-*.ps1
+/soty_*.ps1

@@ -12,7 +12,7 @@ const distDir = path.join(rootDir, "dist");
 const dataDir = process.env.DATA_DIR || path.join(rootDir, "data");
 const port = Number.parseInt(process.env.PORT || "8080", 10);
 
-const app = createHttpApp(distDir);
+const app = createHttpApp(distDir, { dataDir });
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true, maxPayload: 34_000_000 });
 const store = createRoomStore(dataDir);

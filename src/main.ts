@@ -391,7 +391,8 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
 }
 
 function parseOperatorExportPayload(text: string): OperatorExportPayload {
-  const parsed: unknown = JSON.parse(text);
+  const cleanText = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const parsed: unknown = JSON.parse(cleanText);
   if (!isRecord(parsed) || parsed.schema !== "soty.operator-export.v1") {
     throw new Error("Unsupported Soty backup file");
   }
@@ -752,8 +753,9 @@ function renderApp(): void {
     }
   });
   app.querySelector<HTMLButtonElement>(".terminal-close")?.addEventListener("click", () => {
-    if (selectedId) {
-      closeRemoteMode(selectedId);
+    const tunnelId = activeTerminalTunnelId();
+    if (tunnelId) {
+      closeRemoteMode(tunnelId);
     }
   });
   app.querySelector<HTMLFormElement>(".terminal-form")?.addEventListener("submit", (event) => {
@@ -1108,11 +1110,31 @@ function startFreshDialog(): void {
     clearCurrentDialog(active.id);
     return;
   }
-  const fresh = createFreshDialog();
+  const fresh = active && isAgentTunnel(active)
+    ? createFreshDialog(agentDialogLabel, { agent: true })
+    : createFreshDialog();
   if (!fresh) {
     return;
   }
+  if (active && isAgentTunnel(active)) {
+    moveAgentLinkToFreshDialog(active.id, fresh.id);
+  }
   renderApp();
+}
+
+function moveAgentLinkToFreshDialog(previousId: string, freshId: string): void {
+  if (!device || previousId === freshId || !remoteEnabled.has(previousId)) {
+    return;
+  }
+  remoteEnabled = setRemoteEnabled(previousId, false);
+  remoteEnabled = setRemoteEnabled(freshId, true);
+  terminalOpenId = freshId;
+  terminalLogs.delete(freshId);
+  terminalState.delete(previousId);
+  setTerminalState(freshId, "idle");
+  appendTerminalLine(freshId, "+ agent link");
+  void grantAgentSourceAccess(device.id, device.nick, true);
+  startAgentSourceControl(freshId);
 }
 
 function clearCurrentDialog(tunnelId: string): void {
@@ -1772,7 +1794,11 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
 }
 
 function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
-  if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(command.targetDeviceId)) {
+  if (!device || !grantTargetsThisDevice(command.targetDeviceId)) {
+    return;
+  }
+  if (!remoteEnabled.has(tunnelId)) {
+    void syncs.get(tunnelId)?.sendRemoteOutput(command.deviceId, command.id, "! access", 409);
     return;
   }
   selectedId = tunnelId;
@@ -1790,7 +1816,11 @@ function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
 }
 
 function applyRemoteScript(tunnelId: string, script: RemoteScript): void {
-  if (!device || !remoteEnabled.has(tunnelId) || !grantTargetsThisDevice(script.targetDeviceId)) {
+  if (!device || !grantTargetsThisDevice(script.targetDeviceId)) {
+    return;
+  }
+  if (!remoteEnabled.has(tunnelId)) {
+    void syncs.get(tunnelId)?.sendRemoteOutput(script.deviceId, script.id, "! access", 409);
     return;
   }
   selectedId = tunnelId;
@@ -1830,11 +1860,12 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
 }
 
 async function sendTerminalCommand(): Promise<void> {
-  if (!selectedId || !device) {
+  const tunnelId = activeTerminalTunnelId();
+  if (!tunnelId || !device) {
     return;
   }
-  const hostDeviceId = remoteAccess.get(selectedId);
-  const sync = syncs.get(selectedId);
+  const hostDeviceId = remoteAccess.get(tunnelId);
+  const sync = syncs.get(tunnelId);
   const input = app.querySelector<HTMLInputElement>(".terminal-form input");
   const command = input?.value.trim() || "";
   if (!hostDeviceId || !sync || !command) {
@@ -1843,8 +1874,8 @@ async function sendTerminalCommand(): Promise<void> {
   if (input) {
     input.value = "";
   }
-  setTerminalState(selectedId, "run");
-  appendTerminalLine(selectedId, `$ ${command}`);
+  setTerminalState(tunnelId, "run");
+  appendTerminalLine(tunnelId, `$ ${command}`);
   renderTerminal();
   await sync.sendRemoteCommand(hostDeviceId, command);
 }
@@ -1905,6 +1936,9 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     }
     if (message.type === "operator.agent-message") {
       void runOperatorAgentMessage(message);
+    }
+    if (message.type === "operator.terminal") {
+      runOperatorTerminal(message);
     }
     if (message.type === "operator.access") {
       runOperatorAccess(message);
@@ -1974,15 +2008,30 @@ function operatorTargets(): LocalAgentOperatorTarget[] {
     });
 }
 
-function preferredAgentOperatorTarget(sourceDeviceId = ""): LocalAgentOperatorTarget | null {
-  const targets = operatorTargets();
-  const sourceId = sourceDeviceId.trim();
-  if (!sourceId) {
+function preferredAgentOperatorTargetForDialog(
+  text: string,
+  targets: readonly LocalAgentOperatorTarget[]
+): LocalAgentOperatorTarget | null {
+  const byPrefix = targetMentionedAtStart(text, targets);
+  if (byPrefix?.access === true) {
+    return byPrefix;
+  }
+  return null;
+}
+
+function targetMentionedAtStart(text: string, targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
+  const body = normalizeChatMessage(text).trim();
+  const match = /^([^:\n]{1,80})\s*:/u.exec(body);
+  if (!match) {
     return null;
   }
-  const matches = targets.filter((target) => operatorTargetMatchesDevice(target.id, sourceId));
-  return matches.find((target) => target.access === true)
-    || (matches.length === 1 ? matches[0] ?? null : null)
+  const needle = cleanNick(match[1] || "").toLowerCase();
+  if (!needle) {
+    return null;
+  }
+  return targets.find((target) => cleanNick(target.label).toLowerCase() === needle)
+    || targets.find((target) => target.id.toLowerCase() === needle)
+    || targets.find((target) => cleanNick(target.label).toLowerCase().includes(needle))
     || null;
 }
 
@@ -2012,16 +2061,21 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
+  if (!keepCurrentDialog) {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+  }
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${command}`);
   clearTunnelNotices(tunnel.id);
   tunnels = markTunnel(tunnel.id, false);
   renderTiles();
-  applySelectedText(true);
-  renderFiles();
+  if (!keepCurrentDialog) {
+    applySelectedText(true);
+    renderFiles();
+  }
   renderTerminal();
   try {
     const commandId = await sync.sendRemoteCommand(hostDeviceId, command);
@@ -2067,16 +2121,21 @@ async function runOperatorScript(message: {
     return;
   }
   const name = cleanNick(message.name || "script") || "script";
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
+  if (!keepCurrentDialog) {
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+  }
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${name}`);
   clearTunnelNotices(tunnel.id);
   tunnels = markTunnel(tunnel.id, false);
   renderTiles();
-  applySelectedText(true);
-  renderFiles();
+  if (!keepCurrentDialog) {
+    applySelectedText(true);
+    renderFiles();
+  }
   renderTerminal();
   try {
     const commandId = await sync.sendRemoteScript(hostDeviceId, {
@@ -2140,6 +2199,8 @@ async function runOperatorChat(message: {
 async function runOperatorAgentMessage(message: {
   readonly id?: string;
   readonly target?: string;
+  readonly sourceDeviceId?: string;
+  readonly sourceDeviceNick?: string;
   readonly text?: string;
 }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
@@ -2168,12 +2229,19 @@ async function runOperatorAgentMessage(message: {
   localDrafts.delete(tunnel.id);
   clearLiveDraftState(tunnel.id);
   void sync.sendLiveDraft("");
-  sendOperatorUserMessage(tunnel.id, body);
+  const handedToOperatorBridge = sendOperatorUserMessage(tunnel.id, body, current, {
+    deviceId: typeof message.sourceDeviceId === "string" ? message.sourceDeviceId : "",
+    deviceNick: typeof message.sourceDeviceNick === "string" ? message.sourceDeviceNick : ""
+  });
   touchSelected();
   renderTiles();
   applySelectedText();
   renderTextPaint();
   renderWriterPop();
+  if (handedToOperatorBridge) {
+    sendOperatorOutput(requestId, "", 0);
+    return;
+  }
   try {
     await sendAgentDialogMessage(tunnel.id, body);
     // Agent dialog injection is a transport action. Keep the remote command
@@ -2182,6 +2250,19 @@ async function runOperatorAgentMessage(message: {
   } catch {
     sendOperatorOutput(requestId, "! agent-reply", 500);
   }
+}
+
+function runOperatorTerminal(message: {
+  readonly id?: string;
+  readonly target?: string;
+  readonly text?: string;
+}): void {
+  const tunnel = findAgentOperatorTarget(message.target || "");
+  const text = typeof message.text === "string" ? message.text : "";
+  if (!tunnel || !text.trim()) {
+    return;
+  }
+  appendAgentTerminalTranscript(tunnel.id, text);
 }
 
 function formatOperatorChat(text: string, persona: string): string {
@@ -2278,6 +2359,10 @@ function operatorTargetMatchesDevice(tunnelId: string, sourceDeviceId: string): 
   return (peerDevices.get(tunnelId) ?? []).some((peer) => peer.id === sourceId);
 }
 
+function shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId: string): boolean {
+  return Boolean(sourceDeviceId.trim() && selectedId && isAgentTunnelId(selectedId));
+}
+
 function findVisibleOperatorTarget(target: string): TunnelRecord | null {
   const needle = cleanNick(target).toLowerCase();
   if (!needle) {
@@ -2312,27 +2397,36 @@ function renderTerminal(): void {
   if (!panel || !output || !editor || !form || !peer) {
     return;
   }
-  if (!terminalOpenId && selectedId && (remoteAccess.has(selectedId) || isAgentLinkedTunnel(selectedId))) {
-    terminalOpenId = selectedId;
-  }
-  const controller = Boolean(selectedId && terminalOpenId === selectedId && remoteAccess.has(selectedId));
-  const host = Boolean(selectedId && terminalOpenId === selectedId && remoteEnabled.has(selectedId));
+  const tunnelId = activeTerminalTunnelId();
+  const controller = Boolean(tunnelId && remoteAccess.has(tunnelId));
+  const host = Boolean(tunnelId && remoteEnabled.has(tunnelId));
   const active = controller || host;
-  const state = terminalState.get(selectedId) ?? "idle";
+  const state = tunnelId ? terminalState.get(tunnelId) ?? "idle" : "idle";
   editor.classList.toggle("terminal-active", active);
   editor.classList.toggle("terminal-controller", controller);
   editor.classList.toggle("terminal-host", host && !controller);
   panel.dataset.state = state;
   form.hidden = !controller;
-  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   peer.textContent = tunnel ? initials(counterpartyLabel(tunnel)) : ".";
-  output.innerHTML = (terminalLogs.get(selectedId) ?? [])
+  output.innerHTML = (terminalLogs.get(tunnelId) ?? [])
     .map((line) => `<pre>${escapeHtml(line || " ")}</pre>`)
     .join("");
   if (active) {
     output.scrollTop = output.scrollHeight;
     window.setTimeout(() => app.querySelector<HTMLInputElement>(".terminal-form input")?.focus(), 0);
   }
+}
+
+function activeTerminalTunnelId(): string {
+  if (terminalOpenId && (remoteAccess.has(terminalOpenId) || remoteEnabled.has(terminalOpenId) || terminalLogs.has(terminalOpenId))) {
+    return terminalOpenId;
+  }
+  if (selectedId && (remoteAccess.has(selectedId) || isAgentLinkedTunnel(selectedId))) {
+    terminalOpenId = selectedId;
+    return selectedId;
+  }
+  return "";
 }
 
 function isAgentLinkedTunnel(tunnelId: string): boolean {
@@ -2430,7 +2524,7 @@ function stopAgentSourceControl(tunnelId: string): void {
 }
 
 async function pollAgentSourceControl(): Promise<void> {
-  if (agentSourcePolling || !device || !agentSourceControlTunnelId || !remoteEnabled.has(agentSourceControlTunnelId)) {
+  if (agentSourcePolling || !device || !agentSourceControlTunnelId || !isAgentTunnelId(agentSourceControlTunnelId)) {
     return;
   }
   const tunnelId = agentSourceControlTunnelId;
@@ -2443,14 +2537,14 @@ async function pollAgentSourceControl(): Promise<void> {
     }
   } finally {
     agentSourcePolling = false;
-    if (device && agentSourceControlTunnelId === tunnelId && remoteEnabled.has(tunnelId)) {
+    if (device && agentSourceControlTunnelId === tunnelId && isAgentTunnelId(tunnelId)) {
       agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(), 250);
     }
   }
 }
 
 async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
-  if (!device || !remoteEnabled.has(tunnelId)) {
+  if (!device || !isAgentTunnelId(tunnelId)) {
     return;
   }
   const now = Date.now();
@@ -2745,15 +2839,17 @@ function scheduleLiveDraft(tunnelId: string, draft: string): void {
   liveDraftSendTimers.set(tunnelId, timer);
 }
 
-function finalizeComposerDraft(): void {
-  if (!selectedId || !composer || !textarea) {
+async function finalizeComposerDraft(): Promise<void> {
+  const tunnelId = selectedId;
+  if (!tunnelId || !composer || !textarea) {
     return;
   }
-  const sync = syncs.get(selectedId);
+  const sync = syncs.get(tunnelId);
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   if (!sync) {
     return;
   }
-  const draft = composer.value || localDrafts.get(selectedId) || "";
+  const draft = composer.value || localDrafts.get(tunnelId) || "";
   const message = normalizeChatMessage(draft);
   if (!message) {
     if (draft) {
@@ -2762,21 +2858,26 @@ function finalizeComposerDraft(): void {
     }
     return;
   }
-  const current = texts.get(selectedId) ?? textarea.value;
+  const current = texts.get(tunnelId) ?? textarea.value;
   const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
   const next = `${current}${separator}${message}\n`;
   textarea.value = next;
-  texts.set(selectedId, next);
+  texts.set(tunnelId, next);
   sync.setText(next);
-  const pendingLiveDraftTimer = liveDraftSendTimers.get(selectedId);
+  const pendingLiveDraftTimer = liveDraftSendTimers.get(tunnelId);
   if (pendingLiveDraftTimer) {
     window.clearTimeout(pendingLiveDraftTimer);
-    liveDraftSendTimers.delete(selectedId);
+    liveDraftSendTimers.delete(tunnelId);
   }
   void sync.sendLiveDraft("");
-  sendOperatorUserMessage(selectedId, message);
-  void sendAgentDialogMessage(selectedId, message);
-  localDrafts.delete(selectedId);
+  if (tunnel && isAgentTunnel(tunnel)) {
+    await prepareAgentSourceForDialog(tunnelId, tunnel);
+  }
+  const handedToOperatorBridge = sendOperatorUserMessage(tunnelId, message, current);
+  if (!handedToOperatorBridge) {
+    void sendAgentDialogMessage(tunnelId, message);
+  }
+  localDrafts.delete(tunnelId);
   composer.value = "";
   touchSelected();
   resizeComposer();
@@ -2790,8 +2891,9 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
   if (!tunnel || !isAgentTunnel(tunnel) || !text.trim()) {
     return Promise.resolve();
   }
+  const targets = operatorTargets();
+  const preferredTarget = preferredAgentOperatorTargetForDialog(text, targets);
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
-  const preferredTarget = preferredAgentOperatorTarget(device?.id || "");
   const source: LocalAgentRequestSource = {
     tunnelId,
     tunnelLabel: counterpartyLabel(tunnel),
@@ -2800,7 +2902,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
     appOrigin: window.location.origin,
     preferredTargetId: preferredTarget?.id || "",
     preferredTargetLabel: preferredTarget?.label || "",
-    operatorTargets: operatorTargets()
+    operatorTargets: targets
   };
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const next = previous
@@ -2808,17 +2910,56 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
     .then(async () => {
       setAgentThinking(tunnelId, true);
       let reply: LocalAgentReply;
+      const streamedMessages: string[] = [];
+      const streamedTerminal: string[] = [];
       try {
-        reply = await askLocalAgentReply(text, context, source);
+        await prepareAgentSourceForDialog(tunnelId, tunnel);
+        reply = await askLocalAgentReply(text, context, source, 310_000, (message) => {
+          const streamed = normalizeChatMessage(cleanAgentReplyText(message));
+          if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
+            return;
+          }
+          streamedMessages.push(streamed);
+          appendAgentChatMessage(tunnelId, streamed);
+        }, (message) => {
+          const streamed = cleanTerminalTranscript(message);
+          if (!streamed || streamedTerminal[streamedTerminal.length - 1] === streamed) {
+            return;
+          }
+          streamedTerminal.push(streamed);
+          appendAgentTerminalTranscript(tunnelId, streamed);
+        });
       } finally {
         setAgentThinking(tunnelId, false);
       }
-      const body = normalizeChatMessage(cleanAgentReplyText(reply.text))
-        || "Сообщение дошло, но локальный агент вернул пустой ответ.";
+      let finalReply = reply;
+      let body = normalizeChatMessage(cleanAgentReplyText(reply.text));
+      if (streamedMessages.length > 0) {
+        const delivered = new Set(streamedMessages);
+        const remainingMessages = (reply.messages ?? [])
+          .map((message) => normalizeChatMessage(cleanAgentReplyText(message)))
+          .filter((message) => message && !delivered.has(message));
+        finalReply = {
+          ...reply,
+          text: "",
+          ...(remainingMessages.length > 0 ? { messages: remainingMessages } : { messages: [] })
+        };
+        body = "";
+      }
+      const deliveredTerminal = new Set(streamedTerminal);
+      for (const message of reply.terminal ?? []) {
+        const terminal = cleanTerminalTranscript(message);
+        if (terminal && !deliveredTerminal.has(terminal)) {
+          appendAgentTerminalTranscript(tunnelId, terminal);
+        }
+      }
       if (shouldOfferAgentInstall(reply)) {
         renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox, refreshLocalAgent);
       }
-      await typeOperatorChat(tunnelId, formatOperatorChat(body, "sysadmin"), "fast");
+      const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
+      if (!appended && !reply.ok && body) {
+        appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
+      }
     });
   agentReplyQueues.set(tunnelId, next);
   void next.finally(() => {
@@ -2827,6 +2968,95 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
     }
   });
   return next;
+}
+
+async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecord): Promise<void> {
+  if (!device || !isAgentTunnel(tunnel)) {
+    return;
+  }
+  if (!remoteEnabled.has(tunnelId)) {
+    remoteEnabled = setRemoteEnabled(tunnelId, true);
+  }
+  terminalOpenId = tunnelId;
+  if (!terminalState.has(tunnelId)) {
+    setTerminalState(tunnelId, "idle");
+  }
+  renderTiles();
+  renderTerminal();
+  publishOperatorTargets();
+  await grantAgentSourceAccess(device.id, device.nick, true, 2500).catch(() => false);
+  startAgentSourceControl(tunnelId);
+  publishOperatorTargets();
+}
+
+function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fallback: string): boolean {
+  const messages = (reply.messages ?? [])
+    .map((message) => cleanAgentReplyText(message))
+    .filter(Boolean);
+  if (messages.length > 0) {
+    return appendAgentChatMessage(tunnelId, messages.join("\n\n"));
+  }
+  if (reply.ok && fallback) {
+    return appendAgentChatMessage(tunnelId, fallback);
+  }
+  return false;
+}
+
+function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
+  const sync = syncs.get(tunnelId);
+  const message = cleanAgentReplyText(rawText);
+  if (!sync || !message) {
+    return false;
+  }
+  const before = texts.get(tunnelId) || "";
+  const separator = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+  const firstLine = message.split(/\r?\n/u, 1)[0]?.trim() || "";
+  const displayText = isOperatorHeader(firstLine) ? message : formatOperatorChat(message, "sysadmin");
+  const insertText = `${separator}${displayText}\n`;
+  const next = `${before}${insertText}`;
+  const index = before.length;
+  const activity: WriterActivity = {
+    deviceId: "codex",
+    nick: agentDialogLabel,
+    index,
+    local: false,
+    action: "write",
+    preview: message.replace(/\s+/gu, " ").trim().slice(0, 48),
+    insertText,
+    deleteCount: 0,
+    startLine: lineFromIndex(before, index),
+    startColumn: columnFromIndex(before, index),
+    lineDelta: lineBreakCount(insertText)
+  };
+  sync.setText(next);
+  texts.set(tunnelId, next);
+  rememberWriter(tunnelId, activity);
+  clearLiveDraftState(tunnelId);
+  if (tunnelId === selectedId && textarea) {
+    textarea.value = next;
+    textarea.setSelectionRange(next.length, next.length);
+    renderLineTags();
+    renderTextPaint();
+    renderWriterPop();
+  }
+  tunnels = touchTunnel(tunnelId);
+  renderTiles();
+  return true;
+}
+
+function appendAgentTerminalTranscript(tunnelId: string, rawText: string): boolean {
+  const text = cleanTerminalTranscript(rawText);
+  if (!text) {
+    return false;
+  }
+  terminalOpenId = tunnelId;
+  if (!terminalState.has(tunnelId)) {
+    setTerminalState(tunnelId, "run");
+  }
+  appendTerminalLine(tunnelId, text);
+  renderTerminal();
+  renderTiles();
+  return true;
 }
 
 function setAgentThinking(tunnelId: string, active: boolean): void {
@@ -2839,6 +3069,15 @@ function setAgentThinking(tunnelId: string, active: boolean): void {
     renderTextPaint();
     renderWriterPop();
   }
+}
+
+function cleanTerminalTranscript(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .replace(/\n{5,}/gu, "\n\n\n\n")
+    .trim()
+    .slice(0, 12_000);
 }
 
 function cleanAgentReplyText(value: string): string {
@@ -2928,6 +3167,10 @@ async function typeOperatorChat(tunnelId: string, rawText: string, speed: string
   const initial = texts.get(tunnelId) || "";
   const prefix = initial.length > 0 && !initial.endsWith("\n") ? "\n" : "";
   const suffix = text.endsWith("\n") ? "" : "\n";
+  if (speed === "instant") {
+    appendOperatorChatText(tunnelId, `${prefix}${text}${suffix}`);
+    return;
+  }
   const chars = Array.from(`${prefix}${text}${suffix}`);
   for (let index = 0; index < chars.length; index += 1) {
     const char = chars[index] || "";
@@ -2975,21 +3218,35 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
   renderTiles();
 }
 
-function sendOperatorUserMessage(tunnelId: string, text: string): void {
+function sendOperatorUserMessage(
+  tunnelId: string,
+  text: string,
+  context = "",
+  source: { readonly deviceId?: string; readonly deviceNick?: string } = {}
+): boolean {
   const ws = operatorSocket;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   const message = normalizeChatMessage(text);
   if (!ws || ws.readyState !== WebSocket.OPEN || !tunnel || !message) {
-    return;
+    return false;
   }
-  ws.send(JSON.stringify({
-    type: "operator.message",
-    id: `user_${crypto.randomUUID()}`,
-    target: tunnelId,
-    label: counterpartyLabel(tunnel),
-    text: message.slice(0, 12_000),
-    createdAt: new Date().toISOString()
-  }));
+  try {
+    ws.send(JSON.stringify({
+      type: "operator.message",
+      id: `user_${crypto.randomUUID()}`,
+      target: tunnelId,
+      label: counterpartyLabel(tunnel),
+      sourceDeviceId: source.deviceId || device?.id || "",
+      sourceDeviceNick: source.deviceNick || device?.nick || "",
+      agent: isAgentTunnel(tunnel),
+      text: message.slice(0, 12_000),
+      context: cleanAgentContext(context).slice(-16_000),
+      createdAt: new Date().toISOString()
+    }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function removeOperatorChatSuffix(tunnelId: string, suffix: string): void {
@@ -3132,6 +3389,10 @@ function insertedLineSpan(text: string, dropLeadingBreak = false): number {
     return 1;
   }
   return body.split("\n").length;
+}
+
+function lineBreakCount(text: string): number {
+  return (text.match(/\n/gu) ?? []).length;
 }
 
 function applyLiveDraft(tunnelId: string, draft: LiveDraft): void {
@@ -3278,7 +3539,7 @@ function renderTextPaint(): void {
     if (hideAgentChrome && isAgentChromeLineClass(state.className)) {
       continue;
     }
-    if (!line.trim() && !label) {
+    if (!line.trim()) {
       if (bubbles.length > 0) {
         bubbles[bubbles.length - 1]?.lines.push("");
       }

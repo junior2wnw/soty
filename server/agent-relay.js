@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 const maxChatChars = 12_000;
 const maxContextChars = 16_000;
 const maxReplyChars = 12_000;
+const maxReplyMessages = 64;
 const maxSourceChars = 180;
 const leaseMs = 10 * 60_000;
 const connectedMs = 70_000;
@@ -16,6 +17,7 @@ const channels = new Map();
 const agentSources = new Map();
 const pollWaiters = new Map();
 const replyWaiters = new Map();
+const eventWaiters = new Map();
 const sourcePollWaiters = new Map();
 const sourceReplyWaiters = new Map();
 const jsonParser = express.json({ limit: "180kb", type: "application/json" });
@@ -76,7 +78,7 @@ export function attachAgentRelay(app) {
     }
     cleanupChannels();
     const target = resolveRequestChannel(relayId);
-    source = enrichAgentSource(target.relayId, relayId, source);
+    source = enrichAgentSource(target.relayId, relayId, source, text);
     const channel = getChannel(target.relayId);
     const job = {
       id: `agent_${randomUUID()}`,
@@ -86,6 +88,8 @@ export function attachAgentRelay(app) {
       createdAt: Date.now(),
       leaseUntil: 0,
       reply: null,
+      events: [],
+      nextEventSeq: 0,
       clientRelayId: target.clientRelayId
     };
     channel.jobs.push(job);
@@ -134,6 +138,8 @@ export function attachAgentRelay(app) {
     job.reply = {
       ok: Boolean(req.body?.ok),
       text: cleanText(req.body?.text, maxReplyChars),
+      ...cleanReplyMessages(req.body?.messages),
+      ...cleanReplyTerminal(req.body?.terminal),
       ...(Number.isSafeInteger(req.body?.exitCode) ? { exitCode: req.body.exitCode } : {})
     };
     job.leaseUntil = 0;
@@ -141,7 +147,44 @@ export function attachAgentRelay(app) {
     if (job.clientRelayId) {
       flushReplyWaiters(job.clientRelayId, id);
     }
+    flushEventWaiters(relayId, id);
+    if (job.clientRelayId) {
+      flushEventWaiters(job.clientRelayId, id);
+    }
     res.json({ ok: true });
+  });
+
+  app.post("/api/agent/relay/event", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const id = cleanText(req.body?.id, 120);
+    const text = cleanText(req.body?.text, maxReplyChars);
+    const type = cleanText(req.body?.type, 40) || "agent_message";
+    if (!relayId || !id || !text.trim()) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    cleanupChannels();
+    const channel = channels.get(relayId);
+    const job = channel?.jobs.find((item) => item.id === id);
+    if (!job) {
+      res.status(404).json({ ok: false });
+      return;
+    }
+    const event = {
+      seq: ++job.nextEventSeq,
+      type,
+      text,
+      createdAt: new Date().toISOString()
+    };
+    job.events.push(event);
+    while (job.events.length > maxReplyMessages) {
+      job.events.shift();
+    }
+    flushEventWaiters(relayId, id);
+    if (job.clientRelayId) {
+      flushEventWaiters(job.clientRelayId, id);
+    }
+    res.json({ ok: true, event });
   });
 
   app.get("/api/agent/relay/reply", (req, res) => {
@@ -158,6 +201,23 @@ export function attachAgentRelay(app) {
       return;
     }
     addWaiter(replyWaiters, replyKey(relayId, id), req, res, () => ({ ok: true, reply: findReply(relayId, id) }));
+  });
+
+  app.get("/api/agent/relay/events", (req, res) => {
+    const relayId = normalizeRelayId(req.query.relayId);
+    const id = cleanText(req.query.id, 120);
+    const after = Number.parseInt(String(req.query.after || "0"), 10);
+    if (!relayId || !id) {
+      res.status(400).json({ ok: false, events: [], done: true });
+      return;
+    }
+    cleanupChannels();
+    const payload = relayEventsPayload(relayId, id, Number.isSafeInteger(after) ? after : 0);
+    if (payload.events.length > 0 || payload.done || req.query.wait !== "1") {
+      res.json(payload);
+      return;
+    }
+    addWaiter(eventWaiters, replyKey(relayId, id), req, res, () => relayEventsPayload(relayId, id, Number.isSafeInteger(after) ? after : 0));
   });
 
   app.post("/api/agent/source/grant", jsonParser, (req, res) => {
@@ -394,7 +454,7 @@ function touchAgentSource(source) {
   source.jobs = source.jobs.filter((job) => source.lastSeenAt - job.createdAt < sourceJobTtlMs);
 }
 
-function enrichAgentSource(targetRelayId, clientRelayId, source) {
+function enrichAgentSource(targetRelayId, clientRelayId, source, text = "") {
   if (!source.deviceId) {
     return source;
   }
@@ -405,15 +465,46 @@ function enrichAgentSource(targetRelayId, clientRelayId, source) {
   }
   const target = publicAgentSourceTarget(agentSource);
   const existing = Array.isArray(source.operatorTargets) ? source.operatorTargets : [];
+  const hasPreferred = preferredTargetMentioned(text, source, existing);
   return {
     ...source,
-    preferredTargetId: target.id,
-    preferredTargetLabel: target.label,
+    preferredTargetId: hasPreferred ? source.preferredTargetId : target.id,
+    preferredTargetLabel: hasPreferred ? source.preferredTargetLabel : target.label,
     operatorTargets: [
-      target,
-      ...existing.filter((item) => item.id !== target.id)
+      ...existing.filter((item) => item.id !== target.id),
+      target
     ]
   };
+}
+
+function preferredTargetMentioned(text, source, targets) {
+  const prefix = targetPrefix(text);
+  if (!prefix) {
+    return false;
+  }
+  const preferredId = normalizeTargetText(source.preferredTargetId);
+  const preferredLabel = normalizeTargetText(source.preferredTargetLabel);
+  if (preferredId && prefix === preferredId) {
+    return true;
+  }
+  if (preferredLabel && (prefix === preferredLabel || preferredLabel.includes(prefix) || prefix.includes(preferredLabel))) {
+    return true;
+  }
+  return targets.some((target) => {
+    const id = normalizeTargetText(target?.id);
+    const label = normalizeTargetText(target?.label);
+    return (id && prefix === id)
+      || (label && (prefix === label || label.includes(prefix) || prefix.includes(label)));
+  });
+}
+
+function targetPrefix(text) {
+  const match = /^([^:\n]{1,80})\s*:/u.exec(String(text || "").trim());
+  return match ? normalizeTargetText(match[1]) : "";
+}
+
+function normalizeTargetText(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function publicAgentSourceTarget(source) {
@@ -587,6 +678,10 @@ function flushReplyWaiters(relayId, id) {
   flushWaiters(replyWaiters, replyKey(relayId, id), () => ({ ok: true, reply: findReply(relayId, id) }));
 }
 
+function flushEventWaiters(relayId, id) {
+  flushWaiters(eventWaiters, replyKey(relayId, id), () => relayEventsPayload(relayId, id, 0));
+}
+
 function flushWaiters(map, key, buildPayload) {
   const waiters = map.get(key);
   if (!waiters) {
@@ -615,6 +710,37 @@ function replyKey(relayId, id) {
   return `${relayId}:${id}`;
 }
 
+function relayEventsPayload(relayId, id, after) {
+  const found = findRelayJob(relayId, id);
+  if (!found) {
+    return { ok: true, events: [], done: true };
+  }
+  const events = (found.job.events || [])
+    .filter((event) => Number.isSafeInteger(event.seq) && event.seq > after)
+    .map((event) => ({
+      seq: event.seq,
+      type: event.type || "agent_message",
+      text: event.text || "",
+      createdAt: event.createdAt || ""
+    }));
+  return { ok: true, events, done: Boolean(found.job.reply) };
+}
+
+function findRelayJob(relayId, id) {
+  const direct = channels.get(relayId);
+  const directJob = direct?.jobs.find((job) => job.id === id);
+  if (directJob) {
+    return { relayId, job: directJob };
+  }
+  for (const [channelRelayId, channel] of channels) {
+    const job = channel.jobs.find((item) => item.id === id && item.clientRelayId === relayId);
+    if (job) {
+      return { relayId: channelRelayId, job };
+    }
+  }
+  return null;
+}
+
 function normalizeRelayId(value) {
   const text = String(value || "").trim();
   return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
@@ -622,6 +748,30 @@ function normalizeRelayId(value) {
 
 function cleanText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function cleanReplyMessages(value) {
+  if (!Array.isArray(value)) {
+    return {};
+  }
+  const messages = value
+    .filter((item) => typeof item === "string")
+    .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, maxReplyChars))
+    .filter(Boolean)
+    .slice(0, maxReplyMessages);
+  return messages.length > 0 ? { messages } : {};
+}
+
+function cleanReplyTerminal(value) {
+  if (!Array.isArray(value)) {
+    return {};
+  }
+  const terminal = value
+    .filter((item) => typeof item === "string")
+    .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, maxReplyChars))
+    .filter(Boolean)
+    .slice(0, maxReplyMessages);
+  return terminal.length > 0 ? { terminal } : {};
 }
 
 function safeTimeout(value) {

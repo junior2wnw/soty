@@ -127,6 +127,150 @@ try {
     }
   }
 
+  function Test-CodexCli {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
+    if ($Path -notmatch '\.(cmd|exe|bat)$') { return $false }
+    try {
+      $version = & $Path --version 2>$null
+      return (($LASTEXITCODE -eq 0) -and ([string]$version -match 'codex'))
+    } catch {
+      return $false
+    }
+  }
+
+  function Resolve-Npm {
+    param([string]$NodePath)
+    $nodeDir = Split-Path -Parent $NodePath
+    foreach ($candidate in @(
+      (Join-Path $nodeDir "npm.cmd"),
+      (Join-Path $nodeDir "npm")
+    )) {
+      if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if ($npm) { return $npm.Source }
+    $npm = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npm -and ($npm.Source -match '\.(cmd|exe|bat)$')) { return $npm.Source }
+    throw "npm is required to install stock Codex CLI"
+  }
+
+  function Find-StockCodexCli {
+    param([string]$NodePath)
+    $nodeDir = Split-Path -Parent $NodePath
+    $candidates = @(
+      (Join-Path $nodeDir "codex.cmd"),
+      (Join-Path $nodeDir "codex.exe"),
+      (Join-Path $nodeDir "codex.bat")
+    )
+    if ($env:APPDATA) { $candidates += (Join-Path $env:APPDATA "npm\codex.cmd") }
+    $pathCodex = Get-Command codex.cmd -ErrorAction SilentlyContinue
+    if ($pathCodex) { $candidates += $pathCodex.Source }
+    $pathCodexExe = Get-Command codex.exe -ErrorAction SilentlyContinue
+    if ($pathCodexExe) { $candidates += $pathCodexExe.Source }
+    foreach ($candidate in $candidates) {
+      if (Test-CodexCli $candidate) { return $candidate }
+    }
+    return ""
+  }
+
+  function Install-StockCodexCli {
+    param([string]$NodePath)
+    try {
+      Remove-Item -LiteralPath (Join-Path $AgentDir "codex-cli") -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath (Join-Path $AgentDir "codex-home") -Recurse -Force -ErrorAction SilentlyContinue
+      $existing = Find-StockCodexCli $NodePath
+      if ($existing) {
+        Write-Output "soty-codex-cli:available:$existing"
+        return $existing
+      }
+      $npm = Resolve-Npm $NodePath
+      $nodeDir = Split-Path -Parent $NodePath
+      $npmUserBin = if ($env:APPDATA) { Join-Path $env:APPDATA "npm" } else { "" }
+      $env:PATH = (@($nodeDir, $npmUserBin, $env:PATH) | Where-Object { $_ }) -join ";"
+      $codexInstallLog = Join-Path $AgentDir "codex-install.log"
+      $escapedNpm = $npm.Replace('"', '\"')
+      $escapedLog = $codexInstallLog.Replace('"', '\"')
+      $cmdLine = "`"$escapedNpm`" install -g `"@openai/codex@latest`" --no-audit --no-fund > `"$escapedLog`" 2>&1"
+      & $env:ComSpec /d /s /c $cmdLine
+      if ($LASTEXITCODE -ne 0) {
+        Write-Output "soty-codex-cli:install-skipped:$LASTEXITCODE"
+        return ""
+      }
+      $installed = Find-StockCodexCli $NodePath
+      if ($installed) {
+        Write-Output "soty-codex-cli:installed:$installed"
+        return $installed
+      }
+      Write-Output "soty-codex-cli:install-skipped:not-found"
+      return ""
+    } catch {
+      Write-Output "soty-codex-cli:install-skipped:$($_.Exception.Message)"
+      return ""
+    }
+  }
+
+  function Install-OpsSkillSource {
+    $skillRoot = Join-Path $AgentDir "skill-sources"
+    $target = Join-Path $skillRoot "universal-install-ops-skill"
+    $zipPath = Join-Path $AgentDir "universal-install-ops-skill-main.zip"
+    $extractDir = Join-Path $AgentDir "ops-skill-download"
+    $url = "$Base/ops-skill.zip"
+    $expectedHash = ""
+    $expectedTarHash = ""
+    try {
+      $skillManifest = Invoke-RestMethod -Uri $ManifestUrl -UseBasicParsing -TimeoutSec 15
+      if ($skillManifest -and $skillManifest.opsSkill) {
+        $manifestUrl = [string]$skillManifest.opsSkill.zipUrl
+        $manifestHash = [string]$skillManifest.opsSkill.zipSha256
+        $manifestTarHash = [string]$skillManifest.opsSkill.tarSha256
+        if ($manifestUrl) {
+          if ($manifestUrl -match '^https?://') {
+            $url = $manifestUrl
+          } elseif ($manifestUrl.StartsWith("/")) {
+            $baseUri = [Uri]$Base
+            $url = "$($baseUri.Scheme)://$($baseUri.Authority)$manifestUrl"
+          } else {
+            $url = "$($Base.TrimEnd('/'))/$manifestUrl"
+          }
+        }
+        if ($manifestHash -match '^[a-fA-F0-9]{64}$') {
+          $expectedHash = $manifestHash.ToLowerInvariant()
+        }
+        if ($manifestTarHash -match '^[a-fA-F0-9]{64}$') {
+          $expectedTarHash = $manifestTarHash.ToLowerInvariant()
+        }
+      }
+    } catch {}
+    try {
+      New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
+      Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+      Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $zipPath
+      if ($expectedHash) {
+        $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) { throw "ops skill hash mismatch" }
+      }
+      Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+      $inner = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1
+      if (-not $inner) { throw "ops skill archive is empty" }
+      Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+      Move-Item -LiteralPath $inner.FullName -Destination $target
+      if ($expectedHash) {
+        $marker = @{ zipSha256 = $expectedHash; tarSha256 = $expectedTarHash; installedAt = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json -Compress
+        Set-Content -LiteralPath (Join-Path $target ".soty-skill-bundle.json") -Value $marker -Encoding ASCII
+      }
+      Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Output "soty-ops-skill:installed"
+    } catch {
+      if (Test-Path -LiteralPath (Join-Path $target "SKILL.md")) {
+        Write-Output "soty-ops-skill:kept-existing"
+        return
+      }
+      throw "ops skill install failed: $($_.Exception.Message)"
+    }
+  }
+
   function Test-AgentHealth {
     try {
       $health = Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 2
@@ -314,11 +458,24 @@ shell.Run "$escapedCommand", 0, False
   }
 
   $NodePath = Resolve-Node
+  $CodexPath = ([string](Install-StockCodexCli $NodePath | Select-Object -Last 1)).Trim()
+  Install-OpsSkillSource
+  $NodeDir = Split-Path -Parent $NodePath
+  $NpmUserBin = if ($env:APPDATA) { Join-Path $env:APPDATA "npm" } else { "" }
+  $RunnerPathParts = @($NodeDir, $NpmUserBin) | Where-Object { $_ }
   $SafeRelayId = Normalize-AgentRelayId $RelayId
   $RelayEnv = if ($SafeRelayId) {
 @"
 `$env:SOTY_AGENT_RELAY_ID = "$SafeRelayId"
 `$env:SOTY_AGENT_RELAY_URL = "https://xn--n1afe0b.online"
+"@
+  } else {
+    ""
+  }
+  $CodexEnv = if ($RunnerPathParts.Count -gt 0) {
+    $RunnerPathPrefix = ($RunnerPathParts -join ";")
+@"
+`$env:PATH = "$RunnerPathPrefix;`$env:PATH"
 "@
   } else {
     ""
@@ -331,6 +488,7 @@ shell.Run "$escapedCommand", 0, False
 `$env:SOTY_AGENT_SCOPE = "$Scope"
 `$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
 $RelayEnv
+$CodexEnv
 while (`$true) {
   & "$NodePath" "$AgentPath"
   `$code = `$LASTEXITCODE
