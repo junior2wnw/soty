@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.104";
+const agentVersion = "0.3.105";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -36,10 +36,13 @@ const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
+const configuredAgentDeviceId = safeSourceText(process.env.SOTY_AGENT_DEVICE_ID || "");
+const configuredAgentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_NICK || "");
 const maxCodexDialogMessages = 64;
 const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
 const agentReplyTimeoutMs = Number.parseInt(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS || "300000", 10);
+const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK === "1";
@@ -51,6 +54,7 @@ const operatorMessageWaiters = new Set();
 const agentOperatorReplyQueues = new Map();
 const recentAgentOperatorMessageKeys = new Map();
 const recentCodexTurnKeys = new Map();
+const activeRelayJobs = new Set();
 let learningSyncTimer = null;
 let operatorBridge = null;
 let operatorBridgeVisible = false;
@@ -339,6 +343,7 @@ async function handleOperatorHttpRun(request, response, headers) {
   }
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
+  const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const timeoutMs = Number.isSafeInteger(payload.timeoutMs) ? Math.max(1000, Math.min(payload.timeoutMs, defaultTimeoutMs)) : defaultTimeoutMs;
   const blocked = blockedManualWindowsRecoveryHandoff(command);
@@ -347,14 +352,14 @@ async function handleOperatorHttpRun(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
-  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId));
+  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers);
+    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers, sourceRelayId);
     return;
   }
   if (!operatorBridge?.open || !target || !command.trim()) {
@@ -381,6 +386,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   }
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
+  const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
@@ -391,14 +397,14 @@ async function handleOperatorHttpScript(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
-  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId));
+  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell }, timeoutMs, response, headers);
+    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell }, timeoutMs, response, headers, sourceRelayId);
     return;
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
@@ -417,7 +423,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   });
 }
 
-async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers) {
+async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers, sourceRelayId = "") {
   const deviceId = agentSourceDeviceId(target);
   if (!deviceId || !command.trim()) {
     sendJson(response, 400, headers, { ok: false, text: "! request", exitCode: 400 });
@@ -431,16 +437,16 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
     deviceId,
     command,
     timeoutMs
-  });
+  }, sourceRelayId);
   rememberAgentSourceOutcome({ kind: "run", command, result });
   sendJson(response, 200, headers, result);
 }
 
-async function normalizeOperatorHttpTarget(target, sourceDeviceId) {
+async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "") {
   if (isAgentSourceTarget(target)) {
     return { target, sourceDeviceId };
   }
-  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, await activeAgentSourceTargets());
+  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, await activeAgentSourceTargets(sourceRelayId));
   if (!sourceTarget) {
     return { target, sourceDeviceId };
   }
@@ -489,7 +495,7 @@ function operatorTargetByText(target) {
     || null;
 }
 
-async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers) {
+async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers, sourceRelayId = "") {
   const deviceId = agentSourceDeviceId(target);
   if (!deviceId || !String(payload.script || "").trim()) {
     sendJson(response, 400, headers, { ok: false, text: "! request", exitCode: 400 });
@@ -503,14 +509,15 @@ async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, time
     deviceId,
     ...payload,
     timeoutMs
-  });
+  }, sourceRelayId);
   rememberAgentSourceOutcome({ kind: "script", command: payload.script, result });
   sendJson(response, 200, headers, result);
 }
 
-async function postAgentSourceJob(path, body) {
+async function postAgentSourceJob(path, body, relayId = "") {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
-  if (!relayBaseUrl || !agentRelayId) {
+  const jobRelayId = safeRelayId(relayId) || agentRelayId;
+  if (!relayBaseUrl || !jobRelayId) {
     return { ok: false, text: "! relay", exitCode: 409 };
   }
   try {
@@ -519,7 +526,7 @@ async function postAgentSourceJob(path, body) {
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        relayId: agentRelayId,
+        relayId: jobRelayId,
         ...body
       })
     });
@@ -1557,16 +1564,35 @@ async function runAgentRelayLoop() {
         await sleep(30_000);
         continue;
       }
+      if (activeRelayJobs.size >= maxConcurrentCodexJobs) {
+        await sleep(500);
+        continue;
+      }
       const jobs = await pollAgentRelay();
       retryMs = 1000;
       for (const job of jobs) {
-        await handleAgentRelayJob(job);
+        scheduleAgentRelayJob(job);
       }
     } catch {
       await sleep(retryMs);
       retryMs = Math.min(30_000, Math.round(retryMs * 1.6));
     }
   }
+}
+
+function scheduleAgentRelayJob(job) {
+  const task = handleAgentRelayJob(job)
+    .catch(async (error) => {
+      await postAgentRelayReply(job.id, {
+        ok: false,
+        text: agentFailureText(error instanceof Error ? error.message : String(error)),
+        exitCode: 1
+      }).catch(() => undefined);
+    })
+    .finally(() => {
+      activeRelayJobs.delete(task);
+    });
+  activeRelayJobs.add(task);
 }
 
 async function pollAgentRelay() {
@@ -1579,10 +1605,15 @@ async function pollAgentRelay() {
   url.searchParams.set("codex", "1");
   if (operatorDeviceId) {
     url.searchParams.set("deviceId", operatorDeviceId);
+  } else if (configuredAgentDeviceId) {
+    url.searchParams.set("deviceId", configuredAgentDeviceId);
   }
   if (operatorDeviceNick) {
     url.searchParams.set("deviceNick", operatorDeviceNick);
+  } else if (configuredAgentDeviceNick) {
+    url.searchParams.set("deviceNick", configuredAgentDeviceNick);
   }
+  url.searchParams.set("scope", agentScope);
   url.searchParams.set("wait", "1");
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -1852,13 +1883,18 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "" }
     args.push("--dangerously-bypass-approvals-and-sandbox");
   }
   const targetId = target?.id || "";
-  const sourceDeviceId = bridgeSourceDeviceId(target, source);
+  const safeSource = sanitizeAgentSource(source);
+  const sourceDeviceId = bridgeSourceDeviceId(target, safeSource);
+  const sourceRelayId = safeRelayId(safeSource.sourceRelayId) || agentRelayId;
   const mcpArgs = [
     scriptPath,
     "mcp",
     "--port",
     String(port)
   ];
+  if (sourceRelayId) {
+    mcpArgs.push("--source-relay", sourceRelayId);
+  }
   if (targetId && sourceDeviceId) {
     mcpArgs.push("--target", targetId, "--source-device", sourceDeviceId);
   }
@@ -2234,14 +2270,15 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   return null;
 }
 
-async function activeAgentSourceTargets() {
+async function activeAgentSourceTargets(relayId = "") {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
-  if (!relayBaseUrl || !agentRelayId) {
+  const sourceRelayId = safeRelayId(relayId) || agentRelayId;
+  if (!relayBaseUrl || !sourceRelayId) {
     return [];
   }
   try {
     const url = new URL("/api/agent/source/targets", relayBaseUrl);
-    url.searchParams.set("relayId", agentRelayId);
+    url.searchParams.set("relayId", sourceRelayId);
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok || !payload?.ok) {
@@ -2718,6 +2755,7 @@ function sanitizeAgentSource(value) {
     deviceId: clean(value.deviceId),
     deviceNick: clean(value.deviceNick),
     appOrigin: clean(value.appOrigin),
+    sourceRelayId: safeRelayId(value.sourceRelayId),
     preferredTargetId: clean(value.preferredTargetId),
     preferredTargetLabel: clean(value.preferredTargetLabel),
     localAgentDirect: value.localAgentDirect === true,
@@ -2984,6 +3022,7 @@ function quoteSh(value) {
 function runMcpServer() {
   const mcpTarget = arg("--target") || process.env.SOTY_MCP_TARGET || "";
   const mcpSourceDeviceId = arg("--source-device") || process.env.SOTY_MCP_SOURCE_DEVICE || "";
+  const mcpSourceRelayId = safeRelayId(arg("--source-relay") || process.env.SOTY_MCP_SOURCE_RELAY || "");
   let mcpBuffer = Buffer.alloc(0);
   process.stdin.on("data", (chunk) => {
     mcpBuffer = Buffer.concat([mcpBuffer, chunk]);
@@ -3384,7 +3423,10 @@ function runMcpServer() {
           "Content-Type": "application/json",
           Origin: "https://xn--n1afe0b.online"
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          ...body,
+          ...(mcpSourceRelayId ? { sourceRelayId: mcpSourceRelayId } : {})
+        })
       });
       const payload = await response.json();
       return {

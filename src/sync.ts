@@ -18,6 +18,7 @@ export interface PeerInfo {
 
 export interface SyncCallbacks {
   readonly onText: (text: string) => void;
+  readonly onTerminal: (terminal: TerminalSnapshot) => void;
   readonly onActivity: (activity: WriterActivity) => void;
   readonly onRemoteChange: (activity: WriterActivity) => void;
   readonly onLiveDraft: (draft: LiveDraft) => void;
@@ -132,6 +133,11 @@ export interface RemoteOutput {
   readonly deviceId: string;
   readonly nick: string;
   readonly createdAt: string;
+}
+
+export interface TerminalSnapshot {
+  readonly lines: readonly string[];
+  readonly state: "idle" | "run" | "ok" | "bad" | "off";
 }
 
 interface EncryptedUpdate {
@@ -341,6 +347,8 @@ const p2pIceServers: RTCIceServer[] = [
 export class TunnelSync {
   private readonly doc = new Y.Doc();
   private readonly text = this.doc.getText("body");
+  private readonly terminalLines = this.doc.getArray<string>("terminalLines");
+  private readonly terminalMeta = this.doc.getMap<string>("terminalMeta");
   private ws: WebSocket | null = null;
   private destroyed = false;
   private ready = false;
@@ -397,6 +405,12 @@ export class TunnelSync {
     this.text.observe(() => {
       this.callbacks.onText(this.text.toString());
     });
+    this.terminalLines.observe(() => {
+      this.callbacks.onTerminal(this.terminalSnapshot());
+    });
+    this.terminalMeta.observe(() => {
+      this.callbacks.onTerminal(this.terminalSnapshot());
+    });
     window.addEventListener("online", this.wakeReconnect);
     window.addEventListener("offline", this.offlineState);
     window.addEventListener("focus", this.wakeReconnect);
@@ -435,6 +449,31 @@ export class TunnelSync {
         this.text.insert(start, insertText);
       }
     }, "local");
+  }
+
+  appendTerminalLine(line: string): void {
+    const text = cleanTerminalLine(line);
+    if (!text) {
+      return;
+    }
+    this.doc.transact(() => {
+      this.terminalLines.push([text]);
+      const overflow = this.terminalLines.length - 600;
+      if (overflow > 0) {
+        this.terminalLines.delete(0, overflow);
+      }
+    }, "local");
+  }
+
+  setTerminalState(state: TerminalSnapshot["state"]): void {
+    this.terminalMeta.set("state", terminalStateFrom(state));
+  }
+
+  terminalSnapshot(): TerminalSnapshot {
+    return {
+      lines: this.terminalLines.toArray().slice(-600),
+      state: terminalStateFrom(this.terminalMeta.get("state"))
+    };
   }
 
   async sendLiveDraft(text: string): Promise<void> {
@@ -748,6 +787,7 @@ export class TunnelSync {
       this.reconnectDelay = minReconnectDelayMs;
       this.callbacks.onState("open");
       this.callbacks.onText(this.text.toString());
+      this.callbacks.onTerminal(this.terminalSnapshot());
       this.flushOfflineQueue();
       this.flushControls();
       this.scheduleSnapshot();
@@ -1692,6 +1732,19 @@ function cleanFileName(value: string): string {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function cleanTerminalLine(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .replace(/\n{5,}/gu, "\n\n\n\n")
+    .trim()
+    .slice(0, 12_000);
+}
+
+function terminalStateFrom(value: unknown): TerminalSnapshot["state"] {
+  return value === "run" || value === "ok" || value === "bad" || value === "off" ? value : "idle";
 }
 
 function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {

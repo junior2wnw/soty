@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
-import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -1354,6 +1354,9 @@ function ensureSync(tunnel: TunnelRecord): void {
         applySelectedText();
       }
     },
+    onTerminal: (terminal) => {
+      applySyncedTerminal(tunnel.id, terminal);
+    },
     onActivity: (activity) => {
       rememberWriter(tunnel.id, activity);
       activeActivities.set(tunnel.id, activity);
@@ -2422,9 +2425,24 @@ function isAgentLinkedTunnel(tunnelId: string): boolean {
   return isAgentTunnelId(tunnelId) && remoteEnabled.has(tunnelId);
 }
 
-function appendTerminalLine(tunnelId: string, line: string): void {
+function applySyncedTerminal(tunnelId: string, terminal: TerminalSnapshot): void {
+  terminalLogs.set(tunnelId, [...terminal.lines]);
+  terminalState.set(tunnelId, terminal.state);
+  if (terminal.lines.length > 0 && !terminalOpenId && (tunnelId === selectedId || remoteAccess.has(tunnelId) || remoteEnabled.has(tunnelId))) {
+    terminalOpenId = tunnelId;
+  }
+  if (tunnelId === selectedId || terminalOpenId === tunnelId) {
+    renderTerminal();
+    renderTiles();
+  }
+}
+
+function appendTerminalLine(tunnelId: string, line: string, publish = true): void {
   const next = [...(terminalLogs.get(tunnelId) ?? []), line].slice(-600);
   terminalLogs.set(tunnelId, next);
+  if (publish) {
+    syncs.get(tunnelId)?.appendTerminalLine(line);
+  }
 }
 
 function appendTerminalExitLine(tunnelId: string, exitCode: number): void {
@@ -2433,8 +2451,11 @@ function appendTerminalExitLine(tunnelId: string, exitCode: number): void {
   }
 }
 
-function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad" | "off"): void {
+function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad" | "off", publish = true): void {
   terminalState.set(tunnelId, state);
+  if (publish) {
+    syncs.get(tunnelId)?.setTerminalState(state);
+  }
 }
 
 function grantTargetsThisDevice(targetDeviceId: string): boolean {

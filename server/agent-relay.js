@@ -21,6 +21,7 @@ const eventWaiters = new Map();
 const sourcePollWaiters = new Map();
 const sourceReplyWaiters = new Map();
 const jsonParser = express.json({ limit: "180kb", type: "application/json" });
+const configuredServerCodexRelayId = normalizeRelayId(process.env.SOTY_SERVER_CODEX_RELAY_ID || process.env.SOTY_AGENT_RELAY_ID || "");
 
 export function attachAgentRelay(app) {
   app.get("/api/agent/relay/status", (req, res) => {
@@ -30,15 +31,16 @@ export function attachAgentRelay(app) {
       return;
     }
     cleanupChannels();
-    const channel = channels.get(relayId);
-    const lastPollAt = channel?.lastPollAt || 0;
     const now = Date.now();
+    const target = resolveRequestChannel(relayId, now);
+    const channel = target.connected ? channels.get(target.relayId) : channels.get(relayId);
     res.json({
       ok: true,
-      connected: Boolean(channel && isCodexChannelConnected(channel, now)),
+      connected: Boolean(target.connected),
       lastSeenAt: channel ? new Date(channelActivityAt(channel, now)).toISOString() : "",
       version: channel?.agentVersion || "",
       codex: channel?.codex === true,
+      serverRelay: Boolean(target.clientRelayId),
       deviceId: channel?.deviceId || "",
       deviceNick: channel?.deviceNick || ""
     });
@@ -59,7 +61,7 @@ export function attachAgentRelay(app) {
       res.status(409).json({ ok: false, error: "relay-not-connected" });
       return;
     }
-    source = enrichAgentSource(target.relayId, relayId, source, text);
+    source = withSourceRelay(enrichAgentSource(target.relayId, relayId, source, text), relayId);
     const channel = getChannel(target.relayId);
     const job = {
       id: `agent_${randomUUID()}`,
@@ -92,6 +94,7 @@ export function attachAgentRelay(app) {
     channel.lastPollAt = Date.now();
     channel.agentVersion = cleanText(req.query.version, 32);
     channel.codex = req.query.codex === "1";
+    channel.agentScope = cleanText(req.query.scope, 40);
     channel.deviceId = cleanText(req.query.deviceId, maxSourceChars) || channel.deviceId || "";
     channel.deviceNick = cleanText(req.query.deviceNick, maxSourceChars) || channel.deviceNick || "";
     const jobs = leasePendingJobs(channel);
@@ -344,13 +347,41 @@ function getChannel(relayId) {
   return channel;
 }
 
-function resolveRequestChannel(relayId) {
+function resolveRequestChannel(relayId, now = Date.now()) {
   const requested = channels.get(relayId);
-  const requestedConnected = requested ? isCodexChannelConnected(requested, Date.now()) : false;
+  const requestedConnected = requested ? isCodexChannelConnected(requested, now) : false;
   if (requested?.codex === true && requestedConnected) {
     return { relayId, clientRelayId: "", connected: true };
   }
+  const server = bestServerCodexChannel(relayId, now);
+  if (server) {
+    return { relayId: server.relayId, clientRelayId: relayId, connected: true };
+  }
   return { relayId, clientRelayId: "", connected: false };
+}
+
+function bestServerCodexChannel(clientRelayId, now = Date.now()) {
+  return [...channels.entries()]
+    .filter(([relayId, channel]) => relayId !== clientRelayId && isServerCodexChannel(relayId, channel, now))
+    .map(([relayId, channel]) => ({
+      relayId,
+      load: channel.jobs.filter((job) => !job.reply).length,
+      activity: channelActivityAt(channel, now)
+    }))
+    .sort((left, right) => left.load - right.load || right.activity - left.activity)[0] || null;
+}
+
+function isServerCodexChannel(relayId, channel, now = Date.now()) {
+  if (!channel?.codex || !isCodexChannelConnected(channel, now)) {
+    return false;
+  }
+  if (configuredServerCodexRelayId && relayId === configuredServerCodexRelayId) {
+    return true;
+  }
+  if (String(channel.agentScope || "").toLowerCase() === "server") {
+    return true;
+  }
+  return /^srv_codex_/u.test(relayId);
 }
 
 function isCodexChannelConnected(channel, now = Date.now()) {
@@ -435,6 +466,13 @@ function enrichAgentSource(targetRelayId, clientRelayId, source, text = "") {
     return source;
   }
   return enrichWithAgentSourceTarget(source, agentSource, Boolean(mentionedSource), text);
+}
+
+function withSourceRelay(source, sourceRelayId) {
+  return {
+    ...source,
+    sourceRelayId: normalizeRelayId(sourceRelayId) || normalizeRelayId(source?.sourceRelayId)
+  };
 }
 
 function enrichWithAgentSourceTarget(source, agentSource, forcePreferred, text = "") {
@@ -596,6 +634,7 @@ function cleanAgentSource(value) {
     deviceId: cleanText(value.deviceId, maxSourceChars),
     deviceNick: cleanText(value.deviceNick, maxSourceChars),
     appOrigin: cleanText(value.appOrigin, maxSourceChars),
+    sourceRelayId: normalizeRelayId(value.sourceRelayId),
     preferredTargetId: cleanText(value.preferredTargetId, maxSourceChars),
     preferredTargetLabel: cleanText(value.preferredTargetLabel, maxSourceChars),
     localAgentDirect: value.localAgentDirect === true,

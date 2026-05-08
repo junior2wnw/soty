@@ -67,7 +67,9 @@ For development, run:
 pnpm run agent
 ```
 
-Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. Agent chat first tries that loopback bridge and then falls back only to the explicitly paired server relay when the browser blocks local-network access; it must not auto-switch to a global "latest" agent from another device.
+Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. Agent chat first tries that loopback bridge. If the local companion has no Codex CLI or the browser blocks loopback access, chat falls back to a server Codex executor channel marked with `SOTY_SERVER_CODEX_RELAY_ID`, `SOTY_AGENT_RELAY_ID`, `SOTY_AGENT_SCOPE=Server`, or a `srv_codex_` relay id. The server executor may think for many client relays, but device commands are routed back through the requesting `sourceRelayId + deviceId`; it must not auto-switch to a global "latest" user agent from another device.
+
+Remote command transcripts are part of the encrypted tunnel document, not page-local scratch state. Reloading one browser tab must not clear another device's command window, and a refreshed tab should recover the terminal transcript from the server snapshot.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 

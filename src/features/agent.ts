@@ -45,6 +45,7 @@ export interface LocalAgentRequestSource {
   readonly tunnelLabel?: string;
   readonly deviceId?: string;
   readonly deviceNick?: string;
+  readonly sourceRelayId?: string;
   readonly appOrigin?: string;
   readonly preferredTargetId?: string;
   readonly preferredTargetLabel?: string;
@@ -89,7 +90,8 @@ export async function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus
     return direct;
   }
 
-  if (readAgentRelayId()) {
+  const relayId = readAgentRelayId() || ensureAgentRelayId();
+  if (relayId) {
     const relay = await checkAgentRelay(timeoutMs);
     if (relay.ok && relay.codex !== false) {
       return relay;
@@ -118,7 +120,7 @@ export async function askLocalAgentReply(
     { ...source, localAgentDirect: true },
     timeoutMs
   );
-  if (direct) {
+  if (direct && !isCodexMissingReply(direct)) {
     for (const message of direct.messages ?? []) {
       onMessage?.(message);
     }
@@ -128,7 +130,7 @@ export async function askLocalAgentReply(
     return direct;
   }
 
-  if (readAgentRelayId()) {
+  if (readAgentRelayId() || ensureAgentRelayId()) {
     const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal);
     if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
@@ -192,7 +194,7 @@ export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
 }
 
 export async function grantAgentSourceAccess(deviceId: string, deviceNick: string, enabled: boolean, timeoutMs = 1500): Promise<boolean> {
-  const relayId = readAgentRelayId();
+  const relayId = ensureAgentRelayId();
   if (!relayId || !deviceId) {
     return false;
   }
@@ -326,7 +328,7 @@ async function askAgentRelayReply(
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler
 ): Promise<LocalAgentReply | null> {
-  const relayId = readAgentRelayId();
+  const relayId = readAgentRelayId() || ensureAgentRelayId();
   if (!relayId) {
     return null;
   }
@@ -476,7 +478,7 @@ function cleanReplyMessages(value: readonly unknown[] | undefined): string[] {
 }
 
 function isCodexMissingReply(reply: LocalAgentReply): boolean {
-  return reply.exitCode === 126 || /codex/iu.test(reply.text);
+  return !reply.ok && (reply.exitCode === 126 || /codex-cli:\s*not found/iu.test(reply.text));
 }
 
 async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus> {
