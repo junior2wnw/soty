@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.100";
+const agentVersion = "0.3.101";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2595,8 +2595,8 @@ async function installOpsSkillForCodexHome(codexHome) {
   }
   const skillsDir = join(codexHome, "skills");
   await mkdir(skillsDir, { recursive: true });
-  for (const skillName of ["universal-install-ops", "ops"]) {
-    const target = join(skillsDir, skillName);
+  const target = join(skillsDir, "universal-install-ops");
+  if (!sameFsPath(source, target)) {
     await rm(target, { recursive: true, force: true }).catch(() => undefined);
     await cp(source, target, {
       recursive: true,
@@ -2608,7 +2608,16 @@ async function installOpsSkillForCodexHome(codexHome) {
       }
     });
   }
+  await rm(join(skillsDir, "ops"), { recursive: true, force: true }).catch(() => undefined);
   return true;
+}
+
+function sameFsPath(left, right) {
+  const leftPath = resolve(left).replace(/\\/gu, "/");
+  const rightPath = resolve(right).replace(/\\/gu, "/");
+  return process.platform === "win32"
+    ? leftPath.toLowerCase() === rightPath.toLowerCase()
+    : leftPath === rightPath;
 }
 
 function opsSkillSourceDir() {
