@@ -8,6 +8,7 @@ import {
   isP2pCandidate,
   isP2pDescription,
   isRemoteCommand,
+  isRemoteCancel,
   isRemoteGrant,
   isRemoteOutput,
   isRemoteRequest,
@@ -147,6 +148,13 @@ async function handleMessage(room, peer, ws, store, raw) {
     broadcast(room, peer.id, {
       type: "remote.script",
       script: withPeer(peer, message.script)
+    });
+    return;
+  }
+  if (message.type === "remote.cancel" && isRemoteCancel(message.cancel)) {
+    broadcast(room, peer.id, {
+      type: "remote.cancel",
+      cancel: withPeer(peer, message.cancel)
     });
     return;
   }

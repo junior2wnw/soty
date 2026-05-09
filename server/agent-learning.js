@@ -324,7 +324,7 @@ function cleanReceipt(value) {
     return null;
   }
   const kind = cleanEnum(value.kind, ["codex-turn", "source-command", "agent-runtime", "action-job"], "agent-runtime");
-  const result = cleanEnum(value.result, ["ok", "failed", "partial", "blocked", "timeout"], "failed");
+  const result = cleanEnum(value.result, ["ok", "failed", "partial", "blocked", "timeout", "cancelled"], "failed");
   const exitCode = Number.isSafeInteger(value.exitCode) ? Math.max(-32768, Math.min(32767, value.exitCode)) : undefined;
   return {
     kind,

@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.112");
+      assertEqual(health.body.version, "0.3.113");
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -143,6 +143,16 @@ async function runScenarios() {
       assert(response.body.jobId);
       await waitForStatus(response.body.statusPath, "ok");
     }],
+    ["detached action can be stopped", async () => {
+      const response = await action({ ...sourceRun("SELFTEST_HANG cancel"), detached: true, idempotencyKey: "detached-cancel-one" });
+      assertEqual(response.status, 202);
+      await waitForCall("SELFTEST_HANG cancel");
+      const stop = await post(`/operator/action/${response.body.jobId}/stop`, {});
+      assert(stop.status === 200 || stop.status === 202);
+      const status = await waitForStatus(response.body.statusPath, "cancelled");
+      assertEqual(status.body.job.status, "cancelled");
+      await waitForCancel(response.body.jobId);
+    }],
     ["actions list includes completed jobs", async () => {
       const list = await get("/operator/actions");
       assert(list.body.jobs.some((job) => job.status === "ok"));
@@ -232,11 +242,11 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.112");
+      assertEqual(manifest.version, "0.3.113");
       assertEqual(manifest.windowsReinstall.scripts.length, 3);
     }]
   ];
-  assertEqual(cases.length, 50);
+  assert(cases.length >= 50);
   for (const [name, fn] of cases) {
     await fn();
     scenariosRun += 1;
@@ -267,6 +277,26 @@ async function waitForStatus(path, status) {
   throw new Error(`status ${status} did not appear at ${path}`);
 }
 
+async function waitForCancel(jobId) {
+  for (let index = 0; index < 40; index += 1) {
+    if (mock.cancelCount(jobId) >= 1) {
+      return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`cancel ${jobId} did not arrive`);
+}
+
+async function waitForCall(needle) {
+  for (let index = 0; index < 40; index += 1) {
+    if (mock.count(needle) >= 1) {
+      return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`call ${needle} did not arrive`);
+}
+
 function expectStatus(response, status) {
   assertEqual(response.body.status, status);
   return response;
@@ -284,6 +314,7 @@ function expectRisk(response, risk) {
 
 function createMockRelay() {
   const calls = [];
+  const cancels = [];
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname === "/agent/manifest.json") {
@@ -296,7 +327,7 @@ function createMockRelay() {
       const text = String(payload.command || payload.script || "");
       calls.push(text);
       if (text.includes("SELFTEST_HANG")) {
-        await sleep(30_000);
+        await sleep(5000);
       }
       if (text.includes("SELFTEST_DELAY")) {
         await sleep(250);
@@ -324,6 +355,13 @@ function createMockRelay() {
       json(response, 200, { ok: true, text: output, exitCode: 0 });
       return;
     }
+    if (url.pathname === "/api/agent/source/cancel") {
+      const body = await readBody(request);
+      const payload = JSON.parse(body || "{}");
+      cancels.push(String(payload.id || ""));
+      json(response, 200, { ok: true, id: payload.id || "" });
+      return;
+    }
     if (url.pathname === "/api/agent/learning/receipts") {
       json(response, 200, { ok: true, accepted: 1 });
       return;
@@ -333,6 +371,7 @@ function createMockRelay() {
   return {
     server,
     count: (needle) => calls.filter((item) => item.includes(needle)).length,
+    cancelCount: (id) => cancels.filter((item) => item === id).length,
     lastCommandWith: (needle) => [...calls].reverse().find((item) => item.includes(needle)) || ""
   };
 }

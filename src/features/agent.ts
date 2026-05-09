@@ -55,8 +55,9 @@ export interface LocalAgentRequestSource {
 
 export interface AgentSourceCommand {
   readonly id: string;
-  readonly type: "run" | "script";
+  readonly type: "run" | "script" | "cancel";
   readonly command?: string;
+  readonly commandId?: string;
   readonly script?: string;
   readonly name?: string;
   readonly shell?: string;
@@ -266,7 +267,7 @@ function agentSourceCommandFrom(value: unknown): AgentSourceCommand | null {
   }
   const item = value as Record<string, unknown>;
   const id = typeof item.id === "string" ? item.id : "";
-  const type = item.type === "script" ? "script" : item.type === "run" ? "run" : "";
+  const type = item.type === "cancel" ? "cancel" : item.type === "script" ? "script" : item.type === "run" ? "run" : "";
   if (!id || !type) {
     return null;
   }
@@ -274,9 +275,11 @@ function agentSourceCommandFrom(value: unknown): AgentSourceCommand | null {
     id,
     type,
     ...(typeof item.command === "string" ? { command: item.command } : {}),
+    ...(typeof item.commandId === "string" ? { commandId: item.commandId } : {}),
     ...(typeof item.script === "string" ? { script: item.script } : {}),
     ...(typeof item.name === "string" ? { name: item.name } : {}),
-    ...(typeof item.shell === "string" ? { shell: item.shell } : {})
+    ...(typeof item.shell === "string" ? { shell: item.shell } : {}),
+    ...(typeof item.timeoutMs === "number" ? { timeoutMs: item.timeoutMs } : {})
   };
 }
 

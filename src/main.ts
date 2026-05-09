@@ -1,10 +1,10 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
-import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, isWindowsPlatform, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, hasAgentRelayId, isWindowsPlatform, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
 import type { AgentSourceCommand, LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
@@ -149,6 +149,8 @@ let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
+const operatorRemoteRuns = new Map<string, { readonly commandId: string; readonly tunnelId: string; readonly hostDeviceId: string }>();
+const localAgentRuns = new Map<string, WebSocket>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 const agentReplyQueues = new Map<string, Promise<void>>();
 const agentThinking = new Set<string>();
@@ -920,13 +922,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (!device) {
     return;
   }
-  const agent = await refreshLocalCompanion();
-  if (!agent.ok) {
-    renderAgentInstall(agentTunnelId, () => {
-      void toggleAgentRemoteGrant(agentTunnelId);
-    });
-    return;
-  }
+  void refreshLocalCompanion();
   const granted = await grantAgentSourceAccess(device.id, device.nick, true);
   if (!granted) {
     await typeOperatorChat(
@@ -1439,6 +1435,9 @@ function ensureSync(tunnel: TunnelRecord): void {
     onRemoteScript: (script) => {
       applyRemoteScript(tunnel.id, script);
     },
+    onRemoteCancel: (cancel) => {
+      applyRemoteCancel(tunnel.id, cancel);
+    },
     onRemoteOutput: (output) => {
       applyRemoteOutput(tunnel.id, output);
     },
@@ -1839,6 +1838,18 @@ function applyRemoteScript(tunnelId: string, script: RemoteScript): void {
   renderTerminal();
 }
 
+function applyRemoteCancel(tunnelId: string, cancel: RemoteCancel): void {
+  if (!device || !grantTargetsThisDevice(cancel.targetDeviceId)) {
+    return;
+  }
+  if (!remoteEnabled.has(tunnelId)) {
+    return;
+  }
+  stopLocalAgentRun(cancel.commandId);
+  appendTerminalLine(tunnelId, "! stop requested");
+  renderTerminal();
+}
+
 function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
   if (!device || !grantTargetsThisDevice(output.targetDeviceId)) {
     return;
@@ -1855,6 +1866,7 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
     sendOperatorOutput(operatorId, output.text, output.exitCode);
     if (typeof output.exitCode === "number") {
       operatorPending.delete(output.commandId);
+      operatorRemoteRuns.delete(operatorId);
     }
   }
   terminalOpenId = tunnelId;
@@ -1894,7 +1906,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     return;
   }
   window.clearTimeout(operatorReconnectTimer);
-  const agent = await checkLocalCompanionAgent(650);
+  const agent = await checkLocalCompanionAgent(1500);
   if (!agent.ok || (!operatorBridgeAllowEmpty && !hasOperatorTargets())) {
     if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
       operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
@@ -1932,6 +1944,9 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     }
     if (message.type === "operator.script") {
       void runOperatorScript(message);
+    }
+    if (message.type === "operator.cancel") {
+      void runOperatorCancel(message);
     }
     if (message.type === "operator.chat") {
       void runOperatorChat(message);
@@ -1971,6 +1986,7 @@ function closeOperatorBridge(): void {
   operatorSocket = null;
   operatorBridgeAllowEmpty = false;
   operatorPending.clear();
+  operatorRemoteRuns.clear();
 }
 
 function hasOperatorTargets(): boolean {
@@ -2084,6 +2100,7 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   try {
     const commandId = await sync.sendRemoteCommand(hostDeviceId, command);
     operatorPending.set(commandId, requestId);
+    operatorRemoteRuns.set(requestId, { commandId, tunnelId: tunnel.id, hostDeviceId });
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
@@ -2148,11 +2165,30 @@ async function runOperatorScript(message: {
       script
     });
     operatorPending.set(commandId, requestId);
+    operatorRemoteRuns.set(requestId, { commandId, tunnelId: tunnel.id, hostDeviceId });
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
     renderTerminal();
   }
+}
+
+async function runOperatorCancel(message: { readonly id?: string }): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  const run = requestId ? operatorRemoteRuns.get(requestId) : null;
+  if (!requestId || !run) {
+    return;
+  }
+  const sync = syncs.get(run.tunnelId);
+  if (!sync) {
+    sendOperatorOutput(requestId, "! tunnel", 409);
+    return;
+  }
+  appendTerminalLine(run.tunnelId, "! stop requested");
+  renderTerminal();
+  await sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
+  operatorRemoteRuns.delete(requestId);
+  operatorPending.delete(run.commandId);
 }
 
 async function runOperatorChat(message: {
@@ -2572,6 +2608,16 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
   if (!device) {
     return;
   }
+  if (job.type === "cancel") {
+    const commandId = job.commandId || "";
+    if (commandId) {
+      stopLocalAgentRun(commandId);
+      appendTerminalLine(tunnelId, "! stop requested");
+      renderTerminal();
+      void sendAgentSourceOutput(device.id, commandId, "! cancelled", 130);
+    }
+    return;
+  }
   let opened = false;
   let finished = false;
   const ws = new WebSocket("ws://127.0.0.1:49424");
@@ -2583,7 +2629,6 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
-    renderAgentInstall(tunnelId);
     window.clearTimeout(timer);
     void sendAgentSourceOutput(device.id, job.id, "! 127.0.0.1:49424", 127);
   };
@@ -2602,6 +2647,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
   ws.onopen = () => {
     opened = true;
     window.clearTimeout(timer);
+    localAgentRuns.set(job.id, ws);
     if (job.type === "script") {
       ws.send(JSON.stringify({
         type: "script",
@@ -2661,7 +2707,12 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     void sendAgentSourceOutput(device.id, job.id, text, exitCode);
   };
   ws.onerror = () => fail();
-  ws.onclose = () => window.clearTimeout(timer);
+  ws.onclose = () => {
+    window.clearTimeout(timer);
+    if (localAgentRuns.get(job.id) === ws) {
+      localAgentRuns.delete(job.id);
+    }
+  };
 }
 
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
@@ -2680,7 +2731,6 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
-    renderAgentInstall(tunnelId);
     window.clearTimeout(timer);
     void sync.sendRemoteOutput(command.deviceId, command.id, "! 127.0.0.1:49424", 127);
   };
@@ -2691,6 +2741,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   ws.onopen = () => {
     opened = true;
     window.clearTimeout(timer);
+    localAgentRuns.set(command.id, ws);
     ws.send(JSON.stringify({
       type: "run",
       id: command.id,
@@ -2735,7 +2786,12 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);
   };
   ws.onerror = () => fail();
-  ws.onclose = () => window.clearTimeout(timer);
+  ws.onclose = () => {
+    window.clearTimeout(timer);
+    if (localAgentRuns.get(command.id) === ws) {
+      localAgentRuns.delete(command.id);
+    }
+  };
 }
 
 function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
@@ -2754,7 +2810,6 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
-    renderAgentInstall(tunnelId);
     window.clearTimeout(timer);
     void sync.sendRemoteOutput(script.deviceId, script.id, "! 127.0.0.1:49424", 127);
   };
@@ -2765,6 +2820,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
   ws.onopen = () => {
     opened = true;
     window.clearTimeout(timer);
+    localAgentRuns.set(script.id, ws);
     ws.send(JSON.stringify({
       type: "script",
       id: script.id,
@@ -2811,7 +2867,21 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     void sync.sendRemoteOutput(script.deviceId, script.id, text, exitCode);
   };
   ws.onerror = () => fail();
-  ws.onclose = () => window.clearTimeout(timer);
+  ws.onclose = () => {
+    window.clearTimeout(timer);
+    if (localAgentRuns.get(script.id) === ws) {
+      localAgentRuns.delete(script.id);
+    }
+  };
+}
+
+function stopLocalAgentRun(commandId: string): boolean {
+  const ws = localAgentRuns.get(commandId);
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+  ws.send(JSON.stringify({ type: "stop", id: commandId }));
+  return true;
 }
 
 function touchSelected(): void {
@@ -3134,7 +3204,8 @@ function normalizeChatMessage(value: string): string {
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
   return !reply.ok
     && reply.exitCode === 127
-    && /127\.0\.0\.1:49424/u.test(reply.text);
+    && /127\.0\.0\.1:49424/u.test(reply.text)
+    && !hasAgentRelayId();
 }
 
 function resizeComposer(): void {

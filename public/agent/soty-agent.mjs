@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.112";
+const agentVersion = "0.3.113";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -56,6 +56,7 @@ const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v4-runtime-con
 const active = new Map();
 const operatorRuns = new Map();
 const actionJobs = new Map();
+const actionControllers = new Map();
 const operatorMessages = [];
 const operatorMessageWaiters = new Set();
 const agentOperatorReplyQueues = new Map();
@@ -214,6 +215,11 @@ async function handleHttpRequest(request, response) {
   const actionMatch = url.pathname.match(/^\/operator\/action\/([A-Za-z0-9_-]{8,96})$/u);
   if (actionMatch && request.method === "GET") {
     await handleOperatorHttpActionStatus(actionMatch[1], response, headers);
+    return;
+  }
+  const actionStopMatch = url.pathname.match(/^\/operator\/action\/([A-Za-z0-9_-]{8,96})\/stop$/u);
+  if (actionStopMatch && request.method === "POST") {
+    await handleOperatorHttpActionStop(actionStopMatch[1], response, headers);
     return;
   }
   if (url.pathname === "/operator/run" && request.method === "POST") {
@@ -457,6 +463,24 @@ async function handleOperatorHttpActionStatus(jobId, response, headers) {
   sendJson(response, 200, headers, { ok: true, ...job });
 }
 
+async function handleOperatorHttpActionStop(jobId, response, headers) {
+  const entry = await readActionJob(jobId);
+  if (!entry?.job) {
+    sendJson(response, 404, headers, { ok: false, text: "! action-job", exitCode: 404 });
+    return;
+  }
+  const controller = actionControllers.get(jobId);
+  if (!controller) {
+    const payload = actionJobResponsePayload(entry);
+    sendJson(response, payload.status === "running" ? 409 : 200, headers, payload);
+    return;
+  }
+  controller.cancel();
+  const stopped = await waitForActionJobSettle(jobId, 2500);
+  const payload = actionJobResponsePayload(stopped || entry);
+  sendJson(response, payload.status === "running" ? 202 : 200, headers, payload);
+}
+
 async function handleOperatorHttpAction(request, response, headers) {
   let payload;
   try {
@@ -610,35 +634,52 @@ async function createActionJob(action) {
 
 async function runActionJob(job, action) {
   const started = Date.now();
+  const abortController = new AbortController();
   let current = {
     ...job,
     status: "running",
     startedAt: new Date(started).toISOString()
   };
   actionJobs.set(job.id, current);
+  actionControllers.set(job.id, {
+    cancel: () => abortController.abort()
+  });
   await writeActionJob(current);
   let execution;
   try {
-    execution = await executeOperatorAction(action);
+    execution = await executeOperatorAction({ ...action, jobId: job.id }, abortController.signal);
   } catch (error) {
-    execution = {
-      ok: false,
-      text: error instanceof Error ? `! action ${error.message}` : "! action",
-      exitCode: 127,
-      route: "action-kernel",
-      target: action.target,
-      sourceDeviceId: action.sourceDeviceId
-    };
+    execution = isAbortError(error)
+      ? {
+        ok: false,
+        text: "! cancelled",
+        exitCode: 130,
+        route: "action-cancelled",
+        target: action.target,
+        sourceDeviceId: action.sourceDeviceId
+      }
+      : {
+        ok: false,
+        text: error instanceof Error ? `! action ${error.message}` : "! action",
+        exitCode: 127,
+        route: "action-kernel",
+        target: action.target,
+        sourceDeviceId: action.sourceDeviceId
+      };
+  } finally {
+    actionControllers.delete(job.id);
   }
   const finished = Date.now();
   const exitCode = Number.isSafeInteger(execution.exitCode) ? execution.exitCode : (execution.ok ? 0 : 1);
   const status = execution.ok && exitCode === 0
     ? "ok"
-    : exitCode === 124
-      ? "timeout"
-      : exitCode === 422
-        ? "blocked"
-        : "failed";
+    : exitCode === 130
+      ? "cancelled"
+      : exitCode === 124
+        ? "timeout"
+        : exitCode === 422
+          ? "blocked"
+          : "failed";
   const durationMs = Math.max(0, finished - started);
   const text = String(execution.text || "").slice(-1_000_000);
   const route = cleanActionText(execution.route || `operator-action.${action.mode}`, 120);
@@ -713,7 +754,10 @@ async function runActionJob(job, action) {
   };
 }
 
-async function executeOperatorAction(action) {
+async function executeOperatorAction(action, signal = null) {
+  if (signal?.aborted) {
+    return actionCancelledResult(action);
+  }
   const body = action.mode === "script" ? action.script : action.command;
   const blocked = blockedManualWindowsRecoveryHandoff(body);
   if (blocked) {
@@ -735,19 +779,27 @@ async function executeOperatorAction(action) {
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
       return { ok: false, text: "! source-target", exitCode: 403, route: `agent-source.${action.mode}`, target, sourceDeviceId };
     }
+    const sourceJobId = cleanActionId(action.jobId || "") || `act_${randomUUID().replace(/-/gu, "").slice(0, 24)}`;
+    const cancelSource = () => {
+      void cancelAgentSourceJob(action.sourceRelayId, deviceId, sourceJobId).catch(() => undefined);
+    };
+    signal?.addEventListener("abort", cancelSource, { once: true });
     const result = action.mode === "script"
       ? await postAgentSourceJob("/api/agent/source/script", {
         deviceId,
+        clientJobId: sourceJobId,
         script: action.script,
         name: action.name,
         shell: action.shell,
         timeoutMs: action.timeoutMs
-      }, action.sourceRelayId, 1_000_000)
+      }, action.sourceRelayId, 1_000_000, signal)
       : await postAgentSourceJob("/api/agent/source/run", {
         deviceId,
+        clientJobId: sourceJobId,
         command: action.command,
         timeoutMs: action.timeoutMs
-      }, action.sourceRelayId, 1_000_000);
+      }, action.sourceRelayId, 1_000_000, signal);
+    signal?.removeEventListener("abort", cancelSource);
     return {
       ...result,
       route: `agent-source.${action.mode}`,
@@ -758,7 +810,12 @@ async function executeOperatorAction(action) {
   if (!operatorBridge?.open || !target) {
     return { ok: false, text: "! bridge", exitCode: 409, route: `operator-bridge.${action.mode}`, target, sourceDeviceId };
   }
-  const { id, promise } = registerOperatorPromiseRun(action.timeoutMs);
+  const { id, promise, cancel } = registerOperatorPromiseRun(action.timeoutMs);
+  const cancelBridge = () => {
+    sendRaw(operatorBridge, { type: "operator.cancel", id });
+    cancel(130, "! cancelled");
+  };
+  signal?.addEventListener("abort", cancelBridge, { once: true });
   sendRaw(operatorBridge, action.mode === "script" ? {
     type: "operator.script",
     id,
@@ -775,6 +832,7 @@ async function executeOperatorAction(action) {
     command: action.command
   });
   const result = await promise;
+  signal?.removeEventListener("abort", cancelBridge);
   return {
     ...result,
     route: `operator-bridge.${action.mode}`,
@@ -788,6 +846,7 @@ function registerOperatorPromiseRun(timeoutMs) {
   let body = "";
   let done = false;
   let timer;
+  let cancelRun = () => undefined;
   const promise = new Promise((resolvePromise) => {
     const finish = (exitCode, extraText = "") => {
       if (done) {
@@ -805,6 +864,7 @@ function registerOperatorPromiseRun(timeoutMs) {
         exitCode
       });
     };
+    cancelRun = finish;
     timer = setTimeout(() => finish(124, "! timeout"), timeoutMs);
     operatorRuns.set(id, {
       append: (text) => {
@@ -813,7 +873,22 @@ function registerOperatorPromiseRun(timeoutMs) {
       finish
     });
   });
-  return { id, promise };
+  return { id, promise, cancel: cancelRun };
+}
+
+function actionCancelledResult(action) {
+  return {
+    ok: false,
+    text: "! cancelled",
+    exitCode: 130,
+    route: `action-cancelled.${action.mode || "run"}`,
+    target: action.target,
+    sourceDeviceId: action.sourceDeviceId
+  };
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError" || /aborted|abort/iu.test(String(error?.message || error || ""));
 }
 
 function buildActionProof({ action, execution, status }) {
@@ -877,6 +952,20 @@ async function listActionJobs() {
   return jobs
     .sort((left, right) => String(right.startedAt || right.createdAt).localeCompare(String(left.startedAt || left.createdAt)))
     .slice(0, 40);
+}
+
+async function waitForActionJobSettle(jobId, timeoutMs) {
+  const deadline = Date.now() + Math.max(100, timeoutMs || 1000);
+  let last = await readActionJob(jobId);
+  while (Date.now() < deadline) {
+    const status = String(last?.result?.status || last?.job?.status || "");
+    if (status && status !== "created" && status !== "running") {
+      return last;
+    }
+    await sleep(80);
+    last = await readActionJob(jobId);
+  }
+  return last;
 }
 
 async function findActionJobByIdempotencyKey(action) {
@@ -1119,7 +1208,7 @@ async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, time
   sendJson(response, 200, headers, result);
 }
 
-async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxChatChars) {
+async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxChatChars, signal = null) {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
   const jobRelayId = safeRelayId(relayId) || agentRelayId;
   if (!relayBaseUrl || !jobRelayId) {
@@ -1133,7 +1222,8 @@ async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxC
       body: JSON.stringify({
         relayId: jobRelayId,
         ...body
-      })
+      }),
+      ...(signal ? { signal } : {})
     });
     const payload = await response.json();
     return {
@@ -1141,8 +1231,38 @@ async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxC
       text: String(payload?.text || "").slice(0, Math.max(1, Math.min(maxTextLength, 1_000_000))),
       exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.ok ? 0 : response.status)
     };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      return { ok: false, text: "! cancelled", exitCode: 130 };
+    }
     return { ok: false, text: "! agent-source", exitCode: 127 };
+  }
+}
+
+async function cancelAgentSourceJob(relayId, deviceId, jobId) {
+  const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
+  const jobRelayId = safeRelayId(relayId) || agentRelayId;
+  if (!relayBaseUrl || !jobRelayId || !deviceId || !jobId) {
+    return { ok: false };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(new URL("/api/agent/source/cancel", relayBaseUrl), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        relayId: jobRelayId,
+        deviceId,
+        id: jobId
+      }),
+      signal: controller.signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    return { ok: Boolean(response.ok && payload?.ok) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1236,7 +1356,7 @@ function sourceOutputShape(text) {
 
 function sourceFailureProof(text) {
   const value = String(text || "");
-  const known = value.match(/!\s*(target|bridge|source-target|access|tunnel|timeout|agent-source|relay|request)\b/iu);
+  const known = value.match(/!\s*(target|bridge|source-target|access|tunnel|timeout|cancelled|agent-source|relay|request)\b/iu);
   if (known) {
     return `! ${known[1].toLowerCase()}`;
   }
@@ -1297,7 +1417,7 @@ function cleanLearningReceipt(value) {
   const exitCode = Number.isSafeInteger(value.exitCode) ? Math.max(-32768, Math.min(32767, value.exitCode)) : undefined;
   return {
     kind: cleanLearningEnum(value.kind, ["codex-turn", "source-command", "agent-runtime", "action-job"], "agent-runtime"),
-    result: cleanLearningEnum(value.result, ["ok", "failed", "partial", "blocked", "timeout"], "failed"),
+    result: cleanLearningEnum(value.result, ["ok", "failed", "partial", "blocked", "timeout", "cancelled"], "failed"),
     family: cleanLearningText(value.family, 80),
     platform: process.platform,
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
@@ -2512,7 +2632,7 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   }
   args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
   args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-  for (const tool of ["soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
+  for (const tool of ["soty_run", "soty_script", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
     args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
   }
   if (outPath) {
@@ -3216,11 +3336,12 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- Do not show raw tool errors or codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets in user-facing chat; translate them into one plain sentence.",
     "- Before tools, either act silently or send one short plain-language progress line. Do not narrate every probe, retry, helper, or memory lookup.",
     "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
-    "- For work on a paired user device, use Soty MCP tools: soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
+    "- For work on a paired user device, use Soty MCP tools: soty_action, soty_action_status, soty_action_stop, soty_action_list, soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
+    "- Use `soty_action` for installs, downloads, repairs, scans, staged scripts, destructive work, and any operation that may hang. Keep the returned jobId, poll `soty_action_status`, and call `soty_action_stop` if the job is stuck or the user asks to stop.",
     "- Use `soty_script` with `shell: \"powershell\"` for any PowerShell variables, pipelines, semicolons, or multi-step checks. Reserve `soty_run` for trivial one-line commands.",
     "- If a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then name one plain blocker instead of continuing through the local server shell.",
     "- For quick identity, health, and readiness probes, pass a short timeoutMs such as 15000-45000. Reserve timeoutMs up to 7200000 for real long-running installs, downloads, repairs, scans, or staged scripts after the target is proven.",
-    "- For destructive or long device work such as format, diskpart, robocopy, dism, installers, downloads, reset, or reboot, issue exactly one target tool call at a time; wait for that call to return or name a blocker before starting any second write, format, reset, or reboot command.",
+    "- For destructive or long device work such as format, diskpart, robocopy, dism, installers, downloads, reset, or reboot, issue exactly one `soty_action` at a time; poll/stop that job before starting any second write, format, reset, or reboot command.",
     "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, repair or prove the narrow channel once, then name one plain blocker and one next action.",
     "- For Soty-managed clean Windows reinstall, the happy path is mandatory: prove machine worker, stage/run the managed prepare script from the current /agent/manifest.json windowsReinstall URLs after verifying the listed SHA-256, wait for ready.json, read backupProof, then ask the exact confirmation phrase and run the managed arm script. Do not use Media Creation Tool, Windows Settings reset, generic installer GUI, or Shift+F10/localonly as the planned path.",
     "- Before any reinstall arm/reboot, backupProof must show backupRoot, Wi-Fi export result, exported drivers, Soty restore/postinstall artifacts, root Autounattend.xml, and OEM SetupComplete fallback. If those artifacts are missing, repair preparation instead of asking the user to click OOBE screens.",
@@ -3283,10 +3404,11 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- communication_rule: keep $ops/skills/router/helper/preflight/gate/MCP/bridge/source-scoped details internal; answer in short plain language like IDE Codex.",
     "- error_translation_rule: do not show raw tool errors/codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets; translate to a human sentence.",
     "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
-    "- powershell_tool_rule: use soty_script with shell=\"powershell\" for PowerShell variables, semicolons, pipelines, or multi-step checks. Use soty_run only for trivial one-line commands.",
+    "- action_tool_rule: use soty_action for installs, downloads, repairs, scans, destructive work, staged scripts, or anything that may hang; poll with soty_action_status and stop with soty_action_stop when needed.",
+    "- powershell_tool_rule: use soty_script with shell=\"powershell\" for short PowerShell variables, semicolons, pipelines, or multi-step checks. Use soty_run only for trivial one-line commands.",
     "- target_failure_rule: if a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then give one plain blocker; do not continue through the local server shell unless the server/runtime is explicitly the target.",
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use timeoutMs up to 7200000 only for real long-running jobs after the target is proven.",
-    "- serial_long_job_rule: for destructive or long target work, call only one soty_* write/format/reset/reboot job at a time; wait for its result or name a blocker before launching another.",
+    "- serial_long_job_rule: for destructive or long target work, call only one soty_action write/format/reset/reboot job at a time; poll/stop it or name a blocker before launching another.",
     "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
     "- backup_proof_rule: before asking for the destructive reinstall phrase, prove backupProof with backup root, Wi-Fi profile export result, driver export result, Soty restore/postinstall assets, Autounattend.xml, and OEM SetupComplete fallback.",
     "- reinstall_rule: for Windows reinstall/reset, ask at most one plain question at a time and do not ask for destructive confirmation until control, backup/data intent, USB scope, BitLocker/recovery safety, and return path are proven.",
@@ -3803,7 +3925,7 @@ function runMcpServer() {
     return [
       {
         name: "soty_run",
-        description: "Run one trivial shell command on the current Soty Agent LINK source device. The command and output are shown in the user's LINK console. Do not use for PowerShell variables, semicolons, pipelines, or multi-step checks; use soty_script with shell=\"powershell\" instead. Do not use this to read Codex skill files from CODEX_HOME; those are in the operator runtime, not on the source device. Use soty_skill_read for skill files.",
+        description: "Run one trivial shell command on the current Soty Agent LINK source device. Use soty_action for installs, downloads, repairs, resets, scans, long work, destructive work, or anything that may need status/stop. The command and output are shown in the user's LINK console. Do not use for PowerShell variables, semicolons, pipelines, or multi-step checks; use soty_script with shell=\"powershell\" instead. Do not use this to read Codex skill files from CODEX_HOME; those are in the operator runtime, not on the source device. Use soty_skill_read for skill files.",
         inputSchema: {
           type: "object",
           properties: {
@@ -3816,7 +3938,7 @@ function runMcpServer() {
       },
       {
         name: "soty_script",
-        description: "Run a multiline script on the current Soty Agent LINK source device. Use for PowerShell workflows, checks, and browser automation launched on that device.",
+        description: "Run a multiline script on the current Soty Agent LINK source device. Use for short PowerShell workflows, checks, and browser automation launched on that device. Use soty_action for installs, downloads, repairs, resets, scans, long work, destructive work, or anything that may need status/stop.",
         inputSchema: {
           type: "object",
           properties: {
@@ -3826,6 +3948,61 @@ function runMcpServer() {
             timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000. Use 15000-45000 for quick probes; use a long timeout only for install, download, repair, reset, or reinstall jobs that are expected to keep running." }
           },
           required: ["script"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_action",
+        description: "Start a supervised durable action job on the current Soty Agent LINK source device. Prefer this for installs, downloads, repairs, resets, scans, scripts with multiple stages, destructive work, or any job that may hang. Returns jobId, statusPath, proof/result paths, and can be followed with soty_action_status or stopped with soty_action_stop.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            mode: { type: "string", description: "run or script. Defaults to script when script is provided, otherwise run." },
+            command: { type: "string", description: "Command for mode=run." },
+            script: { type: "string", description: "Script body for mode=script." },
+            shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
+            name: { type: "string", description: "Short label shown in the LINK console." },
+            family: { type: "string", description: "Task family, for example windows-reinstall, package-install, service-check, driver-check, generic." },
+            kind: { type: "string", description: "Action kind, for example prepare, verify, install, repair, backup, probe." },
+            intent: { type: "string", description: "Short operator intent for future learning." },
+            risk: { type: "string", description: "low, medium, high, or destructive." },
+            idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
+            detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll with soty_action_status." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-7200000." }
+          },
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_action_status",
+        description: "Read status/result for a supervised Soty action job by jobId.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            jobId: { type: "string", description: "Action job id returned by soty_action." }
+          },
+          required: ["jobId"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_action_stop",
+        description: "Stop a running supervised Soty action job. This sends a cancel to the target device when possible and marks the job cancelled.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            jobId: { type: "string", description: "Action job id returned by soty_action." }
+          },
+          required: ["jobId"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_action_list",
+        description: "List recent supervised Soty action jobs with status, proof, and statusPath.",
+        inputSchema: {
+          type: "object",
+          properties: {},
           additionalProperties: false
         }
       },
@@ -3946,8 +4123,55 @@ function runMcpServer() {
       const result = await readCodexSkillFile(args);
       return mcpToolText(result.text, !result.ok, result.exitCode);
     }
+    if (name === "soty_action_list") {
+      const result = await mcpRequestOperator("GET", "/operator/actions");
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    if (name === "soty_action_status") {
+      const jobId = String(args.jobId || "").trim();
+      if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
+        return mcpToolText("! action-job", true, 2);
+      }
+      const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    if (name === "soty_action_stop") {
+      const jobId = String(args.jobId || "").trim();
+      if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
+        return mcpToolText("! action-job", true, 2);
+      }
+      const result = await mcpRequestOperator("POST", `/operator/action/${encodeURIComponent(jobId)}/stop`, {});
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
     if (!mcpTarget || !mcpSourceDeviceId) {
       return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
+    }
+    if (name === "soty_action") {
+      const mode = args.mode === "script" || typeof args.script === "string" ? "script" : "run";
+      const command = String(args.command || "").trim();
+      const script = String(args.script || "").trim();
+      if (mode === "run" && !command) {
+        return mcpToolText("! command", true);
+      }
+      if (mode === "script" && !script) {
+        return mcpToolText("! script", true);
+      }
+      const result = await mcpRequestOperator("POST", "/operator/action", {
+        mode,
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        ...(mode === "run" ? { command } : { script }),
+        shell: String(args.shell || ""),
+        name: String(args.name || (mode === "script" ? "action-script" : "action-run")),
+        family: String(args.family || ""),
+        kind: String(args.kind || ""),
+        intent: String(args.intent || ""),
+        risk: String(args.risk || ""),
+        idempotencyKey: String(args.idempotencyKey || ""),
+        detached: args.detached === true,
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
+      });
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
     }
     if (name === "soty_run") {
       const command = String(args.command || "").trim();
@@ -4119,28 +4343,40 @@ function runMcpServer() {
   }
 
   async function mcpPostOperator(path, body) {
+    const result = await mcpRequestOperator("POST", path, body);
+    const payload = result.payload || {};
+    return {
+      ok: Boolean(result.ok),
+      text: String(payload.text || ""),
+      exitCode: Number.isSafeInteger(payload.exitCode) ? payload.exitCode : result.exitCode
+    };
+  }
+
+  async function mcpRequestOperator(method, path, body = undefined) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-        method: "POST",
+        method,
         headers: {
           "Content-Type": "application/json",
           Origin: "https://xn--n1afe0b.online"
         },
-        body: JSON.stringify({
-          ...body,
-          ...(mcpSourceRelayId ? { sourceRelayId: mcpSourceRelayId } : {})
+        ...(body === undefined ? {} : {
+          body: JSON.stringify({
+            ...body,
+            ...(mcpSourceRelayId ? { sourceRelayId: mcpSourceRelayId } : {})
+          })
         })
       });
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       return {
         ok: Boolean(response.ok && payload?.ok),
-        text: String(payload?.text || ""),
+        payload,
         exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.ok ? 0 : response.status)
       };
     } catch (error) {
       return {
         ok: false,
-        text: error instanceof Error ? error.message : String(error),
+        payload: { ok: false, text: error instanceof Error ? error.message : String(error) },
         exitCode: 1
       };
     }
@@ -4153,6 +4389,19 @@ function runMcpServer() {
         {
           type: "text",
           text: `${body}${Number.isSafeInteger(exitCode) ? `\nexitCode=${exitCode}` : ""}`
+        }
+      ],
+      isError: Boolean(isError)
+    };
+  }
+
+  function mcpToolJson(value, isError = false, exitCode = 0) {
+    const payload = value && typeof value === "object" ? value : { text: String(value || ""), exitCode };
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(payload, null, 2)
         }
       ],
       isError: Boolean(isError)
@@ -4983,6 +5232,21 @@ async function runControlCli(args) {
       process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
       process.exit(response.ok && payload.ok ? 0 : 1);
     }
+    if (subcommand === "stop" || subcommand === "cancel") {
+      const jobId = args[2] || "";
+      if (!jobId) {
+        process.stderr.write("sotyctl action stop <job-id>\n");
+        process.exit(2);
+      }
+      const response = await fetch(`http://127.0.0.1:${port}/operator/action/${encodeURIComponent(jobId)}/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      const payload = await response.json();
+      printActionCliResult(payload);
+      process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok && payload.ok ? 0 : 1));
+    }
     if (subcommand === "run") {
       const parsed = parseActionCtlOptions(args.slice(2));
       const target = parsed.args[0] || "";
@@ -5031,7 +5295,7 @@ async function runControlCli(args) {
       printActionCliResult(payload);
       process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok && payload.ok ? 0 : 1));
     }
-    process.stderr.write("sotyctl action list | action status <job-id> | action run <target> <command> | action script <target> <file> [shell]\n");
+    process.stderr.write("sotyctl action list | action status <job-id> | action stop <job-id> | action run <target> <command> | action script <target> <file> [shell]\n");
     process.exit(2);
   }
   if (command === "run") {

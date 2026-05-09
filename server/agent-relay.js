@@ -14,6 +14,7 @@ const requestTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const idleChannelTtlMs = 30 * 60_000;
 const sourceConnectedMs = 90_000;
 const sourceJobTtlMs = maxTaskTimeoutMs + 20 * 60_000;
+const sourceCancelTtlMs = 5 * 60_000;
 const maxJobsPerChannel = 80;
 const channels = new Map();
 const agentSources = new Map();
@@ -268,10 +269,45 @@ export function attachAgentRelay(app) {
     touchAgentSource(source);
     job.text = `${job.text || ""}${cleanText(req.body?.text, maxReplyChars)}`.slice(-maxReplyChars);
     if (Number.isSafeInteger(req.body?.exitCode)) {
-      job.exitCode = req.body.exitCode;
+      if (!(job.cancelRequested === true && job.exitCode === 130 && req.body.exitCode !== 130)) {
+        job.exitCode = req.body.exitCode;
+      }
       flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
     }
     res.json({ ok: true });
+  });
+
+  app.post("/api/agent/source/cancel", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
+    const id = cleanSourceJobId(req.body?.id);
+    if (!relayId || !deviceId || !id) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    const source = findAgentSource(relayId, deviceId);
+    const job = source?.jobs.find((item) => item.id === id);
+    if (!source || !job) {
+      res.status(404).json({ ok: false });
+      return;
+    }
+    touchAgentSource(source);
+    job.cancelRequested = true;
+    job.text = `${job.text || ""}${job.text ? "\n" : ""}! cancelled`.slice(-maxReplyChars);
+    job.exitCode = 130;
+    source.cancels = source.cancels || [];
+    if (!source.cancels.some((item) => item.commandId === id)) {
+      source.cancels.push({
+        id: `cancel_${randomUUID()}`,
+        type: "cancel",
+        commandId: id,
+        createdAt: Date.now(),
+        leaseUntil: 0
+      });
+    }
+    flushSourcePollWaiters(source);
+    flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
+    res.json({ ok: true, id });
   });
 
   app.post("/api/agent/source/run", jsonParser, (req, res) => {
@@ -288,7 +324,12 @@ export function attachAgentRelay(app) {
       res.status(404).json({ ok: false, text: "! agent-source", exitCode: 404 });
       return;
     }
-    const job = createSourceJob(source, { type: "run", command, timeoutMs });
+    const job = createSourceJob(source, {
+      type: "run",
+      id: cleanSourceJobId(req.body?.clientJobId || req.body?.id),
+      command,
+      timeoutMs
+    });
     addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), sourceReplyWaitTimeout(timeoutMs));
   });
 
@@ -308,6 +349,7 @@ export function attachAgentRelay(app) {
     }
     const job = createSourceJob(source, {
       type: "script",
+      id: cleanSourceJobId(req.body?.clientJobId || req.body?.id),
       script,
       name: cleanText(req.body?.name, 120) || "script",
       shell: cleanText(req.body?.shell, 40),
@@ -429,7 +471,8 @@ function getAgentSource(relayId, deviceId) {
       deviceNick: "",
       access: false,
       lastSeenAt: 0,
-      jobs: []
+      jobs: [],
+      cancels: []
     };
     agentSources.set(key, source);
   }
@@ -454,6 +497,7 @@ function connectedAgentSources(relayId) {
 function touchAgentSource(source) {
   source.lastSeenAt = Date.now();
   source.jobs = source.jobs.filter((job) => source.lastSeenAt - job.createdAt < sourceJobTtlMs);
+  source.cancels = (source.cancels || []).filter((item) => source.lastSeenAt - item.createdAt < sourceCancelTtlMs);
 }
 
 function enrichAgentSource(targetRelayId, clientRelayId, source, text = "") {
@@ -560,12 +604,13 @@ function publicAgentSourceTarget(source) {
 
 function createSourceJob(source, payload) {
   touchAgentSource(source);
+  const id = cleanSourceJobId(payload.id) || cleanSourceJobId(payload.clientJobId) || `source_${randomUUID()}`;
   const job = {
-    id: `source_${randomUUID()}`,
+    ...payload,
+    id,
     createdAt: Date.now(),
     leaseUntil: 0,
-    text: "",
-    ...payload
+    text: ""
   };
   source.jobs.push(job);
   while (source.jobs.length > maxJobsPerChannel) {
@@ -577,22 +622,36 @@ function createSourceJob(source, payload) {
 
 function leasePendingSourceJobs(source) {
   const now = Date.now();
+  const cancels = (source.cancels || [])
+    .filter((item) => !item.leaseUntil || item.leaseUntil < now)
+    .slice(0, 8);
+  for (const cancel of cancels) {
+    cancel.leaseUntil = now + 15_000;
+  }
   const jobs = source.jobs
     .filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil < now))
     .slice(0, 2);
   for (const job of jobs) {
     job.leaseUntil = now + leaseMs;
   }
-  return jobs.map((job) => ({
-    id: job.id,
-    type: job.type,
-    command: job.command || "",
-    script: job.script || "",
-    name: job.name || "",
-    shell: job.shell || "",
-    timeoutMs: safeTimeout(job.timeoutMs),
-    createdAt: new Date(job.createdAt).toISOString()
-  }));
+  return [
+    ...cancels.map((item) => ({
+      id: item.id,
+      type: "cancel",
+      commandId: item.commandId,
+      createdAt: new Date(item.createdAt).toISOString()
+    })),
+    ...jobs.map((job) => ({
+      id: job.id,
+      type: job.type,
+      command: job.command || "",
+      script: job.script || "",
+      name: job.name || "",
+      shell: job.shell || "",
+      timeoutMs: safeTimeout(job.timeoutMs),
+      createdAt: new Date(job.createdAt).toISOString()
+    }))
+  ];
 }
 
 function sourceJobReply(job) {
@@ -612,7 +671,8 @@ function cleanupAgentSources() {
   const now = Date.now();
   for (const [key, source] of agentSources) {
     source.jobs = source.jobs.filter((job) => now - job.createdAt < sourceJobTtlMs);
-    if (now - source.lastSeenAt > idleChannelTtlMs && source.jobs.length === 0) {
+    source.cancels = (source.cancels || []).filter((item) => now - item.createdAt < sourceCancelTtlMs);
+    if (now - source.lastSeenAt > idleChannelTtlMs && source.jobs.length === 0 && source.cancels.length === 0) {
       agentSources.delete(key);
     }
   }
@@ -620,6 +680,11 @@ function cleanupAgentSources() {
 
 function sourceKey(relayId, deviceId) {
   return `${relayId}:${deviceId}`;
+}
+
+function cleanSourceJobId(value) {
+  const text = cleanText(value, 120);
+  return /^[A-Za-z0-9_.:-]{8,120}$/u.test(text) ? text : "";
 }
 
 function agentSourceTargetId(deviceId) {

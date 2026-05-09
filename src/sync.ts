@@ -29,6 +29,7 @@ export interface SyncCallbacks {
   readonly onRemoteGrant: (grant: RemoteGrant) => void;
   readonly onRemoteCommand: (command: RemoteCommand) => void;
   readonly onRemoteScript: (script: RemoteScript) => void;
+  readonly onRemoteCancel: (cancel: RemoteCancel) => void;
   readonly onRemoteOutput: (output: RemoteOutput) => void;
   readonly onPeers: (peers: readonly PeerInfo[]) => void;
   readonly onJoinRequest: (request: JoinRequest) => void;
@@ -118,6 +119,15 @@ export interface RemoteScript {
   readonly name: string;
   readonly shell: string;
   readonly script: string;
+  readonly targetDeviceId: string;
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly createdAt: string;
+}
+
+export interface RemoteCancel {
+  readonly id: string;
+  readonly commandId: string;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -240,6 +250,16 @@ interface EncryptedRemoteOutput {
   readonly createdAt?: string;
 }
 
+interface RemoteCancelMessage {
+  readonly id: string;
+  readonly commandId: string;
+  readonly targetDeviceId: string;
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
+}
+
 interface P2pDescriptionSignal {
   readonly id: string;
   readonly kind: "offer" | "answer";
@@ -296,6 +316,7 @@ type ServerMessage =
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
+  | { readonly type: "remote.cancel"; readonly cancel: RemoteCancelMessage }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput }
   | { readonly type: "p2p.offer"; readonly signal: P2pDescriptionSignal }
   | { readonly type: "p2p.answer"; readonly signal: P2pDescriptionSignal }
@@ -319,6 +340,7 @@ type ControlMessage =
   | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.script"; readonly script: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
+  | { readonly type: "remote.cancel"; readonly cancel: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string } }
   | { readonly type: "remote.output"; readonly output: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string; readonly exitCode?: number } };
 type FileControlMessage = Extract<ControlMessage, { readonly type: "file" }>;
 
@@ -331,6 +353,7 @@ type DirectMessage =
   | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
+  | { readonly type: "remote.cancel"; readonly cancel: RemoteCancelMessage }
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput };
 
 const heartbeatIntervalMs = 12_000;
@@ -637,6 +660,19 @@ export class TunnelSync {
     return id;
   }
 
+  async sendRemoteCancel(targetDeviceId: string, commandId: string): Promise<string> {
+    const id = `remote_cancel_${crypto.randomUUID()}`;
+    this.sendControl({
+      type: "remote.cancel",
+      cancel: {
+        id,
+        commandId,
+        targetDeviceId
+      }
+    });
+    return id;
+  }
+
   async sendRemoteOutput(targetDeviceId: string, commandId: string, text: string, exitCode?: number): Promise<string> {
     const id = `remote_out_${crypto.randomUUID()}`;
     const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({ text })));
@@ -877,6 +913,13 @@ export class TunnelSync {
       return;
     }
 
+    if (message.type === "remote.cancel") {
+      if (this.rememberControl(message.cancel.id) && message.cancel.deviceId !== this.device.id) {
+        this.applyRemoteCancel(message.cancel);
+      }
+      return;
+    }
+
     if (message.type === "remote.output") {
       if (this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {
         await this.applyRemoteOutput(message.output);
@@ -1058,6 +1101,20 @@ export class TunnelSync {
       deviceId: script.deviceId || "",
       nick: script.deviceNick || script.nick || "",
       createdAt: script.createdAt || new Date().toISOString()
+    });
+  }
+
+  private applyRemoteCancel(cancel: RemoteCancelMessage): void {
+    if (!cancel.commandId.trim()) {
+      return;
+    }
+    this.callbacks.onRemoteCancel({
+      id: cancel.id,
+      commandId: cancel.commandId,
+      targetDeviceId: cancel.targetDeviceId,
+      deviceId: cancel.deviceId || "",
+      nick: cancel.deviceNick || cancel.nick || "",
+      createdAt: cancel.createdAt || new Date().toISOString()
     });
   }
 
@@ -1298,6 +1355,19 @@ export class TunnelSync {
         type: "remote.script",
         script: {
           ...message.script,
+          deviceId: this.device.id,
+          deviceNick: this.device.nick,
+          nick: this.device.nick,
+          createdAt
+        }
+      });
+      return;
+    }
+    if (message.type === "remote.cancel") {
+      this.broadcastDirect({
+        type: "remote.cancel",
+        cancel: {
+          ...message.cancel,
           deviceId: this.device.id,
           deviceNick: this.device.nick,
           nick: this.device.nick,
@@ -1629,6 +1699,10 @@ export class TunnelSync {
     }
     if (message.type === "remote.script" && this.rememberControl(message.script.id) && message.script.deviceId !== this.device.id) {
       await this.applyRemoteScript(message.script);
+      return;
+    }
+    if (message.type === "remote.cancel" && this.rememberControl(message.cancel.id) && message.cancel.deviceId !== this.device.id) {
+      this.applyRemoteCancel(message.cancel);
       return;
     }
     if (message.type === "remote.output" && this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {

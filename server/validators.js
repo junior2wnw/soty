@@ -88,6 +88,13 @@ export function isRemoteOutput(value) {
     && (value.exitCode === undefined || isSafeRange(value.exitCode, -32768, 32767));
 }
 
+export function isRemoteCancel(value) {
+  return value
+    && isShortText(value.id, 140)
+    && isShortText(value.commandId, 140)
+    && isShortText(value.targetDeviceId, 140);
+}
+
 export function isP2pDescription(value, kind) {
   return value
     && isShortText(value.id, 140)
