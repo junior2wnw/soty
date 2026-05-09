@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.122");
+      assertEqual(health.body.version, "0.3.123");
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -272,19 +272,21 @@ async function runScenarios() {
       assertEqual(secondManifest.opsSkill.tarSha256, firstManifest.opsSkill.tarSha256);
       assertEqual(secondManifest.opsSkill.zipSha256, firstManifest.opsSkill.zipSha256);
     }],
-    ["windows reinstall scripts default to managed Cyrillic account", async () => {
+    ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       assert(prepare.includes('[string] $ManagedUserName = "Соты"'));
       assert(fastUsb.includes('[string] $ManagedUserName = "Соты"'));
       assert(prepare.includes("UTF8Encoding($true)"));
       assert(fastUsb.includes("UTF8Encoding($true)"));
-      assert(prepare.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
-      assert(fastUsb.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
+      assert(prepare.includes("$AllowTemporaryManagedPassword -and -not $NoTemporaryManagedPassword"));
+      assert(fastUsb.includes("$AllowTemporaryManagedPassword -and -not $NoTemporaryManagedPassword"));
+      assert(!prepare.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
+      assert(!fastUsb.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.122");
+      assertEqual(manifest.version, "0.3.123");
       assertEqual(manifest.windowsReinstall.scripts.length, 3);
     }]
   ];

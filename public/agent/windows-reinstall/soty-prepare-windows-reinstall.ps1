@@ -872,8 +872,11 @@ try {
   $computerName = $env:COMPUTERNAME
   $effectiveManagedUserPassword = $ManagedUserPassword
   $managedUserPasswordGenerated = $false
+  if ($AllowTemporaryManagedPassword -and $NoTemporaryManagedPassword) {
+    throw "Choose either -AllowTemporaryManagedPassword or -NoTemporaryManagedPassword, not both."
+  }
   if ([string]::IsNullOrEmpty($effectiveManagedUserPassword)) {
-    if ($AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword) {
+    if ($AllowTemporaryManagedPassword -and -not $NoTemporaryManagedPassword) {
       $effectiveManagedUserPassword = "Soty-" + ([Guid]::NewGuid().ToString("N"))
       $managedUserPasswordGenerated = $true
     } else {

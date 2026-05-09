@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.122";
+const agentVersion = "0.3.123";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3470,6 +3470,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- For destructive or long device work such as format, diskpart, robocopy, dism, installers, downloads, reset, or reboot, issue exactly one `soty_action` at a time; poll/stop that job before starting any second write, format, reset, or reboot command.",
     "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, repair or prove the narrow channel once, then name one plain blocker and one next action.",
     "- For Soty-managed clean Windows reinstall, the happy path is mandatory: prove machine worker, stage/run the managed prepare script from the current /agent/manifest.json windowsReinstall URLs after verifying the listed SHA-256, wait for ready.json, read backupProof, prove the unattended local admin account is named `Соты`, then ask the exact confirmation phrase and run the managed arm script. Do not use Media Creation Tool, Windows Settings reset, generic installer GUI, or Shift+F10/localonly as the planned path.",
+    "- For Soty-managed Windows reinstall, the managed local account must be passwordless by default. Do not pass ManagedUserPassword or AllowTemporaryManagedPassword unless the user explicitly asks for a Windows password; if the user forbids passwords, require ready.managedUserPasswordMode=`blank-no-password` before arming.",
     "- Before any reinstall arm/reboot, backupProof must show backupRoot, Wi-Fi export result, exported drivers, Soty restore/postinstall artifacts, root Autounattend.xml, and OEM SetupComplete fallback. If those artifacts are missing, repair preparation instead of asking the user to click OOBE screens.",
     "- For Windows reinstall/reset, do not ask for destructive confirmations until target identity, control channel, backup/data intent, USB scope if needed, BitLocker/recovery safety, and return path are proven. Ask at most one plain question at a time.",
     "- If a Windows reinstall/reset is blocked only because the target Soty channel is unavailable, answer in no more than three short sentences: `Переустановку не начал. Я пока не вижу <device> через Soty. Открой/перезапусти Soty Agent на этом ПК и напиши «готово».`",
@@ -3537,6 +3538,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use timeoutMs up to 7200000 only for real long-running jobs after the target is proven.",
     "- serial_long_job_rule: for destructive or long target work, call only one soty_action write/format/reset/reboot job at a time; poll/stop it or name a blocker before launching another.",
     "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification and a local admin account named `Соты`; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
+    "- managed_password_rule: default Soty managed reinstall account is passwordless; do not generate or pass a temporary password unless explicitly authorized. If passwords were forbidden, arm only when ready.managedUserPasswordMode is `blank-no-password`.",
     "- backup_proof_rule: before asking for the destructive reinstall phrase, prove backupProof with backup root, Wi-Fi profile export result, driver export result, Soty restore/postinstall assets, Autounattend.xml, and OEM SetupComplete fallback.",
     "- reinstall_rule: for Windows reinstall/reset, ask at most one plain question at a time and do not ask for destructive confirmation until control, backup/data intent, USB scope, BitLocker/recovery safety, and return path are proven.",
     "- missing_channel_reinstall_rule: if reinstall/reset is blocked only by an unavailable target Soty channel, answer in <=3 short sentences: not started; cannot see <device> through Soty; open/restart Soty Agent there and reply ready.",
