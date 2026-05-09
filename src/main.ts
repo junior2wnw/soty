@@ -933,7 +933,13 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (!device) {
     return;
   }
-  void refreshLocalCompanion();
+  const companion = await refreshLocalCompanion();
+  if (!companion.ok) {
+    renderAgentInstall(agentTunnelId, () => {
+      void toggleAgentRemoteGrant(agentTunnelId);
+    }, (agent) => agent.ok, refreshLocalCompanion);
+    return;
+  }
   const granted = await grantAgentSourceAccess(device.id, device.nick, true);
   if (!granted) {
     await typeOperatorChat(
