@@ -457,6 +457,32 @@ shell.Run "$escapedCommand", 0, False
     return ""
   }
 
+  function Resolve-ExistingAgentRelayId {
+    foreach ($path in @(
+      (Join-Path $AgentDir "agent-config.json"),
+      (Join-Path $AgentDir "start-agent.ps1")
+    )) {
+      if (-not (Test-Path -LiteralPath $path)) { continue }
+      try {
+        if ($path -like "*.json") {
+          $config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          $candidate = Normalize-AgentRelayId ([string]$config.relayId)
+          if ($candidate) { return $candidate }
+        } else {
+          $text = Get-Content -LiteralPath $path -Raw
+          $match = [regex]::Match($text, 'SOTY_AGENT_RELAY_ID\s*=\s*"([^"]+)"')
+          if ($match.Success) {
+            $candidate = Normalize-AgentRelayId $match.Groups[1].Value
+            if ($candidate) { return $candidate }
+          }
+        }
+      } catch {
+        Write-Output "soty-agent:relay-preserve-skip:$path"
+      }
+    }
+    return ""
+  }
+
   $NodePath = Resolve-Node
   $CodexPath = ([string](Install-StockCodexCli $NodePath | Select-Object -Last 1)).Trim()
   Install-OpsSkillSource
@@ -464,6 +490,9 @@ shell.Run "$escapedCommand", 0, False
   $NpmUserBin = if ($env:APPDATA) { Join-Path $env:APPDATA "npm" } else { "" }
   $RunnerPathParts = @($NodeDir, $NpmUserBin) | Where-Object { $_ }
   $SafeRelayId = Normalize-AgentRelayId $RelayId
+  if (-not $SafeRelayId) {
+    $SafeRelayId = Resolve-ExistingAgentRelayId
+  }
   $RelayEnv = if ($SafeRelayId) {
 @"
 `$env:SOTY_AGENT_RELAY_ID = "$SafeRelayId"

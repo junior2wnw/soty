@@ -14,6 +14,24 @@ const outputPath = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
 const opsSkillSourcePath = process.env.SOTY_OPS_SKILL_SOURCE || join(homedir(), ".codex", "skills", "universal-install-ops");
 const opsSkillPackageDir = "universal-install-ops-skill";
+const windowsReinstallDir = join(outputDir, "windows-reinstall");
+const windowsReinstallScriptSpecs = [
+  {
+    name: "prepare",
+    fileName: "soty-prepare-windows-reinstall.ps1",
+    sourcePath: join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1")
+  },
+  {
+    name: "arm",
+    fileName: "soty-arm-windows-reinstall.ps1",
+    sourcePath: join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1")
+  },
+  {
+    name: "makeFastUsb",
+    fileName: "soty-make-fast-usb.ps1",
+    sourcePath: join(root, "scripts", "windows", "soty-make-fast-usb.ps1")
+  }
+];
 let crcTable = null;
 
 const source = await readFile(sourcePath, "utf8");
@@ -26,17 +44,43 @@ if (!version) {
 await mkdir(outputDir, { recursive: true });
 await writeFile(outputPath, sourceText, { mode: 0o755 });
 const opsSkill = await buildOpsSkillBundle(opsSkillSourcePath);
+const windowsReinstall = await publishWindowsReinstallScripts();
 
 const manifest = {
   version,
   agentUrl: "/agent/soty-agent.mjs",
   sha256: createHash("sha256").update(sourceText).digest("hex"),
-  opsSkill
+  opsSkill,
+  windowsReinstall
 };
 
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 process.stdout.write(`agent:${version}:${manifest.sha256}\n`);
 process.stdout.write(`ops-skill:${opsSkill.tarSha256}\n`);
+process.stdout.write(`windows-reinstall:${windowsReinstall.scripts.map((script) => `${script.name}:${script.sha256}`).join(",")}\n`);
+
+async function publishWindowsReinstallScripts() {
+  await mkdir(windowsReinstallDir, { recursive: true });
+  const scripts = [];
+  for (const spec of windowsReinstallScriptSpecs) {
+    if (!existsSync(spec.sourcePath)) {
+      throw new Error(`Windows reinstall script not found: ${spec.sourcePath}`);
+    }
+    const bytes = await readFile(spec.sourcePath);
+    const outputFile = join(windowsReinstallDir, spec.fileName);
+    await writeFile(outputFile, bytes, { mode: 0o755 });
+    scripts.push({
+      name: spec.name,
+      url: `/agent/windows-reinstall/${spec.fileName}`,
+      sha256: sha256(bytes),
+      bytes: bytes.length
+    });
+  }
+  return {
+    scriptsBaseUrl: "/agent/windows-reinstall/",
+    scripts
+  };
+}
 
 async function buildOpsSkillBundle(skillSourcePath) {
   if (!existsSync(join(skillSourcePath, "SKILL.md"))) {

@@ -14,3 +14,5 @@ install-op-cases/
 /soty-export-after-reinstall.json
 /soty-*.ps1
 /soty_*.ps1
+/usb-recovery-backup-*/
+/windows-media-tool/
