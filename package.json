@@ -13,6 +13,7 @@
     "agent": "node scripts/soty-agent.mjs",
     "ctl": "node scripts/soty-agent.mjs ctl",
     "agent:release": "node scripts/build-agent-release.mjs",
+    "agent:selftest": "node scripts/action-kernel-selftest.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

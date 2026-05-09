@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.111";
+const agentVersion = "0.3.112";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -16,7 +16,7 @@ const codexSessionsPath = join(agentDir, "agent-codex-sessions.json");
 const codexWorkspacesDir = join(agentDir, "codex-workspaces");
 const learningOutboxPath = join(agentDir, "learning-outbox.jsonl");
 const learningSentPath = join(agentDir, "learning-sent.jsonl");
-const actionJobsDir = join(agentDir, "action-jobs");
+const actionJobsDir = resolve(process.env.SOTY_AGENT_ACTION_JOBS_DIR || join(agentDir, "action-jobs"));
 const persistedAgentConfig = loadAgentConfig();
 const persistedCodexSessions = loadCodexSessions();
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
@@ -470,6 +470,24 @@ async function handleOperatorHttpAction(request, response, headers) {
     sendJson(response, 400, headers, { ok: false, text: action.text, exitCode: 400 });
     return;
   }
+  if (action.idempotencyKey) {
+    const previous = await findActionJobByIdempotencyKey(action);
+    if (previous?.conflict) {
+      sendJson(response, 409, headers, {
+        ok: false,
+        text: "! idempotency-key",
+        exitCode: 409,
+        jobId: previous.job?.id || "",
+        statusPath: previous.job?.id ? `/operator/action/${previous.job.id}` : ""
+      });
+      return;
+    }
+    if (previous?.entry) {
+      const payload = actionJobResponsePayload(previous.entry);
+      sendJson(response, payload.status === "running" ? 202 : 200, headers, payload);
+      return;
+    }
+  }
   const job = await createActionJob(action);
   const promise = runActionJob(job, action);
   if (action.detached) {
@@ -477,6 +495,7 @@ async function handleOperatorHttpAction(request, response, headers) {
     sendJson(response, 202, headers, {
       ok: true,
       jobId: job.id,
+      idempotencyKey: job.idempotencyKey,
       status: "running",
       family: job.family,
       risk: job.risk,
@@ -511,12 +530,14 @@ function normalizeOperatorActionPayload(payload) {
   }
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
+  const intent = cleanActionText(payload.intent || payload.name || family, 180);
+  const commandSig = commandSignature(body, family);
   return {
     ok: true,
     mode,
     actionType: cleanActionToken(payload.kind || payload.actionType || mode, mode),
     family,
-    intent: cleanActionText(payload.intent || payload.name || family, 180),
+    intent,
     target,
     sourceDeviceId,
     sourceRelayId,
@@ -527,7 +548,10 @@ function normalizeOperatorActionPayload(payload) {
     shell: cleanActionText(payload.shell, 40),
     risk: cleanActionRisk(payload.risk || inferActionRisk(body, family)),
     detached: payload.detached === true || payload.wait === false,
-    createdBy: cleanActionText(payload.createdBy || "soty-agent", 80)
+    createdBy: cleanActionText(payload.createdBy || "soty-agent", 80),
+    idempotencyKey: cleanActionId(payload.idempotencyKey || payload.clientRequestId || payload.requestId || ""),
+    commandSig,
+    taskSig: taskSignature(`${family} ${intent} ${target}`)
   };
 }
 
@@ -547,13 +571,14 @@ async function createActionJob(action) {
     target: action.target,
     sourceDeviceId: action.sourceDeviceId,
     createdBy: action.createdBy,
+    idempotencyKey: action.idempotencyKey,
     createdAt,
     startedAt: "",
     finishedAt: "",
     durationMs: 0,
     route: "",
-    commandSig: commandSignature(action.mode === "script" ? action.script : action.command, action.family),
-    taskSig: taskSignature(`${action.family} ${action.intent} ${action.target}`),
+    commandSig: action.commandSig,
+    taskSig: action.taskSig,
     artifacts: {
       root,
       jobPath: join(root, "job.json"),
@@ -562,7 +587,7 @@ async function createActionJob(action) {
     }
   };
   await mkdir(root, { recursive: true });
-  await writeFile(join(root, "input.json"), JSON.stringify({
+  await writeJsonAtomic(join(root, "input.json"), {
     schema: "soty.action.input.v1",
     mode: action.mode,
     kind: action.actionType,
@@ -573,10 +598,11 @@ async function createActionJob(action) {
     sourceDeviceId: action.sourceDeviceId,
     sourceRelayId: action.sourceRelayId ? "<set>" : "",
     timeoutMs: action.timeoutMs,
+    idempotencyKey: action.idempotencyKey,
     commandSig: job.commandSig,
     taskSig: job.taskSig,
     createdAt
-  }, null, 2), "utf8");
+  });
   await writeActionJob(job);
   actionJobs.set(id, job);
   return job;
@@ -626,6 +652,7 @@ async function runActionJob(job, action) {
     mode: action.mode,
     kind: action.actionType,
     risk: action.risk,
+    idempotencyKey: action.idempotencyKey,
     target: cleanActionText(execution.target || action.target, 160),
     sourceDeviceId: cleanActionText(execution.sourceDeviceId || action.sourceDeviceId, maxSourceChars),
     route,
@@ -641,7 +668,7 @@ async function runActionJob(job, action) {
     finishedAt: new Date(finished).toISOString()
   };
   await writeFile(job.artifacts.stdoutPath, text, "utf8").catch(() => undefined);
-  await writeFile(job.artifacts.resultPath, JSON.stringify(resultDoc, null, 2), "utf8").catch(() => undefined);
+  await writeJsonAtomic(job.artifacts.resultPath, resultDoc).catch(() => undefined);
   current = {
     ...current,
     status,
@@ -671,6 +698,7 @@ async function runActionJob(job, action) {
     payload: {
       ok: status === "ok",
       jobId: job.id,
+      idempotencyKey: job.idempotencyKey,
       status,
       family: action.family,
       risk: action.risk,
@@ -714,12 +742,12 @@ async function executeOperatorAction(action) {
         name: action.name,
         shell: action.shell,
         timeoutMs: action.timeoutMs
-      }, action.sourceRelayId)
+      }, action.sourceRelayId, 1_000_000)
       : await postAgentSourceJob("/api/agent/source/run", {
         deviceId,
         command: action.command,
         timeoutMs: action.timeoutMs
-      }, action.sourceRelayId);
+      }, action.sourceRelayId, 1_000_000);
     return {
       ...result,
       route: `agent-source.${action.mode}`,
@@ -798,7 +826,15 @@ function buildActionProof({ action, execution, status }) {
 
 async function writeActionJob(job) {
   await mkdir(dirname(job.artifacts.jobPath), { recursive: true });
-  await writeFile(job.artifacts.jobPath, JSON.stringify(job, null, 2), "utf8");
+  await writeJsonAtomic(job.artifacts.jobPath, job);
+}
+
+async function writeJsonAtomic(filePath, value) {
+  const dir = dirname(filePath);
+  await mkdir(dir, { recursive: true });
+  const tempPath = join(dir, `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(tempPath, filePath);
 }
 
 async function readActionJob(jobId) {
@@ -814,8 +850,9 @@ async function readActionJob(jobId) {
     return null;
   }
   const result = await readJsonFile(resultPath);
+  const hydratedJob = hydrateActionJob(job, { live: Boolean(live), result });
   return {
-    job,
+    job: hydratedJob,
     ...(result ? { result } : {})
   };
 }
@@ -827,9 +864,9 @@ async function listActionJobs() {
     if (!entry.isDirectory()) {
       continue;
     }
-    const item = await readJsonFile(join(actionJobsDir, entry.name, "job.json"));
-    if (item) {
-      jobs.push(summarizeActionJob(item));
+    const item = await readActionJob(entry.name);
+    if (item?.job) {
+      jobs.push(summarizeActionJob(item.job));
     }
   }
   for (const live of actionJobs.values()) {
@@ -840,6 +877,94 @@ async function listActionJobs() {
   return jobs
     .sort((left, right) => String(right.startedAt || right.createdAt).localeCompare(String(left.startedAt || left.createdAt)))
     .slice(0, 40);
+}
+
+async function findActionJobByIdempotencyKey(action) {
+  const key = cleanActionId(action.idempotencyKey);
+  if (!key) {
+    return null;
+  }
+  for (const job of actionJobs.values()) {
+    if (job.idempotencyKey === key) {
+      const entry = await readActionJob(job.id) || { job };
+      return job.commandSig === action.commandSig
+        ? { entry }
+        : { conflict: true, job };
+    }
+  }
+  const entries = await readdir(actionJobsDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const item = await readActionJob(entry.name);
+    const job = item?.job;
+    if (job?.idempotencyKey !== key) {
+      continue;
+    }
+    return job.commandSig === action.commandSig
+      ? { entry: item }
+      : { conflict: true, job };
+  }
+  return null;
+}
+
+function actionJobResponsePayload(entry) {
+  const job = entry?.job || {};
+  const result = entry?.result || null;
+  const status = cleanActionText(result?.status || job.status || "unknown", 24);
+  const exitCode = Number.isSafeInteger(result?.exitCode)
+    ? result.exitCode
+    : Number.isSafeInteger(job.exitCode)
+      ? job.exitCode
+      : status === "ok"
+        ? 0
+        : status === "running"
+          ? undefined
+          : 1;
+  return {
+    ok: status === "ok",
+    jobId: cleanActionText(job.id, 96),
+    idempotencyKey: cleanActionText(job.idempotencyKey, 120),
+    status,
+    family: cleanActionText(result?.family || job.family, 80),
+    risk: cleanActionText(result?.risk || job.risk, 20),
+    route: cleanActionText(result?.route || job.route, 120),
+    proof: cleanActionText(result?.proof || job.proof, 900),
+    text: String(result?.output?.tail || "").slice(-maxChatChars),
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(Number.isSafeInteger(result?.durationMs) || Number.isSafeInteger(job.durationMs)
+      ? { durationMs: Number.isSafeInteger(result?.durationMs) ? result.durationMs : job.durationMs }
+      : {}),
+    statusPath: job.id ? `/operator/action/${job.id}` : "",
+    resultPath: result ? cleanActionText(job.artifacts?.resultPath, 260) : ""
+  };
+}
+
+function hydrateActionJob(job, { live = false, result = null } = {}) {
+  if (!job || typeof job !== "object") {
+    return job;
+  }
+  if (result && typeof result === "object") {
+    return {
+      ...job,
+      status: cleanActionText(result.status || job.status, 24),
+      route: cleanActionText(result.route || job.route, 120),
+      finishedAt: cleanActionText(result.finishedAt || job.finishedAt, 80),
+      durationMs: Number.isSafeInteger(result.durationMs) ? result.durationMs : job.durationMs,
+      exitCode: Number.isSafeInteger(result.exitCode) ? result.exitCode : job.exitCode,
+      proof: cleanActionText(result.proof || job.proof, 900)
+    };
+  }
+  if (!live && (job.status === "created" || job.status === "running")) {
+    return {
+      ...job,
+      status: "interrupted",
+      exitCode: 127,
+      proof: "local action supervisor exited before result artifact"
+    };
+  }
+  return job;
 }
 
 function summarizeActionJob(job) {
@@ -865,6 +990,14 @@ function summarizeActionJob(job) {
 function cleanActionRisk(value) {
   const text = String(value || "").trim().toLowerCase();
   return ["low", "medium", "high", "destructive"].includes(text) ? text : "medium";
+}
+
+function cleanActionId(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 120);
 }
 
 function inferActionRisk(text, family) {
@@ -986,7 +1119,7 @@ async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, time
   sendJson(response, 200, headers, result);
 }
 
-async function postAgentSourceJob(path, body, relayId = "") {
+async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxChatChars) {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
   const jobRelayId = safeRelayId(relayId) || agentRelayId;
   if (!relayBaseUrl || !jobRelayId) {
@@ -1005,7 +1138,7 @@ async function postAgentSourceJob(path, body, relayId = "") {
     const payload = await response.json();
     return {
       ok: Boolean(response.ok && payload?.ok),
-      text: String(payload?.text || "").slice(0, maxChatChars),
+      text: String(payload?.text || "").slice(0, Math.max(1, Math.min(maxTextLength, 1_000_000))),
       exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.ok ? 0 : response.status)
     };
   } catch {
@@ -4855,7 +4988,7 @@ async function runControlCli(args) {
       const target = parsed.args[0] || "";
       const remoteCommand = parsed.args.slice(1).join(" ");
       if (!target || !remoteCommand) {
-        process.stderr.write("sotyctl action run [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--detached] [--source-device=id] [--timeout=ms] <target> <command>\n");
+        process.stderr.write("sotyctl action run [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <command>\n");
         process.exit(2);
       }
       const response = await fetch(`http://127.0.0.1:${port}/operator/action`, {
@@ -4878,7 +5011,7 @@ async function runControlCli(args) {
       const filePath = parsed.args[1] || "";
       const shell = parsed.shell || parsed.args[2] || "";
       if (!target || !filePath) {
-        process.stderr.write("sotyctl action script [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--detached] [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
+        process.stderr.write("sotyctl action script [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
         process.exit(2);
       }
       const script = await readFile(filePath, "utf8");
@@ -5203,6 +5336,7 @@ function parseActionCtlOptions(args) {
   let kind = "";
   let risk = "";
   let shell = "";
+  let idempotencyKey = "";
   let detached = false;
   while (rest.length > 0) {
     const head = rest[0] || "";
@@ -5276,6 +5410,21 @@ function parseActionCtlOptions(args) {
       rest.splice(0, 2);
       continue;
     }
+    if (head.startsWith("--idempotency-key=")) {
+      idempotencyKey = cleanActionId(head.slice("--idempotency-key=".length));
+      rest.shift();
+      continue;
+    }
+    if ((head === "--idempotency-key" || head === "--request-id") && rest.length > 1) {
+      idempotencyKey = cleanActionId(rest[1]);
+      rest.splice(0, 2);
+      continue;
+    }
+    if (head.startsWith("--request-id=")) {
+      idempotencyKey = cleanActionId(head.slice("--request-id=".length));
+      rest.shift();
+      continue;
+    }
     if (head === "--detached" || head === "--detach" || head === "--no-wait") {
       detached = true;
       rest.shift();
@@ -5288,7 +5437,7 @@ function parseActionCtlOptions(args) {
     }
     break;
   }
-  return { timeoutMs, sourceDeviceId, sourceRelayId, family, kind, risk, shell, detached, args: rest };
+  return { timeoutMs, sourceDeviceId, sourceRelayId, family, kind, risk, shell, idempotencyKey, detached, args: rest };
 }
 
 function actionCtlRequestOptions(parsed) {
@@ -5299,6 +5448,7 @@ function actionCtlRequestOptions(parsed) {
     ...(parsed.family ? { family: parsed.family } : {}),
     ...(parsed.kind ? { kind: parsed.kind } : {}),
     ...(parsed.risk ? { risk: parsed.risk } : {}),
+    ...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {}),
     ...(parsed.detached ? { detached: true } : {})
   };
 }
