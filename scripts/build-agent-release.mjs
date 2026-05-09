@@ -84,6 +84,10 @@ async function publishWindowsReinstallScripts() {
 
 async function buildOpsSkillBundle(skillSourcePath) {
   if (!existsSync(join(skillSourcePath, "SKILL.md"))) {
+    const existing = await existingOpsSkillBundle();
+    if (existing) {
+      return existing;
+    }
     throw new Error(`Ops skill source not found: ${skillSourcePath}`);
   }
 
@@ -119,6 +123,52 @@ async function buildOpsSkillBundle(skillSourcePath) {
   } finally {
     await rm(stageDir, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function existingOpsSkillBundle() {
+  const manifest = await readJson(manifestPath);
+  const opsSkill = manifest?.opsSkill;
+  if (!isSafeExistingOpsSkill(opsSkill)) {
+    return null;
+  }
+  const zipPath = join(outputDir, "ops-skill.zip");
+  const tarPath = join(outputDir, "ops-skill.tar.gz");
+  if (!existsSync(zipPath) || !existsSync(tarPath)) {
+    return null;
+  }
+  const zipBytes = await readFile(zipPath).catch(() => null);
+  const tarBytes = await readFile(tarPath).catch(() => null);
+  if (!zipBytes || !tarBytes) {
+    return null;
+  }
+  if (sha256(zipBytes) !== opsSkill.zipSha256 || sha256(tarBytes) !== opsSkill.tarSha256) {
+    return null;
+  }
+  if (zipBytes.length !== opsSkill.zipBytes || tarBytes.length !== opsSkill.tarBytes) {
+    return null;
+  }
+  return { ...opsSkill };
+}
+
+async function readJson(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function isSafeExistingOpsSkill(value) {
+  return value
+    && typeof value === "object"
+    && value.name === "universal-install-ops"
+    && value.root === opsSkillPackageDir
+    && value.zipUrl === "/agent/ops-skill.zip"
+    && value.tarUrl === "/agent/ops-skill.tar.gz"
+    && /^[a-f0-9]{64}$/u.test(value.zipSha256)
+    && /^[a-f0-9]{64}$/u.test(value.tarSha256)
+    && Number.isSafeInteger(value.zipBytes)
+    && Number.isSafeInteger(value.tarBytes);
 }
 
 function isAllowedSkillPath(value) {
