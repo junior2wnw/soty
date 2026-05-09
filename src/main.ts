@@ -3206,6 +3206,14 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
       let reply: LocalAgentReply;
       const streamedMessages: string[] = [];
       const streamedTerminal: string[] = [];
+      const progressTimer = window.setTimeout(() => {
+        if (streamedMessages.length === 0 && streamedTerminal.length === 0) {
+          appendAgentChatMessage(
+            tunnelId,
+            "\u0417\u0430\u043f\u0443\u0441\u043a\u0430\u044e\u0441\u044c. \u041f\u0435\u0440\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c \u0434\u043e \u043c\u0438\u043d\u0443\u0442\u044b."
+          );
+        }
+      }, 8_000);
       try {
         await prepareAgentSourceForDialog(tunnelId, tunnel);
         reply = await askLocalAgentReply(text, context, source, 2 * 60 * 60_000, (message) => {
@@ -3224,6 +3232,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
           appendAgentTerminalTranscript(tunnelId, streamed);
         });
       } finally {
+        window.clearTimeout(progressTimer);
         setAgentThinking(tunnelId, false);
       }
       let finalReply = reply;

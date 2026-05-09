@@ -115,6 +115,14 @@ export async function askLocalAgentReply(
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler
 ): Promise<LocalAgentReply> {
+  const relayId = readAgentRelayId() || ensureAgentRelayId();
+  if (relayId) {
+    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, true);
+    if (relay && !shouldRetryAgentRelayReply(relay)) {
+      return relay;
+    }
+  }
+
   const direct = await askLocalAgentReplyHttp(
     text,
     context,
@@ -132,7 +140,7 @@ export async function askLocalAgentReply(
     return direct;
   }
 
-  if (readAgentRelayId() || ensureAgentRelayId()) {
+  if (relayId) {
     const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, directNeedsServerFallback);
     if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
@@ -161,7 +169,7 @@ function shouldUseServerAgentReplyFallback(reply: LocalAgentReply): boolean {
   if (reply.ok) {
     return false;
   }
-  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected)/iu.test(reply.text);
+  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected|local Codex did not start in time)/iu.test(reply.text);
 }
 
 export function hasAgentRelayId(): boolean {

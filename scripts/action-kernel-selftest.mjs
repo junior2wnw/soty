@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.121");
+      assertEqual(health.body.version, "0.3.122");
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -284,7 +284,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.121");
+      assertEqual(manifest.version, "0.3.122");
       assertEqual(manifest.windowsReinstall.scripts.length, 3);
     }]
   ];

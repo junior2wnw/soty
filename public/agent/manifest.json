@@ -1,18 +1,17 @@
 {
-  "version": "0.3.121",
+  "version": "0.3.122",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "ef5f3a6530777d95fd1b1bae865280f1bca4c6a39c60dab3140bb23184858b55",
+  "sha256": "7d5bad15959f2bb0bf5b94ec04a109016977b45a285a53378a0e5d837a7e14fd",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "31033cc83cb53307fb3443e193ee16ada671cc8b12ea4ec82f5f74dddb138c5d",
-    "zipBytes": 1215569,
+    "zipSha256": "7e0dbff9282f35b53437f6a046bd92cc496f247c19aef133b70f3baedb85aa94",
+    "zipBytes": 1217139,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "45157c4f8747ea6292223bbc7156cd4286feee786db385a73930b40d6a8a949d",
-    "tarBytes": 298888,
-    "revision": "03a97b34403feb4109cf66fa1ab1f73bbd036a61",
-    "dirty": true
+    "tarSha256": "57ab602287fe8b398fc8782fcde1bb2ad1c14db23d43f11855b8c4d0b0d57b4c",
+    "tarBytes": 299428,
+    "revision": "45627224b8c0eec3c7552fe13049ca51550dd4b1"
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",

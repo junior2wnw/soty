@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.121";
+const agentVersion = "0.3.122";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -48,6 +48,7 @@ const agentReplyTimeoutMs = Math.max(
   maxLongTaskTimeoutMs,
   safeDurationMs(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS, maxLongTaskTimeoutMs, maxLongTaskTimeoutMs)
 );
+const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIMEOUT_MS, 25_000, 120_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -2837,12 +2838,21 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
     let stderr = "";
     let jsonBuffer = "";
     let done = false;
+    let sawStartupActivity = false;
+    const markStartupActivity = () => {
+      if (sawStartupActivity) {
+        return;
+      }
+      sawStartupActivity = true;
+      clearTimeout(startupTimer);
+    };
     const finish = (exitCode) => {
       if (done) {
         return;
       }
       done = true;
       clearTimeout(timer);
+      clearTimeout(startupTimer);
       resolve({
         exitCode: Number.isSafeInteger(exitCode) ? exitCode : 0,
         stdout: stdout.slice(-12_000),
@@ -2856,7 +2866,17 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       killProcessTree(child);
       reject(new Error("timeout"));
     }, Math.max(5000, timeoutMs || 120000));
+    const startupTimer = setTimeout(() => {
+      if (done || sawStartupActivity) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      killProcessTree(child);
+      reject(new Error("codex cold start timeout"));
+    }, Math.max(5000, Math.min(codexStartupTimeoutMs, timeoutMs || codexStartupTimeoutMs)));
     child.stdout.on("data", (chunk) => {
+      markStartupActivity();
       const text = chunk.toString("utf8");
       stdout = `${stdout}${text}`.slice(-24_000);
       jsonBuffer = `${jsonBuffer}${text}`;
@@ -2867,6 +2887,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       }
     });
     child.stderr.on("data", (chunk) => {
+      markStartupActivity();
       stderr = `${stderr}${chunk.toString("utf8")}`.slice(-24_000);
     });
     if (input && child.stdin) {
@@ -2878,6 +2899,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       }
       done = true;
       clearTimeout(timer);
+      clearTimeout(startupTimer);
       reject(error);
     });
     child.on("close", finish);
@@ -3722,7 +3744,7 @@ function shouldUseCodexRelayFallback(reply) {
   if (!codexRelayFallback || !reply || reply.ok) {
     return false;
   }
-  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected)/iu.test(String(reply.text || ""));
+  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected|local Codex did not start in time)/iu.test(String(reply.text || ""));
 }
 
 function agentFailureText(details) {
@@ -3732,6 +3754,8 @@ function agentFailureText(details) {
     reason = "missing auth or API key";
   } else if (value.includes("403 Forbidden") || value.includes("Unable to load site")) {
     reason = "OpenAI/ChatGPT transport rejected the Codex CLI request";
+  } else if (value.includes("cold start")) {
+    reason = "local Codex did not start in time";
   } else if (value.includes("timeout")) {
     reason = "timeout waiting for Codex CLI";
   }
