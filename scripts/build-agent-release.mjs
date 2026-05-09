@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
+import { spawnSync } from "node:child_process";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourcePath = join(root, "scripts", "soty-agent.mjs");
@@ -103,7 +104,7 @@ async function buildOpsSkillBundle(skillSourcePath) {
     const zipPath = join(outputDir, "ops-skill.zip");
     const tarPath = join(outputDir, "ops-skill.tar.gz");
     await writeFile(zipPath, await createZipFromDirectory(packageRoot, opsSkillPackageDir));
-    createTarGz(stageDir, tarPath);
+    await writeFile(tarPath, await createTarGzFromDirectory(packageRoot, opsSkillPackageDir));
 
     const zipBytes = await readFile(zipPath);
     const tarBytes = await readFile(tarPath);
@@ -177,15 +178,6 @@ function isAllowedSkillPath(value) {
     && !/\.pyc$/iu.test(normalized);
 }
 
-function createTarGz(stageDir, tarPath) {
-  const result = spawnSync("tar", ["-czf", tarPath, "-C", stageDir, opsSkillPackageDir], {
-    encoding: "utf8"
-  });
-  if (result.status !== 0) {
-    throw new Error(`tar failed: ${result.stderr || result.error?.message || result.status}`);
-  }
-}
-
 async function createZipFromDirectory(rootDir, rootName) {
   const files = await listFiles(rootDir);
   const localRecords = [];
@@ -250,6 +242,80 @@ async function createZipFromDirectory(rootDir, rootName) {
   end.writeUInt16LE(0, 20);
 
   return Buffer.concat([...localRecords, ...centralRecords, end]);
+}
+
+async function createTarGzFromDirectory(rootDir, rootName) {
+  const files = await listFiles(rootDir);
+  const records = [];
+  for (const file of files) {
+    const absolutePath = join(rootDir, file);
+    const data = await readFile(absolutePath);
+    const name = `${rootName}/${file.replace(/\\/gu, "/")}`;
+    records.push(createTarHeader(name, data.length), data, zeroPad(data.length, 512));
+  }
+  records.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(records), { level: 9, mtime: 0 });
+}
+
+function createTarHeader(path, size) {
+  const header = Buffer.alloc(512, 0);
+  const { name, prefix } = splitTarPath(path);
+  writeTarString(header, name, 0, 100);
+  writeTarOctal(header, 0o644, 100, 8);
+  writeTarOctal(header, 0, 108, 8);
+  writeTarOctal(header, 0, 116, 8);
+  writeTarOctal(header, size, 124, 12);
+  writeTarOctal(header, 0, 136, 12);
+  header.fill(0x20, 148, 156);
+  header[156] = "0".charCodeAt(0);
+  writeTarString(header, "ustar", 257, 6);
+  writeTarString(header, "00", 263, 2);
+  writeTarString(header, prefix, 345, 155);
+
+  let checksum = 0;
+  for (const byte of header) {
+    checksum += byte;
+  }
+  const checksumText = checksum.toString(8).padStart(6, "0");
+  header.write(`${checksumText}\0 `, 148, 8, "ascii");
+  return header;
+}
+
+function splitTarPath(path) {
+  const normalized = String(path || "").replace(/\\/gu, "/").replace(/^\/+/u, "");
+  if (Buffer.byteLength(normalized, "utf8") <= 100) {
+    return { name: normalized, prefix: "" };
+  }
+  const parts = normalized.split("/");
+  for (let index = parts.length - 1; index > 0; index -= 1) {
+    const prefix = parts.slice(0, index).join("/");
+    const name = parts.slice(index).join("/");
+    if (Buffer.byteLength(prefix, "utf8") <= 155 && Buffer.byteLength(name, "utf8") <= 100) {
+      return { name, prefix };
+    }
+  }
+  throw new Error(`Tar path is too long: ${normalized}`);
+}
+
+function writeTarString(buffer, value, offset, length) {
+  const bytes = Buffer.from(String(value || ""), "utf8");
+  if (bytes.length > length) {
+    throw new Error(`Tar field is too long: ${value}`);
+  }
+  bytes.copy(buffer, offset);
+}
+
+function writeTarOctal(buffer, value, offset, length) {
+  const text = Math.trunc(value).toString(8);
+  if (text.length > length - 1) {
+    throw new Error(`Tar numeric field is too large: ${value}`);
+  }
+  buffer.write(`${text.padStart(length - 1, "0")}\0`, offset, length, "ascii");
+}
+
+function zeroPad(size, blockSize) {
+  const remainder = size % blockSize;
+  return remainder === 0 ? Buffer.alloc(0) : Buffer.alloc(blockSize - remainder);
 }
 
 async function listFiles(rootDir, currentDir = rootDir) {

@@ -108,6 +108,7 @@ export interface RemoteRequest {
 export interface RemoteCommand {
   readonly id: string;
   readonly command: string;
+  readonly timeoutMs?: number;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -119,6 +120,7 @@ export interface RemoteScript {
   readonly name: string;
   readonly shell: string;
   readonly script: string;
+  readonly timeoutMs?: number;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -366,6 +368,14 @@ const p2pIceServers: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" }
 ];
+
+function safeRemoteTimeoutMs(value: unknown): number {
+  const timeoutMs = typeof value === "number" ? value : 0;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return 0;
+  }
+  return Math.max(1000, Math.min(Math.trunc(timeoutMs), 2 * 60 * 60_000));
+}
 
 export class TunnelSync {
   private readonly doc = new Y.Doc();
@@ -626,9 +636,12 @@ export class TunnelSync {
     });
   }
 
-  async sendRemoteCommand(targetDeviceId: string, command: string): Promise<string> {
+  async sendRemoteCommand(targetDeviceId: string, command: string, timeoutMs = 0): Promise<string> {
     const id = `remote_cmd_${crypto.randomUUID()}`;
-    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({ command })));
+    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({
+      command,
+      ...(safeRemoteTimeoutMs(timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(timeoutMs) } : {})
+    })));
     this.sendControl({
       type: "remote.command",
       command: {
@@ -641,12 +654,13 @@ export class TunnelSync {
     return id;
   }
 
-  async sendRemoteScript(targetDeviceId: string, script: { readonly name?: string; readonly shell?: string; readonly script: string }): Promise<string> {
+  async sendRemoteScript(targetDeviceId: string, script: { readonly name?: string; readonly shell?: string; readonly script: string; readonly timeoutMs?: number }): Promise<string> {
     const id = `remote_script_${crypto.randomUUID()}`;
     const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({
       name: script.name || "script",
       shell: script.shell || "",
-      script: script.script.slice(0, 1_000_000)
+      script: script.script.slice(0, 1_000_000),
+      ...(safeRemoteTimeoutMs(script.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(script.timeoutMs) } : {})
     })));
     this.sendControl({
       type: "remote.script",
@@ -1070,7 +1084,7 @@ export class TunnelSync {
 
   private async applyRemoteCommand(command: EncryptedRemoteCommand): Promise<void> {
     const bytes = await decryptFromTunnel(this.tunnel, command.nonce, command.ciphertext);
-    const payload = JSON.parse(decode(bytes)) as { readonly command?: string };
+    const payload = JSON.parse(decode(bytes)) as { readonly command?: string; readonly timeoutMs?: number };
     const text = typeof payload.command === "string" ? payload.command.slice(0, 8000) : "";
     if (!text.trim()) {
       return;
@@ -1078,6 +1092,7 @@ export class TunnelSync {
     this.callbacks.onRemoteCommand({
       id: command.id,
       command: text,
+      ...(safeRemoteTimeoutMs(payload.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(payload.timeoutMs) } : {}),
       targetDeviceId: command.targetDeviceId,
       deviceId: command.deviceId || "",
       nick: command.deviceNick || command.nick || "",
@@ -1087,7 +1102,7 @@ export class TunnelSync {
 
   private async applyRemoteScript(script: EncryptedRemoteScript): Promise<void> {
     const bytes = await decryptFromTunnel(this.tunnel, script.nonce, script.ciphertext);
-    const payload = JSON.parse(decode(bytes)) as { readonly name?: string; readonly shell?: string; readonly script?: string };
+    const payload = JSON.parse(decode(bytes)) as { readonly name?: string; readonly shell?: string; readonly script?: string; readonly timeoutMs?: number };
     const text = typeof payload.script === "string" ? payload.script.slice(0, 1_000_000) : "";
     if (!text.trim()) {
       return;
@@ -1097,6 +1112,7 @@ export class TunnelSync {
       name: cleanFileName(payload.name || "script"),
       shell: typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "",
       script: text,
+      ...(safeRemoteTimeoutMs(payload.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(payload.timeoutMs) } : {}),
       targetDeviceId: script.targetDeviceId,
       deviceId: script.deviceId || "",
       nick: script.deviceNick || script.nick || "",

@@ -149,7 +149,18 @@ let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
-const operatorRemoteRuns = new Map<string, { readonly commandId: string; readonly tunnelId: string; readonly hostDeviceId: string }>();
+let operatorBridgeEpoch = 0;
+type OperatorRemoteRun = {
+  readonly commandId: string;
+  readonly tunnelId: string;
+  readonly hostDeviceId: string;
+  readonly startedAt: number;
+  readonly timeoutMs: number;
+  readonly kind: "run" | "script";
+  readonly label: string;
+};
+const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
+const operatorStartingTunnels = new Set<string>();
 const localAgentRuns = new Map<string, WebSocket>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 const agentReplyQueues = new Map<string, Promise<void>>();
@@ -1845,8 +1856,11 @@ function applyRemoteCancel(tunnelId: string, cancel: RemoteCancel): void {
   if (!remoteEnabled.has(tunnelId)) {
     return;
   }
-  stopLocalAgentRun(cancel.commandId);
+  const stopped = stopLocalAgentRun(cancel.commandId);
   appendTerminalLine(tunnelId, "! stop requested");
+  if (stopped) {
+    void syncs.get(tunnelId)?.sendRemoteOutput(cancel.deviceId, cancel.commandId, "! cancelled\n", 130);
+  }
   renderTerminal();
 }
 
@@ -1933,6 +1947,8 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
       readonly text?: string;
       readonly speed?: string;
       readonly persona?: string;
+      readonly version?: string;
+      readonly timeoutMs?: number;
     };
     try {
       message = JSON.parse(event.data as string) as typeof message;
@@ -1966,10 +1982,15 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     if (message.type === "operator.import") {
       void runOperatorImport(message);
     }
+    if (message.type === "operator.updating") {
+      cancelAllOperatorRemoteRuns("! agent updating");
+    }
   };
   ws.onclose = () => {
     if (operatorSocket === ws) {
       operatorSocket = null;
+      operatorBridgeEpoch += 1;
+      cancelAllOperatorRemoteRuns("! operator bridge closed");
     }
     if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
       operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
@@ -1982,11 +2003,57 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
 
 function closeOperatorBridge(): void {
   window.clearTimeout(operatorReconnectTimer);
+  operatorBridgeEpoch += 1;
+  cancelAllOperatorRemoteRuns("! operator bridge closed");
   operatorSocket?.close();
   operatorSocket = null;
   operatorBridgeAllowEmpty = false;
   operatorPending.clear();
   operatorRemoteRuns.clear();
+  operatorStartingTunnels.clear();
+}
+
+function operatorTargetBusy(tunnelId: string): boolean {
+  if (operatorStartingTunnels.has(tunnelId)) {
+    return true;
+  }
+  for (const run of operatorRemoteRuns.values()) {
+    if (run.tunnelId === tunnelId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function safeOperatorTimeoutMs(value: unknown): number {
+  const timeoutMs = typeof value === "number" ? value : 0;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return 0;
+  }
+  return Math.max(1000, Math.min(Math.trunc(timeoutMs), 2 * 60 * 60_000));
+}
+
+function cancelAllOperatorRemoteRuns(reason: string): void {
+  const runs = [...operatorRemoteRuns.entries()];
+  operatorStartingTunnels.clear();
+  for (const [requestId, run] of runs) {
+    cancelOperatorRemoteRun(requestId, run, reason);
+  }
+  if (runs.length > 0) {
+    renderTerminal();
+  }
+}
+
+function cancelOperatorRemoteRun(requestId: string, run: OperatorRemoteRun, reason: string): void {
+  appendTerminalLine(run.tunnelId, reason);
+  setTerminalState(run.tunnelId, "bad");
+  const sync = syncs.get(run.tunnelId);
+  if (sync) {
+    void sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
+  }
+  sendOperatorOutput(requestId, `${reason}\n`, 130);
+  operatorRemoteRuns.delete(requestId);
+  operatorPending.delete(run.commandId);
 }
 
 function hasOperatorTargets(): boolean {
@@ -2055,7 +2122,7 @@ function targetMentionedAtStart(text: string, targets: readonly LocalAgentOperat
     || null;
 }
 
-async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string }): Promise<void> {
+async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string; readonly timeoutMs?: number }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
   const command = typeof message.command === "string" ? message.command.trim() : "";
   const sourceDeviceId = typeof message.sourceDeviceId === "string" ? message.sourceDeviceId.trim() : "";
@@ -2081,6 +2148,15 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
+  if (operatorTargetBusy(tunnel.id)) {
+    appendTerminalLine(tunnel.id, "! busy");
+    sendOperatorOutput(requestId, "! busy", 409);
+    renderTerminal();
+    return;
+  }
+  const bridgeEpoch = operatorBridgeEpoch;
+  const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
+  operatorStartingTunnels.add(tunnel.id);
   const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
   if (!keepCurrentDialog) {
     selectedId = tunnel.id;
@@ -2098,13 +2174,28 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   }
   renderTerminal();
   try {
-    const commandId = await sync.sendRemoteCommand(hostDeviceId, command);
+    const commandId = await sync.sendRemoteCommand(hostDeviceId, command, timeoutMs);
+    if (bridgeEpoch !== operatorBridgeEpoch || !operatorSocket || operatorSocket.readyState !== WebSocket.OPEN) {
+      await sync.sendRemoteCancel(hostDeviceId, commandId).catch(() => undefined);
+      sendOperatorOutput(requestId, "! operator bridge closed", 130);
+      return;
+    }
     operatorPending.set(commandId, requestId);
-    operatorRemoteRuns.set(requestId, { commandId, tunnelId: tunnel.id, hostDeviceId });
+    operatorRemoteRuns.set(requestId, {
+      commandId,
+      tunnelId: tunnel.id,
+      hostDeviceId,
+      startedAt: Date.now(),
+      timeoutMs,
+      kind: "run",
+      label: command.slice(0, 120)
+    });
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
     renderTerminal();
+  } finally {
+    operatorStartingTunnels.delete(tunnel.id);
   }
 }
 
@@ -2115,6 +2206,7 @@ async function runOperatorScript(message: {
   readonly name?: string;
   readonly shell?: string;
   readonly script?: string;
+  readonly timeoutMs?: number;
 }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
   const script = typeof message.script === "string" ? message.script : "";
@@ -2141,7 +2233,16 @@ async function runOperatorScript(message: {
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
+  if (operatorTargetBusy(tunnel.id)) {
+    appendTerminalLine(tunnel.id, "! busy");
+    sendOperatorOutput(requestId, "! busy", 409);
+    renderTerminal();
+    return;
+  }
   const name = cleanNick(message.name || "script") || "script";
+  const bridgeEpoch = operatorBridgeEpoch;
+  const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
+  operatorStartingTunnels.add(tunnel.id);
   const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
   if (!keepCurrentDialog) {
     selectedId = tunnel.id;
@@ -2162,14 +2263,30 @@ async function runOperatorScript(message: {
     const commandId = await sync.sendRemoteScript(hostDeviceId, {
       name,
       shell: message.shell || "",
-      script
+      script,
+      timeoutMs
     });
+    if (bridgeEpoch !== operatorBridgeEpoch || !operatorSocket || operatorSocket.readyState !== WebSocket.OPEN) {
+      await sync.sendRemoteCancel(hostDeviceId, commandId).catch(() => undefined);
+      sendOperatorOutput(requestId, "! operator bridge closed", 130);
+      return;
+    }
     operatorPending.set(commandId, requestId);
-    operatorRemoteRuns.set(requestId, { commandId, tunnelId: tunnel.id, hostDeviceId });
+    operatorRemoteRuns.set(requestId, {
+      commandId,
+      tunnelId: tunnel.id,
+      hostDeviceId,
+      startedAt: Date.now(),
+      timeoutMs,
+      kind: "script",
+      label: name.slice(0, 120)
+    });
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
     renderTerminal();
+  } finally {
+    operatorStartingTunnels.delete(tunnel.id);
   }
 }
 
@@ -2189,6 +2306,7 @@ async function runOperatorCancel(message: { readonly id?: string }): Promise<voi
   await sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
   operatorRemoteRuns.delete(requestId);
   operatorPending.delete(run.commandId);
+  sendOperatorOutput(requestId, "! stopped\n", 130);
 }
 
 async function runOperatorChat(message: {
@@ -2604,6 +2722,10 @@ async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
   }
 }
 
+function localAgentRunTimeoutMs(value: unknown): number {
+  return safeOperatorTimeoutMs(value) || 30 * 60_000;
+}
+
 function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
   if (!device) {
     return;
@@ -2620,6 +2742,8 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
   }
   let opened = false;
   let finished = false;
+  const timeoutMs = localAgentRunTimeoutMs(job.timeoutMs);
+  let watchdogTimer = 0;
   const ws = new WebSocket("ws://127.0.0.1:49424");
   const fail = () => {
     if (finished || opened || !device) {
@@ -2630,6 +2754,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
     window.clearTimeout(timer);
+    window.clearTimeout(watchdogTimer);
     void sendAgentSourceOutput(device.id, job.id, "! 127.0.0.1:49424", 127);
   };
   const timer = window.setTimeout(() => {
@@ -2648,6 +2773,21 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     opened = true;
     window.clearTimeout(timer);
     localAgentRuns.set(job.id, ws);
+    watchdogTimer = window.setTimeout(() => {
+      if (finished || !device) {
+        return;
+      }
+      finished = true;
+      stopLocalAgentRun(job.id);
+      setTerminalState(tunnelId, "bad");
+      appendTerminalLine(tunnelId, "! timeout");
+      renderTerminal();
+      if (localAgentRuns.get(job.id) === ws) {
+        localAgentRuns.delete(job.id);
+      }
+      void sendAgentSourceOutput(device.id, job.id, "! timeout\n", 124);
+      ws.close();
+    }, timeoutMs + 1500);
     if (job.type === "script") {
       ws.send(JSON.stringify({
         type: "script",
@@ -2655,7 +2795,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
         name: job.name || "script",
         shell: job.shell || "",
         script: job.script || "",
-        timeoutMs: job.timeoutMs
+        timeoutMs
       }));
       return;
     }
@@ -2663,7 +2803,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
       type: "run",
       id: job.id,
       command: job.command || "",
-      timeoutMs: job.timeoutMs
+      timeoutMs
     }));
   };
   ws.onmessage = (event) => {
@@ -2683,6 +2823,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     }
     if (message.type === "error") {
       finished = true;
+      window.clearTimeout(watchdogTimer);
       setTerminalState(tunnelId, "bad");
       const text = typeof message.text === "string" ? message.text : "!";
       appendTerminalLine(tunnelId, text);
@@ -2700,6 +2841,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
     }
     if (typeof exitCode === "number") {
       finished = true;
+      window.clearTimeout(watchdogTimer);
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
       appendTerminalExitLine(tunnelId, exitCode);
     }
@@ -2709,6 +2851,14 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
   ws.onerror = () => fail();
   ws.onclose = () => {
     window.clearTimeout(timer);
+    window.clearTimeout(watchdogTimer);
+    if (opened && !finished && device) {
+      finished = true;
+      setTerminalState(tunnelId, "bad");
+      appendTerminalLine(tunnelId, "! agent disconnected");
+      renderTerminal();
+      void sendAgentSourceOutput(device.id, job.id, "! agent disconnected\n", 127);
+    }
     if (localAgentRuns.get(job.id) === ws) {
       localAgentRuns.delete(job.id);
     }
@@ -2722,6 +2872,8 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   }
   let opened = false;
   let finished = false;
+  const timeoutMs = localAgentRunTimeoutMs(command.timeoutMs);
+  let watchdogTimer = 0;
   const ws = new WebSocket("ws://127.0.0.1:49424");
   const fail = () => {
     if (finished || opened) {
@@ -2732,6 +2884,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
     window.clearTimeout(timer);
+    window.clearTimeout(watchdogTimer);
     void sync.sendRemoteOutput(command.deviceId, command.id, "! 127.0.0.1:49424", 127);
   };
   const timer = window.setTimeout(() => {
@@ -2742,10 +2895,26 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     opened = true;
     window.clearTimeout(timer);
     localAgentRuns.set(command.id, ws);
+    watchdogTimer = window.setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      stopLocalAgentRun(command.id);
+      setTerminalState(tunnelId, "bad");
+      appendTerminalLine(tunnelId, "! timeout");
+      renderTerminal();
+      if (localAgentRuns.get(command.id) === ws) {
+        localAgentRuns.delete(command.id);
+      }
+      void sync.sendRemoteOutput(command.deviceId, command.id, "! timeout\n", 124);
+      ws.close();
+    }, timeoutMs + 1500);
     ws.send(JSON.stringify({
       type: "run",
       id: command.id,
-      command: command.command
+      command: command.command,
+      timeoutMs
     }));
   };
   ws.onmessage = (event) => {
@@ -2762,6 +2931,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     }
     if (message.type === "error") {
       finished = true;
+      window.clearTimeout(watchdogTimer);
       setTerminalState(tunnelId, "bad");
       const text = typeof message.text === "string" ? message.text : "!";
       appendTerminalLine(tunnelId, text);
@@ -2779,6 +2949,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     }
     if (typeof exitCode === "number") {
       finished = true;
+      window.clearTimeout(watchdogTimer);
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
       appendTerminalExitLine(tunnelId, exitCode);
     }
@@ -2788,6 +2959,14 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   ws.onerror = () => fail();
   ws.onclose = () => {
     window.clearTimeout(timer);
+    window.clearTimeout(watchdogTimer);
+    if (opened && !finished) {
+      finished = true;
+      setTerminalState(tunnelId, "bad");
+      appendTerminalLine(tunnelId, "! agent disconnected");
+      renderTerminal();
+      void sync.sendRemoteOutput(command.deviceId, command.id, "! agent disconnected\n", 127);
+    }
     if (localAgentRuns.get(command.id) === ws) {
       localAgentRuns.delete(command.id);
     }
@@ -2801,6 +2980,8 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
   }
   let opened = false;
   let finished = false;
+  const timeoutMs = localAgentRunTimeoutMs(script.timeoutMs);
+  let watchdogTimer = 0;
   const ws = new WebSocket("ws://127.0.0.1:49424");
   const fail = () => {
     if (finished || opened) {
@@ -2811,6 +2992,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
     window.clearTimeout(timer);
+    window.clearTimeout(watchdogTimer);
     void sync.sendRemoteOutput(script.deviceId, script.id, "! 127.0.0.1:49424", 127);
   };
   const timer = window.setTimeout(() => {
@@ -2821,12 +3003,28 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     opened = true;
     window.clearTimeout(timer);
     localAgentRuns.set(script.id, ws);
+    watchdogTimer = window.setTimeout(() => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      stopLocalAgentRun(script.id);
+      setTerminalState(tunnelId, "bad");
+      appendTerminalLine(tunnelId, "! timeout");
+      renderTerminal();
+      if (localAgentRuns.get(script.id) === ws) {
+        localAgentRuns.delete(script.id);
+      }
+      void sync.sendRemoteOutput(script.deviceId, script.id, "! timeout\n", 124);
+      ws.close();
+    }, timeoutMs + 1500);
     ws.send(JSON.stringify({
       type: "script",
       id: script.id,
       name: script.name,
       shell: script.shell,
-      script: script.script
+      script: script.script,
+      timeoutMs
     }));
   };
   ws.onmessage = (event) => {
@@ -2843,6 +3041,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     }
     if (message.type === "error") {
       finished = true;
+      window.clearTimeout(watchdogTimer);
       setTerminalState(tunnelId, "bad");
       const text = typeof message.text === "string" ? message.text : "!";
       appendTerminalLine(tunnelId, text);
@@ -2860,6 +3059,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     }
     if (typeof exitCode === "number") {
       finished = true;
+      window.clearTimeout(watchdogTimer);
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
       appendTerminalExitLine(tunnelId, exitCode);
     }
@@ -2869,6 +3069,14 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
   ws.onerror = () => fail();
   ws.onclose = () => {
     window.clearTimeout(timer);
+    window.clearTimeout(watchdogTimer);
+    if (opened && !finished) {
+      finished = true;
+      setTerminalState(tunnelId, "bad");
+      appendTerminalLine(tunnelId, "! agent disconnected");
+      renderTerminal();
+      void sync.sendRemoteOutput(script.deviceId, script.id, "! agent disconnected\n", 127);
+    }
     if (localAgentRuns.get(script.id) === ws) {
       localAgentRuns.delete(script.id);
     }
@@ -3044,6 +3252,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
       }
       const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
       if (!appended && !reply.ok && body) {
+        appendAgentChatMessage(tunnelId, userVisibleAgentFailureText(body));
         appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
       }
     });
@@ -3086,6 +3295,17 @@ function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fall
     return appendAgentChatMessage(tunnelId, fallback);
   }
   return false;
+}
+
+function userVisibleAgentFailureText(value: string): string {
+  const text = cleanAgentReplyText(value).toLowerCase();
+  if (text.includes("timeout")) {
+    return "Не успел получить ответ. Ничего не менял. Попробуй еще раз через минуту.";
+  }
+  if (text.includes("auth") || text.includes("api key") || text.includes("openai") || text.includes("chatgpt")) {
+    return "Не смог подключиться к агенту. Ничего не менял. Проверь вход в Codex/OpenAI на этом компьютере.";
+  }
+  return "Не смог сейчас ответить в чате. Ничего не менял. Попробуй еще раз, а если повторится - перезапусти Soty Agent.";
 }
 
 function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {

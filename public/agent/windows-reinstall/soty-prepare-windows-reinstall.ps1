@@ -1,7 +1,7 @@
 param(
   [string] $WorkspaceRoot = "C:\ProgramData\Soty\WindowsReinstall",
   [string] $UsbDriveLetter = "D",
-  [string] $ManagedUserName = "Soty",
+  [string] $ManagedUserName = "Соты",
   [string] $ManagedUserPassword = "",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
   [string] $WindowsImageUrl = "http://dl.delivery.mp.microsoft.com/filestreamingservice/files/071fc359-1d92-46c0-ad88-c7801d2f69be/26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENTCONSUMER_RET_x64FRE_ru-ru.esd",
@@ -9,6 +9,7 @@ param(
   [string] $ConfirmationPhrase = "",
   [switch] $UseExistingUsbInstallImage,
   [switch] $AllowTemporaryManagedPassword,
+  [switch] $NoTemporaryManagedPassword,
   [switch] $Detached,
   [string] $JobRoot = ""
 )
@@ -70,6 +71,9 @@ if (-not $Detached) {
   }
   if ($AllowTemporaryManagedPassword) {
     $argParts += "-AllowTemporaryManagedPassword"
+  }
+  if ($NoTemporaryManagedPassword) {
+    $argParts += "-NoTemporaryManagedPassword"
   }
   $argList = $argParts -join " "
 
@@ -538,7 +542,7 @@ Log "first logon restore finished"
 Register-ScheduledTask -TaskName 'Soty-FirstLogon-Restore' -Action `$action -Trigger `$trigger -Description 'Restore Soty PWA state on first managed logon' -Force | Out-Null
 Log 'postinstall finished'
 "@
-  [System.IO.File]::WriteAllText($Path, $post, (New-Object System.Text.UTF8Encoding($false)))
+  [System.IO.File]::WriteAllText($Path, $post, (New-Object System.Text.UTF8Encoding($true)))
 }
 
 function Write-WinPeWorker([string] $Path) {
@@ -869,7 +873,7 @@ try {
   $effectiveManagedUserPassword = $ManagedUserPassword
   $managedUserPasswordGenerated = $false
   if ([string]::IsNullOrEmpty($effectiveManagedUserPassword)) {
-    if ($AllowTemporaryManagedPassword) {
+    if ($AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword) {
       $effectiveManagedUserPassword = "Soty-" + ([Guid]::NewGuid().ToString("N"))
       $managedUserPasswordGenerated = $true
     } else {

@@ -2,10 +2,11 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $UsbDriveLetter,
   [string] $SourceMediaRoot = (Join-Path $env:ProgramData "Soty\WindowsReinstall\media"),
-  [string] $ManagedUserName = "Soty",
+  [string] $ManagedUserName = "Соты",
   [string] $ManagedUserPassword = "",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
-  [switch] $AllowTemporaryManagedPassword
+  [switch] $AllowTemporaryManagedPassword,
+  [switch] $NoTemporaryManagedPassword
 )
 
 $ErrorActionPreference = "Stop"
@@ -245,7 +246,7 @@ Log "first logon finished"
 } catch { Log ('first logon script staging failed: ' + `$_.Exception.ToString()) }
 Log 'postinstall finished'
 "@
-  [IO.File]::WriteAllText($Path, $post, (New-Object Text.UTF8Encoding($false)))
+  [IO.File]::WriteAllText($Path, $post, (New-Object Text.UTF8Encoding($true)))
 }
 
 $UsbDriveLetter = $UsbDriveLetter.TrimEnd([char[]]":\")
@@ -274,7 +275,7 @@ if (-not (Test-Path -LiteralPath $installImage)) {
 $effectiveManagedUserPassword = $ManagedUserPassword
 $managedUserPasswordGenerated = $false
 if ([string]::IsNullOrEmpty($effectiveManagedUserPassword)) {
-  if ($AllowTemporaryManagedPassword) {
+  if ($AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword) {
     $effectiveManagedUserPassword = "Soty-" + ([Guid]::NewGuid().ToString("N"))
     $managedUserPasswordGenerated = $true
   } else {

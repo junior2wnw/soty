@@ -59,7 +59,7 @@ export function attachAgentRelay(app) {
       return;
     }
     cleanupChannels();
-    const target = resolveRequestChannel(relayId);
+    const target = resolveRequestChannel(relayId, Date.now(), { preferServer: req.body?.preferServer === true });
     if (!target.connected) {
       res.status(409).json({ ok: false, error: "relay-not-connected" });
       return;
@@ -391,7 +391,14 @@ function getChannel(relayId) {
   return channel;
 }
 
-function resolveRequestChannel(relayId, now = Date.now()) {
+function resolveRequestChannel(relayId, now = Date.now(), options = {}) {
+  if (options.preferServer === true) {
+    const server = bestServerCodexChannel(relayId, now);
+    if (server) {
+      return { relayId: server.relayId, clientRelayId: relayId, connected: true };
+    }
+    return { relayId, clientRelayId: "", connected: false };
+  }
   const requested = channels.get(relayId);
   const requestedConnected = requested ? isCodexChannelConnected(requested, now) : false;
   if (requested?.codex === true && requestedConnected) {

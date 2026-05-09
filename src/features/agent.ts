@@ -121,7 +121,8 @@ export async function askLocalAgentReply(
     { ...source, localAgentDirect: true },
     timeoutMs
   );
-  if (direct && !isCodexMissingReply(direct)) {
+  const directNeedsServerFallback = direct ? shouldUseServerAgentReplyFallback(direct) : false;
+  if (direct && !directNeedsServerFallback) {
     for (const message of direct.messages ?? []) {
       onMessage?.(message);
     }
@@ -132,13 +133,17 @@ export async function askLocalAgentReply(
   }
 
   if (readAgentRelayId() || ensureAgentRelayId()) {
-    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal);
+    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, directNeedsServerFallback);
     if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
     }
-    if (relay) {
+    if (relay && !direct) {
       return relay;
     }
+  }
+
+  if (direct) {
+    return direct;
   }
 
   return {
@@ -150,6 +155,13 @@ export async function askLocalAgentReply(
 
 function shouldRetryAgentRelayReply(reply: LocalAgentReply): boolean {
   return !reply.ok && reply.text.trim().startsWith("! agent-relay:");
+}
+
+function shouldUseServerAgentReplyFallback(reply: LocalAgentReply): boolean {
+  if (reply.ok) {
+    return false;
+  }
+  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected)/iu.test(reply.text);
 }
 
 export function hasAgentRelayId(): boolean {
@@ -329,7 +341,8 @@ async function askAgentRelayReply(
   source: LocalAgentRequestSource,
   timeoutMs: number,
   onMessage?: LocalAgentMessageHandler,
-  onTerminal?: LocalAgentMessageHandler
+  onTerminal?: LocalAgentMessageHandler,
+  preferServer = false
 ): Promise<LocalAgentReply | null> {
   const relayId = readAgentRelayId() || ensureAgentRelayId();
   if (!relayId) {
@@ -340,7 +353,7 @@ async function askAgentRelayReply(
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relayId, text, context, source })
+      body: JSON.stringify({ relayId, text, context, source, ...(preferServer ? { preferServer: true } : {}) })
     });
     const created = await request.json() as { readonly ok?: boolean; readonly id?: string };
     if (!request.ok || !created.ok || typeof created.id !== "string") {

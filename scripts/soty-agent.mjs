@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.113";
+const agentVersion = "0.3.121";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -38,6 +38,7 @@ const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
+const updateFetchTimeoutMs = 20_000;
 const configuredAgentDeviceId = safeSourceText(process.env.SOTY_AGENT_DEVICE_ID || "");
 const configuredAgentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_NICK || "");
 const maxCodexDialogMessages = 64;
@@ -51,7 +52,7 @@ const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
-const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK === "1";
+const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v4-runtime-context";
 const active = new Map();
 const operatorRuns = new Map();
@@ -76,6 +77,8 @@ let cachedCodexLearningMemoryAt = 0;
 let cachedCodexLearningMemoryText = "";
 let agentRelayStarted = false;
 let audioWarmupStarted = false;
+let updateCheckRunning = false;
+let deferredUpdateTimer = null;
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
@@ -398,7 +401,8 @@ async function handleOperatorHttpRun(request, response, headers) {
     id,
     target,
     sourceDeviceId,
-    command
+    command,
+    timeoutMs
   });
 }
 
@@ -445,7 +449,8 @@ async function handleOperatorHttpScript(request, response, headers) {
     sourceDeviceId,
     name,
     shell,
-    script
+    script,
+    timeoutMs
   });
 }
 
@@ -492,6 +497,20 @@ async function handleOperatorHttpAction(request, response, headers) {
   const action = normalizeOperatorActionPayload(payload);
   if (!action.ok) {
     sendJson(response, 400, headers, { ok: false, text: action.text, exitCode: 400 });
+    return;
+  }
+  const actionBody = action.mode === "script" ? action.script : action.command;
+  const blocked = blockedManualWindowsRecoveryHandoff(actionBody);
+  if (blocked) {
+    recordBlockedWindowsReinstallHandoff({ kind: action.mode, command: actionBody });
+    sendJson(response, 422, headers, {
+      ok: false,
+      status: "blocked",
+      family: action.family,
+      risk: action.risk,
+      text: blocked,
+      exitCode: 422
+    });
     return;
   }
   if (action.idempotencyKey) {
@@ -554,12 +573,16 @@ function normalizeOperatorActionPayload(payload) {
   }
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
+  const actionType = cleanActionToken(payload.kind || payload.actionType || mode, mode);
   const intent = cleanActionText(payload.intent || payload.name || family, 180);
   const commandSig = commandSignature(body, family);
+  const inferredRisk = cleanActionRisk(inferActionRisk(body, family));
+  const explicitRisk = cleanActionRiskOrEmpty(payload.risk);
+  const risk = explicitRisk ? maxActionRisk(explicitRisk, inferredRisk) : inferredRisk;
   return {
     ok: true,
     mode,
-    actionType: cleanActionToken(payload.kind || payload.actionType || mode, mode),
+    actionType,
     family,
     intent,
     target,
@@ -570,8 +593,8 @@ function normalizeOperatorActionPayload(payload) {
     script,
     name: cleanActionText(payload.name || (mode === "script" ? "action-script" : "action-run"), 120),
     shell: cleanActionText(payload.shell, 40),
-    risk: cleanActionRisk(payload.risk || inferActionRisk(body, family)),
-    detached: payload.detached === true || payload.wait === false,
+    risk,
+    detached: payload.detached === true || payload.wait === false || shouldForceDetachedAction({ family, actionType, risk }),
     createdBy: cleanActionText(payload.createdBy || "soty-agent", 80),
     idempotencyKey: cleanActionId(payload.idempotencyKey || payload.clientRequestId || payload.requestId || ""),
     commandSig,
@@ -1079,6 +1102,28 @@ function summarizeActionJob(job) {
 function cleanActionRisk(value) {
   const text = String(value || "").trim().toLowerCase();
   return ["low", "medium", "high", "destructive"].includes(text) ? text : "medium";
+}
+
+function cleanActionRiskOrEmpty(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ["low", "medium", "high", "destructive"].includes(text) ? text : "";
+}
+
+function maxActionRisk(left, right) {
+  const ranks = { low: 0, medium: 1, high: 2, destructive: 3 };
+  return (ranks[cleanActionRisk(left)] >= ranks[cleanActionRisk(right)])
+    ? cleanActionRisk(left)
+    : cleanActionRisk(right);
+}
+
+function shouldForceDetachedAction({ family, actionType, risk }) {
+  if (family === "windows-reinstall") {
+    return true;
+  }
+  if (risk === "high" || risk === "destructive") {
+    return true;
+  }
+  return actionType === "prepare" && risk !== "low";
 }
 
 function cleanActionId(value) {
@@ -2016,12 +2061,18 @@ function registerOperatorRun(response, headers, timeoutMs) {
   const id = `operator_${randomUUID()}`;
   let body = "";
   let done = false;
+  const cancelBridgeRun = () => {
+    if (operatorBridge?.open) {
+      sendRaw(operatorBridge, { type: "operator.cancel", id });
+    }
+  };
   const finish = (exitCode, extraText = "") => {
     if (done) {
       return;
     }
     done = true;
     clearTimeout(timer);
+    response.off?.("close", cancelOnClientClose);
     operatorRuns.delete(id);
     if (extraText) {
       body += `${body ? "\n" : ""}${extraText}`;
@@ -2032,7 +2083,18 @@ function registerOperatorRun(response, headers, timeoutMs) {
       exitCode
     });
   };
-  const timer = setTimeout(() => finish(124, "! timeout"), timeoutMs);
+  const cancelOnClientClose = () => {
+    if (done) {
+      return;
+    }
+    cancelBridgeRun();
+    finish(130, "! cancelled");
+  };
+  response.on?.("close", cancelOnClientClose);
+  const timer = setTimeout(() => {
+    cancelBridgeRun();
+    finish(124, "! timeout");
+  }, timeoutMs);
   operatorRuns.set(id, {
     append: (text) => {
       body = `${body}${text}`.slice(-1_000_000);
@@ -2426,7 +2488,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
   });
 
   try {
-    return await runCodexSotySessionTurn({
+    const local = await runCodexSotySessionTurn({
       codexBin,
       childEnv,
       text,
@@ -2435,19 +2497,33 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       onMessage,
       onTerminal
     });
+    if (shouldUseCodexRelayFallback(local)) {
+      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true });
+      if (relay) {
+        return relay;
+      }
+    }
+    return local;
   } catch (error) {
-    return {
+    const local = {
       ok: false,
       text: agentFailureText(error instanceof Error ? error.message : String(error)),
       exitCode: 1
     };
+    if (shouldUseCodexRelayFallback(local)) {
+      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true });
+      if (relay) {
+        return relay;
+      }
+    }
+    return local;
   }
 }
 
 async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
-  const sourceTargets = await activeAgentSourceTargets();
+  const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const sessionKey = codexSessionKey(safeSource, target);
   const turnKey = codexTurnDedupeKey(sessionKey, text);
@@ -2997,21 +3073,47 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   if (preferred) {
     return preferred;
   }
-  if (safe.deviceId) {
-    return {
-      id: `agent-source:${safe.deviceId}`,
-      label: safe.deviceNick || "source device",
-      deviceIds: [safe.deviceId],
-      hostDeviceId: safe.deviceId,
-      access: true,
-      host: true
-    };
+  const implicitTarget = implicitOperatorTargetForRequest(safe, text, sourceTargets);
+  if (implicitTarget) {
+    return implicitTarget;
   }
-  const [linked] = sourceAgentLinkTargets(safe);
+  const [linked] = sourceAgentLinkTargets(safe, sourceTargets);
   if (linked) {
     return linked;
   }
+  if (safe.deviceId) {
+    return sourceDeviceFallbackTarget(safe);
+  }
   return null;
+}
+
+function implicitOperatorTargetForRequest(source, text = "", sourceTargets = []) {
+  const safe = sanitizeAgentSource(source);
+  if (classifySourceCommand(text) !== "windows-reinstall") {
+    return null;
+  }
+  const candidates = runtimeActiveTargets(safe, null, sourceTargets)
+    .filter((target) => target.access === true && !isAgentSourceTarget(target.id));
+  const selected = candidates.filter((target) => target.selected === true);
+  if (selected.length === 1) {
+    return selected[0];
+  }
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function sourceDeviceFallbackTarget(source) {
+  const safe = sanitizeAgentSource(source);
+  if (!safe.deviceId) {
+    return null;
+  }
+  return {
+    id: `agent-source:${safe.deviceId}`,
+    label: safe.deviceNick || "source device",
+    deviceIds: [safe.deviceId],
+    hostDeviceId: safe.deviceId,
+    access: true,
+    host: true
+  };
 }
 
 async function activeAgentSourceTargets(relayId = "") {
@@ -3125,7 +3227,7 @@ function isInternalAgentReceiptLine(line) {
     || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text);
 }
 
-async function askCodexRelayFallback(text, context, source = {}, onMessage = null, onTerminal = null) {
+async function askCodexRelayFallback(text, context, source = {}, onMessage = null, onTerminal = null, options = {}) {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
   if (!relayBaseUrl) {
     return null;
@@ -3143,7 +3245,8 @@ async function askCodexRelayFallback(text, context, source = {}, onMessage = nul
         relayId: requestRelayId,
         text: String(text || "").slice(0, maxChatChars),
         context: String(context || "").slice(-maxAgentContextChars),
-        source: sanitizeAgentSource(source)
+        source: sanitizeAgentSource(source),
+        ...(options?.preferServer === true ? { preferServer: true } : {})
       })
     });
     const created = await request.json();
@@ -3338,12 +3441,13 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
     "- For work on a paired user device, use Soty MCP tools: soty_action, soty_action_status, soty_action_stop, soty_action_list, soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
     "- Use `soty_action` for installs, downloads, repairs, scans, staged scripts, destructive work, and any operation that may hang. Keep the returned jobId, poll `soty_action_status`, and call `soty_action_stop` if the job is stuck or the user asks to stop.",
+    "- For Windows reinstall and other high/destructive actions, call `soty_action` with `detached: true` and a stable idempotencyKey, then poll `soty_action_status`; do not report target channel loss until the job status and one short channel recheck prove it.",
     "- Use `soty_script` with `shell: \"powershell\"` for any PowerShell variables, pipelines, semicolons, or multi-step checks. Reserve `soty_run` for trivial one-line commands.",
     "- If a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then name one plain blocker instead of continuing through the local server shell.",
     "- For quick identity, health, and readiness probes, pass a short timeoutMs such as 15000-45000. Reserve timeoutMs up to 7200000 for real long-running installs, downloads, repairs, scans, or staged scripts after the target is proven.",
     "- For destructive or long device work such as format, diskpart, robocopy, dism, installers, downloads, reset, or reboot, issue exactly one `soty_action` at a time; poll/stop that job before starting any second write, format, reset, or reboot command.",
     "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, repair or prove the narrow channel once, then name one plain blocker and one next action.",
-    "- For Soty-managed clean Windows reinstall, the happy path is mandatory: prove machine worker, stage/run the managed prepare script from the current /agent/manifest.json windowsReinstall URLs after verifying the listed SHA-256, wait for ready.json, read backupProof, then ask the exact confirmation phrase and run the managed arm script. Do not use Media Creation Tool, Windows Settings reset, generic installer GUI, or Shift+F10/localonly as the planned path.",
+    "- For Soty-managed clean Windows reinstall, the happy path is mandatory: prove machine worker, stage/run the managed prepare script from the current /agent/manifest.json windowsReinstall URLs after verifying the listed SHA-256, wait for ready.json, read backupProof, prove the unattended local admin account is named `Соты`, then ask the exact confirmation phrase and run the managed arm script. Do not use Media Creation Tool, Windows Settings reset, generic installer GUI, or Shift+F10/localonly as the planned path.",
     "- Before any reinstall arm/reboot, backupProof must show backupRoot, Wi-Fi export result, exported drivers, Soty restore/postinstall artifacts, root Autounattend.xml, and OEM SetupComplete fallback. If those artifacts are missing, repair preparation instead of asking the user to click OOBE screens.",
     "- For Windows reinstall/reset, do not ask for destructive confirmations until target identity, control channel, backup/data intent, USB scope if needed, BitLocker/recovery safety, and return path are proven. Ask at most one plain question at a time.",
     "- If a Windows reinstall/reset is blocked only because the target Soty channel is unavailable, answer in no more than three short sentences: `Переустановку не начал. Я пока не вижу <device> через Soty. Открой/перезапусти Soty Agent на этом ПК и напиши «готово».`",
@@ -3405,11 +3509,12 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- error_translation_rule: do not show raw tool errors/codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets; translate to a human sentence.",
     "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
     "- action_tool_rule: use soty_action for installs, downloads, repairs, scans, destructive work, staged scripts, or anything that may hang; poll with soty_action_status and stop with soty_action_stop when needed.",
+    "- detached_action_rule: for Windows reinstall or high/destructive target work, call soty_action detached:true with a stable idempotencyKey and poll status; do not treat a long job as channel loss without checking soty_action_status.",
     "- powershell_tool_rule: use soty_script with shell=\"powershell\" for short PowerShell variables, semicolons, pipelines, or multi-step checks. Use soty_run only for trivial one-line commands.",
     "- target_failure_rule: if a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then give one plain blocker; do not continue through the local server shell unless the server/runtime is explicitly the target.",
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use timeoutMs up to 7200000 only for real long-running jobs after the target is proven.",
     "- serial_long_job_rule: for destructive or long target work, call only one soty_action write/format/reset/reboot job at a time; poll/stop it or name a blocker before launching another.",
-    "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
+    "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification and a local admin account named `Соты`; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
     "- backup_proof_rule: before asking for the destructive reinstall phrase, prove backupProof with backup root, Wi-Fi profile export result, driver export result, Soty restore/postinstall assets, Autounattend.xml, and OEM SetupComplete fallback.",
     "- reinstall_rule: for Windows reinstall/reset, ask at most one plain question at a time and do not ask for destructive confirmation until control, backup/data intent, USB scope, BitLocker/recovery safety, and return path are proven.",
     "- missing_channel_reinstall_rule: if reinstall/reset is blocked only by an unavailable target Soty channel, answer in <=3 short sentences: not started; cannot see <device> through Soty; open/restart Soty Agent there and reply ready.",
@@ -3577,7 +3682,7 @@ function sanitizeAgentSource(value) {
   };
 }
 
-function sourceMatchedOperatorTargets(source) {
+function sourceMatchedOperatorTargets(source, extraTargets = []) {
   const safe = sanitizeAgentSource(source);
   const sourceDeviceId = safe.deviceId;
   const merged = new Map();
@@ -3587,14 +3692,17 @@ function sourceMatchedOperatorTargets(source) {
   for (const target of operatorTargets) {
     merged.set(target.id, target);
   }
+  for (const target of sanitizeTargets(extraTargets)) {
+    merged.set(target.id, target);
+  }
   return [...merged.values()]
     .filter((target) => targetMatchesSourceDevice(target, sourceDeviceId))
     .filter((target) => target.access === true)
     .sort((left, right) => operatorSourceTargetScore(right, sourceDeviceId) - operatorSourceTargetScore(left, sourceDeviceId));
 }
 
-function sourceAgentLinkTargets(source) {
-  const matches = sourceMatchedOperatorTargets(source);
+function sourceAgentLinkTargets(source, extraTargets = []) {
+  const matches = sourceMatchedOperatorTargets(source, extraTargets);
   const synthetic = matches.filter((target) => isAgentSourceTarget(target.id));
   if (synthetic.length > 0) {
     return synthetic;
@@ -3608,6 +3716,13 @@ function targetMatchesSourceDevice(target, sourceDeviceId) {
     return false;
   }
   return target.hostDeviceId === sourceId || target.deviceIds.includes(sourceId);
+}
+
+function shouldUseCodexRelayFallback(reply) {
+  if (!codexRelayFallback || !reply || reply.ok) {
+    return false;
+  }
+  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected)/iu.test(String(reply.text || ""));
 }
 
 function agentFailureText(details) {
@@ -3815,7 +3930,13 @@ async function ensureCtlLauncher() {
   try {
     if (process.platform === "win32") {
       const ctlPath = join(agentDir, "sotyctl.cmd");
-      await writeFile(ctlPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" ctl %*\r\n`, "utf8");
+      const ctlPs1Path = join(agentDir, "sotyctl.ps1");
+      await writeFile(ctlPath, `@echo off\r\nchcp 65001 >nul\r\n"${process.execPath}" "${scriptPath}" ctl %*\r\n`, "utf8");
+      await writeFile(
+        ctlPs1Path,
+        `$OutputEncoding = [System.Text.UTF8Encoding]::new($false)\r\n& "${process.execPath}" "${scriptPath}" ctl @args\r\nexit $LASTEXITCODE\r\n`,
+        "utf8"
+      );
       return;
     }
     const launcher = `#!/bin/sh\nexec ${quoteSh(process.execPath)} ${quoteSh(scriptPath)} ctl "$@"\n`;
@@ -6093,12 +6214,15 @@ function scheduleUpdate() {
 }
 
 async function checkForUpdate() {
+  if (updateCheckRunning) {
+    return;
+  }
+  updateCheckRunning = true;
   try {
-    const response = await fetch(updateManifestUrl, { cache: "no-store" });
+    const { response, json: manifest } = await fetchJsonWithTimeout(updateManifestUrl, { cache: "no-store" }, updateFetchTimeoutMs);
     if (!response.ok) {
       return;
     }
-    const manifest = await response.json();
     if (!isSafeManifest(manifest)) {
       return;
     }
@@ -6111,12 +6235,15 @@ async function checkForUpdate() {
     if (manifest.sha256 === currentHash) {
       return;
     }
+    if (shouldDeferAgentUpdate()) {
+      scheduleDeferredUpdateCheck();
+      return;
+    }
     const nextUrl = new URL(manifest.agentUrl, updateManifestUrl);
-    const nextResponse = await fetch(nextUrl, { cache: "no-store" });
+    const { response: nextResponse, bytes } = await fetchBytesWithTimeout(nextUrl, { cache: "no-store" }, updateFetchTimeoutMs);
     if (!nextResponse.ok) {
       return;
     }
-    const bytes = Buffer.from(await nextResponse.arrayBuffer());
     if (sha256(bytes) !== manifest.sha256) {
       return;
     }
@@ -6125,10 +6252,39 @@ async function checkForUpdate() {
     await writeFile(tempPath, bytes, { mode: 0o755 });
     await copyFile(tempPath, scriptPath);
     await rm(tempPath, { force: true });
+    notifyOperatorUpdating(manifest.version);
+    await sleep(250);
     process.exit(75);
   } catch {
     // Updates are best-effort; the running agent must keep the tunnel useful.
+  } finally {
+    updateCheckRunning = false;
   }
+}
+
+function shouldDeferAgentUpdate() {
+  return active.size > 0
+    || operatorRuns.size > 0
+    || actionControllers.size > 0
+    || activeRelayJobs.size > 0;
+}
+
+function scheduleDeferredUpdateCheck() {
+  if (deferredUpdateTimer) {
+    return;
+  }
+  deferredUpdateTimer = setTimeout(() => {
+    deferredUpdateTimer = null;
+    void checkForUpdate();
+  }, 60_000);
+  deferredUpdateTimer.unref?.();
+}
+
+function notifyOperatorUpdating(version) {
+  sendRaw(operatorBridge, {
+    type: "operator.updating",
+    version: typeof version === "string" ? version.slice(0, 40) : ""
+  });
 }
 
 async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
@@ -6139,7 +6295,7 @@ async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
   const target = join(agentDir, "skill-sources", "universal-install-ops-skill");
   if (existsSync(join(target, "SKILL.md"))) {
     const marker = await readJsonFile(join(target, ".soty-skill-bundle.json"));
-    if (marker?.tarSha256 === skill.tarSha256) {
+    if (marker?.tarSha256 === skill.tarSha256 || (skill.zipSha256 && marker?.zipSha256 === skill.zipSha256)) {
       return false;
     }
   }
@@ -6148,11 +6304,10 @@ async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
   if (!/^https?:$/iu.test(archiveUrl.protocol)) {
     return false;
   }
-  const archiveResponse = await fetch(archiveUrl, { cache: "no-store" });
+  const { response: archiveResponse, bytes: archiveBytes } = await fetchBytesWithTimeout(archiveUrl, { cache: "no-store" }, updateFetchTimeoutMs);
   if (!archiveResponse.ok) {
     return false;
   }
-  const archiveBytes = Buffer.from(await archiveResponse.arrayBuffer());
   if (sha256(archiveBytes) !== skill.tarSha256) {
     return false;
   }
@@ -6185,6 +6340,7 @@ async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
     });
     await writeFile(join(next, ".soty-skill-bundle.json"), JSON.stringify({
       tarSha256: skill.tarSha256,
+      zipSha256: typeof skill.zipSha256 === "string" ? skill.zipSha256 : "",
       revision: typeof skill.revision === "string" ? skill.revision : "",
       installedAt: new Date().toISOString()
     }, null, 2), "utf8");
@@ -6205,6 +6361,34 @@ async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
     await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(next, { recursive: true, force: true }).catch(() => undefined);
     await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function fetchJsonWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    return { response, json: await response.json() };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBytesWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    return { response, bytes: Buffer.from(await response.arrayBuffer()) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -6255,7 +6439,8 @@ function isSafeOpsSkillManifest(value) {
     && /^[A-Za-z0-9_.-]{1,80}$/u.test(value.root)
     && typeof value.tarUrl === "string"
     && value.tarUrl.length <= 300
-    && /^[a-f0-9]{64}$/u.test(value.tarSha256);
+    && /^[a-f0-9]{64}$/u.test(value.tarSha256)
+    && (typeof value.zipSha256 === "undefined" || /^[a-f0-9]{64}$/u.test(value.zipSha256));
 }
 
 function compareVersion(left, right) {

@@ -1,7 +1,7 @@
 {
-  "version": "0.3.113",
+  "version": "0.3.121",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "f984e7ab5325553fdfa82a3680db3f465e4d974b4fdb84dcb8ff8c8ba704011c",
+  "sha256": "ef5f3a6530777d95fd1b1bae865280f1bca4c6a39c60dab3140bb23184858b55",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
@@ -9,8 +9,8 @@
     "zipSha256": "31033cc83cb53307fb3443e193ee16ada671cc8b12ea4ec82f5f74dddb138c5d",
     "zipBytes": 1215569,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "1dcd111eea347c9190f1aa6ab0f22a6cacdf058e2742af22bdfd35ed70497a54",
-    "tarBytes": 300854,
+    "tarSha256": "45157c4f8747ea6292223bbc7156cd4286feee786db385a73930b40d6a8a949d",
+    "tarBytes": 298888,
     "revision": "03a97b34403feb4109cf66fa1ab1f73bbd036a61",
     "dirty": true
   },
@@ -20,8 +20,8 @@
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "12c0a846d1ecbdee555d9c659550676c3dc604496c96e4364436d4fe312c9c5d",
-        "bytes": 43953
+        "sha256": "e3ff8ef7e2c0553f712040bb6d89d8963557f1ae8ad588a9c0ea0399d51d321f",
+        "bytes": 44121
       },
       {
         "name": "arm",
@@ -32,8 +32,8 @@
       {
         "name": "makeFastUsb",
         "url": "/agent/windows-reinstall/soty-make-fast-usb.ps1",
-        "sha256": "0e638b6e401b8deab814926bc5553ed1f0e8c724d383d3ef68bd0e6bc4e4d5f5",
-        "bytes": 14246
+        "sha256": "d3bc83bc6f4a49eba5d9c68d89a9a7d9fe87054a27d2e0d37d425300d230f0af",
+        "bytes": 14326
       }
     ]
   }

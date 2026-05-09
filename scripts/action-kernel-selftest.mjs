@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.113");
+      assertEqual(health.body.version, "0.3.121");
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -85,6 +85,15 @@ async function runScenarios() {
       expectStatus(response, "failed");
       assertEqual(response.body.exitCode, 409);
     }],
+    ["ordinary target with source device uses active source link", async () => {
+      const response = await action({
+        target: "room-a",
+        sourceDeviceId: "dev1",
+        command: "SELFTEST_OK ordinary-source-link"
+      });
+      expectStatus(response, "ok");
+      assertEqual(mock.count("SELFTEST_OK ordinary-source-link"), 1);
+    }],
     ["source device mismatch is not rerouted", async () => {
       const response = await action({ target: "agent-source:dev1", sourceDeviceId: "dev2", command: "SELFTEST_OK" });
       expectStatus(response, "failed");
@@ -105,8 +114,20 @@ async function runScenarios() {
     ["generic command stays generic", async () => expectFamily(await action(sourceRun("echo SELFTEST_OK")), "generic")],
     ["low risk is inferred", async () => expectRisk(await action(sourceRun("whoami SELFTEST_OK")), "low")],
     ["medium risk is inferred", async () => expectRisk(await action(sourceRun("winget install app SELFTEST_OK")), "medium")],
-    ["high disk risk is inferred", async () => expectRisk(await action(sourceRun("diskpart SELFTEST_OK")), "high")],
-    ["windows reinstall risk is high", async () => expectRisk(await action({ ...sourceRun("reinstall windows SELFTEST_OK"), family: "windows-reinstall" }), "high")],
+    ["high disk risk is inferred and detached", async () => expectDetachedRisk(await action(sourceRun("diskpart SELFTEST_OK high-detached")), "high")],
+    ["windows reinstall risk is high and detached", async () => expectDetachedRisk(await action({ ...sourceRun("reinstall windows SELFTEST_OK win-detached"), family: "windows-reinstall" }), "high")],
+    ["windows reinstall risk cannot be downgraded", async () => expectDetachedRisk(await action({ ...sourceRun("reinstall windows SELFTEST_OK win-risk-floor"), family: "windows-reinstall", risk: "medium" }), "high")],
+    ["prepare action is detached by default", async () => {
+      const response = await action({
+        ...sourceRun("SELFTEST_DELAY SELFTEST_OK prepare-detached"),
+        kind: "prepare",
+        risk: "medium",
+        idempotencyKey: "prepare-detached-one"
+      });
+      assertEqual(response.status, 202);
+      assertEqual(response.body.status, "running");
+      await waitForStatus(response.body.statusPath, "ok");
+    }],
     ["explicit family wins", async () => expectFamily(await action({ ...sourceRun("echo SELFTEST_OK"), family: "custom-family" }), "custom-family")],
     ["explicit kind is stored", async () => {
       const response = await action({ ...sourceRun("echo SELFTEST_OK"), kind: "browser.automation" });
@@ -240,9 +261,30 @@ async function runScenarios() {
       assertEqual(cli.code, 0);
       assert(cli.stdout.includes("ops-skill:"));
     }],
+    ["release builder keeps ops skill tar hash stable", async () => {
+      const manifestPath = join(root, "public", "agent", "manifest.json");
+      const first = await runNode([join(root, "scripts", "build-agent-release.mjs")], process.env, root);
+      assertEqual(first.code, 0);
+      const firstManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      const second = await runNode([join(root, "scripts", "build-agent-release.mjs")], process.env, root);
+      assertEqual(second.code, 0);
+      const secondManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      assertEqual(secondManifest.opsSkill.tarSha256, firstManifest.opsSkill.tarSha256);
+      assertEqual(secondManifest.opsSkill.zipSha256, firstManifest.opsSkill.zipSha256);
+    }],
+    ["windows reinstall scripts default to managed Cyrillic account", async () => {
+      const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
+      const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
+      assert(prepare.includes('[string] $ManagedUserName = "Соты"'));
+      assert(fastUsb.includes('[string] $ManagedUserName = "Соты"'));
+      assert(prepare.includes("UTF8Encoding($true)"));
+      assert(fastUsb.includes("UTF8Encoding($true)"));
+      assert(prepare.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
+      assert(fastUsb.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
+    }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.113");
+      assertEqual(manifest.version, "0.3.121");
       assertEqual(manifest.windowsReinstall.scripts.length, 3);
     }]
   ];
@@ -312,6 +354,15 @@ function expectRisk(response, risk) {
   assertEqual(response.body.risk, risk);
 }
 
+async function expectDetachedRisk(response, risk) {
+  assertEqual(response.status, 202);
+  assertEqual(response.body.status, "running");
+  assertEqual(response.body.risk, risk);
+  const status = await waitForStatus(response.body.statusPath, "ok");
+  assertEqual(status.body.result.risk, risk);
+  return status;
+}
+
 function createMockRelay() {
   const calls = [];
   const cancels = [];
@@ -353,6 +404,24 @@ function createMockRelay() {
         ? `SELFTEST_LARGE ${"x".repeat(20_000)} volume=22 muted=false`
         : `SELFTEST_OK output for ${text} volume=22 muted=false`;
       json(response, 200, { ok: true, text: output, exitCode: 0 });
+      return;
+    }
+    if (url.pathname === "/api/agent/source/targets") {
+      json(response, 200, {
+        ok: true,
+        targets: [
+          {
+            id: "agent-source:dev1",
+            label: "selftest-source",
+            deviceIds: ["dev1"],
+            hostDeviceId: "dev1",
+            access: true,
+            host: true,
+            selected: true,
+            lastActionAt: new Date().toISOString()
+          }
+        ]
+      });
       return;
     }
     if (url.pathname === "/api/agent/source/cancel") {
