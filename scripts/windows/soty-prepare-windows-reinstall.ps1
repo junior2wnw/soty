@@ -161,6 +161,145 @@ function Invoke-LoggedCliWithTimeout([string] $FilePath, [string[]] $ArgumentLis
   }
 }
 
+function Get-FileLengthSafe([string] $Path) {
+  try {
+    if (Test-Path -LiteralPath $Path) { return [int64](Get-Item -LiteralPath $Path).Length }
+  } catch {}
+  return [int64]0
+}
+
+function Test-FileSha256([string] $Path, [string] $ExpectedSha256) {
+  if ([string]::IsNullOrWhiteSpace($ExpectedSha256) -or -not (Test-Path -LiteralPath $Path)) { return $false }
+  try {
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
+    return ($actual -eq $ExpectedSha256.ToLowerInvariant())
+  } catch {
+    return $false
+  }
+}
+
+function Join-BinaryFile([string] $Source, [string] $Destination) {
+  $inputStream = $null
+  $outputStream = $null
+  try {
+    $inputStream = [System.IO.File]::OpenRead($Source)
+    $outputStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    $inputStream.CopyTo($outputStream)
+  } finally {
+    if ($inputStream) { $inputStream.Dispose() }
+    if ($outputStream) { $outputStream.Dispose() }
+  }
+}
+
+function Invoke-HttpRangeDownloadAttempt([string] $Uri, [string] $TempPath, [string] $LogName) {
+  $before = Get-FileLengthSafe $TempPath
+  $part = $TempPath + ".part"
+  Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+  $headers = @{}
+  if ($before -gt 0) { $headers["Range"] = "bytes=$before-" }
+  $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $headers -OutFile $part -TimeoutSec 1800 -ErrorAction Stop
+  $statusCode = if ($response -and $null -ne $response.StatusCode) { [int]$response.StatusCode } else { 0 }
+  Set-Content -LiteralPath (Join-Path $JobRoot $LogName) -Encoding UTF8 -Value ("Invoke-WebRequest status=" + $statusCode + " resumeFrom=" + $before)
+  if (-not (Test-Path -LiteralPath $part)) { throw "HTTP download attempt did not create $part" }
+  if ($before -gt 0 -and $statusCode -eq 206) {
+    Join-BinaryFile -Source $part -Destination $TempPath
+    Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+  } else {
+    Move-Item -LiteralPath $part -Destination $TempPath -Force
+  }
+}
+
+function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string] $ExpectedSha256, [string] $LogPrefix, [int] $MaxTotalSeconds = 172800) {
+  $expected = $ExpectedSha256.ToLowerInvariant()
+  $tmp = $Destination + ".download"
+  if (Test-Path -LiteralPath $Destination) {
+    if (Test-FileSha256 -Path $Destination -ExpectedSha256 $expected) {
+      Log ("Verified cached download: " + $Destination)
+      return
+    }
+    Log ("Removing cached file with wrong SHA256: " + $Destination)
+    Remove-Item -LiteralPath $Destination -Force
+  }
+  if (Test-Path -LiteralPath $tmp) {
+    if (Test-FileSha256 -Path $tmp -ExpectedSha256 $expected) {
+      Log ("Completing previously downloaded image from " + $tmp)
+      Move-Item -LiteralPath $tmp -Destination $Destination -Force
+      return
+    }
+    $partialGb = [math]::Round((Get-FileLengthSafe $tmp) / 1GB, 2)
+    Log ("Resuming Windows image download from " + $partialGb + " GB.")
+  } else {
+    Log "Downloading Windows image."
+  }
+
+  Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue |
+    Where-Object { $_.DisplayName -eq "Soty Windows reinstall image" } |
+    Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
+
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  $started = Get-Date
+  $attempt = 0
+  $noGrowthAttempts = 0
+  $lastBytes = Get-FileLengthSafe $tmp
+  while (((Get-Date) - $started).TotalSeconds -lt $MaxTotalSeconds) {
+    $attempt += 1
+    $before = Get-FileLengthSafe $tmp
+    $beforeGb = [math]::Round($before / 1GB, 3)
+    Log ("Download attempt " + $attempt + " starting at " + $beforeGb + " GB.")
+    try {
+      if ($curl) {
+        $curlArgs = @(
+          "-L",
+          "--fail",
+          "--connect-timeout",
+          "30",
+          "--retry",
+          "20",
+          "--retry-delay",
+          "5",
+          "--retry-connrefused",
+          "--speed-time",
+          "600",
+          "--speed-limit",
+          "512"
+        )
+        if ($before -gt 0) { $curlArgs += @("-C", "-") }
+        $curlArgs += @("--output", $tmp, $Uri)
+        Invoke-LoggedCliWithTimeout curl.exe $curlArgs ($LogPrefix + "-attempt-" + $attempt + ".txt") 7200
+      } else {
+        Invoke-HttpRangeDownloadAttempt -Uri $Uri -TempPath $tmp -LogName ($LogPrefix + "-attempt-" + $attempt + ".txt")
+      }
+    } catch {
+      Log ("WARN download attempt " + $attempt + " did not finish: " + $_.Exception.Message)
+    }
+
+    if (-not (Test-Path -LiteralPath $tmp)) {
+      Start-Sleep -Seconds ([math]::Min(300, 10 + ($attempt * 5)))
+      continue
+    }
+    $after = Get-FileLengthSafe $tmp
+    $afterGb = [math]::Round($after / 1GB, 3)
+    if ($after -gt $before -or $after -gt $lastBytes) {
+      $deltaMb = [math]::Round((($after - [math]::Max($before, $lastBytes)) / 1MB), 1)
+      Log ("Download progress: " + $afterGb + " GB, +" + $deltaMb + " MB.")
+      $noGrowthAttempts = 0
+    } else {
+      $noGrowthAttempts += 1
+      Log ("WARN download made no visible progress; partial size is " + $afterGb + " GB.")
+    }
+    $lastBytes = $after
+    if (Test-FileSha256 -Path $tmp -ExpectedSha256 $expected) {
+      Move-Item -LiteralPath $tmp -Destination $Destination -Force
+      Log ("Windows image download verified: " + $Destination)
+      return
+    }
+    $delay = if ($noGrowthAttempts -gt 0) { [math]::Min(900, 30 * $noGrowthAttempts) } else { [math]::Min(300, 10 + ($attempt * 5)) }
+    Start-Sleep -Seconds $delay
+  }
+  $partial = if (Test-Path -LiteralPath $tmp) { [math]::Round((Get-FileLengthSafe $tmp) / 1GB, 3) } else { 0 }
+  throw "Windows image download did not complete within the retry window; partial file is preserved at $tmp ($partial GB)."
+}
+
 function Copy-TreeIfExists([string] $Source, [string] $Destination, [int] $TimeoutSec = 45) {
   if (-not (Test-Path -LiteralPath $Source)) { return $false }
   New-Directory $Destination
@@ -831,37 +970,7 @@ try {
       }
     }
     if (-not (Test-Path -LiteralPath $esdPath)) {
-      $tmp = $esdPath + ".download"
-      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-      Log "Downloading Windows image."
-      Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -eq "Soty Windows reinstall image" } |
-        Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
-      $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-      if ($curl) {
-        try {
-          Invoke-LoggedCliWithTimeout curl.exe @("-L", "--fail", "--retry", "5", "--retry-delay", "5", "--connect-timeout", "30", "--output", $tmp, $WindowsImageUrl) "curl-download-windows-image.txt" 7200
-        } catch {
-          if (-not (Test-Path -LiteralPath $tmp)) {
-            throw
-          }
-          $tmpHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
-          if ($tmpHash -ne $WindowsImageSha256.ToLowerInvariant()) {
-            throw
-          }
-          Log ("WARN curl reported an error after producing a valid image: " + $_.Exception.Message)
-        }
-      } else {
-        Invoke-WebRequest -Uri $WindowsImageUrl -UseBasicParsing -OutFile $tmp
-      }
-      if (-not (Test-Path -LiteralPath $tmp)) {
-        throw "Windows image download did not create $tmp"
-      }
-      $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
-      if ($actualHash -ne $WindowsImageSha256.ToLowerInvariant()) {
-        throw "Windows image SHA256 mismatch. expected=$WindowsImageSha256 actual=$actualHash"
-      }
-      Move-Item -LiteralPath $tmp -Destination $esdPath -Force
+      Invoke-ResumableDownload -Uri $WindowsImageUrl -Destination $esdPath -ExpectedSha256 $WindowsImageSha256 -LogPrefix "windows-image-download"
     }
 
     $installWim = Join-Path $sourceRoot "install.wim"

@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.124");
+      assertEqual(health.body.version, "0.3.126");
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -285,9 +285,20 @@ async function runScenarios() {
       assertEqual(secondManifest.opsSkill.zipSha256, firstManifest.opsSkill.zipSha256);
     }],
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
+      const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
+      assert(agent.includes("turnkey_terminal_rule"));
+      assert(agent.includes("large_download_rule"));
+      assert(agent.includes("waitForSotyReinstallPrepare"));
+      assert(agent.includes("waitForCompletion"));
+      assert(agent.includes("Get-MediaStatus"));
+      assert(agent.includes("updatedAgeSeconds"));
+      assert(agent.includes("86400000"));
+      assert(prepare.includes("Invoke-ResumableDownload"));
+      assert(prepare.includes('"-C", "-"'));
+      assert(prepare.includes("Windows image download did not complete within the retry window"));
       assert(prepare.includes('[string] $ManagedUserName = "Соты"'));
       assert(fastUsb.includes('[string] $ManagedUserName = "Соты"'));
       assert(arm.includes('[string] $ExpectedManagedUserName = "Соты"'));
@@ -304,7 +315,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.124");
+      assertEqual(manifest.version, "0.3.126");
       assertEqual(manifest.windowsReinstall.scripts.length, 3);
     }]
   ];
