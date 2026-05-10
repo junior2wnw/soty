@@ -2,7 +2,9 @@ param(
   [string] $WorkspaceRoot = "C:\ProgramData\Soty\WindowsReinstall",
   [string] $UsbDriveLetter = "D",
   [string] $ConfirmationPhrase = "",
-  [string] $ExpectedConfirmationPhrase = ""
+  [string] $ExpectedConfirmationPhrase = "",
+  [string] $ExpectedManagedUserName = "Соты",
+  [switch] $AllowManagedUserPassword
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +93,12 @@ foreach ($path in $required) {
   if (-not (Test-Path -LiteralPath $path)) { throw "Required reinstall artifact missing: $path" }
 }
 $ready = Get-Content -LiteralPath (Join-Path $usbReinstall "ready.json") -Raw | ConvertFrom-Json
+if (-not [string]::IsNullOrWhiteSpace($ExpectedManagedUserName) -and [string]$ready.managedUserName -ne $ExpectedManagedUserName) {
+  throw "Managed user mismatch. Expected $ExpectedManagedUserName, got $([string]$ready.managedUserName)."
+}
+if (-not $AllowManagedUserPassword -and [string]$ready.managedUserPasswordMode -ne "blank-no-password") {
+  throw "Managed user must be passwordless before arming. mode=$([string]$ready.managedUserPasswordMode)"
+}
 function Get-InstallImageCandidate([string[]] $SourceRoots) {
   foreach ($root in $SourceRoots) {
     if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root)) { continue }
@@ -122,6 +130,10 @@ if (-not $backupProof) {
 if ($backupProof.ok -ne $true) {
   throw "Backup proof is incomplete. Refusing to arm reinstall until backup/postinstall/OOBE artifacts are proven."
 }
+$personalScope = @($ready.backupScope | Where-Object { [string]$_ -like "personal-folders-*" })
+if ($personalScope.Count -lt 1 -or $null -eq $backupProof.personalFolderCounts) {
+  throw "Personal-folder backup proof is missing. Run managed prepare again before arming reinstall."
+}
 foreach ($path in @(
   (Join-Path $usbReinstall "backup-proof.json"),
   (Join-Path $usbRoot "Autounattend.xml"),
@@ -142,6 +154,8 @@ $marker = [ordered]@{
   schema = "soty.windows-reinstall.arm.v1"
   caseId = $ready.caseId
   computerName = $env:COMPUTERNAME
+  managedUserName = $ready.managedUserName
+  managedUserPasswordMode = $ready.managedUserPasswordMode
   backupProof = $backupProof
   armedAt = (Get-Date).ToString("o")
 }

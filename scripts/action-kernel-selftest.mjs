@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.123");
+      assertEqual(health.body.version, "0.3.124");
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -79,6 +79,18 @@ async function runScenarios() {
       const response = await action(sourceRun("SELFTEST_HTTP_500"));
       expectStatus(response, "failed");
       assertEqual(response.body.exitCode, 500);
+    }],
+    ["source route failure carries diagnostic", async () => {
+      const response = await action(sourceRun("SELFTEST_AGENT_SOURCE_MISSING"));
+      expectStatus(response, "failed");
+      assertEqual(response.body.exitCode, 404);
+      assertEqual(response.body.diagnostic.reason, "not-found");
+    }],
+    ["source link status exposes relay diagnostic", async () => {
+      const response = await get("/operator/source-status?sourceRelayId=selftest_relay_00000000000000000001&sourceDeviceId=dev1");
+      assertEqual(response.status, 200);
+      assertEqual(response.body.relay.reason, "ok");
+      assertEqual(response.body.relay.source.connected, true);
     }],
     ["ordinary target without bridge fails narrowly", async () => {
       const response = await action({ target: "room-a", command: "whoami SELFTEST_OK" });
@@ -274,19 +286,25 @@ async function runScenarios() {
     }],
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
+      const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       assert(prepare.includes('[string] $ManagedUserName = "Соты"'));
       assert(fastUsb.includes('[string] $ManagedUserName = "Соты"'));
+      assert(arm.includes('[string] $ExpectedManagedUserName = "Соты"'));
       assert(prepare.includes("UTF8Encoding($true)"));
       assert(fastUsb.includes("UTF8Encoding($true)"));
       assert(prepare.includes("$AllowTemporaryManagedPassword -and -not $NoTemporaryManagedPassword"));
       assert(fastUsb.includes("$AllowTemporaryManagedPassword -and -not $NoTemporaryManagedPassword"));
       assert(!prepare.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
       assert(!fastUsb.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
+      assert(prepare.includes("personal-folders-Desktop-Documents-Downloads-Pictures-Videos-Music"));
+      assert(prepare.includes("personalFolderCounts"));
+      assert(arm.includes("Managed user must be passwordless before arming"));
+      assert(arm.includes("Personal-folder backup proof is missing"));
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.123");
+      assertEqual(manifest.version, "0.3.124");
       assertEqual(manifest.windowsReinstall.scripts.length, 3);
     }]
   ];
@@ -394,6 +412,22 @@ function createMockRelay() {
         json(response, 500, { ok: false, text: "! mock-http", exitCode: 500 });
         return;
       }
+      if (text.includes("SELFTEST_AGENT_SOURCE_MISSING")) {
+        json(response, 404, {
+          ok: false,
+          text: "! agent-source: not-found",
+          exitCode: 404,
+          diagnostic: {
+            reason: "not-found",
+            relayId: payload.relayId || "",
+            deviceId: payload.deviceId || "",
+            sourceConnectedMs: 90000,
+            source: null,
+            candidates: []
+          }
+        });
+        return;
+      }
       if (text.includes("SELFTEST_TIMEOUT")) {
         json(response, 200, { ok: false, text: "! timeout", exitCode: 124 });
         return;
@@ -423,6 +457,33 @@ function createMockRelay() {
             lastActionAt: new Date().toISOString()
           }
         ]
+      });
+      return;
+    }
+    if (url.pathname === "/api/agent/source/status") {
+      json(response, 200, {
+        ok: true,
+        relayId: url.searchParams.get("relayId") || "",
+        deviceId: url.searchParams.get("deviceId") || "",
+        runnable: true,
+        reason: "ok",
+        sourceConnectedMs: 90000,
+        source: {
+          relayId: url.searchParams.get("relayId") || "",
+          deviceId: url.searchParams.get("deviceId") || "",
+          deviceNick: "selftest-source",
+          access: true,
+          connected: true,
+          lastSeenAt: new Date().toISOString(),
+          lastSeenAgeMs: 10,
+          sourceConnectedMs: 90000,
+          pendingJobs: 0,
+          leasedJobs: 0,
+          finishedJobs: 0,
+          cancels: 0,
+          lastJob: null
+        },
+        candidates: []
       });
       return;
     }

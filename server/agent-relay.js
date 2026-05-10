@@ -16,6 +16,7 @@ const sourceConnectedMs = 90_000;
 const sourceJobTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const sourceCancelTtlMs = 5 * 60_000;
 const maxJobsPerChannel = 80;
+const maxDiagnosticSources = 16;
 const channels = new Map();
 const agentSources = new Map();
 const pollWaiters = new Map();
@@ -235,6 +236,17 @@ export function attachAgentRelay(app) {
     });
   });
 
+  app.get("/api/agent/source/status", (req, res) => {
+    const relayId = normalizeRelayId(req.query.relayId);
+    const deviceId = cleanText(req.query.deviceId, maxSourceChars);
+    cleanupAgentSources();
+    const diagnostic = agentSourceDiagnostics(relayId, deviceId);
+    res.status(relayId ? 200 : 400).json({
+      ok: Boolean(relayId),
+      ...diagnostic
+    });
+  });
+
   app.get("/api/agent/source/poll", (req, res) => {
     const relayId = normalizeRelayId(req.query.relayId);
     const deviceId = cleanText(req.query.deviceId, maxSourceChars);
@@ -315,13 +327,20 @@ export function attachAgentRelay(app) {
     const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
     const command = cleanText(req.body?.command, 8_000);
     const timeoutMs = safeTimeout(req.body?.timeoutMs);
-    const source = findRunnableAgentSource(relayId, deviceId);
     if (!relayId || !deviceId || !command.trim()) {
       res.status(400).json({ ok: false, text: "! request", exitCode: 400 });
       return;
     }
+    cleanupAgentSources();
+    const source = findRunnableAgentSource(relayId, deviceId);
     if (!source) {
-      res.status(404).json({ ok: false, text: "! agent-source", exitCode: 404 });
+      const diagnostic = agentSourceDiagnostics(relayId, deviceId);
+      res.status(404).json({
+        ok: false,
+        text: agentSourceUnavailableText(diagnostic),
+        exitCode: 404,
+        diagnostic
+      });
       return;
     }
     const job = createSourceJob(source, {
@@ -338,13 +357,20 @@ export function attachAgentRelay(app) {
     const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
     const script = cleanText(req.body?.script, 1_000_000);
     const timeoutMs = safeTimeout(req.body?.timeoutMs);
-    const source = findRunnableAgentSource(relayId, deviceId);
     if (!relayId || !deviceId || !script.trim()) {
       res.status(400).json({ ok: false, text: "! request", exitCode: 400 });
       return;
     }
+    cleanupAgentSources();
+    const source = findRunnableAgentSource(relayId, deviceId);
     if (!source) {
-      res.status(404).json({ ok: false, text: "! agent-source", exitCode: 404 });
+      const diagnostic = agentSourceDiagnostics(relayId, deviceId);
+      res.status(404).json({
+        ok: false,
+        text: agentSourceUnavailableText(diagnostic),
+        exitCode: 404,
+        diagnostic
+      });
       return;
     }
     const job = createSourceJob(source, {
@@ -492,7 +518,112 @@ function findAgentSource(relayId, deviceId) {
 
 function findRunnableAgentSource(relayId, deviceId) {
   const source = findAgentSource(relayId, deviceId);
-  return source && source.access === true && Date.now() - source.lastSeenAt < sourceConnectedMs ? source : null;
+  return isRunnableAgentSource(source) ? source : null;
+}
+
+function isRunnableAgentSource(source, now = Date.now()) {
+  return Boolean(source && source.access === true && now - source.lastSeenAt < sourceConnectedMs);
+}
+
+function agentSourceUnavailableText(diagnostic) {
+  return `! agent-source: ${cleanText(diagnostic?.reason, 80) || "unavailable"}`;
+}
+
+function agentSourceDiagnostics(relayId, deviceId, now = Date.now()) {
+  const source = relayId && deviceId ? findAgentSource(relayId, deviceId) : null;
+  const sourceDiagnostic = source ? publicAgentSourceDiagnostic(source, now) : null;
+  const reason = agentSourceDiagnosticReason({ relayId, deviceId, source, sourceDiagnostic });
+  return {
+    relayId,
+    deviceId,
+    runnable: reason === "ok",
+    reason,
+    now: new Date(now).toISOString(),
+    sourceConnectedMs,
+    source: sourceDiagnostic,
+    candidates: agentSourceDiagnosticCandidates(relayId, deviceId, now)
+  };
+}
+
+function agentSourceDiagnosticReason({ relayId, deviceId, source, sourceDiagnostic }) {
+  if (!relayId) {
+    return "missing-relay";
+  }
+  if (!deviceId) {
+    return "missing-device";
+  }
+  if (!source) {
+    return "not-found";
+  }
+  if (sourceDiagnostic.access !== true) {
+    return "access-denied";
+  }
+  if (sourceDiagnostic.lastSeenAgeMs >= sourceConnectedMs) {
+    return "source-stale";
+  }
+  return "ok";
+}
+
+function agentSourceDiagnosticCandidates(relayId, deviceId, now = Date.now()) {
+  const sources = [...agentSources.values()]
+    .filter((source) => (relayId && source.relayId === relayId) || (deviceId && source.deviceId === deviceId))
+    .sort((left, right) => {
+      const leftExact = left.relayId === relayId && left.deviceId === deviceId ? 1 : 0;
+      const rightExact = right.relayId === relayId && right.deviceId === deviceId ? 1 : 0;
+      if (leftExact !== rightExact) {
+        return rightExact - leftExact;
+      }
+      const leftRelay = left.relayId === relayId ? 1 : 0;
+      const rightRelay = right.relayId === relayId ? 1 : 0;
+      if (leftRelay !== rightRelay) {
+        return rightRelay - leftRelay;
+      }
+      return right.lastSeenAt - left.lastSeenAt;
+    })
+    .slice(0, maxDiagnosticSources);
+  return sources.map((source) => publicAgentSourceDiagnostic(source, now));
+}
+
+function publicAgentSourceDiagnostic(source, now = Date.now()) {
+  const lastSeenAgeMs = Math.max(0, now - (source.lastSeenAt || 0));
+  const jobs = Array.isArray(source.jobs) ? source.jobs : [];
+  const cancels = Array.isArray(source.cancels) ? source.cancels : [];
+  const lastJob = jobs
+    .slice()
+    .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0))[0] || null;
+  return {
+    relayId: source.relayId,
+    deviceId: source.deviceId,
+    deviceNick: source.deviceNick || "",
+    access: source.access === true,
+    connected: source.access === true && lastSeenAgeMs < sourceConnectedMs,
+    lastSeenAt: source.lastSeenAt ? new Date(source.lastSeenAt).toISOString() : "",
+    lastSeenAgeMs,
+    sourceConnectedMs,
+    pendingJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil <= now)).length,
+    leasedJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && job.leaseUntil && job.leaseUntil > now).length,
+    finishedJobs: jobs.filter((job) => Number.isSafeInteger(job.exitCode)).length,
+    cancels: cancels.length,
+    lastJob: lastJob ? publicSourceJobDiagnostic(lastJob, now) : null
+  };
+}
+
+function publicSourceJobDiagnostic(job, now = Date.now()) {
+  const leased = Boolean(job.leaseUntil);
+  const finished = Number.isSafeInteger(job.exitCode);
+  return {
+    id: cleanText(job.id, 120),
+    type: cleanText(job.type, 40),
+    createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : "",
+    ageMs: Math.max(0, now - (job.createdAt || now)),
+    timeoutMs: safeTimeout(job.timeoutMs),
+    leased,
+    leaseActive: Boolean(job.leaseUntil && job.leaseUntil > now),
+    leaseUntil: job.leaseUntil ? new Date(job.leaseUntil).toISOString() : "",
+    finished,
+    ...(finished ? { exitCode: job.exitCode } : {}),
+    textChars: String(job.text || "").length
+  };
 }
 
 function connectedAgentSources(relayId) {
@@ -615,6 +746,8 @@ function createSourceJob(source, payload) {
   const job = {
     ...payload,
     id,
+    sourceRelayId: source.relayId,
+    sourceDeviceId: source.deviceId,
     createdAt: Date.now(),
     leaseUntil: 0,
     text: ""
@@ -666,7 +799,24 @@ function sourceJobReply(job) {
   return {
     ok: exitCode === 0,
     text: job.text || (exitCode === 124 ? "! timeout" : ""),
-    exitCode
+    exitCode,
+    ...(exitCode === 0 ? {} : { diagnostic: sourceJobDiagnostic(job) })
+  };
+}
+
+function sourceJobDiagnostic(job, now = Date.now()) {
+  const source = findAgentSource(job.sourceRelayId, job.sourceDeviceId);
+  const leased = Boolean(job.leaseUntil);
+  const finished = Number.isSafeInteger(job.exitCode);
+  const reason = finished
+    ? (job.exitCode === 0 ? "ok" : "nonzero-exit")
+    : leased
+      ? "reply-wait-timeout-after-lease"
+      : "reply-wait-timeout-before-pickup";
+  return {
+    reason,
+    job: publicSourceJobDiagnostic(job, now),
+    source: source ? publicAgentSourceDiagnostic(source, now) : null
   };
 }
 
@@ -890,5 +1040,9 @@ function safeTimeout(value) {
 }
 
 function sourceReplyWaitTimeout(value) {
-  return Math.min(maxTaskTimeoutMs + 60_000, safeTimeout(value) + 30_000);
+  const timeout = safeTimeout(value);
+  const grace = timeout <= 60_000
+    ? 3_000
+    : Math.min(30_000, Math.max(5_000, Math.round(timeout * 0.05)));
+  return Math.min(maxTaskTimeoutMs + 60_000, timeout + grace);
 }

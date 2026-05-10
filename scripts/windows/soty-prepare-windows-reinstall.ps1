@@ -182,7 +182,7 @@ function Copy-TreeIfExists([string] $Source, [string] $Destination, [int] $Timeo
   $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $args -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
   if (-not $process.WaitForExit($TimeoutSec * 1000)) {
     try { $process.Kill() } catch {}
-    Log "WARN robocopy timed out after ${TimeoutSec}s for $Source -> $Destination. Continuing without this optional browser-state folder."
+    Log "WARN robocopy timed out after ${TimeoutSec}s for $Source -> $Destination. Continuing without this optional backup folder."
     $global:LASTEXITCODE = 0
     return $false
   }
@@ -254,6 +254,14 @@ function Write-SetupFallbackArtifacts([string] $UsbRoot, [string] $UsbSources, [
 
 function Get-ReinstallBackupProof {
   $sotyBrowserArtifactCount = Count-Files -Path $sotyStateRoot -Filter "*" -Recurse
+  $folderNames = if ($null -ne $personalFolderNames -and @($personalFolderNames).Count -gt 0) { @($personalFolderNames) } else { @("Desktop") }
+  $personalFolderCounts = [ordered]@{}
+  $personalFileTotalCount = 0
+  foreach ($folderName in $folderNames) {
+    $count = Count-Files -Path (Join-Path $personalFilesRoot $folderName) -Filter "*" -Recurse
+    $personalFolderCounts[$folderName] = $count
+    $personalFileTotalCount += $count
+  }
   $oemSourcesRoot = if (-not [string]::IsNullOrWhiteSpace($script:installMediaSources)) { $script:installMediaSources } else { $usbSources }
   $proof = [ordered]@{
     schema = "soty.windows-reinstall.backup-proof.v1"
@@ -263,6 +271,9 @@ function Get-ReinstallBackupProof {
     driverInfCount = Count-Files -Path $driverRoot -Filter "*.inf" -Recurse
     sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
     sotyBrowserArtifactCount = $sotyBrowserArtifactCount
+    personalFolderCounts = $personalFolderCounts
+    personalFileTotalCount = $personalFileTotalCount
+    personalFoldersBackedUp = $personalFilesBackedUp
     desktopFileCount = Count-Files -Path $desktopBackupRoot -Filter "*" -Recurse
     postinstallScript = (Test-Path -LiteralPath (Join-Path $usbRestore "postinstall.ps1"))
     rootAutounattend = (Test-Path -LiteralPath (Join-Path $script:usbRoot "Autounattend.xml"))
@@ -497,10 +508,15 @@ if (`$resetManagedPasswordToBlank) {
     Log "managed user password reset to blank"
   } catch { Log ("managed password cleanup warning: " + `$_.Exception.Message) }
 }
-`$desktopBackup = Join-Path `$backupRoot "personal-files\$SourceProfileName\Desktop"
+`$personalFolders = @("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music")
+foreach (`$folderName in `$personalFolders) {
+  `$folderBackup = Join-Path `$backupRoot "personal-files\$SourceProfileName\`$folderName"
+  `$folderDest = if (`$folderName -eq "Desktop") { [Environment]::GetFolderPath("Desktop") } else { Join-Path `$env:USERPROFILE `$folderName }
+  if ([string]::IsNullOrWhiteSpace(`$folderDest)) { `$folderDest = Join-Path `$env:USERPROFILE `$folderName }
+  CopyDir `$folderBackup `$folderDest
+}
 `$desktopDest = [Environment]::GetFolderPath("Desktop")
 if ([string]::IsNullOrWhiteSpace(`$desktopDest)) { `$desktopDest = Join-Path `$env:USERPROFILE "Desktop" }
-CopyDir `$desktopBackup `$desktopDest
 `$edgeDefault = Join-Path `$env:USERPROFILE "AppData\Local\Microsoft\Edge\User Data\Default"
 `$sourceState = Join-Path `$backupRoot "soty-state\$SourceProfileName"
 CopyDir (Join-Path `$sourceState "Edge-IndexedDB") (Join-Path `$edgeDefault "IndexedDB")
@@ -763,6 +779,7 @@ try {
   $driverRoot = Join-Path $script:backupRoot "drivers"
   $sotyStateRoot = Join-Path (Join-Path $script:backupRoot "soty-state") $sourceProfileName
   $personalFilesRoot = Join-Path (Join-Path $script:backupRoot "personal-files") $sourceProfileName
+  $personalFolderNames = @("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music")
   $desktopBackupRoot = Join-Path $personalFilesRoot "Desktop"
   $operatorExportPath = Join-Path $sotyStateRoot "operator-export.json"
   $personalFilesBackedUp = $false
@@ -772,24 +789,27 @@ try {
     "exported-drivers",
     "soty-operator-export",
     "soty-browser-return-state",
-    "desktop-personal-files"
+    "personal-folders-Desktop-Documents-Downloads-Pictures-Videos-Music"
   )
   New-Directory $wifiRoot
   New-Directory $driverRoot
   New-Directory $sotyStateRoot
   New-Directory $personalFilesRoot
-  Log "Backup scope: Wi-Fi profiles, exported drivers, Soty operator export, Soty browser return state, and Desktop personal files."
+  Log "Backup scope: Wi-Fi profiles, exported drivers, Soty operator export, Soty browser return state, and personal folders: Desktop, Documents, Downloads, Pictures, Videos, Music."
   try { & netsh.exe wlan export profile key=clear folder="$wifiRoot" | Out-File -LiteralPath (Join-Path $JobRoot "netsh-wifi-export.txt") -Encoding UTF8 } catch { Log ("WARN wifi export failed: " + $_.Exception.Message) }
   try { Invoke-LoggedCliWithTimeout dism.exe @("/online", "/export-driver", "/destination:$driverRoot") "dism-export-drivers.txt" 1800 } catch { Log ("WARN driver export failed: " + $_.Exception.Message) }
   if (Save-SotyOperatorExport $operatorExportPath) { $sotyOperatorExportBackedUp = $true }
   if (Test-Path -LiteralPath $sourceProfile) {
-    $desktopSource = Join-Path $sourceProfile "Desktop"
-    if (Copy-TreeIfExists $desktopSource $desktopBackupRoot) { $personalFilesBackedUp = $true }
+    foreach ($folderName in $personalFolderNames) {
+      $folderSource = Join-Path $sourceProfile $folderName
+      $folderDestination = Join-Path $personalFilesRoot $folderName
+      if (Copy-TreeIfExists $folderSource $folderDestination 600) { $personalFilesBackedUp = $true }
+    }
     $edgeDefault = Join-Path $sourceProfile "AppData\Local\Microsoft\Edge\User Data\Default"
-    Copy-TreeIfExists (Join-Path $edgeDefault "IndexedDB") (Join-Path $sotyStateRoot "Edge-IndexedDB") | Out-Null
-    Copy-TreeIfExists (Join-Path $edgeDefault "Local Storage") (Join-Path $sotyStateRoot "Edge-LocalStorage") | Out-Null
-    Copy-TreeIfExists (Join-Path $edgeDefault "Service Worker") (Join-Path $sotyStateRoot "Edge-ServiceWorker") | Out-Null
-    Copy-TreeIfExists (Join-Path $edgeDefault "Sessions") (Join-Path $sotyStateRoot "Edge-Sessions") | Out-Null
+    Copy-TreeIfExists (Join-Path $edgeDefault "IndexedDB") (Join-Path $sotyStateRoot "Edge-IndexedDB") 90 | Out-Null
+    Copy-TreeIfExists (Join-Path $edgeDefault "Local Storage") (Join-Path $sotyStateRoot "Edge-LocalStorage") 90 | Out-Null
+    Copy-TreeIfExists (Join-Path $edgeDefault "Service Worker") (Join-Path $sotyStateRoot "Edge-ServiceWorker") 90 | Out-Null
+    Copy-TreeIfExists (Join-Path $edgeDefault "Sessions") (Join-Path $sotyStateRoot "Edge-Sessions") 90 | Out-Null
   }
   # The machine worker is reinstalled by postinstall. Copying its live ops/jobs
   # tree can hold locks or copy an active job forever, so keep it out of the
@@ -910,6 +930,7 @@ try {
     managedUserName = $ManagedUserName
     managedUserPasswordMode = $managedUserPasswordMode
     backupScope = $backupScope
+    personalFolderNames = $personalFolderNames
     personalFilesBackedUp = $personalFilesBackedUp
     sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
     sourceProfileName = $sourceProfileName
@@ -934,6 +955,7 @@ try {
     reinstallRoot = $script:reinstallRoot
     backupRoot = $script:backupRoot
     backupScope = $backupScope
+    personalFolderNames = $personalFolderNames
     installImageSourceRoot = $script:installMediaSources
     personalFilesBackedUp = $personalFilesBackedUp
     sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp

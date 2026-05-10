@@ -1,17 +1,18 @@
 {
-  "version": "0.3.123",
+  "version": "0.3.124",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "f0b178bbe8881a4cb55bdf86de6c5ca8399b7e88ac10d4918fb67fd4e53d54da",
+  "sha256": "e2010e00f71d45df270436617e876a0a1c912606d3ccfa6e6243b543b98a0297",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "8c60ca85b51d7173ee1018dc6907a9d3fd9fd335eb9a5691b3263af5a454ba8d",
-    "zipBytes": 1237279,
+    "zipSha256": "9d1b11ed128fbc39c79e98ce65d1bea0752eab46d166159bb45fb00bb8415c18",
+    "zipBytes": 1241028,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "88f86130fcef2f59d13ba27e40c1fbd54beba8e1eccd53926e4570b7c65cabec",
-    "tarBytes": 299063,
-    "revision": "1a06a2f489e360600f829cdf72cb7bfda9e5e0cb"
+    "tarSha256": "92ae9f6b46f5abea2a8c45fe39f7b2c18093d4247a74abf3dd4d86fbd0535945",
+    "tarBytes": 300300,
+    "revision": "1a06a2f489e360600f829cdf72cb7bfda9e5e0cb",
+    "dirty": true
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
@@ -19,14 +20,14 @@
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "3edd4b12b8e38674aef903824b0e6eee53a67a2b047aeffd4b2fc1649c3a2a65",
-        "bytes": 44298
+        "sha256": "08df744a933972e4d686f7d960515ff4c22f338a2dbafd3b5ff18d1635501c13",
+        "bytes": 45712
       },
       {
         "name": "arm",
         "url": "/agent/windows-reinstall/soty-arm-windows-reinstall.ps1",
-        "sha256": "14589611a585426deda9b3638e134d2a47e95944e2ff36deec910123d5a06b1c",
-        "bytes": 7227
+        "sha256": "b00dd60782b2bed3feef0a9f04117c544704c554642f860a858a45d3906a7988",
+        "bytes": 8154
       },
       {
         "name": "makeFastUsb",
