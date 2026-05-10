@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.126";
+const agentVersion = "0.3.127";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -4554,7 +4554,7 @@ function runMcpServer() {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         script: sourceFileScript(args),
-        shell: "powershell",
+        shell: "node",
         name: `soty-file-${action}`.slice(0, 120),
         timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
@@ -4569,7 +4569,7 @@ function runMcpServer() {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         script: sourceBrowserScript(args),
-        shell: "powershell",
+        shell: "node",
         name: `soty-browser-${action}`.slice(0, 120),
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 10 * 60_000)
       });
@@ -4595,10 +4595,12 @@ function runMcpServer() {
       if (!/^https?:\/\//iu.test(url)) {
         return mcpToolText("! url", true);
       }
-      const result = await mcpPostOperator("/operator/run", {
+      const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
-        command: `Start-Process ${quotePowerShell(url)}`,
+        script: sourceOpenUrlScript(url),
+        shell: "node",
+        name: "soty-open-url",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
       return mcpToolOperatorResult(result, "opened");
@@ -5082,13 +5084,34 @@ function runMcpServer() {
     return /^[A-Z]$/u.test(letter) ? letter : "D";
   }
 
-  function quotePowerShell(value) {
-    return `'${String(value).replace(/'/gu, "''")}'`;
-  }
+function quotePowerShell(value) {
+  return `'${String(value).replace(/'/gu, "''")}'`;
+}
 
-  function sendMcp(message) {
-    process.stdout.write(`${JSON.stringify(message)}\n`);
-  }
+function sourceOpenUrlScript(url) {
+  const payload = Buffer.from(JSON.stringify({ url: String(url || "").slice(0, 4000) }), "utf8").toString("base64");
+  return `
+const { spawn } = require("node:child_process");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const url = String(req.url || "");
+if (!/^https?:\\/\\//i.test(url)) {
+  console.error("invalid url");
+  process.exit(2);
+}
+const command = process.platform === "win32"
+  ? { file: "cmd.exe", args: ["/d", "/s", "/c", "start", "", url] }
+  : process.platform === "darwin"
+    ? { file: "open", args: [url] }
+    : { file: "xdg-open", args: [url] };
+const child = spawn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: false });
+child.unref();
+console.log(JSON.stringify({ ok: true, action: "open", url, platform: process.platform }));
+`.trim();
+}
+
+function sendMcp(message) {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
+}
 }
 
 function windowsAudioScript(volumePercent, muteMode) {
@@ -5558,96 +5581,115 @@ function sourceFileScript(args) {
     maxChars: Number.isSafeInteger(args.maxChars) ? Math.max(1000, Math.min(args.maxChars, 12000)) : 9000
   }), "utf8").toString("base64");
   return `
-$ErrorActionPreference = 'Stop'
-$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
-function Full-SotyPath([string]$Path) {
-  if ([string]::IsNullOrWhiteSpace($Path)) { throw 'empty path' }
-  $expanded = [Environment]::ExpandEnvironmentVariables($Path)
-  if (-not [IO.Path]::IsPathRooted($expanded)) { $expanded = Join-Path (Get-Location).Path $expanded }
-  [IO.Path]::GetFullPath($expanded)
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const emit = (value) => console.log(JSON.stringify(value));
+function expandPath(value) {
+  let text = String(value || "").trim();
+  if (!text) throw new Error("empty path");
+  if (text === "~" || text.startsWith("~/") || text.startsWith("~\\\\")) {
+    text = path.join(os.homedir(), text.slice(2));
+  }
+  text = text
+    .replace(/%([^%]+)%/g, (_, name) => process.env[name] || "")
+    .replace(/\\$\\{([^}]+)\\}|\\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, braced, plain) => process.env[braced || plain] || "");
+  return path.resolve(text);
 }
-function Emit($Value) { $Value | ConvertTo-Json -Depth 8 -Compress }
-$action = ''
-$path = ''
-try {
-$action = ([string]$req.action).Trim().ToLowerInvariant()
-$path = Full-SotyPath ([string]$req.path)
-$maxResults = [Math]::Max(1, [Math]::Min(500, [int]$req.maxResults))
-$maxChars = [Math]::Max(1000, [Math]::Min(12000, [int]$req.maxChars))
-switch ($action) {
-  'stat' {
-    $item = Get-Item -LiteralPath $path -Force
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$item.FullName; type=$(if ($item.PSIsContainer) { 'directory' } else { 'file' }); length=$item.Length; updated=$item.LastWriteTimeUtc.ToString('o') })
+function itemInfo(fullPath, name = path.basename(fullPath)) {
+  const stat = fs.statSync(fullPath);
+  return {
+    name,
+    path: fullPath,
+    type: stat.isDirectory() ? "directory" : "file",
+    length: stat.isDirectory() ? 0 : stat.size,
+    updated: stat.mtime.toISOString()
+  };
+}
+function wildcardToRegExp(glob) {
+  const escaped = String(glob || "*").replace(/[.+^$(){}|[\\]\\\\]/g, "\\\\$&").replace(/\\*/g, ".*").replace(/\\?/g, ".");
+  return new RegExp("^" + escaped + "$", "i");
+}
+function listFiles(root, recursive, limit, out = []) {
+  if (out.length >= limit) return out;
+  const stat = fs.statSync(root);
+  if (!stat.isDirectory()) {
+    out.push(root);
+    return out;
   }
-  'list' {
-    $items = if ($req.recursive -eq $true) { Get-ChildItem -LiteralPath $path -Force -Recurse -ErrorAction SilentlyContinue | Select-Object -First $maxResults } else { Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | Select-Object -First $maxResults }
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; items=@($items | ForEach-Object { [pscustomobject]@{ name=$_.Name; path=$_.FullName; type=$(if ($_.PSIsContainer) { 'directory' } else { 'file' }); length=$_.Length; updated=$_.LastWriteTimeUtc.ToString('o') } }) })
-  }
-  'read' {
-    $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
-    if ($text.Length -gt $maxChars) { $text = $text.Substring(0, $maxChars) }
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text })
-  }
-  'write' {
-    $dir = Split-Path -Parent $path
-    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8 -NoNewline
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; bytes=([Text.Encoding]::UTF8.GetByteCount([string]$req.content)) })
-  }
-  'append' {
-    $dir = Split-Path -Parent $path
-    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; bytes=([Text.Encoding]::UTF8.GetByteCount([string]$req.content)) })
-  }
-  'mkdir' {
-    $item = New-Item -ItemType Directory -Force -Path $path
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$item.FullName })
-  }
-  'move' {
-    $to = Full-SotyPath ([string]$req.toPath)
-    $dir = Split-Path -Parent $to
-    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    Move-Item -LiteralPath $path -Destination $to -Force
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; toPath=$to })
-  }
-  'copy' {
-    $to = Full-SotyPath ([string]$req.toPath)
-    $dir = Split-Path -Parent $to
-    if ($dir) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    Copy-Item -LiteralPath $path -Destination $to -Force -Recurse:($req.recursive -eq $true)
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; toPath=$to })
-  }
-  'delete' {
-    Remove-Item -LiteralPath $path -Force -Recurse:($req.recursive -eq $true)
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path })
-  }
-  'search' {
-    $pattern = [string]$req.pattern
-    if ([string]::IsNullOrWhiteSpace($pattern)) { throw 'empty pattern' }
-    $root = Get-Item -LiteralPath $path -Force
-    $glob = if ([string]::IsNullOrWhiteSpace([string]$req.glob)) { '*' } else { [string]$req.glob }
-    $files = if ($root.PSIsContainer) {
-      Get-ChildItem -LiteralPath $root.FullName -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $glob }
-    } else { @($root) }
-    $matches = New-Object System.Collections.Generic.List[object]
-    foreach ($file in $files) {
-      if ($matches.Count -ge $maxResults) { break }
-      try {
-        $found = if ($req.regex -eq $true) { Select-String -LiteralPath $file.FullName -Pattern $pattern -ErrorAction Stop } else { Select-String -LiteralPath $file.FullName -Pattern $pattern -SimpleMatch -ErrorAction Stop }
-        foreach ($m in $found) {
-          $matches.Add([pscustomobject]@{ path=$m.Path; line=$m.LineNumber; text=([string]$m.Line).Trim() })
-          if ($matches.Count -ge $maxResults) { break }
-        }
-      } catch {}
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (out.length >= limit) break;
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      if (recursive) listFiles(full, true, limit, out);
+    } else if (entry.isFile()) {
+      out.push(full);
     }
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; pattern=$pattern; matches=@($matches) })
   }
-  default { throw "unsupported file action: $action" }
+  return out;
 }
-} catch {
-  Emit ([pscustomobject]@{ ok=$false; action=$action; path=$path; error=$_.Exception.Message })
-  exit 1
+let action = "";
+let fullPath = "";
+try {
+  action = String(req.action || "").trim().toLowerCase();
+  fullPath = expandPath(req.path);
+  const maxResults = Math.max(1, Math.min(500, Number(req.maxResults) || 80));
+  const maxChars = Math.max(1000, Math.min(12000, Number(req.maxChars) || 9000));
+  if (action === "stat") {
+    emit({ ok: true, action, ...itemInfo(fullPath) });
+  } else if (action === "list") {
+    const stat = fs.statSync(fullPath);
+    const entries = stat.isDirectory()
+      ? (req.recursive ? listFiles(fullPath, true, maxResults) : fs.readdirSync(fullPath).slice(0, maxResults).map((name) => path.join(fullPath, name)))
+      : [fullPath];
+    emit({ ok: true, action, path: fullPath, items: entries.map((entry) => itemInfo(entry)) });
+  } else if (action === "read") {
+    const text = fs.readFileSync(fullPath, "utf8").slice(0, maxChars);
+    emit({ ok: true, action, path: fullPath, text });
+  } else if (action === "write" || action === "append") {
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    if (action === "write") fs.writeFileSync(fullPath, String(req.content || ""), "utf8");
+    else fs.appendFileSync(fullPath, String(req.content || ""), "utf8");
+    emit({ ok: true, action, path: fullPath, bytes: Buffer.byteLength(String(req.content || ""), "utf8") });
+  } else if (action === "mkdir") {
+    fs.mkdirSync(fullPath, { recursive: true });
+    emit({ ok: true, action, path: fullPath });
+  } else if (action === "move" || action === "copy") {
+    const toPath = expandPath(req.toPath);
+    fs.mkdirSync(path.dirname(toPath), { recursive: true });
+    if (action === "move") fs.renameSync(fullPath, toPath);
+    else fs.cpSync(fullPath, toPath, { recursive: req.recursive === true, force: true });
+    emit({ ok: true, action, path: fullPath, toPath });
+  } else if (action === "delete") {
+    fs.rmSync(fullPath, { recursive: req.recursive === true, force: true });
+    emit({ ok: true, action, path: fullPath });
+  } else if (action === "search") {
+    const pattern = String(req.pattern || "");
+    if (!pattern.trim()) throw new Error("empty pattern");
+    const glob = wildcardToRegExp(req.glob || "*");
+    const matcher = req.regex ? new RegExp(pattern, "iu") : null;
+    const files = listFiles(fullPath, true, maxResults * 20).filter((file) => glob.test(path.basename(file)));
+    const matches = [];
+    for (const file of files) {
+      if (matches.length >= maxResults) break;
+      let text = "";
+      try { text = fs.readFileSync(file, "utf8"); } catch { continue; }
+      const lines = text.split(/\\r?\\n/u);
+      for (let index = 0; index < lines.length && matches.length < maxResults; index += 1) {
+        const line = lines[index];
+        if (matcher ? matcher.test(line) : line.includes(pattern)) {
+          matches.push({ path: file, line: index + 1, text: line.trim().slice(0, 1000) });
+        }
+      }
+    }
+    emit({ ok: true, action, path: fullPath, pattern, matches });
+  } else {
+    throw new Error("unsupported file action: " + action);
+  }
+} catch (error) {
+  emit({ ok: false, action, path: fullPath, error: error && error.message ? error.message : String(error) });
+  process.exit(1);
 }
 `.trim();
 }
@@ -5666,8 +5708,8 @@ function sourceBrowserScript(args) {
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawn } = require("node:child_process");
-const req = JSON.parse(Buffer.from(process.argv[2] || "", "base64").toString("utf8"));
+const { spawn, spawnSync } = require("node:child_process");
+const req = JSON.parse(Buffer.from("${request}", "base64").toString("utf8"));
 const port = 9222;
 const base = "http://127.0.0.1:" + port;
 let nextId = 1;
@@ -5691,12 +5733,33 @@ function browserCandidates() {
   }
   return ["google-chrome", "microsoft-edge", "chromium", "chromium-browser"];
 }
+function executableExists(candidate) {
+  if (process.platform === "win32" || candidate.includes("/")) {
+    return fs.existsSync(candidate);
+  }
+  return spawnSync("sh", ["-lc", "command -v " + candidate], { stdio: "ignore" }).status === 0;
+}
+function openDefaultBrowser(url) {
+  if (!/^https?:\\/\\//i.test(String(url || ""))) return false;
+  const command = process.platform === "win32"
+    ? { file: "cmd.exe", args: ["/d", "/s", "/c", "start", "", url] }
+    : process.platform === "darwin"
+      ? { file: "open", args: [url] }
+      : { file: "xdg-open", args: [url] };
+  try {
+    const child = spawn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: false });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 async function ensureBrowser() {
   try {
     await fetchJson(base + "/json/version");
     return;
   } catch {}
-  const exe = browserCandidates().find((candidate) => process.platform !== "win32" || fs.existsSync(candidate)) || browserCandidates()[0];
+  const exe = browserCandidates().find(executableExists) || browserCandidates()[0];
   const profile = path.join(os.tmpdir(), "soty-browser-profile");
   fs.mkdirSync(profile, { recursive: true });
   const args = ["--remote-debugging-port=" + port, "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check"];
@@ -5822,30 +5885,16 @@ async function evalText(client, expression) {
   }
   throw new Error("unsupported browser action: " + action);
 })().catch((error) => {
+  const action = String(req.action || "").toLowerCase();
+  if ((action === "open" || action === "goto") && openDefaultBrowser(req.url)) {
+    console.log(JSON.stringify({ ok: true, action, url: req.url, mode: "default-browser-fallback" }));
+    return;
+  }
   console.error(error && error.stack ? error.stack : String(error));
   process.exit(1);
 });
 `, "utf8").toString("base64");
-  return `
-$ErrorActionPreference = 'Stop'
-$dir = Join-Path $env:TEMP 'soty-browser'
-New-Item -ItemType Directory -Force -Path $dir | Out-Null
-$scriptPath = Join-Path $dir 'soty-browser-driver.cjs'
-$driver = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${driver}'))
-Set-Content -LiteralPath $scriptPath -Value $driver -Encoding UTF8
-& node $scriptPath '${request}'
-$code = $LASTEXITCODE
-if ($code -ne 0) {
-  $req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${request}')) | ConvertFrom-Json
-  $action = ([string]$req.action).Trim().ToLowerInvariant()
-  if (($action -eq 'open' -or $action -eq 'goto') -and -not [string]::IsNullOrWhiteSpace([string]$req.url)) {
-    Start-Process ([string]$req.url)
-    @{ ok=$true; action=$action; url=([string]$req.url); mode='start-process-fallback' } | ConvertTo-Json -Compress
-    exit 0
-  }
-}
-exit $code
-`.trim();
+  return Buffer.from(driver, "base64").toString("utf8");
 }
 
 function sourceDesktopScript(args) {
@@ -6832,6 +6881,9 @@ function safeCtlTimeout(value) {
 }
 
 function machineInstallCommand() {
+  if (process.platform !== "win32") {
+    return unixMachineInstallCommand();
+  }
   const encoded = psEncoded(machineInstallLauncherScript());
   return [
     "$ErrorActionPreference='Stop'",
@@ -6854,6 +6906,9 @@ function machineInstallLauncherScript() {
 }
 
 function machineStatusCommand() {
+  if (process.platform !== "win32") {
+    return unixMachineStatusCommand();
+  }
   return [
     "$ErrorActionPreference='Stop'",
     "try {",
@@ -6865,6 +6920,57 @@ function machineStatusCommand() {
     "exit 1",
     "}"
   ].join("; ");
+}
+
+function unixMachineInstallCommand() {
+  const base = "https://xn--n1afe0b.online/agent";
+  const lines = [
+    "set -eu",
+    "tmp=\"${TMPDIR:-/tmp}/soty-agent-machine\"",
+    "mkdir -p \"$tmp\"",
+    "script=\"$tmp/install-macos-linux.sh\"",
+    `base=${shQuote(base)}`,
+    "if command -v curl >/dev/null 2>&1; then curl -fsSL \"$base/install-macos-linux.sh\" -o \"$script\"; elif command -v wget >/dev/null 2>&1; then wget -qO \"$script\" \"$base/install-macos-linux.sh\"; else echo 'soty-agent-machine:missing-downloader'; exit 1; fi",
+    "chmod 755 \"$script\"",
+    "log=\"$tmp/install.log\"",
+    "(",
+    "  if [ \"$(id -u)\" = \"0\" ]; then",
+    "    sh \"$script\" --scope machine --base \"$base\"",
+    "  elif [ \"$(uname -s)\" = \"Darwin\" ] && command -v osascript >/dev/null 2>&1; then",
+    "    cmd=\"sh $(printf %s \"$script\" | sed \"s/'/'\\\\''/g; s/^/'/; s/$/'/\") --scope machine --base $(printf %s \"$base\" | sed \"s/'/'\\\\''/g; s/^/'/; s/$/'/\")\"",
+    "    esc=$(printf %s \"$cmd\" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')",
+    "    osascript -e \"do shell script \\\"$esc\\\" with administrator privileges\"",
+    "  elif command -v pkexec >/dev/null 2>&1; then",
+    "    pkexec sh \"$script\" --scope machine --base \"$base\"",
+    "  elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then",
+    "    sudo -n sh \"$script\" --scope machine --base \"$base\"",
+    "  else",
+    "    echo 'soty-agent-machine:sudo-required'",
+    "    exit 1",
+    "  fi",
+    ") >\"$log\" 2>&1 &",
+    "echo \"soty-agent-machine:launcher-started log=$log\""
+  ];
+  return lines.join("\n");
+}
+
+function unixMachineStatusCommand() {
+  return [
+    "set -eu",
+    "url='http://127.0.0.1:49424/health'",
+    "if command -v curl >/dev/null 2>&1; then",
+    "  curl -fsS --max-time 3 \"$url\"",
+    "elif command -v wget >/dev/null 2>&1; then",
+    "  wget -qO- --timeout=3 \"$url\"",
+    "else",
+    "  printf '%s\\n' '{\"ok\":false,\"error\":\"curl-or-wget-required\"}'",
+    "  exit 1",
+    "fi"
+  ].join("\n");
+}
+
+function shQuote(value) {
+  return `'${String(value).replace(/'/gu, "'\\''")}'`;
 }
 
 function psQuote(value) {
@@ -6975,7 +7081,13 @@ function runtimeHealth() {
       windowsUser: windowsUserName(),
       system: isWindowsSystem(),
       maintenance: agentScope === "Machine" && isWindowsSystem()
-    } : {})
+    } : {
+      user: unixUserName(),
+      uid: unixUid(),
+      gid: unixGid(),
+      system: isUnixRoot(),
+      maintenance: agentScope === "Machine" && isUnixRoot()
+    })
   };
 }
 
@@ -7013,6 +7125,25 @@ function isWindowsSystem() {
   return actual === "nt authority\\system"
     || actual === "nt authority\\система"
     || (agentScope === "Machine" && (process.env.USERNAME || "").endsWith("$"));
+}
+
+function unixUserName() {
+  if (process.platform === "win32") {
+    return "";
+  }
+  return process.env.USER || process.env.LOGNAME || process.env.SUDO_USER || "";
+}
+
+function unixUid() {
+  return typeof process.getuid === "function" ? process.getuid() : undefined;
+}
+
+function unixGid() {
+  return typeof process.getgid === "function" ? process.getgid() : undefined;
+}
+
+function isUnixRoot() {
+  return process.platform !== "win32" && unixUid() === 0;
 }
 
 function windowsWhoami() {

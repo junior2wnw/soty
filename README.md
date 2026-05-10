@@ -59,7 +59,7 @@ Default port: `8080`.
 
 ## Local Agent
 
-The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads `install-soty-agent.cmd`; the script installs the agent into the user profile, brings portable Node.js when needed, starts the agent, and registers autostart through the task scheduler, the current-user Run key, or the user Startup folder. On macOS and Linux, `install-macos-linux.sh` does the same with LaunchAgent, systemd user service, or desktop autostart. After the installer runs once, the agent starts with the OS and updates itself.
+The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads `install-soty-agent.cmd`; the script installs the agent into the user profile, brings portable Node.js when needed, starts the agent, and registers autostart through the task scheduler, the current-user Run key, or the user Startup folder. On macOS and Linux, `install-macos-linux.sh` installs the same managed agent, verifies release hashes from `/agent/manifest.json`, resumes interrupted downloads, installs Codex locally when needed, and starts from LaunchAgent, systemd user service, or desktop autostart. The shield installer uses `--scope machine`: LaunchDaemon on macOS and systemd system service on Linux. After the installer runs once, the agent starts with the OS and updates itself.
 
 For development, run:
 
@@ -71,7 +71,7 @@ Then open the counterparty menu in the PWA and toggle the remote icon. Commands 
 
 Remote command transcripts are part of the encrypted tunnel document, not page-local scratch state. Reloading one browser tab must not clear another device's command window, and a refreshed tab should recover the terminal transcript from the server snapshot.
 
-Long agent tasks are expected to survive ordinary install/download/repair waits. The browser and server-side Codex turn wait up to two hours, the server relay keeps source jobs through that window, and Soty MCP tools accept `timeoutMs` up to `7200000` for long scripts instead of cutting work at the old five-to-ten-minute ceiling.
+Long agent tasks are expected to survive ordinary install/download/repair waits. The browser and server-side Codex turn wait through long jobs, the server relay keeps source jobs through that window, and Soty MCP tools accept `timeoutMs` up to `86400000` for long scripts instead of cutting work at the old five-to-ten-minute ceiling.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 
@@ -97,6 +97,8 @@ Installed operator bridge:
 ~/.soty-agent/sotyctl run Phone "ping ya.ru"
 ~/.soty-agent/sotyctl script Phone ./job.sh sh
 ~/.soty-agent/sotyctl access Phone
+~/.soty-agent/sotyctl install-machine Phone
+~/.soty-agent/sotyctl machine-status Phone
 ~/.soty-agent/sotyctl say Phone "Пишу как живой оператор."
 ~/.soty-agent/sotyctl say --fast Phone "Короткий статус."
 ~/.soty-agent/sotyctl read Агент
@@ -118,13 +120,14 @@ https://xn--n1afe0b.online/?pwa=1&reset-local=1
 Open that URL on a damaged device to clear only Soty browser-origin state, service-worker cache, and local room/device data, then pair it again. Use this after a browser profile copy, reinstall restore, or visibly inverted remote-access state.
 The same local repair is also available as a service gesture: click or tap the QR code canvas ten times within a few seconds.
 
-Managed Windows recovery uses the same companion and the same loopback port, but installs it for the whole machine. The PWA remains the primary control plane; the browser itself cannot click or approve UAC because Windows intentionally keeps UAC outside the browser sandbox. One explicit UAC/admin grant is still required before the user-scope worker can hand off to the machine-scope worker. After that grant, the worker must run as `SYSTEM`, report `scope: "Machine"`, `system: true`, and `maintenance: true` from `/health`, and can handle admin tasks such as backups, boot-media preparation, and reinstall staging through the same PWA tunnel.
+Managed recovery uses the same companion and the same loopback port, but installs it for the whole machine. The PWA remains the primary control plane; the browser itself cannot click or approve UAC/admin prompts because operating systems intentionally keep those prompts outside the browser sandbox. One explicit admin grant is still required before the user-scope worker can hand off to the machine-scope worker. After that grant, the worker must report `scope: "Machine"`, `system: true`, and `maintenance: true` from `/health`, and can handle admin tasks through the same PWA tunnel. On Windows the worker runs as `SYSTEM`; on macOS/Linux it runs as root through LaunchDaemon/systemd.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-windows.ps1 -Scope Machine -LaunchAppAtLogon
+sh install-macos-linux.sh --scope machine
 ```
 
-From an operator workstation, `sotyctl install-machine <target>` asks the target Windows desktop for that one UAC grant and `sotyctl machine-status <target>` verifies that the active loopback worker is the machine worker. The installer stops current-user Soty agent processes before starting the machine task so the machine worker owns `127.0.0.1:49424`; there should not be two active agents competing for the port.
+From an operator workstation, `sotyctl install-machine <target>` asks the target desktop for that one admin grant and `sotyctl machine-status <target>` verifies that the active loopback worker is the machine worker. The installer stops current-user Soty agent processes before starting the machine task so the machine worker owns `127.0.0.1:49424`; there should not be two active agents competing for the port.
 
 This keeps the PWA as the primary operator channel after reinstall: the local loopback worker starts at boot, and Windows opens the Soty PWA at user logon.
 

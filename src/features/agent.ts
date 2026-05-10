@@ -598,6 +598,12 @@ export function isWindowsPlatform(): boolean {
   return platform.includes("win");
 }
 
+export function canInstallMachineAgent(): boolean {
+  const nav = navigator as Navigator & { readonly userAgentData?: { readonly platform?: string } };
+  const platform = `${nav.userAgentData?.platform || navigator.platform || navigator.userAgent}`.toLowerCase();
+  return !/(iphone|ipad|ipod|android|mobile)/u.test(platform);
+}
+
 export function agentInstallUrl(scope: "user" | "machine" = "user"): string {
   return isWindowsPlatform()
     ? (scope === "machine" ? "/agent/install-windows-machine.cmd" : "/agent/install-windows.cmd")
@@ -615,7 +621,7 @@ export function downloadAgentInstaller(scope: "user" | "machine" = "user"): void
     );
     return;
   }
-  downloadText("install-soty-agent.sh", buildUnixInstaller(base, relayId), "text/x-shellscript");
+  downloadText("install-soty-agent.sh", buildUnixInstaller(scope, base, relayId), "text/x-shellscript");
 }
 
 function buildWindowsInstaller(scope: "user" | "machine", base: string, relayId: string): string {
@@ -659,7 +665,7 @@ function buildWindowsInstaller(scope: "user" | "machine", base: string, relayId:
   ].join("\r\n");
 }
 
-function buildUnixInstaller(base: string, relayId: string): string {
+function buildUnixInstaller(scope: "user" | "machine", base: string, relayId: string): string {
   return [
     "#!/usr/bin/env sh",
     "set -eu",
@@ -669,11 +675,13 @@ function buildUnixInstaller(base: string, relayId: string): string {
     "mkdir -p \"$DIR\"",
     "SCRIPT=\"$DIR/install-macos-linux.sh\"",
     "if command -v curl >/dev/null 2>&1; then",
-    "  curl -fsSL \"$BASE/install-macos-linux.sh\" -o \"$SCRIPT\"",
+    "  curl -fsSL --retry 3 --retry-delay 2 \"$BASE/install-macos-linux.sh\" -o \"$SCRIPT\"",
     "else",
     "  wget -qO \"$SCRIPT\" \"$BASE/install-macos-linux.sh\"",
     "fi",
-    "sh \"$SCRIPT\" \"$BASE\" \"$RELAY\"",
+    scope === "machine"
+      ? "sh \"$SCRIPT\" --scope machine --base \"$BASE\" --relay-id \"$RELAY\""
+      : "sh \"$SCRIPT\" --scope user --base \"$BASE\" --relay-id \"$RELAY\"",
     ""
   ].join("\n");
 }
