@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.135";
+const agentVersion = "0.3.136";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -22,6 +22,7 @@ const persistedCodexSessions = loadCodexSessions();
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
 const maxLongTaskTimeoutMs = 24 * 60 * 60_000;
 const defaultTimeoutMs = safeDurationMs(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS, 30 * 60_000, maxLongTaskTimeoutMs);
+const mcpInlineToolBudgetMs = 95_000;
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
@@ -4752,7 +4753,11 @@ function runMcpServer() {
         return mcpToolText("! action-job", true, 2);
       }
       const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
-      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+      const payload = result.payload || result;
+      if (isManagedReinstallActionPayload(payload)) {
+        return await mcpToolManagedReinstallActionStatus(payload, result);
+      }
+      return mcpToolJson(payload, !result.ok, result.exitCode);
     }
     if (name === "soty_action_stop") {
       const jobId = String(args.jobId || "").trim();
@@ -4776,6 +4781,10 @@ function runMcpServer() {
       if (!command) {
         return mcpToolText("! command", true);
       }
+      const managedRedirect = await maybeRedirectManagedReinstallProbe("soty_run", command);
+      if (managedRedirect) {
+        return managedRedirect;
+      }
       if (isPowerShellWorkflowCommand(command)) {
         return mcpToolText("! soty-run-powershell-workflow: use soty_script with shell=\"powershell\" for PowerShell variables, pipelines, semicolons, or multi-step checks.", true, 64);
       }
@@ -4792,6 +4801,10 @@ function runMcpServer() {
       if (!script) {
         return mcpToolText("! script", true);
       }
+      const managedRedirect = await maybeRedirectManagedReinstallProbe("soty_script", `${args.name || ""}\n${script}`);
+      if (managedRedirect) {
+        return managedRedirect;
+      }
       const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
@@ -4807,6 +4820,10 @@ function runMcpServer() {
       const path = String(args.path || "").trim();
       if (!action || !path) {
         return mcpToolText("! file", true);
+      }
+      const managedRedirect = await maybeRedirectManagedReinstallProbe("soty_file", path);
+      if (managedRedirect) {
+        return managedRedirect;
       }
       const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
@@ -5167,10 +5184,12 @@ function runMcpServer() {
     const payload = result.payload || result;
     const shouldWait = action === "prepare" && args.waitForCompletion !== false;
     if (shouldWait) {
+      const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
       const waited = await waitForSotyReinstallPrepare({
         request,
         initial: payload,
-        waitTimeoutMs: mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs)
+        waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
+        requestedWaitTimeoutMs
       });
       return mcpToolJson(waited, waited.ok === false, waited.exitCode);
     }
@@ -5213,7 +5232,7 @@ function runMcpServer() {
     };
   }
 
-  async function waitForSotyReinstallPrepare({ request, initial, waitTimeoutMs }) {
+  async function waitForSotyReinstallPrepare({ request, initial, waitTimeoutMs, requestedWaitTimeoutMs = waitTimeoutMs }) {
     const started = Date.now();
     let lastStatus = null;
     let lastPayload = initial;
@@ -5250,7 +5269,37 @@ function runMcpServer() {
           };
         }
       }
-      await sleep(reinstallPollDelayMs(lastStatus));
+      const elapsedMs = Date.now() - started;
+      const remainingMs = waitTimeoutMs - elapsedMs;
+      const delayMs = reinstallPollDelayMs(lastStatus);
+      if (remainingMs <= Math.min(10_000, delayMs)) {
+        break;
+      }
+      await sleep(Math.min(delayMs, Math.max(1000, remainingMs - 5000)));
+    }
+    if (lastStatus) {
+      return {
+        ok: true,
+        action: "prepare",
+        status: "running",
+        terminalReason: "still-running",
+        text: "Preparation is still running. Continue monitoring with soty_reinstall status; do not start another prepare and do not use generic script/file polling.",
+        exitCode: 0,
+        elapsedMs: Date.now() - started,
+        waitCapped: requestedWaitTimeoutMs > waitTimeoutMs,
+        nextPollMs: reinstallPollDelayMs(lastStatus),
+        nextTool: {
+          name: "soty_reinstall",
+          args: {
+            action: "status",
+            timeoutMs: 45_000
+          }
+        },
+        agentGuidance: "This is a non-terminal progress result. Keep the chat alive by polling soty_reinstall status until ready, blocked, or one specific user input is required.",
+        initial,
+        lastStatus,
+        lastProbe: lastPayload
+      };
     }
     return {
       ok: false,
@@ -5274,6 +5323,87 @@ function runMcpServer() {
       name: "soty-reinstall-status",
       timeoutMs: 45_000
     });
+  }
+
+  function managedReinstallStatusRequest(usbDriveLetter = "D") {
+    return {
+      action: "status",
+      usbDriveLetter: normalizeUsbDriveLetter(usbDriveLetter || "D"),
+      confirmationPhrase: "",
+      useExistingUsbInstallImage: false,
+      manifestUrl: updateManifestUrl,
+      panelSiteUrl: originFromUrl(updateManifestUrl) || agentRelayBaseUrl || "https://xn--n1afe0b.online",
+      workspaceRoot: "C:\\ProgramData\\Soty\\WindowsReinstall"
+    };
+  }
+
+  function isManagedReinstallActionPayload(payload) {
+    const job = payload?.job && typeof payload.job === "object" ? payload.job : payload;
+    const text = [
+      job?.family,
+      job?.toolkit,
+      job?.intent,
+      job?.idempotencyKey,
+      job?.name
+    ].map((item) => String(item || "").toLowerCase()).join(" ");
+    return String(job?.family || "").toLowerCase() === "windows-reinstall"
+      || String(job?.toolkit || "").toLowerCase() === "windows-reinstall"
+      || text.includes("windows-reinstall")
+      || text.includes("windows reinstall");
+  }
+
+  async function mcpToolManagedReinstallActionStatus(payload, result) {
+    const statusResult = await readSotyReinstallStatus(managedReinstallStatusRequest());
+    const liveStatus = parseReinstallStatusResult(statusResult);
+    const body = {
+      ...payload,
+      liveStatus: liveStatus || mcpOperatorPayload(statusResult),
+      liveStatusOk: Boolean(liveStatus),
+      agentGuidance: "For managed Windows reinstall progress use liveStatus or soty_reinstall status. Do not crawl C:\\ProgramData\\Soty\\WindowsReinstall with soty_script, soty_run, or soty_file."
+    };
+    return mcpToolJson(body, !result.ok || !liveStatus, result.exitCode || statusResult.exitCode);
+  }
+
+  async function maybeRedirectManagedReinstallProbe(toolName, text) {
+    if (!looksLikeManagedReinstallProbe(text)) {
+      return null;
+    }
+    const statusResult = await readSotyReinstallStatus(managedReinstallStatusRequest());
+    const liveStatus = parseReinstallStatusResult(statusResult);
+    const body = {
+      ok: Boolean(liveStatus),
+      redirected: true,
+      blockedTool: toolName,
+      reason: "managed-reinstall-toolkit-required",
+      text: liveStatus
+        ? "Managed reinstall status returned by soty_reinstall; generic filesystem/script polling was skipped."
+        : "Generic reinstall probing was skipped, but soty_reinstall status did not return structured status.",
+      liveStatus: liveStatus || mcpOperatorPayload(statusResult),
+      nextTool: {
+        name: "soty_reinstall",
+        args: {
+          action: "status",
+          timeoutMs: 45_000
+        }
+      },
+      agentGuidance: "Continue only with soty_reinstall status/prepare/arm for this reinstall flow; do not retry generic script/file/run probes for WindowsReinstall artifacts."
+    };
+    return mcpToolJson(body, !liveStatus, statusResult.exitCode);
+  }
+
+  function looksLikeManagedReinstallProbe(text) {
+    const lower = String(text || "").toLowerCase();
+    return lower.includes("programdata\\soty\\windowsreinstall")
+      || lower.includes("programdata/soty/windowsreinstall")
+      || lower.includes("soty\\windowsreinstall")
+      || lower.includes("soty/windowsreinstall")
+      || lower.includes("soty-managed-windows-reinstall")
+      || lower.includes("backup-proof.json")
+      || lower.includes("ready.json")
+      || lower.includes("autounattend.xml")
+      || lower.includes("setupcomplete.cmd")
+      || lower.includes(".esd.download")
+      || lower.includes("windows11_25h2_clientconsumer");
   }
 
   function parseReinstallStatusResult(result) {
