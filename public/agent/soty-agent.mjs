@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.136";
+const agentVersion = "0.3.137";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3826,6 +3826,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- Turnkey terminal rule: after starting a background job, download, scan, install, repair, backup, media prepare, reset, or reinstall step, do not send a final answer while it is merely running. Continue monitoring until it finishes, fails with a blocker, or needs one specific user input.",
     "- Large-download rule: bad internet is expected. For installer/media downloads, preserve partial files, resume from existing bytes, and treat a growing partial file or active download process as progress, not as a completed answer or unstable connection.",
     "- If a live-waiting tool reports progress internally, let it run. Do not replace it with repeated manual polling or a final message such as `I'll continue later`, `when it finishes`, or `preparation is still running` unless the user explicitly asked for background mode.",
+    "- For reinstall/media waits, do not use the local shell (`sleep`, `timeout`, loops) as a timer. Call `soty_reinstall` with action=`status` and waitMs instead, so the wait stays inside the toolkit and does not show terminal noise to the user.",
     "- Use `soty_link_status` after any source/relay failure and before claiming the PC connection is unstable; distinguish a healthy short link from a failed long command/job route.",
     "- For Windows reinstall and other high/destructive actions, call `soty_action` with `detached: true` and a stable idempotencyKey, then poll `soty_action_status`; do not report target channel loss until the job status and one short channel recheck prove it.",
     "- Use `soty_script` with `shell: \"powershell\"` for any PowerShell variables, pipelines, semicolons, or multi-step checks. Reserve `soty_run` for trivial one-line commands.",
@@ -3910,6 +3911,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use very long timeoutMs only for real long-running jobs after the target is proven.",
     "- serial_long_job_rule: for destructive or long target work, call only one soty_action write/format/reset/reboot job at a time; poll/stop it or name a blocker before launching another.",
     "- managed_reinstall_tool_rule: clean Windows reinstall through Soty must use soty_reinstall preflight/prepare/status/arm first; it bootstraps one versioned managed script and passes flags to it. Generic manifest crawling, soty_file ready.json reads, and hand-written prepare wrappers are fallback only when the tool is unavailable.",
+    "- managed_reinstall_wait_rule: after soty_reinstall prepare returns status=running, do not use exec_command sleep or local shell waiting. Call soty_reinstall status with waitMs from the suggested nextTool and continue until ready, blocked, or confirmation is required.",
     "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification and a local admin account named `Соты`; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
     "- managed_password_rule: default Soty managed reinstall account is passwordless; do not generate or pass a temporary password unless explicitly authorized. If passwords were forbidden, arm only when ready.managedUserPasswordMode is `blank-no-password`.",
     "- backup_proof_rule: before asking for the destructive reinstall phrase, prove backupProof with backup root, Wi-Fi profile export result, driver export result, Soty restore/postinstall assets, Autounattend.xml, and OEM SetupComplete fallback.",
@@ -4594,6 +4596,7 @@ function runMcpServer() {
             useExistingUsbInstallImage: { type: "boolean", description: "When true, prepare refuses to download Windows and requires a valid existing USB install image." },
             waitForCompletion: { type: "boolean", description: "Default true for prepare. Keep true unless the user explicitly asked to run in background." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, default up to 86400000 for prepare." },
+            waitMs: { type: "integer", description: "For status only: wait inside the toolkit before reading status again. Use instead of local shell sleep." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds. Use short timeouts for preflight/status; prepare and arm are durable actions." }
           },
           required: ["action"],
@@ -5141,14 +5144,24 @@ function runMcpServer() {
       return mcpToolText("! confirmation-phrase", true, 2);
     }
     if (action === "preflight" || action === "status") {
-      const minimumTimeoutMs = action === "preflight" ? 90_000 : 60_000;
+      const minimumTimeoutMs = action === "preflight" ? 90_000 : 45_000;
+      const operatorTimeoutMs = Math.max(mcpSafeTimeout(args.timeoutMs, minimumTimeoutMs), minimumTimeoutMs);
+      if (action === "status") {
+        const requestedWaitMs = Number.parseInt(String(args.waitMs ?? args.waitForChangeMs ?? "0"), 10);
+        const statusWaitMs = Number.isSafeInteger(requestedWaitMs)
+          ? Math.max(0, Math.min(requestedWaitMs, Math.max(0, mcpInlineToolBudgetMs - operatorTimeoutMs - 5000)))
+          : 0;
+        if (statusWaitMs > 0) {
+          await sleep(statusWaitMs);
+        }
+      }
       const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         script: sourceManagedWindowsReinstallScript(request),
         shell: "powershell",
         name: `soty-reinstall-${action}`,
-        timeoutMs: Math.max(mcpSafeTimeout(args.timeoutMs, minimumTimeoutMs), minimumTimeoutMs)
+        timeoutMs: operatorTimeoutMs
       });
       return await mcpToolJsonTextWithSourceStatus(result, {
         toolkit: "windows-reinstall",
@@ -5287,15 +5300,16 @@ function runMcpServer() {
         exitCode: 0,
         elapsedMs: Date.now() - started,
         waitCapped: requestedWaitTimeoutMs > waitTimeoutMs,
-        nextPollMs: reinstallPollDelayMs(lastStatus),
+        nextPollMs: Math.min(reinstallPollDelayMs(lastStatus), 45_000),
         nextTool: {
           name: "soty_reinstall",
           args: {
             action: "status",
+            waitMs: Math.min(reinstallPollDelayMs(lastStatus), 45_000),
             timeoutMs: 45_000
           }
         },
-        agentGuidance: "This is a non-terminal progress result. Keep the chat alive by polling soty_reinstall status until ready, blocked, or one specific user input is required.",
+        agentGuidance: "This is a non-terminal progress result. Keep the chat alive by calling nextTool. Do not use local shell sleep or generic script/file probes.",
         initial,
         lastStatus,
         lastProbe: lastPayload
