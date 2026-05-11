@@ -1,7 +1,7 @@
 {
-  "version": "0.3.133",
+  "version": "0.3.134",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "93ee21c0f7d7d054f4d3d5d188f3273097e1271a67fe5ac5d4e866418d36d08b",
+  "sha256": "ed9a79c4d49a5c8e24dbe3f467368f921c8d25c80101d851bf711ef561cdd613",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
