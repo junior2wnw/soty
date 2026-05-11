@@ -13,6 +13,7 @@ const connectedMs = 70_000;
 const requestTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const idleChannelTtlMs = 30 * 60_000;
 const sourceConnectedMs = 90_000;
+const sourceJobPickupBaseMs = 90_000;
 const sourceJobTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const sourceCancelTtlMs = 5 * 60_000;
 const maxJobsPerChannel = 80;
@@ -341,6 +342,9 @@ export function attachAgentRelay(app) {
     }
     cleanupAgentSources();
     const source = findAgentSource(relayId, deviceId);
+    if (source) {
+      expireQueuedSourceJobs(source);
+    }
     const job = source?.jobs.find((item) => item.id === id);
     if (!source || !job) {
       res.status(404).json({
@@ -607,6 +611,7 @@ function publicSourceJobDiagnostic(job, now = Date.now()) {
     ageMs: Math.max(0, now - (job.createdAt || now)),
     timeoutMs: safeTimeout(job.timeoutMs),
     leased,
+    leasedAt: job.leasedAt ? new Date(job.leasedAt).toISOString() : "",
     leaseActive: Boolean(job.leaseUntil && job.leaseUntil > now),
     leaseUntil: job.leaseUntil ? new Date(job.leaseUntil).toISOString() : "",
     finished,
@@ -751,6 +756,7 @@ function createSourceJob(source, payload) {
 
 function leasePendingSourceJobs(source) {
   const now = Date.now();
+  expireQueuedSourceJobs(source, now);
   const cancels = (source.cancels || [])
     .filter((item) => !item.leaseUntil || item.leaseUntil < now)
     .slice(0, 8);
@@ -761,6 +767,7 @@ function leasePendingSourceJobs(source) {
     .filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil < now))
     .slice(0, 2);
   for (const job of jobs) {
+    job.leasedAt = job.leasedAt || now;
     job.leaseUntil = now + leaseMs;
   }
   return [
@@ -846,7 +853,9 @@ function sourceJobStatus(job, now = Date.now()) {
         : exitCode === 124
           ? "timeout"
           : "failed"
-    : "running";
+    : job.leaseUntil
+      ? "running"
+      : "queued";
   return {
     ok: finished ? exitCode === 0 : true,
     id: job.id,
@@ -883,6 +892,25 @@ function sourceJobDiagnostic(job, now = Date.now()) {
   };
 }
 
+function expireQueuedSourceJobs(source, now = Date.now()) {
+  for (const job of source.jobs) {
+    if (Number.isSafeInteger(job.exitCode) || job.leaseUntil) {
+      continue;
+    }
+    if (now - job.createdAt <= sourceJobPickupTimeoutMs(job)) {
+      continue;
+    }
+    job.exitCode = 124;
+    job.text = `${job.text || ""}${job.text ? "\n" : ""}! pickup timeout\n`.slice(-maxReplyChars);
+    flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
+  }
+}
+
+function sourceJobPickupTimeoutMs(job) {
+  const timeoutMs = safeTimeout(job?.timeoutMs);
+  return Math.max(sourceJobPickupBaseMs, Math.min(10 * 60_000, timeoutMs + sourceJobPickupBaseMs));
+}
+
 function flushSourcePollWaiters(source) {
   flushWaiters(sourcePollWaiters, source.key, () => ({ ok: true, jobs: leasePendingSourceJobs(source) }));
 }
@@ -890,6 +918,7 @@ function flushSourcePollWaiters(source) {
 function cleanupAgentSources() {
   const now = Date.now();
   for (const [key, source] of agentSources) {
+    expireQueuedSourceJobs(source, now);
     source.jobs = source.jobs.filter((job) => now - job.createdAt < sourceJobTtlMs);
     source.cancels = (source.cancels || []).filter((item) => now - item.createdAt < sourceCancelTtlMs);
     if (now - source.lastSeenAt > idleChannelTtlMs && source.jobs.length === 0 && source.cancels.length === 0) {

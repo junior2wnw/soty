@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.132");
+      assertEqual(health.body.version, "0.3.133");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("universal-toolkit"));
@@ -361,7 +361,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.132");
+      assertEqual(manifest.version, "0.3.133");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");

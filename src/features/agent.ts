@@ -238,15 +238,26 @@ export async function grantAgentSourceAccess(deviceId: string, deviceNick: strin
   }
 }
 
-export async function pollAgentSourceCommands(deviceId: string, timeoutMs = 35_000): Promise<AgentSourceCommand[]> {
+export async function pollAgentSourceCommands(
+  deviceId: string,
+  timeoutMs = 35_000,
+  options: { readonly wait?: boolean; readonly signal?: AbortSignal } = {}
+): Promise<AgentSourceCommand[]> {
   const relayId = readAgentRelayId();
   if (!relayId || !deviceId) {
     return [];
   }
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs + 3000);
+  const abort = () => controller.abort();
+  if (options.signal?.aborted) {
+    controller.abort();
+  } else {
+    options.signal?.addEventListener("abort", abort, { once: true });
+  }
   try {
-    const url = `/api/agent/source/poll?relayId=${encodeURIComponent(relayId)}&deviceId=${encodeURIComponent(deviceId)}&wait=1`;
+    const wait = options.wait === false ? "" : "&wait=1";
+    const url = `/api/agent/source/poll?relayId=${encodeURIComponent(relayId)}&deviceId=${encodeURIComponent(deviceId)}${wait}`;
     const response = await fetch(url, { cache: "no-store", signal: controller.signal });
     if (!response.ok) {
       return [];
@@ -258,6 +269,7 @@ export async function pollAgentSourceCommands(deviceId: string, timeoutMs = 35_0
   } catch {
     return [];
   } finally {
+    options.signal?.removeEventListener("abort", abort);
     window.clearTimeout(timer);
   }
 }

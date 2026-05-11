@@ -168,6 +168,8 @@ const agentThinking = new Set<string>();
 let agentSourceControlTunnelId = "";
 let agentSourcePollTimer = 0;
 let agentSourcePolling = false;
+let agentSourcePollEpoch = 0;
+let agentSourcePollController: AbortController | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -2666,9 +2668,13 @@ function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNoti
 
 function startAgentSourceControl(tunnelId: string): void {
   agentSourceControlTunnelId = tunnelId;
+  agentSourcePollEpoch += 1;
+  agentSourcePollController?.abort();
+  agentSourcePollController = null;
+  agentSourcePolling = false;
   window.clearTimeout(agentSourcePollTimer);
   agentSourceGrantRefreshAt = 0;
-  void pollAgentSourceControl();
+  void pollAgentSourceControl(agentSourcePollEpoch);
 }
 
 function resumeAgentSourceControl(): void {
@@ -2689,26 +2695,40 @@ function stopAgentSourceControl(tunnelId: string): void {
   if (agentSourceControlTunnelId === tunnelId) {
     agentSourceControlTunnelId = "";
   }
+  agentSourcePollEpoch += 1;
+  agentSourcePollController?.abort();
+  agentSourcePollController = null;
+  agentSourcePolling = false;
   agentSourceGrantRefreshAt = 0;
   window.clearTimeout(agentSourcePollTimer);
 }
 
-async function pollAgentSourceControl(): Promise<void> {
+async function pollAgentSourceControl(epoch = agentSourcePollEpoch): Promise<void> {
   if (agentSourcePolling || !device || !agentSourceControlTunnelId || !isAgentTunnelId(agentSourceControlTunnelId)) {
     return;
   }
   const tunnelId = agentSourceControlTunnelId;
+  const controller = new AbortController();
+  agentSourcePollController = controller;
   agentSourcePolling = true;
   try {
     await refreshAgentSourceGrant(tunnelId);
-    const jobs = await pollAgentSourceCommands(device.id);
+    const jobs = await pollAgentSourceCommands(device.id, 35_000, { signal: controller.signal });
+    if (agentSourcePollEpoch !== epoch || controller.signal.aborted) {
+      return;
+    }
     for (const job of jobs) {
       runAgentSourceJob(tunnelId, job);
     }
   } finally {
-    agentSourcePolling = false;
-    if (device && agentSourceControlTunnelId === tunnelId && isAgentTunnelId(tunnelId)) {
-      agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(), 250);
+    if (agentSourcePollController === controller) {
+      agentSourcePollController = null;
+    }
+    if (agentSourcePollEpoch === epoch) {
+      agentSourcePolling = false;
+      if (device && agentSourceControlTunnelId === tunnelId && isAgentTunnelId(tunnelId)) {
+        agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(epoch), 250);
+      }
     }
   }
 }
@@ -3295,6 +3315,10 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   renderTerminal();
   publishOperatorTargets();
   await grantAgentSourceAccess(device.id, device.nick, true, 2500).catch(() => false);
+  const immediateJobs = await pollAgentSourceCommands(device.id, 2500, { wait: false }).catch(() => []);
+  for (const job of immediateJobs) {
+    runAgentSourceJob(tunnelId, job);
+  }
   startAgentSourceControl(tunnelId);
   publishOperatorTargets();
 }

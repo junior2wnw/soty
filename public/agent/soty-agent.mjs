@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.132";
+const agentVersion = "0.3.133";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -39,6 +39,7 @@ const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
 const updateFetchTimeoutMs = 20_000;
+const sourceJobPickupBaseMs = 90_000;
 const configuredAgentDeviceId = safeSourceText(process.env.SOTY_AGENT_DEVICE_ID || "");
 const configuredAgentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_NICK || "");
 const maxCodexDialogMessages = 64;
@@ -1403,9 +1404,11 @@ async function postAgentSourceJobAsync(path, body, jobRelayId, relayBaseUrl, max
   const deviceId = safeSourceText(body?.deviceId || "");
   const jobId = cleanActionId(start.payload.id);
   const timeoutMs = safeDurationMs(body?.timeoutMs, defaultTimeoutMs, maxLongTaskTimeoutMs);
+  const pickupTimeoutMs = sourceJobPickupTimeoutMs(timeoutMs);
   const started = Date.now();
+  let leasedAt = 0;
   let lastPayload = start.payload;
-  while (Date.now() - started < timeoutMs + 3000) {
+  while (true) {
     if (signal?.aborted) {
       await cancelAgentSourceJob(jobRelayId, deviceId, jobId).catch(() => undefined);
       return { ok: false, text: "! cancelled", exitCode: 130 };
@@ -1420,6 +1423,35 @@ async function postAgentSourceJobAsync(path, body, jobRelayId, relayBaseUrl, max
     if (!status.payload || !status.payload.ok || sourceJobTerminal(status.payload)) {
       return agentSourcePayloadResult(status.payload, status.httpStatus, maxTextLength);
     }
+    const job = status.payload?.diagnostic?.job && typeof status.payload.diagnostic.job === "object"
+      ? status.payload.diagnostic.job
+      : {};
+    if (!leasedAt && job.leased === true) {
+      const parsedLeasedAt = Date.parse(String(job.leasedAt || ""));
+      leasedAt = Number.isFinite(parsedLeasedAt) ? parsedLeasedAt : Date.now();
+    }
+    if (!leasedAt) {
+      if (Date.now() - started <= pickupTimeoutMs) {
+        continue;
+      }
+      return {
+        ok: false,
+        text: String(lastPayload?.text || "! pickup timeout").slice(0, Math.max(1, Math.min(maxTextLength, 1_000_000))),
+        exitCode: 124,
+        diagnostic: {
+          kind: "source-job",
+          reason: "pickup-timeout",
+          jobId,
+          status: String(lastPayload?.status || "queued").slice(0, 80),
+          last: lastPayload?.diagnostic && typeof lastPayload.diagnostic === "object" ? lastPayload.diagnostic : undefined
+        }
+      };
+    }
+    if (Date.now() - leasedAt <= timeoutMs + 3000) {
+      continue;
+    }
+    await cancelAgentSourceJob(jobRelayId, deviceId, jobId).catch(() => undefined);
+    break;
   }
   return {
     ok: false,
@@ -1568,6 +1600,11 @@ function sourceJobPollDelayMs(elapsedMs) {
     return 1500;
   }
   return 5000;
+}
+
+function sourceJobPickupTimeoutMs(timeoutMs) {
+  const safe = safeDurationMs(timeoutMs, defaultTimeoutMs, maxLongTaskTimeoutMs);
+  return Math.max(sourceJobPickupBaseMs, Math.min(10 * 60_000, safe + sourceJobPickupBaseMs));
 }
 
 function parseAgentSourceJson(value) {
