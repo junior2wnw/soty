@@ -1,39 +1,141 @@
 {
-  "version": "0.3.127",
+  "version": "0.3.131",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "851592da8cc4f4827179cb1b40792199425f0022b005ed39f8a97a0a34b3102c",
+  "sha256": "16bc69fbad9ec318390a38bcc988a9da0a189deece41f1a66c2a349a4873acb8",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "696d5a51e78820f748d46e74b854f3ffb965a2178a63929ef6b01cbae796610e",
-    "zipBytes": 1242311,
+    "zipSha256": "90b3872d39e255f906f6c4132680602fcaef5e17e3d6ae7e7290606fd8ae759a",
+    "zipBytes": 1247838,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "1d99c4844df3438b8ea0fb87fe6489d24b6b516cddba1c06b60b75acdf3ce9b7",
-    "tarBytes": 300710,
-    "revision": "fe3a3375b47dc607acb3c46931fd932d66b4642e",
-    "dirty": true
+    "tarSha256": "2eafb726bd0668dc18b5425be71c83b960091269621401fb52768d0664d9bade",
+    "tarBytes": 302767,
+    "revision": "d1849c9a7d132cdd3d885f94ffa0e03f058c2a96"
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
     "scripts": [
       {
+        "name": "managed",
+        "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
+        "sha256": "bfaa67036c2406cc3072a1a59057fa7c5c55bf4934e3ceb5c511e822132c8314",
+        "bytes": 17105
+      },
+      {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "0681a43aa9e11c5e546d58855ccd4c1af07896743eac114c70bcb5ab67b598fb",
-        "bytes": 50016
+        "sha256": "6d5f2de16841a0e6160132152a8b7890106f31164f7310c9f277c13c7c3d378c",
+        "bytes": 51900
       },
       {
         "name": "arm",
         "url": "/agent/windows-reinstall/soty-arm-windows-reinstall.ps1",
-        "sha256": "b00dd60782b2bed3feef0a9f04117c544704c554642f860a858a45d3906a7988",
-        "bytes": 8154
+        "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
+        "bytes": 8194
       },
       {
         "name": "makeFastUsb",
         "url": "/agent/windows-reinstall/soty-make-fast-usb.ps1",
-        "sha256": "06ea9d6b85ac32f686b068a98804fbbca1a9f790329474e2f90df9378785d8c1",
-        "bytes": 14497
+        "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
+        "bytes": 14537
+      }
+    ]
+  },
+  "automationToolkits": {
+    "schema": "soty.automation-toolkits.v1",
+    "policy": {
+      "entrypoint": "soty_toolkit",
+      "route": "first-class-toolkit-before-ad-hoc-script",
+      "fallbackKernel": "soty_action",
+      "chat": "bare-facts",
+      "terminalStates": [
+        "completed",
+        "failed",
+        "blocked-needs-user",
+        "waiting-confirmation"
+      ]
+    },
+    "toolkits": [
+      {
+        "name": "universal-toolkit",
+        "entryTool": "soty_toolkit",
+        "kind": "front-door",
+        "phases": [
+          "describe",
+          "start",
+          "status",
+          "stop",
+          "list",
+          "reinstall"
+        ],
+        "proof": [
+          "toolkit",
+          "phase",
+          "jobId",
+          "statusPath",
+          "resultPath",
+          "proof"
+        ],
+        "promotion": "Use this before low-level run/script/action. Repeated safe work becomes a manifest-pinned toolkit."
+      },
+      {
+        "name": "durable-action",
+        "entryTool": "soty_action",
+        "kind": "generic-kernel",
+        "phases": [
+          "start",
+          "status",
+          "stop"
+        ],
+        "proof": [
+          "jobId",
+          "statusPath",
+          "resultPath",
+          "proof"
+        ],
+        "promotion": "When a family repeats safely, promote it into a manifest-pinned toolkit script with selftests."
+      },
+      {
+        "name": "windows-reinstall",
+        "entryTool": "soty_reinstall",
+        "kind": "managed-toolkit",
+        "phases": [
+          "preflight",
+          "prepare",
+          "status",
+          "arm"
+        ],
+        "scriptSet": "windowsReinstall",
+        "scripts": [
+          {
+            "name": "managed",
+            "sha256": "bfaa67036c2406cc3072a1a59057fa7c5c55bf4934e3ceb5c511e822132c8314",
+            "bytes": 17105
+          },
+          {
+            "name": "prepare",
+            "sha256": "6d5f2de16841a0e6160132152a8b7890106f31164f7310c9f277c13c7c3d378c",
+            "bytes": 51900
+          },
+          {
+            "name": "arm",
+            "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
+            "bytes": 8194
+          },
+          {
+            "name": "makeFastUsb",
+            "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
+            "bytes": 14537
+          }
+        ],
+        "proof": [
+          "backupProof",
+          "installMedia",
+          "unattend",
+          "postinstall",
+          "rebooting"
+        ]
       }
     ]
   }

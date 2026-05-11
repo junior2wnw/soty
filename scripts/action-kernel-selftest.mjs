@@ -39,7 +39,20 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.127");
+      assertEqual(health.body.version, "0.3.131");
+      assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
+      assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
+      assert(health.body.automationToolkits.available.includes("universal-toolkit"));
+      assert(health.body.automationToolkits.available.includes("durable-action"));
+      assert(health.body.automationToolkits.available.includes("windows-reinstall"));
+      assertEqual(health.body.automationToolkits.defaultKernel, "soty_action");
+    }],
+    ["toolkit endpoint exposes universal contract", async () => {
+      const toolkits = await get("/operator/toolkits");
+      assertEqual(toolkits.status, 200);
+      assertEqual(toolkits.body.schema, "soty.automation-toolkits.v1");
+      assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "durable-action"));
+      assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "windows-reinstall"));
     }],
     ["actions list starts empty", async () => {
       const list = await get("/operator/actions");
@@ -217,6 +230,7 @@ async function runScenarios() {
       await action(sourceRun("SELFTEST_OK learning"));
       const outbox = await readFile(join(tempRoot, "learning-outbox.jsonl"), "utf8");
       assert(outbox.includes("\"kind\":\"action-job\"") || outbox.includes("\"kind\": \"action-job\""));
+      assert(outbox.includes("\"toolkit\":\"durable-action\"") || outbox.includes("\"toolkit\": \"durable-action\""));
     }],
     ["cli action list works", async () => {
       const cli = await runCli(["action", "list"]);
@@ -233,6 +247,22 @@ async function runScenarios() {
       const cli = await runCli(["action", "run", "--idempotency-key", "cli-run-one", "agent-source:dev1", "SELFTEST_OK", "cli-run"]);
       assertEqual(cli.code, 0);
       assert(cli.stderr.includes("soty-action: ok"));
+    }],
+    ["cli toolkit describe works", async () => {
+      const cli = await runCli(["toolkit", "describe"]);
+      assertEqual(cli.code, 0);
+      assert(cli.stdout.includes("soty.automation-toolkits.v1"));
+      assert(cli.stdout.includes("soty_toolkit"));
+    }],
+    ["cli toolkit run uses durable-action metadata", async () => {
+      const cli = await runCli(["toolkit", "run", "--phase", "probe", "--idempotency-key", "cli-toolkit-run-one", "agent-source:dev1", "SELFTEST_OK", "cli-toolkit"]);
+      assertEqual(cli.code, 0);
+      assert(cli.stderr.includes("soty-action: ok"));
+      const list = await get("/operator/actions");
+      const job = list.body.jobs.find((item) => item.idempotencyKey === "cli-toolkit-run-one");
+      assert(job);
+      assertEqual(job.toolkit, "durable-action");
+      assertEqual(job.phase, "probe");
     }],
     ["cli action script works", async () => {
       const scriptPath = join(tempRoot, "selftest-script.ps1");
@@ -289,19 +319,33 @@ async function runScenarios() {
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
+      const managed = await readFile(join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1"), "utf8");
       assert(agent.includes("turnkey_terminal_rule"));
+      assert(agent.includes("soty_toolkit"));
+      assert(agent.includes("toolkit_rule"));
+      assert(agent.includes("toolkit_quality_rule"));
+      assert(agent.includes("automationToolkitStatus"));
+      assert(agent.includes("soty_toolkits"));
       assert(agent.includes("large_download_rule"));
       assert(agent.includes("waitForSotyReinstallPrepare"));
       assert(agent.includes("waitForCompletion"));
-      assert(agent.includes("Get-MediaStatus"));
-      assert(agent.includes("updatedAgeSeconds"));
+      assert(agent.includes("sourceManagedWindowsReinstallBootstrap"));
       assert(agent.includes("86400000"));
+      assert(managed.includes("Get-MediaStatus"));
+      assert(managed.includes("updatedAgeSeconds"));
+      assert(managed.includes("Get-ManagedScript"));
+      assert(managed.includes("managed account must be passwordless"));
       assert(prepare.includes("Invoke-ResumableDownload"));
       assert(prepare.includes('"-C", "-"'));
       assert(prepare.includes("Windows image download did not complete within the retry window"));
-      assert(prepare.includes('[string] $ManagedUserName = "Соты"'));
-      assert(fastUsb.includes('[string] $ManagedUserName = "Соты"'));
-      assert(arm.includes('[string] $ExpectedManagedUserName = "Соты"'));
+      const sotyUserCodepoints = "0x0421, 0x043E, 0x0442, 0x044B";
+      assert(prepare.includes(sotyUserCodepoints));
+      assert(fastUsb.includes(sotyUserCodepoints));
+      assert(arm.includes(sotyUserCodepoints));
+      assert(managed.includes("Get-SotyUserName"));
+      for (const script of [prepare, arm, fastUsb, managed]) {
+        assert(!script.includes('"Соты"'));
+      }
       assert(prepare.includes("UTF8Encoding($true)"));
       assert(fastUsb.includes("UTF8Encoding($true)"));
       assert(prepare.includes("$AllowTemporaryManagedPassword -and -not $NoTemporaryManagedPassword"));
@@ -310,13 +354,29 @@ async function runScenarios() {
       assert(!fastUsb.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
       assert(prepare.includes("personal-folders-Desktop-Documents-Downloads-Pictures-Videos-Music"));
       assert(prepare.includes("personalFolderCounts"));
+      assert(prepare.includes("Preferred Windows edition from current OS"));
+      assert(prepare.includes("Test-WindowsEditionMatch"));
       assert(arm.includes("Managed user must be passwordless before arming"));
       assert(arm.includes("Personal-folder backup proof is missing"));
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.127");
-      assertEqual(manifest.windowsReinstall.scripts.length, 3);
+      assertEqual(manifest.version, "0.3.131");
+      assertEqual(manifest.windowsReinstall.scripts.length, 4);
+      assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
+      assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
+      assertEqual(manifest.automationToolkits.policy.entrypoint, "soty_toolkit");
+      assertEqual(manifest.automationToolkits.policy.fallbackKernel, "soty_action");
+      const universalToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "universal-toolkit");
+      assert(universalToolkit);
+      assertEqual(universalToolkit.entryTool, "soty_toolkit");
+      const reinstallToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "windows-reinstall");
+      assert(reinstallToolkit);
+      assertEqual(reinstallToolkit.entryTool, "soty_reinstall");
+      assert(reinstallToolkit.scripts.some((script) => script.name === "managed"));
+      const durableKernel = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "durable-action");
+      assert(durableKernel);
+      assertEqual(durableKernel.entryTool, "soty_action");
     }]
   ];
   assert(cases.length >= 50);
@@ -397,10 +457,63 @@ async function expectDetachedRisk(response, risk) {
 function createMockRelay() {
   const calls = [];
   const cancels = [];
+  const sourceJobs = new Map();
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname === "/agent/manifest.json") {
       json(response, 200, { version: "0.0.0" });
+      return;
+    }
+    if (url.pathname === "/api/agent/source/start") {
+      const body = await readBody(request);
+      const payload = JSON.parse(body || "{}");
+      const text = String(payload.command || payload.script || "");
+      calls.push(text);
+      if (text.includes("SELFTEST_BAD_JSON")) {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end("{");
+        return;
+      }
+      if (text.includes("SELFTEST_HTTP_500")) {
+        json(response, 500, { ok: false, text: "! mock-http", exitCode: 500 });
+        return;
+      }
+      if (text.includes("SELFTEST_AGENT_SOURCE_MISSING")) {
+        json(response, 404, mockSourceMissing(payload));
+        return;
+      }
+      const id = String(payload.clientJobId || payload.id || `mock_${sourceJobs.size + 1}`);
+      sourceJobs.set(id, mockSourceJob(id, text));
+      json(response, 200, { ok: true, id, status: "created", text: "" });
+      return;
+    }
+    if (url.pathname === "/api/agent/source/job") {
+      const id = url.searchParams.get("id") || "";
+      const job = sourceJobs.get(id);
+      if (!job) {
+        json(response, 404, { ok: false, status: "missing", text: "! source-job", exitCode: 404 });
+        return;
+      }
+      if (!Number.isSafeInteger(job.exitCode) && Date.now() >= job.finishAt) {
+        job.exitCode = job.finalExitCode;
+        job.text = job.finalText;
+      }
+      json(response, 200, {
+        ok: Number.isSafeInteger(job.exitCode) ? job.exitCode === 0 : true,
+        id,
+        status: Number.isSafeInteger(job.exitCode)
+          ? job.exitCode === 0
+            ? "ok"
+            : job.exitCode === 124
+              ? "timeout"
+              : job.exitCode === 130
+                ? "cancelled"
+                : "failed"
+          : "running",
+        text: job.text,
+        ...(Number.isSafeInteger(job.exitCode) ? { exitCode: job.exitCode } : {}),
+        diagnostic: { reason: Number.isSafeInteger(job.exitCode) ? "nonzero-exit" : "leased" }
+      });
       return;
     }
     if (url.pathname === "/api/agent/source/run" || url.pathname === "/api/agent/source/script") {
@@ -424,19 +537,7 @@ function createMockRelay() {
         return;
       }
       if (text.includes("SELFTEST_AGENT_SOURCE_MISSING")) {
-        json(response, 404, {
-          ok: false,
-          text: "! agent-source: not-found",
-          exitCode: 404,
-          diagnostic: {
-            reason: "not-found",
-            relayId: payload.relayId || "",
-            deviceId: payload.deviceId || "",
-            sourceConnectedMs: 90000,
-            source: null,
-            candidates: []
-          }
-        });
+        json(response, 404, mockSourceMissing(payload));
         return;
       }
       if (text.includes("SELFTEST_TIMEOUT")) {
@@ -517,6 +618,39 @@ function createMockRelay() {
     cancelCount: (id) => cancels.filter((item) => item === id).length,
     lastCommandWith: (needle) => [...calls].reverse().find((item) => item.includes(needle)) || ""
   };
+}
+
+function mockSourceMissing(payload) {
+  return {
+    ok: false,
+    text: "! agent-source: not-found",
+    exitCode: 404,
+    diagnostic: {
+      reason: "not-found",
+      relayId: payload.relayId || "",
+      deviceId: payload.deviceId || "",
+      sourceConnectedMs: 90000,
+      source: null,
+      candidates: []
+    }
+  };
+}
+
+function mockSourceJob(id, text) {
+  const delay = text.includes("SELFTEST_DELAY") ? 250 : 0;
+  if (text.includes("SELFTEST_HANG")) {
+    return { id, text: "", finalText: "", finishAt: Number.MAX_SAFE_INTEGER, finalExitCode: 0 };
+  }
+  if (text.includes("SELFTEST_TIMEOUT")) {
+    return { id, text: "", finalText: "! timeout", finishAt: Date.now() + delay, finalExitCode: 124 };
+  }
+  if (text.includes("SELFTEST_FAIL")) {
+    return { id, text: "", finalText: "! mock-fail", finishAt: Date.now() + delay, finalExitCode: 7 };
+  }
+  const output = text.includes("SELFTEST_LARGE")
+    ? `SELFTEST_LARGE ${"x".repeat(20_000)} volume=22 muted=false`
+    : `SELFTEST_OK output for ${text} volume=22 muted=false`;
+  return { id, text: "", finalText: output, finishAt: Date.now() + delay, finalExitCode: 0 };
 }
 
 async function startAgent({ port: requestedPort, relayUrl }) {

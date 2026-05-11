@@ -24,7 +24,7 @@ const replyWaiters = new Map();
 const eventWaiters = new Map();
 const sourcePollWaiters = new Map();
 const sourceReplyWaiters = new Map();
-const jsonParser = express.json({ limit: "180kb", type: "application/json" });
+const jsonParser = express.json({ limit: "2mb", type: "application/json" });
 const configuredServerCodexRelayId = normalizeRelayId(process.env.SOTY_SERVER_CODEX_RELAY_ID || process.env.SOTY_AGENT_RELAY_ID || "");
 
 export function attachAgentRelay(app) {
@@ -322,66 +322,55 @@ export function attachAgentRelay(app) {
     res.json({ ok: true, id });
   });
 
-  app.post("/api/agent/source/run", jsonParser, (req, res) => {
-    const relayId = normalizeRelayId(req.body?.relayId);
-    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
-    const command = cleanText(req.body?.command, 8_000);
-    const timeoutMs = safeTimeout(req.body?.timeoutMs);
-    if (!relayId || !deviceId || !command.trim()) {
+  app.post("/api/agent/source/start", jsonParser, (req, res) => {
+    const created = createSourceJobFromRequest(req.body);
+    if (!created.ok) {
+      res.status(created.httpStatus).json(created.payload);
+      return;
+    }
+    res.json(sourceJobStarted(created.job));
+  });
+
+  app.get("/api/agent/source/job", (req, res) => {
+    const relayId = normalizeRelayId(req.query.relayId);
+    const deviceId = cleanText(req.query.deviceId, maxSourceChars);
+    const id = cleanSourceJobId(req.query.id);
+    if (!relayId || !deviceId || !id) {
       res.status(400).json({ ok: false, text: "! request", exitCode: 400 });
       return;
     }
     cleanupAgentSources();
-    const source = findRunnableAgentSource(relayId, deviceId);
-    if (!source) {
-      const diagnostic = agentSourceDiagnostics(relayId, deviceId);
+    const source = findAgentSource(relayId, deviceId);
+    const job = source?.jobs.find((item) => item.id === id);
+    if (!source || !job) {
       res.status(404).json({
         ok: false,
-        text: agentSourceUnavailableText(diagnostic),
+        status: "missing",
+        text: "! source-job",
         exitCode: 404,
-        diagnostic
+        diagnostic: agentSourceDiagnostics(relayId, deviceId)
       });
       return;
     }
-    const job = createSourceJob(source, {
-      type: "run",
-      id: cleanSourceJobId(req.body?.clientJobId || req.body?.id),
-      command,
-      timeoutMs
-    });
-    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), sourceReplyWaitTimeout(timeoutMs));
+    res.json(sourceJobStatus(job));
+  });
+
+  app.post("/api/agent/source/run", jsonParser, (req, res) => {
+    const created = createSourceJobFromRequest({ ...req.body, type: "run" });
+    if (!created.ok) {
+      res.status(created.httpStatus).json(created.payload);
+      return;
+    }
+    addWaiter(sourceReplyWaiters, created.job.id, req, res, () => sourceJobReply(created.job), sourceReplyWaitTimeout(created.job.timeoutMs));
   });
 
   app.post("/api/agent/source/script", jsonParser, (req, res) => {
-    const relayId = normalizeRelayId(req.body?.relayId);
-    const deviceId = cleanText(req.body?.deviceId, maxSourceChars);
-    const script = cleanText(req.body?.script, 1_000_000);
-    const timeoutMs = safeTimeout(req.body?.timeoutMs);
-    if (!relayId || !deviceId || !script.trim()) {
-      res.status(400).json({ ok: false, text: "! request", exitCode: 400 });
+    const created = createSourceJobFromRequest({ ...req.body, type: "script" });
+    if (!created.ok) {
+      res.status(created.httpStatus).json(created.payload);
       return;
     }
-    cleanupAgentSources();
-    const source = findRunnableAgentSource(relayId, deviceId);
-    if (!source) {
-      const diagnostic = agentSourceDiagnostics(relayId, deviceId);
-      res.status(404).json({
-        ok: false,
-        text: agentSourceUnavailableText(diagnostic),
-        exitCode: 404,
-        diagnostic
-      });
-      return;
-    }
-    const job = createSourceJob(source, {
-      type: "script",
-      id: cleanSourceJobId(req.body?.clientJobId || req.body?.id),
-      script,
-      name: cleanText(req.body?.name, 120) || "script",
-      shell: cleanText(req.body?.shell, 40),
-      timeoutMs
-    });
-    addWaiter(sourceReplyWaiters, job.id, req, res, () => sourceJobReply(job), sourceReplyWaitTimeout(timeoutMs));
+    addWaiter(sourceReplyWaiters, created.job.id, req, res, () => sourceJobReply(created.job), sourceReplyWaitTimeout(created.job.timeoutMs));
   });
 
   app.use("/api/agent/source", (error, _req, res, _next) => {
@@ -792,6 +781,80 @@ function leasePendingSourceJobs(source) {
       createdAt: new Date(job.createdAt).toISOString()
     }))
   ];
+}
+
+function createSourceJobFromRequest(body) {
+  const relayId = normalizeRelayId(body?.relayId);
+  const deviceId = cleanText(body?.deviceId, maxSourceChars);
+  const type = body?.type === "run" ? "run" : body?.type === "script" ? "script" : body?.script ? "script" : "run";
+  const command = cleanText(body?.command, 8_000);
+  const script = cleanText(body?.script, 1_000_000);
+  const timeoutMs = safeTimeout(body?.timeoutMs);
+  if (!relayId || !deviceId || (type === "run" ? !command.trim() : !script.trim())) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      payload: { ok: false, text: "! request", exitCode: 400 }
+    };
+  }
+  cleanupAgentSources();
+  const source = findRunnableAgentSource(relayId, deviceId);
+  if (!source) {
+    const diagnostic = agentSourceDiagnostics(relayId, deviceId);
+    return {
+      ok: false,
+      httpStatus: 404,
+      payload: {
+        ok: false,
+        text: agentSourceUnavailableText(diagnostic),
+        exitCode: 404,
+        diagnostic
+      }
+    };
+  }
+  const job = createSourceJob(source, {
+    type,
+    id: cleanSourceJobId(body?.clientJobId || body?.id),
+    ...(type === "run" ? { command } : {
+      script,
+      name: cleanText(body?.name, 120) || "script",
+      shell: cleanText(body?.shell, 40)
+    }),
+    timeoutMs
+  });
+  return { ok: true, httpStatus: 200, job };
+}
+
+function sourceJobStarted(job) {
+  return {
+    ok: true,
+    id: job.id,
+    status: "created",
+    text: "",
+    diagnostic: sourceJobDiagnostic(job)
+  };
+}
+
+function sourceJobStatus(job, now = Date.now()) {
+  const finished = Number.isSafeInteger(job.exitCode);
+  const exitCode = finished ? job.exitCode : undefined;
+  const status = finished
+    ? exitCode === 0
+      ? "ok"
+      : exitCode === 130
+        ? "cancelled"
+        : exitCode === 124
+          ? "timeout"
+          : "failed"
+    : "running";
+  return {
+    ok: finished ? exitCode === 0 : true,
+    id: job.id,
+    status,
+    text: job.text || "",
+    ...(finished ? { exitCode } : {}),
+    diagnostic: sourceJobDiagnostic(job, now)
+  };
 }
 
 function sourceJobReply(job) {

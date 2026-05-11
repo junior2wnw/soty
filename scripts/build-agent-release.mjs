@@ -18,6 +18,11 @@ const opsSkillPackageDir = "universal-install-ops-skill";
 const windowsReinstallDir = join(outputDir, "windows-reinstall");
 const windowsReinstallScriptSpecs = [
   {
+    name: "managed",
+    fileName: "soty-managed-windows-reinstall.ps1",
+    sourcePath: join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1")
+  },
+  {
     name: "prepare",
     fileName: "soty-prepare-windows-reinstall.ps1",
     sourcePath: join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1")
@@ -46,13 +51,15 @@ await mkdir(outputDir, { recursive: true });
 await writeFile(outputPath, sourceText, { mode: 0o755 });
 const opsSkill = await buildOpsSkillBundle(opsSkillSourcePath);
 const windowsReinstall = await publishWindowsReinstallScripts();
+const automationToolkits = buildAutomationToolkits(windowsReinstall);
 
 const manifest = {
   version,
   agentUrl: "/agent/soty-agent.mjs",
   sha256: createHash("sha256").update(sourceText).digest("hex"),
   opsSkill,
-  windowsReinstall
+  windowsReinstall,
+  automationToolkits
 };
 
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -80,6 +87,50 @@ async function publishWindowsReinstallScripts() {
   return {
     scriptsBaseUrl: "/agent/windows-reinstall/",
     scripts
+  };
+}
+
+function buildAutomationToolkits(windowsReinstall) {
+  return {
+    schema: "soty.automation-toolkits.v1",
+    policy: {
+      entrypoint: "soty_toolkit",
+      route: "first-class-toolkit-before-ad-hoc-script",
+      fallbackKernel: "soty_action",
+      chat: "bare-facts",
+      terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"]
+    },
+    toolkits: [
+      {
+        name: "universal-toolkit",
+        entryTool: "soty_toolkit",
+        kind: "front-door",
+        phases: ["describe", "start", "status", "stop", "list", "reinstall"],
+        proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"],
+        promotion: "Use this before low-level run/script/action. Repeated safe work becomes a manifest-pinned toolkit."
+      },
+      {
+        name: "durable-action",
+        entryTool: "soty_action",
+        kind: "generic-kernel",
+        phases: ["start", "status", "stop"],
+        proof: ["jobId", "statusPath", "resultPath", "proof"],
+        promotion: "When a family repeats safely, promote it into a manifest-pinned toolkit script with selftests."
+      },
+      {
+        name: "windows-reinstall",
+        entryTool: "soty_reinstall",
+        kind: "managed-toolkit",
+        phases: ["preflight", "prepare", "status", "arm"],
+        scriptSet: "windowsReinstall",
+        scripts: windowsReinstall.scripts.map((script) => ({
+          name: script.name,
+          sha256: script.sha256,
+          bytes: script.bytes
+        })),
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"]
+      }
+    ]
   };
 }
 

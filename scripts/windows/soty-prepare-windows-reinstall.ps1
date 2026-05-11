@@ -1,7 +1,7 @@
 param(
   [string] $WorkspaceRoot = "C:\ProgramData\Soty\WindowsReinstall",
   [string] $UsbDriveLetter = "D",
-  [string] $ManagedUserName = "Соты",
+  [string] $ManagedUserName = (-join ([char[]](0x0421, 0x043E, 0x0442, 0x044B))),
   [string] $ManagedUserPassword = "",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
   [string] $WindowsImageUrl = "http://dl.delivery.mp.microsoft.com/filestreamingservice/files/071fc359-1d92-46c0-ad88-c7801d2f69be/26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENTCONSUMER_RET_x64FRE_ru-ru.esd",
@@ -439,13 +439,29 @@ function Test-WindowsInstallImage([string] $ImageName, [string] $ImageDescriptio
   return $true
 }
 
-function Select-WindowsInstallImage($Images) {
+function Get-WindowsEditionKind([string] $Text) {
+  if ($Text -match '(?i)professional|windows\s+11\s+pro|windows\s+10\s+pro|pro\b|профессион') { return "pro" }
+  if ($Text -match '(?i)home|core|домаш') { return "home" }
+  return ""
+}
+
+function Test-WindowsEditionMatch([string] $ImageText, [string] $PreferredEditionHint) {
+  $preferred = Get-WindowsEditionKind $PreferredEditionHint
+  if ([string]::IsNullOrWhiteSpace($preferred)) { return $true }
+  return ((Get-WindowsEditionKind $ImageText) -eq $preferred)
+}
+
+function Select-WindowsInstallImage($Images, [string] $PreferredEditionHint = "") {
   $installImages = @($Images | Where-Object {
     Test-WindowsInstallImage -ImageName ([string]$_.ImageName) -ImageDescription ([string]$_.ImageDescription) -ImageSize ([Int64]$_.ImageSize)
   })
   if ($installImages.Count -eq 0) {
     throw "No installable Windows OS image found in ESD."
   }
+  $editionMatched = $installImages | Where-Object {
+    Test-WindowsEditionMatch -ImageText ((([string]$_.ImageName), ([string]$_.ImageDescription)) -join " ") -PreferredEditionHint $PreferredEditionHint
+  } | Select-Object -First 1
+  if ($editionMatched) { return $editionMatched }
   $preferred = $installImages | Where-Object {
     (([string]$_.ImageName) -match '(?i)home|core|домашн') -or
     (([string]$_.ImageDescription) -match '(?i)home|core|домашн')
@@ -454,13 +470,14 @@ function Select-WindowsInstallImage($Images) {
   return ($installImages | Select-Object -First 1)
 }
 
-function Test-ExistingInstallWim([string] $Path) {
+function Test-ExistingInstallWim([string] $Path, [string] $PreferredEditionHint = "") {
   if (-not (Test-Path -LiteralPath $Path)) { return $false }
   try {
     $images = @(Get-WindowsImage -ImagePath $Path -ErrorAction Stop)
     $first = $images | Select-Object -First 1
     if (-not $first) { return $false }
-    return (Test-WindowsInstallImage -ImageName ([string]$first.ImageName) -ImageDescription ([string]$first.ImageDescription) -ImageSize ([Int64]$first.ImageSize))
+    if (-not (Test-WindowsInstallImage -ImageName ([string]$first.ImageName) -ImageDescription ([string]$first.ImageDescription) -ImageSize ([Int64]$first.ImageSize))) { return $false }
+    return (Test-WindowsEditionMatch -ImageText ((([string]$first.ImageName), ([string]$first.ImageDescription)) -join " ") -PreferredEditionHint $PreferredEditionHint)
   } catch {
     return $false
   }
@@ -483,14 +500,15 @@ function Get-InstallImageCandidate([string[]] $SourceRoots) {
   return $null
 }
 
-function Test-ExistingInstallImage([string] $Path, [string] $SourceRoot) {
+function Test-ExistingInstallImage([string] $Path, [string] $SourceRoot, [string] $PreferredEditionHint = "") {
   if (-not (Test-Path -LiteralPath $Path)) { return $false }
   if ([IO.Path]::GetExtension($Path).Equals(".swm", [StringComparison]::OrdinalIgnoreCase)) {
     $swmPattern = Join-Path $SourceRoot "install*.swm"
     $output = & dism.exe /English /Get-WimInfo "/WimFile:$Path" "/SWMFile:$swmPattern" 2>&1
-    return ($LASTEXITCODE -eq 0 -and (($output | Out-String) -match "Index"))
+    $text = $output | Out-String
+    return ($LASTEXITCODE -eq 0 -and ($text -match "Index") -and (Test-WindowsEditionMatch -ImageText $text -PreferredEditionHint $PreferredEditionHint))
   }
-  return (Test-ExistingInstallWim -Path $Path)
+  return (Test-ExistingInstallWim -Path $Path -PreferredEditionHint $PreferredEditionHint)
 }
 
 function Get-LoggedOnUserLeaf {
@@ -912,6 +930,15 @@ try {
   Log ("caseId=" + $script:caseId)
   Log ("usbRoot=" + $script:usbRoot)
 
+  $preferredEditionHint = ""
+  try {
+    $currentOs = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $preferredEditionHint = (([string]$currentOs.Caption), ([string]$currentOs.OperatingSystemSKU)) -join " "
+    Log ("Preferred Windows edition from current OS: " + $preferredEditionHint)
+  } catch {
+    Log ("WARN could not read current Windows edition: " + $_.Exception.Message)
+  }
+
   $sourceProfileName = Get-LoggedOnUserLeaf
   $sourceProfile = Join-Path "C:\Users" $sourceProfileName
   $wifiRoot = Join-Path $script:backupRoot "wifi-profiles"
@@ -955,7 +982,7 @@ try {
   # reinstall backup.
 
   $existingUsbImage = Get-InstallImageCandidate @($usbMediaSources, $usbSources)
-  if ($existingUsbImage -and (Test-ExistingInstallImage -Path $existingUsbImage.Path -SourceRoot $existingUsbImage.SourceRoot)) {
+  if ($existingUsbImage -and (Test-ExistingInstallImage -Path $existingUsbImage.Path -SourceRoot $existingUsbImage.SourceRoot -PreferredEditionHint $preferredEditionHint)) {
     $script:installMediaSources = $existingUsbImage.SourceRoot
     Log ("Using existing USB install image: " + $existingUsbImage.Path)
   } elseif ($UseExistingUsbInstallImage) {
@@ -974,14 +1001,14 @@ try {
     }
 
     $installWim = Join-Path $sourceRoot "install.wim"
-    if ((Test-Path -LiteralPath $installWim) -and -not (Test-ExistingInstallWim -Path $installWim)) {
+    if ((Test-Path -LiteralPath $installWim) -and -not (Test-ExistingInstallWim -Path $installWim -PreferredEditionHint $preferredEditionHint)) {
       Log "Removing invalid cached install.wim."
       Remove-Item -LiteralPath $installWim -Force
     }
     if (-not (Test-Path -LiteralPath $installWim)) {
-      Log "Exporting Windows Home/Core from ESD."
+      Log "Exporting Windows edition from ESD."
       $images = @(Get-WindowsImage -ImagePath $esdPath -ErrorAction Stop)
-      $image = Select-WindowsInstallImage -Images $images
+      $image = Select-WindowsInstallImage -Images $images -PreferredEditionHint $preferredEditionHint
       Log ("Selected image index " + [int]$image.ImageIndex + ": " + [string]$image.ImageName)
       Invoke-LoggedCli dism.exe @("/Export-Image", "/SourceImageFile:$esdPath", "/SourceIndex:$([int]$image.ImageIndex)", "/DestinationImageFile:$installWim", "/Compress:max", "/CheckIntegrity") "dism-export-installwim.txt"
     }
@@ -1066,6 +1093,7 @@ try {
     backupScope = $backupScope
     personalFolderNames = $personalFolderNames
     installImageSourceRoot = $script:installMediaSources
+    preferredEditionHint = $preferredEditionHint
     personalFilesBackedUp = $personalFilesBackedUp
     sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
     internalBootRoot = $script:internalBootRoot

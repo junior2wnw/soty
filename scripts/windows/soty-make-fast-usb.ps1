@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $UsbDriveLetter,
   [string] $SourceMediaRoot = (Join-Path $env:ProgramData "Soty\WindowsReinstall\media"),
-  [string] $ManagedUserName = "Соты",
+  [string] $ManagedUserName = (-join ([char[]](0x0421, 0x043E, 0x0442, 0x044B))),
   [string] $ManagedUserPassword = "",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
   [switch] $AllowTemporaryManagedPassword,

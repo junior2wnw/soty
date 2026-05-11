@@ -3,7 +3,7 @@ param(
   [string] $UsbDriveLetter = "D",
   [string] $ConfirmationPhrase = "",
   [string] $ExpectedConfirmationPhrase = "",
-  [string] $ExpectedManagedUserName = "Соты",
+  [string] $ExpectedManagedUserName = (-join ([char[]](0x0421, 0x043E, 0x0442, 0x044B))),
   [switch] $AllowManagedUserPassword
 )
 

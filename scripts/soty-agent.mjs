@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.127";
+const agentVersion = "0.3.131";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -210,6 +210,15 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/source-status" && request.method === "GET") {
     await handleOperatorHttpSourceStatus(url, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/toolkits" && request.method === "GET") {
+    sendJson(response, 200, headers, {
+      ok: true,
+      version: agentVersion,
+      manifestUrl: updateManifestUrl,
+      ...automationToolkitStatus()
+    });
     return;
   }
   if (url.pathname === "/operator/actions" && request.method === "GET") {
@@ -640,6 +649,8 @@ function normalizeOperatorActionPayload(payload) {
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
   const actionType = cleanActionToken(payload.kind || payload.actionType || mode, mode);
+  const phase = cleanActionToken(payload.phase || actionType, actionType);
+  const toolkit = normalizeToolkitName(payload.toolkit || toolkitForFamily(family));
   const intent = cleanActionText(payload.intent || payload.name || family, 180);
   const commandSig = commandSignature(body, family);
   const inferredRisk = cleanActionRisk(inferActionRisk(body, family));
@@ -649,6 +660,8 @@ function normalizeOperatorActionPayload(payload) {
     ok: true,
     mode,
     actionType,
+    phase,
+    toolkit,
     family,
     intent,
     target,
@@ -664,7 +677,8 @@ function normalizeOperatorActionPayload(payload) {
     createdBy: cleanActionText(payload.createdBy || "soty-agent", 80),
     idempotencyKey: cleanActionId(payload.idempotencyKey || payload.clientRequestId || payload.requestId || ""),
     commandSig,
-    taskSig: taskSignature(`${family} ${intent} ${target}`)
+    taskSig: taskSignature(`${toolkit} ${phase} ${family} ${intent} ${target}`),
+    improvement: cleanActionText(payload.improvement || payload.improvementNote || "", 240)
   };
 }
 
@@ -676,6 +690,8 @@ async function createActionJob(action) {
     schema: "soty.action.job.v1",
     id,
     status: "created",
+    toolkit: action.toolkit,
+    phase: action.phase,
     mode: action.mode,
     kind: action.actionType,
     family: action.family,
@@ -690,6 +706,7 @@ async function createActionJob(action) {
     finishedAt: "",
     durationMs: 0,
     route: "",
+    improvement: action.improvement,
     commandSig: action.commandSig,
     taskSig: action.taskSig,
     artifacts: {
@@ -703,6 +720,8 @@ async function createActionJob(action) {
   await writeJsonAtomic(join(root, "input.json"), {
     schema: "soty.action.input.v1",
     mode: action.mode,
+    toolkit: action.toolkit,
+    phase: action.phase,
     kind: action.actionType,
     family: action.family,
     intent: action.intent,
@@ -714,6 +733,7 @@ async function createActionJob(action) {
     idempotencyKey: action.idempotencyKey,
     commandSig: job.commandSig,
     taskSig: job.taskSig,
+    improvement: action.improvement ? "<set>" : "",
     createdAt
   });
   await writeActionJob(job);
@@ -778,6 +798,8 @@ async function runActionJob(job, action) {
     jobId: job.id,
     ok: status === "ok",
     status,
+    toolkit: action.toolkit,
+    phase: action.phase,
     family: action.family,
     mode: action.mode,
     kind: action.actionType,
@@ -789,6 +811,7 @@ async function runActionJob(job, action) {
     exitCode,
     durationMs,
     proof,
+    improvement: action.improvement,
     output: {
       chars: text.length,
       shape: sourceOutputShape(text),
@@ -815,12 +838,14 @@ async function runActionJob(job, action) {
   await writeActionJob(current);
   recordLearningReceipt({
     kind: "action-job",
+    toolkit: action.toolkit,
+    phase: action.phase,
     family: action.family,
     result: status,
     route,
     commandSig: job.commandSig,
     taskSig: job.taskSig,
-    proof,
+    proof: action.improvement ? `${proof}; improvement=${action.improvement}` : proof,
     exitCode,
     durationMs
   });
@@ -831,6 +856,8 @@ async function runActionJob(job, action) {
       jobId: job.id,
       idempotencyKey: job.idempotencyKey,
       status,
+      toolkit: action.toolkit,
+      phase: action.phase,
       family: action.family,
       risk: action.risk,
       route,
@@ -984,11 +1011,12 @@ function isAbortError(error) {
 
 function buildActionProof({ action, execution, status }) {
   const exitCode = Number.isSafeInteger(execution.exitCode) ? execution.exitCode : (execution.ok ? 0 : 1);
+  const toolkitProof = action.toolkit ? `toolkit=${action.toolkit}; phase=${action.phase || action.actionType}; ` : "";
   if (status === "ok") {
-    return `exitCode=0; family=${action.family}; route=${execution.route}; output=${sourceOutputShape(execution.text)}`;
+    return `${toolkitProof}exitCode=0; family=${action.family}; route=${execution.route}; output=${sourceOutputShape(execution.text)}`;
   }
   const diagnostic = sourceDiagnosticProof(execution.diagnostic);
-  return `exitCode=${exitCode}; family=${action.family}; route=${execution.route}; proof=${sourceFailureProof(execution.text)}${diagnostic ? `; ${diagnostic}` : ""}`;
+  return `${toolkitProof}exitCode=${exitCode}; family=${action.family}; route=${execution.route}; proof=${sourceFailureProof(execution.text)}${diagnostic ? `; ${diagnostic}` : ""}`;
 }
 
 async function writeActionJob(job) {
@@ -1108,6 +1136,8 @@ function actionJobResponsePayload(entry) {
     jobId: cleanActionText(job.id, 96),
     idempotencyKey: cleanActionText(job.idempotencyKey, 120),
     status,
+    toolkit: cleanActionText(result?.toolkit || job.toolkit, 80),
+    phase: cleanActionText(result?.phase || job.phase, 80),
     family: cleanActionText(result?.family || job.family, 80),
     risk: cleanActionText(result?.risk || job.risk, 20),
     route: cleanActionText(result?.route || job.route, 120),
@@ -1131,6 +1161,8 @@ function hydrateActionJob(job, { live = false, result = null } = {}) {
     return {
       ...job,
       status: cleanActionText(result.status || job.status, 24),
+      toolkit: cleanActionText(result.toolkit || job.toolkit, 80),
+      phase: cleanActionText(result.phase || job.phase, 80),
       route: cleanActionText(result.route || job.route, 120),
       finishedAt: cleanActionText(result.finishedAt || job.finishedAt, 80),
       durationMs: Number.isSafeInteger(result.durationMs) ? result.durationMs : job.durationMs,
@@ -1152,7 +1184,10 @@ function hydrateActionJob(job, { live = false, result = null } = {}) {
 function summarizeActionJob(job) {
   return {
     id: cleanActionText(job.id, 96),
+    idempotencyKey: cleanActionText(job.idempotencyKey, 120),
     status: cleanActionText(job.status, 24),
+    toolkit: cleanActionText(job.toolkit, 80),
+    phase: cleanActionText(job.phase, 80),
     family: cleanActionText(job.family, 80),
     mode: cleanActionText(job.mode, 20),
     kind: cleanActionText(job.kind, 80),
@@ -1194,6 +1229,22 @@ function shouldForceDetachedAction({ family, actionType, risk }) {
     return true;
   }
   return actionType === "prepare" && risk !== "low";
+}
+
+function toolkitForFamily(family) {
+  const token = cleanActionToken(family, "generic");
+  if (token === "windows-reinstall") {
+    return "windows-reinstall";
+  }
+  return "durable-action";
+}
+
+function normalizeToolkitName(value) {
+  const token = cleanActionToken(value, "durable-action");
+  if (["windows-reinstall", "durable-action", "console", "software", "generic"].includes(token)) {
+    return token === "generic" ? "durable-action" : token;
+  }
+  return token;
 }
 
 function cleanActionId(value) {
@@ -1329,6 +1380,62 @@ async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxC
   if (!relayBaseUrl || !jobRelayId) {
     return { ok: false, text: "! relay", exitCode: 409 };
   }
+  const asyncResult = await postAgentSourceJobAsync(path, body, jobRelayId, relayBaseUrl, maxTextLength, signal);
+  if (asyncResult?.supported !== false) {
+    return asyncResult;
+  }
+  return await postAgentSourceJobSync(path, body, jobRelayId, relayBaseUrl, maxTextLength, signal);
+}
+
+async function postAgentSourceJobAsync(path, body, jobRelayId, relayBaseUrl, maxTextLength = maxChatChars, signal = null) {
+  const type = path.endsWith("/script") ? "script" : "run";
+  const start = await fetchAgentSourceJson(new URL("/api/agent/source/start", relayBaseUrl), {
+    relayId: jobRelayId,
+    type,
+    ...body
+  }, signal);
+  if (start.unsupported) {
+    return { supported: false };
+  }
+  if (!start.payload?.ok || !start.payload?.id) {
+    return agentSourcePayloadResult(start.payload, start.httpStatus, maxTextLength);
+  }
+  const deviceId = safeSourceText(body?.deviceId || "");
+  const jobId = cleanActionId(start.payload.id);
+  const timeoutMs = safeDurationMs(body?.timeoutMs, defaultTimeoutMs, maxLongTaskTimeoutMs);
+  const started = Date.now();
+  let lastPayload = start.payload;
+  while (Date.now() - started < timeoutMs + 3000) {
+    if (signal?.aborted) {
+      await cancelAgentSourceJob(jobRelayId, deviceId, jobId).catch(() => undefined);
+      return { ok: false, text: "! cancelled", exitCode: 130 };
+    }
+    await sleep(sourceJobPollDelayMs(Date.now() - started));
+    const statusUrl = new URL("/api/agent/source/job", relayBaseUrl);
+    statusUrl.searchParams.set("relayId", jobRelayId);
+    statusUrl.searchParams.set("deviceId", deviceId);
+    statusUrl.searchParams.set("id", jobId);
+    const status = await fetchAgentSourceJson(statusUrl, null, signal);
+    lastPayload = status.payload || lastPayload;
+    if (!status.payload || !status.payload.ok || sourceJobTerminal(status.payload)) {
+      return agentSourcePayloadResult(status.payload, status.httpStatus, maxTextLength);
+    }
+  }
+  return {
+    ok: false,
+    text: String(lastPayload?.text || "! timeout").slice(0, Math.max(1, Math.min(maxTextLength, 1_000_000))),
+    exitCode: 124,
+    diagnostic: {
+      kind: "source-job",
+      reason: "poll-timeout",
+      jobId,
+      status: String(lastPayload?.status || "running").slice(0, 80),
+      last: lastPayload?.diagnostic && typeof lastPayload.diagnostic === "object" ? lastPayload.diagnostic : undefined
+    }
+  };
+}
+
+async function postAgentSourceJobSync(path, body, jobRelayId, relayBaseUrl, maxTextLength = maxChatChars, signal = null) {
   try {
     const response = await fetch(new URL(path, relayBaseUrl), {
       method: "POST",
@@ -1377,6 +1484,90 @@ async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxC
       }
     };
   }
+}
+
+async function fetchAgentSourceJson(url, body = null, signal = null) {
+  try {
+    const response = await fetch(url, {
+      method: body ? "POST" : "GET",
+      cache: "no-store",
+      headers: body ? { "Content-Type": "application/json" } : {},
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(signal ? { signal } : {})
+    });
+    const responseText = await response.text();
+    const payload = parseAgentSourceJson(responseText);
+    if (!payload) {
+      return {
+        payload: {
+          ok: false,
+          text: "! relay-json: invalid response from Soty relay",
+          exitCode: response.ok ? 502 : (response.status || 502),
+          diagnostic: {
+            kind: "relay-json",
+            httpStatus: response.status,
+            bodyPreview: responseText.slice(0, 240)
+          }
+        },
+        httpStatus: response.status
+      };
+    }
+    const unsupported = response.status === 404
+      && payload?.ok === false
+      && !payload.text
+      && !payload.diagnostic
+      && !payload.id;
+    return { payload, httpStatus: response.status, unsupported };
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      return { payload: { ok: false, text: "! cancelled", exitCode: 130 }, httpStatus: 499 };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      payload: {
+        ok: false,
+        text: `! relay-fetch: ${message}`.slice(0, maxChatChars),
+        exitCode: 127,
+        diagnostic: {
+          kind: "relay-fetch",
+          message: message.slice(0, 500)
+        }
+      },
+      httpStatus: 0
+    };
+  }
+}
+
+function agentSourcePayloadResult(payload, httpStatus = 0, maxTextLength = maxChatChars) {
+  const safePayload = payload && typeof payload === "object" ? payload : {};
+  const exitCode = Number.isSafeInteger(safePayload.exitCode)
+    ? safePayload.exitCode
+    : (safePayload.ok === true ? 0 : (httpStatus || 1));
+  return {
+    ok: Boolean(safePayload.ok && exitCode === 0),
+    text: String(safePayload.text || "").slice(0, Math.max(1, Math.min(maxTextLength, 1_000_000))),
+    exitCode,
+    httpStatus,
+    ...(safePayload.diagnostic && typeof safePayload.diagnostic === "object" ? { diagnostic: safePayload.diagnostic } : {}),
+    ...(typeof safePayload.reason === "string" ? { reason: safePayload.reason.slice(0, 120) } : {}),
+    ...(typeof safePayload.status === "string" ? { status: safePayload.status.slice(0, 80) } : {}),
+    ...(typeof safePayload.id === "string" ? { sourceJobId: safePayload.id.slice(0, 120) } : {})
+  };
+}
+
+function sourceJobTerminal(payload) {
+  const status = String(payload?.status || "").toLowerCase();
+  return Number.isSafeInteger(payload?.exitCode) || ["ok", "failed", "timeout", "cancelled", "missing"].includes(status);
+}
+
+function sourceJobPollDelayMs(elapsedMs) {
+  if (elapsedMs < 5000) {
+    return 500;
+  }
+  if (elapsedMs < 60_000) {
+    return 1500;
+  }
+  return 5000;
 }
 
 function parseAgentSourceJson(value) {
@@ -1591,6 +1782,8 @@ function cleanLearningReceipt(value) {
   return {
     kind: cleanLearningEnum(value.kind, ["codex-turn", "source-command", "agent-runtime", "action-job"], "agent-runtime"),
     result: cleanLearningEnum(value.result, ["ok", "failed", "partial", "blocked", "timeout", "cancelled"], "failed"),
+    toolkit: cleanLearningText(value.toolkit, 80),
+    phase: cleanLearningText(value.phase, 80),
     family: cleanLearningText(value.family, 80),
     platform: process.platform,
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
@@ -2836,7 +3029,7 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   }
   args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
   args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-  for (const tool of ["soty_run", "soty_script", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_reinstall", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
+  for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
     args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
   }
   if (outPath) {
@@ -3585,11 +3778,13 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- Keep $ops, skill routing, route selection, helper names, preflight/gate language, MCP names, and bridge/source-scoped mechanics internal unless the user explicitly asks for technical details.",
     "- In Soty chat, do not announce skills, $ops, routes, helpers, MCP tool names, or source-scoped mechanics; show the user only the action, result, or one plain blocker.",
     "- Write like a practical IDE Codex: concise, warm, decisive, and action-oriented. The user should see what you did or need next, not how the routing machinery works.",
+    "- Do not think aloud in Soty chat. User-facing messages should be bare facts: one short action started if needed, one exact question/confirmation, one blocker, or one completion proof.",
     "- Do not show raw tool errors or codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets in user-facing chat; translate them into one plain sentence.",
-    "- Before tools, either act silently or send one short plain-language progress line. Do not narrate every probe, retry, helper, or memory lookup.",
+    "- Before tools, either act silently or send one short plain-language progress line. Do not narrate every probe, retry, helper, memory lookup, download poll, DISM phase, or script-internal wait.",
+    "- Toolkit contract: for repeated, long, or lifecycle operations, use a first-class toolkit entrypoint when one exists. If no toolkit exists, use `soty_action` as the durable generic kernel and promote repeated safe automation into a manifest-pinned toolkit instead of embedding long one-off scripts in the prompt.",
     "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
-    "- For work on a paired user device, use Soty MCP tools: soty_reinstall, soty_action, soty_action_status, soty_action_stop, soty_action_list, soty_link_status, soty_run, soty_script, soty_file, soty_browser, soty_desktop, soty_open_url, soty_audio.",
-    "- Use `soty_action` for installs, downloads, repairs, scans, staged scripts, destructive work, and any operation that may hang. Keep the returned jobId, poll `soty_action_status`, and call `soty_action_stop` if the job is stuck or the user asks to stop.",
+    "- For work on a paired user device, use Soty MCP tools through `soty_toolkit` first. `soty_reinstall` is the first-class Windows reinstall toolkit; `soty_action` is the low-level durable kernel; `soty_run` and `soty_script` are low-level fallbacks for tiny probes only.",
+    "- Use `soty_toolkit` or `soty_action` for installs, downloads, repairs, scans, staged scripts, destructive work, and any operation that may hang. Keep the returned jobId, poll status, and stop the job if it is stuck or the user asks to stop.",
     "- Turnkey terminal rule: after starting a background job, download, scan, install, repair, backup, media prepare, reset, or reinstall step, do not send a final answer while it is merely running. Continue monitoring until it finishes, fails with a blocker, or needs one specific user input.",
     "- Large-download rule: bad internet is expected. For installer/media downloads, preserve partial files, resume from existing bytes, and treat a growing partial file or active download process as progress, not as a completed answer or unstable connection.",
     "- If a live-waiting tool reports progress internally, let it run. Do not replace it with repeated manual polling or a final message such as `I'll continue later`, `when it finishes`, or `preparation is still running` unless the user explicitly asked for background mode.",
@@ -3600,7 +3795,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- For quick identity, health, and readiness probes, pass a short timeoutMs such as 15000-45000. Reserve very long timeoutMs values only for real installs, downloads, repairs, scans, or staged scripts after the target is proven.",
     "- For destructive or long device work such as format, diskpart, robocopy, dism, installers, downloads, reset, or reboot, issue exactly one `soty_action` at a time; poll/stop that job before starting any second write, format, reset, or reboot command.",
     "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, repair or prove the narrow channel once, then name one plain blocker and one next action.",
-    "- For Soty-managed clean Windows reinstall, use `soty_reinstall` first: preflight, prepare, status until ready/backupProof are proven, ask the exact confirmation phrase, then arm. Do not manually crawl /agent/manifest.json, ready.json, or backup-proof.json with generic tools unless `soty_reinstall` is unavailable.",
+    "- For Soty-managed clean Windows reinstall, use `soty_reinstall` first and let its managed script run the direct path: preflight, prepare, status until ready/backupProof are proven, ask the exact confirmation phrase, then arm. Do not manually crawl /agent/manifest.json, ready.json, or backup-proof.json with generic tools unless `soty_reinstall` is unavailable.",
     "- For Soty-managed clean Windows reinstall, the happy path must prove the machine worker, current manifest script hashes, backupProof, install media, unattended local admin account named `Соты`, password mode `blank-no-password`, Autounattend.xml, OEM SetupComplete, and postinstall restore. Do not use Media Creation Tool, Windows Settings reset, generic installer GUI, or Shift+F10/localonly as the planned path.",
     "- For Soty-managed Windows reinstall, the managed local account must be passwordless by default. Do not pass ManagedUserPassword or AllowTemporaryManagedPassword unless the user explicitly asks for a Windows password; if the user forbids passwords, require ready.managedUserPasswordMode=`blank-no-password` before arming.",
     "- Before any reinstall arm/reboot, backupProof must show backupRoot, Wi-Fi export result, exported drivers, Soty restore/postinstall artifacts, root Autounattend.xml, and OEM SetupComplete fallback. If those artifacts are missing, repair preparation instead of asking the user to click OOBE screens.",
@@ -3662,9 +3857,12 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- local_shell_scope: server agent runtime only; use Soty MCP for paired device work.",
     "- ops_rule: apply the ops operating contract internally for system/device/install/repair/package/service/skill/memory work; read it with soty_skill_read skill=ops path=SKILL.md only when detailed route context is needed.",
     "- communication_rule: keep $ops/skills/router/helper/preflight/gate/MCP/bridge/source-scoped details internal; answer in short plain language like IDE Codex.",
+    "- no_thinking_aloud_rule: do not narrate internal reasoning, probes, polls, retries, or script phases; show only bare facts, one needed question, one blocker, or completion proof.",
     "- error_translation_rule: do not show raw tool errors/codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets; translate to a human sentence.",
     "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
-    "- action_tool_rule: use soty_action for installs, downloads, repairs, scans, destructive work, staged scripts, or anything that may hang; poll with soty_action_status and stop with soty_action_stop when needed.",
+    "- toolkit_rule: repeated, long, lifecycle, or console/software work should enter through `soty_toolkit` first. Use a first-class toolkit when available; otherwise use the durable-action kernel and promote repeated safe patterns into manifest-pinned toolkit code/tests, not prompt-local long scripts.",
+    "- toolkit_quality_rule: every toolkit step must have a phase, durable status/proof, a terminal state, and one next action/blocker; chat gets the distilled fact only.",
+    "- action_tool_rule: use soty_toolkit or soty_action for installs, downloads, repairs, scans, destructive work, staged scripts, or anything that may hang; poll status and stop when needed.",
     "- turnkey_terminal_rule: never final-answer with a target job still running unless the user explicitly requested background mode. The only valid final states are completed, failed/blocked with one concrete next user action, or waiting for one explicit user confirmation/input.",
     "- large_download_rule: interrupted media downloads must resume from existing partial bytes. A growing .download file or active curl/BITS/PowerShell download is progress; continue watching instead of final-answering.",
     "- link_visibility_rule: when a Soty source tool fails, inspect `soty_link_status`; if short link/source status is healthy, report the specific failed route/job instead of saying the PC connection is unstable.",
@@ -3673,7 +3871,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- target_failure_rule: if a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then give one plain blocker; do not continue through the local server shell unless the server/runtime is explicitly the target.",
     "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use very long timeoutMs only for real long-running jobs after the target is proven.",
     "- serial_long_job_rule: for destructive or long target work, call only one soty_action write/format/reset/reboot job at a time; poll/stop it or name a blocker before launching another.",
-    "- managed_reinstall_tool_rule: clean Windows reinstall through Soty must use soty_reinstall preflight/prepare/status/arm first; generic manifest crawling, soty_file ready.json reads, and hand-written prepare wrappers are fallback only when the tool is unavailable.",
+    "- managed_reinstall_tool_rule: clean Windows reinstall through Soty must use soty_reinstall preflight/prepare/status/arm first; it bootstraps one versioned managed script and passes flags to it. Generic manifest crawling, soty_file ready.json reads, and hand-written prepare wrappers are fallback only when the tool is unavailable.",
     "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification and a local admin account named `Соты`; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
     "- managed_password_rule: default Soty managed reinstall account is passwordless; do not generate or pass a temporary password unless explicitly authorized. If passwords were forbidden, arm only when ready.managedUserPasswordMode is `blank-no-password`.",
     "- backup_proof_rule: before asking for the destructive reinstall phrase, prove backupProof with backup root, Wi-Fi profile export result, driver export result, Soty restore/postinstall assets, Autounattend.xml, and OEM SetupComplete fallback.",
@@ -4209,8 +4407,40 @@ function runMcpServer() {
   function sotyMcpToolList() {
     return [
       {
+        name: "soty_toolkit",
+        description: "Universal Soty automation toolkit entrypoint for any software or console work on the current LINK source device. Use this first for repeated, long, state-changing, install/repair/diagnostic, or scriptable tasks. It routes to first-class toolkits such as windows-reinstall or to the durable-action kernel, records proof, and keeps old run/script paths as low-level fallback.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            operation: { type: "string", description: "describe, start, status, stop, list, or reinstall. Defaults to start when command/script is present." },
+            toolkit: { type: "string", description: "Toolkit name, for example windows-reinstall, durable-action, console, software, or auto." },
+            phase: { type: "string", description: "Toolkit phase, for example probe, prepare, install, repair, verify, backup, status, arm." },
+            mode: { type: "string", description: "run or script for durable-action start. Defaults to script when script is provided." },
+            command: { type: "string", description: "Command for mode=run." },
+            script: { type: "string", description: "Script body for mode=script." },
+            shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
+            name: { type: "string", description: "Short operator label." },
+            family: { type: "string", description: "Task family, for example package-install, service-check, browser-restore, driver-check, generic." },
+            intent: { type: "string", description: "Short intent for reusable learning." },
+            risk: { type: "string", description: "low, medium, high, or destructive." },
+            idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
+            detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
+            waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
+            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
+            timeoutMs: { type: "integer", description: "Per-action timeout in milliseconds, 1000-86400000." },
+            jobId: { type: "string", description: "Job id for status/stop." },
+            action: { type: "string", description: "Windows reinstall action when toolkit=windows-reinstall: preflight, prepare, status, or arm." },
+            usbDriveLetter: { type: "string", description: "Windows reinstall USB drive letter." },
+            confirmationPhrase: { type: "string", description: "Exact destructive confirmation phrase for arm." },
+            useExistingUsbInstallImage: { type: "boolean", description: "Windows reinstall prepare: require existing valid USB install image." },
+            improvement: { type: "string", description: "Optional sanitized reusable improvement note when this run proves a safe toolkit improvement." }
+          },
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_run",
-        description: "Run one trivial shell command on the current Soty Agent LINK source device. Use soty_action for installs, downloads, repairs, resets, scans, long work, destructive work, or anything that may need status/stop. The command and output are shown in the user's LINK console. Do not use for PowerShell variables, semicolons, pipelines, or multi-step checks; use soty_script with shell=\"powershell\" instead. Do not use this to read Codex skill files from CODEX_HOME; those are in the operator runtime, not on the source device. Use soty_skill_read for skill files.",
+        description: "Low-level fallback: run one trivial shell command on the current Soty Agent LINK source device. Use soty_toolkit first for any repeated, state-changing, long, install, repair, reset, scan, or multi-step console/software work. Do not use for PowerShell variables, semicolons, pipelines, or multi-step checks; use soty_toolkit/soty_action instead.",
         inputSchema: {
           type: "object",
           properties: {
@@ -4223,7 +4453,7 @@ function runMcpServer() {
       },
       {
         name: "soty_script",
-        description: "Run a multiline script on the current Soty Agent LINK source device. Use for short PowerShell workflows, checks, and browser automation launched on that device. Use soty_action for installs, downloads, repairs, resets, scans, long work, destructive work, or anything that may need status/stop.",
+        description: "Low-level fallback: run a short multiline script on the current Soty Agent LINK source device. Use soty_toolkit first for reusable, long, state-changing, install, repair, reset, scan, or proof-bearing work.",
         inputSchema: {
           type: "object",
           properties: {
@@ -4238,7 +4468,7 @@ function runMcpServer() {
       },
       {
         name: "soty_action",
-        description: "Start a supervised durable action job on the current Soty Agent LINK source device. Prefer this for installs, downloads, repairs, resets, scans, scripts with multiple stages, destructive work, or any job that may hang. Returns jobId, statusPath, proof/result paths, and can be followed with soty_action_status or stopped with soty_action_stop.",
+        description: "Low-level durable-action kernel used by soty_toolkit: start a supervised durable job on the current Soty Agent LINK source device. Prefer soty_toolkit as the universal front door; call this directly only when you already know the kernel action shape.",
         inputSchema: {
           type: "object",
           properties: {
@@ -4247,6 +4477,8 @@ function runMcpServer() {
             script: { type: "string", description: "Script body for mode=script." },
             shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
             name: { type: "string", description: "Short label shown in the LINK console." },
+            toolkit: { type: "string", description: "Toolkit name, defaults from family." },
+            phase: { type: "string", description: "Toolkit phase, defaults from kind." },
             family: { type: "string", description: "Task family, for example windows-reinstall, package-install, service-check, driver-check, generic." },
             kind: { type: "string", description: "Action kind, for example prepare, verify, install, repair, backup, probe." },
             intent: { type: "string", description: "Short operator intent for future learning." },
@@ -4255,7 +4487,8 @@ function runMcpServer() {
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll with soty_action_status." },
             waitForCompletion: { type: "boolean", description: "When true, keep the tool call open until the action reaches a terminal state. Use this for turnkey user-facing tasks unless the user explicitly asked for background mode." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." },
+            improvement: { type: "string", description: "Optional sanitized reusable improvement note when this job proves a safe toolkit improvement." }
           },
           additionalProperties: false
         }
@@ -4303,8 +4536,17 @@ function runMcpServer() {
         }
       },
       {
+        name: "soty_toolkits",
+        description: "Show the current Soty automation toolkit contract: first-class toolkit entrypoints, generic durable action kernel, phases, proof fields, and terminal states. Use this when deciding whether to use a toolkit or a generic action.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_reinstall",
-        description: "First-class managed Soty Windows reinstall tool for preflight, prepare, status, and arm. Use this before manually crawling /agent/manifest.json, ready.json, backup-proof.json, or generic soty_action/soty_file reinstall scripts. prepare waits by default until media/backup/ready proof is complete or one concrete blocker/user confirmation is needed; do not final-answer while prepare is merely running.",
+        description: "First-class managed Soty Windows reinstall tool for preflight, prepare, status, and arm. It bootstraps one versioned managed PowerShell script from the manifest and passes flags to that script. Use this before manually crawling /agent/manifest.json, ready.json, backup-proof.json, or generic soty_action/soty_file reinstall scripts. prepare waits by default until media/backup/ready proof is complete or one concrete blocker/user confirmation is needed; do not final-answer while prepare is merely running.",
         inputSchema: {
           type: "object",
           properties: {
@@ -4456,6 +4698,17 @@ function runMcpServer() {
       const result = await mcpRequestOperator("GET", `/operator/source-status${suffix}`);
       return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
     }
+    if (name === "soty_toolkits") {
+      return mcpToolJson({
+        ok: true,
+        version: agentVersion,
+        manifestUrl: updateManifestUrl,
+        ...automationToolkitStatus()
+      });
+    }
+    if (name === "soty_toolkit") {
+      return await callSotyToolkitTool(args);
+    }
     if (name === "soty_action_status") {
       const jobId = String(args.jobId || "").trim();
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
@@ -4479,39 +4732,7 @@ function runMcpServer() {
       return await callSotyReinstallTool(args);
     }
     if (name === "soty_action") {
-      const mode = args.mode === "script" || typeof args.script === "string" ? "script" : "run";
-      const command = String(args.command || "").trim();
-      const script = String(args.script || "").trim();
-      if (mode === "run" && !command) {
-        return mcpToolText("! command", true);
-      }
-      if (mode === "script" && !script) {
-        return mcpToolText("! script", true);
-      }
-      const result = await mcpRequestOperator("POST", "/operator/action", {
-        mode,
-        target: mcpTarget,
-        sourceDeviceId: mcpSourceDeviceId,
-        ...(mode === "run" ? { command } : { script }),
-        shell: String(args.shell || ""),
-        name: String(args.name || (mode === "script" ? "action-script" : "action-run")),
-        family: String(args.family || ""),
-        kind: String(args.kind || ""),
-        intent: String(args.intent || ""),
-        risk: String(args.risk || ""),
-        idempotencyKey: String(args.idempotencyKey || ""),
-        detached: args.detached === true,
-        wait: args.waitForCompletion === true,
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
-      });
-      if (args.waitForCompletion === true) {
-        const waited = await waitForMcpActionTerminal(result.payload || result, {
-          waitTimeoutMs: mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs),
-          progressKind: String(args.kind || args.family || "action")
-        });
-        return mcpToolJson(waited, waited.ok === false, waited.exitCode);
-      }
-      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+      return await callSotyActionKernelTool(args);
     }
     if (name === "soty_run") {
       const command = String(args.command || "").trim();
@@ -4632,6 +4853,221 @@ function runMcpServer() {
     return mcpToolText(`! unknown tool ${name}`, true);
   }
 
+  function mcpSourceUnavailableResult() {
+    return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
+  }
+
+  async function callSotyToolkitTool(args) {
+    const rawOperation = String(args.operation || "").trim().toLowerCase();
+    const operation = cleanActionToken(rawOperation || (args.jobId ? "status" : (args.action ? "reinstall" : (args.command || args.script ? "start" : "describe"))), "describe");
+    const toolkit = normalizeToolkitName(args.toolkit || (args.action ? "windows-reinstall" : ""));
+    const phase = cleanActionToken(args.phase || args.action || operation, operation);
+    if (operation === "describe" || operation === "toolkits") {
+      return mcpToolJson({
+        ok: true,
+        version: agentVersion,
+        manifestUrl: updateManifestUrl,
+        ...automationToolkitStatus()
+      });
+    }
+    if (operation === "list") {
+      const result = await mcpRequestOperator("GET", "/operator/actions");
+      return mcpToolJson({
+        ...(result.payload || result),
+        toolkitContract: automationToolkitStatus()
+      }, !result.ok, result.exitCode);
+    }
+    if (operation === "status" && args.jobId) {
+      const jobId = String(args.jobId || "").trim();
+      if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
+        return mcpToolText("! action-job", true, 2);
+      }
+      const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    if (operation === "stop") {
+      const jobId = String(args.jobId || "").trim();
+      if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
+        return mcpToolText("! action-job", true, 2);
+      }
+      const result = await mcpRequestOperator("POST", `/operator/action/${encodeURIComponent(jobId)}/stop`, {});
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    const reinstallAction = cleanActionToken(args.action || (toolkit === "windows-reinstall" && ["preflight", "prepare", "status", "arm"].includes(phase) ? phase : ""), "");
+    if (operation === "reinstall" || toolkit === "windows-reinstall" || reinstallAction) {
+      if (!mcpTarget || !mcpSourceDeviceId) {
+        return mcpSourceUnavailableResult();
+      }
+      return await callSotyReinstallTool({
+        ...args,
+        action: reinstallAction || phase || "status"
+      });
+    }
+    if (!["start", "run", "script", "execute", "probe", "prepare", "install", "repair", "verify", "backup"].includes(operation)) {
+      return mcpToolText("! toolkit-operation", true, 2);
+    }
+    return await callSotyActionKernelTool({
+      ...args,
+      toolkit,
+      phase,
+      kind: args.kind || phase,
+      waitForCompletion: args.waitForCompletion === true
+    });
+  }
+
+  async function callSotyActionKernelTool(args) {
+    if (!mcpTarget || !mcpSourceDeviceId) {
+      return mcpSourceUnavailableResult();
+    }
+    const mode = args.mode === "script" || typeof args.script === "string" ? "script" : "run";
+    const command = String(args.command || "").trim();
+    const script = String(args.script || "").trim();
+    if (mode === "run" && !command) {
+      return mcpToolText("! command", true);
+    }
+    if (mode === "script" && !script) {
+      return mcpToolText("! script", true);
+    }
+    const family = String(args.family || "");
+    const toolkit = normalizeToolkitName(args.toolkit || toolkitForFamily(family || classifySourceCommand(mode === "script" ? script : command)));
+    const phase = cleanActionToken(args.phase || args.kind || "execute", "execute");
+    const result = await mcpRequestOperator("POST", "/operator/action", {
+      mode,
+      target: mcpTarget,
+      sourceDeviceId: mcpSourceDeviceId,
+      ...(mode === "run" ? { command } : { script }),
+      shell: String(args.shell || ""),
+      name: String(args.name || `${toolkit}-${phase}`),
+      toolkit,
+      phase,
+      family,
+      kind: String(args.kind || phase),
+      intent: String(args.intent || ""),
+      risk: String(args.risk || ""),
+      idempotencyKey: String(args.idempotencyKey || ""),
+      improvement: String(args.improvement || ""),
+      detached: args.detached === true,
+      wait: args.waitForCompletion === true,
+      timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
+    });
+    if (args.waitForCompletion === true) {
+      const waited = await waitForMcpActionTerminal(result.payload || result, {
+        waitTimeoutMs: mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs),
+        progressKind: String(args.phase || args.kind || args.family || args.toolkit || "toolkit")
+      });
+      return mcpToolJson(waited, waited.ok === false, waited.exitCode);
+    }
+    return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+  }
+
+  async function mcpCurrentSourceStatus() {
+    const query = new URLSearchParams();
+    if (mcpTarget) {
+      query.set("target", mcpTarget);
+    }
+    if (mcpSourceRelayId) {
+      query.set("sourceRelayId", mcpSourceRelayId);
+    }
+    if (mcpSourceDeviceId) {
+      query.set("sourceDeviceId", mcpSourceDeviceId);
+    }
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    const result = await mcpRequestOperator("GET", `/operator/source-status${suffix}`);
+    return result.payload || {
+      ok: false,
+      text: "source status unavailable",
+      exitCode: result.exitCode || 1
+    };
+  }
+
+  function sourceStatusSummary(status) {
+    const relay = status?.relay && typeof status.relay === "object" ? status.relay : {};
+    const source = relay.source && typeof relay.source === "object" ? relay.source : null;
+    const candidates = Array.isArray(relay.candidates)
+      ? relay.candidates
+      : Array.isArray(status?.sourceTargets)
+        ? status.sourceTargets
+        : [];
+    const best = source || candidates[0] || null;
+    const lastSeenAgeMs = Number(best?.lastSeenAgeMs);
+    const sourceConnectedMs = Number(best?.sourceConnectedMs);
+    const recentlySeen = Number.isFinite(lastSeenAgeMs)
+      && Number.isFinite(sourceConnectedMs)
+      && lastSeenAgeMs < sourceConnectedMs;
+    const runnable = relay.runnable === true || best?.connected === true || (best?.access === true && recentlySeen);
+    return {
+      ok: status?.ok === true,
+      runnable,
+      reason: String(relay.reason || status?.text || "").slice(0, 120),
+      agentVersion: String(status?.localAgent?.version || "").slice(0, 40),
+      relayConfigured: status?.relayConfigured === true,
+      target: String(status?.target || mcpTarget || "").slice(0, 180),
+      sourceDeviceId: String(status?.sourceDeviceId || mcpSourceDeviceId || "").slice(0, 180),
+      lastSeenAgeMs: Number.isFinite(lastSeenAgeMs) ? lastSeenAgeMs : null,
+      pendingJobs: Number.isFinite(Number(best?.pendingJobs)) ? Number(best.pendingJobs) : null,
+      leasedJobs: Number.isFinite(Number(best?.leasedJobs)) ? Number(best.leasedJobs) : null
+    };
+  }
+
+  function mcpOperatorPayload(result) {
+    const payload = result?.payload && typeof result.payload === "object" ? { ...result.payload } : {};
+    if (!Object.prototype.hasOwnProperty.call(payload, "ok")) {
+      payload.ok = Boolean(result?.ok);
+    }
+    if (!payload.text && result?.text) {
+      payload.text = String(result.text);
+    }
+    if (!Number.isSafeInteger(payload.exitCode)) {
+      payload.exitCode = Number.isSafeInteger(result?.exitCode) ? result.exitCode : (payload.ok ? 0 : 1);
+    }
+    return payload;
+  }
+
+  function isSourceRouteFailure(result) {
+    const payload = result?.payload && typeof result.payload === "object" ? result.payload : {};
+    const diagnostic = payload.diagnostic && typeof payload.diagnostic === "object" ? payload.diagnostic : {};
+    const exitCode = Number.isSafeInteger(payload.exitCode)
+      ? payload.exitCode
+      : Number.isSafeInteger(result?.exitCode)
+        ? result.exitCode
+        : 0;
+    const text = [
+      result?.text,
+      payload.text,
+      diagnostic.kind,
+      diagnostic.reason,
+      diagnostic.bodyPreview
+    ].map((item) => String(item || "").toLowerCase()).join(" ");
+    return [124, 127, 502, 504].includes(exitCode)
+      || text.includes("timeout")
+      || text.includes("relay-json")
+      || text.includes("relay-fetch")
+      || text.includes("agent-source");
+  }
+
+  async function mcpToolJsonTextWithSourceStatus(result, context = {}) {
+    if (result?.ok || !isSourceRouteFailure(result)) {
+      return mcpToolJsonText(result);
+    }
+    let sourceStatus = null;
+    try {
+      sourceStatus = await mcpCurrentSourceStatus();
+    } catch {}
+    const link = sourceStatus ? sourceStatusSummary(sourceStatus) : null;
+    const payload = {
+      ...mcpOperatorPayload(result),
+      toolkit: String(context.toolkit || "").slice(0, 80),
+      action: String(context.action || "").slice(0, 40),
+      route: String(context.route || "").slice(0, 120),
+      sourceLink: link,
+      blocker: link?.runnable ? "source-command-route-timeout" : "source-link-unavailable",
+      agentGuidance: link?.runnable
+        ? "LINK/source status is healthy enough; do not tell the user the PC is not visible. Report the failed command route/job, then continue through durable status/action or give one concrete blocker."
+        : "Only say the target channel is unavailable if this sourceLink summary proves it is not runnable."
+    };
+    return mcpToolJson(payload, true, payload.exitCode);
+  }
+
   async function callSotyReinstallTool(args) {
     const action = String(args.action || "").trim().toLowerCase();
     if (!["preflight", "prepare", "status", "arm"].includes(action)) {
@@ -4659,7 +5095,11 @@ function runMcpServer() {
         name: `soty-reinstall-${action}`,
         timeoutMs: mcpSafeTimeout(args.timeoutMs, action === "preflight" ? 45_000 : 30_000)
       });
-      return mcpToolJsonText(result);
+      return await mcpToolJsonTextWithSourceStatus(result, {
+        toolkit: "windows-reinstall",
+        action,
+        route: `soty_reinstall.${action}`
+      });
     }
     const keyDate = new Date().toISOString().slice(0, 10).replace(/-/gu, "");
     const keyMinute = Math.floor(Date.now() / 60_000);
@@ -4706,15 +5146,15 @@ function runMcpServer() {
     }
     const started = Date.now();
     let lastPayload = initial;
-    let lastProgressAt = 0;
+    let lastProgressAt = Date.now();
     while (Date.now() - started < waitTimeoutMs) {
       const status = String(lastPayload?.status || "").toLowerCase();
       if (status && status !== "created" && status !== "running") {
         return lastPayload;
       }
-      if (Date.now() - lastProgressAt > 5 * 60_000) {
+      if (Date.now() - lastProgressAt > 15 * 60_000) {
         lastProgressAt = Date.now();
-        await postMcpAgentProgress(`Работа ещё выполняется. Я продолжаю следить и остановлюсь только на результате или понятном препятствии.`);
+        await postMcpAgentProgress("Работа продолжается. Остановлюсь на результате, ошибке или нужном действии от вас.");
       }
       await sleep(15_000);
       const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
@@ -4739,9 +5179,8 @@ function runMcpServer() {
     const started = Date.now();
     let lastStatus = null;
     let lastPayload = initial;
-    let lastProgressAt = 0;
+    let lastProgressAt = Date.now();
     let consecutiveStatusFailures = 0;
-    await postMcpAgentProgress("Готовлю установочную флешку и резервную копию. Я продолжу следить до готовности или понятного препятствия.");
     while (Date.now() - started < waitTimeoutMs) {
       const statusResult = await readSotyReinstallStatus(request);
       const status = parseReinstallStatusResult(statusResult);
@@ -4885,11 +5324,11 @@ function runMcpServer() {
   }
 
   function reinstallProgressIntervalMs(status) {
-    return status?.media?.downloading === true ? 10 * 60_000 : 2 * 60_000;
+    return status?.media?.downloading === true ? 30 * 60_000 : 20 * 60_000;
   }
 
   function reinstallPollDelayMs(status) {
-    return status?.media?.downloading === true ? 60_000 : 20_000;
+    return status?.media?.downloading === true ? 120_000 : 60_000;
   }
 
   function formatReinstallPrepareProgress(status) {
@@ -4897,13 +5336,13 @@ function runMcpServer() {
     if (media?.downloading === true) {
       const gb = Number.isFinite(Number(media.gb)) ? `, скачано примерно ${media.gb} ГБ` : "";
       const active = media.active === true ? "процесс скачивания жив" : "докачка сохранена и будет продолжена";
-      return `Подготовка продолжается: скачивается образ Windows${gb}, ${active}. Диск Windows не стираю до финального подтверждения.`;
+      return `Подготовка идёт: образ Windows${gb}, ${active}. Диск Windows не трогаю.`;
     }
     const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
     if (latest?.stdoutTail && /backup|driver|robocopy|export/iu.test(String(latest.stdoutTail))) {
-      return "Подготовка продолжается: собираю резервные копии и проверочные артефакты. Финальную очистку диска ещё не запускал.";
+      return "Подготовка идёт: резервная копия и установочные файлы. Диск Windows не трогаю.";
     }
-    return "Подготовка продолжается. Я слежу за состоянием и остановлюсь только когда будет готово, появится ошибка или понадобится подтверждение.";
+    return "Подготовка идёт. Диск Windows не трогаю.";
   }
 
   async function postMcpAgentProgress(text) {
@@ -5203,7 +5642,7 @@ function runWindowsAudioWarmup() {
   child.on("close", () => clearTimeout(timer));
 }
 
-function sourceManagedWindowsReinstallScript(args) {
+function sourceManagedWindowsReinstallBootstrap(args) {
   const payload = Buffer.from(JSON.stringify({
     action: String(args.action || "status").slice(0, 40),
     usbDriveLetter: String(args.usbDriveLetter || "D").slice(0, 8),
@@ -5224,347 +5663,72 @@ try {
 } catch {}
 $req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
 function Emit($Value, [int]$Code = 0) {
-  $Value | ConvertTo-Json -Depth 14 -Compress
+  $Value | ConvertTo-Json -Depth 16 -Compress
   exit $Code
 }
 function New-Dir([string]$Path) {
   if (-not [string]::IsNullOrWhiteSpace($Path)) { New-Item -ItemType Directory -Force -Path $Path | Out-Null }
 }
-function Read-JsonFile([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) { return $null }
-  try { return (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop) } catch { return $null }
-}
-function Tail-Text([string]$Path, [int]$Chars = 4000) {
-  if (-not (Test-Path -LiteralPath $Path)) { return "" }
-  try {
-    $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-    if ($text.Length -gt $Chars) { return $text.Substring($text.Length - $Chars) }
-    return $text
-  } catch { return "" }
-}
-function Normalize-UsbLetter([string]$Value) {
-  $letter = ([string]$Value).Trim().TrimEnd([char[]]":\\").ToUpperInvariant()
-  if ($letter -notmatch '^[A-Z]$') { return 'D' }
-  return $letter
-}
-function Count-FilesSafe([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) { return 0 }
-  try { return @((Get-ChildItem -LiteralPath $Path -File -Recurse -ErrorAction SilentlyContinue)).Count } catch { return 0 }
-}
-function Get-PrepareJobs([string]$WorkspaceRoot) {
-  $roots = @(
-    (Join-Path $env:ProgramData 'soty-agent\\ops\\jobs'),
-    (Join-Path $WorkspaceRoot 'jobs')
-  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-  $items = New-Object System.Collections.Generic.List[object]
-  foreach ($root in $roots) {
-    if (-not (Test-Path -LiteralPath $root)) { continue }
-    Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match 'prepare.*windows.*reinstall|prepare-' } |
-      Sort-Object LastWriteTimeUtc -Descending |
-      Select-Object -First 8 |
-      ForEach-Object {
-        $resultPath = Join-Path $_.FullName 'result.json'
-        $result = Read-JsonFile $resultPath
-        $stdoutPath = Join-Path $_.FullName 'stdout.txt'
-        $stderrPath = Join-Path $_.FullName 'stderr.txt'
-        $items.Add([pscustomobject]@{
-          id = $_.Name
-          path = $_.FullName
-          status = if ($result) { [string]$result.status } else { 'running-or-started' }
-          ok = if ($result) { [bool]$result.ok } else { $false }
-          exitCode = if ($result -and $null -ne $result.exitCode) { [int]$result.exitCode } else { $null }
-          caseId = if ($result) { [string]$result.caseId } else { '' }
-          resultPath = if (Test-Path -LiteralPath $resultPath) { $resultPath } else { '' }
-          stdoutTail = Tail-Text $stdoutPath 2500
-          stderrTail = Tail-Text $stderrPath 1500
-          updated = $_.LastWriteTimeUtc.ToString('o')
-        })
-      }
-  }
-  return @($items | Sort-Object updated -Descending | Select-Object -First 8)
-}
-function Get-InstallImageCandidate([string[]]$SourceRoots) {
-  foreach ($root in $SourceRoots) {
-    if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root)) { continue }
-    foreach ($name in @('install.swm', 'install.esd', 'install.wim')) {
-      $path = Join-Path $root $name
-      if (Test-Path -LiteralPath $path) { return $path }
-    }
-  }
-  return ''
-}
-function Get-MediaStatus([string]$WorkspaceRoot, [string]$UsbDriveLetter) {
-  $usbRoot = $UsbDriveLetter + ':\\'
-  $downloadProcesses = @()
-  try {
-    $downloadProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-      Where-Object {
-        ([string]$_.Name -match '^(curl|powershell|pwsh|bitsadmin)\.exe$') -and
-        ([string]$_.CommandLine -match 'WindowsReinstall|Windows11_|\.download|dl\.delivery|Soty Windows reinstall image')
-      } |
-      Select-Object -First 8 ProcessId, Name, CommandLine)
-  } catch { $downloadProcesses = @() }
-  $roots = @(
-    (Join-Path $WorkspaceRoot 'media'),
-    (Join-Path $usbRoot 'sources'),
-    (Join-Path (Join-Path $usbRoot 'Soty-Reinstall') 'sources')
-  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-  $items = New-Object System.Collections.Generic.List[object]
-  foreach ($root in $roots) {
-    if (-not (Test-Path -LiteralPath $root)) { continue }
-    Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '\\.(download|esd|wim|swm)$' } |
-      ForEach-Object {
-        $items.Add([pscustomobject]@{
-          path = $_.FullName
-          name = $_.Name
-          bytes = [int64]$_.Length
-          gb = [math]::Round(([double]$_.Length / 1GB), 2)
-          downloading = $_.Name -match '\\.download$'
-          complete = $_.Name -notmatch '\\.download$'
-          updated = $_.LastWriteTimeUtc.ToString('o')
-          updatedAgeSeconds = [math]::Round(((Get-Date).ToUniversalTime() - $_.LastWriteTimeUtc).TotalSeconds, 0)
-        })
-      }
-  }
-  $largest = @($items | Sort-Object bytes -Descending | Select-Object -First 1)
-  if (-not $largest) {
-    return [pscustomobject]@{ found = $false; path = ''; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; activeProcessCount = @($downloadProcesses).Count; updated = ''; updatedAgeSeconds = $null }
-  }
-  $updatedAgeSeconds = if ($null -ne $largest.updatedAgeSeconds) { [double]$largest.updatedAgeSeconds } else { $null }
-  $active = [bool]($largest.downloading -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $updatedAgeSeconds -and $updatedAgeSeconds -lt 900)))
-  return [pscustomobject]@{
-    found = $true
-    path = [string]$largest.path
-    name = [string]$largest.name
-    bytes = [int64]$largest.bytes
-    gb = [double]$largest.gb
-    downloading = [bool]$largest.downloading
-    complete = [bool]$largest.complete
-    active = $active
-    activeProcessCount = @($downloadProcesses).Count
-    updated = [string]$largest.updated
-    updatedAgeSeconds = $updatedAgeSeconds
-  }
-}
-function Get-ReinstallStatus([string]$WorkspaceRoot, [string]$UsbDriveLetter) {
-  $usbRoot = $UsbDriveLetter + ':\\'
-  $usbReinstall = Join-Path (Join-Path $usbRoot 'Soty-Reinstall') 'reinstall'
-  $readyPath = Join-Path $WorkspaceRoot 'ready.json'
-  $usbReadyPath = Join-Path $usbReinstall 'ready.json'
-  $ready = Read-JsonFile $readyPath
-  if (-not $ready) { $ready = Read-JsonFile $usbReadyPath }
-  $backupProof = if ($ready) { $ready.backupProof } else { $null }
-  $installImage = Get-InstallImageCandidate @((Join-Path $usbRoot 'sources'), (Join-Path (Join-Path $usbRoot 'Soty-Reinstall') 'sources'))
-  $prepareJobs = Get-PrepareJobs $WorkspaceRoot
-  $latestPrepare = $prepareJobs | Select-Object -First 1
-  return [pscustomobject]@{
-    ok = $true
-    action = 'status'
-    computerName = $env:COMPUTERNAME
-    workspaceRoot = $WorkspaceRoot
-    usbRoot = $usbRoot
-    ready = [bool]$ready
-    readyPath = if (Test-Path -LiteralPath $readyPath) { $readyPath } elseif (Test-Path -LiteralPath $usbReadyPath) { $usbReadyPath } else { '' }
-    caseId = if ($ready) { [string]$ready.caseId } else { '' }
-    confirmationPhrase = if ($ready) { [string]$ready.confirmationPhrase } else { '' }
-    managedUserName = if ($ready) { [string]$ready.managedUserName } else { '' }
-    managedUserPasswordMode = if ($ready) { [string]$ready.managedUserPasswordMode } else { '' }
-    backupRoot = if ($ready) { [string]$ready.backupRoot } else { '' }
-    backupProofOk = if ($backupProof) { [bool]$backupProof.ok } else { $false }
-    personalFileTotalCount = if ($backupProof -and $null -ne $backupProof.personalFileTotalCount) { [int]$backupProof.personalFileTotalCount } else { $null }
-    desktopFileCount = if ($backupProof -and $null -ne $backupProof.desktopFileCount) { [int]$backupProof.desktopFileCount } else { $null }
-    media = Get-MediaStatus $WorkspaceRoot $UsbDriveLetter
-    installImage = $installImage
-    rootAutounattend = Test-Path -LiteralPath (Join-Path $usbRoot 'Autounattend.xml')
-    oemSetupComplete = if ($installImage) {
-      $sourceRoot = Split-Path -Parent $installImage
-      Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path (Join-Path $sourceRoot '$OEM$') '$$') 'Setup\\Scripts') 'SetupComplete.cmd')
-    } else { $false }
-    latestPrepare = $latestPrepare
-    prepareJobs = @($prepareJobs)
-  }
-}
-function Get-ManagedScript([string]$Name, [string]$WorkspaceRoot) {
+function Get-ManagedScript([string]$WorkspaceRoot) {
   $manifestUrl = [string]$req.manifestUrl
   if ([string]::IsNullOrWhiteSpace($manifestUrl)) { throw 'manifestUrl is empty' }
   $manifest = Invoke-RestMethod -Uri $manifestUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-  $scriptSpec = @($manifest.windowsReinstall.scripts | Where-Object { [string]$_.name -eq $Name } | Select-Object -First 1)
-  if (-not $scriptSpec) { throw ('manifest missing windowsReinstall script ' + $Name) }
+  $scriptSpec = @($manifest.windowsReinstall.scripts | Where-Object { [string]$_.name -eq 'managed' } | Select-Object -First 1)
+  if (-not $scriptSpec) { throw 'manifest missing windowsReinstall managed script' }
   if ([string]::IsNullOrWhiteSpace([string]$scriptSpec.url) -or [string]::IsNullOrWhiteSpace([string]$scriptSpec.sha256)) {
-    throw ('manifest script ' + $Name + ' is incomplete')
+    throw 'manifest managed script is incomplete'
   }
   $downloadRoot = Join-Path $WorkspaceRoot 'downloads\\manifest-scripts'
   New-Dir $downloadRoot
   $baseUri = New-Object System.Uri -ArgumentList $manifestUrl
   $scriptUri = New-Object System.Uri -ArgumentList $baseUri, ([string]$scriptSpec.url)
-  $fileName = Split-Path -Leaf ([string]$scriptSpec.url)
-  if ([string]::IsNullOrWhiteSpace($fileName)) { $fileName = 'soty-' + $Name + '.ps1' }
-  $path = Join-Path $downloadRoot $fileName
-  Invoke-WebRequest -Uri $scriptUri.AbsoluteUri -UseBasicParsing -OutFile $path -TimeoutSec 120 -ErrorAction Stop
-  $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+  $path = Join-Path $downloadRoot (Split-Path -Leaf ([string]$scriptSpec.url))
   $expected = ([string]$scriptSpec.sha256).ToLowerInvariant()
-  if ($actual -ne $expected) { throw ('SHA256 mismatch for ' + $Name + ': expected=' + $expected + ' actual=' + $actual) }
-  return [pscustomobject]@{ path = $path; url = $scriptUri.AbsoluteUri; sha256 = $actual; bytes = (Get-Item -LiteralPath $path).Length }
-}
-function Invoke-ManagedPrepare([string]$WorkspaceRoot, [string]$UsbDriveLetter) {
-  $currentStatus = Get-ReinstallStatus $WorkspaceRoot $UsbDriveLetter
-  if ($currentStatus.ready -and $currentStatus.backupProofOk) {
-    Emit ([pscustomobject]@{
-      ok = $true
-      action = 'prepare'
-      alreadyReady = $true
-      status = $currentStatus
-    }) 0
-  }
-  if ($currentStatus.latestPrepare -and [string]$currentStatus.latestPrepare.status -eq 'running-or-started') {
-    $updated = $null
-    try { $updated = [DateTime]::Parse([string]$currentStatus.latestPrepare.updated).ToUniversalTime() } catch {}
-    if ($updated -and (((Get-Date).ToUniversalTime() - $updated).TotalMinutes -lt 180)) {
-      Emit ([pscustomobject]@{
-        ok = $true
-        action = 'prepare'
-        alreadyRunning = $true
-        status = $currentStatus
-      }) 0
+  if (Test-Path -LiteralPath $path) {
+    $cached = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+    if ($cached -eq $expected) {
+      return [pscustomobject]@{ path = $path; url = $scriptUri.AbsoluteUri; sha256 = $cached; bytes = (Get-Item -LiteralPath $path).Length; cached = $true }
     }
   }
-  if ($currentStatus.media -and $currentStatus.media.downloading -and $currentStatus.media.active) {
-    Emit ([pscustomobject]@{
-      ok = $true
-      action = 'prepare'
-      alreadyRunning = $true
-      status = $currentStatus
-    }) 0
-  }
-  $script = Get-ManagedScript 'prepare' $WorkspaceRoot
-  $panel = ([string]$req.panelSiteUrl).TrimEnd('/')
-  if ([string]::IsNullOrWhiteSpace($panel)) { $panel = 'https://xn--n1afe0b.online' }
+  Invoke-WebRequest -Uri $scriptUri.AbsoluteUri -UseBasicParsing -OutFile $path -TimeoutSec 120 -ErrorAction Stop
+  $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+  if ($actual -ne $expected) { throw ('SHA256 mismatch for managed script: expected=' + $expected + ' actual=' + $actual) }
+  return [pscustomobject]@{ path = $path; url = $scriptUri.AbsoluteUri; sha256 = $actual; bytes = (Get-Item -LiteralPath $path).Length; cached = $false }
+}
+try {
+  $workspaceRoot = [string]$req.workspaceRoot
+  if ([string]::IsNullOrWhiteSpace($workspaceRoot)) { $workspaceRoot = 'C:\\ProgramData\\Soty\\WindowsReinstall' }
+  New-Dir $workspaceRoot
+  $managed = Get-ManagedScript $workspaceRoot
   $psArgs = @(
-    '-NoLogo',
-    '-NoProfile',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-File',
-    $script.path,
-    '-WorkspaceRoot',
-    $WorkspaceRoot,
-    '-UsbDriveLetter',
-    $UsbDriveLetter,
-    '-ManagedUserName',
-    'Соты',
-    '-PanelSiteUrl',
-    $panel,
-    '-NoTemporaryManagedPassword'
+    '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', $managed.path,
+    '-Action', ([string]$req.action),
+    '-WorkspaceRoot', $workspaceRoot,
+    '-UsbDriveLetter', ([string]$req.usbDriveLetter),
+    '-ManifestUrl', ([string]$req.manifestUrl),
+    '-PanelSiteUrl', ([string]$req.panelSiteUrl)
   )
   if ([bool]$req.useExistingUsbInstallImage) { $psArgs += '-UseExistingUsbInstallImage' }
   if (-not [string]::IsNullOrWhiteSpace([string]$req.confirmationPhrase)) { $psArgs += @('-ConfirmationPhrase', [string]$req.confirmationPhrase) }
   $output = & powershell.exe @psArgs 2>&1
   $code = if ($null -ne $global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { 0 }
   $text = ($output | Out-String).Trim()
-  $launched = $null
-  try { if ($text) { $launched = $text | ConvertFrom-Json -ErrorAction Stop } } catch {}
-  Emit ([pscustomobject]@{
-    ok = ($code -eq 0)
-    action = 'prepare'
-    script = $script
-    launched = $launched
-    text = if ($launched) { '' } else { $text }
-    status = Get-ReinstallStatus $WorkspaceRoot $UsbDriveLetter
-  }) $code
-}
-function Invoke-ManagedArm([string]$WorkspaceRoot, [string]$UsbDriveLetter) {
-  $status = Get-ReinstallStatus $WorkspaceRoot $UsbDriveLetter
-  if (-not $status.ready) { throw 'managed reinstall is not ready' }
-  if ([string]$status.managedUserName -ne 'Соты') { throw ('managed user must be Соты, got ' + [string]$status.managedUserName) }
-  if ([string]$status.managedUserPasswordMode -ne 'blank-no-password') { throw ('managed account must be passwordless, got ' + [string]$status.managedUserPasswordMode) }
-  if ($status.backupProofOk -ne $true) { throw 'backup proof is incomplete' }
-  if ([string]::IsNullOrWhiteSpace([string]$req.confirmationPhrase)) { throw 'confirmation phrase is empty' }
-  $script = Get-ManagedScript 'arm' $WorkspaceRoot
-  $output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $script.path -WorkspaceRoot $WorkspaceRoot -UsbDriveLetter $UsbDriveLetter -ConfirmationPhrase ([string]$req.confirmationPhrase) -ExpectedManagedUserName 'Соты' 2>&1
-  $code = if ($null -ne $global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { 0 }
-  $text = ($output | Out-String).Trim()
-  $result = $null
-  try { if ($text) { $result = $text | ConvertFrom-Json -ErrorAction Stop } } catch {}
-  Emit ([pscustomobject]@{
-    ok = ($code -eq 0)
-    action = 'arm'
-    script = $script
-    result = $result
-    text = if ($result) { '' } else { $text }
-  }) $code
-}
-try {
-  $action = ([string]$req.action).Trim().ToLowerInvariant()
-  $workspaceRoot = [string]$req.workspaceRoot
-  if ([string]::IsNullOrWhiteSpace($workspaceRoot)) { $workspaceRoot = 'C:\\ProgramData\\Soty\\WindowsReinstall' }
-  New-Dir $workspaceRoot
-  $usbDriveLetter = Normalize-UsbLetter ([string]$req.usbDriveLetter)
-  if ($action -eq 'status') {
-    Emit (Get-ReinstallStatus $workspaceRoot $usbDriveLetter)
+  $parsed = $null
+  try { if ($text) { $parsed = $text | ConvertFrom-Json -ErrorAction Stop } } catch {}
+  if ($parsed) {
+    $parsed | Add-Member -NotePropertyName managedScript -NotePropertyValue $managed -Force
+    Emit $parsed $code
   }
-  if ($action -eq 'preflight') {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $usb = $null
-    try {
-      $volume = Get-Volume -DriveLetter $usbDriveLetter -ErrorAction Stop
-      $usb = [pscustomobject]@{
-        driveLetter = $usbDriveLetter
-        driveType = [string]$volume.DriveType
-        fileSystem = [string]$volume.FileSystem
-        sizeGB = [math]::Round(([double]$volume.Size / 1GB), 2)
-        freeGB = [math]::Round(([double]$volume.SizeRemaining / 1GB), 2)
-        removable = ([string]$volume.DriveType -eq 'Removable')
-      }
-    } catch { $usb = [pscustomobject]@{ driveLetter = $usbDriveLetter; error = $_.Exception.Message } }
-    $bitlocker = $null
-    try {
-      $blv = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction Stop
-      $bitlocker = [pscustomobject]@{ protectionStatus = [string]$blv.ProtectionStatus; volumeStatus = [string]$blv.VolumeStatus; encryptionPercentage = [int]$blv.EncryptionPercentage }
-    } catch {}
-    $status = Get-ReinstallStatus $workspaceRoot $usbDriveLetter
-    $blockers = New-Object System.Collections.Generic.List[string]
-    if (-not $isAdmin) { $blockers.Add('not-elevated') }
-    if ($usb.error) { $blockers.Add('usb-not-found') }
-    elseif ($usb.removable -ne $true) { $blockers.Add('usb-not-removable') }
-    elseif ($usb.freeGB -lt 12) { $blockers.Add('usb-free-space-low') }
-    Emit ([pscustomobject]@{
-      ok = ($blockers.Count -eq 0)
-      action = 'preflight'
-      computerName = $env:COMPUTERNAME
-      osCaption = if ($os) { [string]$os.Caption } else { '' }
-      osVersion = if ($os) { [string]$os.Version } else { '' }
-      isAdmin = $isAdmin
-      usb = $usb
-      bitLockerC = $bitlocker
-      status = $status
-      blockers = @($blockers)
-    }) $(if ($blockers.Count -eq 0) { 0 } else { 1 })
-  }
-  if ($action -eq 'prepare') {
-    Invoke-ManagedPrepare $workspaceRoot $usbDriveLetter
-  }
-  if ($action -eq 'arm') {
-    Invoke-ManagedArm $workspaceRoot $usbDriveLetter
-  }
-  throw ('unsupported reinstall action: ' + $action)
+  Emit ([pscustomobject]@{ ok = ($code -eq 0); action = [string]$req.action; managedScript = $managed; text = $text }) $code
 } catch {
-  $workspaceRoot = if ([string]::IsNullOrWhiteSpace([string]$req.workspaceRoot)) { 'C:\\ProgramData\\Soty\\WindowsReinstall' } else { [string]$req.workspaceRoot }
-  $usbDriveLetter = Normalize-UsbLetter ([string]$req.usbDriveLetter)
-  $status = $null
-  try { $status = Get-ReinstallStatus $workspaceRoot $usbDriveLetter } catch {}
-  Emit ([pscustomobject]@{
-    ok = $false
-    action = [string]$req.action
-    error = $_.Exception.Message
-    status = $status
-  }) 1
+  Emit ([pscustomobject]@{ ok = $false; action = [string]$req.action; error = $_.Exception.Message }) 1
 }
 `.trim();
+}
+
+function sourceManagedWindowsReinstallScript(args) {
+  return sourceManagedWindowsReinstallBootstrap(args);
 }
 
 function sourceFileScript(args) {
@@ -6301,6 +6465,25 @@ async function runControlCli(args) {
     }
     return;
   }
+  if (command === "toolkit" || command === "toolkits") {
+    const subcommand = args[1] || "describe";
+    if (subcommand === "describe" || subcommand === "contract" || subcommand === "info") {
+      const response = await fetch(`http://127.0.0.1:${port}/operator/toolkits`, { cache: "no-store" });
+      const payload = await response.json();
+      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+      process.exit(response.ok && payload.ok ? 0 : 1);
+    }
+    if (subcommand === "list" || subcommand === "ls" || subcommand === "status" || subcommand === "show" || subcommand === "stop" || subcommand === "cancel") {
+      return await runControlCli(["action", ...args.slice(1)]);
+    }
+    if (subcommand === "run" || subcommand === "script") {
+      const rest = args.slice(2);
+      const hasToolkit = rest.some((item) => item === "--toolkit" || String(item || "").startsWith("--toolkit="));
+      return await runControlCli(["action", subcommand, ...(hasToolkit ? rest : ["--toolkit", "durable-action", ...rest])]);
+    }
+    process.stderr.write("sotyctl toolkit describe | toolkit list | toolkit status <job-id> | toolkit stop <job-id> | toolkit run [--toolkit=name] <target> <command> | toolkit script [--toolkit=name] <target> <file> [shell]\n");
+    process.exit(2);
+  }
   if (command === "action" || command === "actions") {
     const subcommand = args[1] || "list";
     if (subcommand === "list" || subcommand === "ls") {
@@ -6342,7 +6525,7 @@ async function runControlCli(args) {
       const target = parsed.args[0] || "";
       const remoteCommand = parsed.args.slice(1).join(" ");
       if (!target || !remoteCommand) {
-        process.stderr.write("sotyctl action run [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <command>\n");
+        process.stderr.write("sotyctl action run [--toolkit=name] [--phase=name] [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <command>\n");
         process.exit(2);
       }
       const response = await fetch(`http://127.0.0.1:${port}/operator/action`, {
@@ -6365,7 +6548,7 @@ async function runControlCli(args) {
       const filePath = parsed.args[1] || "";
       const shell = parsed.shell || parsed.args[2] || "";
       if (!target || !filePath) {
-        process.stderr.write("sotyctl action script [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
+        process.stderr.write("sotyctl action script [--toolkit=name] [--phase=name] [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
         process.exit(2);
       }
       const script = await readFile(filePath, "utf8");
@@ -6677,7 +6860,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge|global-review [--dry-run] [--strict] | import <file>\n");
+  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge|global-review [--dry-run] [--strict] | import <file>\n");
   process.exit(2);
 }
 
@@ -6686,11 +6869,14 @@ function parseActionCtlOptions(args) {
   let timeoutMs = 0;
   let sourceDeviceId = "";
   let sourceRelayId = "";
+  let toolkit = "";
+  let phase = "";
   let family = "";
   let kind = "";
   let risk = "";
   let shell = "";
   let idempotencyKey = "";
+  let improvement = "";
   let detached = false;
   while (rest.length > 0) {
     const head = rest[0] || "";
@@ -6727,6 +6913,26 @@ function parseActionCtlOptions(args) {
     if (head.startsWith("--family=")) {
       family = cleanActionToken(head.slice("--family=".length), "");
       rest.shift();
+      continue;
+    }
+    if (head.startsWith("--toolkit=")) {
+      toolkit = normalizeToolkitName(head.slice("--toolkit=".length));
+      rest.shift();
+      continue;
+    }
+    if (head === "--toolkit" && rest.length > 1) {
+      toolkit = normalizeToolkitName(rest[1]);
+      rest.splice(0, 2);
+      continue;
+    }
+    if (head.startsWith("--phase=")) {
+      phase = cleanActionToken(head.slice("--phase=".length), "");
+      rest.shift();
+      continue;
+    }
+    if (head === "--phase" && rest.length > 1) {
+      phase = cleanActionToken(rest[1], "");
+      rest.splice(0, 2);
       continue;
     }
     if (head === "--family" && rest.length > 1) {
@@ -6774,6 +6980,16 @@ function parseActionCtlOptions(args) {
       rest.splice(0, 2);
       continue;
     }
+    if (head.startsWith("--improvement=")) {
+      improvement = cleanActionText(head.slice("--improvement=".length), 240);
+      rest.shift();
+      continue;
+    }
+    if (head === "--improvement" && rest.length > 1) {
+      improvement = cleanActionText(rest[1], 240);
+      rest.splice(0, 2);
+      continue;
+    }
     if (head.startsWith("--request-id=")) {
       idempotencyKey = cleanActionId(head.slice("--request-id=".length));
       rest.shift();
@@ -6791,7 +7007,7 @@ function parseActionCtlOptions(args) {
     }
     break;
   }
-  return { timeoutMs, sourceDeviceId, sourceRelayId, family, kind, risk, shell, idempotencyKey, detached, args: rest };
+  return { timeoutMs, sourceDeviceId, sourceRelayId, toolkit, phase, family, kind, risk, shell, idempotencyKey, improvement, detached, args: rest };
 }
 
 function actionCtlRequestOptions(parsed) {
@@ -6799,10 +7015,13 @@ function actionCtlRequestOptions(parsed) {
     ...(parsed.sourceDeviceId ? { sourceDeviceId: parsed.sourceDeviceId } : {}),
     ...(parsed.sourceRelayId ? { sourceRelayId: parsed.sourceRelayId } : {}),
     ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {}),
+    ...(parsed.toolkit ? { toolkit: parsed.toolkit } : {}),
+    ...(parsed.phase ? { phase: parsed.phase } : {}),
     ...(parsed.family ? { family: parsed.family } : {}),
     ...(parsed.kind ? { kind: parsed.kind } : {}),
     ...(parsed.risk ? { risk: parsed.risk } : {}),
     ...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {}),
+    ...(parsed.improvement ? { improvement: parsed.improvement } : {}),
     ...(parsed.detached ? { detached: true } : {})
   };
 }
@@ -6824,6 +7043,8 @@ function formatActionJobLine(job) {
   return [
     job.createdAt || "",
     job.status || "",
+    job.toolkit || "",
+    job.phase || "",
     job.family || "",
     job.mode || "",
     job.risk || "",
@@ -7077,6 +7298,7 @@ function runtimeHealth() {
     codexProxyScheme: proxyScheme(codexProxyUrl),
     learning: learningStatus(),
     opsSkill: opsSkillStatus(),
+    automationToolkits: automationToolkitStatus(),
     ...(process.platform === "win32" ? {
       windowsUser: windowsUserName(),
       system: isWindowsSystem(),
@@ -7088,6 +7310,38 @@ function runtimeHealth() {
       system: isUnixRoot(),
       maintenance: agentScope === "Machine" && isUnixRoot()
     })
+  };
+}
+
+function automationToolkitStatus() {
+  return {
+    schema: "soty.automation-toolkits.v1",
+    policy: "first-class-toolkit-before-ad-hoc-script",
+    chat: "bare-facts",
+    frontDoor: "soty_toolkit",
+    defaultKernel: "soty_action",
+    terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"],
+    available: ["universal-toolkit", "durable-action", "windows-reinstall"],
+    toolkits: [
+      {
+        name: "universal-toolkit",
+        entryTool: "soty_toolkit",
+        phases: ["describe", "start", "status", "stop", "list", "reinstall"],
+        proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"]
+      },
+      {
+        name: "durable-action",
+        entryTool: "soty_action",
+        phases: ["start", "status", "stop"],
+        proof: ["jobId", "statusPath", "resultPath", "proof"]
+      },
+      {
+        name: "windows-reinstall",
+        entryTool: "soty_reinstall",
+        phases: ["preflight", "prepare", "status", "arm"],
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"]
+      }
+    ]
   };
 }
 
