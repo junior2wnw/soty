@@ -1,7 +1,7 @@
 {
-  "version": "0.3.134",
+  "version": "0.3.135",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "ed9a79c4d49a5c8e24dbe3f467368f921c8d25c80101d851bf711ef561cdd613",
+  "sha256": "7d31908715739dfc329069b47e250c51e37491449bdd5fd96d925cb0e270d9d5",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
@@ -19,8 +19,8 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "bfaa67036c2406cc3072a1a59057fa7c5c55bf4934e3ceb5c511e822132c8314",
-        "bytes": 17105
+        "sha256": "7a8ccb6ab2c239f3282cff07ca895601f0195111047e66c5136bd4710ed7a9f4",
+        "bytes": 17857
       },
       {
         "name": "prepare",
@@ -110,8 +110,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "bfaa67036c2406cc3072a1a59057fa7c5c55bf4934e3ceb5c511e822132c8314",
-            "bytes": 17105
+            "sha256": "7a8ccb6ab2c239f3282cff07ca895601f0195111047e66c5136bd4710ed7a9f4",
+            "bytes": 17857
           },
           {
             "name": "prepare",

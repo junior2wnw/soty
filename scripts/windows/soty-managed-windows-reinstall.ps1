@@ -40,12 +40,27 @@ function Read-JsonFile([string] $Path) {
 
 function Tail-Text([string] $Path, [int] $Chars = 4000) {
   if (-not (Test-Path -LiteralPath $Path)) { return "" }
+  $stream = $null
   try {
-    $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    $bytesToRead = [Math]::Min([int64] $item.Length, [int64] ([Math]::Max(1024, $Chars * 4)))
+    $buffer = New-Object byte[] $bytesToRead
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    [void] $stream.Seek(-$bytesToRead, [System.IO.SeekOrigin]::End)
+    $read = $stream.Read($buffer, 0, $buffer.Length)
+    $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $read)
     if ($text.Length -gt $Chars) { return $text.Substring($text.Length - $Chars) }
     return $text
   } catch {
-    return ""
+    try {
+      $text = (Get-Content -LiteralPath $Path -Tail 80 -ErrorAction Stop | Out-String)
+      if ($text.Length -gt $Chars) { return $text.Substring($text.Length - $Chars) }
+      return $text
+    } catch {
+      return ""
+    }
+  } finally {
+    if ($stream) { $stream.Dispose() }
   }
 }
 

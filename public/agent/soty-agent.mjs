@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.134";
+const agentVersion = "0.3.135";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5124,7 +5124,7 @@ function runMcpServer() {
       return mcpToolText("! confirmation-phrase", true, 2);
     }
     if (action === "preflight" || action === "status") {
-      const minimumTimeoutMs = action === "preflight" ? 120_000 : 90_000;
+      const minimumTimeoutMs = action === "preflight" ? 90_000 : 60_000;
       const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,

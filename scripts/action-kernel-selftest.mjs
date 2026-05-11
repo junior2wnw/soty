@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.134");
+      assertEqual(health.body.version, "0.3.135");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("universal-toolkit"));
@@ -335,6 +335,13 @@ async function runScenarios() {
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes("Get-ManagedScript"));
       assert(managed.includes("managed account must be passwordless"));
+      assert(managed.includes("[System.IO.File]::Open"));
+      const tailTextStart = managed.indexOf("function Tail-Text");
+      const tailTextEnd = managed.indexOf("function Normalize-UsbLetter");
+      const tailTextBody = managed.slice(tailTextStart, tailTextEnd);
+      assert(tailTextStart >= 0 && tailTextEnd > tailTextStart);
+      assert(!tailTextBody.includes("Get-Content -LiteralPath $Path -Raw"));
+      assert(tailTextBody.includes("Get-Content -LiteralPath $Path -Tail 80"));
       assert(prepare.includes("Invoke-ResumableDownload"));
       assert(prepare.includes('"-C", "-"'));
       assert(prepare.includes("Windows image download did not complete within the retry window"));
@@ -361,7 +368,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.134");
+      assertEqual(manifest.version, "0.3.135");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
