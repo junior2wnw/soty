@@ -39,7 +39,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.137");
+      assertEqual(health.body.version, "0.3.138");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("universal-toolkit"));
@@ -336,6 +336,8 @@ async function runScenarios() {
       assert(agent.includes("managed-reinstall-toolkit-required"));
       assert(agent.includes("managed_reinstall_wait_rule"));
       assert(agent.includes("waitMs"));
+      assert(agent.includes("reusedExistingPrepare"));
+      assert(agent.includes("isReinstallPrepareActive"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes("Get-ManagedScript"));
@@ -373,7 +375,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.137");
+      assertEqual(manifest.version, "0.3.138");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");

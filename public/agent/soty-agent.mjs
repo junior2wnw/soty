@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.137";
+const agentVersion = "0.3.138";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5169,6 +5169,49 @@ function runMcpServer() {
         route: `soty_reinstall.${action}`
       });
     }
+    const shouldWait = action === "prepare" && args.waitForCompletion !== false;
+    if (action === "prepare") {
+      const existingStatusResult = await readSotyReinstallStatus(managedReinstallStatusRequest(usbDriveLetter));
+      const existingStatus = parseReinstallStatusResult(existingStatusResult);
+      if (existingStatus) {
+        const existingInitial = {
+          ok: true,
+          action: "prepare",
+          status: "running",
+          reusedExistingPrepare: true,
+          reason: "managed-prepare-already-active-or-ready"
+        };
+        const terminal = evaluateReinstallPrepareTerminal(existingStatus, existingInitial, 0);
+        if (terminal) {
+          return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
+        }
+        if (isReinstallPrepareActive(existingStatus)) {
+          if (shouldWait) {
+            const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
+            const waited = await waitForSotyReinstallPrepare({
+              request,
+              initial: existingInitial,
+              waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
+              requestedWaitTimeoutMs
+            });
+            return mcpToolJson(waited, waited.ok === false, waited.exitCode);
+          }
+          return mcpToolJson({
+            ...existingInitial,
+            statusSnapshot: existingStatus,
+            nextTool: {
+              name: "soty_reinstall",
+              args: {
+                action: "status",
+                waitMs: 45_000,
+                timeoutMs: 45_000
+              }
+            },
+            agentGuidance: "An existing managed prepare is already active. Continue with soty_reinstall status; do not start another prepare."
+          });
+        }
+      }
+    }
     const keyDate = new Date().toISOString().slice(0, 10).replace(/-/gu, "");
     const keyMinute = Math.floor(Date.now() / 60_000);
     const sourceToken = cleanActionId(String(mcpSourceDeviceId || "").slice(0, 24)) || "source";
@@ -5195,7 +5238,6 @@ function runMcpServer() {
       timeoutMs: mcpSafeTimeout(args.timeoutMs, action === "prepare" ? 120_000 : 90_000)
     });
     const payload = result.payload || result;
-    const shouldWait = action === "prepare" && args.waitForCompletion !== false;
     if (shouldWait) {
       const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
       const waited = await waitForSotyReinstallPrepare({
@@ -5427,11 +5469,6 @@ function runMcpServer() {
 
   function evaluateReinstallPrepareTerminal(status, initial, elapsedMs) {
     const readyBlockers = reinstallReadyBlockers(status);
-    const media = status?.media && typeof status.media === "object" ? status.media : null;
-    const mediaActive = media?.downloading === true && (
-      media?.active === true
-      || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < 900)
-    );
     if (status?.ready === true && readyBlockers.length === 0) {
       return {
         ok: true,
@@ -5460,7 +5497,7 @@ function runMcpServer() {
         statusSnapshot: status
       };
     }
-    if (mediaActive) {
+    if (isReinstallPrepareActive(status)) {
       return null;
     }
     const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
@@ -5480,6 +5517,20 @@ function runMcpServer() {
       };
     }
     return null;
+  }
+
+  function isReinstallPrepareActive(status) {
+    const media = status?.media && typeof status.media === "object" ? status.media : null;
+    const mediaActive = media?.downloading === true && (
+      media?.active === true
+      || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < 900)
+    );
+    if (mediaActive) {
+      return true;
+    }
+    const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+    const latestStatus = String(latest?.status || "").toLowerCase();
+    return latestStatus === "running-or-started" || latestStatus === "running" || latestStatus === "created";
   }
 
   function reinstallReadyBlockers(status) {
