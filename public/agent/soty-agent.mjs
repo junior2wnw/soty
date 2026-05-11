@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.131";
+const agentVersion = "0.3.132";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5093,7 +5093,7 @@ function runMcpServer() {
         script: sourceManagedWindowsReinstallScript(request),
         shell: "powershell",
         name: `soty-reinstall-${action}`,
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, action === "preflight" ? 45_000 : 30_000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, action === "preflight" ? 120_000 : 90_000)
       });
       return await mcpToolJsonTextWithSourceStatus(result, {
         toolkit: "windows-reinstall",

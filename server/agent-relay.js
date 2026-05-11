@@ -874,8 +874,8 @@ function sourceJobDiagnostic(job, now = Date.now()) {
   const reason = finished
     ? (job.exitCode === 0 ? "ok" : "nonzero-exit")
     : leased
-      ? "reply-wait-timeout-after-lease"
-      : "reply-wait-timeout-before-pickup";
+      ? "running-on-device"
+      : "waiting-for-device-pickup";
   return {
     reason,
     job: publicSourceJobDiagnostic(job, now),
