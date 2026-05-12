@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.143";
+const agentVersion = "0.3.144";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1919,7 +1919,8 @@ function fastRoutineFileReportSpec(count) {
       "$sizes = @(128, 512, 2048, 4096, 8192, 12288, 16384, 24576, 32768)",
       "for ($i = 0; $i -lt $count; $i++) {",
       "  $path = Join-Path $dir ('item-' + ($i + 1) + '.bin')",
-      "  $bytes = New-Object byte[] $sizes[$i]",
+      "  $size = [int]$sizes[$i]",
+      "  $bytes = New-Object byte[] $size",
       "  [System.IO.File]::WriteAllBytes($path, $bytes)",
       "}",
       "$largest = Get-ChildItem -LiteralPath $dir -File | Sort-Object Length -Descending | Select-Object -First 1",
