@@ -8616,6 +8616,16 @@ async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
   if (existsSync(join(target, "SKILL.md"))) {
     const marker = await readJsonFile(join(target, ".soty-skill-bundle.json"));
     if (marker?.tarSha256 === skill.tarSha256 || (skill.zipSha256 && marker?.zipSha256 === skill.zipSha256)) {
+      if (typeof skill.revision === "string" && skill.revision && marker?.revision !== skill.revision) {
+        await writeFile(join(target, ".soty-skill-bundle.json"), JSON.stringify({
+          ...marker,
+          tarSha256: skill.tarSha256,
+          zipSha256: typeof skill.zipSha256 === "string" ? skill.zipSha256 : marker?.zipSha256 || "",
+          revision: skill.revision,
+          installedAt: marker?.installedAt || new Date().toISOString(),
+          metadataRefreshedAt: new Date().toISOString()
+        }, null, 2), "utf8").catch(() => undefined);
+      }
       return false;
     }
   }
