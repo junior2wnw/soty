@@ -5,6 +5,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildTeacherReport } from "../server/agent-learning.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceAgentPath = join(root, "scripts", "soty-agent.mjs");
@@ -39,7 +40,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.138");
+      assertEqual(health.body.version, "0.3.139");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("universal-toolkit"));
@@ -338,6 +339,8 @@ async function runScenarios() {
       assert(agent.includes("waitMs"));
       assert(agent.includes("reusedExistingPrepare"));
       assert(agent.includes("isReinstallPrepareActive"));
+      assert(agent.includes("post-arm-rebooting"));
+      assert(agent.includes("rememberPostArmReboot"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes("Get-ManagedScript"));
@@ -375,7 +378,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.138");
+      assertEqual(manifest.version, "0.3.139");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -391,6 +394,33 @@ async function runScenarios() {
       const durableKernel = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "durable-action");
       assert(durableKernel);
       assertEqual(durableKernel.entryTool, "soty_action");
+    }],
+    ["learning teacher preserves phase and explains post-arm source loss", async () => {
+      const report = buildTeacherReport([
+        {
+          kind: "action-job",
+          result: "ok",
+          toolkit: "windows-reinstall",
+          phase: "arm",
+          family: "windows-reinstall",
+          route: "agent-source.script",
+          proof: "toolkit=windows-reinstall; phase=arm; exitCode=0; rebooting=true; backupProof=ok",
+          exitCode: 0,
+          createdAt: "2026-05-11T16:36:23.370Z"
+        },
+        {
+          kind: "source-command",
+          result: "timeout",
+          family: "windows-reinstall",
+          route: "agent-source.script",
+          proof: "exitCode=124; diagnostic=nonzero-exit; sourceConnected=false; source-stale",
+          exitCode: 124,
+          createdAt: "2026-05-11T16:38:55.956Z"
+        }
+      ], { limit: 2 });
+      assert(report.topSuccesses.some((item) => item.phase === "arm"));
+      assert(report.recommendations.some((item) => item.title === "Stop source probes after managed arm reboot"));
+      assert(report.candidates.some((item) => item.marker.includes("post-arm reboot window")));
     }]
   ];
   assert(cases.length >= 50);

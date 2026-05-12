@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.138";
+const agentVersion = "0.3.139";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -794,7 +794,7 @@ async function runActionJob(job, action) {
   const durationMs = Math.max(0, finished - started);
   const text = String(execution.text || "").slice(-1_000_000);
   const route = cleanActionText(execution.route || `operator-action.${action.mode}`, 120);
-  const proof = buildActionProof({ action, execution: { ...execution, exitCode, route, text }, status });
+  const proof = enrichActionProof(action, text, buildActionProof({ action, execution: { ...execution, exitCode, route, text }, status }));
   const resultDoc = {
     schema: "soty.action.result.v1",
     jobId: job.id,
@@ -1019,6 +1019,23 @@ function buildActionProof({ action, execution, status }) {
   }
   const diagnostic = sourceDiagnosticProof(execution.diagnostic);
   return `${toolkitProof}exitCode=${exitCode}; family=${action.family}; route=${execution.route}; proof=${sourceFailureProof(execution.text)}${diagnostic ? `; ${diagnostic}` : ""}`;
+}
+
+function enrichActionProof(action, text, proof) {
+  if (action?.family !== "windows-reinstall") {
+    return proof;
+  }
+  const phase = String(action.phase || action.actionType || "").toLowerCase();
+  if (phase !== "arm") {
+    return proof;
+  }
+  const parsed = parseJsonObject(text);
+  const result = parsed?.result && typeof parsed.result === "object" ? parsed.result : null;
+  if (result?.rebooting === true) {
+    const backupOk = result.backupProof?.ok === true ? "; backupProof=ok" : "";
+    return `${proof}; rebooting=true${backupOk}`;
+  }
+  return proof;
 }
 
 async function writeActionJob(job) {
@@ -4360,6 +4377,7 @@ function runMcpServer() {
   const mcpTarget = arg("--target") || process.env.SOTY_MCP_TARGET || "";
   const mcpSourceDeviceId = arg("--source-device") || process.env.SOTY_MCP_SOURCE_DEVICE || "";
   const mcpSourceRelayId = safeRelayId(arg("--source-relay") || process.env.SOTY_MCP_SOURCE_RELAY || "");
+  let mcpPostArmReboot = null;
   let mcpBuffer = Buffer.alloc(0);
   process.stdin.on("data", (chunk) => {
     mcpBuffer = Buffer.concat([mcpBuffer, chunk]);
@@ -5144,6 +5162,18 @@ function runMcpServer() {
       return mcpToolText("! confirmation-phrase", true, 2);
     }
     if (action === "preflight" || action === "status") {
+      if (action === "status" && mcpPostArmReboot && Date.now() - mcpPostArmReboot.createdAt < 90 * 60_000) {
+        return mcpToolJson({
+          ok: true,
+          action: "status",
+          status: "rebooting",
+          terminalReason: "post-arm-rebooting",
+          text: "Windows reinstall has been armed and the PC is rebooting. Do not poll the source device until the designed return path is due.",
+          exitCode: 0,
+          postArm: mcpPostArmReboot,
+          agentGuidance: "Stop source/LINK status probes after arm rebooting=true. Tell the user connection may drop during reinstall and wait for the return path."
+        });
+      }
       const minimumTimeoutMs = action === "preflight" ? 90_000 : 45_000;
       const operatorTimeoutMs = Math.max(mcpSafeTimeout(args.timeoutMs, minimumTimeoutMs), minimumTimeoutMs);
       if (action === "status") {
@@ -5238,6 +5268,29 @@ function runMcpServer() {
       timeoutMs: mcpSafeTimeout(args.timeoutMs, action === "prepare" ? 120_000 : 90_000)
     });
     const payload = result.payload || result;
+    if (action === "arm" && args.waitForCompletion !== false) {
+      const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, mcpInlineToolBudgetMs);
+      const terminal = await waitForMcpActionTerminal(payload, {
+        waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
+        progressKind: "windows-reinstall-arm",
+        pollDelayMs: 1000
+      });
+      const postArm = rememberPostArmReboot(terminal);
+      if (postArm) {
+        return mcpToolJson({
+          ...terminal,
+          ok: true,
+          action: "arm",
+          status: "rebooting",
+          terminalReason: "post-arm-rebooting",
+          text: "Windows reinstall has been armed and the PC is rebooting. Connection may drop during reinstall.",
+          exitCode: 0,
+          postArm,
+          agentGuidance: "Do not call soty_reinstall status, soty_link_status, hostname, or health probes against this source after rebooting=true. Give the user the post-arm handoff and wait for the designed return path."
+        });
+      }
+      return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
+    }
     if (shouldWait) {
       const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
       const waited = await waitForSotyReinstallPrepare({
@@ -5251,7 +5304,7 @@ function runMcpServer() {
     return mcpToolJson(payload, !result.ok, result.exitCode);
   }
 
-  async function waitForMcpActionTerminal(initial, { waitTimeoutMs = maxLongTaskTimeoutMs, progressKind = "action" } = {}) {
+  async function waitForMcpActionTerminal(initial, { waitTimeoutMs = maxLongTaskTimeoutMs, progressKind = "action", pollDelayMs = 15_000 } = {}) {
     const jobId = String(initial?.jobId || initial?.id || "").trim();
     if (!jobId) {
       return initial;
@@ -5268,7 +5321,7 @@ function runMcpServer() {
         lastProgressAt = Date.now();
         await postMcpAgentProgress("Работа продолжается. Остановлюсь на результате, ошибке или нужном действии от вас.");
       }
-      await sleep(15_000);
+      await sleep(Math.max(250, Math.min(15_000, pollDelayMs)));
       const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
       lastPayload = result.payload || {
         ok: false,
@@ -5409,6 +5462,17 @@ function runMcpServer() {
   }
 
   async function mcpToolManagedReinstallActionStatus(payload, result) {
+    const postArm = rememberPostArmReboot(payload);
+    if (postArm) {
+      return mcpToolJson({
+        ...payload,
+        ok: true,
+        status: "rebooting",
+        terminalReason: "post-arm-rebooting",
+        postArm,
+        agentGuidance: "The managed arm already reached rebooting=true. Do not read live source status now; the source is expected to disconnect during reinstall."
+      }, false, 0);
+    }
     const statusResult = await readSotyReinstallStatus(managedReinstallStatusRequest());
     const liveStatus = parseReinstallStatusResult(statusResult);
     const body = {
@@ -5418,6 +5482,47 @@ function runMcpServer() {
       agentGuidance: "For managed Windows reinstall progress use liveStatus or soty_reinstall status. Do not crawl C:\\ProgramData\\Soty\\WindowsReinstall with soty_script, soty_run, or soty_file."
     };
     return mcpToolJson(body, !result.ok || !liveStatus, result.exitCode || statusResult.exitCode);
+  }
+
+  function rememberPostArmReboot(payload) {
+    const postArm = managedReinstallPostArm(payload);
+    if (postArm?.rebooting === true) {
+      mcpPostArmReboot = {
+        ...postArm,
+        createdAt: Date.now()
+      };
+      return mcpPostArmReboot;
+    }
+    return null;
+  }
+
+  function managedReinstallPostArm(payload) {
+    const job = payload?.job && typeof payload.job === "object" ? payload.job : payload;
+    const phase = String(payload?.phase || payload?.result?.phase || job?.phase || job?.kind || "").toLowerCase();
+    const family = String(payload?.family || payload?.result?.family || job?.family || "").toLowerCase();
+    if (family !== "windows-reinstall" && phase !== "arm") {
+      return null;
+    }
+    const parsed = parseJsonObject(payload?.result?.output?.tail || payload?.text || payload?.output?.tail || "");
+    const armResult = parsed?.action === "arm" && parsed?.result && typeof parsed.result === "object"
+      ? parsed.result
+      : parsed?.rebooting === true
+        ? parsed
+        : null;
+    if (armResult?.rebooting !== true) {
+      return null;
+    }
+    const backupProof = armResult.backupProof && typeof armResult.backupProof === "object" ? armResult.backupProof : {};
+    return {
+      rebooting: true,
+      caseId: cleanActionText(armResult.caseId || "", 80),
+      backupProofOk: backupProof.ok === true,
+      backupRootExists: backupProof.backupRootExists === true,
+      wifiProfileCount: Number.isSafeInteger(backupProof.wifiProfileCount) ? backupProof.wifiProfileCount : undefined,
+      driverInfCount: Number.isSafeInteger(backupProof.driverInfCount) ? backupProof.driverInfCount : undefined,
+      rootAutounattend: backupProof.rootAutounattend === true,
+      oemSetupComplete: backupProof.oemSetupComplete === true
+    };
   }
 
   async function maybeRedirectManagedReinstallProbe(toolName, text) {

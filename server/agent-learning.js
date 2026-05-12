@@ -85,7 +85,7 @@ async function readRecentLearningReceiptsFromDir(learningDir, limit = 50) {
   return lines.slice(-Math.max(1, Math.min(2000, limit)));
 }
 
-function buildTeacherReport(receipts, { limit = 800 } = {}) {
+export function buildTeacherReport(receipts, { limit = 800 } = {}) {
   const rows = receipts.filter((item) => item && typeof item === "object");
   const familyCounts = countBy(rows, (item) => item.family || "generic");
   const resultCounts = countBy(rows, (item) => item.result || "unknown");
@@ -94,12 +94,16 @@ function buildTeacherReport(receipts, { limit = 800 } = {}) {
     .filter((item) => ["failed", "blocked", "timeout", "partial"].includes(item.result)), (item) => [
       item.family || "generic",
       item.result || "failed",
+      item.toolkit || "",
+      item.phase || "",
       item.route || "unknown",
       Number.isSafeInteger(item.exitCode) ? String(item.exitCode) : "no-exit"
     ].join("|"));
   const topSuccesses = groupRows(rows
     .filter((item) => item.result === "ok"), (item) => [
       item.family || "generic",
+      item.toolkit || "",
+      item.phase || "",
       item.route || "unknown"
     ].join("|"));
   const recommendations = buildRecommendations(rows, topFailures);
@@ -167,6 +171,8 @@ function groupRows(rows, keyFn) {
       key,
       count: 0,
       family: cleanText(row.family, 80) || "generic",
+      toolkit: cleanText(row.toolkit, 80),
+      phase: cleanText(row.phase, 80),
       result: cleanText(row.result, 40),
       route: cleanText(row.route, 120),
       exitCode: Number.isSafeInteger(row.exitCode) ? row.exitCode : undefined,
@@ -215,7 +221,17 @@ function uniqueCount(rows, keyFn) {
 function buildRecommendations(rows, topFailures) {
   const recommendations = [];
   const windowsRows = rows.filter((item) => item.family === "windows-reinstall");
-  const windowsFailures = windowsRows.filter((item) => item.result !== "ok");
+  const postArmLosses = postArmSourceDisconnectRows(rows);
+  if (postArmLosses.length > 0) {
+    recommendations.push({
+      priority: "high",
+      family: "windows-reinstall",
+      title: "Stop source probes after managed arm reboot",
+      action: "When a managed reinstall arm succeeds with rebooting=true, treat source-stale/timeouts for the next boot window as expected. Do not call live source status; give the post-arm handoff and wait for the designed return path."
+    });
+  }
+  const postArmLossSet = new Set(postArmLosses);
+  const windowsFailures = windowsRows.filter((item) => item.result !== "ok" && !postArmLossSet.has(item));
   if (windowsRows.length > 0) {
     if (windowsFailures.length > 0) {
       recommendations.push({
@@ -256,7 +272,23 @@ function buildRecommendations(rows, topFailures) {
 
 function buildPromotionCandidates(rows, failures, successes) {
   const candidates = [];
-  for (const failure of failures.slice(0, 6)) {
+  const postArmLosses = postArmSourceDisconnectRows(rows);
+  if (postArmLosses.length > 0) {
+    candidates.push({
+      scope: postArmLosses.length >= 2 ? "promote" : "candidate",
+      family: "windows-reinstall",
+      marker: `ops-memory: goal=Soty windows-reinstall post-arm reboot window | actual=source disconnect after managed arm reboot | success=do not probe source after rebooting=true | env=soty.learning.teacher count=${postArmLosses.length}`
+    });
+  }
+  const postArmFailureKeys = new Set(postArmLosses.map((item) => [
+    item.family || "generic",
+    item.result || "failed",
+    item.toolkit || "",
+    item.phase || "",
+    item.route || "unknown",
+    Number.isSafeInteger(item.exitCode) ? String(item.exitCode) : "no-exit"
+  ].join("|")));
+  for (const failure of failures.filter((item) => !postArmFailureKeys.has(item.key)).slice(0, 6)) {
     const scope = failure.count >= 2 ? "promote" : "candidate";
     candidates.push({
       scope,
@@ -274,6 +306,68 @@ function buildPromotionCandidates(rows, failures, successes) {
   return candidates.slice(0, 10);
 }
 
+function postArmSourceDisconnectRows(rows) {
+  const armEvents = rows
+    .filter((item) => item.family === "windows-reinstall" && item.result === "ok" && isArmReceipt(item))
+    .map((item) => ({
+      time: Date.parse(cleanIso(item.createdAt) || cleanIso(item.receivedAt) || ""),
+      installHash: cleanText(item.installHash, 120)
+    }))
+    .filter((item) => Number.isFinite(item.time))
+    .sort((left, right) => left.time - right.time);
+  if (armEvents.length === 0) {
+    return [];
+  }
+  return rows.filter((item) => {
+    if (item.family !== "windows-reinstall" || item.result === "ok") {
+      return false;
+    }
+    if (!isSourceDisconnectReceipt(item)) {
+      return false;
+    }
+    const time = Date.parse(cleanIso(item.createdAt) || cleanIso(item.receivedAt) || "");
+    if (!Number.isFinite(time)) {
+      return false;
+    }
+    const installHash = cleanText(item.installHash, 120);
+    return armEvents.some((arm) => {
+      if (installHash && arm.installHash && installHash !== arm.installHash) {
+        return false;
+      }
+      if (installHash && !arm.installHash) {
+        return false;
+      }
+      return time >= arm.time && time - arm.time <= 30 * 60_000;
+    });
+  });
+}
+
+function isArmReceipt(item) {
+  const phase = String(item.phase || "").toLowerCase();
+  const text = [
+    item.toolkit,
+    phase,
+    item.proof,
+    item.commandSig
+  ].map((value) => String(value || "").toLowerCase()).join(" ");
+  return phase === "arm"
+    || /\bphase\s*[:=]\s*arm\b/u.test(text)
+    || /\baction\s*[:=]\s*arm\b/u.test(text)
+    || /\bkind\s*[:=]\s*arm\b/u.test(text);
+}
+
+function isSourceDisconnectReceipt(item) {
+  const text = String(item.proof || "").toLowerCase();
+  const route = String(item.route || "").toLowerCase();
+  const sourceRoute = route.includes("agent-source") || text.includes("! agent-source");
+  const timeoutish = item.result === "timeout" || item.exitCode === 124 || text.includes("timeout");
+  return text.includes("sourceconnected=false")
+    || text.includes("sourceconnected false")
+    || text.includes("source-stale")
+    || text.includes("no active source")
+    || (sourceRoute && timeoutish);
+}
+
 function proofShape(value) {
   const text = redactLearningText(value).slice(0, 300).toLowerCase();
   if (!text) {
@@ -287,6 +381,12 @@ function proofShape(value) {
   }
   if (text.includes("timeout")) {
     return "timeout";
+  }
+  if (text.includes("rebooting=true")) {
+    return "rebooting=true";
+  }
+  if (text.includes("sourceconnected=false") || text.includes("source-stale")) {
+    return "source disconnected";
   }
   if (text.includes("exitcode=0")) {
     return "exitCode=0";
@@ -329,6 +429,8 @@ function cleanReceipt(value) {
   return {
     kind,
     result,
+    toolkit: cleanText(value.toolkit, 80),
+    phase: cleanText(value.phase, 80),
     family: cleanText(value.family, 80),
     platform: cleanText(value.platform, 40),
     codexMode: cleanText(value.codexMode, 80),
