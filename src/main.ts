@@ -80,8 +80,8 @@ if (!root) {
 const app: HTMLDivElement = root;
 installTooltips();
 
-const agentDialogLabel = "Лорд Роя";
-const legacyAgentDialogLabels = ["Codex", "Агент"];
+const agentDialogLabel = "Агент";
+const legacyAgentDialogLabel = "Codex";
 const agentDialogMinVersion = "0.3.16";
 
 let installPrompt: BeforeInstallPromptEvent | null = null;
@@ -1113,7 +1113,7 @@ function hasCounterparty(tunnel: TunnelRecord): boolean {
 
 function counterpartyLabel(tunnel: TunnelRecord): string {
   const label = rawCounterpartyLabel(tunnel);
-  if (tunnel.agent === true || isLegacyAgentDialogLabel(label)) {
+  if (tunnel.agent === true || label.toLowerCase() === legacyAgentDialogLabel.toLowerCase()) {
     return agentDialogLabel;
   }
   return label;
@@ -1231,12 +1231,7 @@ function findActiveAgentDialog(): TunnelRecord | null {
 }
 
 function isAgentTunnel(tunnel: TunnelRecord): boolean {
-  return tunnel.agent === true || isLegacyAgentDialogLabel(rawCounterpartyLabel(tunnel));
-}
-
-function isLegacyAgentDialogLabel(label: string): boolean {
-  const normalized = cleanNick(label).toLowerCase();
-  return legacyAgentDialogLabels.some((item) => normalized === item.toLowerCase());
+  return tunnel.agent === true || rawCounterpartyLabel(tunnel).toLowerCase() === legacyAgentDialogLabel.toLowerCase();
 }
 
 function createFreshDialog(
@@ -4090,7 +4085,7 @@ function isAgentChromeLineClass(className: string): boolean {
 }
 
 function isOperatorHeader(line: string): boolean {
-  return /^(Лорд Роя|Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
+  return /^(Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
 }
 
 function cleanAgentContext(value: string): string {
