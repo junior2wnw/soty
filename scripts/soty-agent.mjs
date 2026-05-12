@@ -1952,7 +1952,7 @@ function redactLearningText(value) {
     .replace(/[A-Za-z]:\\[^\s'"]+/gu, "<path>")
     .replace(/\/(?:Users|home)\/[^\s'"]+/giu, "<path>")
     .replace(/\b[A-Za-z0-9_-]{48,}\b/gu, "<id>")
-    .replace(/\b(?:sk|sess|key|token|secret|password|pwd)[-_A-Za-z0-9]*\b\s*[:=]\s*['"]?[^'"\s]+/giu, "<secret>")
+    .replace(/\b(?:sk|sess|key|token(?!s\b)|secret|password|pwd)[-_A-Za-z0-9]*\b\s*[:=]\s*['"]?[^'"\s]+/giu, "<secret>")
     .replace(/\s+/gu, " ")
     .trim();
 }
