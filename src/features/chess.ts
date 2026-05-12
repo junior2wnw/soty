@@ -251,11 +251,38 @@ export function chooseAgentMove(snapshot: ChessSnapshot): Move | null {
   if (moves.length === 0) {
     return null;
   }
-  const ranked = moves
-    .map((move) => ({ move, score: scoreMove(move) + Math.random() * 18 }))
-    .sort((a, b) => b.score - a.score);
-  const width = Math.min(3, ranked.length);
-  return ranked[Math.floor(Math.random() * width)]?.move ?? moves[0] ?? null;
+  const book = chooseOpeningMove(snapshot, game);
+  if (book) {
+    return book;
+  }
+
+  const agent = agentSide(snapshot);
+  const ordered = orderMoves(moves);
+  let bestMove = ordered[0] ?? moves[0] ?? null;
+  if (!bestMove) {
+    return null;
+  }
+
+  const context: SearchContext = {
+    agent,
+    deadline: Date.now() + searchBudgetMs(game),
+    nodes: 0
+  };
+
+  const maxDepth = searchDepth(game, snapshot.history.length);
+  for (let depth = 1; depth <= maxDepth; depth += 1) {
+    try {
+      const result = searchRoot(game, depth, context, bestMove);
+      bestMove = result.move;
+    } catch (error) {
+      if (error !== searchTimeout) {
+        throw error;
+      }
+      break;
+    }
+  }
+
+  return bestMove;
 }
 
 export function agentSide(snapshot: ChessSnapshot): Color {
@@ -401,37 +428,436 @@ function drawReason(game: Chess): string {
   return "Ничья";
 }
 
-function scoreMove(move: Move): number {
-  let score = 0;
-  if (move.captured) {
-    score += pieceValues[move.captured] - pieceValues[move.piece] * 0.08;
+const searchTimeout = new Error("search timeout");
+const searchInfinity = 9_000_000;
+const checkmateScore = 1_000_000;
+const maxQuiescencePly = 4;
+const openingBook: Record<string, readonly string[]> = {
+  "": ["e4", "d4"],
+  e4: ["c5", "e5", "c6"],
+  "e4 c5 Nf3": ["d6", "Nc6", "e6"],
+  "e4 c5 Nf3 d6 d4": ["cxd4"],
+  "e4 c5 Nf3 Nc6 d4": ["cxd4"],
+  "e4 e5 Nf3": ["Nc6", "Nf6"],
+  "e4 e5 Nf3 Nc6 Bb5": ["a6"],
+  d4: ["Nf6", "d5"],
+  "d4 Nf6 c4": ["e6", "g6"],
+  "d4 Nf6 c4 e6 Nc3": ["Bb4"],
+  "d4 d5 c4": ["e6", "c6"],
+  c4: ["e5", "Nf6"],
+  Nf3: ["d5", "Nf6"],
+  g3: ["d5"],
+  b3: ["e5"]
+};
+
+interface SearchContext {
+  readonly agent: Color;
+  readonly deadline: number;
+  nodes: number;
+}
+
+interface SearchRootResult {
+  readonly move: Move;
+  readonly score: number;
+}
+
+interface BoardPiece {
+  readonly square: Square;
+  readonly type: PieceSymbol;
+  readonly color: Color;
+}
+
+function chooseOpeningMove(snapshot: ChessSnapshot, game: Chess): Move | null {
+  if (snapshot.history.length > 8) {
+    return null;
   }
-  if (move.promotion) {
-    score += pieceValues[move.promotion] + 240;
-  }
-  if (move.isKingsideCastle() || move.isQueensideCastle()) {
-    score += 80;
-  }
-  score += centerBonus(move.to);
-  try {
-    const next = new Chess(move.after);
-    if (next.isCheckmate()) {
-      score += 100_000;
-    } else if (next.isCheck()) {
-      score += 220;
+  const line = snapshot.history.join(" ");
+  const choices = openingBook[line] ?? [];
+  for (const san of choices) {
+    const move = trySanMove(game, san);
+    if (move) {
+      return move;
     }
+  }
+  if (snapshot.history.length === 1) {
+    for (const san of ["e5", "d5", "Nf6", "c5", "e6", "c6"]) {
+      const move = trySanMove(game, san);
+      if (move) {
+        return move;
+      }
+    }
+  }
+  return null;
+}
+
+function trySanMove(game: Chess, san: string): Move | null {
+  try {
+    const move = game.move(san);
+    game.undo();
+    return move;
   } catch {
-    // Keep the simple evaluator moving even if a future chess.js shape changes.
+    return null;
+  }
+}
+
+function searchRoot(game: Chess, depth: number, context: SearchContext, preferred: Move): SearchRootResult {
+  let alpha = -searchInfinity;
+  let bestMove = preferred;
+  let bestScore = -searchInfinity;
+  const moves = orderMoves(game.moves({ verbose: true }), preferred);
+  for (const move of moves) {
+    assertSearchTime(context);
+    makeSearchMove(game, move);
+    const score = minimax(game, depth - 1, alpha, searchInfinity, context, 1);
+    game.undo();
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = move;
+      alpha = Math.max(alpha, score);
+    }
+  }
+  return { move: bestMove, score: bestScore };
+}
+
+function minimax(
+  game: Chess,
+  depth: number,
+  alpha: number,
+  beta: number,
+  context: SearchContext,
+  ply: number
+): number {
+  assertSearchTime(context);
+  const terminal = terminalScore(game, context.agent, ply);
+  if (terminal !== null) {
+    return terminal;
+  }
+  if (depth <= 0) {
+    return quiescence(game, alpha, beta, context, ply, 0);
+  }
+
+  const maximizing = game.turn() === context.agent;
+  const moves = orderMoves(game.moves({ verbose: true }));
+  if (maximizing) {
+    let value = -searchInfinity;
+    for (const move of moves) {
+      makeSearchMove(game, move);
+      value = Math.max(value, minimax(game, depth - 1, alpha, beta, context, ply + 1));
+      game.undo();
+      alpha = Math.max(alpha, value);
+      if (alpha >= beta) {
+        break;
+      }
+    }
+    return value;
+  }
+
+  let value = searchInfinity;
+  for (const move of moves) {
+    makeSearchMove(game, move);
+    value = Math.min(value, minimax(game, depth - 1, alpha, beta, context, ply + 1));
+    game.undo();
+    beta = Math.min(beta, value);
+    if (alpha >= beta) {
+      break;
+    }
+  }
+  return value;
+}
+
+function quiescence(
+  game: Chess,
+  alpha: number,
+  beta: number,
+  context: SearchContext,
+  ply: number,
+  quietPly: number
+): number {
+  assertSearchTime(context);
+  const terminal = terminalScore(game, context.agent, ply);
+  if (terminal !== null) {
+    return terminal;
+  }
+
+  const standPat = evaluatePosition(game, context.agent);
+  if (quietPly >= maxQuiescencePly) {
+    return standPat;
+  }
+
+  const maximizing = game.turn() === context.agent;
+  const tacticalMoves = orderMoves(game.moves({ verbose: true }).filter(isTacticalMove));
+  if (tacticalMoves.length === 0) {
+    return standPat;
+  }
+
+  if (maximizing) {
+    if (standPat >= beta) {
+      return beta;
+    }
+    alpha = Math.max(alpha, standPat);
+    let value = standPat;
+    for (const move of tacticalMoves) {
+      makeSearchMove(game, move);
+      value = Math.max(value, quiescence(game, alpha, beta, context, ply + 1, quietPly + 1));
+      game.undo();
+      alpha = Math.max(alpha, value);
+      if (alpha >= beta) {
+        break;
+      }
+    }
+    return value;
+  }
+
+  if (standPat <= alpha) {
+    return alpha;
+  }
+  beta = Math.min(beta, standPat);
+  let value = standPat;
+  for (const move of tacticalMoves) {
+    makeSearchMove(game, move);
+    value = Math.min(value, quiescence(game, alpha, beta, context, ply + 1, quietPly + 1));
+    game.undo();
+    beta = Math.min(beta, value);
+    if (alpha >= beta) {
+      break;
+    }
+  }
+  return value;
+}
+
+function terminalScore(game: Chess, agent: Color, ply: number): number | null {
+  if (game.isCheckmate()) {
+    return game.turn() === agent ? -checkmateScore + ply : checkmateScore - ply;
+  }
+  if (game.isDraw()) {
+    return 0;
+  }
+  return null;
+}
+
+function evaluatePosition(game: Chess, agent: Color): number {
+  const pieces = piecesOnBoard(game);
+  const endgame = totalNonKingMaterial(pieces) <= 2_700;
+  const pawnsByColor = pawnFiles(pieces);
+  const bishops: Record<Color, number> = { w: 0, b: 0 };
+  let score = 0;
+
+  for (const piece of pieces) {
+    if (piece.type === "b") {
+      bishops[piece.color] += 1;
+    }
+    const signed = piece.color === agent ? 1 : -1;
+    score += signed * (
+      pieceValues[piece.type]
+      + piecePlacementScore(piece, endgame)
+      + pawnStructureScore(piece, pawnsByColor)
+    );
+  }
+
+  if (bishops[agent] >= 2) {
+    score += 35;
+  }
+  const rival = opposite(agent);
+  if (bishops[rival] >= 2) {
+    score -= 35;
+  }
+
+  score += tempoScore(game, agent);
+  return score;
+}
+
+function piecesOnBoard(game: Chess): BoardPiece[] {
+  return game.board().flatMap((rank) => rank.filter(Boolean) as BoardPiece[]);
+}
+
+function totalNonKingMaterial(pieces: readonly BoardPiece[]): number {
+  return pieces.reduce((sum, piece) => piece.type === "k" ? sum : sum + pieceValues[piece.type], 0);
+}
+
+function pawnFiles(pieces: readonly BoardPiece[]): Record<Color, number[]> {
+  const result: Record<Color, number[]> = {
+    w: Array.from({ length: 8 }, () => 0),
+    b: Array.from({ length: 8 }, () => 0)
+  };
+  for (const piece of pieces) {
+    if (piece.type === "p") {
+      const file = fileIndex(piece.square);
+      result[piece.color][file] = (result[piece.color][file] ?? 0) + 1;
+    }
+  }
+  return result;
+}
+
+function piecePlacementScore(piece: BoardPiece, endgame: boolean): number {
+  const file = fileIndex(piece.square);
+  const forward = forwardRank(piece.square, piece.color);
+  const center = centerBonus(piece.square);
+  const edge = Math.max(Math.abs(file - 3.5), Math.abs(Number(piece.square[1]) - 4.5));
+
+  if (piece.type === "p") {
+    return forward * 8 + center * 0.35;
+  }
+  if (piece.type === "n") {
+    return center * 1.4 - edge * 16 + (forward >= 2 ? 12 : 0);
+  }
+  if (piece.type === "b") {
+    return center * 0.75 + (forward >= 2 ? 10 : 0);
+  }
+  if (piece.type === "r") {
+    return forward * 2 + (file === 0 || file === 7 ? 0 : 6);
+  }
+  if (piece.type === "q") {
+    return center * 0.35 - (forward >= 5 ? 6 : 0);
+  }
+
+  return endgame ? center * 1.2 : kingSafetyScore(piece.square, piece.color);
+}
+
+function pawnStructureScore(piece: BoardPiece, pawnsByColor: Record<Color, number[]>): number {
+  if (piece.type !== "p") {
+    return 0;
+  }
+  const file = fileIndex(piece.square);
+  const friendly = pawnsByColor[piece.color];
+  const enemy = pawnsByColor[opposite(piece.color)];
+  let score = 0;
+
+  if ((friendly[file] ?? 0) > 1) {
+    score -= 12;
+  }
+  if ((friendly[file - 1] ?? 0) === 0 && (friendly[file + 1] ?? 0) === 0) {
+    score -= 10;
+  }
+  if (isPassedPawn(piece, enemy)) {
+    score += 22 + forwardRank(piece.square, piece.color) * 12;
   }
   return score;
 }
 
+function isPassedPawn(piece: BoardPiece, enemyFiles: readonly number[]): boolean {
+  const file = fileIndex(piece.square);
+  const rank = Number(piece.square[1]);
+  for (let currentFile = file - 1; currentFile <= file + 1; currentFile += 1) {
+    if ((enemyFiles[currentFile] ?? 0) === 0) {
+      continue;
+    }
+    return false;
+  }
+  return piece.color === "w" ? rank >= 4 : rank <= 5;
+}
+
+function kingSafetyScore(square: Square, color: Color): number {
+  const file = fileIndex(square);
+  const rank = Number(square[1]);
+  const homeRank = color === "w" ? 1 : 8;
+  if (rank === homeRank && (file <= 2 || file >= 5)) {
+    return 42;
+  }
+  if (file >= 3 && file <= 4) {
+    return -38;
+  }
+  return -8;
+}
+
+function tempoScore(game: Chess, agent: Color): number {
+  return game.turn() === agent ? 8 : -8;
+}
+
+function orderMoves(moves: readonly Move[], preferred?: Move): Move[] {
+  return [...moves].sort((a, b) => {
+    const preferredDelta = sameMove(b, preferred) ? 1 : sameMove(a, preferred) ? -1 : 0;
+    if (preferredDelta !== 0) {
+      return preferredDelta;
+    }
+    const scoreDelta = moveOrderingScore(b) - moveOrderingScore(a);
+    return scoreDelta !== 0 ? scoreDelta : moveKey(a).localeCompare(moveKey(b));
+  });
+}
+
+function moveOrderingScore(move: Move): number {
+  let score = 0;
+  if (move.isCapture()) {
+    score += 10_000 + (pieceValues[move.captured ?? "p"] * 10) - pieceValues[move.piece];
+  }
+  if (move.isPromotion()) {
+    score += 15_000 + pieceValues[move.promotion ?? "q"];
+  }
+  if (move.isKingsideCastle() || move.isQueensideCastle()) {
+    score += 600;
+  }
+  if (move.san.includes("#")) {
+    score += 1_000_000;
+  } else if (move.san.includes("+")) {
+    score += 900;
+  }
+  score += centerBonus(move.to);
+  return score;
+}
+
+function isTacticalMove(move: Move): boolean {
+  return move.isCapture() || move.isPromotion() || move.san.includes("+") || move.san.includes("#");
+}
+
+function makeSearchMove(game: Chess, move: Move): void {
+  game.move({ from: move.from, to: move.to, promotion: move.promotion ?? "q" });
+}
+
+function searchDepth(game: Chess, ply: number): number {
+  const pieces = piecesOnBoard(game).length;
+  if (pieces <= 10) {
+    return 5;
+  }
+  if (pieces <= 20 || ply >= 14) {
+    return 4;
+  }
+  return 3;
+}
+
+function searchBudgetMs(game: Chess): number {
+  const pieces = piecesOnBoard(game).length;
+  if (pieces <= 12) {
+    return 1_400;
+  }
+  if (pieces <= 22) {
+    return 1_150;
+  }
+  return 900;
+}
+
+function assertSearchTime(context: SearchContext): void {
+  context.nodes += 1;
+  if ((context.nodes & 2047) === 0 && Date.now() > context.deadline) {
+    throw searchTimeout;
+  }
+}
+
 function centerBonus(square: Square): number {
-  const file = square.charCodeAt(0) - 97;
+  const file = fileIndex(square);
   const rank = Number(square[1]) - 1;
   const fileDistance = Math.abs(file - 3.5);
   const rankDistance = Math.abs(rank - 3.5);
-  return Math.max(0, 38 - (fileDistance + rankDistance) * 9);
+  return Math.max(0, 42 - (fileDistance + rankDistance) * 10);
+}
+
+function forwardRank(square: Square, color: Color): number {
+  const rank = Number(square[1]) - 1;
+  return color === "w" ? rank : 7 - rank;
+}
+
+function fileIndex(square: Square): number {
+  return square.charCodeAt(0) - 97;
+}
+
+function opposite(color: Color): Color {
+  return color === "w" ? "b" : "w";
+}
+
+function sameMove(move: Move, other: Move | undefined): boolean {
+  return Boolean(other && move.from === other.from && move.to === other.to && move.promotion === other.promotion);
+}
+
+function moveKey(move: Move): string {
+  return `${move.from}${move.to}${move.promotion ?? ""}`;
 }
 
 function sanitizeStats(raw: unknown): ChessStats {
