@@ -8196,13 +8196,28 @@ function windowsWhoami() {
     return cachedWindowsWhoami;
   }
   try {
-    cachedWindowsWhoami = execFileSync("whoami.exe", {
+    cachedWindowsWhoami = execFileSync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      `${powerShellUtf8Prelude()}; [System.Security.Principal.WindowsIdentity]::GetCurrent().Name`
+    ], {
       encoding: "utf8",
       timeout: 1000,
       windowsHide: true
     }).trim();
   } catch {
-    cachedWindowsWhoami = "";
+    try {
+      cachedWindowsWhoami = execFileSync("whoami.exe", {
+        encoding: "utf8",
+        timeout: 1000,
+        windowsHide: true
+      }).trim();
+    } catch {
+      cachedWindowsWhoami = "";
+    }
   }
   return cachedWindowsWhoami;
 }
