@@ -3077,7 +3077,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     messages: [],
     terminal: [],
     terminalKeys: new Set(),
-    learningMarkers: []
+    learningMarkers: [],
+    usage: emptyCodexUsage()
   };
   let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal);
   if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
@@ -3087,7 +3088,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       messages: [],
       terminal: [],
       terminalKeys: new Set(),
-      learningMarkers: []
+      learningMarkers: [],
+      usage: emptyCodexUsage()
     };
     const freshArgs = codexSotySessionArgs({
       jobDir,
@@ -3106,6 +3108,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     state.terminal = freshState.terminal;
     state.terminalKeys = freshState.terminalKeys;
     state.learningMarkers = freshState.learningMarkers;
+    state.usage = freshState.usage;
   }
   const lastFileRaw = existsSync(outPath) ? await readFile(outPath, "utf8") : "";
   pushLearningMarkers(state, extractInternalLearningMarkers(lastFileRaw));
@@ -3131,7 +3134,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         result: "failed",
         route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
         taskSig: taskSignature(text),
-        proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}`,
+        proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
         exitCode: 125,
         durationMs: Date.now() - startedAt,
         ...learningContext
@@ -3168,7 +3171,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       result: "ok",
       route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
       taskSig: taskSignature(text),
-      proof: `exitCode=0; messages=${messages.length}; final=nonempty`,
+      proof: `exitCode=0; messages=${messages.length}; final=nonempty; ${codexUsageProof(state.usage, prompt, finalText)}`,
       exitCode: 0,
       durationMs: Date.now() - startedAt,
       ...learningContext
@@ -3193,7 +3196,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     result: result.exitCode === 124 ? "timeout" : "failed",
     route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
     taskSig: taskSignature(text),
-    proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}`,
+    proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
     exitCode: result.exitCode || 1,
     durationMs: Date.now() - startedAt,
     ...learningContext
@@ -3723,6 +3726,7 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
   } catch {
     return;
   }
+  mergeCodexUsage(state, extractCodexUsage(event));
   const threadId = codexEventThreadId(event);
   if (threadId) {
     state.threadId = threadId;
@@ -3758,6 +3762,125 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
       }
     }
   }
+}
+
+function emptyCodexUsage() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    actual: false
+  };
+}
+
+function mergeCodexUsage(state, usage) {
+  if (!state || !usage || usage.totalTokens <= 0) {
+    return;
+  }
+  const current = state.usage || emptyCodexUsage();
+  state.usage = {
+    inputTokens: Math.max(current.inputTokens || 0, usage.inputTokens || 0),
+    outputTokens: Math.max(current.outputTokens || 0, usage.outputTokens || 0),
+    totalTokens: Math.max(current.totalTokens || 0, usage.totalTokens || 0),
+    cachedInputTokens: Math.max(current.cachedInputTokens || 0, usage.cachedInputTokens || 0),
+    actual: true
+  };
+}
+
+function extractCodexUsage(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 4) {
+    return emptyCodexUsage();
+  }
+  const usage = usageFromRecord(value);
+  if (usage.totalTokens > 0) {
+    return usage;
+  }
+  const keys = ["usage", "token_usage", "usage_metadata", "response", "payload", "event", "data"];
+  for (const key of keys) {
+    const nested = value[key];
+    if (nested && typeof nested === "object") {
+      const found = extractCodexUsage(nested, depth + 1);
+      if (found.totalTokens > 0) {
+        return found;
+      }
+    }
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 8)) {
+      const found = extractCodexUsage(item, depth + 1);
+      if (found.totalTokens > 0) {
+        return found;
+      }
+    }
+  }
+  return emptyCodexUsage();
+}
+
+function usageFromRecord(record) {
+  const inputTokens = firstSafeInteger(record, [
+    "input_tokens",
+    "prompt_tokens",
+    "inputTokens",
+    "promptTokens"
+  ]);
+  const outputTokens = firstSafeInteger(record, [
+    "output_tokens",
+    "completion_tokens",
+    "outputTokens",
+    "completionTokens"
+  ]);
+  const cachedInputTokens = firstSafeInteger(record, [
+    "cached_input_tokens",
+    "cached_tokens",
+    "cachedInputTokens",
+    "cachedTokens"
+  ]);
+  const totalFromRecord = firstSafeInteger(record, [
+    "total_tokens",
+    "totalTokens"
+  ]);
+  const totalTokens = totalFromRecord || inputTokens + outputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedInputTokens,
+    actual: totalTokens > 0
+  };
+}
+
+function firstSafeInteger(record, keys) {
+  for (const key of keys) {
+    const value = Number(record?.[key]);
+    if (Number.isSafeInteger(value) && value > 0) {
+      return Math.min(10_000_000, value);
+    }
+  }
+  return 0;
+}
+
+function codexUsageProof(usage, prompt, finalText) {
+  if (usage?.actual && usage.totalTokens > 0) {
+    return [
+      "tokens=actual",
+      `input=${usage.inputTokens || 0}`,
+      `output=${usage.outputTokens || 0}`,
+      `total=${usage.totalTokens || 0}`,
+      `cached=${usage.cachedInputTokens || 0}`
+    ].join("; ");
+  }
+  const input = estimateTokenCount(prompt);
+  const output = estimateTokenCount(finalText);
+  return `tokens=estimated; input=${input}; output=${output}; total=${input + output}; cached=0`;
+}
+
+function estimateTokenCount(text) {
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(normalized.length / 4));
 }
 
 function pushLearningMarkers(state, markers) {
