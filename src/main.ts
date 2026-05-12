@@ -2042,6 +2042,9 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     if (message.type === "operator.agent-message") {
       void runOperatorAgentMessage(message);
     }
+    if (message.type === "operator.agent-new") {
+      void runOperatorAgentNew(message);
+    }
     if (message.type === "operator.terminal") {
       runOperatorTerminal(message);
     }
@@ -2470,6 +2473,41 @@ async function runOperatorAgentMessage(message: {
   } catch {
     sendOperatorOutput(requestId, "! agent-message", 500);
   }
+}
+
+async function runOperatorAgentNew(message: { readonly id?: string }): Promise<void> {
+  const requestId = typeof message.id === "string" ? message.id : "";
+  if (!requestId) {
+    return;
+  }
+  const previous = findActiveAgentDialog();
+  if (previous) {
+    selectedId = previous.id;
+    saveSelectedTunnelId(previous.id);
+  }
+  const fresh = createFreshDialog(agentDialogLabel, {
+    agent: true,
+    archiveCurrent: Boolean(previous)
+  });
+  if (!fresh) {
+    sendOperatorOutput(requestId, "! agent-new\n", 500);
+    return;
+  }
+  if (previous) {
+    moveAgentLinkToFreshDialog(previous.id, fresh.id);
+  }
+  renderApp();
+  const agent = await refreshLocalAgent();
+  if (agent.ok && !agent.relay) {
+    void bindLocalAgentRelay().then((bound) => {
+      if (bound) {
+        void refreshLocalAgent();
+      }
+    });
+  }
+  await ensureOperatorBridge(true);
+  publishOperatorTargets();
+  sendOperatorOutput(requestId, `agent ${fresh.id}\n`, 0);
 }
 
 function runOperatorTerminal(message: {

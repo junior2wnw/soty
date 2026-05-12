@@ -283,6 +283,10 @@ async function handleHttpRequest(request, response) {
     await handleOperatorHttpAgentMessage(request, response, headers);
     return;
   }
+  if (url.pathname === "/operator/agent-new" && request.method === "POST") {
+    await handleOperatorHttpAgentNew(response, headers);
+    return;
+  }
   if (url.pathname === "/operator/messages" && request.method === "GET") {
     handleOperatorHttpMessages(url, response, headers);
     return;
@@ -2425,6 +2429,18 @@ async function handleOperatorHttpAgentMessage(request, response, headers) {
     sourceDeviceId,
     sourceDeviceNick,
     text
+  });
+}
+
+async function handleOperatorHttpAgentNew(response, headers) {
+  if (!operatorBridge?.open) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, 30_000);
+  sendRaw(operatorBridge, {
+    type: "operator.agent-new",
+    id
   });
 }
 
@@ -7553,6 +7569,21 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
+  if (command === "agent-new" || command === "new-agent-chat") {
+    const response = await fetch(`http://127.0.0.1:${port}/operator/agent-new`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
   if (command === "read" || command === "inbox" || command === "messages") {
     const target = args[1] || "";
     const url = new URL(`http://127.0.0.1:${port}/operator/messages`);
@@ -7669,7 +7700,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge|global-review [--dry-run] [--strict] | import <file>\n");
+  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge|global-review [--dry-run] [--strict] | import <file>\n");
   process.exit(2);
 }
 
