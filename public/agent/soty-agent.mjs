@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.139";
+const agentVersion = "0.3.140";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -57,6 +57,29 @@ const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.e
 const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v4-runtime-context";
+const agentResponseStyleProfiles = Object.freeze([
+  {
+    id: "sysadmin-short",
+    displayName: "Лорд Роя",
+    base: "bare-facts",
+    tone: "short-diagnostic-sysadmin",
+    maxUserFacingLines: 4,
+    phraseBank: ["щас", "сек", "так", "ага", "вижу", "странно", "лог", "скрин", "конфиг", "доступ", "права", "порт", "dns", "не трогай", "проверь"],
+    promptRules: [
+      "Your visible Soty chat handle is `Лорд Роя`. Use it as identity when needed, but do not sign every message.",
+      "User-facing style: short, dry, diagnostic sysadmin. No sales tone, no long explanations, no emotional performance.",
+      "Write in fragments when natural: `так`, `щас`, `сек`, `ага`, `вижу`, `странно`, `не трогай`, `проверь`.",
+      "Ask for one concrete artifact or action at a time: log, screenshot, config, access, permission, port, dns, reboot.",
+      "A little tired dryness is allowed; blame, insults, and unsafe sarcasm are not. For destructive or nontechnical-user flows, be calmer and extra plain.",
+      "Most user-facing messages should fit in 1-4 short lines. If the work is running, send one short progress signal, then the result or one blocker."
+    ]
+  }
+]);
+const defaultAgentResponseStyleId = "sysadmin-short";
+const agentResponseStyleId = safeAgentResponseStyleId(
+  process.env.SOTY_AGENT_RESPONSE_STYLE || persistedAgentConfig.responseStyle || defaultAgentResponseStyleId
+);
+const activeAgentResponseStyle = agentResponseStyleProfile(agentResponseStyleId);
 const active = new Map();
 const operatorRuns = new Map();
 const actionJobs = new Map();
@@ -3109,6 +3132,36 @@ function safeCodexReasoningEffort(value) {
   return ["low", "medium", "high", "xhigh"].includes(effort) ? effort : "";
 }
 
+function safeAgentResponseStyleId(value) {
+  const id = String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/gu, "-").replace(/^-+|-+$/gu, "");
+  return agentResponseStyleProfiles.some((profile) => profile.id === id) ? id : defaultAgentResponseStyleId;
+}
+
+function agentResponseStyleProfile(id = agentResponseStyleId) {
+  return agentResponseStyleProfiles.find((profile) => profile.id === id) || agentResponseStyleProfiles[0];
+}
+
+function agentResponseStylePromptLines(profile = activeAgentResponseStyle) {
+  const rules = Array.isArray(profile?.promptRules) ? profile.promptRules : [];
+  return [
+    `- response_style: ${profile.id}; base=${profile.base}; tone=${profile.tone}; max_user_facing_lines=${profile.maxUserFacingLines}`,
+    `- response_identity: visible chat handle is ${profile.displayName}. Use this name when asked who you are; do not sign every message.`,
+    ...rules.map((rule, index) => `- response_style_rule_${index + 1}: ${rule}`)
+  ];
+}
+
+function agentResponseStyleStatus(profile = activeAgentResponseStyle) {
+  return {
+    schema: "soty.response-style.v1",
+    id: profile.id,
+    displayName: profile.displayName,
+    base: profile.base,
+    tone: profile.tone,
+    maxUserFacingLines: profile.maxUserFacingLines,
+    phraseBank: profile.phraseBank
+  };
+}
+
 function shouldRetryCodexWithoutResume(result, state) {
   if (!result || result.exitCode === 0) {
     return false;
@@ -3832,7 +3885,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- If the $ops body is needed, use the Soty MCP tool `soty_skill_read` with skill `ops` and path `SKILL.md`.",
     "- Keep $ops, skill routing, route selection, helper names, preflight/gate language, MCP names, and bridge/source-scoped mechanics internal unless the user explicitly asks for technical details.",
     "- In Soty chat, do not announce skills, $ops, routes, helpers, MCP tool names, or source-scoped mechanics; show the user only the action, result, or one plain blocker.",
-    "- Write like a practical IDE Codex: concise, warm, decisive, and action-oriented. The user should see what you did or need next, not how the routing machinery works.",
+    ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "- Do not think aloud in Soty chat. User-facing messages should be bare facts: one short action started if needed, one exact question/confirmation, one blocker, or one completion proof.",
     "- Do not show raw tool errors or codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets in user-facing chat; translate them into one plain sentence.",
     "- Before tools, either act silently or send one short plain-language progress line. Do not narrate every probe, retry, helper, memory lookup, download poll, DISM phase, or script-internal wait.",
@@ -3873,6 +3926,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     `source_device: ${runtimeContext.source.deviceNick || "unknown"} (${runtimeContext.source.deviceId || "no-id"})`,
     `target: ${runtimeContext.target.label || "none"} (${runtimeContext.target.id || "none"})`,
     `target_source_device_id: ${runtimeContext.target.sourceDeviceId || "none"}`,
+    `response_style: ${activeAgentResponseStyle.id} (${activeAgentResponseStyle.displayName})`,
     "",
     "## Learning Memory",
     runtimeContext.memory || "unavailable",
@@ -3912,7 +3966,8 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     `- target_source_device_id: ${runtime.target?.sourceDeviceId || "none"}`,
     "- local_shell_scope: server agent runtime only; use Soty MCP for paired device work.",
     "- ops_rule: apply the ops operating contract internally for system/device/install/repair/package/service/skill/memory work; read it with soty_skill_read skill=ops path=SKILL.md only when detailed route context is needed.",
-    "- communication_rule: keep $ops/skills/router/helper/preflight/gate/MCP/bridge/source-scoped details internal; answer in short plain language like IDE Codex.",
+    "- communication_rule: keep $ops/skills/router/helper/preflight/gate/MCP/bridge/source-scoped details internal; answer through the active response style only.",
+    ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "- no_thinking_aloud_rule: do not narrate internal reasoning, probes, polls, retries, or script phases; show only bare facts, one needed question, one blocker, or completion proof.",
     "- error_translation_rule: do not show raw tool errors/codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets; translate to a human sentence.",
     "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
@@ -7634,6 +7689,7 @@ function runtimeHealth() {
     codexRuntimeContext: "prompt+AGENTS+SOTY_CONTEXT+learning-memory+always-on-soty-mcp",
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
+    responseStyle: agentResponseStyleStatus(),
     learning: learningStatus(),
     opsSkill: opsSkillStatus(),
     automationToolkits: automationToolkitStatus(),
@@ -7655,7 +7711,8 @@ function automationToolkitStatus() {
   return {
     schema: "soty.automation-toolkits.v1",
     policy: "first-class-toolkit-before-ad-hoc-script",
-    chat: "bare-facts",
+    chat: activeAgentResponseStyle.id,
+    responseStyle: agentResponseStyleStatus(),
     frontDoor: "soty_toolkit",
     defaultKernel: "soty_action",
     terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"],

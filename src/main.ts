@@ -80,8 +80,8 @@ if (!root) {
 const app: HTMLDivElement = root;
 installTooltips();
 
-const agentDialogLabel = "Агент";
-const legacyAgentDialogLabel = "Codex";
+const agentDialogLabel = "Лорд Роя";
+const legacyAgentDialogLabels = ["Codex", "Агент"];
 const agentDialogMinVersion = "0.3.16";
 
 let installPrompt: BeforeInstallPromptEvent | null = null;
@@ -1113,7 +1113,7 @@ function hasCounterparty(tunnel: TunnelRecord): boolean {
 
 function counterpartyLabel(tunnel: TunnelRecord): string {
   const label = rawCounterpartyLabel(tunnel);
-  if (tunnel.agent === true || label.toLowerCase() === legacyAgentDialogLabel.toLowerCase()) {
+  if (tunnel.agent === true || isLegacyAgentDialogLabel(label)) {
     return agentDialogLabel;
   }
   return label;
@@ -1231,7 +1231,12 @@ function findActiveAgentDialog(): TunnelRecord | null {
 }
 
 function isAgentTunnel(tunnel: TunnelRecord): boolean {
-  return tunnel.agent === true || rawCounterpartyLabel(tunnel).toLowerCase() === legacyAgentDialogLabel.toLowerCase();
+  return tunnel.agent === true || isLegacyAgentDialogLabel(rawCounterpartyLabel(tunnel));
+}
+
+function isLegacyAgentDialogLabel(label: string): boolean {
+  const normalized = cleanNick(label).toLowerCase();
+  return legacyAgentDialogLabels.some((item) => normalized === item.toLowerCase());
 }
 
 function createFreshDialog(
@@ -3236,7 +3241,7 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
         if (streamedMessages.length === 0 && streamedTerminal.length === 0) {
           appendAgentChatMessage(
             tunnelId,
-            "\u0417\u0430\u043f\u0443\u0441\u043a\u0430\u044e\u0441\u044c. \u041f\u0435\u0440\u0432\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043c\u043e\u0436\u0435\u0442 \u0437\u0430\u043d\u044f\u0442\u044c \u0434\u043e \u043c\u0438\u043d\u0443\u0442\u044b."
+            "щас\nпервый запуск может занять до минуты"
           );
         }
       }, 8_000);
@@ -4095,7 +4100,7 @@ function isAgentChromeLineClass(className: string): boolean {
 }
 
 function isOperatorHeader(line: string): boolean {
-  return /^(Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
+  return /^(Лорд Роя|Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
 }
 
 function cleanAgentContext(value: string): string {

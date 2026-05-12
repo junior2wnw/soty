@@ -40,18 +40,22 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.139");
+      assertEqual(health.body.version, "0.3.140");
+      assertEqual(health.body.responseStyle.id, "sysadmin-short");
+      assertEqual(health.body.responseStyle.displayName, "Лорд Роя");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("universal-toolkit"));
       assert(health.body.automationToolkits.available.includes("durable-action"));
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
       assertEqual(health.body.automationToolkits.defaultKernel, "soty_action");
+      assertEqual(health.body.automationToolkits.responseStyle.id, "sysadmin-short");
     }],
     ["toolkit endpoint exposes universal contract", async () => {
       const toolkits = await get("/operator/toolkits");
       assertEqual(toolkits.status, 200);
       assertEqual(toolkits.body.schema, "soty.automation-toolkits.v1");
+      assertEqual(toolkits.body.responseStyle.displayName, "Лорд Роя");
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "durable-action"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "windows-reinstall"));
     }],
@@ -341,6 +345,10 @@ async function runScenarios() {
       assert(agent.includes("isReinstallPrepareActive"));
       assert(agent.includes("post-arm-rebooting"));
       assert(agent.includes("rememberPostArmReboot"));
+      assert(agent.includes("agentResponseStyleProfiles"));
+      assert(agent.includes("sysadmin-short"));
+      assert(agent.includes("Лорд Роя"));
+      assert(agent.includes("response_style_rule_${index + 1}"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes("Get-ManagedScript"));
@@ -378,12 +386,15 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.139");
+      assertEqual(manifest.version, "0.3.140");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "soty_toolkit");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "soty_action");
+      assertEqual(manifest.automationToolkits.policy.chat, "sysadmin-short");
+      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Лорд Роя");
+      assert(manifest.automationToolkits.policy.responseStyle.phraseBank.includes("щас"));
       const universalToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "universal-toolkit");
       assert(universalToolkit);
       assertEqual(universalToolkit.entryTool, "soty_toolkit");

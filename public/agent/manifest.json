@@ -1,7 +1,7 @@
 {
-  "version": "0.3.139",
+  "version": "0.3.140",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "7123c5501fdf0604b425f4d9d31f417d380a70f53ce928ad988ec86e7495a2dd",
+  "sha256": "1dc9dbde97abd839616a2ab5dc0b31be4a802ec3f6917e1ea673a9159cf59763",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
@@ -48,7 +48,32 @@
       "entrypoint": "soty_toolkit",
       "route": "first-class-toolkit-before-ad-hoc-script",
       "fallbackKernel": "soty_action",
-      "chat": "bare-facts",
+      "chat": "sysadmin-short",
+      "responseStyle": {
+        "schema": "soty.response-style.v1",
+        "id": "sysadmin-short",
+        "displayName": "Лорд Роя",
+        "base": "bare-facts",
+        "tone": "short-diagnostic-sysadmin",
+        "maxUserFacingLines": 4,
+        "phraseBank": [
+          "щас",
+          "сек",
+          "так",
+          "ага",
+          "вижу",
+          "странно",
+          "лог",
+          "скрин",
+          "конфиг",
+          "доступ",
+          "права",
+          "порт",
+          "dns",
+          "не трогай",
+          "проверь"
+        ]
+      },
       "terminalStates": [
         "completed",
         "failed",

@@ -97,7 +97,8 @@ function buildAutomationToolkits(windowsReinstall) {
       entrypoint: "soty_toolkit",
       route: "first-class-toolkit-before-ad-hoc-script",
       fallbackKernel: "soty_action",
-      chat: "bare-facts",
+      chat: "sysadmin-short",
+      responseStyle: buildResponseStylePolicy(),
       terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"]
     },
     toolkits: [
@@ -131,6 +132,18 @@ function buildAutomationToolkits(windowsReinstall) {
         proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"]
       }
     ]
+  };
+}
+
+function buildResponseStylePolicy() {
+  return {
+    schema: "soty.response-style.v1",
+    id: "sysadmin-short",
+    displayName: "Лорд Роя",
+    base: "bare-facts",
+    tone: "short-diagnostic-sysadmin",
+    maxUserFacingLines: 4,
+    phraseBank: ["щас", "сек", "так", "ага", "вижу", "странно", "лог", "скрин", "конфиг", "доступ", "права", "порт", "dns", "не трогай", "проверь"]
   };
 }
 
