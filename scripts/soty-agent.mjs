@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.146";
+const agentVersion = "0.3.147";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1958,7 +1958,7 @@ function fastRoutineProgramSpec(text) {
       `$processNames = @(${processNames})`,
       "$before = @(Get-Process -Name $processNames -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)",
       args,
-      `$startedProcess = Start-Process -FilePath '${target.exe}' -ArgumentList $argumentList -PassThru`,
+      `$startedProcess = if ($argumentList.Count -gt 0) { Start-Process -FilePath '${target.exe}' -ArgumentList $argumentList -PassThru } else { Start-Process -FilePath '${target.exe}' -PassThru }`,
       "Start-Sleep -Milliseconds 1200",
       "$after = @(Get-Process -Name $processNames -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | Sort-Object Id)",
       "$chosen = if ($after.Count -gt 0) { $after[0] } elseif ($startedProcess -and (Get-Process -Id $startedProcess.Id -ErrorAction SilentlyContinue)) { Get-Process -Id $startedProcess.Id } else { $null }",
@@ -2132,10 +2132,10 @@ function fastRoutineSystemNetworkSpec() {
     timeoutMs: 45_000,
     script: [
       "$ErrorActionPreference = 'Stop'",
-      "$cfg = Get-NetIPConfiguration | Where-Object { $_.IPv4Address -and $_.NetAdapter.Status -eq 'Up' } | Select-Object -First 1",
-      "$dns = @(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses.Count -gt 0 } | Select-Object -First 1 -ExpandProperty ServerAddresses)",
-      "$ipv4 = if ($cfg -and $cfg.IPv4Address) { $cfg.IPv4Address.IPAddress } else { '' }",
-      "$gateway = if ($cfg -and $cfg.IPv4DefaultGateway) { $cfg.IPv4DefaultGateway.NextHop } else { '' }",
+      "$cfg = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter \"IPEnabled=True\" | Select-Object -First 1",
+      "$dns = @($cfg.DNSServerSearchOrder)",
+      "$ipv4 = @($cfg.IPAddress | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' } | Select-Object -First 1)",
+      "$gateway = @($cfg.DefaultIPGateway | Select-Object -First 1)",
       "[pscustomobject]@{ computer = $env:COMPUTERNAME; ipv4 = $ipv4; dns = $dns; gateway = $gateway } | ConvertTo-Json -Compress -Depth 4"
     ].join("\n"),
     format: (data) => [
@@ -2344,7 +2344,7 @@ function fastRoutinePowerShellReleaseSpec() {
 }
 
 function fastRoutineFileCount(text) {
-  const match = /([2-9])\s*(?:files?|файл(?:а|ов)?)/iu.exec(String(text || ""));
+  const match = /([2-9])(?:\s+[a-zа-я0-9_-]+){0,3}\s*(?:files?|файл(?:а|ов)?)/iu.exec(String(text || ""));
   return match ? Number.parseInt(match[1], 10) : 4;
 }
 
