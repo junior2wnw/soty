@@ -40,7 +40,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.141");
+      assertEqual(health.body.version, "0.3.142");
       assertEqual(health.body.responseStyle.id, "sysadmin-short");
       assertEqual(health.body.responseStyle.displayName, "Лорд Роя");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -363,6 +363,8 @@ async function runScenarios() {
       assert(agent.includes("sourceDeviceHash"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
+      assert(managed.includes('*.download.parts'));
+      assert(managed.includes("partBytes"));
       assert(managed.includes("Get-ManagedScript"));
       assert(managed.includes("managed account must be passwordless"));
       assert(managed.includes("[System.IO.File]::Open"));
@@ -373,6 +375,10 @@ async function runScenarios() {
       assert(!tailTextBody.includes("Get-Content -LiteralPath $Path -Raw"));
       assert(tailTextBody.includes("Get-Content -LiteralPath $Path -Tail 80"));
       assert(prepare.includes("Invoke-ResumableDownload"));
+      assert(prepare.includes("Invoke-ParallelRangeDownloadAttempt"));
+      assert(prepare.includes('$partDir = $TempPath + ".parts"'));
+      assert(prepare.includes('"--range"'));
+      assert(prepare.includes('"65536"'));
       assert(prepare.includes('"-C", "-"'));
       assert(prepare.includes("Windows image download did not complete within the retry window"));
       const sotyUserCodepoints = "0x0421, 0x043E, 0x0442, 0x044B";
@@ -398,7 +404,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.141");
+      assertEqual(manifest.version, "0.3.142");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");

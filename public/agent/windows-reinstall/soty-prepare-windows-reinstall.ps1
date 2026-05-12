@@ -209,9 +209,203 @@ function Invoke-HttpRangeDownloadAttempt([string] $Uri, [string] $TempPath, [str
   }
 }
 
+function Get-HttpDownloadInfo([string] $Uri, [string] $LogName) {
+  $result = [ordered]@{ length = [int64]0; acceptRanges = $false; source = "" }
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curl) {
+    try {
+      $head = & curl.exe -I -L --max-time 30 --retry 2 --retry-delay 2 $Uri 2>&1
+      $text = ($head | Out-String)
+      Set-Content -LiteralPath (Join-Path $JobRoot $LogName) -Encoding UTF8 -Value $text
+      foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match '^\s*Content-Length:\s*(\d+)') { $result.length = [int64] $matches[1] }
+        if ($line -match '^\s*Accept-Ranges:\s*bytes\b') { $result.acceptRanges = $true }
+      }
+      if ($result.length -gt 0) {
+        $result.source = "curl-head"
+        return [pscustomobject] $result
+      }
+    } catch {
+      Log ("WARN download HEAD via curl failed: " + $_.Exception.Message)
+    }
+  }
+  try {
+    $request = [System.Net.HttpWebRequest]::Create($Uri)
+    $request.Method = "HEAD"
+    $request.AllowAutoRedirect = $true
+    $request.Timeout = 30000
+    $request.UserAgent = "Soty Windows reinstall media downloader"
+    $response = $request.GetResponse()
+    try {
+      $result.length = [int64] $response.ContentLength
+      $result.acceptRanges = ([string] $response.Headers["Accept-Ranges"]) -match '^bytes$'
+      $result.source = "http-head"
+    } finally {
+      $response.Dispose()
+    }
+  } catch {
+    Log ("WARN download HEAD via .NET failed: " + $_.Exception.Message)
+  }
+  return [pscustomobject] $result
+}
+
+function Get-ParallelDownloadCount([int64] $Bytes) {
+  $envCount = 0
+  try { $envCount = [int] $env:SOTY_WINDOWS_DOWNLOAD_PARALLELISM } catch { $envCount = 0 }
+  if ($envCount -ge 1) { return [math]::Min(16, $envCount) }
+  if ($Bytes -ge 4GB) { return 8 }
+  if ($Bytes -ge 2GB) { return 6 }
+  if ($Bytes -ge 512MB) { return 4 }
+  return 2
+}
+
+function New-RangeSegments([int64] $Start, [int64] $End, [int] $Count, [string] $PartDir) {
+  $remaining = [int64]($End - $Start + 1)
+  if ($remaining -le 0) { return @() }
+  $segmentCount = [math]::Max(1, [math]::Min($Count, [int][math]::Ceiling([double]$remaining / [double]64MB)))
+  $chunk = [int64][math]::Ceiling([double]$remaining / [double]$segmentCount)
+  $segments = @()
+  for ($index = 0; $index -lt $segmentCount; $index += 1) {
+    $segmentStart = [int64]($Start + ([int64]$index * $chunk))
+    if ($segmentStart -gt $End) { break }
+    $segmentEnd = [int64][math]::Min($End, $segmentStart + $chunk - 1)
+    $fileName = ("{0:D3}-{1}-{2}.seg" -f $index, $segmentStart, $segmentEnd)
+    $segments += [pscustomobject]@{
+      index = $index
+      start = $segmentStart
+      end = $segmentEnd
+      expected = [int64]($segmentEnd - $segmentStart + 1)
+      path = (Join-Path $PartDir $fileName)
+      tmp = (Join-Path $PartDir ($fileName + ".tmp"))
+      attempts = 0
+    }
+  }
+  return @($segments)
+}
+
+function Get-DownloadPartBytes([string] $PartDir) {
+  if (-not (Test-Path -LiteralPath $PartDir)) { return [int64]0 }
+  $sum = [int64]0
+  Get-ChildItem -LiteralPath $PartDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '\.(seg|tmp)$' } |
+    ForEach-Object { $sum += [int64] $_.Length }
+  return $sum
+}
+
+function Invoke-ParallelRangeDownloadAttempt([string] $Uri, [string] $TempPath, [string] $LogPrefix) {
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if (-not $curl) { return $false }
+  $info = Get-HttpDownloadInfo -Uri $Uri -LogName ($LogPrefix + "-head.txt")
+  $script:lastDownloadContentLength = [int64] $info.length
+  if (-not $info.acceptRanges -or $info.length -le 0) {
+    Log "HTTP server did not advertise byte ranges; falling back to resumable single-stream download."
+    return $false
+  }
+
+  $prefixBytes = Get-FileLengthSafe $TempPath
+  if ($prefixBytes -gt $info.length) {
+    Log "WARN partial download is larger than the official content length; restarting media download."
+    Remove-Item -LiteralPath $TempPath -Force -ErrorAction SilentlyContinue
+    $prefixBytes = 0
+  }
+  if ($prefixBytes -eq $info.length) { return $true }
+
+  $partDir = $TempPath + ".parts"
+  New-Directory $partDir
+  $remaining = [int64]($info.length - $prefixBytes)
+  $parallel = Get-ParallelDownloadCount $remaining
+  $segments = @(New-RangeSegments -Start $prefixBytes -End ([int64]$info.length - 1) -Count $parallel -PartDir $partDir)
+  if (@($segments).Count -eq 0) { return $true }
+  Log ("Parallel Windows image download: " + @($segments).Count + " ranges, " + [math]::Round($remaining / 1MB, 1) + " MB remaining.")
+
+  $pending = New-Object System.Collections.Queue
+  foreach ($segment in $segments) { $pending.Enqueue($segment) }
+  $running = New-Object System.Collections.ArrayList
+  $lastProgressLog = Get-Date
+  while ($pending.Count -gt 0 -or $running.Count -gt 0) {
+    while ($running.Count -lt $parallel -and $pending.Count -gt 0) {
+      $segment = $pending.Dequeue()
+      if ((Get-FileLengthSafe $segment.path) -eq $segment.expected) { continue }
+      Remove-Item -LiteralPath $segment.path, $segment.tmp -Force -ErrorAction SilentlyContinue
+      $segment.attempts += 1
+      if ($segment.attempts -gt 4) {
+        throw ("Download range " + $segment.start + "-" + $segment.end + " failed too many times.")
+      }
+      $range = ([string]$segment.start) + "-" + ([string]$segment.end)
+      $log = Join-Path $JobRoot ("{0}-segment-{1:D3}-attempt-{2}.txt" -f $LogPrefix, $segment.index, $segment.attempts)
+      $err = $log + ".err"
+      Remove-Item -LiteralPath $log, $err -Force -ErrorAction SilentlyContinue
+      $args = @(
+        "-L",
+        "--fail",
+        "--retry",
+        "8",
+        "--retry-delay",
+        "2",
+        "--retry-connrefused",
+        "--connect-timeout",
+        "20",
+        "--speed-time",
+        "180",
+        "--speed-limit",
+        "65536",
+        "--range",
+        $range,
+        "--output",
+        $segment.tmp,
+        $Uri
+      )
+      $process = Start-Process -FilePath "curl.exe" -ArgumentList $args -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
+      [void] $running.Add([pscustomobject]@{ segment = $segment; process = $process; log = $log; err = $err })
+    }
+
+    $completed = @()
+    foreach ($item in @($running)) {
+      if (-not $item.process.HasExited) { continue }
+      try { $item.process.Refresh() } catch {}
+      if (Test-Path -LiteralPath $item.err) {
+        Add-Content -LiteralPath $item.log -Value (Get-Content -LiteralPath $item.err -Raw) -Encoding UTF8
+      }
+      $segment = $item.segment
+      $bytes = Get-FileLengthSafe $segment.tmp
+      if ($item.process.ExitCode -eq 0 -and $bytes -eq $segment.expected) {
+        Move-Item -LiteralPath $segment.tmp -Destination $segment.path -Force
+        Log ("Download range complete: " + $segment.start + "-" + $segment.end)
+      } else {
+        Log ("WARN download range failed: " + $segment.start + "-" + $segment.end + " exit=" + $item.process.ExitCode + " bytes=" + $bytes + "/" + $segment.expected)
+        Remove-Item -LiteralPath $segment.tmp, $segment.path -Force -ErrorAction SilentlyContinue
+        $pending.Enqueue($segment)
+      }
+      $completed += $item
+    }
+    foreach ($item in $completed) { [void] $running.Remove($item) }
+
+    if (((Get-Date) - $lastProgressLog).TotalSeconds -ge 30) {
+      $downloaded = (Get-FileLengthSafe $TempPath) + (Get-DownloadPartBytes $partDir)
+      Log ("Parallel download progress: " + [math]::Round($downloaded / 1GB, 3) + " / " + [math]::Round(([int64]$info.length) / 1GB, 3) + " GB.")
+      $lastProgressLog = Get-Date
+    }
+    if ($pending.Count -gt 0 -or $running.Count -gt 0) { Start-Sleep -Seconds 2 }
+  }
+
+  if ((Get-FileLengthSafe $TempPath) -ne $prefixBytes) {
+    throw "Partial download prefix changed while range download was running."
+  }
+  foreach ($segment in @($segments | Sort-Object start)) {
+    if ((Get-FileLengthSafe $segment.path) -ne $segment.expected) {
+      throw ("Downloaded range is incomplete: " + $segment.path)
+    }
+    Join-BinaryFile -Source $segment.path -Destination $TempPath
+  }
+  Remove-Item -LiteralPath $partDir -Recurse -Force -ErrorAction SilentlyContinue
+  return $true
+}
+
 function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string] $ExpectedSha256, [string] $LogPrefix, [int] $MaxTotalSeconds = 172800) {
   $expected = $ExpectedSha256.ToLowerInvariant()
   $tmp = $Destination + ".download"
+  $parts = $tmp + ".parts"
+  $script:lastDownloadContentLength = [int64]0
   if (Test-Path -LiteralPath $Destination) {
     if (Test-FileSha256 -Path $Destination -ExpectedSha256 $expected) {
       Log ("Verified cached download: " + $Destination)
@@ -247,7 +441,11 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     $beforeGb = [math]::Round($before / 1GB, 3)
     Log ("Download attempt " + $attempt + " starting at " + $beforeGb + " GB.")
     try {
+      $usedParallel = $false
       if ($curl) {
+        $usedParallel = Invoke-ParallelRangeDownloadAttempt -Uri $Uri -TempPath $tmp -LogPrefix ($LogPrefix + "-attempt-" + $attempt)
+      }
+      if (-not $usedParallel -and $curl) {
         $curlArgs = @(
           "-L",
           "--fail",
@@ -259,9 +457,9 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
           "5",
           "--retry-connrefused",
           "--speed-time",
-          "600",
+          "300",
           "--speed-limit",
-          "512"
+          "65536"
         )
         if ($before -gt 0) { $curlArgs += @("-C", "-") }
         $curlArgs += @("--output", $tmp, $Uri)
@@ -292,6 +490,13 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
       Move-Item -LiteralPath $tmp -Destination $Destination -Force
       Log ("Windows image download verified: " + $Destination)
       return
+    }
+    if ($script:lastDownloadContentLength -gt 0 -and (Get-FileLengthSafe $tmp) -ge $script:lastDownloadContentLength) {
+      Log "WARN downloaded image reached the expected size but SHA256 did not match; restarting with a clean media download."
+      Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $parts -Recurse -Force -ErrorAction SilentlyContinue
+      $lastBytes = 0
+      continue
     }
     $delay = if ($noGrowthAttempts -gt 0) { [math]::Min(900, 30 * $noGrowthAttempts) } else { [math]::Min(300, 10 + ($attempt * 5)) }
     Start-Sleep -Seconds $delay

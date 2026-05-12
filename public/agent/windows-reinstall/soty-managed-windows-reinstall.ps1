@@ -157,6 +157,39 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
           updatedAgeSeconds = [math]::Round(((Get-Date).ToUniversalTime() - $_.LastWriteTimeUtc).TotalSeconds, 0)
         })
       }
+    Get-ChildItem -LiteralPath $root -Directory -Filter "*.download.parts" -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        $partDir = $_.FullName
+        $downloadPath = $partDir.Substring(0, $partDir.Length - ".parts".Length)
+        $prefixBytes = [int64]0
+        $prefixUpdated = [datetime]::MinValue
+        if (Test-Path -LiteralPath $downloadPath) {
+          $prefix = Get-Item -LiteralPath $downloadPath -ErrorAction SilentlyContinue
+          if ($prefix) {
+            $prefixBytes = [int64] $prefix.Length
+            $prefixUpdated = $prefix.LastWriteTimeUtc
+          }
+        }
+        $partBytes = [int64]0
+        $partUpdated = $prefixUpdated
+        Get-ChildItem -LiteralPath $partDir -File -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match "\.(seg|tmp)$" } |
+          ForEach-Object {
+            $partBytes += [int64] $_.Length
+            if ($_.LastWriteTimeUtc -gt $partUpdated) { $partUpdated = $_.LastWriteTimeUtc }
+          }
+        $updatedAge = if ($partUpdated -gt [datetime]::MinValue) { [math]::Round(((Get-Date).ToUniversalTime() - $partUpdated).TotalSeconds, 0) } else { $null }
+        $items.Add([pscustomobject]@{
+          path = $downloadPath
+          name = $_.Name
+          bytes = [int64] ($prefixBytes + $partBytes)
+          gb = [math]::Round(([double] ($prefixBytes + $partBytes) / 1GB), 2)
+          downloading = $true
+          complete = $false
+          updated = if ($partUpdated -gt [datetime]::MinValue) { $partUpdated.ToString("o") } else { "" }
+          updatedAgeSeconds = $updatedAge
+        })
+      }
   }
   $largest = @($items | Sort-Object bytes -Descending | Select-Object -First 1)
   if (-not $largest) {
