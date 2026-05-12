@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.144";
+const agentVersion = "0.3.145";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2089,7 +2089,7 @@ function fastRoutinePowerShellReleaseSpec() {
 }
 
 function fastRoutineFileCount(text) {
-  const match = /\b([2-9])\s*(?:files?|файл(?:а|ов)?)\b/iu.exec(String(text || ""));
+  const match = /([2-9])\s*(?:files?|файл(?:а|ов)?)/iu.exec(String(text || ""));
   return match ? Number.parseInt(match[1], 10) : 4;
 }
 
