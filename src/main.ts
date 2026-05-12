@@ -2458,15 +2458,17 @@ async function runOperatorAgentMessage(message: {
   localDrafts.delete(tunnel.id);
   clearLiveDraftState(tunnel.id);
   void sync.sendLiveDraft("");
-  void sendAgentDialogMessage(tunnel.id, body);
   touchSelected();
   renderTiles();
   applySelectedText();
   renderTextPaint();
   renderWriterPop();
-  // Agent dialog injection is a transport action. Keep the remote command
-  // window quiet so only actual execution output appears there.
-  sendOperatorOutput(requestId, "", 0);
+  try {
+    await sendAgentDialogMessage(tunnel.id, body);
+    sendOperatorOutput(requestId, "done\n", 0);
+  } catch {
+    sendOperatorOutput(requestId, "! agent-message", 500);
+  }
 }
 
 function runOperatorTerminal(message: {
@@ -3978,6 +3980,7 @@ function isInternalAgentReceiptLine(line: string): boolean {
   const text = line.trim();
   return /^`?(learning_delta|proof|final_line|finish_skill_edit)\s*=/iu.test(text)
     || /^`?ops-memory\s*:/iu.test(text)
+    || /^`?soty-memory\s*:/iu.test(text)
     || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text)
     || isInternalAgentRouteLine(text);
 }

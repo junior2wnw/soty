@@ -464,6 +464,21 @@ async function runScenarios() {
       assert(report.topSuccesses.some((item) => item.phase === "arm"));
       assert(report.recommendations.some((item) => item.title === "Stop source probes after managed arm reboot"));
       assert(report.candidates.some((item) => item.marker.includes("post-arm reboot window")));
+    }],
+    ["learning teacher promotes hidden dialog memory markers", async () => {
+      const marker = "ops-memory: goal=Soty UTF-8 identity proof | actual=use WindowsIdentity with UTF-8 output | success=DOMAIN\\User without mojibake | env=agent-dialog";
+      const report = buildTeacherReport([
+        {
+          kind: "agent-runtime",
+          result: "ok",
+          family: "dialog-memory",
+          route: "codex.exec.resume+soty-mcp",
+          proof: marker,
+          exitCode: 0,
+          createdAt: "2026-05-12T14:40:00.000Z"
+        }
+      ], { limit: 1 });
+      assert(report.candidates.some((item) => item.scope === "dialog" && item.marker === marker));
     }]
   ];
   assert(cases.length >= 50);

@@ -37,6 +37,7 @@ const maxScriptChars = 1_000_000;
 const maxChatChars = 12_000;
 const maxAgentContextChars = 16_000;
 const maxAgentRuntimePromptChars = 48_000;
+const maxLearningMarkersPerTurn = 8;
 const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
@@ -1737,6 +1738,9 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 
 function classifySourceCommand(command) {
   const lower = String(command || "").toLowerCase();
+  if (/utf-?8|unicode|codepage|chcp|outputencoding|inputencoding|windowsidentity|text\.encoding|[Рр]РєСЂР°Рє|кракозябр|кодиров/u.test(lower)) {
+    return "encoding-identity";
+  }
   if (/\b(whoami|hostname)\b|computername|username/u.test(lower)) {
     return "identity-probe";
   }
@@ -3033,7 +3037,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     lastMessage: "",
     messages: [],
     terminal: [],
-    terminalKeys: new Set()
+    terminalKeys: new Set(),
+    learningMarkers: []
   };
   let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal);
   if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
@@ -3042,7 +3047,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       lastMessage: "",
       messages: [],
       terminal: [],
-      terminalKeys: new Set()
+      terminalKeys: new Set(),
+      learningMarkers: []
     };
     const freshArgs = codexSotySessionArgs({
       jobDir,
@@ -3060,8 +3066,11 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     state.messages = freshState.messages;
     state.terminal = freshState.terminal;
     state.terminalKeys = freshState.terminalKeys;
+    state.learningMarkers = freshState.learningMarkers;
   }
-  const lastFromFile = existsSync(outPath) ? cleanAgentChatReply(await readFile(outPath, "utf8")) : "";
+  const lastFileRaw = existsSync(outPath) ? await readFile(outPath, "utf8") : "";
+  pushLearningMarkers(state, extractInternalLearningMarkers(lastFileRaw));
+  const lastFromFile = cleanAgentChatReply(lastFileRaw);
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
   if (state.threadId) {
@@ -3085,6 +3094,12 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         taskSig: taskSignature(text),
         proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}`,
         exitCode: 125,
+        durationMs: Date.now() - startedAt,
+        ...learningContext
+      });
+      recordAgentLearningMarkers(state.learningMarkers, {
+        route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+        taskSig: taskSignature(text),
         durationMs: Date.now() - startedAt,
         ...learningContext
       });
@@ -3119,6 +3134,12 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       durationMs: Date.now() - startedAt,
       ...learningContext
     });
+    recordAgentLearningMarkers(state.learningMarkers, {
+      route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+      taskSig: taskSignature(text),
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
     return {
       ok: true,
       text: finalText.slice(0, maxChatChars),
@@ -3135,6 +3156,12 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     taskSig: taskSignature(text),
     proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}`,
     exitCode: result.exitCode || 1,
+    durationMs: Date.now() - startedAt,
+    ...learningContext
+  });
+  recordAgentLearningMarkers(state.learningMarkers, {
+    route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+    taskSig: taskSignature(text),
     durationMs: Date.now() - startedAt,
     ...learningContext
   });
@@ -3676,6 +3703,7 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
     }
   }
   for (const rawMessage of extractCodexAssistantTexts(event)) {
+    pushLearningMarkers(state, extractInternalLearningMarkers(rawMessage));
     const message = cleanAgentChatReply(rawMessage);
     if (!message) {
       continue;
@@ -3690,6 +3718,57 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
         Promise.resolve(onMessage(message)).catch(() => undefined);
       }
     }
+  }
+}
+
+function pushLearningMarkers(state, markers) {
+  if (!state || !Array.isArray(markers) || markers.length === 0) {
+    return;
+  }
+  const target = Array.isArray(state.learningMarkers) ? state.learningMarkers : [];
+  for (const marker of markers) {
+    const clean = cleanInternalLearningMarker(marker);
+    if (clean && !target.includes(clean)) {
+      target.push(clean);
+    }
+  }
+  state.learningMarkers = target.slice(-maxLearningMarkersPerTurn);
+}
+
+function extractInternalLearningMarkers(value) {
+  return String(value || "")
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => cleanInternalLearningMarker(line))
+    .filter(Boolean);
+}
+
+function cleanInternalLearningMarker(value) {
+  const text = String(value || "").trim().replace(/^`|`$/gu, "");
+  if (/^ops-memory\s*:/iu.test(text)) {
+    return text.slice(0, 900);
+  }
+  if (/^soty-memory\s*:/iu.test(text)) {
+    return `ops-memory:${text.replace(/^soty-memory\s*:/iu, "")}`.slice(0, 900);
+  }
+  return "";
+}
+
+function recordAgentLearningMarkers(markers, context = {}) {
+  const unique = [...new Set((markers || []).map(cleanInternalLearningMarker).filter(Boolean))]
+    .slice(-maxLearningMarkersPerTurn);
+  for (const marker of unique) {
+    recordLearningReceipt({
+      kind: "agent-runtime",
+      family: "dialog-memory",
+      result: "ok",
+      route: context.route || "codex.exec.resume",
+      taskSig: context.taskSig || "",
+      proof: marker,
+      exitCode: 0,
+      ...(Number.isSafeInteger(context.durationMs) ? { durationMs: context.durationMs } : {}),
+      ...cleanLearningContext(context)
+    });
   }
 }
 
@@ -3984,6 +4063,7 @@ function isInternalAgentReceiptLine(line) {
   const text = String(line || "").trim();
   return /^`?(learning_delta|proof|final_line|finish_skill_edit)\s*=/iu.test(text)
     || /^`?ops-memory\s*:/iu.test(text)
+    || /^`?soty-memory\s*:/iu.test(text)
     || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text);
 }
 
@@ -4225,6 +4305,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- For project work, detect the real project/root before editing. If the project is on the source device, operate through Soty MCP; if it is the server checkout, state that boundary.",
     "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
     "- Verify changes with the smallest useful proof, record reusable learning when behavior changes, and keep user-facing explanations simple.",
+    "- Learning note rule: when a task produces a reusable lesson for future dialogs, append exactly one hidden line starting `ops-memory:` with `goal=... | actual=... | success=... | env=...`. It is filtered from chat and stored as learning memory.",
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn."
@@ -4303,6 +4384,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- missing_channel_reinstall_rule: if reinstall/reset is blocked only by an unavailable target Soty channel, answer in <=3 short sentences: not started; cannot see <device> through Soty; open/restart Soty Agent there and reply ready.",
     "- project_rule: detect the real project/root before editing; do not assume this generated workspace is the user's project.",
     "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
+    "- learning_note_rule: when you discover a reusable solution, failure contour, route fork, or faster proof, append one hidden line starting exactly `ops-memory:` with `goal=... | actual=... | success=... | env=...`. Do not describe that line visibly; it is filtered from chat and stored for future dialogs.",
     "",
     "Learning memory snapshot:",
     runtime.memory || "unavailable",

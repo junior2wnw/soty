@@ -273,6 +273,14 @@ function buildRecommendations(rows, topFailures) {
 
 function buildPromotionCandidates(rows, failures, successes) {
   const candidates = [];
+  const memoryMarkers = latestMemoryMarkerRows(rows);
+  for (const marker of memoryMarkers) {
+    candidates.push({
+      scope: marker.count >= 2 ? "promote" : "dialog",
+      family: marker.family,
+      marker: marker.marker
+    });
+  }
   const postArmLosses = postArmSourceDisconnectRows(rows);
   if (postArmLosses.length > 0) {
     candidates.push({
@@ -298,6 +306,41 @@ function buildPromotionCandidates(rows, failures, successes) {
     });
   }
   return candidates.slice(0, 10);
+}
+
+function latestMemoryMarkerRows(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const marker = cleanMemoryMarker(row.proof);
+    if (!marker) {
+      continue;
+    }
+    const family = cleanText(row.family, 80) || "dialog-memory";
+    const key = `${family}|${marker}`;
+    const current = groups.get(key) || {
+      family,
+      marker,
+      count: 0,
+      lastSeenAt: ""
+    };
+    current.count += 1;
+    current.lastSeenAt = cleanIso(row.createdAt) || cleanIso(row.receivedAt) || current.lastSeenAt;
+    groups.set(key, current);
+  }
+  return Array.from(groups.values())
+    .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt) || right.count - left.count)
+    .slice(0, 5);
+}
+
+function cleanMemoryMarker(value) {
+  const text = cleanText(value, 900).replace(/^`|`$/gu, "");
+  if (/^ops-memory\s*:/iu.test(text)) {
+    return text;
+  }
+  if (/^soty-memory\s*:/iu.test(text)) {
+    return `ops-memory:${text.replace(/^soty-memory\s*:/iu, "")}`.slice(0, 900);
+  }
+  return "";
 }
 
 function postArmSourceDisconnectRows(rows) {
