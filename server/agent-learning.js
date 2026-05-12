@@ -223,6 +223,15 @@ function buildRecommendations(rows, topFailures) {
   const windowsRows = rows.filter((item) => item.family === "windows-reinstall");
   const postArmLosses = postArmSourceDisconnectRows(rows);
   const slowRoutineGroups = slowRoutineCodexGroups(rows);
+  const lowQualityGroups = lowQualityRouteGroups(rows);
+  for (const item of lowQualityGroups.slice(0, 3)) {
+    recommendations.push({
+      priority: item.count >= 2 || item.score < 60 ? "high" : "normal",
+      family: item.family,
+      title: "Improve low-quality automatic route",
+      action: `A runtime route returned quality=${item.quality} score=${item.score} for ${item.family}. Tighten the route, add a proof check, or fall back to Codex before answering. Evidence count: ${item.count}.`
+    });
+  }
   for (const item of slowRoutineGroups.slice(0, 3)) {
     recommendations.push({
       priority: item.totalTokens >= 100000 || item.durationMs >= 60000 ? "high" : "normal",
@@ -321,7 +330,54 @@ function buildPromotionCandidates(rows, failures, successes) {
       marker: `ops-memory: goal=Soty ${slow.family} fast-route promotion | actual=slow routine via ${slow.route || "codex"} | success=durationMs=${slow.durationMs}; tokens=${slow.totalTokens}; prefer proofed runtime route | env=soty.learning.teacher count=${slow.count}`
     });
   }
+  for (const quality of lowQualityRouteGroups(rows).slice(0, 4)) {
+    candidates.push({
+      scope: quality.count >= 2 ? "promote" : "candidate",
+      family: quality.family,
+      marker: `ops-memory: goal=Soty ${quality.family} route quality | actual=quality=${quality.quality}; score=${quality.score}; route=${quality.route || "unknown"} | success=patch proof checks or fallback before final answer | env=soty.learning.teacher count=${quality.count}`
+    });
+  }
   return candidates.slice(0, 10);
+}
+
+function lowQualityRouteGroups(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const quality = learningQuality(row.proof);
+    if (!quality.low) {
+      continue;
+    }
+    const family = cleanText(row.family, 80) || "generic";
+    const route = cleanText(row.route, 120) || "unknown";
+    const key = `${family}|${route}|${quality.quality}`;
+    const current = groups.get(key) || {
+      family,
+      route,
+      quality: quality.quality,
+      score: quality.score,
+      count: 0,
+      lastSeenAt: ""
+    };
+    current.count += 1;
+    current.score = Math.min(current.score, quality.score);
+    current.lastSeenAt = cleanIso(row.createdAt) || cleanIso(row.receivedAt) || current.lastSeenAt;
+    groups.set(key, current);
+  }
+  return Array.from(groups.values())
+    .sort((left, right) => right.count - left.count || left.score - right.score || right.lastSeenAt.localeCompare(left.lastSeenAt));
+}
+
+function learningQuality(proof) {
+  const text = String(proof || "").toLowerCase();
+  const scoreMatch = /qualityscore=(\d{1,3})/u.exec(text);
+  const score = scoreMatch ? Math.max(0, Math.min(100, Number.parseInt(scoreMatch[1], 10) || 0)) : 100;
+  const qualityMatch = /quality=([a-z0-9_-]+)/u.exec(text);
+  const quality = qualityMatch ? qualityMatch[1] : "";
+  return {
+    quality,
+    score,
+    low: quality === "fail" || score < 80 || text.includes("semantic-mismatch") || text.includes("quality=low")
+  };
 }
 
 function slowRoutineCodexGroups(rows) {

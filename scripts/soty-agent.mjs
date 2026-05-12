@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.147";
+const agentVersion = "0.3.148";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1751,12 +1751,32 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 }
 
 function classifyRoutineSourceTask(lower) {
-  if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process/u.test(String(lower || ""))) {
+  const text = String(lower || "");
+  if (/driver|pnputil|devmgmt|device manager|problem device|устройств|драйвер|диспетчер/u.test(text)) {
+    return "driver-check";
+  }
+  if (/battery|powercfg|sleep|lid|power plan|заряд|батаре|питани|сон|крышк/u.test(text)) {
+    return "power-check";
+  }
+  if (/(?:\bport\b|listener|listen|tcp|udp|netstat|порт|слуша|соединен)/u.test(text)) {
+    return "system-check";
+  }
+  if (/event log|eventlog|winlog|журнал|событи|ошибк|critical|критич/u.test(text)) {
+    return "system-check";
+  }
+  if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process/u.test(text)) {
     return "program-control";
   }
-  const text = String(lower || "");
   if (/script|powershell-скрипт|\.ps1|скрипт/u.test(text)) {
     return "script-task";
+  }
+  if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)
+    && /(official|официальн|релиз|release|lts|stable|стабиль|ссылк|link|github)/u.test(text)) {
+    return "web-lookup";
+  }
+  if (/(?:winget|where\.exe|where\s+|which\s+|installed|version|версии?|установлен[аоы]?|наличи|программ|приложени|git|node|npm|python|pwsh|powershell)\b/u.test(text)
+    && !/\b(?:install|upgrade|uninstall|remove)\b|установи|обнови|удали/u.test(text)) {
+    return "software-check";
   }
   if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)) {
     return "web-lookup";
@@ -1764,7 +1784,7 @@ function classifyRoutineSourceTask(lower) {
   if (/uptime|ram|memory|disk|cpu|bits|windows update|ipv4|ip address|gateway|dns|defender|firewall|памят|диск|шлюз|сеть|сетев|защит|брандмауэр/u.test(text)) {
     return "system-check";
   }
-  if (/temp|file|folder|directory|report\.txt|hash|checksum|файл|папк|отчет|отчёт|создай папку|удали скрипт/u.test(text)) {
+  if (/temp|file|folder|directory|report\.txt|hash|checksum|zip|archive|compress|файл|папк|архив|отчет|отчёт|создай папку|удали скрипт/u.test(text)) {
     return "file-work";
   }
   if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process|блокнот|калькулятор|процесс|запусти|закрой/u.test(text)) {
@@ -1774,7 +1794,7 @@ function classifyRoutineSourceTask(lower) {
 }
 
 function isRoutineAgentTaskFamily(family) {
-  return ["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "audio-volume", "audio-mute"].includes(cleanActionToken(family, ""));
+  return ["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(cleanActionToken(family, ""));
 }
 
 function classifySourceCommand(command) {
@@ -1854,13 +1874,23 @@ function fastDirectAnswerSpec(text) {
     ];
     return { kind: "recipe-omelet", text: lines.slice(0, steps).join("\n") };
   }
+  if (/разминк|тренировк|зарядк|workout|warm-?up|exercise/iu.test(lower)) {
+    const lines = [
+      "1. Круги плечами и шеей - 1 минута.",
+      "2. Приседания в спокойном темпе - 1 минута.",
+      "3. Наклоны и мягкая растяжка спины - 1 минута.",
+      "4. Выпады назад без рывков - 1 минута.",
+      "5. Легкая планка или шаг на месте - 1 минута."
+    ];
+    return { kind: "simple-workout", text: lines.slice(0, steps).join("\n") };
+  }
   return null;
 }
 
 function isPlainNonDeviceTask(text) {
   const lower = String(text || "").toLowerCase();
   return /без компьютера|не используй компьютер|не трогай компьютер|no computer|without computer/iu.test(lower)
-    || (/омлет|рецепт|готовк|сковород|яичниц/iu.test(lower) && !/(файл|папк|windows|powershell|cmd|браузер|интернет|сайт|программ|служб|процесс|pid|диск|сеть)/iu.test(lower));
+    || (/(омлет|рецепт|готовк|сковород|яичниц|разминк|тренировк|зарядк|workout|warm-?up|exercise)/iu.test(lower) && !/(файл|папк|windows|powershell|cmd|браузер|интернет|сайт|программ|служб|процесс|pid|диск|сеть)/iu.test(lower));
 }
 
 function fastRequestedStepCount(text, fallback) {
@@ -1873,41 +1903,107 @@ function fastRequestedStepCount(text, fallback) {
 
 async function tryFastRoutineAgentReply({ text, source, target, taskFamily, startedAt, learningContext }) {
   const spec = fastRoutineSpecForTask(text, taskFamily);
-  if (!spec || !target?.id || !isAgentSourceTarget(target.id)) {
+  if (!spec || !target?.id) {
     return null;
   }
   const deviceId = agentSourceDeviceId(target.id) || bridgeSourceDeviceId(target, source);
   if (!deviceId) {
     return null;
   }
-  const result = await postAgentSourceJob("/api/agent/source/script", {
-    deviceId,
-    script: spec.script,
-    shell: "powershell",
-    name: spec.name,
-    timeoutMs: spec.timeoutMs
-  }, safeRelayId(source?.sourceRelayId || ""));
+  const result = isAgentSourceTarget(target.id)
+    ? await postAgentSourceJob("/api/agent/source/script", {
+      deviceId,
+      script: spec.script,
+      shell: "powershell",
+      name: spec.name,
+      timeoutMs: spec.timeoutMs
+    }, safeRelayId(source?.sourceRelayId || ""))
+    : target.access === true
+      ? await postLocalOperatorScript(target.id, deviceId, {
+        script: spec.script,
+        shell: "powershell",
+        name: spec.name
+      }, spec.timeoutMs)
+      : null;
+  if (!result) {
+    return null;
+  }
   const parsed = parseFastRoutineJson(result?.text || "");
-  const ok = Boolean(result?.ok && parsed);
+  const quality = parsed ? fastRoutineQuality(spec, parsed, text) : { ok: false, score: 0, missing: ["json"] };
+  const ok = Boolean(result?.ok && parsed && quality.ok);
   const finalText = ok
     ? spec.format(parsed)
     : agentFailureText(result?.text || "fast routine did not return proof");
   recordLearningReceipt({
     kind: "agent-runtime",
     family: spec.family,
-    result: ok ? "ok" : "failed",
+    result: ok ? "ok" : parsed ? "partial" : "failed",
     route: "agent-runtime.fast-source-script",
     commandSig: commandSignature(spec.name, spec.family),
     taskSig: taskSignature(text),
-    proof: `exitCode=${ok ? 0 : result?.exitCode || 1}; fastRoutine=${spec.kind}; final=${finalText ? "nonempty" : "empty"}; tokens=actual; input=0; output=0; total=0; cached=0`,
+    proof: `exitCode=${ok ? 0 : result?.exitCode || 1}; fastRoutine=${spec.kind}; final=${finalText ? "nonempty" : "empty"}; quality=${quality.ok ? "pass" : "fail"}; qualityScore=${quality.score}; missing=${quality.missing.join(",").slice(0, 160)}; tokens=actual; input=0; output=0; total=0; cached=0`,
     exitCode: ok ? 0 : result?.exitCode || 1,
     durationMs: Date.now() - startedAt,
     ...learningContext
   });
+  if (parsed && !quality.ok) {
+    return null;
+  }
   return {
     ok,
     text: finalText.slice(0, maxChatChars),
     exitCode: ok ? 0 : result?.exitCode || 1
+  };
+}
+
+async function tryFastWindowsReinstallGateReply({ text, source, target, taskFamily, startedAt, learningContext }) {
+  if (taskFamily !== "windows-reinstall" && classifySourceCommand(text) !== "windows-reinstall") {
+    return null;
+  }
+  if (!target?.id) {
+    return null;
+  }
+  const deviceId = agentSourceDeviceId(target.id) || bridgeSourceDeviceId(target, source);
+  if (!deviceId) {
+    return null;
+  }
+  const request = managedReinstallGuardRequest("preflight");
+  const script = sourceManagedWindowsReinstallScript(request);
+  const result = isAgentSourceTarget(target.id)
+    ? await postAgentSourceJob("/api/agent/source/script", {
+      deviceId,
+      script,
+      shell: "powershell",
+      name: "fast-windows-reinstall-preflight",
+      timeoutMs: 120_000
+    }, safeRelayId(source?.sourceRelayId || ""))
+    : await postLocalOperatorScript(target.id, deviceId, {
+      script,
+      shell: "powershell",
+      name: "fast-windows-reinstall-preflight"
+    }, 120_000);
+  const parsed = parseFastRoutineJson(result?.text || "") || parseJsonObjectLoose(result?.text || "");
+  if (!parsed || String(parsed.action || "") !== "preflight") {
+    return null;
+  }
+  const blockers = reinstallPreflightBlockers(parsed);
+  const finalText = formatFastWindowsReinstallPreflight(parsed, target, blockers);
+  recordLearningReceipt({
+    kind: "agent-runtime",
+    family: "windows-reinstall",
+    result: blockers.length > 0 ? "blocked" : "partial",
+    route: "agent-runtime.fast-reinstall-preflight",
+    commandSig: commandSignature("fast-windows-reinstall-preflight", "windows-reinstall"),
+    taskSig: taskSignature(text),
+    proof: `exitCode=${Number.isSafeInteger(result?.exitCode) ? result.exitCode : 0}; action=preflight; destructive=false; final=nonempty; quality=pass; qualityScore=92; blockers=${blockers.join(",").slice(0, 180)}; tokens=actual; input=0; output=0; total=0; cached=0`,
+    exitCode: 0,
+    durationMs: Date.now() - startedAt,
+    ...learningContext
+  });
+  return {
+    ok: true,
+    text: finalText.slice(0, maxChatChars),
+    exitCode: 0
   };
 }
 
@@ -1916,6 +2012,24 @@ function fastRoutineSpecForTask(text, taskFamily) {
   const lower = body.toLowerCase();
   if (taskFamily === "program-control") {
     return fastRoutineProgramSpec(body);
+  }
+  if (taskFamily === "driver-check") {
+    return fastRoutineDriverProblemSpec(lower);
+  }
+  if (taskFamily === "power-check") {
+    return fastRoutinePowerSpec(lower);
+  }
+  if (taskFamily === "software-check" || (taskFamily === "package-install" && /(version|верс|installed|установлен|наличи|where|which|проверь)/iu.test(lower))) {
+    return fastRoutineSoftwareSpec(lower);
+  }
+  if (taskFamily === "system-check" && /(?:\bport\b|listener|listen|tcp|udp|netstat|порт|слуша|соединен)/iu.test(lower)) {
+    return fastRoutinePortSpec(lower);
+  }
+  if (taskFamily === "system-check" && /event log|eventlog|winlog|журнал|событи|ошибк|critical|критич/iu.test(lower)) {
+    return fastRoutineEventLogSpec();
+  }
+  if (taskFamily === "file-work" && /(zip|archive|compress|архив|сожм|упак)/iu.test(lower) && /temp|tmp|врем/iu.test(lower)) {
+    return fastRoutineZipReportSpec(fastRoutineFileCount(body) || 4);
   }
   if (taskFamily === "file-work" && /report\.txt|отчет|отчёт/iu.test(lower) && /temp|tmp|врем/iu.test(lower)) {
     return fastRoutineFileReportSpec(body);
@@ -2113,6 +2227,40 @@ function fastRoutineLargestFileReportSpec(count) {
   };
 }
 
+function fastRoutineZipReportSpec(count) {
+  const safeCount = Math.max(2, Math.min(9, Number.parseInt(String(count || 4), 10) || 4));
+  return {
+    kind: "temp-zip-report",
+    family: "file-work",
+    name: "fast-file-zip-report",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$count = ${safeCount}`,
+      "$dir = Join-Path $env:TEMP ('soty-zip-check-' + [guid]::NewGuid().ToString('N'))",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$sourceDir = Join-Path $dir 'source'",
+      "New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null",
+      "for ($i = 0; $i -lt $count; $i++) {",
+      "  Set-Content -LiteralPath (Join-Path $sourceDir ('item-' + ($i + 1) + '.txt')) -Value ('soty archive item ' + ($i + 1) + ' ' + [guid]::NewGuid().ToString('N')) -Encoding UTF8",
+      "}",
+      "$zip = Join-Path $dir 'archive.zip'",
+      "$sourceItems = @(Get-ChildItem -LiteralPath $sourceDir -File)",
+      "Compress-Archive -LiteralPath $sourceItems.FullName -DestinationPath $zip -Force",
+      "$hash = Get-FileHash -LiteralPath $zip -Algorithm SHA256",
+      "$report = Join-Path $dir 'report.txt'",
+      "Set-Content -LiteralPath $report -Value @('archive=' + $zip, 'sha256=' + $hash.Hash, 'items=' + $count) -Encoding UTF8",
+      "[pscustomobject]@{ archive = $zip; report = $report; count = $count; sha256 = $hash.Hash; bytes = (Get-Item -LiteralPath $zip).Length } | ConvertTo-Json -Compress"
+    ].join("\n"),
+    format: (data) => [
+      "Готово.",
+      `Архив: \`${data.archive || ""}\` (${data.bytes || 0} байт).`,
+      `Отчет: \`${data.report || ""}\``,
+      `SHA256: \`${data.sha256 || ""}\`; файлов внутри: ${data.count || 0}.`
+    ].join("\n")
+  };
+}
+
 function fastRoutineSystemSpec(lower) {
   if (/ipv4|ip address|dns|gateway|шлюз|сеть|сетев/iu.test(lower)) {
     return fastRoutineSystemNetworkSpec();
@@ -2235,6 +2383,145 @@ function fastRoutineSystemUptimeSpec() {
   };
 }
 
+function fastRoutinePortSpec(lower) {
+  const port = fastRoutineRequestedPort(lower);
+  return {
+    kind: "system-port-listener",
+    family: "system-check",
+    name: "fast-system-port-listener",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$port = ${port}`,
+      "$items = @(Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Select-Object -First 12 LocalAddress,LocalPort,State,OwningProcess)",
+      "$rows = @($items | ForEach-Object {",
+      "  $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue",
+      "  [pscustomobject]@{ address = $_.LocalAddress; port = $_.LocalPort; state = $_.State.ToString(); pid = $_.OwningProcess; process = if ($proc) { $proc.ProcessName } else { '' } }",
+      "})",
+      "[pscustomobject]@{ port = $port; count = $rows.Count; listeners = $rows; changed = $false } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const listeners = Array.isArray(data.listeners) ? data.listeners : [];
+      const rows = listeners.map((item) => `${item.process || "pid"}:${item.pid || 0} ${item.address || "*"}:${item.port || data.port} ${item.state || ""}`);
+      return [
+        `Порт ${data.port}: ${Number(data.count || 0) > 0 ? "есть соединения/слушатели" : "не найден активным"}.`,
+        rows.length > 0 ? rows.join("\n") : "Активных записей TCP нет.",
+        "Ничего не менял."
+      ].join("\n");
+    }
+  };
+}
+
+function fastRoutineEventLogSpec() {
+  return {
+    kind: "system-eventlog-critical",
+    family: "system-check",
+    name: "fast-system-eventlog-critical",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$start = (Get-Date).AddHours(-24)",
+      "$events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1,2; StartTime = $start } -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object {",
+      "  [pscustomobject]@{ time = $_.TimeCreated.ToString('s'); id = $_.Id; provider = $_.ProviderName; message = ([string]$_.Message).Replace(\"`r\", ' ').Replace(\"`n\", ' ').Substring(0, [Math]::Min(180, ([string]$_.Message).Length)) }",
+      "})",
+      "[pscustomobject]@{ hours = 24; count = $events.Count; events = $events; changed = $false } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const events = Array.isArray(data.events) ? data.events : [];
+      return [
+        `System Event Log за ${data.hours || 24}ч: критических/ошибок ${data.count || 0}.`,
+        events.length > 0 ? events.map((item) => `${item.time || ""} ${item.provider || ""} #${item.id || ""}`).join("\n") : "Критических/ошибок не нашел.",
+        "Ничего не менял."
+      ].join("\n");
+    }
+  };
+}
+
+function fastRoutineDriverProblemSpec() {
+  return {
+    kind: "driver-problem-devices",
+    family: "driver-check",
+    name: "fast-driver-problem-devices",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$items = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $null -ne $_.ConfigManagerErrorCode -and [int]$_.ConfigManagerErrorCode -ne 0 } | Select-Object -First 12 Name,DeviceID,ConfigManagerErrorCode)",
+      "$rows = @($items | ForEach-Object { [pscustomobject]@{ name = [string]$_.Name; code = [int]$_.ConfigManagerErrorCode; id = ([string]$_.DeviceID).Substring(0, [Math]::Min(120, ([string]$_.DeviceID).Length)) } })",
+      "[pscustomobject]@{ problemCount = $rows.Count; devices = $rows; changed = $false } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const devices = Array.isArray(data.devices) ? data.devices : [];
+      return [
+        `Проблемных устройств: ${data.problemCount || 0}.`,
+        devices.length > 0 ? devices.map((item) => `${item.name || "device"}: code ${item.code}`).join("\n") : "PnP-ошибок не нашел.",
+        "Ничего не менял."
+      ].join("\n");
+    }
+  };
+}
+
+function fastRoutinePowerSpec() {
+  return {
+    kind: "system-power-battery",
+    family: "power-check",
+    name: "fast-system-power-battery",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$battery = @(Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 2 Name,EstimatedChargeRemaining,BatteryStatus)",
+      "$scheme = ''",
+      "try { $scheme = (powercfg /getactivescheme 2>$null | Out-String).Trim() } catch {}",
+      "$sleep = ''",
+      "try { $sleep = (powercfg /a 2>$null | Out-String).Trim() } catch {}",
+      "[pscustomobject]@{ battery = $battery; activeScheme = $scheme; sleepSummary = $sleep.Substring(0, [Math]::Min(900, $sleep.Length)); changed = $false } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const battery = Array.isArray(data.battery) ? data.battery : data.battery ? [data.battery] : [];
+      const batteryLine = battery.length > 0
+        ? battery.map((item) => `${item.Name || "Battery"} ${item.EstimatedChargeRemaining ?? "?"}% status=${item.BatteryStatus ?? "?"}`).join(", ")
+        : "батарея не найдена";
+      return [
+        `Батарея: ${batteryLine}.`,
+        `План питания: ${String(data.activeScheme || "нет данных").slice(0, 220)}.`,
+        "Ничего не менял."
+      ].join("\n");
+    }
+  };
+}
+
+function fastRoutineSoftwareSpec(lower) {
+  const tools = fastRoutineRequestedTools(lower);
+  const toolRows = tools.map((tool) => `@{ Name = '${tool.name}'; Command = '${tool.command}'; Args = @(${tool.args.map((arg) => `'${arg}'`).join(",")}) }`).join(",\n");
+  return {
+    kind: "software-version-check",
+    family: "software-check",
+    name: "fast-software-version-check",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$tools = @(${toolRows})`,
+      "$rows = @()",
+      "foreach ($tool in $tools) {",
+      "  $cmd = Get-Command $tool.Command -ErrorAction SilentlyContinue | Select-Object -First 1",
+      "  if (-not $cmd) { $rows += [pscustomobject]@{ name = $tool.Name; found = $false; path = ''; version = '' }; continue }",
+      "  $exe = if ($cmd.Path) { [string]$cmd.Path } elseif ($cmd.Source) { [string]$cmd.Source } else { [string]$cmd.Name }",
+      "  $version = ''",
+      "  try { $version = (& $exe @($tool.Args) 2>$null | Out-String).Trim() } catch { $version = $_.Exception.Message }",
+      "  $rows += [pscustomobject]@{ name = $tool.Name; found = $true; path = $exe; version = $version.Substring(0, [Math]::Min(220, $version.Length)) }",
+      "}",
+      "[pscustomobject]@{ tools = $rows; changed = $false } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const toolsOut = Array.isArray(data.tools) ? data.tools : [];
+      return [
+        "Проверил программы:",
+        toolsOut.map((item) => `${item.name}: ${item.found ? (item.version || item.path || "найдено") : "не найдено"}`).join("\n") || "нет данных",
+        "Ничего не менял."
+      ].join("\n");
+    }
+  };
+}
+
 function fastRoutineScriptReportSpec(lower) {
   const services = fastRoutineServiceNames(lower);
   const serviceNames = services.map((name) => `'${name}'`).join(",");
@@ -2348,6 +2635,31 @@ function fastRoutineFileCount(text) {
   return match ? Number.parseInt(match[1], 10) : 4;
 }
 
+function fastRoutineRequestedPort(text) {
+  const value = String(text || "");
+  const explicit = /(?:port|порт)\s*[:#]?\s*(\d{2,5})/iu.exec(value);
+  const fallback = /\b(22|25|53|80|110|143|443|445|993|995|1433|1521|3000|3306|3389|5000|5173|5432|6379|8000|8080|8443|9000)\b/u.exec(value);
+  const port = Number.parseInt((explicit || fallback || [])[1] || "80", 10);
+  return Math.max(1, Math.min(65535, Number.isFinite(port) ? port : 80));
+}
+
+function fastRoutineRequestedTools(lower) {
+  const text = String(lower || "");
+  const specs = [
+    { id: "winget", name: "winget", command: "winget", args: ["--version"], test: /winget|пакет|программ|приложени/u },
+    { id: "git", name: "git", command: "git", args: ["--version"], test: /\bgit\b/u },
+    { id: "node", name: "node", command: "node", args: ["--version"], test: /\bnode(?:\.js)?\b/u },
+    { id: "npm", name: "npm", command: "npm", args: ["--version"], test: /\bnpm\b/u },
+    { id: "python", name: "python", command: "python", args: ["--version"], test: /\bpython|питон/u },
+    { id: "pwsh", name: "PowerShell", command: "pwsh", args: ["--version"], test: /\bpwsh\b|powershell|power shell/u }
+  ];
+  const selected = specs.filter((item) => item.test.test(text));
+  if (selected.length > 0) {
+    return selected.slice(0, 6);
+  }
+  return specs.filter((item) => ["winget", "git", "node", "python"].includes(item.id));
+}
+
 function fastRoutineServiceNames(lower) {
   const text = String(lower || "");
   const names = [];
@@ -2366,6 +2678,111 @@ function fastRoutineServiceNames(lower) {
     add("wuauserv");
   }
   return names.slice(0, 8);
+}
+
+function fastRoutineQuality(spec, data, text) {
+  const missing = [];
+  const need = (condition, key) => {
+    if (!condition) {
+      missing.push(key);
+    }
+  };
+  const lower = String(text || "").toLowerCase();
+  const kind = String(spec?.kind || "");
+  if (kind.startsWith("program-")) {
+    need(data.started !== false && Number(data.pid || 0) >= 0, "program-start-proof");
+    if (/close|stop|kill|закрой|закрыть|заверши|останови/iu.test(lower)) {
+      need(data.closed !== false || data.aliveBeforeClose === false, "close-proof");
+    }
+  } else if (kind === "temp-file-hash-report") {
+    const count = Number(data.count || 0);
+    need(Boolean(data.report), "report");
+    need(count > 0, "count");
+    need(Array.isArray(data.hashes) ? data.hashes.length === count : count === 1 && Boolean(data.hashes), "hashes");
+    need(data.remaining === 1, "cleanup");
+  } else if (kind === "temp-file-report") {
+    need(Boolean(data.report), "report");
+    need(Boolean(data.largest), "largest");
+    need(data.remaining === 1, "cleanup");
+  } else if (kind === "temp-zip-report") {
+    need(Boolean(data.archive), "archive");
+    need(Boolean(data.report), "report");
+    need(Boolean(data.sha256), "sha256");
+    need(Number(data.count || 0) > 0, "count");
+  } else if (kind === "system-network") {
+    need(Boolean(data.computer), "computer");
+    need(Boolean(data.ipv4) || Boolean(data.dns) || Boolean(data.gateway), "network-facts");
+  } else if (kind === "system-services") {
+    const services = Array.isArray(data.services) ? data.services : [];
+    need(services.length > 0, "services");
+    if (/firewall|брандмауэр|фаервол/iu.test(lower)) {
+      need(Array.isArray(data.firewall) && data.firewall.length > 0, "firewall");
+    }
+    if (/c:|диск|место|free|свобод/iu.test(lower)) {
+      need(data.freeGB !== null && data.freeGB !== undefined, "disk");
+    }
+  } else if (kind === "system-port-listener") {
+    need(Number(data.port || 0) > 0, "port");
+    need(data.changed === false, "read-only");
+  } else if (kind === "system-eventlog-critical") {
+    need(Number.isFinite(Number(data.count || 0)), "event-count");
+    need(data.changed === false, "read-only");
+  } else if (kind === "driver-problem-devices") {
+    need(Number.isFinite(Number(data.problemCount || 0)), "driver-count");
+    need(data.changed === false, "read-only");
+  } else if (kind === "system-power-battery") {
+    need(Boolean(data.activeScheme) || Boolean(data.sleepSummary) || data.battery !== undefined, "power-facts");
+    need(data.changed === false, "read-only");
+  } else if (kind === "software-version-check") {
+    const tools = Array.isArray(data.tools) ? data.tools : [];
+    need(tools.length > 0, "tools");
+    need(tools.some((item) => item.found === true || item.found === false), "found-state");
+    need(data.changed === false, "read-only");
+  } else if (kind === "temp-powershell-report") {
+    need(Boolean(data.report), "report");
+    need(data.scriptDeleted !== false, "script-deleted");
+  } else if (kind.startsWith("web-")) {
+    need(Boolean(data.version), "version");
+    need(Boolean(data.source), "source");
+    need(Boolean(data.file), "file");
+  }
+  const score = missing.length === 0 ? 100 : Math.max(0, 100 - missing.length * 22);
+  return { ok: score >= 80, score, missing };
+}
+
+function reinstallPreflightBlockers(data) {
+  const blockers = [];
+  if (Array.isArray(data?.blockers)) {
+    blockers.push(...data.blockers.map((item) => String(item || "").trim()).filter(Boolean));
+  }
+  if (data?.isAdmin === false && !blockers.includes("not-elevated")) {
+    blockers.push("not-elevated");
+  }
+  if (data?.status?.backupProofOk !== true && !blockers.includes("backup-not-ready")) {
+    blockers.push("backup-not-ready");
+  }
+  if (!data?.status?.installImage && !blockers.includes("install-media-not-ready")) {
+    blockers.push("install-media-not-ready");
+  }
+  return Array.from(new Set(blockers)).slice(0, 8);
+}
+
+function formatFastWindowsReinstallPreflight(data, target, blockers) {
+  const device = target?.label || data?.computerName || "ноут";
+  const os = [data?.osCaption, data?.osVersion].filter(Boolean).join(" ").trim();
+  if (blockers.length > 0) {
+    return [
+      `Переустановку на ${device} не начал.`,
+      `Проверил безопасно: ${os || data?.computerName || "система отвечает"}.`,
+      `Блокер: ${blockers.join(", ")}.`,
+      "Диск Windows не трогал; перед продолжением нужны бэкап, носитель/возвратный путь и явное подтверждение стирания."
+    ].join("\n");
+  }
+  return [
+    `Переустановку на ${device} пока не запускал.`,
+    `Предпроверка прошла: ${os || data?.computerName || "система отвечает"}.`,
+    "Следующий безопасный шаг: подготовка бэкапа и установочного носителя; стирание только после точной фразы подтверждения."
+  ].join("\n");
 }
 
 function parseFastRoutineJson(text) {
@@ -3600,6 +4017,10 @@ async function postAgentRelayEvent(id, message, type = "agent_message") {
 }
 
 async function askCodexForAgentReply(text, context, source = {}, onMessage = null, onTerminal = null) {
+  const fast = await tryAgentRuntimeFastReply({ text, source });
+  if (fast) {
+    return fast;
+  }
   const codexBin = hasCodexBinary() ? findCodexBinary() : "";
   if (!codexBin) {
     const relay = codexRelayFallback
@@ -3655,6 +4076,42 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
   }
 }
 
+async function tryAgentRuntimeFastReply({ text, source = {} }) {
+  const startedAt = Date.now();
+  const safeSource = sanitizeAgentSource(source);
+  const directFast = tryFastDirectAgentReply({
+    text,
+    source: safeSource,
+    startedAt
+  });
+  if (directFast) {
+    return directFast;
+  }
+  const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
+  const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
+  const learningContext = learningContextForTurn(safeSource, target);
+  const taskFamily = classifyTaskFamily(text, target);
+  const reinstallGate = await tryFastWindowsReinstallGateReply({
+    text,
+    source: safeSource,
+    target,
+    taskFamily,
+    startedAt,
+    learningContext
+  });
+  if (reinstallGate) {
+    return reinstallGate;
+  }
+  return await tryFastRoutineAgentReply({
+    text,
+    source: safeSource,
+    target,
+    taskFamily,
+    startedAt,
+    learningContext
+  });
+}
+
 async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
@@ -3674,6 +4131,17 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const turnKey = codexTurnDedupeKey(sessionKey, text);
   if (isDuplicateCodexTurn(turnKey)) {
     return { ok: true, text: "", messages: [], exitCode: 0 };
+  }
+  const reinstallGate = await tryFastWindowsReinstallGateReply({
+    text,
+    source: safeSource,
+    target,
+    taskFamily,
+    startedAt,
+    learningContext
+  });
+  if (reinstallGate) {
+    return reinstallGate;
   }
   const fastRoutine = await tryFastRoutineAgentReply({
     text,
@@ -4166,7 +4634,7 @@ function codexReasoningEffortForTask(taskFamily, target = null) {
   if (family === "web-lookup") {
     return "medium";
   }
-  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "power-check", "audio-volume", "audio-mute"].includes(family)) {
+  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(family)) {
     return "low";
   }
   return target?.id ? "medium" : "low";

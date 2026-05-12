@@ -40,7 +40,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.147");
+      assertEqual(health.body.version, "0.3.148");
       assertEqual(health.body.responseStyle.id, "sysadmin-short");
       assertEqual(health.body.responseStyle.displayName, "Лорд Роя");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -404,7 +404,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.147");
+      assertEqual(manifest.version, "0.3.148");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -479,6 +479,21 @@ async function runScenarios() {
         }
       ], { limit: 1 });
       assert(report.candidates.some((item) => item.scope === "dialog" && item.marker === marker));
+    }],
+    ["learning teacher promotes low-quality runtime routes", async () => {
+      const report = buildTeacherReport([
+        {
+          kind: "agent-runtime",
+          result: "partial",
+          family: "file-work",
+          route: "agent-runtime.fast-source-script",
+          proof: "exitCode=0; fastRoutine=temp-file-hash-report; final=nonempty; quality=fail; qualityScore=56; missing=hashes,cleanup; tokens=actual; input=0; output=0; total=0; cached=0",
+          exitCode: 0,
+          createdAt: "2026-05-13T08:00:00.000Z"
+        }
+      ], { limit: 1 });
+      assert(report.recommendations.some((item) => item.title === "Improve low-quality automatic route"));
+      assert(report.candidates.some((item) => item.marker.includes("route quality")));
     }]
   ];
   assert(cases.length >= 50);
