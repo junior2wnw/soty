@@ -6,12 +6,12 @@
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "ddd8a8d4b97f25fdce4b5f0b37da62b46bf83f94d4545f312075a2d0c7771bf5",
-    "zipBytes": 1267347,
+    "zipSha256": "51c42bb883f54e10a4bd3bfa5630066fd32463e5bf946e3ee68d4e1c493c3419",
+    "zipBytes": 1267454,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "59cb0ae8e064970d9432b23d04f7503066207eaae1a97592bdfd66528474d566",
-    "tarBytes": 307863,
-    "revision": "e8b943142e439000fe4a147914f016003aa4571d"
+    "tarSha256": "1b9d527ab931ead918d080e717bf08bfc6031a911b2fb22d743c9c0874822c33",
+    "tarBytes": 307911,
+    "revision": "d17022722e8fb87dbd702464a3270b0af1ce06e7"
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
