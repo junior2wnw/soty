@@ -406,6 +406,20 @@ async function runScenarios() {
       assert(durableKernel);
       assertEqual(durableKernel.entryTool, "soty_action");
     }],
+    ["agent installers stay lightweight by default", async () => {
+      const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
+      const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
+      const ui = await readFile(join(root, "src", "main.ts"), "utf8");
+      assert(windowsInstall.includes("[switch]$InstallCodex"));
+      assert(windowsInstall.includes("if ($InstallCodex)"));
+      assert(windowsInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(unixInstall.includes("INSTALL_CODEX=\"0\""));
+      assert(unixInstall.includes("--install-codex"));
+      assert(unixInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(!ui.includes("Первый ответ может занять"));
+      assert(!ui.includes("первый запуск может занять"));
+      assert(!ui.includes("progressTimer"));
+    }],
     ["learning teacher preserves phase and explains post-arm source loss", async () => {
       const report = buildTeacherReport([
         {

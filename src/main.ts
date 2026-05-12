@@ -1309,7 +1309,6 @@ function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
 
 function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
   return agent.ok
-    && agent.codex !== false
     && (agent.relay === true || compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0);
 }
 
@@ -3237,14 +3236,6 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
       let reply: LocalAgentReply;
       const streamedMessages: string[] = [];
       const streamedTerminal: string[] = [];
-      const progressTimer = window.setTimeout(() => {
-        if (streamedMessages.length === 0 && streamedTerminal.length === 0) {
-          appendAgentChatMessage(
-            tunnelId,
-            "щас\nпервый запуск может занять до минуты"
-          );
-        }
-      }, 8_000);
       try {
         await prepareAgentSourceForDialog(tunnelId, tunnel);
         reply = await askLocalAgentReply(text, context, source, 2 * 60 * 60_000, (message) => {
@@ -3263,7 +3254,6 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
           appendAgentTerminalTranscript(tunnelId, streamed);
         });
       } finally {
-        window.clearTimeout(progressTimer);
         setAgentThinking(tunnelId, false);
       }
       let finalReply = reply;

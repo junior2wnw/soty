@@ -5,7 +5,8 @@ param(
   [string]$InstallDir = "",
   [switch]$LaunchAppAtLogon,
   [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1",
-  [string]$RelayId = ""
+  [string]$RelayId = "",
+  [switch]$InstallCodex
 )
 
 $ErrorActionPreference = "Stop"
@@ -484,11 +485,16 @@ shell.Run "$escapedCommand", 0, False
   }
 
   $NodePath = Resolve-Node
-  $CodexPath = ([string](Install-StockCodexCli $NodePath | Select-Object -Last 1)).Trim()
+  $CodexPath = ""
+  if ($InstallCodex) {
+    $CodexPath = ([string](Install-StockCodexCli $NodePath | Select-Object -Last 1)).Trim()
+  } else {
+    Write-Output "soty-codex-cli:install-skipped:default-light-agent"
+  }
   Install-OpsSkillSource
   $NodeDir = Split-Path -Parent $NodePath
-  $NpmUserBin = if ($env:APPDATA) { Join-Path $env:APPDATA "npm" } else { "" }
-  $RunnerPathParts = @($NodeDir, $NpmUserBin) | Where-Object { $_ }
+  $CodexDir = if ($CodexPath) { Split-Path -Parent $CodexPath } else { "" }
+  $RunnerPathParts = @($NodeDir, $CodexDir) | Where-Object { $_ }
   $SafeRelayId = Normalize-AgentRelayId $RelayId
   if (-not $SafeRelayId) {
     $SafeRelayId = Resolve-ExistingAgentRelayId

@@ -7,6 +7,7 @@ SCOPE="CurrentUser"
 INSTALL_DIR=""
 LAUNCH_APP_AT_LOGON="0"
 APP_URL="https://xn--n1afe0b.online/?pwa=1"
+INSTALL_CODEX="0"
 
 die() {
   printf '%s\n' "$*" >&2
@@ -28,7 +29,7 @@ applescript_quote() {
 usage() {
   cat <<'EOF'
 Usage:
-  sh install-macos-linux.sh [--scope user|machine] [--base URL] [--relay-id ID]
+  sh install-macos-linux.sh [--scope user|machine] [--base URL] [--relay-id ID] [--install-codex]
 
 Legacy positional form is still supported:
   sh install-macos-linux.sh BASE RELAY_ID
@@ -95,6 +96,10 @@ while [ "$#" -gt 0 ]; do
       APP_URL="${1#--app-url=}"
       shift
       ;;
+    --install-codex)
+      INSTALL_CODEX="1"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -151,16 +156,26 @@ request_machine_privileges() {
   if [ "$LAUNCH_APP_AT_LOGON" = "1" ]; then
     launch_arg=" --launch-app-at-logon --app-url $(shell_quote "$APP_URL")"
   fi
-  command_line="sh $(shell_quote "$script_path") --scope machine --base $base_arg --relay-id $relay_arg$install_arg$launch_arg"
+  codex_arg=""
+  if [ "$INSTALL_CODEX" = "1" ]; then
+    codex_arg=" --install-codex"
+  fi
+  command_line="sh $(shell_quote "$script_path") --scope machine --base $base_arg --relay-id $relay_arg$install_arg$launch_arg$codex_arg"
 
   if [ "$OS_NAME" = "Darwin" ] && have osascript; then
     escaped="$(applescript_quote "$command_line")"
     exec osascript -e "do shell script \"$escaped\" with administrator privileges"
   fi
   if have pkexec; then
+    if [ "$INSTALL_CODEX" = "1" ]; then
+      exec pkexec sh "$script_path" --scope machine --base "$BASE" --relay-id "$RELAY_ID" --install-codex
+    fi
     exec pkexec sh "$script_path" --scope machine --base "$BASE" --relay-id "$RELAY_ID"
   fi
   if have sudo; then
+    if [ "$INSTALL_CODEX" = "1" ]; then
+      exec sudo sh "$script_path" --scope machine --base "$BASE" --relay-id "$RELAY_ID" --install-codex
+    fi
     exec sudo sh "$script_path" --scope machine --base "$BASE" --relay-id "$RELAY_ID"
   fi
   die "Administrator rights are required for machine install"
@@ -658,7 +673,12 @@ enable_autostart() {
 }
 
 NODE_PATH="$(resolve_node)"
-CODEX_PATH="$(resolve_codex)"
+CODEX_PATH=""
+if [ "$INSTALL_CODEX" = "1" ]; then
+  CODEX_PATH="$(resolve_codex)"
+else
+  printf '%s\n' "soty-codex-cli:install-skipped:default-light-agent" >>"$LOG_PATH"
+fi
 install_ops_skill_source
 install_agent_script
 write_agent_config

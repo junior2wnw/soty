@@ -67,7 +67,7 @@ export interface AgentSourceCommand {
 const relayStorageKey = "soty:agent:relay-id";
 const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const maxCodexDialogMessages = 64;
-const localAgentBlockedText = "! agent-relay: local Codex bridge is not connected";
+const localAgentBlockedText = "! agent-relay: agent bridge is not connected";
 
 export function adoptAgentRelayFromUrl(): boolean {
   const url = new URL(window.location.href);
