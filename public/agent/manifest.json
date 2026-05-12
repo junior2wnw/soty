@@ -11,8 +11,7 @@
     "tarUrl": "/agent/ops-skill.tar.gz",
     "tarSha256": "59cb0ae8e064970d9432b23d04f7503066207eaae1a97592bdfd66528474d566",
     "tarBytes": 307863,
-    "revision": "772d6ec8eef33fd85cb87b58451612c33adb849e",
-    "dirty": true
+    "revision": "e8b943142e439000fe4a147914f016003aa4571d"
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
