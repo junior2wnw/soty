@@ -2172,6 +2172,11 @@ async function runLearningReviewMerge(rest = []) {
   return report;
 }
 
+async function finishControlCli(exitCode = 0) {
+  process.exitCode = Number.isSafeInteger(exitCode) ? exitCode : 1;
+  await new Promise((resolveReady) => setImmediate(resolveReady));
+}
+
 function parseLearningReviewMergeOptions(rest) {
   const options = {
     dryRun: false,
@@ -7590,7 +7595,7 @@ async function runControlCli(args) {
   if (command === "learn-sync" || command === "learning-sync" || (command === "learn" && args[1] === "sync")) {
     const result = await syncLearningOutbox().catch(() => ({ ok: false, sent: 0, pending: 0 }));
     process.stdout.write(`soty-learning: ok=${result.ok ? "true" : "false"} sent=${result.sent || 0} pending=${result.pending || 0}\n`);
-    process.exit(result.ok ? 0 : 1);
+    return await finishControlCli(result.ok ? 0 : 1);
   }
   if (command === "learn-doctor" || command === "learn-teacher" || command === "learning-doctor" || command === "learning-teacher" || (command === "learn" && (args[1] === "doctor" || args[1] === "teacher"))) {
     const rest = command === "learn" ? args.slice(2) : args.slice(1);
@@ -7608,7 +7613,7 @@ async function runControlCli(args) {
     } else {
       process.stdout.write(`${formatLearningTeacherReport(sync, report)}\n`);
     }
-    process.exit(sync.ok && report.ok ? 0 : 1);
+    return await finishControlCli(sync.ok && report.ok ? 0 : 1);
   }
   if (command === "learn-review-merge" || command === "learning-review-merge" || command === "learn-global-review" || command === "learning-global-review" || (command === "learn" && (args[1] === "review-merge" || args[1] === "merge" || args[1] === "global-review" || args[1] === "global-review-merge"))) {
     const rest = command === "learn" ? args.slice(2) : args.slice(1);
@@ -7619,7 +7624,7 @@ async function runControlCli(args) {
     } else {
       process.stdout.write(`${formatLearningReviewMergeReport(report)}\n`);
     }
-    process.exit(report.ok && (!options.strict || !report.blockedByReview) ? 0 : 1);
+    return await finishControlCli(report.ok && (!options.strict || !report.blockedByReview) ? 0 : 1);
   }
   if (command === "import") {
     const filePath = args[1] || "";
