@@ -231,6 +231,7 @@ function buildRecommendations(rows, topFailures) {
     });
   }
   const postArmLossSet = new Set(postArmLosses);
+  const postArmFailureKeys = new Set(postArmLosses.map(failureGroupKey));
   const windowsFailures = windowsRows.filter((item) => item.result !== "ok" && !postArmLossSet.has(item));
   if (windowsRows.length > 0) {
     if (windowsFailures.length > 0) {
@@ -249,7 +250,7 @@ function buildRecommendations(rows, topFailures) {
       });
     }
   }
-  for (const failure of topFailures.slice(0, 5)) {
+  for (const failure of topFailures.filter((item) => !postArmFailureKeys.has(item.key)).slice(0, 5)) {
     if (failure.count >= 2) {
       recommendations.push({
         priority: failure.family === "windows-reinstall" ? "high" : "normal",
@@ -280,14 +281,7 @@ function buildPromotionCandidates(rows, failures, successes) {
       marker: `ops-memory: goal=Soty windows-reinstall post-arm reboot window | actual=source disconnect after managed arm reboot | success=do not probe source after rebooting=true | env=soty.learning.teacher count=${postArmLosses.length}`
     });
   }
-  const postArmFailureKeys = new Set(postArmLosses.map((item) => [
-    item.family || "generic",
-    item.result || "failed",
-    item.toolkit || "",
-    item.phase || "",
-    item.route || "unknown",
-    Number.isSafeInteger(item.exitCode) ? String(item.exitCode) : "no-exit"
-  ].join("|")));
+  const postArmFailureKeys = new Set(postArmLosses.map(failureGroupKey));
   for (const failure of failures.filter((item) => !postArmFailureKeys.has(item.key)).slice(0, 6)) {
     const scope = failure.count >= 2 ? "promote" : "candidate";
     candidates.push({
@@ -340,6 +334,17 @@ function postArmSourceDisconnectRows(rows) {
       return time >= arm.time && time - arm.time <= 30 * 60_000;
     });
   });
+}
+
+function failureGroupKey(item) {
+  return [
+    item.family || "generic",
+    item.result || "failed",
+    item.toolkit || "",
+    item.phase || "",
+    item.route || "unknown",
+    Number.isSafeInteger(item.exitCode) ? String(item.exitCode) : "no-exit"
+  ].join("|");
 }
 
 function isArmReceipt(item) {
