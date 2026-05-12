@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.145";
+const agentVersion = "0.3.146";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1761,7 +1761,7 @@ function classifyRoutineSourceTask(lower) {
   if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)) {
     return "web-lookup";
   }
-  if (/uptime|ram|memory|disk|cpu|bits|windows update|памят|диск/u.test(text)) {
+  if (/uptime|ram|memory|disk|cpu|bits|windows update|ipv4|ip address|gateway|dns|defender|firewall|памят|диск|шлюз|сеть|сетев|защит|брандмауэр/u.test(text)) {
     return "system-check";
   }
   if (/temp|file|folder|directory|report\.txt|hash|checksum|файл|папк|отчет|отчёт|создай папку|удали скрипт/u.test(text)) {
@@ -1813,6 +1813,64 @@ function classifySourceCommand(command) {
   return "generic";
 }
 
+function tryFastDirectAgentReply({ text, source, startedAt }) {
+  const spec = fastDirectAnswerSpec(text);
+  if (!spec) {
+    return null;
+  }
+  const finalText = spec.text;
+  recordLearningReceipt({
+    kind: "agent-runtime",
+    family: "direct-answer",
+    result: "ok",
+    route: "agent-runtime.fast-direct-answer",
+    taskSig: taskSignature(text),
+    proof: `exitCode=0; direct=${spec.kind}; final=nonempty; tokens=actual; input=0; output=0; total=0; cached=0`,
+    exitCode: 0,
+    durationMs: Date.now() - startedAt,
+    ...learningContextForTurn(source, null)
+  });
+  return {
+    ok: true,
+    text: finalText.slice(0, maxChatChars),
+    exitCode: 0
+  };
+}
+
+function fastDirectAnswerSpec(text) {
+  const body = String(text || "");
+  const lower = body.toLowerCase();
+  if (!isPlainNonDeviceTask(body)) {
+    return null;
+  }
+  const steps = fastRequestedStepCount(body, 5);
+  if (/omelet|омлет|яичниц/iu.test(lower)) {
+    const lines = [
+      "1. Взбей яйца с солью и ложкой молока или воды.",
+      "2. Разогрей сковороду и растопи немного масла.",
+      "3. Влей смесь, убавь огонь до среднего.",
+      "4. Жарь до схватывания краев, середину слегка подтягивай лопаткой.",
+      "5. Накрой на минуту, сними с огня и сразу подавай."
+    ];
+    return { kind: "recipe-omelet", text: lines.slice(0, steps).join("\n") };
+  }
+  return null;
+}
+
+function isPlainNonDeviceTask(text) {
+  const lower = String(text || "").toLowerCase();
+  return /без компьютера|не используй компьютер|не трогай компьютер|no computer|without computer/iu.test(lower)
+    || (/омлет|рецепт|готовк|сковород|яичниц/iu.test(lower) && !/(файл|папк|windows|powershell|cmd|браузер|интернет|сайт|программ|служб|процесс|pid|диск|сеть)/iu.test(lower));
+}
+
+function fastRequestedStepCount(text, fallback) {
+  const match = /(\d{1,2})\s*(?:шаг|step)/iu.exec(String(text || ""));
+  if (!match) {
+    return fallback;
+  }
+  return Math.max(1, Math.min(12, Number.parseInt(match[1], 10) || fallback));
+}
+
 async function tryFastRoutineAgentReply({ text, source, target, taskFamily, startedAt, learningContext }) {
   const spec = fastRoutineSpecForTask(text, taskFamily);
   if (!spec || !target?.id || !isAgentSourceTarget(target.id)) {
@@ -1856,20 +1914,85 @@ async function tryFastRoutineAgentReply({ text, source, target, taskFamily, star
 function fastRoutineSpecForTask(text, taskFamily) {
   const body = String(text || "");
   const lower = body.toLowerCase();
-  if (taskFamily === "program-control" && /notepad|блокнот/iu.test(lower) && /pid|процесс/iu.test(lower)) {
-    return fastRoutineProgramNotepadSpec();
+  if (taskFamily === "program-control") {
+    return fastRoutineProgramSpec(body);
   }
   if (taskFamily === "file-work" && /report\.txt|отчет|отчёт/iu.test(lower) && /temp|tmp|врем/iu.test(lower)) {
-    return fastRoutineFileReportSpec(fastRoutineFileCount(body));
+    return fastRoutineFileReportSpec(body);
   }
-  if (taskFamily === "system-check" && /(uptime|ram|памят|диск|место|служб|bits|windows update|cpu|процесс)/iu.test(lower)) {
+  if (["system-check", "service-check", "identity-probe"].includes(taskFamily) && /(uptime|ram|памят|диск|место|служб|bits|windows update|cpu|процесс|ipv4|ip address|dns|шлюз|сеть|defender|firewall|защит|брандмауэр)/iu.test(lower)) {
     return fastRoutineSystemSpec(lower);
   }
   if (taskFamily === "script-task" && /(powershell|ps1|скрипт)/iu.test(lower)) {
-    return fastRoutineScriptReportSpec(fastRoutineServiceName(lower));
+    return fastRoutineScriptReportSpec(lower);
   }
   if (taskFamily === "web-lookup" && /(node\.?js|powershell)/iu.test(lower) && /(official|официальн|релиз|lts|stable|стабиль)/iu.test(lower)) {
     return fastRoutineWebFactSpec(lower);
+  }
+  return null;
+}
+
+function fastRoutineProgramSpec(text) {
+  const target = fastRoutineProgramTarget(text);
+  if (!target) {
+    return null;
+  }
+  const shouldClose = /close|stop|kill|закрой|закрыть|заверши|останови/iu.test(String(text || ""));
+  const args = target.tempFile
+    ? [
+      "$dir = Join-Path $env:TEMP 'soty-program-check'",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$argFile = Join-Path $dir ('program-' + [guid]::NewGuid().ToString('N') + '.txt')",
+      "Set-Content -LiteralPath $argFile -Value ('Soty program check ' + (Get-Date).ToString('o')) -Encoding UTF8",
+      "$argumentList = @($argFile)"
+    ].join("\n")
+    : "$argFile = ''\n$argumentList = @()";
+  const processNames = target.processNames.map((name) => `'${name.replace(/'/gu, "''")}'`).join(",");
+  return {
+    kind: `program-${target.id}`,
+    family: "program-control",
+    name: `fast-program-${target.id}`,
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$processNames = @(${processNames})`,
+      "$before = @(Get-Process -Name $processNames -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)",
+      args,
+      `$startedProcess = Start-Process -FilePath '${target.exe}' -ArgumentList $argumentList -PassThru`,
+      "Start-Sleep -Milliseconds 1200",
+      "$after = @(Get-Process -Name $processNames -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | Sort-Object Id)",
+      "$chosen = if ($after.Count -gt 0) { $after[0] } elseif ($startedProcess -and (Get-Process -Id $startedProcess.Id -ErrorAction SilentlyContinue)) { Get-Process -Id $startedProcess.Id } else { $null }",
+      "$pidValue = if ($chosen) { $chosen.Id } elseif ($startedProcess) { $startedProcess.Id } else { 0 }",
+      "$aliveBeforeClose = if ($pidValue) { [bool](Get-Process -Id $pidValue -ErrorAction SilentlyContinue) } else { $false }",
+      `$closeRequested = ${shouldClose ? "$true" : "$false"}`,
+      "if ($closeRequested -and $aliveBeforeClose) { Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }",
+      "$aliveAfterClose = if ($pidValue) { [bool](Get-Process -Id $pidValue -ErrorAction SilentlyContinue) } else { $false }",
+      `[pscustomobject]@{ app = '${target.label}'; pid = $pidValue; file = $argFile; started = [bool]$pidValue; aliveBeforeClose = $aliveBeforeClose; closeRequested = $closeRequested; closed = (-not $aliveAfterClose) } | ConvertTo-Json -Compress`
+    ].join("\n"),
+    format: (data) => [
+      `${data.app || target.label}: PID ${data.pid || "не найден"}.`,
+      data.file ? `Файл: \`${data.file}\`.` : `Запуск: ${data.started === false ? "не подтвержден" : "подтвержден"}.`,
+      data.closeRequested === false
+        ? "Не закрывал: закрытие не просили."
+        : data.closed === false
+          ? "Закрытие не подтверждено."
+          : data.aliveBeforeClose === false
+            ? "Процесс завершился сам; сейчас не живой."
+            : "Закрыл только этот процесс."
+    ].join("\n")
+  };
+}
+
+function fastRoutineProgramTarget(text) {
+  const lower = String(text || "").toLowerCase();
+  if (/notepad|блокнот/iu.test(lower)) {
+    return { id: "notepad", label: "Блокнот", exe: "notepad.exe", processNames: ["notepad"], tempFile: true };
+  }
+  if (/\bcalc(?:ulator)?\b|калькулятор/iu.test(lower)) {
+    return { id: "calculator", label: "Калькулятор", exe: "calc.exe", processNames: ["CalculatorApp", "Calculator"], tempFile: false };
+  }
+  if (/mspaint|paint|рисовалк|paintbrush/iu.test(lower)) {
+    return { id: "paint", label: "Paint", exe: "mspaint.exe", processNames: ["mspaint"], tempFile: false };
   }
   return null;
 }
@@ -1904,8 +2027,58 @@ function fastRoutineProgramNotepadSpec() {
   };
 }
 
-function fastRoutineFileReportSpec(count) {
-  const safeCount = Math.max(2, Math.min(9, count || 4));
+function fastRoutineFileReportSpec(text) {
+  const safeCount = Math.max(2, Math.min(9, fastRoutineFileCount(text) || 4));
+  const wantsHash = /sha-?256|checksum|hash|хеш|контрольн/iu.test(String(text || ""));
+  const extension = /txt|текст/iu.test(String(text || "")) ? "txt" : "bin";
+  return wantsHash
+    ? fastRoutineHashFileReportSpec(safeCount, extension)
+    : fastRoutineLargestFileReportSpec(safeCount);
+}
+
+function fastRoutineHashFileReportSpec(count, extension) {
+  const safeExtension = extension === "txt" ? "txt" : "bin";
+  return {
+    kind: "temp-file-hash-report",
+    family: "file-work",
+    name: "fast-file-hash-report",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$count = ${count}`,
+      `$extension = '${safeExtension}'`,
+      "$dir = Join-Path $env:TEMP ('soty-file-hash-' + [guid]::NewGuid().ToString('N'))",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$items = @()",
+      "for ($i = 0; $i -lt $count; $i++) {",
+      "  $path = Join-Path $dir ('item-' + ($i + 1) + '.' + $extension)",
+      "  if ($extension -eq 'txt') {",
+      "    Set-Content -LiteralPath $path -Value ('soty file ' + ($i + 1) + ' ' + [guid]::NewGuid().ToString('N')) -Encoding UTF8",
+      "  } else {",
+      "    $size = [int](256 * ($i + 1))",
+      "    $bytes = New-Object byte[] $size",
+      "    [System.IO.File]::WriteAllBytes($path, $bytes)",
+      "  }",
+      "  $hash = Get-FileHash -LiteralPath $path -Algorithm SHA256",
+      "  $items += [pscustomobject]@{ name = (Split-Path -Leaf $path); sha256 = $hash.Hash }",
+      "}",
+      "$report = Join-Path $dir 'report.txt'",
+      "$body = $items | ForEach-Object { $_.name + '=' + $_.sha256 }",
+      "Set-Content -LiteralPath $report -Value $body -Encoding UTF8",
+      "Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -ne 'report.txt' } | Remove-Item -Force",
+      "$remaining = @(Get-ChildItem -LiteralPath $dir -File).Count",
+      "[pscustomobject]@{ report = $report; count = $count; hashes = $items; remaining = $remaining } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => [
+      "Готово.",
+      `Отчет SHA256: \`${data.report || ""}\``,
+      `Файлов обработано: ${data.count || 0}.`,
+      `В папке оставлен только отчет: ${data.remaining === 1 ? "да" : "проверь вручную"}.`
+    ].join("\n")
+  };
+}
+
+function fastRoutineLargestFileReportSpec(count) {
   return {
     kind: "temp-file-report",
     family: "file-work",
@@ -1913,7 +2086,7 @@ function fastRoutineFileReportSpec(count) {
     timeoutMs: 45_000,
     script: [
       "$ErrorActionPreference = 'Stop'",
-      `$count = ${safeCount}`,
+      `$count = ${count}`,
       "$dir = Join-Path $env:TEMP ('soty-file-check-' + [guid]::NewGuid().ToString('N'))",
       "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
       "$sizes = @(128, 512, 2048, 4096, 8192, 12288, 16384, 24576, 32768)",
@@ -1941,8 +2114,76 @@ function fastRoutineFileReportSpec(count) {
 }
 
 function fastRoutineSystemSpec(lower) {
+  if (/ipv4|ip address|dns|gateway|шлюз|сеть|сетев/iu.test(lower)) {
+    return fastRoutineSystemNetworkSpec();
+  }
+  if (/defender|firewall|защит|брандмауэр|служб|service|bits|windows update|wuauserv/iu.test(lower)) {
+    return fastRoutineSystemServicesSpec(lower);
+  }
   const diskMode = /диск|место|bits|windows update|служб|памят/iu.test(lower) && !/uptime/iu.test(lower);
   return diskMode ? fastRoutineSystemDiskSpec() : fastRoutineSystemUptimeSpec();
+}
+
+function fastRoutineSystemNetworkSpec() {
+  return {
+    kind: "system-network",
+    family: "system-check",
+    name: "fast-system-network",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$cfg = Get-NetIPConfiguration | Where-Object { $_.IPv4Address -and $_.NetAdapter.Status -eq 'Up' } | Select-Object -First 1",
+      "$dns = @(Get-DnsClientServerAddress -AddressFamily IPv4 | Where-Object { $_.ServerAddresses.Count -gt 0 } | Select-Object -First 1 -ExpandProperty ServerAddresses)",
+      "$ipv4 = if ($cfg -and $cfg.IPv4Address) { $cfg.IPv4Address.IPAddress } else { '' }",
+      "$gateway = if ($cfg -and $cfg.IPv4DefaultGateway) { $cfg.IPv4DefaultGateway.NextHop } else { '' }",
+      "[pscustomobject]@{ computer = $env:COMPUTERNAME; ipv4 = $ipv4; dns = $dns; gateway = $gateway } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => [
+      `Имя: ${data.computer || "нет данных"}`,
+      `IPv4: ${data.ipv4 || "нет данных"}`,
+      `DNS: ${Array.isArray(data.dns) ? data.dns.join(", ") : data.dns || "нет данных"}`,
+      `Шлюз: ${data.gateway || "нет данных"}`
+    ].join("\n")
+  };
+}
+
+function fastRoutineSystemServicesSpec(lower) {
+  const services = fastRoutineServiceNames(lower);
+  const serviceNames = services.map((name) => `'${name}'`).join(",");
+  const includeDisk = /c:|диск|место|free|свобод/iu.test(lower);
+  const includeFirewall = /firewall|брандмауэр|фаервол/iu.test(lower);
+  return {
+    kind: "system-services",
+    family: "system-check",
+    name: "fast-system-services",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$serviceNames = @(${serviceNames})`,
+      "$services = @(Get-Service -Name $serviceNames -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ name = $_.Name; status = $_.Status.ToString() } })",
+      includeDisk
+        ? "$disk = Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='C:'\"; $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)"
+        : "$freeGB = $null",
+      includeFirewall
+        ? "$fw = @(Get-NetFirewallProfile | ForEach-Object { [pscustomobject]@{ name = $_.Name; enabled = [bool]$_.Enabled } })"
+        : "$fw = @()",
+      "[pscustomobject]@{ freeGB = $freeGB; services = $services; firewall = $fw } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const servicesOut = Array.isArray(data.services) ? data.services : [];
+      const firewallOut = Array.isArray(data.firewall) ? data.firewall : [];
+      const lines = [];
+      if (data.freeGB !== null && data.freeGB !== undefined) {
+        lines.push(`C: свободно: ${data.freeGB} ГБ.`);
+      }
+      lines.push(`Службы: ${servicesOut.map((item) => `${item.name}=${item.status}`).join(", ") || "нет данных"}.`);
+      if (firewallOut.length > 0) {
+        lines.push(`Firewall: ${firewallOut.map((item) => `${item.name}=${item.enabled ? "On" : "Off"}`).join(", ")}.`);
+      }
+      lines.push("Ничего не менял.");
+      return lines.join("\n");
+    }
+  };
 }
 
 function fastRoutineSystemDiskSpec() {
@@ -1994,8 +2235,10 @@ function fastRoutineSystemUptimeSpec() {
   };
 }
 
-function fastRoutineScriptReportSpec(serviceName) {
-  const safeService = serviceName === "WinDefend" ? "WinDefend" : "Spooler";
+function fastRoutineScriptReportSpec(lower) {
+  const services = fastRoutineServiceNames(lower);
+  const serviceNames = services.map((name) => `'${name}'`).join(",");
+  const includeIdentity = /whoami|hostname|имя|host|компьютер/iu.test(String(lower || ""));
   return {
     kind: "temp-powershell-report",
     family: "script-task",
@@ -2003,29 +2246,41 @@ function fastRoutineScriptReportSpec(serviceName) {
     timeoutMs: 45_000,
     script: [
       "$ErrorActionPreference = 'Stop'",
-      `$serviceName = '${safeService}'`,
+      `$serviceNames = @(${serviceNames})`,
       "$dir = Join-Path $env:TEMP ('soty-script-check-' + [guid]::NewGuid().ToString('N'))",
       "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
       "$scriptPath = Join-Path $dir 'probe.ps1'",
-      "$report = Join-Path $dir 'report.txt'",
+      "$report = Join-Path $dir 'report.json'",
+      "$serviceLiteral = ($serviceNames | ForEach-Object { \"'\" + $_.Replace(\"'\", \"''\") + \"'\" }) -join ','",
       "$scriptBody = @'",
       "$ErrorActionPreference = 'Stop'",
-      "$svc = Get-Service -Name '__SERVICE__' -ErrorAction SilentlyContinue",
-      "[pscustomobject]@{ whoami = (whoami); hostname = $env:COMPUTERNAME; service = '__SERVICE__'; status = $(if ($svc) { $svc.Status.ToString() } else { 'missing' }) } | ConvertTo-Json -Compress",
-      "'@.Replace('__SERVICE__', $serviceName)",
+      "$names = @(__SERVICES__)",
+      "$services = @(Get-Service -Name $names -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ name = $_.Name; status = $_.Status.ToString() } })",
+      `[pscustomobject]@{ whoami = ${includeIdentity ? "(whoami)" : "''"}; hostname = ${includeIdentity ? "$env:COMPUTERNAME" : "''"}; services = $services } | ConvertTo-Json -Compress -Depth 4`,
+      "'@.Replace('__SERVICES__', $serviceLiteral)",
       "Set-Content -LiteralPath $scriptPath -Value $scriptBody -Encoding UTF8",
       "$json = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath",
       "Remove-Item -LiteralPath $scriptPath -Force",
       "Set-Content -LiteralPath $report -Value $json -Encoding UTF8",
       "$obj = $json | ConvertFrom-Json",
-      "[pscustomobject]@{ report = $report; whoami = $obj.whoami; hostname = $obj.hostname; service = $obj.service; status = $obj.status; scriptDeleted = (-not (Test-Path -LiteralPath $scriptPath)) } | ConvertTo-Json -Compress"
+      "[pscustomobject]@{ report = $report; whoami = $obj.whoami; hostname = $obj.hostname; services = $obj.services; scriptDeleted = (-not (Test-Path -LiteralPath $scriptPath)) } | ConvertTo-Json -Compress -Depth 4"
     ].join("\n"),
-    format: (data) => [
-      "Готово.",
-      `Отчет: \`${data.report || ""}\``,
-      `whoami: \`${data.whoami || ""}\`, host: \`${data.hostname || ""}\`.`,
-      `${data.service || safeService}: ${data.status || "нет данных"}; скрипт удален: ${data.scriptDeleted === false ? "нет" : "да"}.`
-    ].join("\n")
+    format: (data) => {
+      const serviceData = Array.isArray(data.services)
+        ? data.services
+        : data.services
+          ? [data.services]
+          : [];
+      const lines = [
+        "Готово.",
+        `JSON-отчет: \`${data.report || ""}\``
+      ];
+      if (data.whoami || data.hostname) {
+        lines.push(`whoami: \`${data.whoami || ""}\`, host: \`${data.hostname || ""}\`.`);
+      }
+      lines.push(`Службы: ${serviceData.map((item) => `${item.name}=${item.status}`).join(", ") || "нет данных"}; скрипт удален: ${data.scriptDeleted === false ? "нет" : "да"}.`);
+      return lines.join("\n");
+    }
   };
 }
 
@@ -2093,8 +2348,24 @@ function fastRoutineFileCount(text) {
   return match ? Number.parseInt(match[1], 10) : 4;
 }
 
-function fastRoutineServiceName(lower) {
-  return /windefend|defender|защитник/iu.test(String(lower || "")) ? "WinDefend" : "Spooler";
+function fastRoutineServiceNames(lower) {
+  const text = String(lower || "");
+  const names = [];
+  const add = (name) => {
+    if (!names.includes(name)) {
+      names.push(name);
+    }
+  };
+  if (/bits/iu.test(text)) add("BITS");
+  if (/wuauserv|windows update|обновлен|обновлён/iu.test(text)) add("wuauserv");
+  if (/windefend|defender|защит/iu.test(text)) add("WinDefend");
+  if (/firewall|mpssvc|брандмауэр|фаервол/iu.test(text)) add("MpsSvc");
+  if (/spooler|печати|принтер/iu.test(text)) add("Spooler");
+  if (names.length === 0) {
+    add("BITS");
+    add("wuauserv");
+  }
+  return names.slice(0, 8);
 }
 
 function parseFastRoutineJson(text) {
@@ -3387,6 +3658,14 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
 async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
+  const directFast = tryFastDirectAgentReply({
+    text,
+    source: safeSource,
+    startedAt
+  });
+  if (directFast) {
+    return directFast;
+  }
   const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
@@ -3842,6 +4121,8 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   const safeSource = sanitizeAgentSource(source);
   const sourceDeviceId = bridgeSourceDeviceId(target, safeSource);
   const sourceRelayId = safeRelayId(safeSource.sourceRelayId) || agentRelayId;
+  const family = cleanActionToken(taskFamily, "generic");
+  const attachSotyMcp = !(family === "plain-dialog" && !targetId);
   const mcpArgs = [
     scriptPath,
     "mcp",
@@ -3854,10 +4135,12 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   if (targetId && sourceDeviceId) {
     mcpArgs.push("--target", targetId, "--source-device", sourceDeviceId);
   }
-  args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
-  args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-  for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
-    args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
+  if (attachSotyMcp) {
+    args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
+    args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
+    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
+      args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
+    }
   }
   if (outPath) {
     args.push("-o", outPath);
@@ -4449,6 +4732,9 @@ function compactTerminalMessages(value) {
 
 function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   const safe = sanitizeAgentSource(source);
+  if (isPlainNonDeviceTask(text)) {
+    return null;
+  }
   const preferred = preferredOperatorTarget(safe);
   const mentionedTarget = targetMentionedAtStart(text, runtimeActiveTargets(safe, preferred, sourceTargets));
   if (mentionedTarget) {

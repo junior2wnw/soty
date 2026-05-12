@@ -222,6 +222,15 @@ function buildRecommendations(rows, topFailures) {
   const recommendations = [];
   const windowsRows = rows.filter((item) => item.family === "windows-reinstall");
   const postArmLosses = postArmSourceDisconnectRows(rows);
+  const slowRoutineGroups = slowRoutineCodexGroups(rows);
+  for (const item of slowRoutineGroups.slice(0, 3)) {
+    recommendations.push({
+      priority: item.totalTokens >= 100000 || item.durationMs >= 60000 ? "high" : "normal",
+      family: item.family,
+      title: "Promote slow routine Codex turn to fast runtime route",
+      action: `A repeated routine used ${item.route || "codex"} with about ${item.durationMs}ms and ${item.totalTokens} tokens. Prefer a small source-scoped runtime script with structured proof before the next comparable chat.`
+    });
+  }
   if (postArmLosses.length > 0) {
     recommendations.push({
       priority: "high",
@@ -305,7 +314,52 @@ function buildPromotionCandidates(rows, failures, successes) {
       marker: `ops-memory: goal=Soty ${success.family} proven route | actual=ok via ${success.route || "unknown-route"} | success=${success.proofShape || "sanitized receipt"} | env=soty.learning.teacher count=${success.count}`
     });
   }
+  for (const slow of slowRoutineCodexGroups(rows).slice(0, 4)) {
+    candidates.push({
+      scope: slow.count >= 2 ? "promote" : "candidate",
+      family: slow.family,
+      marker: `ops-memory: goal=Soty ${slow.family} fast-route promotion | actual=slow routine via ${slow.route || "codex"} | success=durationMs=${slow.durationMs}; tokens=${slow.totalTokens}; prefer proofed runtime route | env=soty.learning.teacher count=${slow.count}`
+    });
+  }
   return candidates.slice(0, 10);
+}
+
+function slowRoutineCodexGroups(rows) {
+  const routineFamilies = new Set(["program-control", "file-work", "system-check", "service-check", "script-task", "web-lookup", "source-scoped-dialog"]);
+  const groups = new Map();
+  for (const row of rows) {
+    const family = cleanText(row.family, 80) || "generic";
+    if (row.kind !== "codex-turn" || !routineFamilies.has(family)) {
+      continue;
+    }
+    const durationMs = Number.isSafeInteger(row.durationMs) ? row.durationMs : 0;
+    const totalTokens = learningTotalTokens(row.proof);
+    if (durationMs < 15000 && totalTokens < 20000) {
+      continue;
+    }
+    const route = cleanText(row.route, 120) || "codex";
+    const key = `${family}|${route}`;
+    const current = groups.get(key) || {
+      family,
+      route,
+      count: 0,
+      durationMs: 0,
+      totalTokens: 0,
+      lastSeenAt: ""
+    };
+    current.count += 1;
+    current.durationMs = Math.max(current.durationMs, durationMs);
+    current.totalTokens = Math.max(current.totalTokens, totalTokens);
+    current.lastSeenAt = cleanIso(row.createdAt) || cleanIso(row.receivedAt) || current.lastSeenAt;
+    groups.set(key, current);
+  }
+  return Array.from(groups.values())
+    .sort((left, right) => right.count - left.count || right.durationMs - left.durationMs || right.totalTokens - left.totalTokens);
+}
+
+function learningTotalTokens(proof) {
+  const match = /tokens=(?:actual|estimated);\s*input=(\d+);\s*output=(\d+);\s*total=(\d+);\s*cached=(\d+)/u.exec(String(proof || ""));
+  return match ? Number.parseInt(match[3], 10) || 0 : 0;
 }
 
 function latestMemoryMarkerRows(rows) {
