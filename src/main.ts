@@ -1,11 +1,13 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
-import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, hasAgentRelayId, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
 import type { AgentSourceCommand, LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
+import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
+import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
@@ -43,6 +45,7 @@ import {
   upsertTunnel
 } from "./trustlink";
 import "./style.css";
+import type { Color, Move, PieceSymbol, Square } from "chess.js";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -109,6 +112,14 @@ let remoteAccess = loadRemoteAccess();
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
 const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
+const chessStoreKey = "soty:chess:v1";
+const chessGames = new Map<string, ChessSnapshot>();
+const chessFlipped = new Set<string>();
+const chessAgentTimers = new Map<string, number>();
+const chessWelcomedGames = new Set<string>();
+let chessOpenId = "";
+let chessSelectedSquare: Square | "" = "";
+let chessPromotion: { readonly tunnelId: string; readonly from: Square; readonly to: Square } | null = null;
 let localAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
 let agentProbe: Promise<LocalAgentStatus> | null = null;
@@ -206,6 +217,7 @@ async function boot(): Promise<void> {
     remoteEnabled = loadRemoteEnabled();
     remoteAccess = loadRemoteAccess();
     terminalOpenId = "";
+    chessOpenId = "";
     rememberAppRuntime();
     window.history.replaceState({}, "", "/?pwa=1");
   }
@@ -399,6 +411,7 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   remoteEnabled = loadRemoteEnabled();
   remoteAccess = loadRemoteAccess();
   terminalOpenId = "";
+  chessOpenId = "";
   return {
     count: restored.tunnels.length,
     texts: restored.texts
@@ -695,6 +708,26 @@ function renderApp(): void {
             <button type="submit" aria-label="run" data-tooltip="Выполнить команду">${icon("check")}</button>
           </form>
         </div>
+        <div class="chess-panel" data-mode="peer">
+          <div class="chess-head">
+            <span class="chess-led"></span>
+            <b class="chess-title">CHESS</b>
+            <small class="chess-status">READY</small>
+            <button class="chess-coach" type="button" data-tooltip="Гений">${icon("person")}<span>ГЕНИЙ</span></button>
+            <button class="chess-flip" type="button" aria-label="flip" data-tooltip="Развернуть доску">${icon("refresh")}</button>
+            <button class="chess-new" type="button" aria-label="new chess game" data-tooltip="Новая партия">${icon("check")}</button>
+            <button class="chess-close" type="button" aria-label="close chess" data-tooltip="Закрыть шахматы">${icon("close")}</button>
+          </div>
+          <div class="chess-body">
+            <div class="chess-board" aria-label="chess board"></div>
+            <aside class="chess-desk">
+              <div class="chess-turn"></div>
+              <div class="chess-stats"></div>
+              <ol class="chess-moves"></ol>
+            </aside>
+          </div>
+          <div class="chess-promotion" hidden></div>
+        </div>
         <input class="file-input" type="file" multiple />
       </section>
       </main>
@@ -715,6 +748,7 @@ function renderApp(): void {
             <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
             <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>LINK</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
+            <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
           </div>
         </section>
       </aside>
@@ -777,6 +811,9 @@ function renderApp(): void {
     event.preventDefault();
     void sendTerminalCommand();
   });
+  app.querySelector<HTMLDivElement>(".chess-panel")?.addEventListener("click", (event) => {
+    handleChessPanelClick(event);
+  });
   app.querySelector<HTMLButtonElement>(".attach-action")?.addEventListener("click", () => fileInput?.click());
   app.querySelector<HTMLButtonElement>(".knock-action")?.addEventListener("click", () => {
     if (!selectedId) {
@@ -788,6 +825,9 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".agent-action")?.addEventListener("click", () => {
     void startAgentDialog();
+  });
+  app.querySelector<HTMLButtonElement>(".chess-action")?.addEventListener("click", () => {
+    void openChessForSelected();
   });
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
     if (selectedId) {
@@ -807,6 +847,7 @@ function renderApp(): void {
   applySelectedText();
   renderFiles();
   renderTerminal();
+  renderChess();
   void ensureOperatorBridge();
   resumeAgentSourceControl();
 }
@@ -847,6 +888,7 @@ function renderTiles(): void {
       applySelectedText(true);
       renderFiles();
       renderTerminal();
+      renderChess();
     },
     menu: (id, x, y) => {
       openCounterpartyMenu(x, y, {
@@ -1006,6 +1048,7 @@ function renderAgentInstall(
   overlay.innerHTML = `
     <div class="agent-sheet${isReady(localAgent) ? " is-ok" : ""}" data-tooltip="Панель установки локального Soty-агента" data-tooltip-side="bottom">
       <span class="agent-mark" data-tooltip="Локальный агент нужен для команд Windows">${icon("remote")}</span>
+      <button class="icon-button chess-install-button" type="button" aria-label="chess" data-tooltip="Играть с агентом в шахматы">${icon("chess")}</button>
       <button class="icon-button download-button" type="button" aria-label="download" data-tooltip="Скачать обычный установщик">${icon("download")}</button>
       ${canInstallMachineAgent() ? `<button class="icon-button machine-button" type="button" aria-label="machine" data-tooltip="Установить с правами администратора">${icon("shield")}</button>` : ""}
       <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Проверить, запущен ли агент">${icon("refresh")}</button>
@@ -1015,6 +1058,10 @@ function renderAgentInstall(
   document.body.append(overlay);
   overlay.querySelector(".download-button")?.addEventListener("click", () => {
     downloadAgentInstaller();
+  });
+  overlay.querySelector(".chess-install-button")?.addEventListener("click", () => {
+    overlay.remove();
+    void startAgentChess();
   });
   overlay.querySelector(".machine-button")?.addEventListener("click", () => {
     downloadAgentInstaller("machine");
@@ -1371,6 +1418,9 @@ function ensureSync(tunnel: TunnelRecord): void {
     onTerminal: (terminal) => {
       applySyncedTerminal(tunnel.id, terminal);
     },
+    onChess: (chess) => {
+      applySyncedChess(tunnel.id, chess);
+    },
     onActivity: (activity) => {
       rememberWriter(tunnel.id, activity);
       activeActivities.set(tunnel.id, activity);
@@ -1587,8 +1637,19 @@ function closeTunnel(id: string): void {
   if (terminalOpenId === id) {
     terminalOpenId = "";
   }
+  if (chessOpenId === id) {
+    chessOpenId = "";
+  }
+  const chessTimer = chessAgentTimers.get(id);
+  if (chessTimer) {
+    window.clearTimeout(chessTimer);
+    chessAgentTimers.delete(id);
+  }
   terminalLogs.delete(id);
   terminalState.delete(id);
+  chessGames.delete(id);
+  chessFlipped.delete(id);
+  forgetChessSnapshot(id);
   writerLines.delete(id);
   activeActivities.delete(id);
   activeActivityTicks.delete(id);
@@ -1617,6 +1678,9 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     activeActivityTicks.delete(tunnel.id);
     clearLiveDraftState(tunnel.id);
     agentThinking.delete(tunnel.id);
+    chessGames.delete(tunnel.id);
+    chessFlipped.delete(tunnel.id);
+    forgetChessSnapshot(tunnel.id);
     files.delete(tunnel.id);
     fileNotices.delete(tunnel.id);
   }
@@ -2551,9 +2615,10 @@ function renderTerminal(): void {
     return;
   }
   const tunnelId = activeTerminalTunnelId();
+  const chessActive = Boolean(activeChessTunnelId());
   const controller = Boolean(tunnelId && remoteAccess.has(tunnelId));
   const host = Boolean(tunnelId && remoteEnabled.has(tunnelId));
-  const active = controller || host;
+  const active = !chessActive && (controller || host);
   const state = tunnelId ? terminalState.get(tunnelId) ?? "idle" : "idle";
   editor.classList.toggle("terminal-active", active);
   editor.classList.toggle("terminal-controller", controller);
@@ -2617,6 +2682,490 @@ function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad"
   if (publish) {
     syncs.get(tunnelId)?.setTerminalState(state);
   }
+}
+
+function activeChessTunnelId(): string {
+  return chessOpenId && chessOpenId === selectedId ? chessOpenId : "";
+}
+
+async function openChessForSelected(): Promise<void> {
+  if (!selectedId) {
+    return;
+  }
+  if (activeChessTunnelId() === selectedId) {
+    closeChessPanel();
+    return;
+  }
+  if (isAgentTunnelId(selectedId)) {
+    await startAgentChess();
+    return;
+  }
+  chessOpenId = selectedId;
+  chessSelectedSquare = "";
+  chessPromotion = null;
+  ensureChessSnapshot(selectedId, "peer");
+  renderTerminal();
+  renderChess();
+}
+
+async function startAgentChess(): Promise<void> {
+  let tunnel = findActiveAgentDialog();
+  if (!tunnel) {
+    tunnel = createFreshDialog(agentDialogLabel, { agent: true, archiveCurrent: false });
+  } else {
+    tunnel = normalizeAgentDialog(tunnel.id) || tunnel;
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+    tunnels = markTunnel(tunnel.id, false);
+  }
+  if (!tunnel) {
+    return;
+  }
+  renderApp();
+  chessOpenId = tunnel.id;
+  chessSelectedSquare = "";
+  chessPromotion = null;
+  const snapshot = ensureChessSnapshot(tunnel.id, "agent");
+  maybeWelcomeChessAgent(tunnel.id, snapshot);
+  renderTerminal();
+  renderChess();
+  scheduleChessAgentMove(tunnel.id);
+}
+
+function closeChessPanel(): void {
+  if (chessOpenId) {
+    const timer = chessAgentTimers.get(chessOpenId);
+    if (timer) {
+      window.clearTimeout(timer);
+      chessAgentTimers.delete(chessOpenId);
+    }
+  }
+  chessOpenId = "";
+  chessSelectedSquare = "";
+  chessPromotion = null;
+  renderChess();
+  renderTerminal();
+}
+
+function handleChessPanelClick(event: MouseEvent): void {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) {
+    return;
+  }
+  const promotionButton = target.closest<HTMLButtonElement>("[data-promotion]");
+  if (promotionButton) {
+    const piece = promotionButton.dataset.promotion;
+    if (isChessPromotionPiece(piece) && chessPromotion && chessPromotion.tunnelId === activeChessTunnelId()) {
+      makeChessMove(chessPromotion.tunnelId, chessPromotion.from, chessPromotion.to, piece);
+    }
+    return;
+  }
+  if (target.closest(".chess-close")) {
+    closeChessPanel();
+    return;
+  }
+  if (target.closest(".chess-new")) {
+    const tunnelId = activeChessTunnelId();
+    if (tunnelId) {
+      restartChessGame(tunnelId);
+    }
+    return;
+  }
+  if (target.closest(".chess-flip")) {
+    const tunnelId = activeChessTunnelId();
+    if (tunnelId) {
+      if (chessFlipped.has(tunnelId)) {
+        chessFlipped.delete(tunnelId);
+      } else {
+        chessFlipped.add(tunnelId);
+      }
+      renderChess();
+    }
+    return;
+  }
+  if (target.closest(".chess-coach")) {
+    const tunnelId = activeChessTunnelId();
+    if (tunnelId) {
+      toggleChessCoach(tunnelId);
+    }
+    return;
+  }
+  const squareButton = target.closest<HTMLButtonElement>("[data-square]");
+  const square = squareButton?.dataset.square || "";
+  if (isSquare(square)) {
+    handleChessSquare(square);
+  }
+}
+
+function renderChess(): void {
+  const panel = app.querySelector<HTMLDivElement>(".chess-panel");
+  const editor = app.querySelector<HTMLElement>(".editor");
+  const action = app.querySelector<HTMLButtonElement>(".chess-action");
+  if (!panel || !editor) {
+    return;
+  }
+  const tunnelId = activeChessTunnelId();
+  const active = Boolean(tunnelId);
+  editor.classList.toggle("chess-active", active);
+  action?.classList.toggle("is-on", active);
+  if (action) {
+    action.dataset.tooltip = active ? "Закрыть шахматы" : "Шахматы";
+  }
+  if (!active) {
+    return;
+  }
+
+  const snapshot = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  const game = chessFromSnapshot(snapshot);
+  if (chessSelectedSquare) {
+    const piece = game.get(chessSelectedSquare);
+    if (!piece || piece.color !== game.turn()) {
+      chessSelectedSquare = "";
+      chessPromotion = null;
+    }
+  }
+
+  const title = panel.querySelector<HTMLElement>(".chess-title");
+  const status = panel.querySelector<HTMLElement>(".chess-status");
+  const board = panel.querySelector<HTMLDivElement>(".chess-board");
+  const turn = panel.querySelector<HTMLDivElement>(".chess-turn");
+  const stats = panel.querySelector<HTMLDivElement>(".chess-stats");
+  const moves = panel.querySelector<HTMLOListElement>(".chess-moves");
+  const coach = panel.querySelector<HTMLButtonElement>(".chess-coach");
+  const promotion = panel.querySelector<HTMLDivElement>(".chess-promotion");
+  if (!board || !turn || !stats || !moves || !coach || !promotion) {
+    return;
+  }
+
+  panel.dataset.mode = snapshot.mode;
+  panel.dataset.result = snapshot.result || "play";
+  if (title) {
+    title.textContent = snapshot.mode === "agent" ? "CHESS / ГЕНИЙ" : "CHESS";
+  }
+  if (status) {
+    status.textContent = snapshot.result ? "DONE" : game.isCheck() ? "CHECK" : `${game.moveNumber()}`;
+  }
+  coach.hidden = snapshot.mode !== "agent";
+  coach.classList.toggle("is-on", snapshot.coach === geniusCoach);
+
+  const selectedMoves = chessSelectedSquare ? legalMovesForSquare(snapshot, chessSelectedSquare) : [];
+  const legalTargets = new Set(selectedMoves.map((move) => move.to));
+  const canMove = canMoveOnChessBoard(snapshot);
+  const orientation: Color = chessFlipped.has(tunnelId) ? "b" : "w";
+  board.innerHTML = boardSquares(orientation).map((square) => {
+    const piece = game.get(square);
+    const selected = chessSelectedSquare === square;
+    const legal = legalTargets.has(square);
+    const last = snapshot.lastMove?.from === square || snapshot.lastMove?.to === square;
+    const classes = [
+      "chess-square",
+      chessSquareTone(square),
+      piece ? `has-piece ${piece.color === "w" ? "white-piece" : "black-piece"}` : "",
+      selected ? "is-selected" : "",
+      legal ? "is-legal" : "",
+      legal && piece ? "is-capture" : "",
+      last ? "is-last" : ""
+    ].filter(Boolean).join(" ");
+    const label = piece ? `${sideName(piece.color)} ${piece.type} ${square}` : square;
+    return `<button class="${classes}" type="button" data-square="${square}" aria-label="${escapeHtml(label)}"${canMove ? "" : " disabled"}>${pieceGlyph(piece)}</button>`;
+  }).join("");
+
+  turn.innerHTML = `
+    <b>${escapeHtml(statusText(snapshot))}</b>
+    <small>${escapeHtml(snapshot.mode === "agent" ? "ГЕНИЙ" : "ЛЮДИ")}</small>
+  `;
+  stats.innerHTML = renderChessStats(snapshot);
+  moves.innerHTML = renderChessMoves(snapshot.history);
+  renderChessPromotion(snapshot, promotion);
+  if (isAgentTurn(snapshot)) {
+    scheduleChessAgentMove(tunnelId);
+  }
+}
+
+function handleChessSquare(square: Square): void {
+  const tunnelId = activeChessTunnelId();
+  if (!tunnelId) {
+    return;
+  }
+  const snapshot = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  if (!canMoveOnChessBoard(snapshot)) {
+    return;
+  }
+  const game = chessFromSnapshot(snapshot);
+  const piece = game.get(square);
+  if (chessSelectedSquare) {
+    if (chessSelectedSquare === square) {
+      chessSelectedSquare = "";
+      chessPromotion = null;
+      renderChess();
+      return;
+    }
+    const choices = promotionChoices(snapshot, chessSelectedSquare, square);
+    if (choices.length > 0) {
+      chessPromotion = { tunnelId, from: chessSelectedSquare, to: square };
+      renderChess();
+      return;
+    }
+    if (makeChessMove(tunnelId, chessSelectedSquare, square)) {
+      return;
+    }
+  }
+  if (piece && piece.color === game.turn()) {
+    chessSelectedSquare = square;
+    chessPromotion = null;
+    renderChess();
+  }
+}
+
+function makeChessMove(tunnelId: string, from: Square, to: Square, promotion: PieceSymbol = "q"): boolean {
+  const snapshot = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  const moved = applyChessMove(snapshot, from, to, promotion);
+  if (!moved) {
+    chessPromotion = null;
+    renderChess();
+    return false;
+  }
+  chessSelectedSquare = "";
+  chessPromotion = null;
+  publishChessSnapshot(tunnelId, moved.snapshot);
+  renderChess();
+  if (moved.snapshot.mode === "agent") {
+    if (moved.snapshot.result && moved.snapshot.coach === geniusCoach) {
+      appendAgentChatMessage(tunnelId, buildGeniusLine(moved.snapshot, moved.move, null));
+    } else {
+      scheduleChessAgentMove(tunnelId, moved.move);
+    }
+  }
+  return true;
+}
+
+function scheduleChessAgentMove(tunnelId: string, humanMove: Move | null = null): void {
+  const snapshot = chessGames.get(tunnelId);
+  if (!snapshot || !isAgentTurn(snapshot)) {
+    return;
+  }
+  const previous = chessAgentTimers.get(tunnelId);
+  if (previous) {
+    window.clearTimeout(previous);
+  }
+  const timer = window.setTimeout(() => {
+    chessAgentTimers.delete(tunnelId);
+    runChessAgentMove(tunnelId, humanMove);
+  }, humanMove ? 520 : 760);
+  chessAgentTimers.set(tunnelId, timer);
+}
+
+function runChessAgentMove(tunnelId: string, humanMove: Move | null): void {
+  const snapshot = ensureChessSnapshot(tunnelId, "agent");
+  if (!isAgentTurn(snapshot)) {
+    return;
+  }
+  const agentMove = chooseAgentMove(snapshot);
+  if (!agentMove) {
+    return;
+  }
+  const moved = applyChessMove(snapshot, agentMove.from, agentMove.to, agentMove.promotion ?? "q");
+  if (!moved) {
+    return;
+  }
+  publishChessSnapshot(tunnelId, moved.snapshot);
+  renderChess();
+  if (moved.snapshot.coach === geniusCoach) {
+    appendAgentChatMessage(tunnelId, buildGeniusLine(moved.snapshot, humanMove, moved.move));
+  }
+}
+
+function restartChessGame(tunnelId: string): void {
+  const previous = ensureChessSnapshot(tunnelId, chessModeForTunnel(tunnelId));
+  const names = chessNames(tunnelId);
+  const snapshot = createChessSnapshot({
+    mode: previous.mode,
+    localNick: names.local,
+    opponentNick: names.opponent,
+    stats: previous.stats,
+    coach: previous.coach
+  });
+  chessSelectedSquare = "";
+  chessPromotion = null;
+  publishChessSnapshot(tunnelId, snapshot);
+  if (snapshot.mode === "agent") {
+    maybeWelcomeChessAgent(tunnelId, snapshot);
+  }
+  renderChess();
+}
+
+function toggleChessCoach(tunnelId: string): void {
+  const snapshot = ensureChessSnapshot(tunnelId, "agent");
+  const nextCoach: ChessCoach = snapshot.coach === geniusCoach ? "quiet" : geniusCoach;
+  const next = withCoach(snapshot, nextCoach);
+  publishChessSnapshot(tunnelId, next);
+  if (nextCoach === geniusCoach) {
+    appendAgentChatMessage(tunnelId, "ГЕНИЙ: тренер включен. Будут советы, стеб и иногда воспитательная работа.");
+  }
+  renderChess();
+}
+
+function renderChessPromotion(snapshot: ChessSnapshot, promotion: HTMLDivElement): void {
+  if (!chessPromotion || chessPromotion.tunnelId !== activeChessTunnelId()) {
+    promotion.hidden = true;
+    promotion.innerHTML = "";
+    return;
+  }
+  const choices = promotionChoices(snapshot, chessPromotion.from, chessPromotion.to);
+  if (choices.length === 0) {
+    promotion.hidden = true;
+    promotion.innerHTML = "";
+    return;
+  }
+  const color = chessFromSnapshot(snapshot).get(chessPromotion.from)?.color ?? "w";
+  promotion.hidden = false;
+  promotion.innerHTML = `
+    <span>Пешка</span>
+    ${choices.map((piece) => `<button type="button" data-promotion="${piece}">${pieceGlyph({ color, type: piece })}</button>`).join("")}
+  `;
+}
+
+function renderChessStats(snapshot: ChessSnapshot): string {
+  const stats = snapshot.stats;
+  if (snapshot.mode === "agent") {
+    return `
+      <span><b>${stats.humanWins}</b><small>YOU</small></span>
+      <span><b>${stats.draws}</b><small>DRAW</small></span>
+      <span><b>${stats.agentWins}</b><small>GENIUS</small></span>
+      <span><b>${stats.longestPly}</b><small>PLY</small></span>
+    `;
+  }
+  return `
+    <span><b>${stats.whiteWins}</b><small>WHITE</small></span>
+    <span><b>${stats.draws}</b><small>DRAW</small></span>
+    <span><b>${stats.blackWins}</b><small>BLACK</small></span>
+    <span><b>${stats.longestPly}</b><small>PLY</small></span>
+  `;
+}
+
+function renderChessMoves(history: readonly string[]): string {
+  if (history.length === 0) {
+    return `<li class="is-empty"><b>1</b><span>START</span><span></span></li>`;
+  }
+  const rows: string[] = [];
+  for (let index = 0; index < history.length; index += 2) {
+    const white = history[index] || "";
+    const black = history[index + 1] || "";
+    rows.push(`<li><b>${Math.floor(index / 2) + 1}</b><span>${escapeHtml(white)}</span><span>${escapeHtml(black)}</span></li>`);
+  }
+  return rows.slice(-80).join("");
+}
+
+function ensureChessSnapshot(tunnelId: string, mode: ChessMode): ChessSnapshot {
+  const names = chessNames(tunnelId);
+  const stored = chessGames.get(tunnelId) ?? loadStoredChessSnapshot(tunnelId);
+  let snapshot = stored
+    ? normalizeChessSnapshot(stored, { mode, localNick: names.local, opponentNick: names.opponent })
+    : null;
+  if (!snapshot || snapshot.mode !== mode) {
+    snapshot = createChessSnapshot({
+      mode,
+      localNick: names.local,
+      opponentNick: names.opponent,
+      stats: snapshot?.stats,
+      coach: mode === "agent" ? snapshot?.coach ?? geniusCoach : "quiet"
+    });
+    publishChessSnapshot(tunnelId, snapshot);
+  } else {
+    chessGames.set(tunnelId, snapshot);
+    rememberChessSnapshot(tunnelId, snapshot);
+  }
+  return snapshot;
+}
+
+function publishChessSnapshot(tunnelId: string, snapshot: ChessSnapshot): void {
+  chessGames.set(tunnelId, snapshot);
+  rememberChessSnapshot(tunnelId, snapshot);
+  syncs.get(tunnelId)?.setChessSnapshot(snapshot as unknown as SyncedChessState);
+  tunnels = touchTunnel(tunnelId);
+  renderTiles();
+}
+
+function applySyncedChess(tunnelId: string, chess: SyncedChessState | null): void {
+  if (!chess) {
+    return;
+  }
+  const mode: ChessMode = chess.mode === "agent" || chessModeForTunnel(tunnelId) === "agent" ? "agent" : "peer";
+  const names = chessNames(tunnelId);
+  const snapshot = normalizeChessSnapshot(chess, { mode, localNick: names.local, opponentNick: names.opponent });
+  chessGames.set(tunnelId, snapshot);
+  rememberChessSnapshot(tunnelId, snapshot);
+  if (tunnelId === selectedId || tunnelId === chessOpenId) {
+    renderChess();
+    renderTiles();
+  }
+}
+
+function chessModeForTunnel(tunnelId: string): ChessMode {
+  return isAgentTunnelId(tunnelId) ? "agent" : "peer";
+}
+
+function chessNames(tunnelId: string): { readonly local: string; readonly opponent: string } {
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  return {
+    local: cleanNick(device?.nick || "") || "Я",
+    opponent: tunnel ? counterpartyLabel(tunnel) : "Черные"
+  };
+}
+
+function canMoveOnChessBoard(snapshot: ChessSnapshot): boolean {
+  return !snapshot.result && !(snapshot.mode === "agent" && chessFromSnapshot(snapshot).turn() === agentSide(snapshot));
+}
+
+function maybeWelcomeChessAgent(tunnelId: string, snapshot: ChessSnapshot): void {
+  if (snapshot.mode !== "agent" || snapshot.history.length > 0 || snapshot.coach !== geniusCoach || chessWelcomedGames.has(snapshot.gameId)) {
+    return;
+  }
+  chessWelcomedGames.add(snapshot.gameId);
+  appendAgentChatMessage(tunnelId, "ГЕНИЙ: доска на месте. Ты за белых, я за черных. Все просто: ходи.");
+}
+
+function loadStoredChessSnapshot(tunnelId: string): unknown {
+  return loadStoredChessSnapshots()[tunnelId] ?? null;
+}
+
+function loadStoredChessSnapshots(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(chessStoreKey) || "{}") as unknown;
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberChessSnapshot(tunnelId: string, snapshot: ChessSnapshot): void {
+  try {
+    const stored = loadStoredChessSnapshots();
+    stored[tunnelId] = snapshot;
+    localStorage.setItem(chessStoreKey, JSON.stringify(stored));
+  } catch {
+    // Chess still lives in the synced room if local storage is unavailable.
+  }
+}
+
+function forgetChessSnapshot(tunnelId: string): void {
+  try {
+    const stored = loadStoredChessSnapshots();
+    delete stored[tunnelId];
+    localStorage.setItem(chessStoreKey, JSON.stringify(stored));
+  } catch {
+    // Best effort only.
+  }
+}
+
+function chessSquareTone(square: Square): string {
+  const file = square.charCodeAt(0) - 96;
+  const rank = Number(square[1]);
+  return (file + rank) % 2 === 0 ? "dark" : "light";
+}
+
+function isChessPromotionPiece(value: unknown): value is PieceSymbol {
+  return value === "q" || value === "r" || value === "b" || value === "n";
 }
 
 function grantTargetsThisDevice(targetDeviceId: string): boolean {
@@ -3657,6 +4206,7 @@ function buildOperatorExport(): string {
       ...tunnel,
       counterpartyLabel: counterpartyLabel(tunnel),
       text: texts.get(tunnel.id) || "",
+      chess: chessGames.get(tunnel.id) ?? loadStoredChessSnapshot(tunnel.id),
       files: (files.get(tunnel.id) || []).map((file) => ({
         id: file.id,
         name: file.name,

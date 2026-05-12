@@ -19,6 +19,7 @@ export interface PeerInfo {
 export interface SyncCallbacks {
   readonly onText: (text: string) => void;
   readonly onTerminal: (terminal: TerminalSnapshot) => void;
+  readonly onChess: (chess: SyncedChessState | null) => void;
   readonly onActivity: (activity: WriterActivity) => void;
   readonly onRemoteChange: (activity: WriterActivity) => void;
   readonly onLiveDraft: (draft: LiveDraft) => void;
@@ -151,6 +152,8 @@ export interface TerminalSnapshot {
   readonly lines: readonly string[];
   readonly state: "idle" | "run" | "ok" | "bad" | "off";
 }
+
+export type SyncedChessState = Readonly<Record<string, unknown>>;
 
 interface EncryptedUpdate {
   readonly id: string;
@@ -382,6 +385,7 @@ export class TunnelSync {
   private readonly text = this.doc.getText("body");
   private readonly terminalLines = this.doc.getArray<string>("terminalLines");
   private readonly terminalMeta = this.doc.getMap<string>("terminalMeta");
+  private readonly chessMeta = this.doc.getMap<string>("chessMeta");
   private ws: WebSocket | null = null;
   private destroyed = false;
   private ready = false;
@@ -443,6 +447,9 @@ export class TunnelSync {
     });
     this.terminalMeta.observe(() => {
       this.callbacks.onTerminal(this.terminalSnapshot());
+    });
+    this.chessMeta.observe(() => {
+      this.callbacks.onChess(this.chessSnapshot());
     });
     window.addEventListener("online", this.wakeReconnect);
     window.addEventListener("offline", this.offlineState);
@@ -507,6 +514,26 @@ export class TunnelSync {
       lines: this.terminalLines.toArray().slice(-600),
       state: terminalStateFrom(this.terminalMeta.get("state"))
     };
+  }
+
+  setChessSnapshot(snapshot: SyncedChessState): void {
+    this.chessMeta.set("state", JSON.stringify(snapshot));
+  }
+
+  chessSnapshot(): SyncedChessState | null {
+    const raw = this.chessMeta.get("state");
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as SyncedChessState;
+      }
+    } catch {
+      // Ignore corrupt chess state; the room can create a fresh game.
+    }
+    return null;
   }
 
   async sendLiveDraft(text: string): Promise<void> {
