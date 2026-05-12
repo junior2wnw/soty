@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.148";
+const agentVersion = "0.3.149";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -698,6 +698,11 @@ function normalizeOperatorActionPayload(payload) {
   const inferredRisk = cleanActionRisk(inferActionRisk(body, family));
   const explicitRisk = cleanActionRiskOrEmpty(payload.risk);
   const risk = explicitRisk ? maxActionRisk(explicitRisk, inferredRisk) : inferredRisk;
+  const reuseKey = cleanActionText(payload.reuseKey || payload.routeKey || payload.scriptKey || "", 120);
+  const pivotFrom = cleanActionText(payload.pivotFrom || payload.pivotOf || payload.previousVector || "", 160);
+  const successCriteria = cleanActionText(payload.successCriteria || payload.qualityTarget || payload.doneWhen || "", 220);
+  const scriptUse = cleanActionText(payload.scriptUse || payload.knowledgeUse || payload.reuseUse || "", 180);
+  const contextFingerprint = cleanActionText(payload.contextFingerprint || payload.environmentKey || "", 120);
   return {
     ok: true,
     mode,
@@ -719,8 +724,13 @@ function normalizeOperatorActionPayload(payload) {
     createdBy: cleanActionText(payload.createdBy || "soty-agent", 80),
     idempotencyKey: cleanActionId(payload.idempotencyKey || payload.clientRequestId || payload.requestId || ""),
     commandSig,
-    taskSig: taskSignature(`${toolkit} ${phase} ${family} ${intent} ${target}`),
-    improvement: cleanActionText(payload.improvement || payload.improvementNote || "", 240)
+    taskSig: taskSignature(`${toolkit} ${phase} ${family} ${intent} ${target} ${reuseKey}`),
+    improvement: cleanActionText(payload.improvement || payload.improvementNote || "", 240),
+    reuseKey,
+    pivotFrom,
+    successCriteria,
+    scriptUse,
+    contextFingerprint
   };
 }
 
@@ -749,6 +759,11 @@ async function createActionJob(action) {
     durationMs: 0,
     route: "",
     improvement: action.improvement,
+    reuseKey: action.reuseKey,
+    pivotFrom: action.pivotFrom,
+    successCriteria: action.successCriteria,
+    scriptUse: action.scriptUse,
+    contextFingerprint: action.contextFingerprint,
     commandSig: action.commandSig,
     taskSig: action.taskSig,
     artifacts: {
@@ -776,6 +791,11 @@ async function createActionJob(action) {
     commandSig: job.commandSig,
     taskSig: job.taskSig,
     improvement: action.improvement ? "<set>" : "",
+    reuseKey: action.reuseKey,
+    pivotFrom: action.pivotFrom ? "<set>" : "",
+    successCriteria: action.successCriteria ? "<set>" : "",
+    scriptUse: action.scriptUse ? "<set>" : "",
+    contextFingerprint: action.contextFingerprint,
     createdAt
   });
   await writeActionJob(job);
@@ -834,7 +854,7 @@ async function runActionJob(job, action) {
   const durationMs = Math.max(0, finished - started);
   const text = String(execution.text || "").slice(-1_000_000);
   const route = cleanActionText(execution.route || `operator-action.${action.mode}`, 120);
-  const proof = enrichActionProof(action, text, buildActionProof({ action, execution: { ...execution, exitCode, route, text }, status }));
+  const proof = appendActionMetaProof(action, enrichActionProof(action, text, buildActionProof({ action, execution: { ...execution, exitCode, route, text }, status })));
   const resultDoc = {
     schema: "soty.action.result.v1",
     jobId: job.id,
@@ -854,6 +874,11 @@ async function runActionJob(job, action) {
     durationMs,
     proof,
     improvement: action.improvement,
+    reuseKey: action.reuseKey,
+    pivotFrom: action.pivotFrom,
+    successCriteria: action.successCriteria,
+    scriptUse: action.scriptUse,
+    contextFingerprint: action.contextFingerprint,
     output: {
       chars: text.length,
       shape: sourceOutputShape(text),
@@ -1077,6 +1102,34 @@ function enrichActionProof(action, text, proof) {
     return `${proof}; rebooting=true${backupOk}`;
   }
   return proof;
+}
+
+function appendActionMetaProof(action, proof) {
+  const parts = [];
+  if (action?.reuseKey) {
+    parts.push(`reuseKey=${cleanProofToken(action.reuseKey)}`);
+  }
+  if (action?.pivotFrom) {
+    parts.push(`pivotFrom=${cleanProofToken(action.pivotFrom)}`);
+  }
+  if (action?.successCriteria) {
+    parts.push("successCriteria=set");
+  }
+  if (action?.scriptUse) {
+    parts.push(`scriptUse=${cleanProofToken(action.scriptUse)}`);
+  }
+  if (action?.contextFingerprint) {
+    parts.push(`context=${cleanProofToken(action.contextFingerprint)}`);
+  }
+  return parts.length > 0 ? `${proof}; ${parts.join("; ")}` : proof;
+}
+
+function cleanProofToken(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 80) || "set";
 }
 
 async function writeActionJob(job) {
@@ -5606,6 +5659,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
     "- Reuse learned routes only when they shorten the current task. For similar system checks, use the shortest proven read-only command plus one proof line; do not repeat broad exploration.",
     "- Speed/quality rule: before using tools, classify the task as direct-answer, read-only probe, reversible change, or long/risky job; take the smallest route that gives proof, and stop as soon as the requested proof is enough.",
+    "- Pivot rule: keep a tiny execution state in your head: current goal, target, reusable artifacts, risk, proof, and next blocker. If the user changes direction, reuse the still-valid artifacts and continue from the nearest safe point instead of restarting discovery.",
+    "- Reuse-capsule rule: when a script or command pattern may help different future tasks, give the action a stable `reuseKey`, `scriptUse`, `successCriteria`, and small `contextFingerprint`. Treat these as portable route capsules, not one-dialog trivia.",
+    "- Optimization rule: at every tool boundary prefer the smaller action that preserves or improves proof quality. If a big script can be replaced by a targeted helper with the same proof, use the targeted helper and record the improvement.",
     "- Quiet fast path: for low-risk routine computer tasks expected under 90 seconds, do not send a progress message before tools; send one final answer after the proof.",
     "- Program-management rule: for app/process tasks, prefer one source-scoped process/service/window command with readback; open GUI apps only when the user asks for visible UI, and close only processes you started.",
     "- Web-to-computer rule: when internet lookup is required, use one official or primary source when possible, capture the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
@@ -6257,7 +6313,12 @@ function runMcpServer() {
             usbDriveLetter: { type: "string", description: "Windows reinstall USB drive letter." },
             confirmationPhrase: { type: "string", description: "Exact destructive confirmation phrase for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "Windows reinstall prepare: require existing valid USB install image." },
-            improvement: { type: "string", description: "Optional sanitized reusable improvement note when this run proves a safe toolkit improvement." }
+            improvement: { type: "string", description: "Optional sanitized reusable improvement note when this run proves a safe toolkit improvement." },
+            reuseKey: { type: "string", description: "Stable reusable route/script key when this action should help unrelated future tasks reuse the same method." },
+            pivotFrom: { type: "string", description: "Optional previous task vector when the user changed direction and this action continues with existing proof/artifacts." },
+            successCriteria: { type: "string", description: "Short done condition used to keep quality high while optimizing speed." },
+            scriptUse: { type: "string", description: "How the script/knowledge is being reused, for example probe, backup, repair, prepare, verify." },
+            contextFingerprint: { type: "string", description: "Tiny environment boundary for reusable learning, without secrets or private ids." }
           },
           additionalProperties: false
         }
@@ -6312,7 +6373,12 @@ function runMcpServer() {
             waitForCompletion: { type: "boolean", description: "When true, keep the tool call open until the action reaches a terminal state. Use this for turnkey user-facing tasks unless the user explicitly asked for background mode." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." },
-            improvement: { type: "string", description: "Optional sanitized reusable improvement note when this job proves a safe toolkit improvement." }
+            improvement: { type: "string", description: "Optional sanitized reusable improvement note when this job proves a safe toolkit improvement." },
+            reuseKey: { type: "string", description: "Stable reusable route/script key when this action should help unrelated future tasks reuse the same method." },
+            pivotFrom: { type: "string", description: "Optional previous task vector when the user changed direction and this action continues with existing proof/artifacts." },
+            successCriteria: { type: "string", description: "Short done condition used to keep quality high while optimizing speed." },
+            scriptUse: { type: "string", description: "How the script/knowledge is being reused, for example probe, backup, repair, prepare, verify." },
+            contextFingerprint: { type: "string", description: "Tiny environment boundary for reusable learning, without secrets or private ids." }
           },
           additionalProperties: false
         }
@@ -6787,6 +6853,11 @@ function runMcpServer() {
       risk: String(args.risk || ""),
       idempotencyKey: String(args.idempotencyKey || ""),
       improvement: String(args.improvement || ""),
+      reuseKey: String(args.reuseKey || ""),
+      pivotFrom: String(args.pivotFrom || ""),
+      successCriteria: String(args.successCriteria || ""),
+      scriptUse: String(args.scriptUse || ""),
+      contextFingerprint: String(args.contextFingerprint || ""),
       detached: args.detached === true,
       wait: args.waitForCompletion === true,
       timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
@@ -8999,6 +9070,11 @@ function parseActionCtlOptions(args) {
   let shell = "";
   let idempotencyKey = "";
   let improvement = "";
+  let reuseKey = "";
+  let pivotFrom = "";
+  let successCriteria = "";
+  let scriptUse = "";
+  let contextFingerprint = "";
   let detached = false;
   while (rest.length > 0) {
     const head = rest[0] || "";
@@ -9112,6 +9188,56 @@ function parseActionCtlOptions(args) {
       rest.splice(0, 2);
       continue;
     }
+    if (head.startsWith("--reuse-key=")) {
+      reuseKey = cleanActionText(head.slice("--reuse-key=".length), 120);
+      rest.shift();
+      continue;
+    }
+    if (head === "--reuse-key" && rest.length > 1) {
+      reuseKey = cleanActionText(rest[1], 120);
+      rest.splice(0, 2);
+      continue;
+    }
+    if (head.startsWith("--pivot-from=")) {
+      pivotFrom = cleanActionText(head.slice("--pivot-from=".length), 160);
+      rest.shift();
+      continue;
+    }
+    if (head === "--pivot-from" && rest.length > 1) {
+      pivotFrom = cleanActionText(rest[1], 160);
+      rest.splice(0, 2);
+      continue;
+    }
+    if (head.startsWith("--success-criteria=")) {
+      successCriteria = cleanActionText(head.slice("--success-criteria=".length), 220);
+      rest.shift();
+      continue;
+    }
+    if (head === "--success-criteria" && rest.length > 1) {
+      successCriteria = cleanActionText(rest[1], 220);
+      rest.splice(0, 2);
+      continue;
+    }
+    if (head.startsWith("--script-use=")) {
+      scriptUse = cleanActionText(head.slice("--script-use=".length), 180);
+      rest.shift();
+      continue;
+    }
+    if (head === "--script-use" && rest.length > 1) {
+      scriptUse = cleanActionText(rest[1], 180);
+      rest.splice(0, 2);
+      continue;
+    }
+    if (head.startsWith("--context=")) {
+      contextFingerprint = cleanActionText(head.slice("--context=".length), 120);
+      rest.shift();
+      continue;
+    }
+    if (head === "--context" && rest.length > 1) {
+      contextFingerprint = cleanActionText(rest[1], 120);
+      rest.splice(0, 2);
+      continue;
+    }
     if (head.startsWith("--request-id=")) {
       idempotencyKey = cleanActionId(head.slice("--request-id=".length));
       rest.shift();
@@ -9129,7 +9255,7 @@ function parseActionCtlOptions(args) {
     }
     break;
   }
-  return { timeoutMs, sourceDeviceId, sourceRelayId, toolkit, phase, family, kind, risk, shell, idempotencyKey, improvement, detached, args: rest };
+  return { timeoutMs, sourceDeviceId, sourceRelayId, toolkit, phase, family, kind, risk, shell, idempotencyKey, improvement, reuseKey, pivotFrom, successCriteria, scriptUse, contextFingerprint, detached, args: rest };
 }
 
 function actionCtlRequestOptions(parsed) {
@@ -9144,6 +9270,11 @@ function actionCtlRequestOptions(parsed) {
     ...(parsed.risk ? { risk: parsed.risk } : {}),
     ...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {}),
     ...(parsed.improvement ? { improvement: parsed.improvement } : {}),
+    ...(parsed.reuseKey ? { reuseKey: parsed.reuseKey } : {}),
+    ...(parsed.pivotFrom ? { pivotFrom: parsed.pivotFrom } : {}),
+    ...(parsed.successCriteria ? { successCriteria: parsed.successCriteria } : {}),
+    ...(parsed.scriptUse ? { scriptUse: parsed.scriptUse } : {}),
+    ...(parsed.contextFingerprint ? { contextFingerprint: parsed.contextFingerprint } : {}),
     ...(parsed.detached ? { detached: true } : {})
   };
 }

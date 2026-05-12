@@ -224,6 +224,15 @@ function buildRecommendations(rows, topFailures) {
   const postArmLosses = postArmSourceDisconnectRows(rows);
   const slowRoutineGroups = slowRoutineCodexGroups(rows);
   const lowQualityGroups = lowQualityRouteGroups(rows);
+  const reusableCapsules = reusableRouteCapsuleGroups(rows);
+  for (const item of reusableCapsules.slice(0, 3)) {
+    recommendations.push({
+      priority: item.count >= 2 ? "normal" : "low",
+      family: item.family,
+      title: "Promote reusable route capsule",
+      action: `Route capsule ${item.reuseKey} proved ${item.count} time(s). Reuse it for comparable tasks before broad discovery, and keep success criteria plus context boundary attached.`
+    });
+  }
   for (const item of lowQualityGroups.slice(0, 3)) {
     recommendations.push({
       priority: item.count >= 2 || item.score < 60 ? "high" : "normal",
@@ -337,7 +346,57 @@ function buildPromotionCandidates(rows, failures, successes) {
       marker: `ops-memory: goal=Soty ${quality.family} route quality | actual=quality=${quality.quality}; score=${quality.score}; route=${quality.route || "unknown"} | success=patch proof checks or fallback before final answer | env=soty.learning.teacher count=${quality.count}`
     });
   }
+  for (const capsule of reusableRouteCapsuleGroups(rows).slice(0, 4)) {
+    candidates.push({
+      scope: capsule.count >= 2 ? "profile" : "candidate",
+      family: capsule.family,
+      marker: `ops-memory: goal=Soty reusable route capsule ${capsule.reuseKey} | actual=${capsule.scriptUse || "reused-script"} via ${capsule.route || "unknown-route"} | success=count=${capsule.count}; successCriteria=${capsule.successCriteria ? "set" : "unset"}; context=${capsule.context || "unknown"} | env=soty.learning.teacher`
+    });
+  }
   return candidates.slice(0, 10);
+}
+
+function reusableRouteCapsuleGroups(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const capsule = learningRouteCapsule(row.proof);
+    if (!capsule.reuseKey) {
+      continue;
+    }
+    const family = cleanText(row.family, 80) || "generic";
+    const route = cleanText(row.route, 120) || "unknown";
+    const key = `${family}|${route}|${capsule.reuseKey}`;
+    const current = groups.get(key) || {
+      family,
+      route,
+      reuseKey: capsule.reuseKey,
+      scriptUse: capsule.scriptUse,
+      successCriteria: capsule.successCriteria,
+      context: capsule.context,
+      count: 0,
+      lastSeenAt: ""
+    };
+    current.count += 1;
+    current.lastSeenAt = cleanIso(row.createdAt) || cleanIso(row.receivedAt) || current.lastSeenAt;
+    groups.set(key, current);
+  }
+  return Array.from(groups.values())
+    .sort((left, right) => right.count - left.count || right.lastSeenAt.localeCompare(left.lastSeenAt));
+}
+
+function learningRouteCapsule(proof) {
+  const text = String(proof || "").toLowerCase();
+  return {
+    reuseKey: proofField(text, "reusekey"),
+    scriptUse: proofField(text, "scriptuse"),
+    successCriteria: text.includes("successcriteria=set"),
+    context: proofField(text, "context")
+  };
+}
+
+function proofField(text, name) {
+  const match = new RegExp(`(?:^|; )${name}=([a-z0-9_.:-]{1,80})`, "u").exec(text);
+  return match ? match[1] : "";
 }
 
 function lowQualityRouteGroups(rows) {

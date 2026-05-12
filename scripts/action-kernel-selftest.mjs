@@ -40,7 +40,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.148");
+      assertEqual(health.body.version, "0.3.149");
       assertEqual(health.body.responseStyle.id, "sysadmin-short");
       assertEqual(health.body.responseStyle.displayName, "Лорд Роя");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -169,6 +169,22 @@ async function runScenarios() {
       const status = await get(response.body.statusPath);
       assertEqual(status.body.job.intent, "repair proof");
       assertEqual(status.body.result.kind, "script");
+    }],
+    ["reuse and pivot metadata are stored as portable action context", async () => {
+      const response = await action({
+        ...sourceScript("echo SELFTEST_OK reuse-pivot"),
+        reuseKey: "powershell-structured-proof",
+        pivotFrom: "driver probe",
+        successCriteria: "json output plus exitCode 0",
+        scriptUse: "verify",
+        contextFingerprint: "windows-link"
+      });
+      const status = await get(response.body.statusPath);
+      assertEqual(status.body.job.reuseKey, "powershell-structured-proof");
+      assertEqual(status.body.result.scriptUse, "verify");
+      assert(status.body.result.proof.includes("reuseKey=powershell-structured-proof"));
+      assert(status.body.result.proof.includes("pivotFrom=driver-probe"));
+      assert(status.body.result.proof.includes("successCriteria=set"));
     }],
     ["source relay is redacted in input artifact", async () => {
       const response = await action({ ...sourceRun("SELFTEST_OK relay"), sourceRelayId: "relay_secret_00000000000000000001" });
@@ -404,7 +420,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.148");
+      assertEqual(manifest.version, "0.3.149");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -494,6 +510,21 @@ async function runScenarios() {
       ], { limit: 1 });
       assert(report.recommendations.some((item) => item.title === "Improve low-quality automatic route"));
       assert(report.candidates.some((item) => item.marker.includes("route quality")));
+    }],
+    ["learning teacher promotes reusable route capsules", async () => {
+      const report = buildTeacherReport([
+        {
+          kind: "action-job",
+          result: "ok",
+          family: "system-check",
+          route: "agent-source.script",
+          proof: "toolkit=durable-action; phase=verify; exitCode=0; reuseKey=powershell-structured-proof; scriptUse=verify; successCriteria=set; context=windows-link",
+          exitCode: 0,
+          createdAt: "2026-05-13T08:05:00.000Z"
+        }
+      ], { limit: 1 });
+      assert(report.recommendations.some((item) => item.title === "Promote reusable route capsule"));
+      assert(report.candidates.some((item) => item.marker.includes("reusable route capsule powershell-structured-proof")));
     }]
   ];
   assert(cases.length >= 50);
