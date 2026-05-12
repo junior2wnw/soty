@@ -443,6 +443,11 @@ function cleanReceipt(value) {
     commandSig: cleanSignature(value.commandSig, cleanText(value.family, 80)),
     taskSig: cleanTaskSignature(value.taskSig),
     proof: redactLearningText(value.proof).slice(0, maxReceiptText),
+    targetLabel: cleanText(value.targetLabel, 80),
+    sourceDeviceNick: cleanText(value.sourceDeviceNick, 80),
+    targetHash: cleanHash(value.targetHash),
+    sourceDeviceHash: cleanHash(value.sourceDeviceHash),
+    dialogHash: cleanHash(value.dialogHash),
     durationMs: Number.isSafeInteger(value.durationMs) ? Math.max(0, Math.min(86_400_000, value.durationMs)) : undefined,
     ...(exitCode === undefined ? {} : { exitCode }),
     skillSha: cleanText(value.skillSha, 80),
@@ -461,6 +466,11 @@ function cleanText(value, max) {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, max);
+}
+
+function cleanHash(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return /^[a-f0-9]{8,32}$/u.test(text) ? text.slice(0, 32) : "";
 }
 
 function cleanSignature(value, family = "") {

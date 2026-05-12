@@ -40,7 +40,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.140");
+      assertEqual(health.body.version, "0.3.141");
       assertEqual(health.body.responseStyle.id, "sysadmin-short");
       assertEqual(health.body.responseStyle.displayName, "Лорд Роя");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -349,6 +349,18 @@ async function runScenarios() {
       assert(agent.includes("sysadmin-short"));
       assert(agent.includes("Лорд Роя"));
       assert(agent.includes("response_style_rule_${index + 1}"));
+      assert(agent.includes("shouldAutoReplyOperatorMessage"));
+      assert(agent.includes("isActionableTargetOperatorMessage"));
+      assert(agent.includes('preferredTargetId: agentDialog ? "" : item.target'));
+      assert(agent.includes("that device is the only intended target"));
+      assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));
+      assert(agent.includes("waitForTurnkeyTargetAfterCodex"));
+      assert(agent.includes("turnkeyGuardTimeoutMs"));
+      assert(agent.includes("guardTurnkeyMessages"));
+      assert(agent.includes("managedReinstallGuardTerminal"));
+      assert(agent.includes("learningContextForTurn"));
+      assert(agent.includes("targetHash"));
+      assert(agent.includes("sourceDeviceHash"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes("Get-ManagedScript"));
@@ -386,7 +398,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.140");
+      assertEqual(manifest.version, "0.3.141");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.140";
+const agentVersion = "0.3.141";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -23,6 +23,8 @@ const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49
 const maxLongTaskTimeoutMs = 24 * 60 * 60_000;
 const defaultTimeoutMs = safeDurationMs(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS, 30 * 60_000, maxLongTaskTimeoutMs);
 const mcpInlineToolBudgetMs = 95_000;
+const turnkeyGuardTimeoutMs = safeDurationMs(process.env.SOTY_TURNKEY_GUARD_TIMEOUT_MS, maxLongTaskTimeoutMs, maxLongTaskTimeoutMs);
+const turnkeyGuardProgressMs = safeDurationMs(process.env.SOTY_TURNKEY_GUARD_PROGRESS_MS, 20 * 60_000, 60 * 60_000);
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
@@ -872,7 +874,8 @@ async function runActionJob(job, action) {
     taskSig: job.taskSig,
     proof: action.improvement ? `${proof}; improvement=${action.improvement}` : proof,
     exitCode,
-    durationMs
+    durationMs,
+    ...learningContextForAction(action)
   });
   return {
     httpStatus: status === "blocked" ? 422 : 200,
@@ -1822,6 +1825,49 @@ function taskSignature(text) {
   return `task:${hashText(normalized).slice(0, 16)}`;
 }
 
+function learningContextForTurn(source, target) {
+  const safe = sanitizeAgentSource(source);
+  return cleanLearningContext({
+    dialogHash: hashLearningRef(safe.tunnelId),
+    sourceDeviceHash: hashLearningRef(safe.deviceId),
+    sourceDeviceNick: safe.deviceNick,
+    targetHash: hashLearningRef(target?.id || ""),
+    targetLabel: target?.label || ""
+  });
+}
+
+function learningContextForAction(action) {
+  return cleanLearningContext({
+    sourceDeviceHash: hashLearningRef(action?.sourceDeviceId || ""),
+    targetHash: hashLearningRef(action?.target || "")
+  });
+}
+
+function cleanLearningContext(value) {
+  const context = {};
+  const targetLabel = cleanLearningText(value?.targetLabel, 80);
+  const sourceDeviceNick = cleanLearningText(value?.sourceDeviceNick, 80);
+  const targetHash = cleanLearningHash(value?.targetHash);
+  const sourceDeviceHash = cleanLearningHash(value?.sourceDeviceHash);
+  const dialogHash = cleanLearningHash(value?.dialogHash);
+  if (targetLabel) context.targetLabel = targetLabel;
+  if (sourceDeviceNick) context.sourceDeviceNick = sourceDeviceNick;
+  if (targetHash) context.targetHash = targetHash;
+  if (sourceDeviceHash) context.sourceDeviceHash = sourceDeviceHash;
+  if (dialogHash) context.dialogHash = dialogHash;
+  return context;
+}
+
+function hashLearningRef(value) {
+  const text = String(value || "").trim();
+  return text ? hashText(text).slice(0, 16) : "";
+}
+
+function cleanLearningHash(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return /^[a-f0-9]{8,32}$/u.test(text) ? text.slice(0, 32) : "";
+}
+
 function recordLearningReceipt(receipt) {
   const clean = cleanLearningReceipt(receipt);
   if (!clean) {
@@ -1869,6 +1915,7 @@ function cleanLearningReceipt(value) {
     commandSig: cleanLearningText(value.commandSig, 120),
     taskSig: cleanLearningText(value.taskSig, 120),
     proof: redactLearningText(value.proof).slice(0, 900),
+    ...cleanLearningContext(value),
     ...(exitCode === undefined ? {} : { exitCode }),
     ...(Number.isSafeInteger(value.durationMs) ? { durationMs: Math.max(0, Math.min(86_400_000, value.durationMs)) } : {}),
     skillSha: cleanLearningText(opsSkillStatus().tarSha256 || "", 80),
@@ -2545,7 +2592,7 @@ function handleOperatorIncomingMessage(message) {
 }
 
 function maybeStartAgentOperatorReply(item) {
-  if (!isAgentOperatorMessage(item)) {
+  if (!shouldAutoReplyOperatorMessage(item)) {
     return;
   }
   const previous = agentOperatorReplyQueues.get(item.target) || Promise.resolve();
@@ -2565,8 +2612,25 @@ function isAgentOperatorMessage(item) {
   return item?.agent === true || label === "агент" || label === "codex";
 }
 
+function shouldAutoReplyOperatorMessage(item) {
+  return isAgentOperatorMessage(item) || isActionableTargetOperatorMessage(item);
+}
+
+function isActionableTargetOperatorMessage(item) {
+  if (!item || isAgentOperatorMessage(item)) {
+    return false;
+  }
+  const text = String(item.text || "").trim();
+  if (!text) {
+    return false;
+  }
+  const directAgentMention = /(?:^|[\s,.:;!?])(?:агент|соты|лорд\s+роя|codex)(?:$|[\s,.:;!?])/iu.test(text);
+  const highConfidenceDeviceTask = /(?:переустанов\p{L}*|перестанов\p{L}*|винд\p{L}*|windows|win11|установочн\p{L}*\s+флеш\p{L}*|флеш\p{L}*.*винд\p{L}*|стираем\s+вс[её]|стереть\s+вс[её]|формат\p{L}*|бэкап\p{L}*|резервн\p{L}*\s+коп\p{L}*|\b(?:backup|reinstall|windows\s+reinstall|factory\s+reset|format)\b)/iu.test(text);
+  return directAgentMention || highConfidenceDeviceTask;
+}
+
 function isDuplicateAgentOperatorMessage(item) {
-  if (!isAgentOperatorMessage(item)) {
+  if (!shouldAutoReplyOperatorMessage(item)) {
     return false;
   }
   const now = Date.now();
@@ -2582,14 +2646,15 @@ function isDuplicateAgentOperatorMessage(item) {
 }
 
 async function replyToAgentOperatorMessage(item) {
+  const agentDialog = isAgentOperatorMessage(item);
   const source = {
     tunnelId: item.target,
     tunnelLabel: item.label || "Агент",
     deviceId: item.sourceDeviceId || operatorDeviceId || "",
     deviceNick: item.sourceDeviceNick || operatorDeviceNick || "",
     appOrigin: agentRelayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online",
-    preferredTargetId: "",
-    preferredTargetLabel: "",
+    preferredTargetId: agentDialog ? "" : item.target,
+    preferredTargetLabel: agentDialog ? "" : item.label,
     operatorTargets
   };
   const streamedMessages = [];
@@ -2924,6 +2989,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const safeSource = sanitizeAgentSource(source);
   const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
+  const learningContext = learningContextForTurn(safeSource, target);
   const sessionKey = codexSessionKey(safeSource, target);
   const turnKey = codexTurnDedupeKey(sessionKey, text);
   if (isDuplicateCodexTurn(turnKey)) {
@@ -2944,6 +3010,16 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const prompt = buildAgentPrompt(text, context, runtimeContext);
   const outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
   const taskFamily = classifyTaskFamily(text, target);
+  const guardTurnkeyMessages = shouldGuardTurnkeyTask(taskFamily, text);
+  const bufferedCodexMessages = [];
+  const codexOnMessage = guardTurnkeyMessages
+    ? (message) => {
+      const clean = cleanAgentChatReply(message);
+      if (clean) {
+        bufferedCodexMessages.push(clean);
+      }
+    }
+    : onMessage;
   const args = codexSotySessionArgs({
     jobDir,
     target,
@@ -2959,7 +3035,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     terminal: [],
     terminalKeys: new Set()
   };
-  let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, onMessage, onTerminal);
+  let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal);
   if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
     const freshState = {
       threadId: "",
@@ -2978,7 +3054,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     });
     delete persistedCodexSessions[sessionKey];
     await saveCodexSessions();
-    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, onMessage, onTerminal);
+    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, codexOnMessage, onTerminal);
     state.threadId = freshState.threadId;
     state.lastMessage = freshState.lastMessage;
     state.messages = freshState.messages;
@@ -2986,8 +3062,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     state.terminalKeys = freshState.terminalKeys;
   }
   const lastFromFile = existsSync(outPath) ? cleanAgentChatReply(await readFile(outPath, "utf8")) : "";
-  const messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
-  const finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
+  let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
+  let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
   if (state.threadId) {
     persistedCodexSessions[sessionKey] = {
       threadId: state.threadId,
@@ -3009,14 +3085,28 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         taskSig: taskSignature(text),
         proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}`,
         exitCode: 125,
-        durationMs: Date.now() - startedAt
+        durationMs: Date.now() - startedAt,
+        ...learningContext
       });
       return {
         ok: false,
-      text: agentFailureText("Codex CLI exited successfully but did not produce a final assistant message."),
+        text: agentFailureText("Codex CLI exited successfully but did not produce a final assistant message."),
         ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
         exitCode: 125
       };
+    }
+    const turnkeyGuard = await waitForTurnkeyTargetAfterCodex({
+      text,
+      taskFamily,
+      target,
+      source: safeSource,
+      startedAt,
+      finalText,
+      onMessage
+    });
+    if (turnkeyGuard?.text) {
+      finalText = cleanAgentChatReply(turnkeyGuard.text);
+      messages = compactCodexMessages([...messages, finalText]);
     }
     recordLearningReceipt({
       kind: "codex-turn",
@@ -3026,7 +3116,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       taskSig: taskSignature(text),
       proof: `exitCode=0; messages=${messages.length}; final=nonempty`,
       exitCode: 0,
-      durationMs: Date.now() - startedAt
+      durationMs: Date.now() - startedAt,
+      ...learningContext
     });
     return {
       ok: true,
@@ -3044,7 +3135,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     taskSig: taskSignature(text),
     proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}`,
     exitCode: result.exitCode || 1,
-    durationMs: Date.now() - startedAt
+    durationMs: Date.now() - startedAt,
+    ...learningContext
   });
   return {
     ok: false,
@@ -3052,6 +3144,226 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
     exitCode: result.exitCode || 1
   };
+}
+
+async function waitForTurnkeyTargetAfterCodex({ text, taskFamily, target, source, startedAt, finalText, onMessage }) {
+  if (!target?.id || !shouldGuardTurnkeyTask(taskFamily, text)) {
+    return null;
+  }
+  if (target.access !== true && !isAgentSourceTarget(target.id)) {
+    return null;
+  }
+  const sourceDeviceId = bridgeSourceDeviceId(target, source);
+  if (!sourceDeviceId) {
+    return null;
+  }
+  return await waitForManagedReinstallAfterCodex({
+    target,
+    sourceDeviceId,
+    startedAt,
+    finalText,
+    onMessage
+  }).catch(() => null);
+}
+
+function shouldGuardTurnkeyTask(taskFamily, text) {
+  return taskFamily === "windows-reinstall" || classifySourceCommand(text) === "windows-reinstall";
+}
+
+async function waitForManagedReinstallAfterCodex({ target, sourceDeviceId, startedAt, finalText, onMessage }) {
+  const started = Date.now();
+  const deadline = started + turnkeyGuardTimeoutMs;
+  let sawManagedStatus = false;
+  let consecutiveMisses = 0;
+  let lastStatus = null;
+  let progressAt = 0;
+  const recentJobs = await recentTurnkeyActionJobs(target.id, sourceDeviceId, startedAt);
+  while (Date.now() < deadline) {
+    const probe = await readManagedReinstallStatusForTarget(target.id, sourceDeviceId);
+    const status = parseManagedReinstallStatusProbe(probe);
+    if (status) {
+      sawManagedStatus = true;
+      consecutiveMisses = 0;
+      lastStatus = status;
+      const terminal = managedReinstallGuardTerminal(status);
+      if (terminal) {
+        return terminal;
+      }
+      if (isManagedReinstallGuardActive(status)) {
+        if (!progressAt || Date.now() - progressAt > turnkeyGuardProgressMs) {
+          progressAt = Date.now();
+          await postTurnkeyGuardProgress(onMessage, managedReinstallGuardProgress(status));
+        }
+        await sleep(managedReinstallGuardPollMs(status));
+        continue;
+      }
+      return recentJobs.length > 0 ? null : null;
+    }
+    consecutiveMisses += 1;
+    if (!sawManagedStatus && consecutiveMisses >= 2) {
+      return null;
+    }
+    if (sawManagedStatus && consecutiveMisses >= 2) {
+      return {
+        text: "не могу дочитать статус на этом устройстве\nоткрой Soty Agent там и напиши «готово»"
+      };
+    }
+    await sleep(15_000);
+  }
+  if (lastStatus && isManagedReinstallGuardActive(lastStatus)) {
+    return {
+      text: "подготовка ещё идёт\nдиск Windows не трогаю\nоткрой Soty и напиши «продолжай»"
+    };
+  }
+  return finalText ? null : {
+    text: "задача не дошла до понятного конца\nпроверь Soty на этом устройстве"
+  };
+}
+
+async function recentTurnkeyActionJobs(targetId, sourceDeviceId, startedAt) {
+  const cutoff = Math.max(0, Number(startedAt || 0) - 2 * 60_000);
+  const jobs = await listActionJobs().catch(() => []);
+  return jobs.filter((job) => {
+    const family = String(job.family || "").toLowerCase();
+    const risk = String(job.risk || "").toLowerCase();
+    if (family !== "windows-reinstall" && risk !== "high" && risk !== "destructive") {
+      return false;
+    }
+    if (targetId && job.target && job.target !== targetId) {
+      return false;
+    }
+    if (sourceDeviceId && job.sourceDeviceId && job.sourceDeviceId !== sourceDeviceId) {
+      return false;
+    }
+    const time = Date.parse(job.startedAt || job.createdAt || "");
+    return Number.isFinite(time) ? time >= cutoff : true;
+  });
+}
+
+async function readManagedReinstallStatusForTarget(targetId, sourceDeviceId) {
+  return await postLocalOperatorScript(targetId, sourceDeviceId, {
+    script: sourceManagedWindowsReinstallScript(managedReinstallGuardRequest("status")),
+    shell: "powershell",
+    name: "soty-reinstall-status"
+  }, 45_000);
+}
+
+function managedReinstallGuardRequest(action = "status") {
+  return {
+    action,
+    usbDriveLetter: "D",
+    confirmationPhrase: "",
+    useExistingUsbInstallImage: false,
+    manifestUrl: updateManifestUrl,
+    panelSiteUrl: originFromUrl(updateManifestUrl) || agentRelayBaseUrl || "https://xn--n1afe0b.online",
+    workspaceRoot: "C:\\ProgramData\\Soty\\WindowsReinstall"
+  };
+}
+
+function parseManagedReinstallStatusProbe(result) {
+  const parsed = parseJsonObjectLoose(result?.text || result?.payload?.text || "");
+  return parsed?.action === "status" ? parsed : null;
+}
+
+function managedReinstallGuardTerminal(status) {
+  const blockers = managedReinstallGuardReadyBlockers(status);
+  if (status?.ready === true && blockers.length === 0) {
+    const phrase = String(status.confirmationPhrase || "ERASE INTERNAL DISK").trim();
+    return {
+      text: `готово\nбэкап и установочная флешка проверены\nнапиши точно: ${phrase}`
+    };
+  }
+  if (status?.ready === true && blockers.length > 0) {
+    return {
+      text: `стоп\nподготовка неполная: ${blockers.join(", ")}`
+    };
+  }
+  if (isManagedReinstallGuardActive(status)) {
+    return null;
+  }
+  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+  const latestStatus = String(latest?.status || "").toLowerCase();
+  if (latest && latestStatus && !["running-or-started", "running", "created"].includes(latestStatus)) {
+    return {
+      text: "стоп\nподготовка остановилась до готовности\nдиск Windows не трогаю"
+    };
+  }
+  return null;
+}
+
+function isManagedReinstallGuardActive(status) {
+  const media = status?.media && typeof status.media === "object" ? status.media : null;
+  if (media?.downloading === true && (
+    media?.active === true
+    || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < 900)
+  )) {
+    return true;
+  }
+  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+  const latestStatus = String(latest?.status || "").toLowerCase();
+  return latestStatus === "running-or-started" || latestStatus === "running" || latestStatus === "created";
+}
+
+function managedReinstallGuardReadyBlockers(status) {
+  const blockers = [];
+  if (String(status?.managedUserName || "") !== "Соты") {
+    blockers.push("local-account");
+  }
+  if (String(status?.managedUserPasswordMode || "") !== "blank-no-password") {
+    blockers.push("passwordless-account");
+  }
+  if (status?.backupProofOk !== true) {
+    blockers.push("backup");
+  }
+  if (!String(status?.installImage || "")) {
+    blockers.push("install-media");
+  }
+  if (status?.rootAutounattend !== true) {
+    blockers.push("autounattend");
+  }
+  if (status?.oemSetupComplete !== true) {
+    blockers.push("setupcomplete");
+  }
+  return blockers;
+}
+
+function managedReinstallGuardProgress(status) {
+  const media = status?.media && typeof status.media === "object" ? status.media : null;
+  if (media?.downloading === true) {
+    const gb = Number.isFinite(Number(media.gb)) ? `, скачано примерно ${media.gb} ГБ` : "";
+    return `подготовка идёт: образ Windows${gb}\nдиск Windows не трогаю`;
+  }
+  return "подготовка идёт\nдиск Windows не трогаю";
+}
+
+function managedReinstallGuardPollMs(status) {
+  return status?.media?.downloading === true ? 120_000 : 60_000;
+}
+
+async function postTurnkeyGuardProgress(onMessage, text) {
+  const clean = cleanAgentChatReply(text);
+  if (!clean || typeof onMessage !== "function") {
+    return;
+  }
+  await Promise.resolve(onMessage(clean)).catch(() => undefined);
+}
+
+function parseJsonObjectLoose(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {}
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(text.slice(start, end + 1));
+    } catch {}
+  }
+  return null;
 }
 
 function codexTurnDedupeKey(sessionKey, text) {
@@ -3594,25 +3906,23 @@ function targetLastActionMs(target) {
 
 function preferredOperatorTarget(source) {
   const safe = sanitizeAgentSource(source);
-  const targets = sanitizeTargets(safe.operatorTargets).filter((target) => target.access === true);
-  if (targets.length === 0) {
-    return null;
-  }
+  const allTargets = sanitizeTargets(safe.operatorTargets);
+  const accessTargets = allTargets.filter((target) => target.access === true);
   const preferredId = String(safe.preferredTargetId || "").trim().toLowerCase();
   if (preferredId) {
-    const byId = targets.find((target) => target.id === safe.preferredTargetId || target.id.toLowerCase() === preferredId);
+    const byId = allTargets.find((target) => target.id === safe.preferredTargetId || target.id.toLowerCase() === preferredId);
     if (byId) {
       return byId;
     }
   }
   const preferredLabel = String(safe.preferredTargetLabel || "").trim().toLowerCase();
   if (preferredLabel) {
-    const byLabel = targets.find((target) => target.label.toLowerCase() === preferredLabel);
+    const byLabel = allTargets.find((target) => target.label.toLowerCase() === preferredLabel);
     if (byLabel) {
       return byLabel;
     }
   }
-  return null;
+  return accessTargets.length === 1 ? accessTargets[0] : null;
 }
 
 function targetMentionedAtStart(text, targets) {
@@ -3892,6 +4202,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- Toolkit contract: for repeated, long, or lifecycle operations, use a first-class toolkit entrypoint when one exists. If no toolkit exists, use `soty_action` as the durable generic kernel and promote repeated safe automation into a manifest-pinned toolkit instead of embedding long one-off scripts in the prompt.",
     "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
     "- For work on a paired user device, use Soty MCP tools through `soty_toolkit` first. `soty_reinstall` is the first-class Windows reinstall toolkit; `soty_action` is the low-level durable kernel; `soty_run` and `soty_script` are low-level fallbacks for tiny probes only.",
+    "- If `target.id` is set from a device chat, that device is the only intended target. If it has no access or no source device id, request/prove access for that target once or name that blocker; never silently fall back to the server runtime or the message author's local PC.",
     "- Use `soty_toolkit` or `soty_action` for installs, downloads, repairs, scans, staged scripts, destructive work, and any operation that may hang. Keep the returned jobId, poll status, and stop the job if it is stuck or the user asks to stop.",
     "- Turnkey terminal rule: after starting a background job, download, scan, install, repair, backup, media prepare, reset, or reinstall step, do not send a final answer while it is merely running. Continue monitoring until it finishes, fails with a blocker, or needs one specific user input.",
     "- Large-download rule: bad internet is expected. For installer/media downloads, preserve partial files, resume from existing bytes, and treat a growing partial file or active download process as progress, not as a completed answer or unstable connection.",
