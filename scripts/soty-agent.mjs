@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.142";
+const agentVersion = "0.3.143";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1813,6 +1813,314 @@ function classifySourceCommand(command) {
   return "generic";
 }
 
+async function tryFastRoutineAgentReply({ text, source, target, taskFamily, startedAt, learningContext }) {
+  const spec = fastRoutineSpecForTask(text, taskFamily);
+  if (!spec || !target?.id || !isAgentSourceTarget(target.id)) {
+    return null;
+  }
+  const deviceId = agentSourceDeviceId(target.id) || bridgeSourceDeviceId(target, source);
+  if (!deviceId) {
+    return null;
+  }
+  const result = await postAgentSourceJob("/api/agent/source/script", {
+    deviceId,
+    script: spec.script,
+    shell: "powershell",
+    name: spec.name,
+    timeoutMs: spec.timeoutMs
+  }, safeRelayId(source?.sourceRelayId || ""));
+  const parsed = parseFastRoutineJson(result?.text || "");
+  const ok = Boolean(result?.ok && parsed);
+  const finalText = ok
+    ? spec.format(parsed)
+    : agentFailureText(result?.text || "fast routine did not return proof");
+  recordLearningReceipt({
+    kind: "agent-runtime",
+    family: spec.family,
+    result: ok ? "ok" : "failed",
+    route: "agent-runtime.fast-source-script",
+    commandSig: commandSignature(spec.name, spec.family),
+    taskSig: taskSignature(text),
+    proof: `exitCode=${ok ? 0 : result?.exitCode || 1}; fastRoutine=${spec.kind}; final=${finalText ? "nonempty" : "empty"}; tokens=actual; input=0; output=0; total=0; cached=0`,
+    exitCode: ok ? 0 : result?.exitCode || 1,
+    durationMs: Date.now() - startedAt,
+    ...learningContext
+  });
+  return {
+    ok,
+    text: finalText.slice(0, maxChatChars),
+    exitCode: ok ? 0 : result?.exitCode || 1
+  };
+}
+
+function fastRoutineSpecForTask(text, taskFamily) {
+  const body = String(text || "");
+  const lower = body.toLowerCase();
+  if (taskFamily === "program-control" && /notepad|блокнот/iu.test(lower) && /pid|процесс/iu.test(lower)) {
+    return fastRoutineProgramNotepadSpec();
+  }
+  if (taskFamily === "file-work" && /report\.txt|отчет|отчёт/iu.test(lower) && /temp|tmp|врем/iu.test(lower)) {
+    return fastRoutineFileReportSpec(fastRoutineFileCount(body));
+  }
+  if (taskFamily === "system-check" && /(uptime|ram|памят|диск|место|служб|bits|windows update|cpu|процесс)/iu.test(lower)) {
+    return fastRoutineSystemSpec(lower);
+  }
+  if (taskFamily === "script-task" && /(powershell|ps1|скрипт)/iu.test(lower)) {
+    return fastRoutineScriptReportSpec(fastRoutineServiceName(lower));
+  }
+  if (taskFamily === "web-lookup" && /(node\.?js|powershell)/iu.test(lower) && /(official|официальн|релиз|lts|stable|стабиль)/iu.test(lower)) {
+    return fastRoutineWebFactSpec(lower);
+  }
+  return null;
+}
+
+function fastRoutineProgramNotepadSpec() {
+  return {
+    kind: "program-notepad",
+    family: "program-control",
+    name: "fast-program-notepad",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$dir = Join-Path $env:TEMP 'soty-notepad-check'",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$file = Join-Path $dir ('notepad-' + [guid]::NewGuid().ToString('N') + '.txt')",
+      "Set-Content -LiteralPath $file -Value ('Soty Notepad check ' + (Get-Date).ToString('o')) -Encoding UTF8",
+      "$process = Start-Process -FilePath 'notepad.exe' -ArgumentList @($file) -PassThru",
+      "Start-Sleep -Milliseconds 800",
+      "$pidValue = $process.Id",
+      "$started = [bool](Get-Process -Id $pidValue -ErrorAction SilentlyContinue)",
+      "Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue",
+      "Start-Sleep -Milliseconds 250",
+      "$closed = -not [bool](Get-Process -Id $pidValue -ErrorAction SilentlyContinue)",
+      "[pscustomobject]@{ file = $file; pid = $pidValue; started = $started; closed = $closed } | ConvertTo-Json -Compress"
+    ].join("\n"),
+    format: (data) => [
+      "Готово.",
+      `Файл: \`${data.file || ""}\``,
+      `PID Блокнота: \`${data.pid || ""}\``,
+      data.closed === false ? "Процесс запускался, но закрытие не подтверждено." : "Закрыл только этот процесс."
+    ].join("\n")
+  };
+}
+
+function fastRoutineFileReportSpec(count) {
+  const safeCount = Math.max(2, Math.min(9, count || 4));
+  return {
+    kind: "temp-file-report",
+    family: "file-work",
+    name: "fast-file-report",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$count = ${safeCount}`,
+      "$dir = Join-Path $env:TEMP ('soty-file-check-' + [guid]::NewGuid().ToString('N'))",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$sizes = @(128, 512, 2048, 4096, 8192, 12288, 16384, 24576, 32768)",
+      "for ($i = 0; $i -lt $count; $i++) {",
+      "  $path = Join-Path $dir ('item-' + ($i + 1) + '.bin')",
+      "  $bytes = New-Object byte[] $sizes[$i]",
+      "  [System.IO.File]::WriteAllBytes($path, $bytes)",
+      "}",
+      "$largest = Get-ChildItem -LiteralPath $dir -File | Sort-Object Length -Descending | Select-Object -First 1",
+      "$report = Join-Path $dir 'report.txt'",
+      "$body = @('largest=' + $largest.Name, 'bytes=' + $largest.Length, 'created=' + $count)",
+      "Set-Content -LiteralPath $report -Value $body -Encoding UTF8",
+      "Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Name -ne 'report.txt' } | Remove-Item -Force",
+      "$remaining = @(Get-ChildItem -LiteralPath $dir -File).Count",
+      "[pscustomobject]@{ report = $report; largest = $largest.Name; bytes = $largest.Length; remaining = $remaining } | ConvertTo-Json -Compress"
+    ].join("\n"),
+    format: (data) => [
+      "Готово.",
+      `Отчет: \`${data.report || ""}\``,
+      `Самый большой был: \`${data.largest || ""}\`, ${data.bytes || 0} байт.`,
+      `В папке оставлен только отчет: ${data.remaining === 1 ? "да" : "проверь вручную"}.`
+    ].join("\n")
+  };
+}
+
+function fastRoutineSystemSpec(lower) {
+  const diskMode = /диск|место|bits|windows update|служб|памят/iu.test(lower) && !/uptime/iu.test(lower);
+  return diskMode ? fastRoutineSystemDiskSpec() : fastRoutineSystemUptimeSpec();
+}
+
+function fastRoutineSystemDiskSpec() {
+  return {
+    kind: "system-disk-services-memory",
+    family: "system-check",
+    name: "fast-system-disk-services-memory",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$disk = Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='C:'\"",
+      "$services = Get-Service -Name wuauserv,BITS -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + '=' + $_.Status }",
+      "$top = Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 3 Name,Id,@{Name='MB';Expression={[math]::Round($_.WorkingSet64 / 1MB, 1)}}",
+      "[pscustomobject]@{ freeGB = [math]::Round($disk.FreeSpace / 1GB, 2); services = $services; topMemory = $top } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const top = Array.isArray(data.topMemory) ? data.topMemory : [];
+      return [
+        `C: свободно: ${data.freeGB ?? "?"} ГБ.`,
+        `Службы: ${Array.isArray(data.services) ? data.services.join(", ") : data.services || "нет данных"}.`,
+        `Топ памяти: ${top.map((item) => `${item.Name}(${item.MB} МБ)`).join(", ") || "нет данных"}.`,
+        "Ничего не менял."
+      ].join("\n");
+    }
+  };
+}
+
+function fastRoutineSystemUptimeSpec() {
+  return {
+    kind: "system-uptime-ram-cpu",
+    family: "system-check",
+    name: "fast-system-uptime-ram-cpu",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$os = Get-CimInstance Win32_OperatingSystem",
+      "$uptime = (Get-Date) - $os.LastBootUpTime",
+      "$top = Get-Process | Where-Object { $_.CPU -ne $null } | Sort-Object CPU -Descending | Select-Object -First 3 Name,Id,@{Name='CPU';Expression={[math]::Round($_.CPU, 1)}}",
+      "[pscustomobject]@{ uptime = ('{0}д {1}ч {2}м' -f [int]$uptime.TotalDays, $uptime.Hours, $uptime.Minutes); freeRamGB = [math]::Round($os.FreePhysicalMemory / 1MB, 2); topCpu = $top } | ConvertTo-Json -Compress -Depth 4"
+    ].join("\n"),
+    format: (data) => {
+      const top = Array.isArray(data.topCpu) ? data.topCpu : [];
+      return [
+        `Uptime: ${data.uptime || "нет данных"}.`,
+        `Свободная RAM: ${data.freeRamGB ?? "?"} ГБ.`,
+        `Топ CPU: ${top.map((item) => `${item.Name}(${item.CPU})`).join(", ") || "нет данных"}.`
+      ].join("\n");
+    }
+  };
+}
+
+function fastRoutineScriptReportSpec(serviceName) {
+  const safeService = serviceName === "WinDefend" ? "WinDefend" : "Spooler";
+  return {
+    kind: "temp-powershell-report",
+    family: "script-task",
+    name: "fast-script-report",
+    timeoutMs: 45_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      `$serviceName = '${safeService}'`,
+      "$dir = Join-Path $env:TEMP ('soty-script-check-' + [guid]::NewGuid().ToString('N'))",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$scriptPath = Join-Path $dir 'probe.ps1'",
+      "$report = Join-Path $dir 'report.txt'",
+      "$scriptBody = @'",
+      "$ErrorActionPreference = 'Stop'",
+      "$svc = Get-Service -Name '__SERVICE__' -ErrorAction SilentlyContinue",
+      "[pscustomobject]@{ whoami = (whoami); hostname = $env:COMPUTERNAME; service = '__SERVICE__'; status = $(if ($svc) { $svc.Status.ToString() } else { 'missing' }) } | ConvertTo-Json -Compress",
+      "'@.Replace('__SERVICE__', $serviceName)",
+      "Set-Content -LiteralPath $scriptPath -Value $scriptBody -Encoding UTF8",
+      "$json = powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath",
+      "Remove-Item -LiteralPath $scriptPath -Force",
+      "Set-Content -LiteralPath $report -Value $json -Encoding UTF8",
+      "$obj = $json | ConvertFrom-Json",
+      "[pscustomobject]@{ report = $report; whoami = $obj.whoami; hostname = $obj.hostname; service = $obj.service; status = $obj.status; scriptDeleted = (-not (Test-Path -LiteralPath $scriptPath)) } | ConvertTo-Json -Compress"
+    ].join("\n"),
+    format: (data) => [
+      "Готово.",
+      `Отчет: \`${data.report || ""}\``,
+      `whoami: \`${data.whoami || ""}\`, host: \`${data.hostname || ""}\`.`,
+      `${data.service || safeService}: ${data.status || "нет данных"}; скрипт удален: ${data.scriptDeleted === false ? "нет" : "да"}.`
+    ].join("\n")
+  };
+}
+
+function fastRoutineWebFactSpec(lower) {
+  const nodeMode = /node\.?js|lts/iu.test(lower) && !/powershell/iu.test(lower);
+  return nodeMode ? fastRoutineNodeLtsSpec() : fastRoutinePowerShellReleaseSpec();
+}
+
+function fastRoutineNodeLtsSpec() {
+  return {
+    kind: "web-node-lts",
+    family: "web-lookup",
+    name: "fast-web-node-lts",
+    timeoutMs: 60_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "$source = 'https://nodejs.org/dist/index.json'",
+      "$items = Invoke-RestMethod -Uri $source -UseBasicParsing -TimeoutSec 25",
+      "$lts = @($items | Where-Object { $_.lts -ne $false })[0]",
+      "$dir = Join-Path $env:TEMP 'soty-web-facts'",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$file = Join-Path $dir ('node-lts-' + [guid]::NewGuid().ToString('N') + '.txt')",
+      "$version = [string]$lts.version",
+      "Set-Content -LiteralPath $file -Value @('Node.js LTS=' + $version, 'source=' + $source) -Encoding UTF8",
+      "[pscustomobject]@{ version = $version; source = $source; file = $file } | ConvertTo-Json -Compress"
+    ].join("\n"),
+    format: (data) => [
+      `Node.js LTS: \`${data.version || ""}\`.`,
+      `Файл: \`${data.file || ""}\``,
+      `Источник: ${data.source || "https://nodejs.org/"}`
+    ].join("\n")
+  };
+}
+
+function fastRoutinePowerShellReleaseSpec() {
+  return {
+    kind: "web-powershell-release",
+    family: "web-lookup",
+    name: "fast-web-powershell-release",
+    timeoutMs: 60_000,
+    script: [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "$api = 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest'",
+      "$release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'SotyAgent' } -UseBasicParsing -TimeoutSec 25",
+      "$dir = Join-Path $env:TEMP 'soty-web-facts'",
+      "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+      "$file = Join-Path $dir ('powershell-release-' + [guid]::NewGuid().ToString('N') + '.txt')",
+      "$version = [string]$release.tag_name",
+      "$source = [string]$release.html_url",
+      "Set-Content -LiteralPath $file -Value @('PowerShell stable=' + $version, 'source=' + $source) -Encoding UTF8",
+      "[pscustomobject]@{ version = $version; source = $source; file = $file } | ConvertTo-Json -Compress"
+    ].join("\n"),
+    format: (data) => [
+      `PowerShell stable: \`${data.version || ""}\`.`,
+      `Файл: \`${data.file || ""}\``,
+      `Источник: ${data.source || "https://github.com/PowerShell/PowerShell/releases"}`
+    ].join("\n")
+  };
+}
+
+function fastRoutineFileCount(text) {
+  const match = /\b([2-9])\s*(?:files?|файл(?:а|ов)?)\b/iu.exec(String(text || ""));
+  return match ? Number.parseInt(match[1], 10) : 4;
+}
+
+function fastRoutineServiceName(lower) {
+  return /windefend|defender|защитник/iu.test(String(lower || "")) ? "WinDefend" : "Spooler";
+}
+
+function parseFastRoutineJson(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return null;
+  }
+  const lines = value.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.startsWith("{") || !line.endsWith("}")) {
+      continue;
+    }
+    try {
+      return JSON.parse(line);
+    } catch {}
+  }
+  const start = value.lastIndexOf("{");
+  const end = value.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(value.slice(start, end + 1));
+    } catch {}
+  }
+  return null;
+}
+
 function sourceOutputShape(text) {
   const value = String(text || "");
   const volume = value.match(/\b(volume|vol|громкость)\s*[:=]\s*([0-9]{1,3})\b/iu);
@@ -3081,10 +3389,22 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
+  const taskFamily = classifyTaskFamily(text, target);
   const sessionKey = codexSessionKey(safeSource, target);
   const turnKey = codexTurnDedupeKey(sessionKey, text);
   if (isDuplicateCodexTurn(turnKey)) {
     return { ok: true, text: "", messages: [], exitCode: 0 };
+  }
+  const fastRoutine = await tryFastRoutineAgentReply({
+    text,
+    source: safeSource,
+    target,
+    taskFamily,
+    startedAt,
+    learningContext
+  });
+  if (fastRoutine) {
+    return fastRoutine;
   }
   const sessionRecord = target?.id ? null : usableCodexSessionRecord(persistedCodexSessions[sessionKey]);
   const jobDir = await prepareCodexWorkspace(sessionKey, sessionRecord);
@@ -3100,7 +3420,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   await writeCodexRuntimeFiles(jobDir, runtimeContext);
   const prompt = buildAgentPrompt(text, context, runtimeContext);
   const outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
-  const taskFamily = classifyTaskFamily(text, target);
   const guardTurnkeyMessages = shouldGuardTurnkeyTask(taskFamily, text);
   const bufferedCodexMessages = [];
   const codexOnMessage = guardTurnkeyMessages
