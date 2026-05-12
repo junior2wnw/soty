@@ -1751,6 +1751,9 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 }
 
 function classifyRoutineSourceTask(lower) {
+  if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process/u.test(String(lower || ""))) {
+    return "program-control";
+  }
   const text = String(lower || "");
   if (/script|powershell-скрипт|\.ps1|скрипт/u.test(text)) {
     return "script-task";
@@ -1768,6 +1771,10 @@ function classifyRoutineSourceTask(lower) {
     return "program-control";
   }
   return "";
+}
+
+function isRoutineAgentTaskFamily(family) {
+  return ["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "audio-volume", "audio-mute"].includes(cleanActionToken(family, ""));
 }
 
 function classifySourceCommand(command) {
@@ -3553,10 +3560,10 @@ function codexReasoningEffortForTask(taskFamily, target = null) {
   if (["package-install", "driver-check"].includes(family)) {
     return "high";
   }
-  if (["web-lookup", "script-task"].includes(family)) {
+  if (family === "web-lookup") {
     return "medium";
   }
-  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "power-check", "audio-volume", "audio-mute"].includes(family)) {
+  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "power-check", "audio-volume", "audio-mute"].includes(family)) {
     return "low";
   }
   return target?.id ? "medium" : "low";
@@ -4404,6 +4411,8 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
 
 async function buildAgentRuntimeContext({ text, context = "", source = {}, target = null, sourceTargets = [], sessionRecord = null, jobDir = "" }) {
   const safeSource = sanitizeAgentSource(source);
+  const taskFamily = classifyTaskFamily(text, target);
+  const routineTask = isRoutineAgentTaskFamily(taskFamily);
   const sourceDeviceId = promptInline(bridgeSourceDeviceId(target, safeSource) || safeSource.deviceId || "");
   const targetLabel = promptInline(target?.label || safeSource.preferredTargetLabel || "");
   const targetId = promptInline(target?.id || safeSource.preferredTargetId || "");
@@ -4412,8 +4421,9 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
     .map((item) => `${promptInline(item.label)} (${promptInline(item.id)})${item.access ? " access=true" : ""}`)
     .join("\n");
   return {
+    taskFamily,
     userText: String(text || "").trim().slice(0, maxChatChars),
-    visibleContext: cleanPromptBlock(context, maxAgentContextChars),
+    visibleContext: cleanPromptBlock(context, routineTask ? 3000 : maxAgentContextChars),
     source: {
       tunnelId: promptInline(safeSource.tunnelId),
       tunnelLabel: promptInline(safeSource.tunnelLabel),
@@ -4433,7 +4443,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       mode: codexSessionMode,
       workspaceDir: promptInline(jobDir)
     },
-    memory: await codexLearningMemoryPrompt()
+    memory: (await codexLearningMemoryPrompt()).slice(0, routineTask ? 1400 : 4000)
   };
 }
 
@@ -4478,13 +4488,35 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     return;
   }
   await mkdir(jobDir, { recursive: true });
-  const agents = [
+  const compactRoutine = isRoutineAgentTaskFamily(runtimeContext.taskFamily);
+  const fullAgentLines = [
     "# Soty Codex Runtime",
     "",
     "This is a generated Soty server-Codex workspace. It is not automatically the user's project checkout.",
     "",
     "Operating contract:",
-    "- Read the current prompt's Soty runtime packet before acting, but treat the current user request as the authoritative task.",
+    "- Read the current prompt's Soty runtime packet before acting, but treat the current user request as the authoritative task."
+  ];
+  const agents = (compactRoutine ? [
+    "# Soty Codex Runtime",
+    "",
+    "Routine computer task contract:",
+    "- Treat the current user request as authoritative and answer in the user's language.",
+    "- Use Soty MCP tools for the paired computer; do not use the server shell for the user's PC.",
+    "- For low-risk routine tasks, do not send progress before tools; send one final answer after proof.",
+    "- Use one compact source-scoped PowerShell/Node script when it can do the action and readback together.",
+    "- Program tasks: start/read PID/close only the process you started.",
+    "- Web tasks: use one official/primary source, save only the requested small artifact, cite the URL.",
+    "- File tasks: use a dedicated TEMP folder, verify with one listing/hash/count, avoid profile scans.",
+    "- System tasks: return only requested facts; avoid Event Log, registry crawling, and inventories unless asked.",
+    "- If the target channel fails, check the narrow link once, then give one plain blocker.",
+    "- Keep the visible answer compact and do not mention tools, routes, helpers, MCP, or internal memory.",
+    "- Hidden learning note, only when reusable: `ops-memory: goal=... | actual=... | success=... | env=...`.",
+    "",
+    "Useful local files:",
+    "- SOTY_CONTEXT.md contains the runtime packet for this turn."
+  ] : [
+    ...fullAgentLines,
     "- Answer in the user's language unless they ask otherwise.",
     "- For install, reinstall, repair, reset, recovery, boot-media, flashing, OS, package, service, shell, SSH, device, MCP, Codex skill, skill sync, or operational memory tasks, apply the ops operating contract internally: prove target, act narrowly, verify, learn, and close.",
     "- $ops is one canonical skill at skills/universal-install-ops; `ops` is a name/alias, not a second package copy.",
@@ -4534,7 +4566,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn."
-  ].join("\n");
+  ]).join("\n");
   const context = [
     "# Soty Runtime Packet",
     "",
@@ -4569,8 +4601,36 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     session: { resumed: false, mode: codexSessionMode },
     activeTargets: "",
     visibleContext: cleanPromptBlock(context, maxAgentContextChars),
-    memory: ""
+    memory: "",
+    taskFamily: classifyTaskFamily(body, null)
   };
+  const taskFamily = runtime.taskFamily || classifyTaskFamily(body, runtime.target);
+  if (isRoutineAgentTaskFamily(taskFamily)) {
+    const lines = [
+      "Current user request:",
+      body || "(empty)",
+      "",
+      "Runtime:",
+      `- family: ${taskFamily}`,
+      `- source_device: ${runtime.source?.deviceNick || "unknown"} (${runtime.source?.deviceId || "no-id"})`,
+      `- target: ${runtime.target?.label || "none"} (${runtime.target?.id || "none"})`,
+      "- local_shell_scope: server only; use Soty MCP for the paired computer.",
+      ...agentResponseStylePromptLines(activeAgentResponseStyle),
+      "- fast_rule: solve with the smallest proven route; for routine low-risk tasks send no progress, only final proof.",
+      "- program_rule: one command/script should start, capture PID, close only that PID, and verify closed.",
+      "- web_rule: use one official/primary source, save the requested fact to the requested small file, cite the URL.",
+      "- file_rule: use a dedicated TEMP folder and one verification listing/hash/count.",
+      "- system_rule: one compact PowerShell script; no broad inventory unless asked.",
+      "- output_rule: compact answer, no internal tool/route/helper names.",
+      "",
+      "Learning memory:",
+      runtime.memory || "unavailable",
+      "",
+      "Visible context:",
+      runtime.visibleContext || "none"
+    ];
+    return lines.join("\n").slice(0, 8000);
+  }
   const lines = [
     "Current user request (authoritative):",
     body || "(empty)",
