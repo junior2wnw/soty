@@ -2020,6 +2020,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
       readonly persona?: string;
       readonly version?: string;
       readonly timeoutMs?: number;
+      readonly tailChars?: number;
     };
     try {
       message = JSON.parse(event.data as string) as typeof message;
@@ -2518,12 +2519,16 @@ function runOperatorAccess(message: { readonly id?: string; readonly target?: st
   sendOperatorOutput(requestId, "requested\n", 0);
 }
 
-function runOperatorExport(message: { readonly id?: string }): void {
+function runOperatorExport(message: { readonly id?: string; readonly target?: string; readonly tailChars?: number }): void {
   const requestId = typeof message.id === "string" ? message.id : "";
   if (!requestId) {
     return;
   }
-  sendOperatorOutput(requestId, buildOperatorExport(), 0);
+  const tailChars = Number.isSafeInteger(message.tailChars) ? Number(message.tailChars) : undefined;
+  sendOperatorOutput(requestId, buildOperatorExport({
+    target: typeof message.target === "string" ? message.target : "",
+    ...(tailChars === undefined ? {} : { tailChars })
+  }), 0);
 }
 
 async function runOperatorImport(message: { readonly id?: string; readonly text?: string }): Promise<void> {
@@ -4185,12 +4190,26 @@ function operatorDelay(char: string, speed: string): number {
   return Math.round((base + Math.random() * base) * multiplier);
 }
 
-function buildOperatorExport(): string {
+function buildOperatorExport(options: { readonly target?: string; readonly tailChars?: number } = {}): string {
+  const target = cleanNick(options.target || "");
+  const tailChars = Number.isSafeInteger(options.tailChars)
+    ? Math.max(0, Math.min(200_000, Number(options.tailChars)))
+    : 0;
+  const focused = Boolean(target);
   const local: Record<string, string> = {};
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index) || "";
-    if (key === "device" || key.startsWith("soty:")) {
-      local[key] = localStorage.getItem(key) || "";
+  if (!focused) {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index) || "";
+      if (key === "device" || key.startsWith("soty:")) {
+        local[key] = localStorage.getItem(key) || "";
+      }
+    }
+  } else {
+    for (const key of ["soty:selected:v1", "soty:agent:relay-id"]) {
+      const value = localStorage.getItem(key);
+      if (value) {
+        local[key] = value;
+      }
     }
   }
   const safeDevice = device ? {
@@ -4199,27 +4218,45 @@ function buildOperatorExport(): string {
     publicJwk: device.publicJwk,
     createdAt: device.createdAt
   } : null;
+  const tunnels = loadTunnels();
+  const needle = target.toLowerCase();
+  const exportedTunnels = focused
+    ? tunnels.filter((tunnel) => {
+      const labels = [
+        tunnel.id,
+        cleanNick(tunnel.label),
+        cleanNick(counterpartyLabel(tunnel))
+      ].map((value) => value.toLowerCase());
+      return labels.includes(needle);
+    })
+    : tunnels;
   const payload = {
     schema: "soty.operator-export.v1",
     exportedAt: new Date().toISOString(),
+    focused,
+    target: focused ? target : undefined,
+    tailChars: focused ? tailChars : undefined,
     selectedId,
     device: safeDevice,
     localStorage: local,
-    tunnels: loadTunnels().map((tunnel) => ({
-      ...tunnel,
-      counterpartyLabel: counterpartyLabel(tunnel),
-      text: texts.get(tunnel.id) || "",
-      chess: chessGames.get(tunnel.id) ?? loadStoredChessSnapshot(tunnel.id),
-      files: (files.get(tunnel.id) || []).map((file) => ({
-        id: file.id,
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        nick: file.nick,
-        deviceId: file.deviceId,
-        createdAt: file.createdAt
-      }))
-    }))
+    tunnels: exportedTunnels.map((tunnel) => {
+      const text = texts.get(tunnel.id) || "";
+      return {
+        ...tunnel,
+        counterpartyLabel: counterpartyLabel(tunnel),
+        text: focused && tailChars > 0 ? text.slice(-tailChars) : text,
+        chess: chessGames.get(tunnel.id) ?? loadStoredChessSnapshot(tunnel.id),
+        files: (files.get(tunnel.id) || []).map((file) => ({
+          id: file.id,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          nick: file.nick,
+          deviceId: file.deviceId,
+          createdAt: file.createdAt
+        }))
+      };
+    })
   };
   return `${JSON.stringify(payload, null, 2)}\n`;
 }

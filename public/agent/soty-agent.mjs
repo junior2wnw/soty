@@ -300,7 +300,7 @@ async function handleHttpRequest(request, response) {
     return;
   }
   if (url.pathname === "/operator/export" && (request.method === "GET" || request.method === "POST")) {
-    await handleOperatorHttpExport(response, headers);
+    await handleOperatorHttpExport(request, url, response, headers);
     return;
   }
   if (url.pathname === "/operator/import" && request.method === "POST") {
@@ -2479,15 +2479,33 @@ async function handleOperatorHttpAccess(request, response, headers) {
   });
 }
 
-async function handleOperatorHttpExport(response, headers) {
+async function handleOperatorHttpExport(request, url, response, headers) {
   if (!operatorBridge?.open) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
   }
+  let payload = {};
+  if (request.method === "POST") {
+    try {
+      payload = await readJsonBody(request, 4096);
+    } catch {
+      sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+      return;
+    }
+  }
+  const target = typeof payload.target === "string"
+    ? payload.target.slice(0, 160)
+    : (url.searchParams.get("target") || "").slice(0, 160);
+  const rawTailChars = Number(payload.tailChars ?? url.searchParams.get("tailChars") ?? 0);
+  const tailChars = Number.isSafeInteger(rawTailChars)
+    ? Math.max(0, Math.min(200_000, rawTailChars))
+    : 0;
   const id = registerOperatorRun(response, headers, 60_000);
   sendRaw(operatorBridge, {
     type: "operator.export",
-    id
+    id,
+    target,
+    tailChars
   });
 }
 
