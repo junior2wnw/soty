@@ -1750,8 +1750,32 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
   ], dirname(opsPath));
 }
 
+function classifyRoutineSourceTask(lower) {
+  const text = String(lower || "");
+  if (/script|powershell-скрипт|\.ps1|скрипт/u.test(text)) {
+    return "script-task";
+  }
+  if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)) {
+    return "web-lookup";
+  }
+  if (/uptime|ram|memory|disk|cpu|bits|windows update|памят|диск/u.test(text)) {
+    return "system-check";
+  }
+  if (/temp|file|folder|directory|report\.txt|hash|checksum|файл|папк|отчет|отчёт|создай папку|удали скрипт/u.test(text)) {
+    return "file-work";
+  }
+  if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process|блокнот|калькулятор|процесс|запусти|закрой/u.test(text)) {
+    return "program-control";
+  }
+  return "";
+}
+
 function classifySourceCommand(command) {
   const lower = String(command || "").toLowerCase();
+  const routineFamily = classifyRoutineSourceTask(lower);
+  if (routineFamily) {
+    return routineFamily;
+  }
   if (/utf-?8|unicode|codepage|chcp|outputencoding|inputencoding|windowsidentity|text\.encoding|[Рр]РєСЂР°Рє|кракозябр|кодиров/u.test(lower)) {
     return "encoding-identity";
   }
@@ -3522,7 +3546,20 @@ function codexReasoningEffortForTask(taskFamily, target = null) {
   if (codexDefaultReasoningEffort) {
     return codexDefaultReasoningEffort;
   }
-  return "xhigh";
+  const family = cleanActionToken(taskFamily, "generic");
+  if (family === "windows-reinstall") {
+    return "xhigh";
+  }
+  if (["package-install", "driver-check"].includes(family)) {
+    return "high";
+  }
+  if (["web-lookup", "script-task"].includes(family)) {
+    return "medium";
+  }
+  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "power-check", "audio-volume", "audio-mute"].includes(family)) {
+    return "low";
+  }
+  return target?.id ? "medium" : "low";
 }
 
 function safeCodexReasoningEffort(value) {
@@ -4485,6 +4522,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
     "- Reuse learned routes only when they shorten the current task. For similar system checks, use the shortest proven read-only command plus one proof line; do not repeat broad exploration.",
     "- Speed/quality rule: before using tools, classify the task as direct-answer, read-only probe, reversible change, or long/risky job; take the smallest route that gives proof, and stop as soon as the requested proof is enough.",
+    "- Quiet fast path: for low-risk routine computer tasks expected under 90 seconds, do not send a progress message before tools; send one final answer after the proof.",
     "- Program-management rule: for app/process tasks, prefer one source-scoped process/service/window command with readback; open GUI apps only when the user asks for visible UI, and close only processes you started.",
     "- Web-to-computer rule: when internet lookup is required, use one official or primary source when possible, capture the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
     "- File-work rule: for temporary file tasks, create a dedicated temp folder, use structured PowerShell/Node filesystem APIs, verify with one listing/hash/count, and avoid scanning the user profile unless asked.",
@@ -4573,6 +4611,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
     "- learned_route_compression: if learning memory contains a proven route for the same kind of system check, use the shortest read-only route and answer with the smallest proof; avoid rediscovery.",
     "- speed_quality_rule: classify the request as direct-answer, read-only probe, reversible change, or long/risky job; choose the smallest route that proves the result, then stop.",
+    "- quiet_fast_path_rule: for low-risk routine computer tasks expected under 90 seconds, do not send a progress message before tools; send one final answer after the proof.",
     "- program_management_rule: for app/process/service/window tasks, prefer one source-scoped command with readback; only open visible UI when needed and only close processes this turn started.",
     "- web_to_computer_rule: when internet lookup is required, prefer one official/primary source, extract the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
     "- file_work_rule: use a dedicated temp folder for temporary files, structured filesystem APIs, and one listing/hash/count proof; do not scan user profile trees unless requested.",
