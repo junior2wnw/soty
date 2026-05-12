@@ -174,6 +174,7 @@ const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
 const operatorStartingTunnels = new Set<string>();
 const localAgentRuns = new Map<string, WebSocket>();
 const operatorChatQueues = new Map<string, Promise<void>>();
+const operatorBridgeProtocol = "soty.operator-bridge.v2";
 const agentReplyQueues = new Map<string, Promise<void>>();
 const agentThinking = new Set<string>();
 let agentSourceControlTunnelId = "";
@@ -2001,7 +2002,12 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
   const ws = new WebSocket("ws://127.0.0.1:49424");
   operatorSocket = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: "operator.attach", visible: document.visibilityState === "visible" }));
+    ws.send(JSON.stringify({
+      type: "operator.attach",
+      visible: document.visibilityState === "visible",
+      protocol: operatorBridgeProtocol,
+      capabilities: ["agent-new", "agent-message", "export-tail", "fast-fresh-dialog"]
+    }));
     publishOperatorTargets();
     resumeAgentSourceControl();
   };
@@ -2497,17 +2503,19 @@ async function runOperatorAgentNew(message: { readonly id?: string }): Promise<v
     moveAgentLinkToFreshDialog(previous.id, fresh.id);
   }
   renderApp();
-  const agent = await refreshLocalAgent();
-  if (agent.ok && !agent.relay) {
-    void bindLocalAgentRelay().then((bound) => {
-      if (bound) {
-        void refreshLocalAgent();
-      }
-    });
-  }
-  await ensureOperatorBridge(true);
   publishOperatorTargets();
   sendOperatorOutput(requestId, `agent ${fresh.id}\n`, 0);
+  void (async () => {
+    const agent = await refreshLocalAgent().catch(() => null);
+    if (agent?.ok && !agent.relay) {
+      const bound = await bindLocalAgentRelay().catch(() => false);
+      if (bound) {
+        await refreshLocalAgent().catch(() => null);
+      }
+    }
+    await ensureOperatorBridge(true).catch(() => undefined);
+    publishOperatorTargets();
+  })();
 }
 
 function runOperatorTerminal(message: {
@@ -4282,7 +4290,7 @@ function buildOperatorExport(options: { readonly target?: string; readonly tailC
       return {
         ...tunnel,
         counterpartyLabel: counterpartyLabel(tunnel),
-        text: focused && tailChars > 0 ? text.slice(-tailChars) : text,
+        text: tailChars > 0 ? text.slice(-tailChars) : text,
         chess: chessGames.get(tunnel.id) ?? loadStoredChessSnapshot(tunnel.id),
         files: (files.get(tunnel.id) || []).map((file) => ({
           id: file.id,

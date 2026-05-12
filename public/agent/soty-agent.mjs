@@ -96,6 +96,8 @@ const activeRelayJobs = new Set();
 let learningSyncTimer = null;
 let operatorBridge = null;
 let operatorBridgeVisible = false;
+let operatorBridgeProtocol = "";
+let operatorBridgeCapabilities = [];
 let operatorTargets = [];
 let operatorDeviceId = "";
 let operatorDeviceNick = "";
@@ -232,6 +234,8 @@ async function handleHttpRequest(request, response) {
     sendJson(response, 200, headers, {
       ok: true,
       attached: Boolean(operatorBridge?.open),
+      bridgeProtocol: operatorBridgeProtocol,
+      bridgeCapabilities: operatorBridgeCapabilities,
       targets: operatorTargets
     });
     return;
@@ -284,7 +288,7 @@ async function handleHttpRequest(request, response) {
     return;
   }
   if (url.pathname === "/operator/agent-new" && request.method === "POST") {
-    await handleOperatorHttpAgentNew(response, headers);
+    await handleOperatorHttpAgentNew(request, response, headers);
     return;
   }
   if (url.pathname === "/operator/messages" && request.method === "GET") {
@@ -376,6 +380,10 @@ function handleOperatorMessage(ws, message) {
     }
     operatorBridge = ws;
     operatorBridgeVisible = visible;
+    operatorBridgeProtocol = typeof message.protocol === "string" ? message.protocol.slice(0, 80) : "";
+    operatorBridgeCapabilities = Array.isArray(message.capabilities)
+      ? message.capabilities.filter((item) => typeof item === "string").slice(0, 24).map((item) => item.slice(0, 80))
+      : [];
     sendRaw(ws, { type: "operator.ready" });
     return;
   }
@@ -398,6 +406,8 @@ function cleanupOperatorSocket(ws) {
   if (operatorBridge === ws) {
     operatorBridge = null;
     operatorBridgeVisible = false;
+    operatorBridgeProtocol = "";
+    operatorBridgeCapabilities = [];
     operatorTargets = [];
     operatorDeviceId = "";
     operatorDeviceNick = "";
@@ -2432,12 +2442,19 @@ async function handleOperatorHttpAgentMessage(request, response, headers) {
   });
 }
 
-async function handleOperatorHttpAgentNew(response, headers) {
+async function handleOperatorHttpAgentNew(request, response, headers) {
   if (!operatorBridge?.open) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
   }
-  const id = registerOperatorRun(response, headers, 30_000);
+  let payload = {};
+  try {
+    payload = await readJsonBody(request, 4096);
+  } catch {
+    payload = {};
+  }
+  const timeoutMs = safeRunTimeoutMs(payload.timeoutMs || 120_000);
+  const id = registerOperatorRun(response, headers, timeoutMs);
   sendRaw(operatorBridge, {
     type: "operator.agent-new",
     id
@@ -4467,6 +4484,11 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "- For project work, detect the real project/root before editing. If the project is on the source device, operate through Soty MCP; if it is the server checkout, state that boundary.",
     "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
     "- Reuse learned routes only when they shorten the current task. For similar system checks, use the shortest proven read-only command plus one proof line; do not repeat broad exploration.",
+    "- Speed/quality rule: before using tools, classify the task as direct-answer, read-only probe, reversible change, or long/risky job; take the smallest route that gives proof, and stop as soon as the requested proof is enough.",
+    "- Program-management rule: for app/process tasks, prefer one source-scoped process/service/window command with readback; open GUI apps only when the user asks for visible UI, and close only processes you started.",
+    "- Web-to-computer rule: when internet lookup is required, use one official or primary source when possible, capture the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
+    "- File-work rule: for temporary file tasks, create a dedicated temp folder, use structured PowerShell/Node filesystem APIs, verify with one listing/hash/count, and avoid scanning the user profile unless asked.",
+    "- System-check rule: for Windows/system checks, prefer one compact PowerShell script returning the requested facts; avoid Event Log, registry crawling, and full inventories unless the prompt specifically needs them.",
     "- For simple advice, cooking, planning, or exercise tasks that do not need the paired device, answer directly without tools in the exact shape requested, usually 3-6 concise lines.",
     "- If the user asks for one line, two lines, or only steps, obey that output shape before adding any extra explanation.",
     "- Verify changes with the smallest useful proof, record reusable learning when behavior changes, and keep user-facing explanations simple.",
@@ -4550,6 +4572,11 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- project_rule: detect the real project/root before editing; do not assume this generated workspace is the user's project.",
     "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
     "- learned_route_compression: if learning memory contains a proven route for the same kind of system check, use the shortest read-only route and answer with the smallest proof; avoid rediscovery.",
+    "- speed_quality_rule: classify the request as direct-answer, read-only probe, reversible change, or long/risky job; choose the smallest route that proves the result, then stop.",
+    "- program_management_rule: for app/process/service/window tasks, prefer one source-scoped command with readback; only open visible UI when needed and only close processes this turn started.",
+    "- web_to_computer_rule: when internet lookup is required, prefer one official/primary source, extract the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
+    "- file_work_rule: use a dedicated temp folder for temporary files, structured filesystem APIs, and one listing/hash/count proof; do not scan user profile trees unless requested.",
+    "- system_check_rule: for Windows/system checks, use one compact PowerShell script returning only requested facts; avoid Event Log, registry crawling, and broad inventories unless specifically needed.",
     "- simple_task_rule: recipes, routines, planning, and other non-device advice should not call tools; follow the requested shape exactly and keep the answer compact.",
     "- learning_note_rule: when you discover a reusable solution, failure contour, route fork, or faster proof, append one hidden line starting exactly `ops-memory:` with `goal=... | actual=... | success=... | env=...`. Do not describe that line visibly; it is filtered from chat and stored for future dialogs.",
     "",
@@ -7698,10 +7725,13 @@ async function runControlCli(args) {
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
   if (command === "agent-new" || command === "new-agent-chat") {
+    const parsed = parseCtlOptions(args.slice(1));
     const response = await fetch(`http://127.0.0.1:${port}/operator/agent-new`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}"
+      body: JSON.stringify({
+        ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {})
+      })
     });
     const payload = await response.json();
     if (payload.text) {
