@@ -99,6 +99,10 @@ function buildAutomationToolkits(windowsReinstall) {
       fallbackKernel: "soty_action",
       chat: "lord-sysadmin",
       responseStyle: buildResponseStylePolicy(),
+      diagnostics: {
+        trace: "soty.agent.trace.v1",
+        eval: "soty-agent-eval"
+      },
       terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"]
     },
     toolkits: [

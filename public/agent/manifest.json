@@ -1,7 +1,7 @@
 {
-  "version": "0.3.152",
+  "version": "0.3.153",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "79d20ef07d01e9c64a873e7330e16f75914c87b3e69c8a46754aefe4999fc848",
+  "sha256": "8715067aba9f3613350cedf0289171ec5ae3dfc67d836932b294b7fcdc19da85",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
@@ -58,6 +58,10 @@
         "tone": "brief-sysadmin",
         "maxUserFacingLines": 0,
         "phraseBank": []
+      },
+      "diagnostics": {
+        "trace": "soty.agent.trace.v1",
+        "eval": "soty-agent-eval"
       },
       "terminalStates": [
         "completed",

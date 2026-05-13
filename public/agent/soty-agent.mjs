@@ -8,12 +8,13 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.152";
+const agentVersion = "0.3.153";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
 const codexSessionsPath = join(agentDir, "agent-codex-sessions.json");
 const codexWorkspacesDir = join(agentDir, "codex-workspaces");
+const agentTracesDir = resolve(process.env.SOTY_AGENT_TRACE_DIR || join(agentDir, "agent-traces"));
 const learningOutboxPath = join(agentDir, "learning-outbox.jsonl");
 const learningSentPath = join(agentDir, "learning-sent.jsonl");
 const actionJobsDir = resolve(process.env.SOTY_AGENT_ACTION_JOBS_DIR || join(agentDir, "action-jobs"));
@@ -59,7 +60,12 @@ const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
+const codexDisabled = process.env.SOTY_CODEX_DISABLED === "1";
 const enableFastDirectAnswers = process.env.SOTY_AGENT_ENABLE_FAST_DIRECT === "1";
+const agentTraceEnabled = process.env.SOTY_AGENT_TRACE !== "0";
+const agentTraceFullPrompt = process.env.SOTY_AGENT_TRACE_FULL_PROMPT !== "0";
+const agentTraceRetain = Math.max(10, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_RETAIN || "200", 10) || 200, 5000));
+const agentTraceMaxJsonEvents = Math.max(20, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_MAX_EVENTS || "360", 10) || 360, 5000));
 const codexSessionMode = "soty-lord-capability-memory-v1";
 const agentResponseStyleProfiles = Object.freeze([
   {
@@ -291,6 +297,15 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/agent/reply" && request.method === "POST") {
     await handleAgentReply(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/agent/traces" && request.method === "GET") {
+    await handleAgentTraceList(url, response, headers);
+    return;
+  }
+  const traceMatch = url.pathname.match(/^\/agent\/trace\/([A-Za-z0-9_.-]{12,120})$/u);
+  if (traceMatch && request.method === "GET") {
+    await handleAgentTraceRead(traceMatch[1], response, headers);
     return;
   }
   if (url.pathname === "/agent/relay" && request.method === "POST") {
@@ -1137,6 +1152,328 @@ async function writeJsonAtomic(filePath, value) {
   const tempPath = join(dir, `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(tempPath, filePath);
+}
+
+async function beginAgentTrace({ entrypoint, text, context = "", source = {} }) {
+  if (!agentTraceEnabled) {
+    return null;
+  }
+  try {
+    const startedAt = new Date();
+    const sig = taskSignature(text).replace(/[^a-z0-9_-]+/giu, "-");
+    const traceId = `${startedAt.toISOString().replace(/[-:.TZ]/gu, "").slice(0, 14)}-${sig}-${randomUUID().slice(0, 8)}`;
+    const dir = join(agentTracesDir, traceId);
+    const safeSource = sanitizeAgentSource(source);
+    const trace = {
+      id: traceId,
+      dir,
+      jsonPath: join(dir, "trace.json"),
+      writeQueue: Promise.resolve(),
+      doc: {
+        schema: "soty.agent.trace.v1",
+        traceId,
+        status: "running",
+        version: agentVersion,
+        pid: process.pid,
+        platform: process.platform,
+        startedAt: startedAt.toISOString(),
+        endedAt: "",
+        entrypoint: String(entrypoint || "agent").slice(0, 80),
+        taskSig: taskSignature(text),
+        textHash: hashText(String(text || "")),
+        config: {
+          traceFullPrompt: agentTraceFullPrompt,
+          fastDirectEnabled: enableFastDirectAnswers,
+          codexDisabled,
+          codexFullLocalTools,
+          codexRelayFallback,
+          codexSessionMode,
+          responseStyle: activeAgentResponseStyle.id,
+          maxPromptChars: maxAgentRuntimePromptChars
+        },
+        input: {
+          textChars: String(text || "").length,
+          textPreview: redactTraceString(text, 300),
+          contextChars: String(context || "").length,
+          source: traceValue(safeSource, 1600, 4)
+        },
+        routing: {},
+        codex: {
+          spawned: false,
+          jobDir: "",
+          args: [],
+          eventCount: 0,
+          eventsDropped: 0,
+          lastEvents: [],
+          usage: emptyCodexUsage()
+        },
+        files: [
+          "trace.json",
+          "raw-user.txt",
+          "visible-context.txt"
+        ],
+        steps: [],
+        result: {}
+      }
+    };
+    await mkdir(dir, { recursive: true });
+    await Promise.all([
+      writeFile(join(dir, "raw-user.txt"), `${redactTraceString(text, maxChatChars)}\n`, "utf8"),
+      writeFile(join(dir, "visible-context.txt"), `${redactTraceString(context, maxAgentContextChars)}\n`, "utf8")
+    ]);
+    await writeJsonAtomic(trace.jsonPath, trace.doc);
+    void pruneAgentTraces();
+    return trace;
+  } catch {
+    return null;
+  }
+}
+
+function traceStep(trace, name, details = {}) {
+  if (!trace?.doc) {
+    return;
+  }
+  trace.doc.steps.push({
+    at: new Date().toISOString(),
+    name: String(name || "step").slice(0, 100),
+    details: traceValue(details, 6000, 5)
+  });
+  while (trace.doc.steps.length > 160) {
+    trace.doc.steps.shift();
+  }
+  queueAgentTraceWrite(trace);
+}
+
+function traceRouting(trace, details = {}) {
+  if (!trace?.doc) {
+    return;
+  }
+  trace.doc.routing = {
+    ...trace.doc.routing,
+    ...traceValue(details, 4000, 5)
+  };
+  queueAgentTraceWrite(trace);
+}
+
+function traceCodexEvent(trace, line, event) {
+  if (!trace?.doc) {
+    return;
+  }
+  const codex = trace.doc.codex;
+  codex.eventCount += 1;
+  const record = {
+    at: new Date().toISOString(),
+    type: codexEventType(event),
+    rawChars: String(line || "").length,
+    event: traceValue(event, 2400, 5)
+  };
+  codex.lastEvents.push(record);
+  if (codex.lastEvents.length > agentTraceMaxJsonEvents) {
+    codex.eventsDropped += codex.lastEvents.length - agentTraceMaxJsonEvents;
+    codex.lastEvents = codex.lastEvents.slice(-agentTraceMaxJsonEvents);
+  }
+  if (codex.eventCount === 1 || codex.eventCount % 25 === 0) {
+    queueAgentTraceWrite(trace);
+  }
+}
+
+function codexEventType(event) {
+  if (!event || typeof event !== "object") {
+    return "unknown";
+  }
+  return String(event.type || event.event || event.kind || event.name || event.msg?.type || event.item?.type || "unknown")
+    .replace(/\s+/gu, "-")
+    .slice(0, 120);
+}
+
+async function traceWriteText(trace, name, text, max = 120_000) {
+  if (!trace?.doc || !name) {
+    return;
+  }
+  const safeName = String(name).replace(/[^A-Za-z0-9_.-]+/gu, "-").slice(0, 120);
+  if (!safeName) {
+    return;
+  }
+  const body = redactTraceString(text, max);
+  const filePath = join(trace.dir, safeName);
+  await writeFile(filePath, body.endsWith("\n") ? body : `${body}\n`, "utf8").catch(() => undefined);
+  if (!trace.doc.files.includes(safeName)) {
+    trace.doc.files.push(safeName);
+    queueAgentTraceWrite(trace);
+  }
+}
+
+async function traceWriteJson(trace, name, value) {
+  if (!trace?.doc || !name) {
+    return;
+  }
+  const safeName = String(name).replace(/[^A-Za-z0-9_.-]+/gu, "-").slice(0, 120);
+  if (!safeName) {
+    return;
+  }
+  await writeJsonAtomic(join(trace.dir, safeName), traceValue(value, 80_000, 8)).catch(() => undefined);
+  if (!trace.doc.files.includes(safeName)) {
+    trace.doc.files.push(safeName);
+    queueAgentTraceWrite(trace);
+  }
+}
+
+function queueAgentTraceWrite(trace) {
+  if (!trace?.doc) {
+    return;
+  }
+  trace.writeQueue = Promise.resolve(trace.writeQueue)
+    .catch(() => undefined)
+    .then(() => writeJsonAtomic(trace.jsonPath, trace.doc))
+    .catch(() => undefined);
+}
+
+async function finishAgentTrace(trace, result = {}, status = "") {
+  if (!trace?.doc) {
+    return;
+  }
+  trace.doc.status = status || (result?.ok ? "ok" : "failed");
+  trace.doc.endedAt = new Date().toISOString();
+  trace.doc.durationMs = Date.parse(trace.doc.endedAt) - Date.parse(trace.doc.startedAt);
+  trace.doc.result = traceValue({
+    ok: Boolean(result?.ok),
+    exitCode: Number.isSafeInteger(result?.exitCode) ? result.exitCode : undefined,
+    textChars: String(result?.text || "").length,
+    textPreview: redactTraceString(result?.text || "", 600),
+    messages: Array.isArray(result?.messages) ? result.messages.length : 0,
+    terminal: Array.isArray(result?.terminal) ? result.terminal.length : 0
+  }, 3000, 4);
+  if (result?.text) {
+    await traceWriteText(trace, "final.txt", result.text, maxChatChars);
+  }
+  queueAgentTraceWrite(trace);
+  await trace.writeQueue.catch(() => undefined);
+}
+
+function withTraceId(result, trace) {
+  return trace?.id ? { ...result, traceId: trace.id } : result;
+}
+
+async function pruneAgentTraces() {
+  if (!agentTraceEnabled) {
+    return;
+  }
+  const entries = await readdir(agentTracesDir, { withFileTypes: true }).catch(() => []);
+  const dirs = entries
+    .filter((entry) => entry.isDirectory() && /^[0-9]{14}-/u.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  const remove = dirs.slice(0, Math.max(0, dirs.length - agentTraceRetain));
+  for (const name of remove) {
+    await rm(join(agentTracesDir, name), { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function agentTraceStatus() {
+  return {
+    schema: "soty.agent.trace.v1",
+    enabled: agentTraceEnabled,
+    fullPrompt: agentTraceFullPrompt,
+    retain: agentTraceRetain,
+    maxJsonEvents: agentTraceMaxJsonEvents,
+    dir: agentTracesDir
+  };
+}
+
+async function handleAgentTraceList(url, response, headers) {
+  const limit = Math.max(1, Math.min(Number.parseInt(url.searchParams.get("limit") || "20", 10) || 20, 200));
+  const entries = await readdir(agentTracesDir, { withFileTypes: true }).catch(() => []);
+  const names = entries
+    .filter((entry) => entry.isDirectory() && /^[0-9]{14}-/u.test(entry.name))
+    .map((entry) => entry.name)
+    .sort()
+    .reverse()
+    .slice(0, limit);
+  const traces = [];
+  for (const name of names) {
+    const trace = await readJsonFile(join(agentTracesDir, name, "trace.json"));
+    if (trace) {
+      traces.push({
+        traceId: trace.traceId || name,
+        status: trace.status || "unknown",
+        startedAt: trace.startedAt || "",
+        durationMs: Number.isSafeInteger(trace.durationMs) ? trace.durationMs : undefined,
+        taskSig: trace.taskSig || "",
+        textPreview: trace.input?.textPreview || "",
+        family: trace.routing?.taskFamily || trace.routing?.family || "",
+        route: trace.routing?.route || trace.routing?.finalRoute || "",
+        ok: typeof trace.result?.ok === "boolean" ? trace.result.ok : undefined,
+        exitCode: Number.isSafeInteger(trace.result?.exitCode) ? trace.result.exitCode : undefined,
+        path: join(agentTracesDir, name)
+      });
+    }
+  }
+  sendJson(response, 200, headers, {
+    ok: true,
+    ...agentTraceStatus(),
+    traces
+  });
+}
+
+async function handleAgentTraceRead(traceId, response, headers) {
+  const id = safeAgentTraceId(traceId);
+  if (!id) {
+    sendJson(response, 400, headers, { ok: false, text: "! trace-id" });
+    return;
+  }
+  const trace = await readJsonFile(join(agentTracesDir, id, "trace.json"));
+  if (!trace) {
+    sendJson(response, 404, headers, { ok: false, text: "! trace-not-found" });
+    return;
+  }
+  sendJson(response, 200, headers, {
+    ok: true,
+    trace,
+    path: join(agentTracesDir, id)
+  });
+}
+
+function safeAgentTraceId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_.-]{12,120}$/u.test(text) && !text.includes("..") ? text : "";
+}
+
+function traceValue(value, maxString = 4000, depth = 0) {
+  if (value == null) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return redactTraceString(value, maxString);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (depth <= 0) {
+      return `[array:${value.length}]`;
+    }
+    return value.slice(0, 40).map((item) => traceValue(item, maxString, depth - 1));
+  }
+  if (typeof value === "object") {
+    if (depth <= 0) {
+      return "[object]";
+    }
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, 80)) {
+      out[String(key).slice(0, 120)] = traceValue(item, maxString, depth - 1);
+    }
+    return out;
+  }
+  return String(value).slice(0, 200);
+}
+
+function redactTraceString(value, max = 4000) {
+  return String(value || "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(/(api[_-]?key|authorization|bearer|token|secret|password|passwd|cap_sid)\s*[:=]\s*['"]?[^'"\s]+/giu, "$1=<redacted>")
+    .replace(/\b(?:sk|sess|cap|pat|ghp|github_pat)_[A-Za-z0-9_-]{16,}\b/gu, "<redacted-token>")
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "<redacted-long-token>")
+    .slice(0, Math.max(0, max));
 }
 
 async function readActionJob(jobId) {
@@ -4198,6 +4535,7 @@ async function postAgentRelayReply(id, result) {
       ...(Array.isArray(result.terminal) && result.terminal.length > 0
         ? { terminal: result.terminal.map((item) => String(item || "").slice(0, maxChatChars)).filter(Boolean).slice(-maxCodexDialogMessages) }
         : {}),
+      ...(result.traceId ? { traceId: String(result.traceId).slice(0, 120) } : {}),
       ...(typeof result.exitCode === "number" ? { exitCode: result.exitCode } : {})
     })
   });
@@ -4224,33 +4562,50 @@ async function postAgentRelayEvent(id, message, type = "agent_message") {
 }
 
 async function askCodexForAgentReply(text, context, source = {}, onMessage = null, onTerminal = null) {
-  const fast = await tryAgentRuntimeFastReply({ text, source });
-  if (fast) {
-    return fast;
-  }
-  const codexBin = hasCodexBinary() ? findCodexBinary() : "";
-  if (!codexBin) {
-    const relay = codexRelayFallback
-      ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal)
-      : null;
-    if (relay) {
-      return relay;
-    }
-    return {
-      ok: false,
-      text: "! codex-cli: not found on this computer",
-      exitCode: 126
-    };
-  }
-
-  const codexHome = await preparePersistentStockCodexHome();
-  const childEnv = withAgentToolPath({
-    ...process.env,
-    ...codexNetworkProxyEnv(),
-    CODEX_HOME: codexHome
-  });
-
+  const trace = await beginAgentTrace({ entrypoint: "agent.reply", text, context, source });
   try {
+    traceStep(trace, "agent.start", {
+      codexDisabled,
+      codexProbe: hasCodexBinary(),
+      relayFallback: codexRelayFallback
+    });
+    const fast = await tryAgentRuntimeFastReply({ text, source, trace });
+    if (fast) {
+      traceRouting(trace, { finalRoute: "agent-runtime.fast" });
+      await finishAgentTrace(trace, fast);
+      return withTraceId(fast, trace);
+    }
+    const codexBin = hasCodexBinary() ? findCodexBinary() : "";
+    if (!codexBin) {
+      traceStep(trace, "codex.missing", { codexDisabled, relayFallback: codexRelayFallback });
+      const relay = codexRelayFallback
+        ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal)
+        : null;
+      if (relay) {
+        traceRouting(trace, { finalRoute: "codex.relay-fallback" });
+        await finishAgentTrace(trace, relay);
+        return withTraceId(relay, trace);
+      }
+      const missing = {
+        ok: false,
+        text: "! codex-cli: not found on this computer",
+        exitCode: 126
+      };
+      await finishAgentTrace(trace, missing);
+      return withTraceId(missing, trace);
+    }
+
+    const codexHome = await preparePersistentStockCodexHome();
+    const childEnv = withAgentToolPath({
+      ...process.env,
+      ...codexNetworkProxyEnv(),
+      CODEX_HOME: codexHome
+    });
+    traceStep(trace, "codex.local.ready", {
+      codexBinary: basename(codexBin),
+      codexHome,
+      proxy: Boolean(codexProxyUrl)
+    });
     const local = await runCodexSotySessionTurn({
       codexBin,
       childEnv,
@@ -4258,32 +4613,40 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       context,
       source,
       onMessage,
-      onTerminal
+      onTerminal,
+      trace
     });
     if (shouldUseCodexRelayFallback(local)) {
       const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true });
       if (relay) {
-        return relay;
+        traceRouting(trace, { finalRoute: "codex.relay-fallback-after-local" });
+        await finishAgentTrace(trace, relay);
+        return withTraceId(relay, trace);
       }
     }
-    return local;
+    await finishAgentTrace(trace, local);
+    return withTraceId(local, trace);
   } catch (error) {
     const local = {
       ok: false,
       text: agentFailureText(error instanceof Error ? error.message : String(error)),
       exitCode: 1
     };
+    traceStep(trace, "agent.error", { message: error instanceof Error ? error.message : String(error) });
     if (shouldUseCodexRelayFallback(local)) {
       const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true });
       if (relay) {
-        return relay;
+        traceRouting(trace, { finalRoute: "codex.relay-fallback-after-error" });
+        await finishAgentTrace(trace, relay);
+        return withTraceId(relay, trace);
       }
     }
-    return local;
+    await finishAgentTrace(trace, local);
+    return withTraceId(local, trace);
   }
 }
 
-async function tryAgentRuntimeFastReply({ text, source = {} }) {
+async function tryAgentRuntimeFastReply({ text, source = {}, trace = null }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
   const directFast = tryFastDirectAgentReply({
@@ -4292,13 +4655,21 @@ async function tryAgentRuntimeFastReply({ text, source = {} }) {
     startedAt
   });
   if (directFast) {
+    traceStep(trace, "fast.direct.hit", { enabled: enableFastDirectAnswers });
     return directFast;
   }
   const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = classifyTaskFamily(text, target);
-  return await tryFastRoutineAgentReply({
+  traceRouting(trace, {
+    taskFamily,
+    targetId: target?.id || "",
+    targetLabel: target?.label || "",
+    activeTargets: sourceTargets.length,
+    route: "agent-runtime.fast-check"
+  });
+  const reply = await tryFastRoutineAgentReply({
     text,
     source: safeSource,
     target,
@@ -4306,9 +4677,15 @@ async function tryAgentRuntimeFastReply({ text, source = {} }) {
     startedAt,
     learningContext
   });
+  traceStep(trace, "fast.routine", {
+    taskFamily,
+    hit: Boolean(reply),
+    exitCode: Number.isSafeInteger(reply?.exitCode) ? reply.exitCode : undefined
+  });
+  return reply;
 }
 
-async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal }) {
+async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal, trace = null }) {
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
   const directFast = tryFastDirectAgentReply({
@@ -4325,8 +4702,18 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const taskFamily = classifyTaskFamily(text, target);
   const sessionKey = codexSessionKey(safeSource, target);
   const turnKey = codexTurnDedupeKey(sessionKey, text);
+  traceRouting(trace, {
+    route: "codex.local",
+    taskFamily,
+    targetId: target?.id || "",
+    targetLabel: target?.label || "",
+    activeTargets: sourceTargets.length,
+    sessionKey: hashText(sessionKey).slice(0, 16)
+  });
   if (isDuplicateCodexTurn(turnKey)) {
-    return { ok: true, text: "", messages: [], exitCode: 0 };
+    const duplicate = { ok: true, text: "", messages: [], exitCode: 0 };
+    traceStep(trace, "codex.duplicate-turn", { sessionKey: hashText(sessionKey).slice(0, 16) });
+    return duplicate;
   }
   const reinstallGate = await tryFastWindowsReinstallGateReply({
     text,
@@ -4337,6 +4724,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     learningContext
   });
   if (reinstallGate) {
+    traceRouting(trace, { finalRoute: "agent-runtime.fast-reinstall-preflight" });
+    traceStep(trace, "fast.reinstall-gate.hit", { taskFamily, exitCode: reinstallGate.exitCode });
     return reinstallGate;
   }
   const fastRoutine = await tryFastRoutineAgentReply({
@@ -4348,6 +4737,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     learningContext
   });
   if (fastRoutine) {
+    traceRouting(trace, { finalRoute: "agent-runtime.fast-source-script" });
+    traceStep(trace, "fast.routine-after-codex-check.hit", { taskFamily, exitCode: fastRoutine.exitCode });
     return fastRoutine;
   }
   const sessionRecord = target?.id ? null : usableCodexSessionRecord(persistedCodexSessions[sessionKey]);
@@ -4364,6 +4755,19 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   await writeCodexRuntimeFiles(jobDir, runtimeContext);
   const prompt = buildAgentPrompt(text, context, runtimeContext);
   const outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
+  if (trace?.doc) {
+    trace.doc.codex.jobDir = jobDir;
+  }
+  traceStep(trace, "codex.workspace", {
+    jobDir,
+    resumed: Boolean(sessionRecord?.threadId),
+    promptChars: prompt.length,
+    memoryChars: String(runtimeContext.memory || "").length
+  });
+  await traceWriteJson(trace, "runtime-context.json", runtimeContext);
+  if (agentTraceFullPrompt) {
+    await traceWriteText(trace, "prompt.txt", prompt, maxAgentRuntimePromptChars + 2000);
+  }
   const guardTurnkeyMessages = shouldGuardTurnkeyTask(taskFamily, text);
   const bufferedCodexMessages = [];
   const codexOnMessage = guardTurnkeyMessages
@@ -4382,6 +4786,17 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     threadId: sessionRecord?.threadId || "",
     taskFamily
   });
+  if (trace?.doc) {
+    trace.doc.codex.spawned = true;
+    trace.doc.codex.args = traceValue(args, 8000, 3);
+  }
+  await traceWriteJson(trace, "codex-args.json", {
+    file: basename(codexBin),
+    args,
+    outPath,
+    reasoningEffort: codexReasoningEffortForTask(taskFamily, target),
+    mcpAttached: args.some((item) => String(item).includes("mcp_servers.soty"))
+  });
   const state = {
     threadId: "",
     lastMessage: "",
@@ -4389,7 +4804,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     terminal: [],
     terminalKeys: new Set(),
     learningMarkers: [],
-    usage: emptyCodexUsage()
+    usage: emptyCodexUsage(),
+    trace
   };
   let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal);
   if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
@@ -4400,7 +4816,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       terminal: [],
       terminalKeys: new Set(),
       learningMarkers: [],
-      usage: emptyCodexUsage()
+      usage: emptyCodexUsage(),
+      trace
     };
     const freshArgs = codexSotySessionArgs({
       jobDir,
@@ -4422,6 +4839,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     state.usage = freshState.usage;
   }
   const lastFileRaw = existsSync(outPath) ? await readFile(outPath, "utf8") : "";
+  await traceWriteText(trace, "last-message.txt", lastFileRaw, maxChatChars + 2000);
   pushLearningMarkers(state, extractInternalLearningMarkers(lastFileRaw));
   const lastFromFile = cleanAgentChatReply(lastFileRaw);
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
@@ -4439,6 +4857,12 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   }
   if (result.exitCode === 0) {
     if (!finalText) {
+      traceStep(trace, "codex.no-final-message", {
+        messages: messages.length,
+        stdout: Boolean(result.stdout),
+        stderr: Boolean(result.stderr),
+        usage: state.usage
+      });
       recordLearningReceipt({
         kind: "codex-turn",
         family: taskFamily === "generic" ? "no-final-assistant-message" : taskFamily,
@@ -4493,6 +4917,15 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       durationMs: Date.now() - startedAt,
       ...learningContext
     });
+    if (trace?.doc) {
+      trace.doc.codex.usage = state.usage;
+    }
+    traceRouting(trace, { finalRoute: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume" });
+    traceStep(trace, "codex.ok", {
+      messages: messages.length,
+      terminal: state.terminal.length,
+      usage: state.usage
+    });
     return {
       ok: true,
       text: finalText.slice(0, maxChatChars),
@@ -4501,6 +4934,17 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       exitCode: 0
     };
   }
+  if (trace?.doc) {
+    trace.doc.codex.usage = state.usage;
+  }
+  traceRouting(trace, { finalRoute: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume" });
+  traceStep(trace, "codex.nonzero", {
+    exitCode: result.exitCode || 1,
+    stdout: Boolean(result.stdout),
+    stderr: Boolean(result.stderr),
+    finalText: Boolean(finalText),
+    usage: state.usage
+  });
   recordLearningReceipt({
     kind: "codex-turn",
     family: taskFamily === "generic" ? "codex-cli-nonzero" : taskFamily,
@@ -4968,6 +5412,12 @@ function quoteWindowsCommandArg(value) {
 
 function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, onMessage = null, onTerminal = null) {
   return new Promise((resolve, reject) => {
+    traceStep(state?.trace, "codex.spawn", {
+      file: basename(file || ""),
+      cwd: jobDir || process.cwd(),
+      timeoutMs,
+      inputChars: String(input || "").length
+    });
     const child = spawnCommand(file, args, {
       cwd: jobDir || process.cwd(),
       env,
@@ -4993,6 +5443,14 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       done = true;
       clearTimeout(timer);
       clearTimeout(startupTimer);
+      void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
+      void traceWriteText(state?.trace, "stderr-tail.txt", stderr, 24_000);
+      traceStep(state?.trace, "codex.exit", {
+        exitCode: Number.isSafeInteger(exitCode) ? exitCode : 0,
+        stdoutChars: stdout.length,
+        stderrChars: stderr.length,
+        events: state?.trace?.doc?.codex?.eventCount || 0
+      });
       resolve({
         exitCode: Number.isSafeInteger(exitCode) ? exitCode : 0,
         stdout: stdout.slice(-12_000),
@@ -5004,6 +5462,13 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
         return;
       }
       killProcessTree(child);
+      void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
+      void traceWriteText(state?.trace, "stderr-tail.txt", stderr, 24_000);
+      traceStep(state?.trace, "codex.timeout", {
+        timeoutMs,
+        stdoutChars: stdout.length,
+        stderrChars: stderr.length
+      });
       reject(new Error("timeout"));
     }, Math.max(5000, timeoutMs || 120000));
     const startupTimer = setTimeout(() => {
@@ -5013,6 +5478,11 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       done = true;
       clearTimeout(timer);
       killProcessTree(child);
+      traceStep(state?.trace, "codex.startup-timeout", {
+        timeoutMs: codexStartupTimeoutMs,
+        stdoutChars: stdout.length,
+        stderrChars: stderr.length
+      });
       reject(new Error("codex cold start timeout"));
     }, Math.max(5000, Math.min(codexStartupTimeoutMs, timeoutMs || codexStartupTimeoutMs)));
     child.stdout.on("data", (chunk) => {
@@ -5040,6 +5510,9 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       done = true;
       clearTimeout(timer);
       clearTimeout(startupTimer);
+      traceStep(state?.trace, "codex.spawn-error", {
+        message: error instanceof Error ? error.message : String(error)
+      });
       reject(error);
     });
     child.on("close", finish);
@@ -5057,6 +5530,7 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
   } catch {
     return;
   }
+  traceCodexEvent(state?.trace, text, event);
   mergeCodexUsage(state, extractCodexUsage(event));
   const threadId = codexEventThreadId(event);
   if (threadId) {
@@ -6166,10 +6640,18 @@ function mergedNoProxy(value) {
 }
 
 function findCodexBinary() {
+  if (codexDisabled) {
+    return "";
+  }
   return stockCodexPathCandidates().find((candidate) => candidate && existsSync(candidate)) || "";
 }
 
 function hasCodexBinary() {
+  if (codexDisabled) {
+    cachedCodexProbeAt = Date.now();
+    cachedCodexAvailable = false;
+    return false;
+  }
   const now = Date.now();
   if (now - cachedCodexProbeAt < 30_000) {
     return cachedCodexAvailable;
@@ -9906,6 +10388,7 @@ function runtimeHealth() {
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),
+    trace: agentTraceStatus(),
     learning: learningStatus(),
     opsSkill: opsSkillStatus(),
     automationToolkits: automationToolkitStatus(),

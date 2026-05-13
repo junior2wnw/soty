@@ -40,7 +40,9 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.152");
+      assertEqual(health.body.version, "0.3.153");
+      assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
+      assertEqual(health.body.trace.enabled, true);
       assertEqual(health.body.responseStyle.id, "lord-sysadmin");
       assertEqual(health.body.responseStyle.displayName, "Лорд");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
@@ -50,6 +52,12 @@ async function runScenarios() {
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
       assertEqual(health.body.automationToolkits.defaultKernel, "soty_action");
       assertEqual(health.body.automationToolkits.responseStyle.id, "lord-sysadmin");
+    }],
+    ["trace endpoint lists diagnostic turns", async () => {
+      const traces = await get("/agent/traces?limit=5");
+      assertEqual(traces.status, 200);
+      assertEqual(traces.body.schema, "soty.agent.trace.v1");
+      assert(Array.isArray(traces.body.traces));
     }],
     ["toolkit endpoint exposes universal contract", async () => {
       const toolkits = await get("/operator/toolkits");
@@ -378,6 +386,9 @@ async function runScenarios() {
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
       assert(agent.includes("sourceDeviceHash"));
+      assert(agent.includes("soty.agent.trace.v1"));
+      assert(agent.includes("beginAgentTrace"));
+      assert(agent.includes("/agent/traces"));
       assert(agent.includes("enableFastDirectAnswers"));
       assert(agent.includes("hasExplicitEventLogIntent"));
       assert(agent.includes("shouldRunDeterministicFastRoutine"));
@@ -425,13 +436,15 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.152");
+      assertEqual(manifest.version, "0.3.153");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "soty_toolkit");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "soty_action");
       assertEqual(manifest.automationToolkits.policy.chat, "lord-sysadmin");
+      assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
+      assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
       assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Лорд");
       assertEqual(manifest.automationToolkits.policy.responseStyle.phraseBank.length, 0);
       const universalToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "universal-toolkit");
