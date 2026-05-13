@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.149";
+const agentVersion = "0.3.152";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -33,7 +33,7 @@ const agentInstallId = safeInstallId(persistedAgentConfig.installId) || randomUU
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
 const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
-const maxScriptChars = 1_000_000;
+const maxScriptChars = 8_000_000;
 const maxChatChars = 12_000;
 const maxAgentContextChars = 16_000;
 const maxAgentRuntimePromptChars = 48_000;
@@ -59,26 +59,20 @@ const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
-const codexSessionMode = "stock-openai-codex-cli-full-local-tools-v4-runtime-context";
+const enableFastDirectAnswers = process.env.SOTY_AGENT_ENABLE_FAST_DIRECT === "1";
+const codexSessionMode = "soty-lord-capability-memory-v1";
 const agentResponseStyleProfiles = Object.freeze([
   {
-    id: "sysadmin-short",
-    displayName: "Лорд Роя",
-    base: "bare-facts",
-    tone: "short-diagnostic-sysadmin",
-    maxUserFacingLines: 4,
-    phraseBank: ["щас", "сек", "так", "ага", "вижу", "странно", "лог", "скрин", "конфиг", "доступ", "права", "порт", "dns", "не трогай", "проверь"],
-    promptRules: [
-      "Your visible Soty chat handle is `Лорд Роя`. Use it as identity when needed, but do not sign every message.",
-      "User-facing style: short, dry, diagnostic sysadmin. No sales tone, no long explanations, no emotional performance.",
-      "Write in fragments when natural: `так`, `щас`, `сек`, `ага`, `вижу`, `странно`, `не трогай`, `проверь`.",
-      "Ask for one concrete artifact or action at a time: log, screenshot, config, access, permission, port, dns, reboot.",
-      "A little tired dryness is allowed; blame, insults, and unsafe sarcasm are not. For destructive or nontechnical-user flows, be calmer and extra plain.",
-      "Most user-facing messages should fit in 1-4 short lines. If the work is running, send one short progress signal, then the result or one blocker."
-    ]
+    id: "lord-sysadmin",
+    displayName: "Лорд",
+    base: "agent",
+    tone: "brief-sysadmin",
+    maxUserFacingLines: 0,
+    phraseBank: [],
+    promptRules: []
   }
 ]);
-const defaultAgentResponseStyleId = "sysadmin-short";
+const defaultAgentResponseStyleId = "lord-sysadmin";
 const agentResponseStyleId = safeAgentResponseStyleId(
   process.env.SOTY_AGENT_RESPONSE_STYLE || persistedAgentConfig.responseStyle || defaultAgentResponseStyleId
 );
@@ -465,7 +459,7 @@ async function handleOperatorHttpRun(request, response, headers) {
 async function handleOperatorHttpScript(request, response, headers) {
   let payload;
   try {
-    payload = await readJsonBody(request, 2_200_000);
+    payload = await readJsonBody(request, 12_500_000);
   } catch {
     sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
     return;
@@ -1814,7 +1808,7 @@ function classifyRoutineSourceTask(lower) {
   if (/(?:\bport\b|listener|listen|tcp|udp|netstat|порт|слуша|соединен)/u.test(text)) {
     return "system-check";
   }
-  if (/event log|eventlog|winlog|журнал|событи|ошибк|critical|критич/u.test(text)) {
+  if (hasExplicitEventLogIntent(text)) {
     return "system-check";
   }
   if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process/u.test(text)) {
@@ -1844,6 +1838,88 @@ function classifyRoutineSourceTask(lower) {
     return "program-control";
   }
   return "";
+}
+
+function hasExplicitEventLogIntent(text) {
+  const value = String(text || "").toLowerCase();
+  if (/(?:event\s*log|eventlog|winlog|eventvwr|журнал\s+событи|событи[яй]?\s+windows|windows\s+events|системн\w*\s+журнал)/iu.test(value)) {
+    return true;
+  }
+  const hasErrorWord = /\b(?:errors?|critical|criticals?)\b|ошиб|критич/iu.test(value);
+  if (!hasErrorWord) {
+    return false;
+  }
+  const hasSystemAnchor = /\b(?:windows|system|win)\b|винд|систем|журнал|событ|event|за\s+\d{1,3}\s*(?:h|ч|час)|24\s*(?:h|ч|час)|последн|last\s+\d/iu.test(value);
+  const hasProbeVerb = /\b(?:check|show|list|find|diagnos|inspect)\b|проверь|проверить|посмотри|покажи|найди|выведи|диагност|последн/iu.test(value);
+  return hasSystemAnchor && hasProbeVerb;
+}
+
+function isContextualOrCorrectionMessage(text) {
+  const value = String(text || "").toLowerCase();
+  return /(?:\b(?:same|again|previous|instead|fix|redo|wrong)\b|то\s+же|т[оа]же\s+сам|так\s+же|предыдущ|прошл|снова|ещ[её]|только|исправь|переделай|не\s+то|не\s+туда|ошиб)/iu.test(value);
+}
+
+function isCreativeOrGenerativeMessage(text) {
+  const value = String(text || "").toLowerCase();
+  return /(?:\b(?:generate|draw|image|photo|wallpaper|realistic|ultra|style|prompt)\b|сгенер|генерир|нарис|картинк|изображ|фото|обо[и]|ультрареал|реалист|стил|промпт)/iu.test(value);
+}
+
+function hasExplicitRoutineIntent(text) {
+  const value = String(text || "").toLowerCase();
+  return /(?:\b(?:check|show|list|find|diagnos|inspect|open|start|close|create|archive|count|set|turn|run|launch)\b|проверь|проверить|посмотри|покажи|найди|узнай|выведи|диагност|открой|запусти|закрой|создай|заархивируй|посчитай|сколько|какой|какая|поставь|включи|выключи)/iu.test(value);
+}
+
+function hasRoutineTechnicalAnchor(text, family, kind = "") {
+  const value = String(text || "").toLowerCase();
+  const normalizedFamily = cleanActionToken(family, "");
+  const normalizedKind = cleanActionToken(kind, "");
+  if (normalizedKind === "system-eventlog-critical") {
+    return hasExplicitEventLogIntent(value);
+  }
+  if (normalizedFamily === "driver-check") {
+    return /driver|pnputil|devmgmt|device manager|problem device|драйвер|диспетчер|устройств|pnp/iu.test(value);
+  }
+  if (normalizedFamily === "power-check") {
+    return /battery|powercfg|sleep|lid|power plan|заряд|батаре|питани|сон|крышк/iu.test(value);
+  }
+  if (normalizedFamily === "software-check") {
+    return /winget|where\.exe|where\s+|which\s+|installed|version|верси|установлен|наличи|программ|приложени|git|node|npm|python|pwsh|powershell/iu.test(value);
+  }
+  if (normalizedFamily === "program-control") {
+    return /notepad|calc|calculator|paint|process|pid|start-process|stop-process|блокнот|калькулятор|процесс/iu.test(value);
+  }
+  if (normalizedFamily === "file-work") {
+    return /temp|tmp|file|folder|directory|report\.txt|hash|checksum|zip|archive|compress|файл|папк|архив|отчет|отчёт/iu.test(value);
+  }
+  if (normalizedFamily === "web-lookup") {
+    return /internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell|stable/iu.test(value);
+  }
+  if (normalizedFamily === "script-task") {
+    return /script|powershell|\.ps1|скрипт/iu.test(value);
+  }
+  if (["system-check", "service-check", "identity-probe"].includes(normalizedFamily)) {
+    return /(?:\bport\b|listener|listen|tcp|udp|netstat|uptime|ram|memory|disk|cpu|bits|windows update|ipv4|ip address|gateway|dns|defender|firewall|service|служб|порт|памят|диск|шлюз|сеть|защит|брандмауэр)/iu.test(value)
+      || hasExplicitEventLogIntent(value);
+  }
+  return false;
+}
+
+function shouldRunDeterministicFastRoutine(text, spec) {
+  if (!spec) {
+    return false;
+  }
+  if (cleanActionToken(spec.kind, "") === "system-eventlog-critical") {
+    return hasExplicitEventLogIntent(text);
+  }
+  if (isCreativeOrGenerativeMessage(text)) {
+    return false;
+  }
+  const explicit = hasExplicitRoutineIntent(text);
+  const anchored = hasRoutineTechnicalAnchor(text, spec.family, spec.kind);
+  if (isContextualOrCorrectionMessage(text) && !explicit && !anchored) {
+    return false;
+  }
+  return explicit || anchored;
 }
 
 function isRoutineAgentTaskFamily(family) {
@@ -1887,6 +1963,9 @@ function classifySourceCommand(command) {
 }
 
 function tryFastDirectAgentReply({ text, source, startedAt }) {
+  if (!enableFastDirectAnswers) {
+    return null;
+  }
   const spec = fastDirectAnswerSpec(text);
   if (!spec) {
     return null;
@@ -1957,6 +2036,9 @@ function fastRequestedStepCount(text, fallback) {
 async function tryFastRoutineAgentReply({ text, source, target, taskFamily, startedAt, learningContext }) {
   const spec = fastRoutineSpecForTask(text, taskFamily);
   if (!spec || !target?.id) {
+    return null;
+  }
+  if (!shouldRunDeterministicFastRoutine(text, spec)) {
     return null;
   }
   const deviceId = agentSourceDeviceId(target.id) || bridgeSourceDeviceId(target, source);
@@ -2040,7 +2122,23 @@ async function tryFastWindowsReinstallGateReply({ text, source, target, taskFami
     return null;
   }
   const blockers = reinstallPreflightBlockers(parsed);
-  const finalText = formatFastWindowsReinstallPreflight(parsed, target, blockers);
+  const hardBlockers = reinstallHardPreflightBlockers(parsed, blockers);
+  if (hardBlockers.length === 0) {
+    recordLearningReceipt({
+      kind: "agent-runtime",
+      family: "windows-reinstall",
+      result: "partial",
+      route: "agent-runtime.fast-reinstall-preflight",
+      commandSig: commandSignature("fast-windows-reinstall-preflight", "windows-reinstall"),
+      taskSig: taskSignature(text),
+      proof: `exitCode=${Number.isSafeInteger(result?.exitCode) ? result.exitCode : 0}; action=preflight; destructive=false; handoff=codex-agent; recoverable=${blockers.join(",").slice(0, 180)}; tokens=actual; input=0; output=0; total=0; cached=0`,
+      exitCode: 0,
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
+    return null;
+  }
+  const finalText = formatFastWindowsReinstallPreflight(parsed, target, hardBlockers);
   recordLearningReceipt({
     kind: "agent-runtime",
     family: "windows-reinstall",
@@ -2048,7 +2146,7 @@ async function tryFastWindowsReinstallGateReply({ text, source, target, taskFami
     route: "agent-runtime.fast-reinstall-preflight",
     commandSig: commandSignature("fast-windows-reinstall-preflight", "windows-reinstall"),
     taskSig: taskSignature(text),
-    proof: `exitCode=${Number.isSafeInteger(result?.exitCode) ? result.exitCode : 0}; action=preflight; destructive=false; final=nonempty; quality=pass; qualityScore=92; blockers=${blockers.join(",").slice(0, 180)}; tokens=actual; input=0; output=0; total=0; cached=0`,
+    proof: `exitCode=${Number.isSafeInteger(result?.exitCode) ? result.exitCode : 0}; action=preflight; destructive=false; final=nonempty; quality=pass; qualityScore=92; blockers=${hardBlockers.join(",").slice(0, 180)}; tokens=actual; input=0; output=0; total=0; cached=0`,
     exitCode: 0,
     durationMs: Date.now() - startedAt,
     ...learningContext
@@ -2078,7 +2176,7 @@ function fastRoutineSpecForTask(text, taskFamily) {
   if (taskFamily === "system-check" && /(?:\bport\b|listener|listen|tcp|udp|netstat|порт|слуша|соединен)/iu.test(lower)) {
     return fastRoutinePortSpec(lower);
   }
-  if (taskFamily === "system-check" && /event log|eventlog|winlog|журнал|событи|ошибк|critical|критич/iu.test(lower)) {
+  if (taskFamily === "system-check" && hasExplicitEventLogIntent(lower)) {
     return fastRoutineEventLogSpec();
   }
   if (taskFamily === "file-work" && /(zip|archive|compress|архив|сожм|упак)/iu.test(lower) && /temp|tmp|врем/iu.test(lower)) {
@@ -2818,6 +2916,27 @@ function reinstallPreflightBlockers(data) {
     blockers.push("install-media-not-ready");
   }
   return Array.from(new Set(blockers)).slice(0, 8);
+}
+
+function reinstallHardPreflightBlockers(data, blockers) {
+  const hard = [];
+  const values = new Set((Array.isArray(blockers) ? blockers : []).map((item) => String(item || "").trim()).filter(Boolean));
+  for (const blocker of ["not-elevated", "usb-not-found", "usb-not-removable", "usb-free-space-low"]) {
+    if (values.has(blocker)) {
+      hard.push(blocker);
+    }
+  }
+  if (hard.length === 0 && data?.error) {
+    hard.push("preflight-error");
+  }
+  if (hard.length === 0 && data?.ok === false) {
+    for (const blocker of values) {
+      if (blocker !== "backup-not-ready" && blocker !== "install-media-not-ready") {
+        hard.push(blocker);
+      }
+    }
+  }
+  return Array.from(new Set(hard)).slice(0, 8);
 }
 
 function formatFastWindowsReinstallPreflight(data, target, blockers) {
@@ -3766,8 +3885,43 @@ function isActionableTargetOperatorMessage(item) {
     return false;
   }
   const directAgentMention = /(?:^|[\s,.:;!?])(?:агент|соты|лорд\s+роя|codex)(?:$|[\s,.:;!?])/iu.test(text);
+  if (!directAgentMention && isLikelyAgentStatusQuote(text)) {
+    return false;
+  }
   const highConfidenceDeviceTask = /(?:переустанов\p{L}*|перестанов\p{L}*|винд\p{L}*|windows|win11|установочн\p{L}*\s+флеш\p{L}*|флеш\p{L}*.*винд\p{L}*|стираем\s+вс[её]|стереть\s+вс[её]|формат\p{L}*|бэкап\p{L}*|резервн\p{L}*\s+коп\p{L}*|\b(?:backup|reinstall|windows\s+reinstall|factory\s+reset|format)\b)/iu.test(text);
   return directAgentMention || highConfidenceDeviceTask;
+}
+
+function isLikelyAgentStatusQuote(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return false;
+  }
+  const statusStart = /^(?:reinstall|reset)\b.{0,120}\b(?:not started|did not start)\b/iu.test(value);
+  const commandStart = !statusStart && /^(?:переустанови|переустановить|снеси|сотри|стереть|форматируй|подготовь|запусти|продолжай|готово\b|reinstall|reset|format|prepare|start|continue)\b/iu.test(value);
+  if (commandStart) {
+    return false;
+  }
+  const lines = value
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/^>\s?/u, "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  if (lines.length === 0) {
+    return false;
+  }
+  const joined = lines.join("\n");
+  const markers = [
+    /^(?:переустановку|переустановка|windows reinstall|reinstall)(?:$|[\s,.:;!?]).{0,120}(?:не начал|не начата|не запускал|not started|did not start)\b/iu,
+    /^проверил безопасно\b/iu,
+    /^блокер\s*:/iu,
+    /\b(?:install-media-not-ready|backup-not-ready|not-elevated|usb-not-found|usb-not-removable|usb-free-space-low)\b/iu,
+    /\bдиск\s+windows\s+не\s+трогал\b/iu,
+    /^blocker\s*:/iu,
+    /\bwindows\s+disk\b.{0,80}\b(?:not touched|untouched)\b/iu
+  ];
+  const hits = markers.reduce((count, pattern) => count + (pattern.test(joined) ? 1 : 0), 0);
+  return hits >= 2 || (markers[0].test(lines[0] || "") && hits >= 1);
 }
 
 function isDuplicateAgentOperatorMessage(item) {
@@ -4144,17 +4298,6 @@ async function tryAgentRuntimeFastReply({ text, source = {} }) {
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = classifyTaskFamily(text, target);
-  const reinstallGate = await tryFastWindowsReinstallGateReply({
-    text,
-    source: safeSource,
-    target,
-    taskFamily,
-    startedAt,
-    learningContext
-  });
-  if (reinstallGate) {
-    return reinstallGate;
-  }
   return await tryFastRoutineAgentReply({
     text,
     source: safeSource,
@@ -4659,7 +4802,7 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   if (attachSotyMcp) {
     args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
     args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_skill_read"]) {
+    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_image", "soty_skill_read"]) {
       args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
     }
   }
@@ -4690,7 +4833,7 @@ function codexReasoningEffortForTask(taskFamily, target = null) {
   if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(family)) {
     return "low";
   }
-  return target?.id ? "medium" : "low";
+  return "medium";
 }
 
 function safeCodexReasoningEffort(value) {
@@ -4709,9 +4852,12 @@ function agentResponseStyleProfile(id = agentResponseStyleId) {
 
 function agentResponseStylePromptLines(profile = activeAgentResponseStyle) {
   const rules = Array.isArray(profile?.promptRules) ? profile.promptRules : [];
+  const maxLines = Number.isSafeInteger(profile?.maxUserFacingLines) && profile.maxUserFacingLines > 0
+    ? `; max_user_facing_lines=${profile.maxUserFacingLines}`
+    : "";
   return [
-    `- response_style: ${profile.id}; base=${profile.base}; tone=${profile.tone}; max_user_facing_lines=${profile.maxUserFacingLines}`,
-    `- response_identity: visible chat handle is ${profile.displayName}. Use this name when asked who you are; do not sign every message.`,
+    `- response_style: ${profile.id}; base=${profile.base}; tone=${profile.tone}${maxLines}`,
+    `- response_identity: visible chat handle is ${profile.displayName}. Use this name when asked who you are.`,
     ...rules.map((rule, index) => `- response_style_rule_${index + 1}: ${rule}`)
   ];
 }
@@ -5610,67 +5756,26 @@ function runtimeTargetScore(target, preferredId) {
   return score;
 }
 
+function sotyRuntimeHints() {
+  return [
+    "- Capabilities: linked-device file/browser/desktop/audio/image tools, durable jobs, visible context, reusable memory.",
+    "- Priority: quality, speed, token economy, and reusable sanitized memory. Hidden memory line: `soty-memory:`."
+  ];
+}
+
 async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
   if (!jobDir) {
     return;
   }
   await mkdir(jobDir, { recursive: true });
   const agents = [
-    "# Soty Codex Runtime",
+    "# Soty Runtime",
     "",
-    "This is a generated Soty server-Codex workspace. It is not automatically the user's project checkout.",
+    "Generated Soty workspace. It is not automatically the user's project checkout.",
     "",
-    "Operating contract:",
-    "- Read the current prompt's Soty runtime packet before acting, but treat the current user request as the authoritative task.",
-    "- Answer in the user's language unless they ask otherwise.",
-    "- For install, reinstall, repair, reset, recovery, boot-media, flashing, OS, package, service, shell, SSH, device, MCP, Codex skill, skill sync, or operational memory tasks, apply the ops operating contract internally: prove target, act narrowly, verify, learn, and close.",
-    "- $ops is one canonical skill at skills/universal-install-ops; `ops` is a name/alias, not a second package copy.",
-    "- If the $ops body is needed, use the Soty MCP tool `soty_skill_read` with skill `ops` and path `SKILL.md`.",
-    "- Keep $ops, skill routing, route selection, helper names, preflight/gate language, MCP names, and bridge/source-scoped mechanics internal unless the user explicitly asks for technical details.",
-    "- In Soty chat, do not announce skills, $ops, routes, helpers, MCP tool names, or source-scoped mechanics; show the user only the action, result, or one plain blocker.",
+    "Operating model:",
+    ...sotyRuntimeHints(),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
-    "- Do not think aloud in Soty chat. User-facing messages should be bare facts: one short action started if needed, one exact question/confirmation, one blocker, or one completion proof.",
-    "- Do not show raw tool errors or codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets in user-facing chat; translate them into one plain sentence.",
-    "- Before tools, either act silently or send one short plain-language progress line. Do not narrate every probe, retry, helper, memory lookup, download poll, DISM phase, or script-internal wait.",
-    "- Toolkit contract: for repeated, long, or lifecycle operations, use a first-class toolkit entrypoint when one exists. If no toolkit exists, use `soty_action` as the durable generic kernel and promote repeated safe automation into a manifest-pinned toolkit instead of embedding long one-off scripts in the prompt.",
-    "- The local shell belongs to the server agent runtime. Use it only for server/runtime/repo work that the prompt clearly targets.",
-    "- For work on a paired user device, use Soty MCP tools through `soty_toolkit` first. `soty_reinstall` is the first-class Windows reinstall toolkit; `soty_action` is the low-level durable kernel; `soty_run` and `soty_script` are low-level fallbacks for tiny probes only.",
-    "- If `target.id` is set from a device chat, that device is the only intended target. If it has no access or no source device id, request/prove access for that target once or name that blocker; never silently fall back to the server runtime or the message author's local PC.",
-    "- Use `soty_toolkit` or `soty_action` for installs, downloads, repairs, scans, staged scripts, destructive work, and any operation that may hang. Keep the returned jobId, poll status, and stop the job if it is stuck or the user asks to stop.",
-    "- Turnkey terminal rule: after starting a background job, download, scan, install, repair, backup, media prepare, reset, or reinstall step, do not send a final answer while it is merely running. Continue monitoring until it finishes, fails with a blocker, or needs one specific user input.",
-    "- Large-download rule: bad internet is expected. For installer/media downloads, preserve partial files, resume from existing bytes, and treat a growing partial file or active download process as progress, not as a completed answer or unstable connection.",
-    "- If a live-waiting tool reports progress internally, let it run. Do not replace it with repeated manual polling or a final message such as `I'll continue later`, `when it finishes`, or `preparation is still running` unless the user explicitly asked for background mode.",
-    "- For reinstall/media waits, do not use the local shell (`sleep`, `timeout`, loops) as a timer. Call `soty_reinstall` with action=`status` and waitMs instead, so the wait stays inside the toolkit and does not show terminal noise to the user.",
-    "- Use `soty_link_status` after any source/relay failure and before claiming the PC connection is unstable; distinguish a healthy short link from a failed long command/job route.",
-    "- For Windows reinstall and other high/destructive actions, call `soty_action` with `detached: true` and a stable idempotencyKey, then poll `soty_action_status`; do not report target channel loss until the job status and one short channel recheck prove it.",
-    "- Use `soty_script` with `shell: \"powershell\"` for any PowerShell variables, pipelines, semicolons, or multi-step checks. Reserve `soty_run` for trivial one-line commands.",
-    "- If a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then name one plain blocker instead of continuing through the local server shell.",
-    "- For quick identity, health, and readiness probes, pass a short timeoutMs such as 15000-45000. Reserve very long timeoutMs values only for real installs, downloads, repairs, scans, or staged scripts after the target is proven.",
-    "- For destructive or long device work such as format, diskpart, robocopy, dism, installers, downloads, reset, or reboot, issue exactly one `soty_action` at a time; poll/stop that job before starting any second write, format, reset, or reboot command.",
-    "- Do not use the local shell for target-device actions. If the target device is missing or a Soty tool fails, repair or prove the narrow channel once, then name one plain blocker and one next action.",
-    "- For Soty-managed clean Windows reinstall, use `soty_reinstall` first and let its managed script run the direct path: preflight, prepare, status until ready/backupProof are proven, ask the exact confirmation phrase, then arm. Do not manually crawl /agent/manifest.json, ready.json, or backup-proof.json with generic tools unless `soty_reinstall` is unavailable.",
-    "- For Soty-managed clean Windows reinstall, the happy path must prove the machine worker, current manifest script hashes, backupProof, install media, unattended local admin account named `Соты`, password mode `blank-no-password`, Autounattend.xml, OEM SetupComplete, and postinstall restore. Do not use Media Creation Tool, Windows Settings reset, generic installer GUI, or Shift+F10/localonly as the planned path.",
-    "- For Soty-managed Windows reinstall, the managed local account must be passwordless by default. Do not pass ManagedUserPassword or AllowTemporaryManagedPassword unless the user explicitly asks for a Windows password; if the user forbids passwords, require ready.managedUserPasswordMode=`blank-no-password` before arming.",
-    "- Before any reinstall arm/reboot, backupProof must show backupRoot, Wi-Fi export result, exported drivers, Soty restore/postinstall artifacts, root Autounattend.xml, and OEM SetupComplete fallback. If those artifacts are missing, repair preparation instead of asking the user to click OOBE screens.",
-    "- After a managed reinstall arm result says `rebooting=true`, do not run quick hostname/health probes against the rebooting target; tell the user the connection may drop while Windows is being reinstalled and wait for the designed return path.",
-    "- For Windows reinstall/reset, do not ask for destructive confirmations until target identity, control channel, backup/data intent, USB scope if needed, BitLocker/recovery safety, and return path are proven. Ask at most one plain question at a time.",
-    "- If a Windows reinstall/reset is blocked only because the target Soty channel is unavailable, answer in no more than three short sentences: `Переустановку не начал. Я пока не вижу <device> через Soty. Открой/перезапусти Soty Agent на этом ПК и напиши «готово».`",
-    "- For project work, detect the real project/root before editing. If the project is on the source device, operate through Soty MCP; if it is the server checkout, state that boundary.",
-    "- Preserve multi-turn continuity: use the resumed session, the visible Soty shared-text context, and the learning memory snapshot.",
-    "- Reuse learned routes only when they shorten the current task. For similar system checks, use the shortest proven read-only command plus one proof line; do not repeat broad exploration.",
-    "- Speed/quality rule: before using tools, classify the task as direct-answer, read-only probe, reversible change, or long/risky job; take the smallest route that gives proof, and stop as soon as the requested proof is enough.",
-    "- Pivot rule: keep a tiny execution state in your head: current goal, target, reusable artifacts, risk, proof, and next blocker. If the user changes direction, reuse the still-valid artifacts and continue from the nearest safe point instead of restarting discovery.",
-    "- Reuse-capsule rule: when a script or command pattern may help different future tasks, give the action a stable `reuseKey`, `scriptUse`, `successCriteria`, and small `contextFingerprint`. Treat these as portable route capsules, not one-dialog trivia.",
-    "- Optimization rule: at every tool boundary prefer the smaller action that preserves or improves proof quality. If a big script can be replaced by a targeted helper with the same proof, use the targeted helper and record the improvement.",
-    "- Quiet fast path: for low-risk routine computer tasks expected under 90 seconds, do not send a progress message before tools; send one final answer after the proof.",
-    "- Program-management rule: for app/process tasks, prefer one source-scoped process/service/window command with readback; open GUI apps only when the user asks for visible UI, and close only processes you started.",
-    "- Web-to-computer rule: when internet lookup is required, use one official or primary source when possible, capture the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
-    "- File-work rule: for temporary file tasks, create a dedicated temp folder, use structured PowerShell/Node filesystem APIs, verify with one listing/hash/count, and avoid scanning the user profile unless asked.",
-    "- System-check rule: for Windows/system checks, prefer one compact PowerShell script returning the requested facts; avoid Event Log, registry crawling, and full inventories unless the prompt specifically needs them.",
-    "- For simple advice, cooking, planning, or exercise tasks that do not need the paired device, answer directly without tools in the exact shape requested, usually 3-6 concise lines.",
-    "- If the user asks for one line, two lines, or only steps, obey that output shape before adding any extra explanation.",
-    "- Verify changes with the smallest useful proof, record reusable learning when behavior changes, and keep user-facing explanations simple.",
-    "- Learning note rule: when a task produces a reusable lesson for future dialogs, append exactly one hidden line starting `ops-memory:` with `goal=... | actual=... | success=... | env=...`. It is filtered from chat and stored as learning memory.",
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn."
@@ -5722,43 +5827,8 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     `- source_device: ${runtime.source?.deviceNick || "unknown"} (${runtime.source?.deviceId || "no-id"})`,
     `- target: ${runtime.target?.label || "none"} (${runtime.target?.id || "none"})`,
     `- target_source_device_id: ${runtime.target?.sourceDeviceId || "none"}`,
-    "- local_shell_scope: server agent runtime only; use Soty MCP for paired device work.",
-    "- ops_rule: apply the ops operating contract internally for system/device/install/repair/package/service/skill/memory work; read it with soty_skill_read skill=ops path=SKILL.md only when detailed route context is needed.",
-    "- communication_rule: keep $ops/skills/router/helper/preflight/gate/MCP/bridge/source-scoped details internal; answer through the active response style only.",
+    ...sotyRuntimeHints(),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
-    "- no_thinking_aloud_rule: do not narrate internal reasoning, probes, polls, retries, or script phases; show only bare facts, one needed question, one blocker, or completion proof.",
-    "- error_translation_rule: do not show raw tool errors/codes such as agent-source 404, exitCode, timeoutMs, stack traces, helper names, or JSON snippets; translate to a human sentence.",
-    "- progress_rule: do not narrate every probe or retry; send at most one short progress line before a long wait, then the result or one blocker.",
-    "- toolkit_rule: repeated, long, lifecycle, or console/software work should enter through `soty_toolkit` first. Use a first-class toolkit when available; otherwise use the durable-action kernel and promote repeated safe patterns into manifest-pinned toolkit code/tests, not prompt-local long scripts.",
-    "- toolkit_quality_rule: every toolkit step must have a phase, durable status/proof, a terminal state, and one next action/blocker; chat gets the distilled fact only.",
-    "- action_tool_rule: use soty_toolkit or soty_action for installs, downloads, repairs, scans, destructive work, staged scripts, or anything that may hang; poll status and stop when needed.",
-    "- turnkey_terminal_rule: never final-answer with a target job still running unless the user explicitly requested background mode. The only valid final states are completed, failed/blocked with one concrete next user action, or waiting for one explicit user confirmation/input.",
-    "- large_download_rule: interrupted media downloads must resume from existing partial bytes. A growing .download file or active curl/BITS/PowerShell download is progress; continue watching instead of final-answering.",
-    "- link_visibility_rule: when a Soty source tool fails, inspect `soty_link_status`; if short link/source status is healthy, report the specific failed route/job instead of saying the PC connection is unstable.",
-    "- detached_action_rule: for high/destructive target work, use the first-class tool when one exists; otherwise call soty_action detached:true with a stable idempotencyKey and poll status. Do not treat a long job as channel loss without checking durable status.",
-    "- powershell_tool_rule: use soty_script with shell=\"powershell\" for short PowerShell variables, semicolons, pipelines, or multi-step checks. Use soty_run only for trivial one-line commands.",
-    "- target_failure_rule: if a Soty target tool returns missing target, timeout, malformed command output, or nonzero exit, repair or prove that exact target channel once, then give one plain blocker; do not continue through the local server shell unless the server/runtime is explicitly the target.",
-    "- timeout_rule: use timeoutMs 15000-45000 for quick identity/health/readiness probes; use very long timeoutMs only for real long-running jobs after the target is proven.",
-    "- serial_long_job_rule: for destructive or long target work, call only one soty_action write/format/reset/reboot job at a time; poll/stop it or name a blocker before launching another.",
-    "- managed_reinstall_tool_rule: clean Windows reinstall through Soty must use soty_reinstall preflight/prepare/status/arm first; it bootstraps one versioned managed script and passes flags to it. Generic manifest crawling, soty_file ready.json reads, and hand-written prepare wrappers are fallback only when the tool is unavailable.",
-    "- managed_reinstall_wait_rule: after soty_reinstall prepare returns status=running, do not use exec_command sleep or local shell waiting. Call soty_reinstall status with waitMs from the suggested nextTool and continue until ready, blocked, or confirmation is required.",
-    "- managed_reinstall_rule: clean Windows reinstall through Soty must use the managed prepare/ready/backupProof/arm flow from the current /agent/manifest.json windowsReinstall URLs with SHA-256 verification and a local admin account named `Соты`; manual OOBE, MCT GUI, Settings reset, or Shift+F10 local account steps are recovery fallbacks, not the normal answer.",
-    "- managed_password_rule: default Soty managed reinstall account is passwordless; do not generate or pass a temporary password unless explicitly authorized. If passwords were forbidden, arm only when ready.managedUserPasswordMode is `blank-no-password`.",
-    "- backup_proof_rule: before asking for the destructive reinstall phrase, prove backupProof with backup root, Wi-Fi profile export result, driver export result, Soty restore/postinstall assets, Autounattend.xml, and OEM SetupComplete fallback.",
-    "- post_arm_rule: after a managed reinstall arm result says rebooting=true, stop probing that target until the expected post-reboot return path is due; do not spend a minute proving the machine is rebooting.",
-    "- reinstall_rule: for Windows reinstall/reset, ask at most one plain question at a time and do not ask for destructive confirmation until control, backup/data intent, USB scope, BitLocker/recovery safety, and return path are proven.",
-    "- missing_channel_reinstall_rule: if reinstall/reset is blocked only by an unavailable target Soty channel, answer in <=3 short sentences: not started; cannot see <device> through Soty; open/restart Soty Agent there and reply ready.",
-    "- project_rule: detect the real project/root before editing; do not assume this generated workspace is the user's project.",
-    "- continuity_rule: use the visible shared-text context and resumed session; do not answer from only the latest sentence when context is present.",
-    "- learned_route_compression: if learning memory contains a proven route for the same kind of system check, use the shortest read-only route and answer with the smallest proof; avoid rediscovery.",
-    "- speed_quality_rule: classify the request as direct-answer, read-only probe, reversible change, or long/risky job; choose the smallest route that proves the result, then stop.",
-    "- quiet_fast_path_rule: for low-risk routine computer tasks expected under 90 seconds, do not send a progress message before tools; send one final answer after the proof.",
-    "- program_management_rule: for app/process/service/window tasks, prefer one source-scoped command with readback; only open visible UI when needed and only close processes this turn started.",
-    "- web_to_computer_rule: when internet lookup is required, prefer one official/primary source, extract the exact useful fact, then apply or save only the requested small artifact on the paired computer.",
-    "- file_work_rule: use a dedicated temp folder for temporary files, structured filesystem APIs, and one listing/hash/count proof; do not scan user profile trees unless requested.",
-    "- system_check_rule: for Windows/system checks, use one compact PowerShell script returning only requested facts; avoid Event Log, registry crawling, and broad inventories unless specifically needed.",
-    "- simple_task_rule: recipes, routines, planning, and other non-device advice should not call tools; follow the requested shape exactly and keep the answer compact.",
-    "- learning_note_rule: when you discover a reusable solution, failure contour, route fork, or faster proof, append one hidden line starting exactly `ops-memory:` with `goal=... | actual=... | success=... | env=...`. Do not describe that line visibly; it is filtered from chat and stored for future dialogs.",
     "",
     "Learning memory snapshot:",
     runtime.memory || "unavailable",
@@ -6325,12 +6395,12 @@ function runMcpServer() {
       },
       {
         name: "soty_run",
-        description: "Low-level fallback: run one trivial shell command on the current Soty Agent LINK source device. Use soty_toolkit first for any repeated, state-changing, long, install, repair, reset, scan, or multi-step console/software work. Do not use for PowerShell variables, semicolons, pipelines, or multi-step checks; use soty_toolkit/soty_action instead.",
+        description: "Run a shell command on the current Soty Agent LINK source device.",
         inputSchema: {
           type: "object",
           properties: {
-            command: { type: "string", description: "Exact trivial command to run on the source device. Do not include Soty target wrappers. For PowerShell workflows with $, ;, |, or multiple statements, use soty_script." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000. Use 15000-45000 for quick probes; use a long timeout only for install, download, repair, reset, or reinstall jobs that are expected to keep running." }
+            command: { type: "string", description: "Command to run on the source device." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
           },
           required: ["command"],
           additionalProperties: false
@@ -6338,14 +6408,14 @@ function runMcpServer() {
       },
       {
         name: "soty_script",
-        description: "Low-level fallback: run a short multiline script on the current Soty Agent LINK source device. Use soty_toolkit first for reusable, long, state-changing, install, repair, reset, scan, or proof-bearing work.",
+        description: "Run a multiline script on the current Soty Agent LINK source device.",
         inputSchema: {
           type: "object",
           properties: {
             script: { type: "string", description: "Script body to run on the source device." },
             shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
             name: { type: "string", description: "Short technical label shown in the LINK console." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000. Use 15000-45000 for quick probes; use a long timeout only for install, download, repair, reset, or reinstall jobs that are expected to keep running." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
           },
           required: ["script"],
           additionalProperties: false
@@ -6353,7 +6423,7 @@ function runMcpServer() {
       },
       {
         name: "soty_action",
-        description: "Low-level durable-action kernel used by soty_toolkit: start a supervised durable job on the current Soty Agent LINK source device. Prefer soty_toolkit as the universal front door; call this directly only when you already know the kernel action shape.",
+        description: "Start a supervised durable job on the current Soty Agent LINK source device.",
         inputSchema: {
           type: "object",
           properties: {
@@ -6418,7 +6488,7 @@ function runMcpServer() {
       },
       {
         name: "soty_link_status",
-        description: "Inspect the Soty relay/source health for the current LINK source device. Use this after any source/relay failure before telling the user the PC connection is unstable.",
+        description: "Inspect Soty relay/source health for the current LINK source device.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -6427,7 +6497,7 @@ function runMcpServer() {
       },
       {
         name: "soty_toolkits",
-        description: "Show the current Soty automation toolkit contract: first-class toolkit entrypoints, generic durable action kernel, phases, proof fields, and terminal states. Use this when deciding whether to use a toolkit or a generic action.",
+        description: "Show current Soty automation toolkit entrypoints, phases, proof fields, and terminal states.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -6436,7 +6506,7 @@ function runMcpServer() {
       },
       {
         name: "soty_reinstall",
-        description: "First-class managed Soty Windows reinstall tool for preflight, prepare, status, and arm. It bootstraps one versioned managed PowerShell script from the manifest and passes flags to that script. Use this before manually crawling /agent/manifest.json, ready.json, backup-proof.json, or generic soty_action/soty_file reinstall scripts. prepare waits by default until media/backup/ready proof is complete or one concrete blocker/user confirmation is needed; do not final-answer while prepare is merely running.",
+        description: "Managed Soty Windows reinstall toolkit for preflight, prepare, status, and arm.",
         inputSchema: {
           type: "object",
           properties: {
@@ -6455,7 +6525,7 @@ function runMcpServer() {
       },
       {
         name: "soty_open_url",
-        description: "Open a URL in the default browser on the current Soty Agent LINK source device. Do not use this as a Windows reinstall handoff; for reinstall/reset, continue with source-scoped preflight, media staging, and exact blocker proof.",
+        description: "Open a URL in the default browser on the current Soty Agent LINK source device.",
         inputSchema: {
           type: "object",
           properties: {
@@ -6536,6 +6606,25 @@ function runMcpServer() {
             muted: { type: "boolean", description: "Optional mute state. true mutes output; false unmutes output." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000. Default is 120000 to survive cold Windows audio startup." }
           },
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_image",
+        description: "Generate a raster image with the OpenAI Images API and save it as a local PNG/JPEG/WebP file in the Soty Codex runtime. Use for photos, wallpapers, avatars, illustrations, product shots, and other generated bitmap assets.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "Image prompt." },
+            path: { type: "string", description: "Optional output path. If omitted, saves to the Desktop when available." },
+            model: { type: "string", description: "Optional GPT Image model, default from SOTY_IMAGE_MODEL or gpt-image-1.5." },
+            size: { type: "string", description: "auto, 1024x1024, 1536x1024, or 1024x1536. Default auto." },
+            quality: { type: "string", description: "auto, low, medium, or high. Default auto." },
+            format: { type: "string", description: "png, jpeg, or webp. Default png." },
+            background: { type: "string", description: "auto, opaque, or transparent when supported by the selected model." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, default 300000." }
+          },
+          required: ["prompt"],
           additionalProperties: false
         }
       },
@@ -6757,11 +6846,60 @@ function runMcpServer() {
       }
       return mcpToolOperatorResult(result);
     }
+    if (name === "soty_image") {
+      const result = await callSotyImageTool(args);
+      return result.ok
+        ? mcpToolJson(result, false, 0)
+        : mcpToolJson(result, true, result.exitCode || 1);
+    }
     return mcpToolText(`! unknown tool ${name}`, true);
   }
 
   function mcpSourceUnavailableResult() {
     return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
+  }
+
+  async function callSotyImageTool(args) {
+    const image = await generateOpenAiImageData(args);
+    if (!image.ok) {
+      return image;
+    }
+    if (mcpTarget && mcpSourceDeviceId) {
+      const save = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceSaveGeneratedImageScript({
+          imageBase64: image.imageBase64,
+          path: args.path || "",
+          format: image.format
+        }),
+        shell: "node",
+        name: "soty-image-save",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 300_000)
+      });
+      if (save.ok) {
+        const saved = parseJsonObject(save.text) || {};
+        return imageResultPublic({
+          ...image,
+          path: saved.path || "",
+          bytes: Number.isSafeInteger(saved.bytes) ? saved.bytes : image.bytes,
+          savedBy: "source-device"
+        });
+      }
+      return {
+        ...imageResultPublic(image),
+        ok: false,
+        error: "image generated but source-device save failed",
+        save: save.payload || { text: save.text, exitCode: save.exitCode },
+        exitCode: save.exitCode || 1
+      };
+    }
+    const saved = await saveGeneratedImageLocal(image, args);
+    return imageResultPublic({
+      ...image,
+      ...saved,
+      savedBy: "codex-runtime"
+    });
   }
 
   async function callSotyToolkitTool(args) {
@@ -7726,6 +7864,224 @@ console.log(JSON.stringify({ ok: true, action: "open", url, platform: process.pl
 function sendMcp(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
+}
+
+async function generateOpenAiImageData(args) {
+  const prompt = String(args?.prompt || "").trim();
+  if (!prompt) {
+    return { ok: false, error: "prompt is required", exitCode: 2 };
+  }
+  const apiKey = String(process.env.SOTY_OPENAI_API_KEY || process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || "").trim();
+  if (!apiKey) {
+    return {
+      ok: false,
+      error: "OPENAI_API_KEY is not available to the Soty Agent process",
+      exitCode: 78
+    };
+  }
+  const model = safeImageModel(args?.model || process.env.SOTY_IMAGE_MODEL || "gpt-image-1.5");
+  const size = safeImageSize(args?.size || "auto");
+  const quality = safeImageQuality(args?.quality || "auto");
+  const format = safeImageFormat(args?.format || "png");
+  const background = safeImageBackground(args?.background || "");
+  const body = {
+    model,
+    prompt: prompt.slice(0, 16000),
+    size,
+    quality,
+    output_format: format
+  };
+  if (background) {
+    body.background = background;
+  }
+  const controller = new AbortController();
+  const timeoutMs = mcpSafeImageTimeout(args?.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  let payload;
+  try {
+    response = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    payload = await response.json().catch(() => ({}));
+  } catch (error) {
+    clearTimeout(timer);
+    return {
+      ok: false,
+      error: error?.name === "AbortError" ? "image generation timed out" : cleanImageError(error),
+      model,
+      size,
+      quality,
+      format,
+      exitCode: error?.name === "AbortError" ? 124 : 1
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: cleanImageError(payload?.error?.message || payload?.error || `OpenAI image request failed with HTTP ${response.status}`),
+      status: response.status,
+      model,
+      size,
+      quality,
+      format,
+      exitCode: response.status
+    };
+  }
+  const imageBase64 = String(payload?.data?.[0]?.b64_json || "");
+  if (!imageBase64) {
+    return {
+      ok: false,
+      error: "OpenAI image response did not include b64_json",
+      model,
+      size,
+      quality,
+      format,
+      exitCode: 1
+    };
+  }
+  const bytes = Buffer.from(imageBase64, "base64");
+  return {
+    ok: true,
+    action: "image",
+    imageBase64,
+    bytes: bytes.length,
+    model,
+    size,
+    quality,
+    format,
+    revisedPrompt: String(payload?.data?.[0]?.revised_prompt || "").slice(0, 2000)
+  };
+}
+
+async function saveGeneratedImageLocal(image, args) {
+  const outputPath = resolveImageOutputPath(args?.path || "", image.format || "png");
+  const bytes = Buffer.from(String(image?.imageBase64 || ""), "base64");
+  await mkdir(dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, bytes);
+  return {
+    path: outputPath,
+    bytes: bytes.length
+  };
+}
+
+function imageResultPublic(image) {
+  return {
+    ok: Boolean(image?.ok),
+    action: "image",
+    path: String(image?.path || ""),
+    bytes: Number.isSafeInteger(image?.bytes) ? image.bytes : 0,
+    model: String(image?.model || ""),
+    size: String(image?.size || ""),
+    quality: String(image?.quality || ""),
+    format: String(image?.format || ""),
+    savedBy: String(image?.savedBy || ""),
+    revisedPrompt: String(image?.revisedPrompt || "").slice(0, 2000)
+  };
+}
+
+function sourceSaveGeneratedImageScript(args) {
+  const payload = Buffer.from(JSON.stringify({
+    imageBase64: String(args?.imageBase64 || ""),
+    path: String(args?.path || "").slice(0, 2000),
+    format: safeImageFormat(args?.format || "png")
+  }), "utf8").toString("base64");
+  return `
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+function desktopDir() {
+  const candidates = [
+    process.env.OneDrive ? path.join(process.env.OneDrive, "Desktop") : "",
+    process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "OneDrive", "Desktop") : "",
+    path.join(os.homedir(), "OneDrive", "Desktop"),
+    path.join(os.homedir(), "Desktop")
+  ].filter(Boolean);
+  return candidates.find((item) => fs.existsSync(item)) || path.join(os.homedir(), "Desktop");
+}
+function outputPath() {
+  const raw = String(req.path || "").trim();
+  const ext = ["png", "jpeg", "webp"].includes(String(req.format || "").toLowerCase()) ? String(req.format).toLowerCase() : "png";
+  if (raw) {
+    const expanded = raw.replace(/^~(?=$|[\\\\/])/, os.homedir());
+    const resolved = path.resolve(expanded);
+    return /\\.[A-Za-z0-9]{2,5}$/.test(resolved) ? resolved : resolved + "." + ext;
+  }
+  const name = "soty-image-" + new Date().toISOString().replace(/[:.]/g, "-") + "." + ext;
+  return path.join(desktopDir(), name);
+}
+const out = outputPath();
+const bytes = Buffer.from(String(req.imageBase64 || ""), "base64");
+fs.mkdirSync(path.dirname(out), { recursive: true });
+fs.writeFileSync(out, bytes);
+console.log(JSON.stringify({ ok: true, path: out, bytes: bytes.length }));
+`.trim();
+}
+
+function mcpSafeImageTimeout(value) {
+  return Number.isSafeInteger(value) ? Math.max(30_000, Math.min(value, maxLongTaskTimeoutMs)) : 300_000;
+}
+
+function safeImageModel(value) {
+  const text = String(value || "").trim();
+  return /^gpt-image-[A-Za-z0-9_.-]+$/u.test(text) ? text : "gpt-image-1.5";
+}
+
+function safeImageSize(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ["auto", "1024x1024", "1536x1024", "1024x1536"].includes(text) ? text : "auto";
+}
+
+function safeImageQuality(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ["auto", "low", "medium", "high"].includes(text) ? text : "auto";
+}
+
+function safeImageFormat(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ["png", "jpeg", "webp"].includes(text) ? text : "png";
+}
+
+function safeImageBackground(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return ["auto", "opaque", "transparent"].includes(text) ? text : "";
+}
+
+function resolveImageOutputPath(value, format) {
+  const raw = String(value || "").trim();
+  if (raw) {
+    const resolved = resolve(raw.replace(/^~(?=$|[\\/])/u, homedir()));
+    const ext = safeImageFormat(format);
+    return /\.[A-Za-z0-9]{2,5}$/u.test(resolved) ? resolved : `${resolved}.${ext}`;
+  }
+  const desktop = defaultDesktopDir();
+  const name = `soty-image-${new Date().toISOString().replace(/[:.]/gu, "-")}.${safeImageFormat(format)}`;
+  return join(desktop, name);
+}
+
+function defaultDesktopDir() {
+  const candidates = [
+    process.env.OneDrive ? join(process.env.OneDrive, "Desktop") : "",
+    process.env.USERPROFILE ? join(process.env.USERPROFILE, "OneDrive", "Desktop") : "",
+    join(homedir(), "OneDrive", "Desktop"),
+    join(homedir(), "Desktop")
+  ].filter(Boolean);
+  return candidates.find((candidate) => existsSync(candidate)) || join(homedir(), "Desktop");
+}
+
+function cleanImageError(value) {
+  return String(value?.message || value || "image generation failed")
+    .replace(/sk-[A-Za-z0-9_-]+/gu, "sk-***")
+    .slice(0, 500);
 }
 
 function windowsAudioScript(volumePercent, muteMode) {
@@ -9546,7 +9902,7 @@ function runtimeHealth() {
     codexAuth: hasCodexAuth(),
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
     codexSessionMode,
-    codexRuntimeContext: "prompt+AGENTS+SOTY_CONTEXT+learning-memory+always-on-soty-mcp",
+    codexRuntimeContext: "soty-capabilities+learning-memory",
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),

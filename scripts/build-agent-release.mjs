@@ -95,9 +95,9 @@ function buildAutomationToolkits(windowsReinstall) {
     schema: "soty.automation-toolkits.v1",
     policy: {
       entrypoint: "soty_toolkit",
-      route: "first-class-toolkit-before-ad-hoc-script",
+      route: "soty-capability-memory-accelerators",
       fallbackKernel: "soty_action",
-      chat: "sysadmin-short",
+      chat: "lord-sysadmin",
       responseStyle: buildResponseStylePolicy(),
       terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"]
     },
@@ -108,7 +108,7 @@ function buildAutomationToolkits(windowsReinstall) {
         kind: "front-door",
         phases: ["describe", "start", "status", "stop", "list", "reinstall"],
         proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"],
-        promotion: "Use this before low-level run/script/action. Repeated safe work becomes a manifest-pinned toolkit."
+        promotion: "Reusable capability accelerator for repeated proven work."
       },
       {
         name: "durable-action",
@@ -116,7 +116,7 @@ function buildAutomationToolkits(windowsReinstall) {
         kind: "generic-kernel",
         phases: ["start", "status", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"],
-        promotion: "When a family repeats safely, promote it into a manifest-pinned toolkit script with selftests."
+        promotion: "Durable supervised execution for long or reusable jobs."
       },
       {
         name: "windows-reinstall",
@@ -138,12 +138,12 @@ function buildAutomationToolkits(windowsReinstall) {
 function buildResponseStylePolicy() {
   return {
     schema: "soty.response-style.v1",
-    id: "sysadmin-short",
-    displayName: "Лорд Роя",
-    base: "bare-facts",
-    tone: "short-diagnostic-sysadmin",
-    maxUserFacingLines: 4,
-    phraseBank: ["щас", "сек", "так", "ага", "вижу", "странно", "лог", "скрин", "конфиг", "доступ", "права", "порт", "dns", "не трогай", "проверь"]
+    id: "lord-sysadmin",
+    displayName: "Лорд",
+    base: "agent",
+    tone: "brief-sysadmin",
+    maxUserFacingLines: 0,
+    phraseBank: []
   };
 }
 

@@ -1,17 +1,18 @@
 {
-  "version": "0.3.149",
+  "version": "0.3.152",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "0e0309f275ecb65c4826eb2a511dc9c203f1040c8c07eed13498b73c35c6d64f",
+  "sha256": "79d20ef07d01e9c64a873e7330e16f75914c87b3e69c8a46754aefe4999fc848",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
     "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "6cdf246588ae20a293a00eb779e1caea44f6993f8b06a8b5c9b104850540e7e0",
-    "zipBytes": 1267804,
+    "zipSha256": "877b229d12031eb05aa6de85ce6b3375e8b6c9b6b22c4bdd38e054d298e5bd14",
+    "zipBytes": 1271738,
     "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "ecc6571df8e793593d76e8b7e1ca853945244ea3b618cf19e4909995a6aae83f",
-    "tarBytes": 308047,
-    "revision": "b5fad55e593e8da60fcb83ce884967adb118cc71"
+    "tarSha256": "78ffed295fb0760329a2427e7de1b5503a130a99b10d9b89fa97c05d58ab9333",
+    "tarBytes": 309272,
+    "revision": "c9eee0bc2750b51671d663985841f536089e2c61",
+    "dirty": true
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
@@ -46,33 +47,17 @@
     "schema": "soty.automation-toolkits.v1",
     "policy": {
       "entrypoint": "soty_toolkit",
-      "route": "first-class-toolkit-before-ad-hoc-script",
+      "route": "soty-capability-memory-accelerators",
       "fallbackKernel": "soty_action",
-      "chat": "sysadmin-short",
+      "chat": "lord-sysadmin",
       "responseStyle": {
         "schema": "soty.response-style.v1",
-        "id": "sysadmin-short",
-        "displayName": "Лорд Роя",
-        "base": "bare-facts",
-        "tone": "short-diagnostic-sysadmin",
-        "maxUserFacingLines": 4,
-        "phraseBank": [
-          "щас",
-          "сек",
-          "так",
-          "ага",
-          "вижу",
-          "странно",
-          "лог",
-          "скрин",
-          "конфиг",
-          "доступ",
-          "права",
-          "порт",
-          "dns",
-          "не трогай",
-          "проверь"
-        ]
+        "id": "lord-sysadmin",
+        "displayName": "Лорд",
+        "base": "agent",
+        "tone": "brief-sysadmin",
+        "maxUserFacingLines": 0,
+        "phraseBank": []
       },
       "terminalStates": [
         "completed",
@@ -102,7 +87,7 @@
           "resultPath",
           "proof"
         ],
-        "promotion": "Use this before low-level run/script/action. Repeated safe work becomes a manifest-pinned toolkit."
+        "promotion": "Reusable capability accelerator for repeated proven work."
       },
       {
         "name": "durable-action",
@@ -119,7 +104,7 @@
           "resultPath",
           "proof"
         ],
-        "promotion": "When a family repeats safely, promote it into a manifest-pinned toolkit script with selftests."
+        "promotion": "Durable supervised execution for long or reusable jobs."
       },
       {
         "name": "windows-reinstall",

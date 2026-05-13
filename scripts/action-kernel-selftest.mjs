@@ -40,22 +40,22 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.149");
-      assertEqual(health.body.responseStyle.id, "sysadmin-short");
-      assertEqual(health.body.responseStyle.displayName, "Лорд Роя");
+      assertEqual(health.body.version, "0.3.152");
+      assertEqual(health.body.responseStyle.id, "lord-sysadmin");
+      assertEqual(health.body.responseStyle.displayName, "Лорд");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("universal-toolkit"));
       assert(health.body.automationToolkits.available.includes("durable-action"));
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
       assertEqual(health.body.automationToolkits.defaultKernel, "soty_action");
-      assertEqual(health.body.automationToolkits.responseStyle.id, "sysadmin-short");
+      assertEqual(health.body.automationToolkits.responseStyle.id, "lord-sysadmin");
     }],
     ["toolkit endpoint exposes universal contract", async () => {
       const toolkits = await get("/operator/toolkits");
       assertEqual(toolkits.status, 200);
       assertEqual(toolkits.body.schema, "soty.automation-toolkits.v1");
-      assertEqual(toolkits.body.responseStyle.displayName, "Лорд Роя");
+      assertEqual(toolkits.body.responseStyle.displayName, "Лорд");
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "durable-action"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "windows-reinstall"));
     }],
@@ -341,13 +341,12 @@ async function runScenarios() {
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       const managed = await readFile(join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1"), "utf8");
-      assert(agent.includes("turnkey_terminal_rule"));
+      assert(agent.includes("sotyRuntimeHints"));
+      assert(agent.includes("soty-capabilities+learning-memory"));
+      assert(agent.includes("soty_image"));
       assert(agent.includes("soty_toolkit"));
-      assert(agent.includes("toolkit_rule"));
-      assert(agent.includes("toolkit_quality_rule"));
       assert(agent.includes("automationToolkitStatus"));
       assert(agent.includes("soty_toolkits"));
-      assert(agent.includes("large_download_rule"));
       assert(agent.includes("waitForSotyReinstallPrepare"));
       assert(agent.includes("waitForCompletion"));
       assert(agent.includes("sourceManagedWindowsReinstallBootstrap"));
@@ -355,28 +354,34 @@ async function runScenarios() {
       assert(agent.includes("mcpInlineToolBudgetMs"));
       assert(agent.includes("maybeRedirectManagedReinstallProbe"));
       assert(agent.includes("managed-reinstall-toolkit-required"));
-      assert(agent.includes("managed_reinstall_wait_rule"));
       assert(agent.includes("waitMs"));
       assert(agent.includes("reusedExistingPrepare"));
       assert(agent.includes("isReinstallPrepareActive"));
       assert(agent.includes("post-arm-rebooting"));
       assert(agent.includes("rememberPostArmReboot"));
       assert(agent.includes("agentResponseStyleProfiles"));
-      assert(agent.includes("sysadmin-short"));
-      assert(agent.includes("Лорд Роя"));
+      assert(agent.includes("lord-sysadmin"));
+      assert(agent.includes("Лорд"));
       assert(agent.includes("response_style_rule_${index + 1}"));
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
       assert(agent.includes("isActionableTargetOperatorMessage"));
       assert(agent.includes('preferredTargetId: agentDialog ? "" : item.target'));
-      assert(agent.includes("that device is the only intended target"));
+      assert(agent.includes("Priority: quality, speed, token economy"));
       assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));
       assert(agent.includes("waitForTurnkeyTargetAfterCodex"));
       assert(agent.includes("turnkeyGuardTimeoutMs"));
       assert(agent.includes("guardTurnkeyMessages"));
       assert(agent.includes("managedReinstallGuardTerminal"));
+      assert(agent.includes("reinstallHardPreflightBlockers"));
+      assert(agent.includes("handoff=codex-agent"));
+      assert(agent.includes("isLikelyAgentStatusQuote"));
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
       assert(agent.includes("sourceDeviceHash"));
+      assert(agent.includes("enableFastDirectAnswers"));
+      assert(agent.includes("hasExplicitEventLogIntent"));
+      assert(agent.includes("shouldRunDeterministicFastRoutine"));
+      assert(agent.includes("isCreativeOrGenerativeMessage"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes('*.download.parts'));
@@ -420,15 +425,15 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.149");
+      assertEqual(manifest.version, "0.3.152");
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "soty_toolkit");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "soty_action");
-      assertEqual(manifest.automationToolkits.policy.chat, "sysadmin-short");
-      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Лорд Роя");
-      assert(manifest.automationToolkits.policy.responseStyle.phraseBank.includes("щас"));
+      assertEqual(manifest.automationToolkits.policy.chat, "lord-sysadmin");
+      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Лорд");
+      assertEqual(manifest.automationToolkits.policy.responseStyle.phraseBank.length, 0);
       const universalToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "universal-toolkit");
       assert(universalToolkit);
       assertEqual(universalToolkit.entryTool, "soty_toolkit");
