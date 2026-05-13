@@ -1,11 +1,15 @@
 {
-  "version": "0.4.0",
+  "version": "0.4.1",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+memory-plane+user-capability-gateway",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "1e48f312bc09235f476ebf6fef363656d51701abf7749c902dd3d0ec507b4563",
+  "sha256": "680adbe2396fe091f454b8918a5557c0bf1db5b15ae60a3cdf809bfc20f20a0e",
   "memoryPlane": {
     "schema": "soty.memory-plane.v1",
+    "controller": "soty.memctl.v1",
+    "backend": "append-only-jsonl",
+    "querySchema": "soty.memory.query.v2",
+    "reportSchema": "soty.memory.report.v2",
     "healthUrl": "/api/agent/memory/health",
     "queryUrl": "/api/agent/memory/query",
     "receiptsUrl": "/api/agent/memory/receipts",

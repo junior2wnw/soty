@@ -6,6 +6,7 @@ import path from "node:path";
 const maxReceiptsPerRequest = 80;
 const maxReceiptText = 900;
 const signatureMaxSource = 2000;
+const defaultMemoryScanFiles = Math.max(7, Math.min(Number.parseInt(process.env.SOTY_MEMORY_SCAN_FILES || "90", 10) || 90, 3650));
 const jsonParser = express.json({ limit: "320kb", type: "application/json" });
 
 export function attachAgentLearning(app, { dataDir } = {}) {
@@ -19,6 +20,8 @@ export function attachAgentLearning(app, { dataDir } = {}) {
       ok: true,
       enabled: true,
       schema: "soty.memory-plane.v1",
+      controller: "soty.memctl.v1",
+      backend: "append-only-jsonl",
       files: files.length,
       receipts: receipts.length,
       scope: summarizeLearningScope(receipts),
@@ -39,10 +42,12 @@ export function attachAgentLearning(app, { dataDir } = {}) {
   app.get("/api/agent/memory/query", async (req, res) => {
     const limit = safeLimit(req.query?.limit, 800);
     const family = cleanText(req.query?.family, 80);
+    const platform = cleanText(req.query?.platform, 40);
+    const taskSig = cleanText(req.query?.taskSig, 160);
     const lines = await readRecentLearningReceiptsFromDir(learningDir, limit).catch(() => []);
     const receipts = lines.map(parseReceiptLine).filter(Boolean);
-    const report = buildTeacherReport(receipts, { limit });
-    res.json(buildMemoryQuery(report, { family }));
+    const report = buildTeacherReport(receipts, { limit, family, platform, taskSig });
+    res.json(buildMemoryQuery(report, { family, platform, taskSig }));
   });
 
   app.post("/api/agent/memory/receipts", jsonParser, async (req, res) => {
@@ -115,7 +120,7 @@ async function readRecentLearningReceiptsFromDir(learningDir, limit = 50) {
   const files = (await learningFiles(learningDir))
     .map((item) => item.name)
     .sort()
-    .slice(-7);
+    .slice(-defaultMemoryScanFiles);
   const lines = [];
   for (const file of files) {
     const text = await readFile(path.join(learningDir, file), "utf8").catch(() => "");
@@ -128,11 +133,20 @@ async function readRecentLearningReceiptsFromDir(learningDir, limit = 50) {
   return lines.slice(-Math.max(1, Math.min(2000, limit)));
 }
 
-export function buildTeacherReport(receipts, { limit = 800 } = {}) {
+export function buildTeacherReport(receipts, { limit = 800, family = "", platform = "", taskSig = "" } = {}) {
+  const control = buildMemoryControl(receipts, { limit, family, platform, taskSig });
+  return {
+    ...control,
+    schema: "soty.memory.report.v2"
+  };
+}
+
+export function buildMemoryControl(receipts, { limit = 800, family = "", platform = "", taskSig = "" } = {}) {
   const rows = receipts.filter((item) => item && typeof item === "object");
   const familyCounts = countBy(rows, (item) => item.family || "generic");
   const resultCounts = countBy(rows, (item) => item.result || "unknown");
   const routeCounts = countBy(rows, (item) => item.route || "unknown");
+  const filters = cleanMemoryFilters({ family, platform, taskSig });
   const topFailures = groupRows(rows
     .filter((item) => ["failed", "blocked", "timeout", "partial"].includes(item.result)), (item) => [
       item.family || "generic",
@@ -149,22 +163,49 @@ export function buildTeacherReport(receipts, { limit = 800 } = {}) {
       item.phase || "",
       item.route || "unknown"
     ].join("|"));
+  const routeMemory = buildRouteMemory(rows);
+  const stopGates = buildStopGates(rows, topFailures);
+  const routeFixes = buildRouteFixes(rows);
+  const memoryMarkers = buildMemoryMarkers(rows);
   const recommendations = buildRecommendations(rows, topFailures);
   const candidates = buildPromotionCandidates(rows, topFailures, topSuccesses);
   const scope = summarizeLearningScope(rows);
   return {
     ok: true,
-    schema: "soty.memory.report.v1",
+    schema: "soty.memctl.v1",
     generatedAt: new Date().toISOString(),
     source: "global-sanitized-route-memory",
+    controller: {
+      schema: "soty.memctl.v1",
+      contract: "append-only-receipts+deterministic-promotion+hybrid-route-retrieval",
+      sourceOfTruth: "append-only-jsonl",
+      externalBackends: ["none-required", "adapter-ready"],
+      retention: "append-only; query windows are bounded, source receipts are not destructively edited"
+    },
+    filters,
     limit,
     receipts: rows.length,
     scope,
+    stats: {
+      successes: rows.filter((item) => item.result === "ok").length,
+      failures: rows.filter((item) => ["failed", "blocked", "timeout", "partial"].includes(item.result)).length,
+      provenRoutes: routeMemory.provenRoutes.length,
+      stopGates: stopGates.length,
+      routeFixes: routeFixes.length,
+      memoryMarkers: memoryMarkers.length
+    },
     families: topEntries(familyCounts, 12),
     results: topEntries(resultCounts, 8),
     routes: topEntries(routeCounts, 8),
     topFailures: topFailures.slice(0, 12),
     topSuccesses: topSuccesses.slice(0, 8),
+    memories: {
+      provenRoutes: routeMemory.provenRoutes,
+      routeCandidates: routeMemory.routeCandidates,
+      stopGates,
+      routeFixes,
+      memoryMarkers
+    },
     recommendations,
     candidates,
     oneCommand: "sotyctl memory doctor",
@@ -173,11 +214,56 @@ export function buildTeacherReport(receipts, { limit = 800 } = {}) {
   };
 }
 
-function buildMemoryQuery(report, { family = "" } = {}) {
+export function buildMemoryQuery(report, { family = "", platform = "", taskSig = "", limit = 12 } = {}) {
+  const filters = cleanMemoryFilters({ family, platform, taskSig });
   const selected = (items) => Array.isArray(items)
-    ? items.filter((item) => !family || item.family === family || item.family === "generic").slice(0, 8)
+    ? items
+      .filter((item) => memoryItemMatches(item, filters))
+      .slice(0, Math.max(1, Math.min(24, limit)))
     : [];
   const items = [];
+  for (const item of selected(report.memories?.stopGates)) {
+    items.push({
+      kind: "stop-gate",
+      priority: item.priority || "high",
+      family: item.family || "generic",
+      title: item.title || "Stop gate",
+      guidance: item.guidance || "",
+      route: item.route || "",
+      confidence: item.confidence || 0.75,
+      score: item.score || 0,
+      evidence: item.evidence || {}
+    });
+  }
+  for (const item of selected(report.memories?.provenRoutes)) {
+    items.push({
+      kind: "proven-route",
+      priority: item.priority || "normal",
+      family: item.family || "generic",
+      title: item.title || `Proven route: ${item.route || "unknown"}`,
+      guidance: item.guidance || "",
+      route: item.route || "",
+      toolkit: item.toolkit || "",
+      phase: item.phase || "",
+      confidence: item.confidence || 0.65,
+      score: item.score || 0,
+      evidence: item.evidence || {},
+      reusePolicy: item.reusePolicy || ""
+    });
+  }
+  for (const item of selected(report.memories?.routeFixes)) {
+    items.push({
+      kind: "route-fix",
+      priority: item.priority || "normal",
+      family: item.family || "generic",
+      title: item.title || "Improve route",
+      guidance: item.guidance || "",
+      route: item.route || "",
+      confidence: item.confidence || 0.6,
+      score: item.score || 0,
+      evidence: item.evidence || {}
+    });
+  }
   for (const item of selected(report.recommendations)) {
     items.push({
       kind: "route-guidance",
@@ -188,37 +274,397 @@ function buildMemoryQuery(report, { family = "" } = {}) {
       confidence: item.priority === "high" ? 0.86 : 0.68
     });
   }
-  for (const item of selected(report.topSuccesses)) {
-    items.push({
-      kind: "proven-route",
-      priority: "normal",
-      family: item.family || "generic",
-      title: `Proven route: ${item.route || "unknown"}`,
-      guidance: `Route succeeded ${item.count || 1} time(s); require comparable context and proof before reuse.`,
-      route: item.route || "",
-      confidence: Math.min(0.95, 0.55 + (Number(item.count || 1) * 0.08))
-    });
-  }
-  for (const item of selected(report.candidates)) {
+  for (const item of selected(report.memories?.memoryMarkers).concat(selected(report.candidates))) {
     items.push({
       kind: "memory-marker",
       priority: item.scope === "promote" || item.scope === "profile" ? "normal" : "low",
       family: item.family || "generic",
-      title: "Reusable memory candidate",
-      guidance: item.marker || "",
-      confidence: item.scope === "promote" || item.scope === "profile" ? 0.74 : 0.52
+      title: item.title || "Reusable memory candidate",
+      guidance: item.guidance || item.marker || "",
+      confidence: item.confidence || (item.scope === "promote" || item.scope === "profile" ? 0.74 : 0.52),
+      score: item.score || 0
     });
   }
+  const ranked = rankMemoryItems(items);
   return {
     ok: true,
-    schema: "soty.memory.query.v1",
+    schema: "soty.memory.query.v2",
+    controller: "soty.memctl.v1",
     generatedAt: report.generatedAt,
     source: report.source,
     receipts: report.receipts,
     scope: report.scope,
-    family,
-    items: items.slice(0, 12)
+    filters,
+    stats: report.stats || {},
+    items: dedupeMemoryItems(ranked).slice(0, Math.max(1, Math.min(24, limit)))
   };
+}
+
+function buildRouteMemory(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const family = cleanText(row.family, 80) || "generic";
+    const route = cleanText(row.route, 120) || "unknown";
+    const toolkit = cleanText(row.toolkit, 80);
+    const phase = cleanText(row.phase, 80);
+    const key = `${family}|${route}|${toolkit}|${phase}`;
+    const time = cleanIso(row.createdAt) || cleanIso(row.receivedAt) || "";
+    const current = groups.get(key) || {
+      key,
+      family,
+      route,
+      toolkit,
+      phase,
+      attempts: 0,
+      successes: 0,
+      failures: 0,
+      blocked: 0,
+      timeouts: 0,
+      partials: 0,
+      durationTotalMs: 0,
+      durationSamples: 0,
+      maxTokens: 0,
+      minQualityScore: 100,
+      proofShape: "",
+      firstSeenAt: time,
+      lastSeenAt: "",
+      latestSuccessAt: "",
+      latestFailureAt: "",
+      platforms: new Map(),
+      taskSigs: new Set(),
+      reuseKeys: new Set(),
+      contexts: new Set()
+    };
+    current.attempts += 1;
+    if (row.result === "ok") {
+      current.successes += 1;
+      current.latestSuccessAt = maxIso(current.latestSuccessAt, time);
+    } else {
+      current.failures += 1;
+      current.latestFailureAt = maxIso(current.latestFailureAt, time);
+    }
+    if (row.result === "blocked") current.blocked += 1;
+    if (row.result === "timeout") current.timeouts += 1;
+    if (row.result === "partial") current.partials += 1;
+    if (Number.isSafeInteger(row.durationMs) && row.durationMs > 0) {
+      current.durationTotalMs += row.durationMs;
+      current.durationSamples += 1;
+    }
+    current.maxTokens = Math.max(current.maxTokens, learningTotalTokens(row.proof));
+    current.minQualityScore = Math.min(current.minQualityScore, learningQuality(row.proof).score);
+    current.proofShape = current.proofShape || proofShape(row.proof);
+    current.firstSeenAt = minIso(current.firstSeenAt, time);
+    current.lastSeenAt = maxIso(current.lastSeenAt, time);
+    const platform = cleanText(row.platform, 40) || "unknown";
+    current.platforms.set(platform, (current.platforms.get(platform) || 0) + 1);
+    const taskSig = cleanTaskSignature(row.taskSig);
+    if (taskSig) current.taskSigs.add(taskSig);
+    const capsule = learningRouteCapsule(row.proof);
+    if (capsule.reuseKey) current.reuseKeys.add(capsule.reuseKey);
+    if (capsule.context) current.contexts.add(capsule.context);
+    groups.set(key, current);
+  }
+
+  const routeCandidates = Array.from(groups.values()).map(routeMemoryItem)
+    .sort((left, right) => right.score - left.score || right.evidence.successes - left.evidence.successes || right.lastSeenAt.localeCompare(left.lastSeenAt));
+  const provenRoutes = routeCandidates
+    .filter((item) => item.promotion === "proven" || item.promotion === "fast-candidate")
+    .slice(0, 24);
+  return {
+    provenRoutes,
+    routeCandidates: routeCandidates.slice(0, 48)
+  };
+}
+
+function routeMemoryItem(group) {
+  const successRate = group.attempts > 0 ? group.successes / group.attempts : 0;
+  const avgDurationMs = group.durationSamples > 0 ? Math.round(group.durationTotalMs / group.durationSamples) : 0;
+  const latestFailureAfterSuccess = Boolean(group.latestFailureAt && group.latestSuccessAt && group.latestFailureAt > group.latestSuccessAt);
+  const reusableProof = group.reuseKeys.size > 0 || group.contexts.size > 0;
+  const score = memoryScore({
+    successes: group.successes,
+    attempts: group.attempts,
+    successRate,
+    failures: group.failures,
+    latestFailureAfterSuccess,
+    avgDurationMs,
+    maxTokens: group.maxTokens,
+    minQualityScore: group.minQualityScore,
+    reusableProof,
+    lastSeenAt: group.lastSeenAt
+  });
+  const confidence = clamp01(score / 100);
+  const promotion = routePromotion({ group, successRate, score, latestFailureAfterSuccess, reusableProof });
+  const evidence = {
+    attempts: group.attempts,
+    successes: group.successes,
+    failures: group.failures,
+    successRate: round2(successRate),
+    avgDurationMs,
+    maxTokens: group.maxTokens,
+    minQualityScore: group.minQualityScore,
+    proofShape: group.proofShape,
+    firstSeenAt: group.firstSeenAt,
+    lastSeenAt: group.lastSeenAt,
+    platforms: topEntries(group.platforms, 4),
+    taskSigSamples: Array.from(group.taskSigs).slice(0, 4),
+    reuseKeys: Array.from(group.reuseKeys).slice(0, 4),
+    contexts: Array.from(group.contexts).slice(0, 4),
+    latestFailureAfterSuccess
+  };
+  return {
+    kind: "proven-route",
+    family: group.family,
+    route: group.route,
+    toolkit: group.toolkit,
+    phase: group.phase,
+    title: routeTitle(group, promotion),
+    guidance: routeGuidance(group, evidence, promotion),
+    priority: promotion === "proven" && confidence >= 0.82 ? "high" : "normal",
+    confidence,
+    score,
+    promotion,
+    reusePolicy: latestFailureAfterSuccess
+      ? "reuse only after validating the current context; a newer failure exists"
+      : "reuse for comparable family/platform/context before broad rediscovery, then verify with proof",
+    evidence,
+    firstSeenAt: group.firstSeenAt,
+    lastSeenAt: group.lastSeenAt
+  };
+}
+
+function routePromotion({ group, successRate, score, latestFailureAfterSuccess, reusableProof }) {
+  if (group.successes >= 2 && successRate >= 0.75 && score >= 70 && !latestFailureAfterSuccess) {
+    return "proven";
+  }
+  if (group.successes >= 1 && reusableProof && successRate >= 0.67 && score >= 62) {
+    return "fast-candidate";
+  }
+  if (group.failures >= 2 || latestFailureAfterSuccess) {
+    return "conflicted";
+  }
+  return "candidate";
+}
+
+function routeTitle(group, promotion) {
+  const label = group.toolkit || group.phase
+    ? `${group.toolkit || "toolkit"} ${group.phase || "route"}`.trim()
+    : group.route || "route";
+  if (promotion === "proven") {
+    return `Proven route: ${label}`;
+  }
+  if (promotion === "fast-candidate") {
+    return `Fast candidate: ${label}`;
+  }
+  return `Route candidate: ${label}`;
+}
+
+function routeGuidance(group, evidence, promotion) {
+  const proof = evidence.proofShape ? ` Proof: ${evidence.proofShape}.` : "";
+  const speed = evidence.avgDurationMs ? ` Average ${evidence.avgDurationMs}ms.` : "";
+  const reuse = evidence.reuseKeys.length > 0 ? ` Reuse key: ${evidence.reuseKeys[0]}.` : "";
+  if (promotion === "proven") {
+    return `Prefer ${group.route || "this route"} for comparable ${group.family} tasks before broad discovery.${proof}${speed}${reuse}`;
+  }
+  if (promotion === "fast-candidate") {
+    return `Try ${group.route || "this route"} when the context matches, but keep a proof check before final answer.${proof}${reuse}`;
+  }
+  return `Keep ${group.route || "this route"} as evidence, but do not rely on it without fresh proof.${proof}`;
+}
+
+function memoryScore({ successes, attempts, successRate, failures, latestFailureAfterSuccess, avgDurationMs, maxTokens, minQualityScore, reusableProof, lastSeenAt }) {
+  let score = 22;
+  score += Math.min(28, successes * 9);
+  score += Math.round(successRate * 28);
+  score += reusableProof ? 10 : 0;
+  score += recencyBoost(lastSeenAt);
+  if (avgDurationMs > 0 && avgDurationMs <= 5000) score += 6;
+  if (avgDurationMs >= 60000) score -= 8;
+  if (maxTokens >= 100000) score -= 8;
+  if (minQualityScore < 80) score -= Math.min(18, Math.round((80 - minQualityScore) / 2));
+  score -= Math.min(24, failures * 8);
+  if (attempts >= 3 && successRate < 0.67) score -= 14;
+  if (latestFailureAfterSuccess) score -= 18;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function buildStopGates(rows, topFailures) {
+  const gates = [];
+  const postArmLosses = postArmSourceDisconnectRows(rows);
+  if (postArmLosses.length > 0) {
+    gates.push({
+      kind: "stop-gate",
+      family: "windows-reinstall",
+      route: "agent-source.status",
+      title: "Post-arm reboot window",
+      guidance: "After managed arm succeeds with rebooting=true, do not keep probing the stale source. Use the designed return path and wait for the machine to come back.",
+      priority: "high",
+      confidence: Math.min(0.95, 0.72 + postArmLosses.length * 0.06),
+      score: Math.min(100, 72 + postArmLosses.length * 6),
+      evidence: { count: postArmLosses.length, proofShape: "source disconnected after arm" }
+    });
+  }
+  for (const failure of topFailures.slice(0, 12)) {
+    if (failure.count < 2 && failure.result !== "blocked") {
+      continue;
+    }
+    gates.push({
+      kind: "stop-gate",
+      family: failure.family,
+      route: failure.route,
+      title: `Stop repeated ${failure.result}: ${failure.family}`,
+      guidance: `Do not repeat ${failure.route || "this route"} blindly. Switch to a verified route or ask for the missing precondition after ${failure.count} matching failure(s).`,
+      priority: failure.family === "windows-reinstall" || failure.result === "blocked" ? "high" : "normal",
+      confidence: Math.min(0.92, 0.58 + failure.count * 0.08),
+      score: Math.min(100, 54 + failure.count * 10),
+      evidence: {
+        count: failure.count,
+        result: failure.result,
+        exitCode: failure.exitCode,
+        proofShape: failure.proofShape,
+        lastSeenAt: failure.lastSeenAt
+      }
+    });
+  }
+  return dedupeBy(gates, (item) => `${item.family}|${item.route}|${item.title}`)
+    .sort((left, right) => right.score - left.score || right.confidence - left.confidence)
+    .slice(0, 12);
+}
+
+function buildRouteFixes(rows) {
+  const fixes = [];
+  for (const item of lowQualityRouteGroups(rows).slice(0, 8)) {
+    fixes.push({
+      kind: "route-fix",
+      family: item.family,
+      route: item.route,
+      title: "Fix low-quality automatic route",
+      guidance: `Route returned quality=${item.quality || "low"} score=${item.score}. Add stricter proof checks or fall back to Codex before final answer.`,
+      priority: item.count >= 2 || item.score < 60 ? "high" : "normal",
+      confidence: Math.min(0.9, 0.56 + item.count * 0.08),
+      score: Math.min(100, 52 + item.count * 9 + Math.max(0, 80 - item.score)),
+      evidence: { count: item.count, quality: item.quality, score: item.score, lastSeenAt: item.lastSeenAt }
+    });
+  }
+  for (const item of slowRoutineCodexGroups(rows).slice(0, 8)) {
+    fixes.push({
+      kind: "route-fix",
+      family: item.family,
+      route: item.route,
+      title: "Turn slow routine into fast capability route",
+      guidance: `This routine spent about ${item.durationMs}ms and ${item.totalTokens} tokens. Prefer a small source-scoped capability action with structured proof next time.`,
+      priority: item.totalTokens >= 100000 || item.durationMs >= 60000 ? "high" : "normal",
+      confidence: Math.min(0.9, 0.54 + item.count * 0.08),
+      score: Math.min(100, 48 + item.count * 8 + Math.min(24, Math.round(item.durationMs / 5000))),
+      evidence: { count: item.count, durationMs: item.durationMs, totalTokens: item.totalTokens, lastSeenAt: item.lastSeenAt }
+    });
+  }
+  return fixes.sort((left, right) => right.score - left.score).slice(0, 12);
+}
+
+function buildMemoryMarkers(rows) {
+  return latestMemoryMarkerRows(rows).map((item) => ({
+    kind: "memory-marker",
+    scope: item.count >= 2 ? "promote" : "dialog",
+    family: item.family,
+    title: "Reusable dialog memory",
+    guidance: item.marker,
+    marker: item.marker,
+    confidence: item.count >= 2 ? 0.78 : 0.56,
+    score: item.count >= 2 ? 76 : 52,
+    evidence: { count: item.count, lastSeenAt: item.lastSeenAt }
+  }));
+}
+
+function cleanMemoryFilters({ family = "", platform = "", taskSig = "" } = {}) {
+  const cleanTask = cleanText(taskSig, 160);
+  return {
+    family: cleanText(family, 80),
+    platform: cleanText(platform, 40),
+    taskSig: cleanTask && /^task:[a-f0-9]{16,64}$/iu.test(cleanTask) ? cleanTask.toLowerCase() : ""
+  };
+}
+
+function memoryItemMatches(item, filters) {
+  if (!item) {
+    return false;
+  }
+  if (filters.family && item.family !== filters.family && item.family !== "generic" && item.family !== "memory") {
+    return false;
+  }
+  if (filters.platform && Array.isArray(item.evidence?.platforms) && item.evidence.platforms.length > 0) {
+    const platforms = item.evidence.platforms.map((entry) => entry.key);
+    if (!platforms.includes(filters.platform) && !platforms.includes("unknown")) {
+      return false;
+    }
+  }
+  if (filters.taskSig && Array.isArray(item.evidence?.taskSigSamples) && item.evidence.taskSigSamples.length > 0) {
+    if (!item.evidence.taskSigSamples.includes(filters.taskSig)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function rankMemoryItems(items) {
+  const priorityWeight = { high: 30, normal: 15, low: 0 };
+  const kindWeight = { "stop-gate": 28, "proven-route": 24, "route-fix": 16, "route-guidance": 10, "memory-marker": 4 };
+  return items
+    .map((item) => ({
+      ...item,
+      rank: Math.round((item.score || 0) + ((item.confidence || 0) * 40) + (priorityWeight[item.priority] || 0) + (kindWeight[item.kind] || 0))
+    }))
+    .sort((left, right) => right.rank - left.rank || (right.score || 0) - (left.score || 0) || (right.confidence || 0) - (left.confidence || 0));
+}
+
+function dedupeMemoryItems(items) {
+  return dedupeBy(items, (item) => `${item.kind}|${item.family}|${item.route || ""}|${item.title}|${item.guidance || ""}`);
+}
+
+function dedupeBy(items, keyFn) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = keyFn(item);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function recencyBoost(value) {
+  const time = Date.parse(cleanIso(value));
+  if (!Number.isFinite(time)) {
+    return 0;
+  }
+  const ageDays = Math.max(0, (Date.now() - time) / 86_400_000);
+  if (ageDays <= 7) return 8;
+  if (ageDays <= 30) return 5;
+  if (ageDays <= 180) return 2;
+  return 0;
+}
+
+function minIso(left, right) {
+  if (!left) return right || "";
+  if (!right) return left || "";
+  return left <= right ? left : right;
+}
+
+function maxIso(left, right) {
+  if (!left) return right || "";
+  if (!right) return left || "";
+  return left >= right ? left : right;
+}
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function round2(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
 }
 
 function parseReceiptLine(line) {
@@ -787,6 +1233,9 @@ function cleanSignature(value, family = "") {
 
 function cleanTaskSignature(value) {
   const text = cleanText(value, 160);
+  if (!text) {
+    return "";
+  }
   if (/^task:[a-f0-9]{16,64}$/iu.test(text)) {
     return text.toLowerCase();
   }

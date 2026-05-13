@@ -5,7 +5,7 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildTeacherReport } from "../server/agent-learning.js";
+import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceAgentPath = join(root, "scripts", "soty-agent.mjs");
@@ -40,13 +40,14 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.0");
+      assertEqual(health.body.version, "0.4.1");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
       assertEqual(health.body.responseStyle.id, "lord-sysadmin");
       assertEqual(health.body.responseStyle.displayName, "Лорд");
       assertEqual(health.body.memory.schema, "soty.memory-plane.v1");
+      assertEqual(health.body.memory.controller, "soty.memctl.v1");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
       assert(health.body.automationToolkits.available.includes("capability-gateway"));
@@ -346,6 +347,7 @@ async function runScenarios() {
       const secondManifest = JSON.parse(await readFile(manifestPath, "utf8"));
       assertEqual(secondManifest.schema, "soty.agent.release.v2");
       assertEqual(secondManifest.memoryPlane.schema, firstManifest.memoryPlane.schema);
+      assertEqual(secondManifest.memoryPlane.controller, "soty.memctl.v1");
       assertEqual(secondManifest.memoryPlane.queryUrl, "/api/agent/memory/query");
       assertEqual(secondManifest.opsSkill, undefined);
     }],
@@ -442,9 +444,11 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.0");
+      assertEqual(manifest.version, "0.4.1");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
+      assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
+      assertEqual(manifest.memoryPlane.querySchema, "soty.memory.query.v2");
       assertEqual(manifest.opsSkill, undefined);
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
@@ -556,6 +560,78 @@ async function runScenarios() {
       ], { limit: 1 });
       assert(report.recommendations.some((item) => item.title === "Promote reusable route capsule"));
       assert(report.candidates.some((item) => item.marker.includes("reusable route capsule powershell-structured-proof")));
+    }],
+    ["memctl ranks proven routes above rediscovery", async () => {
+      const control = buildMemoryControl([
+        {
+          kind: "action-job",
+          result: "ok",
+          family: "system-check",
+          route: "agent-source.script",
+          toolkit: "durable-action",
+          phase: "verify",
+          platform: "win32",
+          proof: "exitCode=0; reuseKey=powershell-structured-proof; scriptUse=verify; successCriteria=set; context=windows-link",
+          durationMs: 900,
+          createdAt: "2026-05-13T08:05:00.000Z"
+        },
+        {
+          kind: "action-job",
+          result: "ok",
+          family: "system-check",
+          route: "agent-source.script",
+          toolkit: "durable-action",
+          phase: "verify",
+          platform: "win32",
+          proof: "exitCode=0; reuseKey=powershell-structured-proof; scriptUse=verify; successCriteria=set; context=windows-link",
+          durationMs: 1100,
+          createdAt: "2026-05-13T08:06:00.000Z"
+        },
+        {
+          kind: "codex-turn",
+          result: "ok",
+          family: "system-check",
+          route: "codex.exec.resume",
+          platform: "win32",
+          proof: "tokens=actual; input=70000; output=1000; total=71000; cached=0",
+          durationMs: 75000,
+          createdAt: "2026-05-13T08:07:00.000Z"
+        }
+      ], { limit: 3 });
+      assertEqual(control.schema, "soty.memctl.v1");
+      assert(control.memories.provenRoutes.some((item) => item.route === "agent-source.script" && item.confidence >= 0.7));
+      const query = buildMemoryQuery(control, { family: "system-check", platform: "win32" });
+      assertEqual(query.schema, "soty.memory.query.v2");
+      assertEqual(query.controller, "soty.memctl.v1");
+      assertEqual(query.items[0].kind, "proven-route");
+      assert(query.items[0].guidance.includes("Prefer agent-source.script"));
+    }],
+    ["memctl marks newer failures as conflicted instead of proven", async () => {
+      const control = buildMemoryControl([
+        {
+          kind: "action-job",
+          result: "ok",
+          family: "file-work",
+          route: "agent-source.script",
+          proof: "exitCode=0; reuseKey=file-hash-proof; successCriteria=set; context=windows-link",
+          createdAt: "2026-05-13T08:05:00.000Z"
+        },
+        {
+          kind: "action-job",
+          result: "failed",
+          family: "file-work",
+          route: "agent-source.script",
+          proof: "exitCode=7; proof=permission-denied",
+          exitCode: 7,
+          createdAt: "2026-05-13T08:10:00.000Z"
+        }
+      ], { limit: 2 });
+      const route = control.memories.routeCandidates.find((item) => item.family === "file-work");
+      assert(route);
+      assertEqual(route.promotion, "conflicted");
+      assert(!control.memories.provenRoutes.some((item) => item.family === "file-work"));
+      const query = buildMemoryQuery(control, { family: "file-work" });
+      assert(query.items.some((item) => item.kind === "stop-gate" || item.kind === "route-guidance"));
     }]
   ];
   assert(cases.length >= 50);
@@ -792,12 +868,14 @@ function createMockRelay() {
     if (url.pathname === "/api/agent/memory/query") {
       json(response, 200, {
         ok: true,
-        schema: "soty.memory.query.v1",
+        schema: "soty.memory.query.v2",
+        controller: "soty.memctl.v1",
         receipts: 1,
         generatedAt: new Date().toISOString(),
         source: "mock-memory",
         scope: { kind: "global-sanitized-route-memory", deviceCount: 1, platformCounts: [], agentVersions: [] },
         publishModel: "reviewed-memory-route-then-release",
+        stats: { provenRoutes: 0, stopGates: 0, routeFixes: 0 },
         items: []
       });
       return;

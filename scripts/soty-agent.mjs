@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.0";
+const agentVersion = "0.4.1";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -108,6 +108,7 @@ let cachedCodexProbeAt = 0;
 let cachedCodexAvailable = false;
 let cachedCodexLearningMemoryAt = 0;
 let cachedCodexLearningMemoryText = "";
+let cachedCodexLearningMemoryKey = "";
 let agentRelayStarted = false;
 let audioWarmupStarted = false;
 let updateCheckRunning = false;
@@ -3543,12 +3544,23 @@ async function syncLearningOutbox() {
   return { ok: true, sent: receipts.length, pending: rest.length };
 }
 
-async function fetchLearningTeacherReport(limit = 800) {
+async function fetchLearningTeacherReport(limit = 800, options = {}) {
   if (!agentRelayBaseUrl) {
     return { ok: false, status: 0, error: "memory relay url is not configured" };
   }
   const url = new URL("/api/agent/memory/query", agentRelayBaseUrl);
   url.searchParams.set("limit", String(Math.max(1, Math.min(2000, Number.parseInt(String(limit || 800), 10) || 800))));
+  const family = cleanLearningText(options.family || "", 80);
+  const taskSig = cleanLearningText(options.taskSig || "", 160);
+  if (family) {
+    url.searchParams.set("family", family);
+  }
+  if (process.platform) {
+    url.searchParams.set("platform", process.platform);
+  }
+  if (taskSig) {
+    url.searchParams.set("taskSig", taskSig);
+  }
   const response = await fetch(url, { cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload?.ok !== true) {
@@ -3570,7 +3582,7 @@ function formatLearningTeacherReport(sync, report) {
   }
   const lines = [
     `soty-memory-doctor: ok=true receipts=${report.receipts || 0} sent=${sync?.sent || 0} pending=${sync?.pending || 0}`,
-    `memory: ${report.schema || "soty.memory.query"} generated=${report.generatedAt || ""}`,
+    `memory: ${report.schema || "soty.memory.query.v2"} controller=${report.controller || "soty.memctl.v1"} generated=${report.generatedAt || ""}`,
     `scope: ${formatLearningScope(report)}`,
     `publish: ${formatLearningPublishModel(report)}`
   ];
@@ -3584,8 +3596,11 @@ function formatLearningTeacherReport(sync, report) {
     for (const item of recommendations) {
       const prefix = item.priority ? `[${item.priority}] ` : "";
       lines.push(`- ${prefix}${item.family || "generic"}: ${item.title || "review route"}`);
-      if (item.action || item.guidance) {
-        lines.push(`  action: ${item.action || item.guidance}`);
+      if (item.action || item.guidance || item.route) {
+        lines.push(`  action: ${item.action || item.guidance || item.route}`);
+      }
+      if (item.confidence || item.score || item.kind) {
+        lines.push(`  meta: kind=${item.kind || "hint"} confidence=${Number(item.confidence || 0).toFixed(2)} score=${Number(item.score || 0)}`);
       }
     }
   }
@@ -3736,7 +3751,7 @@ function formatLearningReviewMergeReport(report) {
   }
   const lines = [
     `soty-memory-review: ok=true mode=${report.mode} scope=server-global`,
-    `memory: schema=${report.memory?.schema || "soty.memory.query.v1"} receipts=${report.memory?.receipts || 0} devices=${Number(report.memory?.scope?.deviceCount || 0)} sent=${report.sync?.sent || 0} pending=${report.sync?.pending || 0}`,
+    `memory: schema=${report.memory?.schema || "soty.memory.query.v2"} controller=${report.memory?.controller || "soty.memctl.v1"} receipts=${report.memory?.receipts || 0} devices=${Number(report.memory?.scope?.deviceCount || 0)} sent=${report.sync?.sent || 0} pending=${report.sync?.pending || 0}`,
     `hints: accepted=${report.accepted || 0} candidates=${report.candidates || 0}`,
     `publish: ${formatLearningPublishModel(report.memory)}`
   ];
@@ -3753,6 +3768,8 @@ function memoryPlaneStatus() {
   }
   return {
     schema: "soty.memory-plane.v1",
+    controller: "soty.memctl.v1",
+    backend: "append-only-jsonl",
     outbox: pending,
     syncUrl: agentRelayBaseUrl ? "/api/agent/memory/receipts" : "",
     queryUrl: agentRelayBaseUrl ? "/api/agent/memory/query" : "",
@@ -6092,7 +6109,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       mode: codexSessionMode,
       workspaceDir: promptInline(jobDir)
     },
-    memory: (await codexLearningMemoryPrompt()).slice(0, routineTask ? 1400 : 4000)
+    memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, routineTask ? 1400 : 4000)
   };
 }
 
@@ -6225,24 +6242,27 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
   return lines.join("\n").slice(0, maxAgentRuntimePromptChars);
 }
 
-async function codexLearningMemoryPrompt() {
+async function codexLearningMemoryPrompt(taskFamily = "") {
   const now = Date.now();
-  if (cachedCodexLearningMemoryText && now - cachedCodexLearningMemoryAt < 5 * 60_000) {
+  const key = cleanLearningText(taskFamily || "generic", 80) || "generic";
+  if (cachedCodexLearningMemoryText && cachedCodexLearningMemoryKey === key && now - cachedCodexLearningMemoryAt < 5 * 60_000) {
     return cachedCodexLearningMemoryText;
   }
   if (!agentRelayBaseUrl) {
     cachedCodexLearningMemoryAt = now;
+    cachedCodexLearningMemoryKey = key;
     cachedCodexLearningMemoryText = "memory plane unavailable: relay is not configured";
     return cachedCodexLearningMemoryText;
   }
   const report = await Promise.race([
-    fetchLearningTeacherReport(500).catch((error) => ({
+    fetchLearningTeacherReport(500, { family: key === "generic" ? "" : key }).catch((error) => ({
       ok: false,
       error: error instanceof Error ? error.message : String(error)
     })),
     sleep(2500).then(() => ({ ok: false, error: "memory timeout" }))
   ]);
   cachedCodexLearningMemoryAt = now;
+  cachedCodexLearningMemoryKey = key;
   cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, 4000);
   return cachedCodexLearningMemoryText;
 }
@@ -6252,19 +6272,30 @@ function formatCodexLearningMemory(report) {
     return `memory plane unavailable: ${cleanLearningText(report?.error || "unknown", 160)}`;
   }
   const lines = [
-    `memory=${report.schema || "soty.memory.query.v1"} receipts=${Number(report.receipts || 0)} source=${cleanLearningText(report.source || "", 80)}`,
+    `memory=${report.schema || "soty.memory.query.v2"} controller=${report.controller || "soty.memctl.v1"} receipts=${Number(report.receipts || 0)} source=${cleanLearningText(report.source || "", 80)}`,
     `scope=${formatLearningScope(report)}`,
     `publish=${formatLearningPublishModel(report)}`
   ];
+  if (report.stats && typeof report.stats === "object") {
+    lines.push(`stats=provenRoutes:${Number(report.stats.provenRoutes || 0)} stopGates:${Number(report.stats.stopGates || 0)} routeFixes:${Number(report.stats.routeFixes || 0)}`);
+  }
   const recommendations = Array.isArray(report.recommendations)
     ? report.recommendations.slice(0, 4)
     : Array.isArray(report.items)
-      ? report.items.slice(0, 4)
+      ? report.items.slice(0, 6)
       : [];
   if (recommendations.length > 0) {
-    lines.push("recommendations:");
+    lines.push("hints:");
     for (const item of recommendations) {
-      lines.push(`- ${cleanLearningText(item.priority || "normal", 20)} ${cleanLearningText(item.family || "generic", 80)}: ${cleanLearningText(item.title || item.action || "review route", 220)}`);
+      const meta = [
+        cleanLearningText(item.kind || "hint", 40),
+        cleanLearningText(item.priority || "normal", 20),
+        cleanLearningText(item.family || "generic", 80),
+        item.confidence ? `confidence=${Number(item.confidence).toFixed(2)}` : "",
+        item.score ? `score=${Number(item.score)}` : ""
+      ].filter(Boolean).join(" ");
+      const guidance = cleanLearningText(item.guidance || item.action || item.route || "", 260);
+      lines.push(`- ${meta}: ${cleanLearningText(item.title || "memory hint", 180)}${guidance ? ` | ${guidance}` : ""}`);
     }
   }
   const candidates = Array.isArray(report.candidates) ? report.candidates.slice(0, 4) : [];

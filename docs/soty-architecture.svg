@@ -27,7 +27,7 @@
   </defs>
 
   <rect class="bg" width="1280" height="720" />
-  <text class="title" x="64" y="70">Soty: clean Codex + memory plane + user capability gateway</text>
+  <text class="title" x="64" y="70">Soty: clean Codex + MemCtl + user capability gateway</text>
   <text class="small" x="64" y="104">Simple contract: the server thinks, memory accelerates, the installed agent sees and acts on the user's computer.</text>
 
   <rect class="band" x="48" y="140" width="1184" height="236" rx="16" />
@@ -39,10 +39,10 @@
   <text class="tiny" x="122" y="307">no bundled skill wrapper</text>
 
   <rect class="box accent" x="510" y="198" width="260" height="142" />
-  <text class="text" x="540" y="240">Memory plane</text>
+  <text class="text" x="540" y="240">MemCtl</text>
   <text class="small" x="540" y="270">sanitized receipts</text>
-  <text class="small" x="540" y="298">short reusable hints</text>
-  <text class="tiny" x="540" y="323">/memory/query, /memory/receipts</text>
+  <text class="small" x="540" y="298">scored reusable hints</text>
+  <text class="tiny" x="540" y="323">promotion, conflict checks, retrieval</text>
 
   <rect class="box" x="928" y="210" width="244" height="116" />
   <text class="text" x="958" y="252">Release manifest v2</text>

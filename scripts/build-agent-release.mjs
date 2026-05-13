@@ -59,6 +59,10 @@ const manifest = {
   sha256: sha256(sourceText),
   memoryPlane: {
     schema: "soty.memory-plane.v1",
+    controller: "soty.memctl.v1",
+    backend: "append-only-jsonl",
+    querySchema: "soty.memory.query.v2",
+    reportSchema: "soty.memory.report.v2",
     healthUrl: "/api/agent/memory/health",
     queryUrl: "/api/agent/memory/query",
     receiptsUrl: "/api/agent/memory/receipts",
