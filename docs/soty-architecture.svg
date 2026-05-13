@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Soty Agent Architecture</title>
+  <desc id="desc">Server Codex brain with reusable memory plane and a thin user-device capability gateway.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .band { fill: #ffffff; stroke: #d7dde8; stroke-width: 2; }
+      .box { fill: #ffffff; stroke: #26384f; stroke-width: 2.4; rx: 10; }
+      .accent { fill: #e9f7f0; stroke: #157347; }
+      .warn { fill: #fff4e5; stroke: #b96b00; }
+      .dark { fill: #24364b; }
+      .text { font-family: "Segoe UI", Arial, sans-serif; fill: #152033; font-size: 22px; }
+      .small { font-size: 17px; fill: #405066; }
+      .tiny { font-size: 14px; fill: #5d6b7e; }
+      .title { font-size: 34px; font-weight: 700; fill: #152033; }
+      .label { font-size: 18px; font-weight: 700; fill: #152033; }
+      .white { fill: #ffffff; }
+      .arrow { stroke: #26384f; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrow-soft { stroke: #157347; stroke-width: 3; fill: none; marker-end: url(#arrowGreen); stroke-dasharray: 8 8; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#26384f" />
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#157347" />
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1280" height="720" />
+  <text class="title" x="64" y="70">Soty: clean Codex + memory plane + user capability gateway</text>
+  <text class="small" x="64" y="104">Simple contract: the server thinks, memory accelerates, the installed agent sees and acts on the user's computer.</text>
+
+  <rect class="band" x="48" y="140" width="1184" height="236" rx="16" />
+  <text class="label" x="76" y="178">Server plane</text>
+
+  <rect class="box" x="92" y="210" width="260" height="116" />
+  <text class="text" x="122" y="252">Codex brain</text>
+  <text class="small" x="122" y="282">plans, reasons, answers</text>
+  <text class="tiny" x="122" y="307">no bundled skill wrapper</text>
+
+  <rect class="box accent" x="510" y="198" width="260" height="142" />
+  <text class="text" x="540" y="240">Memory plane</text>
+  <text class="small" x="540" y="270">sanitized receipts</text>
+  <text class="small" x="540" y="298">short reusable hints</text>
+  <text class="tiny" x="540" y="323">/memory/query, /memory/receipts</text>
+
+  <rect class="box" x="928" y="210" width="244" height="116" />
+  <text class="text" x="958" y="252">Release manifest v2</text>
+  <text class="small" x="958" y="282">agent + toolkits</text>
+  <text class="tiny" x="958" y="307">no ops-skill artifacts</text>
+
+  <path class="arrow-soft" d="M352 268 C416 232, 446 232, 510 268" />
+  <path class="arrow-soft" d="M770 268 C842 232, 862 232, 928 268" />
+  <path class="arrow-soft" d="M640 340 C640 388, 640 414, 640 452" />
+
+  <rect class="band" x="48" y="430" width="1184" height="210" rx="16" />
+  <text class="label" x="76" y="468">User device plane</text>
+
+  <rect class="box" x="92" y="500" width="292" height="100" />
+  <text class="text" x="122" y="542">Soty Agent</text>
+  <text class="small" x="122" y="572">light install, optional Codex CLI</text>
+
+  <rect class="box accent" x="494" y="488" width="292" height="124" />
+  <text class="text" x="524" y="530">Capability gateway</text>
+  <text class="small" x="524" y="560">file, shell, browser, desktop</text>
+  <text class="tiny" x="524" y="586">durable jobs with proof paths</text>
+
+  <rect class="box warn" x="894" y="500" width="278" height="100" />
+  <text class="text" x="924" y="542">Proof receipts</text>
+  <text class="small" x="924" y="572">result, route, timing, hashes</text>
+
+  <path class="arrow" d="M352 550 C414 550, 432 550, 494 550" />
+  <path class="arrow" d="M786 550 C838 550, 842 550, 894 550" />
+  <path class="arrow-soft" d="M1033 500 C1033 410, 802 398, 700 340" />
+  <path class="arrow" d="M640 452 C640 412, 384 372, 260 326" />
+
+  <rect class="dark" x="64" y="664" width="1152" height="34" rx="8" />
+  <text class="tiny white" x="84" y="686">Invariant: memory suggests, Codex decides, capability tools act, proof closes the loop.</text>
+</svg>

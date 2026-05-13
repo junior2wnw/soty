@@ -2,13 +2,13 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { appendFile, chmod, copyFile, cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.154";
+const agentVersion = "0.4.0";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -68,7 +68,7 @@ const agentTraceEnabled = process.env.SOTY_AGENT_TRACE !== "0";
 const agentTraceFullPrompt = process.env.SOTY_AGENT_TRACE_FULL_PROMPT !== "0";
 const agentTraceRetain = Math.max(10, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_RETAIN || "200", 10) || 200, 5000));
 const agentTraceMaxJsonEvents = Math.max(20, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_MAX_EVENTS || "360", 10) || 360, 5000));
-const codexSessionMode = "soty-lord-capability-memory-v1";
+const codexSessionMode = "soty-clean-codex-memory-plane-v1";
 const agentResponseStyleProfiles = Object.freeze([
   {
     id: "lord-sysadmin",
@@ -2113,27 +2113,6 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
   if (ok && family === "identity-probe") {
     return;
   }
-  const opsPath = findOpsScriptPath();
-  if (!opsPath) {
-    return;
-  }
-  const remember = ok
-    ? `Soty Agent ${family} ${kind} succeeded through source-scoped ctl; future low-risk reversible ${family} tasks should use one agent-source action+readback command and answer plainly.`
-    : `Soty Agent source-scoped ${family} ${kind} failed; keep retries source-scoped, do not switch by label to another device, and report the exact Soty route blocker.`;
-  const proof = ok
-    ? `exitCode=0; family=${family}; output=${sourceOutputShape(result?.text)}`
-    : `exitCode=${exitCode}; proof=${sourceFailureProof(result?.text)}${diagnostic ? `; ${diagnostic}` : ""}`;
-  const env = `soty-agent ${agentVersion}; target=agent-source; sourceDevice=present; kind=${kind}`;
-  spawnDetached(process.env.SOTY_PYTHON || process.env.PYTHON || "python", [
-    opsPath,
-    "Soty Agent source-scoped command outcome",
-    "--remember",
-    remember,
-    "--proof",
-    proof,
-    "--env",
-    env
-  ], dirname(opsPath));
 }
 
 function classifyRoutineSourceTask(lower) {
@@ -3475,7 +3454,7 @@ function cleanLearningReceipt(value) {
     ...cleanLearningContext(value),
     ...(exitCode === undefined ? {} : { exitCode }),
     ...(Number.isSafeInteger(value.durationMs) ? { durationMs: Math.max(0, Math.min(86_400_000, value.durationMs)) } : {}),
-    skillSha: cleanLearningText(opsSkillStatus().tarSha256 || "", 80),
+    memorySchema: "soty.memory.receipt.v1",
     createdAt: new Date().toISOString()
   };
 }
@@ -3543,7 +3522,7 @@ async function syncLearningOutbox() {
     await writeFile(learningOutboxPath, "", "utf8").catch(() => undefined);
     return { ok: false, sent: 0, pending: 0 };
   }
-  const response = await fetch(new URL("/api/agent/learning/receipts", agentRelayBaseUrl), {
+  const response = await fetch(new URL("/api/agent/memory/receipts", agentRelayBaseUrl), {
     method: "POST",
     cache: "no-store",
     headers: { "Content-Type": "application/json" },
@@ -3566,9 +3545,9 @@ async function syncLearningOutbox() {
 
 async function fetchLearningTeacherReport(limit = 800) {
   if (!agentRelayBaseUrl) {
-    return { ok: false, status: 0, error: "learning relay url is not configured" };
+    return { ok: false, status: 0, error: "memory relay url is not configured" };
   }
-  const url = new URL("/api/agent/learning/teacher", agentRelayBaseUrl);
+  const url = new URL("/api/agent/memory/query", agentRelayBaseUrl);
   url.searchParams.set("limit", String(Math.max(1, Math.min(2000, Number.parseInt(String(limit || 800), 10) || 800))));
   const response = await fetch(url, { cache: "no-store" });
   const payload = await response.json().catch(() => ({}));
@@ -3576,7 +3555,7 @@ async function fetchLearningTeacherReport(limit = 800) {
     return {
       ok: false,
       status: response.status,
-      error: cleanLearningText(payload?.error || response.statusText || "teacher request failed", 160)
+      error: cleanLearningText(payload?.error || response.statusText || "memory request failed", 160)
     };
   }
   return payload;
@@ -3585,24 +3564,28 @@ async function fetchLearningTeacherReport(limit = 800) {
 function formatLearningTeacherReport(sync, report) {
   if (!report?.ok) {
     return [
-      `soty-learning-doctor: ok=false sent=${sync?.sent || 0} pending=${sync?.pending || 0}`,
-      `teacher: failed status=${report?.status || 0} error=${report?.error || "unknown"}`
+      `soty-memory-doctor: ok=false sent=${sync?.sent || 0} pending=${sync?.pending || 0}`,
+      `memory: failed status=${report?.status || 0} error=${report?.error || "unknown"}`
     ].join("\n");
   }
   const lines = [
-    `soty-learning-doctor: ok=true receipts=${report.receipts || 0} sent=${sync?.sent || 0} pending=${sync?.pending || 0}`,
-    `teacher: ${report.schema || "soty.learning.teacher"} generated=${report.generatedAt || ""}`,
+    `soty-memory-doctor: ok=true receipts=${report.receipts || 0} sent=${sync?.sent || 0} pending=${sync?.pending || 0}`,
+    `memory: ${report.schema || "soty.memory.query"} generated=${report.generatedAt || ""}`,
     `scope: ${formatLearningScope(report)}`,
     `publish: ${formatLearningPublishModel(report)}`
   ];
-  const recommendations = Array.isArray(report.recommendations) ? report.recommendations.slice(0, 5) : [];
+  const recommendations = Array.isArray(report.recommendations)
+    ? report.recommendations.slice(0, 5)
+    : Array.isArray(report.items)
+      ? report.items.slice(0, 5)
+      : [];
   if (recommendations.length > 0) {
     lines.push("recommendations:");
     for (const item of recommendations) {
       const prefix = item.priority ? `[${item.priority}] ` : "";
       lines.push(`- ${prefix}${item.family || "generic"}: ${item.title || "review route"}`);
-      if (item.action) {
-        lines.push(`  action: ${item.action}`);
+      if (item.action || item.guidance) {
+        lines.push(`  action: ${item.action || item.guidance}`);
       }
     }
   }
@@ -3627,13 +3610,13 @@ function formatLearningScope(report) {
   const platforms = formatLearningCountList(scope.platformCounts);
   const versions = formatLearningCountList(scope.agentVersions);
   const deviceCount = Number(scope.deviceCount || 0);
-  const kind = cleanLearningText(scope.kind || report?.source || "server-global-sanitized-receipts", 80) || "server-global-sanitized-receipts";
+  const kind = cleanLearningText(scope.kind || report?.source || "global-sanitized-route-memory", 80) || "global-sanitized-route-memory";
   return `${kind} devices=${deviceCount} platforms=${platforms || "unknown"} agentVersions=${versions || "unknown"}`;
 }
 
 function formatLearningPublishModel(report) {
-  return cleanLearningText(report?.publishModel || "reviewed-ops-patch-then-build-release-deploy", 120)
-    || "reviewed-ops-patch-then-build-release-deploy";
+  return cleanLearningText(report?.publishModel || "reviewed-memory-route-then-release", 120)
+    || "reviewed-memory-route-then-release";
 }
 
 function formatLearningCountList(entries, limit = 3) {
@@ -3649,78 +3632,30 @@ function formatLearningCountList(entries, limit = 3) {
 async function runLearningReviewMerge(rest = []) {
   const options = parseLearningReviewMergeOptions(rest);
   const sync = await syncLearningOutbox().catch(() => ({ ok: false, sent: 0, pending: 0 }));
-  const teacher = await fetchLearningTeacherReport(options.limit).catch((error) => ({
+  const memory = await fetchLearningTeacherReport(options.limit).catch((error) => ({
     ok: false,
     status: 0,
     error: error instanceof Error ? error.message : String(error)
   }));
+  const items = Array.isArray(memory.items) ? memory.items : [];
+  const recommendations = Array.isArray(memory.recommendations) ? memory.recommendations : [];
+  const candidates = Array.isArray(memory.candidates) ? memory.candidates : [];
   const report = {
-    ok: Boolean(sync.ok && teacher.ok),
-    mode: options.dryRun ? "dry-run" : "write",
+    ok: Boolean(sync.ok && memory.ok),
+    mode: "review",
     sync,
-    teacher,
-    ingest: null,
-    compile: null,
-    reportPath: "",
+    memory,
+    accepted: items.length + recommendations.length,
+    candidates: candidates.length,
     blockedByReview: false,
     error: ""
   };
-  if (!teacher.ok) {
-    report.error = teacher.error || "teacher request failed";
-    return report;
+  if (!memory.ok) {
+    report.error = memory.error || "memory query failed";
   }
-
-  const skillDir = opsSkillSourceDir();
-  if (!skillDir) {
-    return { ...report, ok: false, error: "ops skill source is not installed" };
-  }
-  const ingestScript = join(skillDir, "scripts", "learning", "ingest_teacher_report.py");
-  const compileScript = join(skillDir, "scripts", "learning", "compile_memory_queue.py");
-  if (!existsSync(ingestScript) || !existsSync(compileScript)) {
-    return { ...report, ok: false, error: "ops learning review helpers are missing" };
-  }
-  const python = findPythonCommand();
-  if (!python) {
-    return { ...report, ok: false, error: "python is required for ops learning helpers" };
-  }
-
-  const tempRoot = join(tmpdir(), "soty-learning-review", randomUUID());
-  await mkdir(tempRoot, { recursive: true });
-  const reportPath = join(tempRoot, "teacher-report.json");
-  report.reportPath = reportPath;
-  await writeFile(reportPath, JSON.stringify({ ok: report.ok, sync, teacher }, null, 2), "utf8");
-
-  const commonArgs = [];
-  if (options.memoryDir) {
-    commonArgs.push("--memory-dir", options.memoryDir);
-  }
-  if (options.queue) {
-    commonArgs.push("--queue", options.queue);
-  }
-  for (const scope of options.scopes) {
-    commonArgs.push("--scope", scope);
-  }
-  const ingestArgs = [
-    ingestScript,
-    reportPath,
-    ...commonArgs,
-    ...(options.dryRun ? [] : ["--write"]),
-    "--json"
-  ];
-  const compileArgs = [
-    compileScript,
-    ...(options.memoryDir ? ["--memory-dir", options.memoryDir] : []),
-    "--json"
-  ];
-
-  try {
-    report.ingest = runPythonJson(python, ingestArgs, skillDir);
-    report.compile = runPythonJson(python, compileArgs, skillDir);
-    report.blockedByReview = Number(report.compile?.decision_counts?.review || 0) > 0;
-    report.ok = Boolean(report.sync.ok && report.teacher.ok && report.ingest?.ok !== false && report.compile);
-  } catch (error) {
-    report.ok = false;
-    report.error = error instanceof Error ? error.message : String(error);
+  if (options.jsonPath && report.ok) {
+    await mkdir(dirname(options.jsonPath), { recursive: true });
+    await writeFile(options.jsonPath, JSON.stringify(report, null, 2), "utf8");
   }
   return report;
 }
@@ -3736,8 +3671,7 @@ function parseLearningReviewMergeOptions(rest) {
     json: false,
     strict: false,
     limit: 800,
-    memoryDir: "",
-    queue: "",
+    jsonPath: "",
     scopes: []
   };
   for (let index = 0; index < rest.length; index += 1) {
@@ -3767,22 +3701,13 @@ function parseLearningReviewMergeOptions(rest) {
       options.limit = Number.parseInt(rest[index], 10) || options.limit;
       continue;
     }
-    if (item.startsWith("--memory-dir=")) {
-      options.memoryDir = item.slice("--memory-dir=".length);
+    if (item.startsWith("--out=")) {
+      options.jsonPath = item.slice("--out=".length);
       continue;
     }
-    if (item === "--memory-dir" && rest[index + 1]) {
+    if (item === "--out" && rest[index + 1]) {
       index += 1;
-      options.memoryDir = rest[index] || "";
-      continue;
-    }
-    if (item.startsWith("--queue=")) {
-      options.queue = item.slice("--queue=".length);
-      continue;
-    }
-    if (item === "--queue" && rest[index + 1]) {
-      index += 1;
-      options.queue = rest[index] || "";
+      options.jsonPath = rest[index] || "";
       continue;
     }
     if (item.startsWith("--scope=")) {
@@ -3795,71 +3720,30 @@ function parseLearningReviewMergeOptions(rest) {
     }
   }
   options.limit = Math.max(1, Math.min(2000, options.limit));
-  if (options.memoryDir) {
-    options.memoryDir = resolve(options.memoryDir);
-  }
-  if (options.queue) {
-    options.queue = resolve(options.queue);
-    if (!options.memoryDir) {
-      options.memoryDir = dirname(options.queue);
-    }
+  if (options.jsonPath) {
+    options.jsonPath = resolve(options.jsonPath);
   }
   options.scopes = options.scopes.map((scope) => scope.trim()).filter(Boolean);
   return options;
 }
 
-function findPythonCommand() {
-  const candidates = process.platform === "win32"
-    ? [{ command: "python", args: [] }, { command: "py", args: ["-3"] }, { command: "python3", args: [] }]
-    : [{ command: "python3", args: [] }, { command: "python", args: [] }];
-  for (const candidate of candidates) {
-    try {
-      execFileSync(candidate.command, [...candidate.args, "--version"], { encoding: "utf8", timeout: 5000 });
-      return candidate;
-    } catch {
-      // Try the next well-known Python launcher.
-    }
-  }
-  return null;
-}
-
-function runPythonJson(python, args, cwd) {
-  const output = execFileSync(python.command, [...python.args, ...args], {
-    cwd,
-    encoding: "utf8",
-    timeout: 120_000,
-    env: { ...process.env, PYTHONIOENCODING: "utf-8" }
-  });
-  return JSON.parse(output.replace(/^\uFEFF/u, ""));
-}
-
 function formatLearningReviewMergeReport(report) {
   if (!report?.ok) {
     return [
-      "soty-learning-review-merge: ok=false",
+      "soty-memory-review: ok=false",
       `error: ${report?.error || "unknown"}`
     ].join("\n");
   }
-  const decisions = report.compile?.decision_counts || {};
   const lines = [
-    `soty-learning-review-merge: ok=true mode=${report.mode} scope=server-global`,
-    `teacher: receipts=${report.teacher?.receipts || 0} devices=${Number(report.teacher?.scope?.deviceCount || 0)} sent=${report.sync?.sent || 0} pending=${report.sync?.pending || 0}`,
-    `ingest: accepted=${report.ingest?.accepted_count || 0} skipped=${report.ingest?.skipped_count || 0}`,
-    `compile: promote=${decisions.promote || 0} keep=${decisions.keep || 0} review=${decisions.review || 0} covered=${decisions.covered || 0}`,
-    `queue: ${report.ingest?.queue || ""}`,
-    `publish: ${formatLearningPublishModel(report.teacher)}`
+    `soty-memory-review: ok=true mode=${report.mode} scope=server-global`,
+    `memory: schema=${report.memory?.schema || "soty.memory.query.v1"} receipts=${report.memory?.receipts || 0} devices=${Number(report.memory?.scope?.deviceCount || 0)} sent=${report.sync?.sent || 0} pending=${report.sync?.pending || 0}`,
+    `hints: accepted=${report.accepted || 0} candidates=${report.candidates || 0}`,
+    `publish: ${formatLearningPublishModel(report.memory)}`
   ];
-  if (report.blockedByReview) {
-    lines.push("next: review rows block automatic promotion; patch only reviewed shelf/hot/helper/profile/eval changes.");
-  } else if (Number(decisions.promote || 0) > 0) {
-    lines.push("next: promote rows are ready for a reviewed ops patch, then finish_skill_edit/build/deploy.");
-  } else {
-    lines.push("next: no blocking review rows; keep candidates in queue or patch a reviewed sink when useful.");
-  }
   return lines.join("\n");
 }
 
-function learningStatus() {
+function memoryPlaneStatus() {
   let pending = 0;
   try {
     const text = readFileSync(learningOutboxPath, "utf8");
@@ -3868,9 +3752,11 @@ function learningStatus() {
     pending = 0;
   }
   return {
+    schema: "soty.memory-plane.v1",
     outbox: pending,
-    syncUrl: agentRelayBaseUrl ? "/api/agent/learning/receipts" : "",
-    teacherUrl: agentRelayBaseUrl ? "/api/agent/learning/teacher" : "",
+    syncUrl: agentRelayBaseUrl ? "/api/agent/memory/receipts" : "",
+    queryUrl: agentRelayBaseUrl ? "/api/agent/memory/query" : "",
+    reportUrl: agentRelayBaseUrl ? "/api/agent/memory/report" : "",
     installHash: hashText(agentInstallId).slice(0, 12)
   };
 }
@@ -3894,31 +3780,8 @@ function blockedManualWindowsRecoveryHandoff(command) {
     "! reinstall-route-blocked",
     "Internal tool note: do not open manual Windows Reset/Recovery/Media Creation Tool screens unless the user explicitly asks for a manual fallback.",
     "Continue with managed Soty preparation after the target channel is healthy. If the target channel is not healthy, tell the user plainly: I do not see the computer through Soty right now; restart or open Soty on that PC.",
-    "Do not quote this tool note or mention ops/router/preflight/gates/bridge/source-scoped details in chat."
+    "Do not quote this tool note or mention router/preflight/gates/bridge/source-scoped internals in chat."
   ].join("\n");
-}
-
-function findOpsScriptPath() {
-  const explicit = process.env.SOTY_OPS_SCRIPT || "";
-  const candidates = [
-    explicit,
-    join(agentDir, "skill-sources", "universal-install-ops-skill", "scripts", "ops.py")
-  ].filter(Boolean);
-  return candidates.find((candidate) => existsSync(candidate)) || "";
-}
-
-function spawnDetached(file, args, cwd) {
-  try {
-    const child = spawn(file, args, {
-      cwd,
-      detached: true,
-      windowsHide: true,
-      stdio: "ignore"
-    });
-    child.unref();
-  } catch {
-    // Learning must never block the user's command route.
-  }
 }
 
 async function handleOperatorHttpChat(request, response, headers) {
@@ -5248,7 +5111,7 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   if (attachSotyMcp) {
     args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
     args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_image", "soty_skill_read"]) {
+    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_image"]) {
       args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
     }
   }
@@ -5359,8 +5222,8 @@ function codexSessionFamilyBucket(taskFamily) {
   if (family.includes("browser") || family.includes("pwa")) {
     return "browser";
   }
-  if (family.includes("install") || family.includes("repair") || family.includes("ops")) {
-    return "ops";
+  if (family.includes("install") || family.includes("repair") || family.includes("lifecycle")) {
+    return "lifecycle";
   }
   return family.replace(/[^a-z0-9_.:-]/gu, "_").slice(0, 60) || "dialog";
 }
@@ -5742,10 +5605,10 @@ function extractInternalLearningMarkers(value) {
 function cleanInternalLearningMarker(value) {
   const text = String(value || "").trim().replace(/^`|`$/gu, "");
   if (/^ops-memory\s*:/iu.test(text)) {
-    return text.slice(0, 900);
+    return `soty-memory:${text.replace(/^ops-memory\s*:/iu, "")}`.slice(0, 900);
   }
   if (/^soty-memory\s*:/iu.test(text)) {
-    return `ops-memory:${text.replace(/^soty-memory\s*:/iu, "")}`.slice(0, 900);
+    return text.slice(0, 900);
   }
   return "";
 }
@@ -6271,8 +6134,10 @@ function runtimeTargetScore(target, preferredId) {
 
 function sotyRuntimeHints() {
   return [
-    "- Capabilities: linked-device file/browser/desktop/audio/image tools, durable jobs, visible context, reusable memory.",
-    "- Priority: quality, speed, token economy, and reusable sanitized memory. Hidden memory line: `soty-memory:`."
+    "- Identity: Лорд.",
+    "- Use memory as short reusable hints, not as rules.",
+    "- Use capability tools for the user's computer; verify important actions with proof.",
+    "- Keep answers brief unless the task needs detail. Hidden memory line: `soty-memory:`."
   ];
 }
 
@@ -6303,7 +6168,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     `target_source_device_id: ${runtimeContext.target.sourceDeviceId || "none"}`,
     `response_style: ${activeAgentResponseStyle.id} (${activeAgentResponseStyle.displayName})`,
     "",
-    "## Learning Memory",
+    "## Memory Plane Hints",
     runtimeContext.memory || "unavailable",
     "",
     "## Active Soty Targets",
@@ -6343,7 +6208,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     ...sotyRuntimeHints(),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "",
-    "Learning memory snapshot:",
+    "Memory plane hints:",
     runtime.memory || "unavailable",
     "",
     "Active Soty targets:",
@@ -6355,7 +6220,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "User message to satisfy now:",
     body || "(empty)",
     "",
-    "Use the user message above as the task. Treat service context, learning memory, and any skill text as supporting material only."
+    "Use the user message above as the task. Treat service context and memory hints as supporting material only."
   ];
   return lines.join("\n").slice(0, maxAgentRuntimePromptChars);
 }
@@ -6367,7 +6232,7 @@ async function codexLearningMemoryPrompt() {
   }
   if (!agentRelayBaseUrl) {
     cachedCodexLearningMemoryAt = now;
-    cachedCodexLearningMemoryText = "server learning unavailable: relay is not configured";
+    cachedCodexLearningMemoryText = "memory plane unavailable: relay is not configured";
     return cachedCodexLearningMemoryText;
   }
   const report = await Promise.race([
@@ -6375,7 +6240,7 @@ async function codexLearningMemoryPrompt() {
       ok: false,
       error: error instanceof Error ? error.message : String(error)
     })),
-    sleep(2500).then(() => ({ ok: false, error: "teacher timeout" }))
+    sleep(2500).then(() => ({ ok: false, error: "memory timeout" }))
   ]);
   cachedCodexLearningMemoryAt = now;
   cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, 4000);
@@ -6384,14 +6249,18 @@ async function codexLearningMemoryPrompt() {
 
 function formatCodexLearningMemory(report) {
   if (!report?.ok) {
-    return `server learning unavailable: ${cleanLearningText(report?.error || "unknown", 160)}`;
+    return `memory plane unavailable: ${cleanLearningText(report?.error || "unknown", 160)}`;
   }
   const lines = [
-    `teacher=${report.schema || "soty.learning.teacher"} receipts=${Number(report.receipts || 0)} source=${cleanLearningText(report.source || "", 80)}`,
+    `memory=${report.schema || "soty.memory.query.v1"} receipts=${Number(report.receipts || 0)} source=${cleanLearningText(report.source || "", 80)}`,
     `scope=${formatLearningScope(report)}`,
     `publish=${formatLearningPublishModel(report)}`
   ];
-  const recommendations = Array.isArray(report.recommendations) ? report.recommendations.slice(0, 4) : [];
+  const recommendations = Array.isArray(report.recommendations)
+    ? report.recommendations.slice(0, 4)
+    : Array.isArray(report.items)
+      ? report.items.slice(0, 4)
+      : [];
   if (recommendations.length > 0) {
     lines.push("recommendations:");
     for (const item of recommendations) {
@@ -6572,49 +6441,7 @@ async function preparePersistentStockCodexHome() {
       await copyFile(source, join(target, file)).catch(() => undefined);
     }
   }
-  await installOpsSkillForCodexHome(target);
   return target;
-}
-
-async function installOpsSkillForCodexHome(codexHome) {
-  const source = opsSkillSourceDir();
-  if (!source) {
-    return false;
-  }
-  const skillsDir = join(codexHome, "skills");
-  await mkdir(skillsDir, { recursive: true });
-  const target = join(skillsDir, "universal-install-ops");
-  if (!sameFsPath(source, target)) {
-    await rm(target, { recursive: true, force: true }).catch(() => undefined);
-    await cp(source, target, {
-      recursive: true,
-      force: true,
-      filter: (path) => {
-        const normalized = String(path || "").replace(/\\/gu, "/");
-        return !/(^|\/)(\.git|\.skill-memory|__pycache__)(\/|$)/u.test(normalized)
-          && !/\.pyc$/iu.test(normalized);
-      }
-    });
-  }
-  await rm(join(skillsDir, "ops"), { recursive: true, force: true }).catch(() => undefined);
-  return true;
-}
-
-function sameFsPath(left, right) {
-  const leftPath = resolve(left).replace(/\\/gu, "/");
-  const rightPath = resolve(right).replace(/\\/gu, "/");
-  return process.platform === "win32"
-    ? leftPath.toLowerCase() === rightPath.toLowerCase()
-    : leftPath === rightPath;
-}
-
-function opsSkillSourceDir() {
-  const candidates = [
-    join(agentDir, "skill-sources", "universal-install-ops-skill"),
-    join(chooseCodexAuthHome(), "skills", "universal-install-ops"),
-    join(homedir(), ".codex", "skills", "universal-install-ops")
-  ];
-  return candidates.find((candidate) => candidate && existsSync(join(candidate, "SKILL.md"))) || "";
 }
 
 function chooseCodexAuthHome() {
@@ -7149,19 +6976,6 @@ function runMcpServer() {
           additionalProperties: false
         }
       },
-      {
-        name: "soty_skill_read",
-        description: "Read a file from the Codex skill directory loaded for this session. Use this before applying a skill such as $ops when SKILL.md or a referenced skill file is needed. This is read-only and does not run commands on the source device.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            skill: { type: "string", description: "Skill name, for example ops or universal-install-ops. Defaults to ops." },
-            path: { type: "string", description: "Relative file path inside the skill directory. Defaults to SKILL.md." },
-            maxChars: { type: "integer", description: "Maximum characters to return, 1000-60000." }
-          },
-          additionalProperties: false
-        }
-      }
     ];
   }
 
@@ -7176,10 +6990,6 @@ function runMcpServer() {
   async function callSotyMcpTool(params) {
     const name = String(params.name || "");
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
-    if (name === "soty_skill_read") {
-      const result = await readCodexSkillFile(args);
-      return mcpToolText(result.text, !result.ok, result.exitCode);
-    }
     if (name === "soty_action_list") {
       const result = await mcpRequestOperator("GET", "/operator/actions");
       return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
@@ -8190,58 +8000,6 @@ function runMcpServer() {
       text: clean,
       timeoutMs: 20_000
     }).catch(() => undefined);
-  }
-
-  async function readCodexSkillFile(args) {
-    const skillName = normalizeMcpSkillName(String(args.skill || "ops"));
-    const relativePath = String(args.path || "SKILL.md").trim() || "SKILL.md";
-    const maxChars = Number.isSafeInteger(args.maxChars) ? Math.max(1000, Math.min(args.maxChars, 60000)) : 24000;
-    if (!skillName || !/^[A-Za-z0-9_.-]+$/u.test(skillName)) {
-      return { ok: false, text: "! skill", exitCode: 2 };
-    }
-    if (relativePath.includes("\0") || /(^|[\\/])\.\.([\\/]|$)/u.test(relativePath)) {
-      return { ok: false, text: "! skill-path", exitCode: 2 };
-    }
-    const skillRoot = mcpSkillRoot(skillName);
-    if (!skillRoot) {
-      return { ok: false, text: "! skill-read: skill is not installed", exitCode: 1 };
-    }
-    const fullPath = resolve(skillRoot, relativePath);
-    const rel = relative(skillRoot, fullPath);
-    if (!rel || rel.startsWith("..") || isAbsolute(rel)) {
-      return { ok: false, text: "! skill-path", exitCode: 2 };
-    }
-    try {
-      const text = await readFile(fullPath, "utf8");
-      return {
-        ok: true,
-        text: text.slice(0, maxChars),
-        exitCode: 0
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        text: `! skill-read: ${error instanceof Error ? error.message : String(error)}`,
-        exitCode: 1
-      };
-    }
-  }
-
-  function normalizeMcpSkillName(value) {
-    const text = String(value || "").trim().toLowerCase();
-    if (!text || text === "ops" || text === "universal-install-ops" || text === "universal-install-ops-skill") {
-      return "universal-install-ops";
-    }
-    return text;
-  }
-
-  function mcpSkillRoot(skillName) {
-    if (skillName === "universal-install-ops") {
-      return opsSkillSourceDir() || "";
-    }
-    const skillsRoot = join(chooseCodexAuthHome(), "skills");
-    const root = resolve(skillsRoot, skillName);
-    return existsSync(join(root, "SKILL.md")) ? root : "";
   }
 
   async function mcpPostOperator(path, body) {
@@ -9871,13 +9629,13 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  if (command === "learn-sync" || command === "learning-sync" || (command === "learn" && args[1] === "sync")) {
+  if (command === "learn-sync" || command === "learning-sync" || command === "memory-sync" || (command === "learn" && args[1] === "sync") || (command === "memory" && args[1] === "sync")) {
     const result = await syncLearningOutbox().catch(() => ({ ok: false, sent: 0, pending: 0 }));
-    process.stdout.write(`soty-learning: ok=${result.ok ? "true" : "false"} sent=${result.sent || 0} pending=${result.pending || 0}\n`);
+    process.stdout.write(`soty-memory: ok=${result.ok ? "true" : "false"} sent=${result.sent || 0} pending=${result.pending || 0}\n`);
     return await finishControlCli(result.ok ? 0 : 1);
   }
-  if (command === "learn-doctor" || command === "learn-teacher" || command === "learning-doctor" || command === "learning-teacher" || (command === "learn" && (args[1] === "doctor" || args[1] === "teacher"))) {
-    const rest = command === "learn" ? args.slice(2) : args.slice(1);
+  if (command === "learn-doctor" || command === "learn-teacher" || command === "learning-doctor" || command === "learning-teacher" || command === "memory-doctor" || command === "memory-query" || (command === "learn" && (args[1] === "doctor" || args[1] === "teacher")) || (command === "memory" && (args[1] === "doctor" || args[1] === "query"))) {
+    const rest = command === "learn" || command === "memory" ? args.slice(2) : args.slice(1);
     const json = rest.includes("--json");
     const limitArg = rest.find((item) => item.startsWith("--limit="));
     const limit = limitArg ? Number.parseInt(limitArg.slice("--limit=".length), 10) : 800;
@@ -9888,14 +9646,14 @@ async function runControlCli(args) {
       error: error instanceof Error ? error.message : String(error)
     }));
     if (json) {
-      process.stdout.write(`${JSON.stringify({ ok: sync.ok && report.ok, sync, teacher: report }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ ok: sync.ok && report.ok, sync, memory: report }, null, 2)}\n`);
     } else {
       process.stdout.write(`${formatLearningTeacherReport(sync, report)}\n`);
     }
     return await finishControlCli(sync.ok && report.ok ? 0 : 1);
   }
-  if (command === "learn-review-merge" || command === "learning-review-merge" || command === "learn-global-review" || command === "learning-global-review" || (command === "learn" && (args[1] === "review-merge" || args[1] === "merge" || args[1] === "global-review" || args[1] === "global-review-merge"))) {
-    const rest = command === "learn" ? args.slice(2) : args.slice(1);
+  if (command === "learn-review-merge" || command === "learning-review-merge" || command === "learn-global-review" || command === "learning-global-review" || command === "memory-review" || (command === "learn" && (args[1] === "review-merge" || args[1] === "merge" || args[1] === "global-review" || args[1] === "global-review-merge")) || (command === "memory" && (args[1] === "review" || args[1] === "global-review"))) {
+    const rest = command === "learn" || command === "memory" ? args.slice(2) : args.slice(1);
     const options = parseLearningReviewMergeOptions(rest);
     const report = await runLearningReviewMerge(rest);
     if (options.json) {
@@ -9930,7 +9688,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | learn-sync | learn doctor [--json] [--limit=n] | learn review-merge|global-review [--dry-run] [--strict] | import <file>\n");
+  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
   process.exit(2);
 }
 
@@ -10424,13 +10182,12 @@ function runtimeHealth() {
     codexAuth: hasCodexAuth(),
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
     codexSessionMode,
-    codexRuntimeContext: "soty-capabilities+learning-memory",
+    codexRuntimeContext: "clean-codex+memory-plane+capability-gateway",
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),
     trace: agentTraceStatus(),
-    learning: learningStatus(),
-    opsSkill: opsSkillStatus(),
+    memory: memoryPlaneStatus(),
     automationToolkits: automationToolkitStatus(),
     ...(process.platform === "win32" ? {
       windowsUser: windowsUserName(),
@@ -10448,17 +10205,17 @@ function runtimeHealth() {
 
 function automationToolkitStatus() {
   return {
-    schema: "soty.automation-toolkits.v1",
-    policy: "first-class-toolkit-before-ad-hoc-script",
+    schema: "soty.automation-toolkits.v2",
+    policy: "capability-api-with-memory-hints",
     chat: activeAgentResponseStyle.id,
     responseStyle: agentResponseStyleStatus(),
     frontDoor: "soty_toolkit",
     defaultKernel: "soty_action",
     terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"],
-    available: ["universal-toolkit", "durable-action", "windows-reinstall"],
+    available: ["capability-gateway", "durable-action", "windows-reinstall"],
     toolkits: [
       {
-        name: "universal-toolkit",
+        name: "capability-gateway",
         entryTool: "soty_toolkit",
         phases: ["describe", "start", "status", "stop", "list", "reinstall"],
         proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"]
@@ -10476,25 +10233,6 @@ function automationToolkitStatus() {
         proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"]
       }
     ]
-  };
-}
-
-function opsSkillStatus() {
-  const source = opsSkillSourceDir();
-  if (!source) {
-    return { installed: false };
-  }
-  let marker = null;
-  try {
-    marker = JSON.parse(readFileSync(join(source, ".soty-skill-bundle.json"), "utf8"));
-  } catch {
-    marker = null;
-  }
-  return {
-    installed: true,
-    bundled: source.startsWith(join(agentDir, "skill-sources")),
-    ...(typeof marker?.tarSha256 === "string" ? { tarSha256: marker.tarSha256 } : {}),
-    ...(typeof marker?.revision === "string" && marker.revision ? { revision: marker.revision } : {})
   };
 }
 
@@ -10683,7 +10421,6 @@ async function checkForUpdate() {
     if (!isSafeManifest(manifest)) {
       return;
     }
-    await maybeUpdateOpsSkillFromManifest(manifest, updateManifestUrl).catch(() => undefined);
     if (compareVersion(manifest.version, agentVersion) <= 0) {
       return;
     }
@@ -10744,93 +10481,6 @@ function notifyOperatorUpdating(version) {
   });
 }
 
-async function maybeUpdateOpsSkillFromManifest(manifest, manifestUrl) {
-  const skill = manifest?.opsSkill;
-  if (!isSafeOpsSkillManifest(skill)) {
-    return false;
-  }
-  const target = join(agentDir, "skill-sources", "universal-install-ops-skill");
-  if (existsSync(join(target, "SKILL.md"))) {
-    const marker = await readJsonFile(join(target, ".soty-skill-bundle.json"));
-    if (marker?.tarSha256 === skill.tarSha256 || (skill.zipSha256 && marker?.zipSha256 === skill.zipSha256)) {
-      if (typeof skill.revision === "string" && skill.revision && marker?.revision !== skill.revision) {
-        await writeFile(join(target, ".soty-skill-bundle.json"), JSON.stringify({
-          ...marker,
-          tarSha256: skill.tarSha256,
-          zipSha256: typeof skill.zipSha256 === "string" ? skill.zipSha256 : marker?.zipSha256 || "",
-          revision: skill.revision,
-          installedAt: marker?.installedAt || new Date().toISOString(),
-          metadataRefreshedAt: new Date().toISOString()
-        }, null, 2), "utf8").catch(() => undefined);
-      }
-      return false;
-    }
-  }
-
-  const archiveUrl = new URL(skill.tarUrl, manifestUrl);
-  if (!/^https?:$/iu.test(archiveUrl.protocol)) {
-    return false;
-  }
-  const { response: archiveResponse, bytes: archiveBytes } = await fetchBytesWithTimeout(archiveUrl, { cache: "no-store" }, updateFetchTimeoutMs);
-  if (!archiveResponse.ok) {
-    return false;
-  }
-  if (sha256(archiveBytes) !== skill.tarSha256) {
-    return false;
-  }
-
-  const tempRoot = join(tmpdir(), "soty-agent-skill", randomUUID());
-  const skillRoot = join(agentDir, "skill-sources");
-  const next = join(skillRoot, `universal-install-ops-skill.next-${process.pid}`);
-  const backup = join(skillRoot, `universal-install-ops-skill.backup-${process.pid}`);
-  try {
-    await mkdir(tempRoot, { recursive: true });
-    const archivePath = join(tempRoot, "ops-skill.tar.gz");
-    await writeFile(archivePath, archiveBytes);
-    await extractTarGz(archivePath, tempRoot);
-    const inner = join(tempRoot, skill.root || "universal-install-ops-skill");
-    if (!existsSync(join(inner, "SKILL.md"))) {
-      return false;
-    }
-
-    await mkdir(skillRoot, { recursive: true });
-    await rm(next, { recursive: true, force: true }).catch(() => undefined);
-    await rm(backup, { recursive: true, force: true }).catch(() => undefined);
-    await cp(inner, next, {
-      recursive: true,
-      force: true,
-      filter: (path) => {
-        const normalized = String(path || "").replace(/\\/gu, "/");
-        return !/(^|\/)(\.git|\.skill-memory|__pycache__)(\/|$)/u.test(normalized)
-          && !/\.pyc$/iu.test(normalized);
-      }
-    });
-    await writeFile(join(next, ".soty-skill-bundle.json"), JSON.stringify({
-      tarSha256: skill.tarSha256,
-      zipSha256: typeof skill.zipSha256 === "string" ? skill.zipSha256 : "",
-      revision: typeof skill.revision === "string" ? skill.revision : "",
-      installedAt: new Date().toISOString()
-    }, null, 2), "utf8");
-    if (existsSync(target)) {
-      await rename(target, backup);
-    }
-    try {
-      await rename(next, target);
-      await rm(backup, { recursive: true, force: true }).catch(() => undefined);
-    } catch (error) {
-      if (!existsSync(target) && existsSync(backup)) {
-        await rename(backup, target).catch(() => undefined);
-      }
-      throw error;
-    }
-    return true;
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
-    await rm(next, { recursive: true, force: true }).catch(() => undefined);
-    await rm(backup, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
 async function fetchJsonWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -10859,27 +10509,6 @@ async function fetchBytesWithTimeout(url, options, timeoutMs) {
   }
 }
 
-function extractTarGz(archivePath, destinationDir) {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawnCommand("tar", ["-xzf", archivePath, "-C", destinationDir], {
-      windowsHide: true,
-      stdio: ["ignore", "ignore", "pipe"]
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-4000);
-    });
-    child.on("error", rejectPromise);
-    child.on("close", (exitCode) => {
-      if (exitCode === 0) {
-        resolvePromise();
-      } else {
-        rejectPromise(new Error(`tar failed: ${stderr || exitCode}`));
-      }
-    });
-  });
-}
-
 async function readJsonFile(path) {
   try {
     return JSON.parse(await readFile(path, "utf8"));
@@ -10896,18 +10525,6 @@ function isSafeManifest(value) {
     && typeof value.agentUrl === "string"
     && value.agentUrl.length <= 300
     && /^[a-f0-9]{64}$/u.test(value.sha256);
-}
-
-function isSafeOpsSkillManifest(value) {
-  return value
-    && typeof value === "object"
-    && value.name === "universal-install-ops"
-    && typeof value.root === "string"
-    && /^[A-Za-z0-9_.-]{1,80}$/u.test(value.root)
-    && typeof value.tarUrl === "string"
-    && value.tarUrl.length <= 300
-    && /^[a-f0-9]{64}$/u.test(value.tarSha256)
-    && (typeof value.zipSha256 === "undefined" || /^[a-f0-9]{64}$/u.test(value.zipSha256));
 }
 
 function compareVersion(left, right) {

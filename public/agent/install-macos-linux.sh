@@ -373,58 +373,6 @@ resolve_codex() {
   printf '%s\n' ''
 }
 
-install_ops_skill_source() {
-  skill_root="${AGENT_DIR}/skill-sources"
-  target="${skill_root}/universal-install-ops-skill"
-  archive_path="${AGENT_DIR}/universal-install-ops-skill-main.tar.gz"
-  extract_dir="${AGENT_DIR}/ops-skill-download"
-  manifest_path="${AGENT_DIR}/ops-skill-manifest.json"
-  url="${BASE}/ops-skill.tar.gz"
-  expected_hash=""
-
-  if fetch_file "$MANIFEST_URL" "$manifest_path"; then
-    meta="$("$NODE_PATH" -e 'const fs=require("fs"); const base=process.argv[1]; const file=process.argv[2]; const m=JSON.parse(fs.readFileSync(file,"utf8")); const s=m.opsSkill||{}; const url=typeof s.tarUrl==="string"?new URL(s.tarUrl,base).href:""; const hash=typeof s.tarSha256==="string"&&/^[a-f0-9]{64}$/i.test(s.tarSha256)?s.tarSha256.toLowerCase():""; console.log(url); console.log(hash);' "$MANIFEST_URL" "$manifest_path" 2>/dev/null || true)"
-    parsed_url="$(printf '%s\n' "$meta" | sed -n '1p')"
-    parsed_hash="$(printf '%s\n' "$meta" | sed -n '2p')"
-    [ -n "$parsed_url" ] && url="$parsed_url"
-    expected_hash="$parsed_hash"
-  fi
-  rm -f "$manifest_path"
-
-  mkdir -p "$skill_root"
-  rm -rf "$extract_dir"
-  if fetch_file "$url" "$archive_path"; then
-    if [ -n "$expected_hash" ]; then
-      actual_hash="$(sha256_file "$archive_path")"
-      [ -n "$actual_hash" ] || die "sha256 tool is required"
-      if [ "$actual_hash" != "$expected_hash" ]; then
-        rm -f "$archive_path"
-        die "ops skill hash mismatch"
-      fi
-    fi
-    mkdir -p "$extract_dir"
-    tar -xzf "$archive_path" -C "$extract_dir"
-    inner="$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-    if [ -n "$inner" ]; then
-      rm -rf "$target"
-      mv "$inner" "$target"
-      if [ -n "$expected_hash" ]; then
-        printf '{"tarSha256":"%s","installedAt":"%s"}\n' "$expected_hash" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >"${target}/.soty-skill-bundle.json"
-      fi
-      rm -rf "$extract_dir" "$archive_path"
-      printf '%s\n' "soty-ops-skill:installed"
-      return
-    fi
-  fi
-
-  rm -rf "$extract_dir" "$archive_path"
-  if [ -f "${target}/SKILL.md" ]; then
-    printf '%s\n' "soty-ops-skill:kept-existing"
-    return
-  fi
-  die "ops skill install failed"
-}
-
 install_agent_script() {
   manifest_path="${AGENT_DIR}/manifest.json"
   fetch_file "$MANIFEST_URL" "$manifest_path"
@@ -679,7 +627,6 @@ if [ "$INSTALL_CODEX" = "1" ]; then
 else
   printf '%s\n' "soty-codex-cli:install-skipped:default-light-agent" >>"$LOG_PATH"
 fi
-install_ops_skill_source
 install_agent_script
 write_agent_config
 write_runner

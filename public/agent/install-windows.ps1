@@ -211,67 +211,6 @@ try {
     }
   }
 
-  function Install-OpsSkillSource {
-    $skillRoot = Join-Path $AgentDir "skill-sources"
-    $target = Join-Path $skillRoot "universal-install-ops-skill"
-    $zipPath = Join-Path $AgentDir "universal-install-ops-skill-main.zip"
-    $extractDir = Join-Path $AgentDir "ops-skill-download"
-    $url = "$Base/ops-skill.zip"
-    $expectedHash = ""
-    $expectedTarHash = ""
-    try {
-      $skillManifest = Invoke-RestMethod -Uri $ManifestUrl -UseBasicParsing -TimeoutSec 15
-      if ($skillManifest -and $skillManifest.opsSkill) {
-        $manifestUrl = [string]$skillManifest.opsSkill.zipUrl
-        $manifestHash = [string]$skillManifest.opsSkill.zipSha256
-        $manifestTarHash = [string]$skillManifest.opsSkill.tarSha256
-        if ($manifestUrl) {
-          if ($manifestUrl -match '^https?://') {
-            $url = $manifestUrl
-          } elseif ($manifestUrl.StartsWith("/")) {
-            $baseUri = [Uri]$Base
-            $url = "$($baseUri.Scheme)://$($baseUri.Authority)$manifestUrl"
-          } else {
-            $url = "$($Base.TrimEnd('/'))/$manifestUrl"
-          }
-        }
-        if ($manifestHash -match '^[a-fA-F0-9]{64}$') {
-          $expectedHash = $manifestHash.ToLowerInvariant()
-        }
-        if ($manifestTarHash -match '^[a-fA-F0-9]{64}$') {
-          $expectedTarHash = $manifestTarHash.ToLowerInvariant()
-        }
-      }
-    } catch {}
-    try {
-      New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
-      Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-      Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile $zipPath
-      if ($expectedHash) {
-        $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $expectedHash) { throw "ops skill hash mismatch" }
-      }
-      Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
-      $inner = Get-ChildItem -LiteralPath $extractDir -Directory | Select-Object -First 1
-      if (-not $inner) { throw "ops skill archive is empty" }
-      Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
-      Move-Item -LiteralPath $inner.FullName -Destination $target
-      if ($expectedHash) {
-        $marker = @{ zipSha256 = $expectedHash; tarSha256 = $expectedTarHash; installedAt = (Get-Date).ToUniversalTime().ToString("o") } | ConvertTo-Json -Compress
-        Set-Content -LiteralPath (Join-Path $target ".soty-skill-bundle.json") -Value $marker -Encoding ASCII
-      }
-      Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
-      Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-      Write-Output "soty-ops-skill:installed"
-    } catch {
-      if (Test-Path -LiteralPath (Join-Path $target "SKILL.md")) {
-        Write-Output "soty-ops-skill:kept-existing"
-        return
-      }
-      throw "ops skill install failed: $($_.Exception.Message)"
-    }
-  }
-
   function Test-AgentHealth {
     try {
       $health = Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 2
@@ -491,7 +430,6 @@ shell.Run "$escapedCommand", 0, False
   } else {
     Write-Output "soty-codex-cli:install-skipped:default-light-agent"
   }
-  Install-OpsSkillSource
   $NodeDir = Split-Path -Parent $NodePath
   $CodexDir = if ($CodexPath) { Split-Path -Parent $CodexPath } else { "" }
   $RunnerPathParts = @($NodeDir, $CodexDir) | Where-Object { $_ }

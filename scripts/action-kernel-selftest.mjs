@@ -40,15 +40,16 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.3.154");
+      assertEqual(health.body.version, "0.4.0");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
       assertEqual(health.body.responseStyle.id, "lord-sysadmin");
       assertEqual(health.body.responseStyle.displayName, "Лорд");
-      assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v1");
+      assertEqual(health.body.memory.schema, "soty.memory-plane.v1");
+      assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_toolkit");
-      assert(health.body.automationToolkits.available.includes("universal-toolkit"));
+      assert(health.body.automationToolkits.available.includes("capability-gateway"));
       assert(health.body.automationToolkits.available.includes("durable-action"));
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
       assertEqual(health.body.automationToolkits.defaultKernel, "soty_action");
@@ -63,8 +64,9 @@ async function runScenarios() {
     ["toolkit endpoint exposes universal contract", async () => {
       const toolkits = await get("/operator/toolkits");
       assertEqual(toolkits.status, 200);
-      assertEqual(toolkits.body.schema, "soty.automation-toolkits.v1");
+      assertEqual(toolkits.body.schema, "soty.automation-toolkits.v2");
       assertEqual(toolkits.body.responseStyle.displayName, "Лорд");
+      assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "capability-gateway"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "durable-action"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "windows-reinstall"));
     }],
@@ -281,7 +283,7 @@ async function runScenarios() {
     ["cli toolkit describe works", async () => {
       const cli = await runCli(["toolkit", "describe"]);
       assertEqual(cli.code, 0);
-      assert(cli.stdout.includes("soty.automation-toolkits.v1"));
+      assert(cli.stdout.includes("soty.automation-toolkits.v2"));
       assert(cli.stdout.includes("soty_toolkit"));
     }],
     ["cli toolkit run uses durable-action metadata", async () => {
@@ -325,15 +327,16 @@ async function runScenarios() {
       assertEqual(response.body.status, "interrupted");
       assert(mock.count("SELFTEST_HANG restart") <= 1);
     }],
-    ["release builder reuses committed skill bundle", async () => {
+    ["release builder publishes memory plane manifest without skill bundle", async () => {
       const cli = await runNode([join(root, "scripts", "build-agent-release.mjs")], {
         ...process.env,
         SOTY_OPS_SKILL_SOURCE: join(tempRoot, "missing-skill")
       }, root);
       assertEqual(cli.code, 0);
-      assert(cli.stdout.includes("ops-skill:"));
+      assert(cli.stdout.includes("memory-plane:soty.memory-plane.v1"));
+      assert(!cli.stdout.includes("ops-skill:"));
     }],
-    ["release builder keeps ops skill tar hash stable", async () => {
+    ["release builder keeps memory manifest stable", async () => {
       const manifestPath = join(root, "public", "agent", "manifest.json");
       const first = await runNode([join(root, "scripts", "build-agent-release.mjs")], process.env, root);
       assertEqual(first.code, 0);
@@ -341,8 +344,10 @@ async function runScenarios() {
       const second = await runNode([join(root, "scripts", "build-agent-release.mjs")], process.env, root);
       assertEqual(second.code, 0);
       const secondManifest = JSON.parse(await readFile(manifestPath, "utf8"));
-      assertEqual(secondManifest.opsSkill.tarSha256, firstManifest.opsSkill.tarSha256);
-      assertEqual(secondManifest.opsSkill.zipSha256, firstManifest.opsSkill.zipSha256);
+      assertEqual(secondManifest.schema, "soty.agent.release.v2");
+      assertEqual(secondManifest.memoryPlane.schema, firstManifest.memoryPlane.schema);
+      assertEqual(secondManifest.memoryPlane.queryUrl, "/api/agent/memory/query");
+      assertEqual(secondManifest.opsSkill, undefined);
     }],
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
@@ -351,7 +356,7 @@ async function runScenarios() {
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       const managed = await readFile(join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1"), "utf8");
       assert(agent.includes("sotyRuntimeHints"));
-      assert(agent.includes("soty-capabilities+learning-memory"));
+      assert(agent.includes("clean-codex+memory-plane+capability-gateway"));
       assert(agent.includes("soty_image"));
       assert(agent.includes("soty_toolkit"));
       assert(agent.includes("automationToolkitStatus"));
@@ -375,7 +380,7 @@ async function runScenarios() {
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
       assert(agent.includes("isActionableTargetOperatorMessage"));
       assert(agent.includes('preferredTargetId: agentDialog ? "" : item.target'));
-      assert(agent.includes("Priority: quality, speed, token economy"));
+      assert(agent.includes("Use memory as short reusable hints"));
       assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));
       assert(agent.includes("waitForTurnkeyTargetAfterCodex"));
       assert(agent.includes("turnkeyGuardTimeoutMs"));
@@ -437,10 +442,13 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.3.154");
+      assertEqual(manifest.version, "0.4.0");
+      assertEqual(manifest.schema, "soty.agent.release.v2");
+      assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
+      assertEqual(manifest.opsSkill, undefined);
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
-      assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v1");
+      assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "soty_toolkit");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "soty_action");
       assertEqual(manifest.automationToolkits.policy.chat, "lord-sysadmin");
@@ -448,9 +456,9 @@ async function runScenarios() {
       assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
       assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Лорд");
       assertEqual(manifest.automationToolkits.policy.responseStyle.phraseBank.length, 0);
-      const universalToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "universal-toolkit");
-      assert(universalToolkit);
-      assertEqual(universalToolkit.entryTool, "soty_toolkit");
+      const capabilityGateway = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "capability-gateway");
+      assert(capabilityGateway);
+      assertEqual(capabilityGateway.entryTool, "soty_toolkit");
       const reinstallToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "windows-reinstall");
       assert(reinstallToolkit);
       assertEqual(reinstallToolkit.entryTool, "soty_reinstall");
@@ -466,9 +474,13 @@ async function runScenarios() {
       assert(windowsInstall.includes("[switch]$InstallCodex"));
       assert(windowsInstall.includes("if ($InstallCodex)"));
       assert(windowsInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(!windowsInstall.includes("universal-install-ops"));
+      assert(!windowsInstall.includes("ops-skill"));
       assert(unixInstall.includes("INSTALL_CODEX=\"0\""));
       assert(unixInstall.includes("--install-codex"));
       assert(unixInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(!unixInstall.includes("universal-install-ops"));
+      assert(!unixInstall.includes("ops-skill"));
       assert(!ui.includes("Первый ответ может занять"));
       assert(!ui.includes("первый запуск может занять"));
       assert(!ui.includes("progressTimer"));
@@ -501,7 +513,7 @@ async function runScenarios() {
       assert(report.candidates.some((item) => item.marker.includes("post-arm reboot window")));
     }],
     ["learning teacher promotes hidden dialog memory markers", async () => {
-      const marker = "ops-memory: goal=Soty UTF-8 identity proof | actual=use WindowsIdentity with UTF-8 output | success=DOMAIN\\User without mojibake | env=agent-dialog";
+      const marker = "soty-memory: goal=Soty UTF-8 identity proof | actual=use WindowsIdentity with UTF-8 output | success=DOMAIN\\User without mojibake | env=agent-dialog";
       const report = buildTeacherReport([
         {
           kind: "agent-runtime",
@@ -773,8 +785,21 @@ function createMockRelay() {
       json(response, 200, { ok: true, id: payload.id || "" });
       return;
     }
-    if (url.pathname === "/api/agent/learning/receipts") {
+    if (url.pathname === "/api/agent/learning/receipts" || url.pathname === "/api/agent/memory/receipts") {
       json(response, 200, { ok: true, accepted: 1 });
+      return;
+    }
+    if (url.pathname === "/api/agent/memory/query") {
+      json(response, 200, {
+        ok: true,
+        schema: "soty.memory.query.v1",
+        receipts: 1,
+        generatedAt: new Date().toISOString(),
+        source: "mock-memory",
+        scope: { kind: "global-sanitized-route-memory", deviceCount: 1, platformCounts: [], agentVersions: [] },
+        publishModel: "reviewed-memory-route-then-release",
+        items: []
+      });
       return;
     }
     json(response, 404, { ok: false });

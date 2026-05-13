@@ -1,18 +1,15 @@
 {
-  "version": "0.3.154",
+  "version": "0.4.0",
+  "schema": "soty.agent.release.v2",
+  "architecture": "server-codex-brain+memory-plane+user-capability-gateway",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "cb0a3aaa1d5e9b2bece7c5f18e43e7cc6966fb34c01e97a097ede45f71be148f",
-  "opsSkill": {
-    "name": "universal-install-ops",
-    "root": "universal-install-ops-skill",
-    "zipUrl": "/agent/ops-skill.zip",
-    "zipSha256": "877b229d12031eb05aa6de85ce6b3375e8b6c9b6b22c4bdd38e054d298e5bd14",
-    "zipBytes": 1271738,
-    "tarUrl": "/agent/ops-skill.tar.gz",
-    "tarSha256": "78ffed295fb0760329a2427e7de1b5503a130a99b10d9b89fa97c05d58ab9333",
-    "tarBytes": 309272,
-    "revision": "c9eee0bc2750b51671d663985841f536089e2c61",
-    "dirty": true
+  "sha256": "1e48f312bc09235f476ebf6fef363656d51701abf7749c902dd3d0ec507b4563",
+  "memoryPlane": {
+    "schema": "soty.memory-plane.v1",
+    "healthUrl": "/api/agent/memory/health",
+    "queryUrl": "/api/agent/memory/query",
+    "receiptsUrl": "/api/agent/memory/receipts",
+    "reportUrl": "/api/agent/memory/report"
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
@@ -44,10 +41,11 @@
     ]
   },
   "automationToolkits": {
-    "schema": "soty.automation-toolkits.v1",
+    "schema": "soty.automation-toolkits.v2",
+    "architecture": "capability-gateway",
     "policy": {
       "entrypoint": "soty_toolkit",
-      "route": "soty-capability-memory-accelerators",
+      "route": "capability-api-with-memory-hints",
       "fallbackKernel": "soty_action",
       "chat": "lord-sysadmin",
       "responseStyle": {
@@ -72,7 +70,7 @@
     },
     "toolkits": [
       {
-        "name": "universal-toolkit",
+        "name": "capability-gateway",
         "entryTool": "soty_toolkit",
         "kind": "front-door",
         "phases": [
@@ -91,7 +89,7 @@
           "resultPath",
           "proof"
         ],
-        "promotion": "Reusable capability accelerator for repeated proven work."
+        "promotion": "Thin, proofed computer-control surface for Server Codex."
       },
       {
         "name": "durable-action",
@@ -108,7 +106,7 @@
           "resultPath",
           "proof"
         ],
-        "promotion": "Durable supervised execution for long or reusable jobs."
+        "promotion": "Durable supervised execution for long or repeatable jobs."
       },
       {
         "name": "windows-reinstall",

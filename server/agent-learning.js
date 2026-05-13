@@ -11,6 +11,44 @@ const jsonParser = express.json({ limit: "320kb", type: "application/json" });
 export function attachAgentLearning(app, { dataDir } = {}) {
   const learningDir = process.env.SOTY_LEARNING_DIR || path.join(dataDir || process.cwd(), "learning");
 
+  app.get("/api/agent/memory/health", async (_req, res) => {
+    const files = await learningFiles(learningDir).catch(() => []);
+    const lines = await readRecentLearningReceiptsFromDir(learningDir, 500).catch(() => []);
+    const receipts = lines.map(parseReceiptLine).filter(Boolean);
+    res.json({
+      ok: true,
+      enabled: true,
+      schema: "soty.memory-plane.v1",
+      files: files.length,
+      receipts: receipts.length,
+      scope: summarizeLearningScope(receipts),
+      queryUrl: "/api/agent/memory/query",
+      receiptsUrl: "/api/agent/memory/receipts",
+      reportUrl: "/api/agent/memory/report",
+      dir: path.basename(learningDir)
+    });
+  });
+
+  app.get("/api/agent/memory/report", async (req, res) => {
+    const limit = safeLimit(req.query?.limit, 800);
+    const lines = await readRecentLearningReceiptsFromDir(learningDir, limit).catch(() => []);
+    const receipts = lines.map(parseReceiptLine).filter(Boolean);
+    res.json(buildTeacherReport(receipts, { limit }));
+  });
+
+  app.get("/api/agent/memory/query", async (req, res) => {
+    const limit = safeLimit(req.query?.limit, 800);
+    const family = cleanText(req.query?.family, 80);
+    const lines = await readRecentLearningReceiptsFromDir(learningDir, limit).catch(() => []);
+    const receipts = lines.map(parseReceiptLine).filter(Boolean);
+    const report = buildTeacherReport(receipts, { limit });
+    res.json(buildMemoryQuery(report, { family }));
+  });
+
+  app.post("/api/agent/memory/receipts", jsonParser, async (req, res) => {
+    await handleReceiptPost(req, res, learningDir);
+  });
+
   app.get("/api/agent/learning/health", async (_req, res) => {
     const files = await learningFiles(learningDir).catch(() => []);
     const lines = await readRecentLearningReceiptsFromDir(learningDir, 500).catch(() => []);
@@ -34,28 +72,33 @@ export function attachAgentLearning(app, { dataDir } = {}) {
   });
 
   app.post("/api/agent/learning/receipts", jsonParser, async (req, res) => {
-    const envelope = cleanEnvelope(req.body);
-    const receipts = cleanReceipts(req.body?.receipts);
-    if (receipts.length === 0) {
-      res.status(400).json({ ok: false, accepted: 0 });
-      return;
-    }
-
-    const now = new Date();
-    const partition = now.toISOString().slice(0, 10);
-    const file = path.join(learningDir, `${partition}.jsonl`);
-    await mkdir(learningDir, { recursive: true, mode: 0o700 });
-    const lines = receipts.map((receipt) => JSON.stringify({
-      schema: "soty.learning.receipt.v1",
-      id: `learn_${randomUUID()}`,
-      receivedAt: now.toISOString(),
-      installHash: hashShort(envelope.installId || envelope.relayId || "unknown"),
-      agentVersion: envelope.agentVersion,
-      ...receipt
-    }));
-    await appendFile(file, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
-    res.json({ ok: true, accepted: receipts.length });
+    await handleReceiptPost(req, res, learningDir);
   });
+}
+
+async function handleReceiptPost(req, res, learningDir) {
+  const envelope = cleanEnvelope(req.body);
+  const receipts = cleanReceipts(req.body?.receipts);
+  if (receipts.length === 0) {
+    res.status(400).json({ ok: false, accepted: 0 });
+    return;
+  }
+
+  const now = new Date();
+  const partition = now.toISOString().slice(0, 10);
+  const file = path.join(learningDir, `${partition}.jsonl`);
+  await mkdir(learningDir, { recursive: true, mode: 0o700 });
+  const lines = receipts.map((receipt) => JSON.stringify({
+    schema: "soty.memory.receipt.v1",
+    id: `mem_${randomUUID()}`,
+    receivedAt: now.toISOString(),
+    installHash: hashShort(envelope.installId || envelope.relayId || "unknown"),
+    agentVersion: envelope.agentVersion,
+    privacy: "sanitized",
+    ...receipt
+  }));
+  await appendFile(file, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+  res.json({ ok: true, accepted: receipts.length });
 }
 
 async function learningFiles(dir) {
@@ -111,9 +154,9 @@ export function buildTeacherReport(receipts, { limit = 800 } = {}) {
   const scope = summarizeLearningScope(rows);
   return {
     ok: true,
-    schema: "soty.learning.teacher.v1",
+    schema: "soty.memory.report.v1",
     generatedAt: new Date().toISOString(),
-    source: "server-global-sanitized-receipts",
+    source: "global-sanitized-route-memory",
     limit,
     receipts: rows.length,
     scope,
@@ -124,9 +167,57 @@ export function buildTeacherReport(receipts, { limit = 800 } = {}) {
     topSuccesses: topSuccesses.slice(0, 8),
     recommendations,
     candidates,
-    oneCommand: "sotyctl learn doctor",
-    reviewMergeCommand: "sotyctl learn review-merge",
-    publishModel: "reviewed-ops-patch-then-build-release-deploy"
+    oneCommand: "sotyctl memory doctor",
+    reviewMergeCommand: "sotyctl memory review",
+    publishModel: "reviewed-memory-route-then-release"
+  };
+}
+
+function buildMemoryQuery(report, { family = "" } = {}) {
+  const selected = (items) => Array.isArray(items)
+    ? items.filter((item) => !family || item.family === family || item.family === "generic").slice(0, 8)
+    : [];
+  const items = [];
+  for (const item of selected(report.recommendations)) {
+    items.push({
+      kind: "route-guidance",
+      priority: item.priority || "normal",
+      family: item.family || "generic",
+      title: item.title || "Review route",
+      guidance: item.action || "",
+      confidence: item.priority === "high" ? 0.86 : 0.68
+    });
+  }
+  for (const item of selected(report.topSuccesses)) {
+    items.push({
+      kind: "proven-route",
+      priority: "normal",
+      family: item.family || "generic",
+      title: `Proven route: ${item.route || "unknown"}`,
+      guidance: `Route succeeded ${item.count || 1} time(s); require comparable context and proof before reuse.`,
+      route: item.route || "",
+      confidence: Math.min(0.95, 0.55 + (Number(item.count || 1) * 0.08))
+    });
+  }
+  for (const item of selected(report.candidates)) {
+    items.push({
+      kind: "memory-marker",
+      priority: item.scope === "promote" || item.scope === "profile" ? "normal" : "low",
+      family: item.family || "generic",
+      title: "Reusable memory candidate",
+      guidance: item.marker || "",
+      confidence: item.scope === "promote" || item.scope === "profile" ? 0.74 : 0.52
+    });
+  }
+  return {
+    ok: true,
+    schema: "soty.memory.query.v1",
+    generatedAt: report.generatedAt,
+    source: report.source,
+    receipts: report.receipts,
+    scope: report.scope,
+    family,
+    items: items.slice(0, 12)
   };
 }
 
@@ -197,11 +288,10 @@ function summarizeLearningScope(rows) {
     .filter(Boolean)
     .sort();
   return {
-    kind: "server-global-sanitized-receipts",
+    kind: "global-sanitized-route-memory",
     deviceCount: uniqueCount(rows, (item) => item.installHash),
     platformCounts: topEntries(countBy(rows, (item) => item.platform || "unknown"), 8),
     agentVersions: topEntries(countBy(rows, (item) => item.agentVersion || "unknown"), 8),
-    skillBundles: topEntries(countBy(rows, (item) => item.skillSha ? String(item.skillSha).slice(0, 12) : "unknown"), 8),
     firstSeenAt: timestamps[0] || "",
     lastSeenAt: timestamps.at(-1) || ""
   };
@@ -266,14 +356,14 @@ function buildRecommendations(rows, topFailures) {
         priority: "high",
         family: "windows-reinstall",
         title: "Do not start destructive reinstall until gates are proven",
-        action: "Run the Soty/ops reinstall fast-lane gates first: exact target, data boundary, machine worker, trusted media, return path, and explicit destructive confirmation. Missing gates mean readiness-building, not manual reset."
+        action: "Use the managed reinstall capability first: exact target, data boundary, machine worker, trusted media, return path, and explicit destructive confirmation. Missing gates mean readiness-building, not manual reset."
       });
     } else {
       recommendations.push({
         priority: "normal",
         family: "windows-reinstall",
         title: "Promote the proven reinstall route into the device profile",
-        action: "Store the working route, proof, and timing in windows-reinstall-profile.py so the next run starts from the proven path."
+        action: "Store the working route, proof, and timing as sanitized memory so the next comparable run starts from the proven path."
       });
     }
   }
@@ -283,14 +373,14 @@ function buildRecommendations(rows, topFailures) {
         priority: failure.family === "windows-reinstall" ? "high" : "normal",
         family: failure.family,
         title: `Repeated ${failure.result} on ${failure.family}`,
-        action: `Review ${failure.route || "unknown-route"} and promote a hot-route, helper fix, or stop gate. Evidence count: ${failure.count}.`
+        action: `Review ${failure.route || "unknown-route"} and promote a capability route, proof check, or stop gate. Evidence count: ${failure.count}.`
       });
     }
   }
   if (recommendations.length === 0) {
     recommendations.push({
       priority: "normal",
-      family: "learning",
+      family: "memory",
       title: "No repeated blocker yet",
       action: "Keep syncing receipts. One-off events stay as candidates; repeated proof becomes a route/profile patch."
     });
@@ -313,7 +403,7 @@ function buildPromotionCandidates(rows, failures, successes) {
     candidates.push({
       scope: postArmLosses.length >= 2 ? "promote" : "candidate",
       family: "windows-reinstall",
-      marker: `ops-memory: goal=Soty windows-reinstall post-arm reboot window | actual=source disconnect after managed arm reboot | success=do not probe source after rebooting=true | env=soty.learning.teacher count=${postArmLosses.length}`
+      marker: `soty-memory: goal=Soty windows-reinstall post-arm reboot window | actual=source disconnect after managed arm reboot | success=do not probe source after rebooting=true | env=soty.memory count=${postArmLosses.length}`
     });
   }
   const postArmFailureKeys = new Set(postArmLosses.map(failureGroupKey));
@@ -322,35 +412,35 @@ function buildPromotionCandidates(rows, failures, successes) {
     candidates.push({
       scope,
       family: failure.family,
-      marker: `ops-memory: goal=Soty ${failure.family} ${failure.result} route | actual=${failure.result} via ${failure.route || "unknown-route"} | success=${failure.proofShape || "sanitized receipt"} | env=soty.learning.teacher count=${failure.count}`
+      marker: `soty-memory: goal=Soty ${failure.family} ${failure.result} route | actual=${failure.result} via ${failure.route || "unknown-route"} | success=${failure.proofShape || "sanitized receipt"} | env=soty.memory count=${failure.count}`
     });
   }
   for (const success of successes.filter((item) => item.count >= 2).slice(0, 4)) {
     candidates.push({
       scope: "profile",
       family: success.family,
-      marker: `ops-memory: goal=Soty ${success.family} proven route | actual=ok via ${success.route || "unknown-route"} | success=${success.proofShape || "sanitized receipt"} | env=soty.learning.teacher count=${success.count}`
+      marker: `soty-memory: goal=Soty ${success.family} proven route | actual=ok via ${success.route || "unknown-route"} | success=${success.proofShape || "sanitized receipt"} | env=soty.memory count=${success.count}`
     });
   }
   for (const slow of slowRoutineCodexGroups(rows).slice(0, 4)) {
     candidates.push({
       scope: slow.count >= 2 ? "promote" : "candidate",
       family: slow.family,
-      marker: `ops-memory: goal=Soty ${slow.family} fast-route promotion | actual=slow routine via ${slow.route || "codex"} | success=durationMs=${slow.durationMs}; tokens=${slow.totalTokens}; prefer proofed runtime route | env=soty.learning.teacher count=${slow.count}`
+      marker: `soty-memory: goal=Soty ${slow.family} fast-route promotion | actual=slow routine via ${slow.route || "codex"} | success=durationMs=${slow.durationMs}; tokens=${slow.totalTokens}; prefer proofed capability route | env=soty.memory count=${slow.count}`
     });
   }
   for (const quality of lowQualityRouteGroups(rows).slice(0, 4)) {
     candidates.push({
       scope: quality.count >= 2 ? "promote" : "candidate",
       family: quality.family,
-      marker: `ops-memory: goal=Soty ${quality.family} route quality | actual=quality=${quality.quality}; score=${quality.score}; route=${quality.route || "unknown"} | success=patch proof checks or fallback before final answer | env=soty.learning.teacher count=${quality.count}`
+      marker: `soty-memory: goal=Soty ${quality.family} route quality | actual=quality=${quality.quality}; score=${quality.score}; route=${quality.route || "unknown"} | success=patch proof checks or fallback before final answer | env=soty.memory count=${quality.count}`
     });
   }
   for (const capsule of reusableRouteCapsuleGroups(rows).slice(0, 4)) {
     candidates.push({
       scope: capsule.count >= 2 ? "profile" : "candidate",
       family: capsule.family,
-      marker: `ops-memory: goal=Soty reusable route capsule ${capsule.reuseKey} | actual=${capsule.scriptUse || "reused-script"} via ${capsule.route || "unknown-route"} | success=count=${capsule.count}; successCriteria=${capsule.successCriteria ? "set" : "unset"}; context=${capsule.context || "unknown"} | env=soty.learning.teacher`
+      marker: `soty-memory: goal=Soty reusable route capsule ${capsule.reuseKey} | actual=${capsule.scriptUse || "reused-script"} via ${capsule.route || "unknown-route"} | success=count=${capsule.count}; successCriteria=${capsule.successCriteria ? "set" : "unset"}; context=${capsule.context || "unknown"} | env=soty.memory`
     });
   }
   return candidates.slice(0, 10);
@@ -503,11 +593,11 @@ function latestMemoryMarkerRows(rows) {
 
 function cleanMemoryMarker(value) {
   const text = cleanText(value, 900).replace(/^`|`$/gu, "");
-  if (/^ops-memory\s*:/iu.test(text)) {
+  if (/^soty-memory\s*:/iu.test(text)) {
     return text;
   }
-  if (/^soty-memory\s*:/iu.test(text)) {
-    return `ops-memory:${text.replace(/^soty-memory\s*:/iu, "")}`.slice(0, 900);
+  if (/^ops-memory\s*:/iu.test(text)) {
+    return `soty-memory:${text.replace(/^ops-memory\s*:/iu, "")}`.slice(0, 900);
   }
   return "";
 }
@@ -662,7 +752,7 @@ function cleanReceipt(value) {
     dialogHash: cleanHash(value.dialogHash),
     durationMs: Number.isSafeInteger(value.durationMs) ? Math.max(0, Math.min(86_400_000, value.durationMs)) : undefined,
     ...(exitCode === undefined ? {} : { exitCode }),
-    skillSha: cleanText(value.skillSha, 80),
+    memorySchema: cleanText(value.memorySchema || "soty.memory.receipt.v1", 80),
     createdAt: cleanIso(value.createdAt) || new Date().toISOString()
   };
 }
