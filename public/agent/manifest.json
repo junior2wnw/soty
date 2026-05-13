@@ -1,7 +1,7 @@
 {
-  "version": "0.3.153",
+  "version": "0.3.154",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "8715067aba9f3613350cedf0289171ec5ae3dfc67d836932b294b7fcdc19da85",
+  "sha256": "cb0a3aaa1d5e9b2bece7c5f18e43e7cc6966fb34c01e97a097ede45f71be148f",
   "opsSkill": {
     "name": "universal-install-ops",
     "root": "universal-install-ops-skill",
@@ -20,14 +20,14 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "f07b2f20a58824b3c0ac1ec500adcdb8393c2adafcebc8be197ae918f3667f72",
-        "bytes": 19463
+        "sha256": "05b6d111f58955fa717d20aac2bcbf6e436772fe809beeafc93ea66ef6fed618",
+        "bytes": 25094
       },
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "cd5f3eb9e792e6d103bd13bcee1610f79ee060c939777422f0bdf74d81f71e4f",
-        "bytes": 60821
+        "sha256": "fa22b0d9a2c206f1a226879b27d6cc54d3fb472228a3f675ab6a4a813c575752",
+        "bytes": 66339
       },
       {
         "name": "arm",
@@ -124,13 +124,13 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "f07b2f20a58824b3c0ac1ec500adcdb8393c2adafcebc8be197ae918f3667f72",
-            "bytes": 19463
+            "sha256": "05b6d111f58955fa717d20aac2bcbf6e436772fe809beeafc93ea66ef6fed618",
+            "bytes": 25094
           },
           {
             "name": "prepare",
-            "sha256": "cd5f3eb9e792e6d103bd13bcee1610f79ee060c939777422f0bdf74d81f71e4f",
-            "bytes": 60821
+            "sha256": "fa22b0d9a2c206f1a226879b27d6cc54d3fb472228a3f675ab6a4a813c575752",
+            "bytes": 66339
           },
           {
             "name": "arm",

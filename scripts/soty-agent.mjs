@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.3.153";
+const agentVersion = "0.3.154";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -32,6 +32,8 @@ let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY
 let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
 const agentInstallId = safeInstallId(persistedAgentConfig.installId) || randomUUID();
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
+const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
+  || (process.env.SOTY_AGENT_AUTO_UPDATE !== "0" && process.env.SOTY_AGENT_SUPERVISED === "1");
 const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;
@@ -4700,7 +4702,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = classifyTaskFamily(text, target);
-  const sessionKey = codexSessionKey(safeSource, target);
+  const sessionKey = codexSessionKey(safeSource, target, taskFamily);
   const turnKey = codexTurnDedupeKey(sessionKey, text);
   traceRouting(trace, {
     route: "codex.local",
@@ -5329,11 +5331,38 @@ function shouldRetryCodexWithoutResume(result, state) {
   return /resume|session|thread|conversation|not found|missing|invalid|no such/u.test(details);
 }
 
-function codexSessionKey(source, target = null) {
+function codexSessionKey(source, target = null, taskFamily = "generic") {
   const safe = sanitizeAgentSource(source);
   const targetId = String(target?.id || safe.preferredTargetId || "").trim();
-  const key = [safe.tunnelId || safe.deviceId || "default", targetId].filter(Boolean).join("@");
+  const key = [
+    safe.tunnelId || safe.deviceId || "default",
+    targetId,
+    `family:${codexSessionFamilyBucket(taskFamily)}`
+  ].filter(Boolean).join("@");
   return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 180);
+}
+
+function codexSessionFamilyBucket(taskFamily) {
+  const family = String(taskFamily || "generic").trim().toLowerCase();
+  if (!family || family === "generic") {
+    return "dialog";
+  }
+  if (family === "plain-dialog" || family === "source-scoped-dialog") {
+    return family;
+  }
+  if (family.includes("windows-reinstall")) {
+    return "windows-reinstall";
+  }
+  if (family.includes("audio") || family.includes("volume") || family.includes("mute")) {
+    return "audio";
+  }
+  if (family.includes("browser") || family.includes("pwa")) {
+    return "browser";
+  }
+  if (family.includes("install") || family.includes("repair") || family.includes("ops")) {
+    return "ops";
+  }
+  return family.replace(/[^a-z0-9_.:-]/gu, "_").slice(0, 60) || "dialog";
 }
 
 function classifyTaskFamily(text, target = null) {
@@ -6030,11 +6059,21 @@ function cleanTerminalTranscript(value) {
 }
 
 function isInternalAgentReceiptLine(line) {
-  const text = String(line || "").trim();
+  const text = internalAgentReceiptText(line);
   return /^`?(learning_delta|proof|final_line|finish_skill_edit)\s*=/iu.test(text)
     || /^`?ops-memory\s*:/iu.test(text)
     || /^`?soty-memory\s*:/iu.test(text)
     || /^ops:\s*`?(learning_delta|proof|final_line)\s*=/iu.test(text);
+}
+
+function internalAgentReceiptText(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^(?:>\s*)+/u, "")
+    .replace(/^(?:[-*]\s*)+/u, "")
+    .replace(/^`{1,3}\s*/u, "")
+    .replace(/\s*`{1,3}$/u, "")
+    .trim();
 }
 
 async function askCodexRelayFallback(text, context, source = {}, onMessage = null, onTerminal = null, options = {}) {
@@ -10375,6 +10414,7 @@ function runtimeHealth() {
   return {
     managed,
     scope: agentScope,
+    autoUpdate: agentAutoUpdate,
     platform: process.platform,
     shell: shellName(),
     version: agentVersion,
@@ -10609,7 +10649,7 @@ function createOutputDecoder() {
 }
 
 function scheduleUpdate() {
-  if (!managed || !updateManifestUrl) {
+  if (!managed || !updateManifestUrl || !agentAutoUpdate) {
     return;
   }
   const firstDelay = 8000 + Math.floor(Math.random() * 5000);
@@ -10628,6 +10668,9 @@ function scheduleUpdate() {
 }
 
 async function checkForUpdate() {
+  if (!agentAutoUpdate) {
+    return;
+  }
   if (updateCheckRunning) {
     return;
   }

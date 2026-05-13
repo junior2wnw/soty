@@ -66,8 +66,114 @@ function Tail-Text([string] $Path, [int] $Chars = 4000) {
 
 function Normalize-UsbLetter([string] $Value) {
   $letter = ([string] $Value).Trim().TrimEnd([char[]]":\").ToUpperInvariant()
-  if ($letter -notmatch "^[A-Z]$") { return "D" }
+  if ($letter -notmatch "^[A-Z]$") { return "" }
   return $letter
+}
+
+function Get-UsbVolumeSafe([string] $Letter) {
+  if ([string]::IsNullOrWhiteSpace($Letter)) { return $null }
+  try { return Get-Volume -DriveLetter $Letter -ErrorAction Stop } catch { return $null }
+}
+
+function Get-UsbCandidateVolumes {
+  $items = New-Object System.Collections.Generic.List[object]
+  try {
+    Get-Volume -ErrorAction SilentlyContinue |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_.DriveLetter) } |
+      ForEach-Object {
+        $letter = ([string] $_.DriveLetter).Trim().ToUpperInvariant()
+        if ($letter -match "^[A-Z]$") {
+          $root = $letter + ":\"
+          $hasReinstall = Test-Path -LiteralPath (Join-Path $root "Soty-Reinstall")
+          $hasInstallImage = $false
+          foreach ($path in @(
+            (Join-Path (Join-Path $root "sources") "install.wim"),
+            (Join-Path (Join-Path $root "sources") "install.esd"),
+            (Join-Path (Join-Path $root "sources") "install.swm"),
+            (Join-Path (Join-Path (Join-Path $root "Soty-Reinstall") "sources") "install.wim"),
+            (Join-Path (Join-Path (Join-Path $root "Soty-Reinstall") "sources") "install.esd"),
+            (Join-Path (Join-Path (Join-Path $root "Soty-Reinstall") "sources") "install.swm")
+          )) {
+            if (Test-Path -LiteralPath $path) { $hasInstallImage = $true; break }
+          }
+          $removable = ([string] $_.DriveType -eq "Removable")
+          if ($removable -or $hasReinstall -or $hasInstallImage) {
+            $items.Add([pscustomobject]@{
+              driveLetter = $letter
+              root = $root
+              driveType = [string] $_.DriveType
+              fileSystem = [string] $_.FileSystem
+              sizeGB = [math]::Round(([double] $_.Size / 1GB), 2)
+              freeGB = [math]::Round(([double] $_.SizeRemaining / 1GB), 2)
+              removable = $removable
+              hasSotyReinstall = $hasReinstall
+              hasInstallImage = $hasInstallImage
+              accepted = ($removable -or $hasReinstall -or $hasInstallImage)
+            })
+          }
+        }
+      }
+  } catch {}
+  return @($items | Sort-Object @{ Expression = "hasSotyReinstall"; Descending = $true }, @{ Expression = "hasInstallImage"; Descending = $true }, "driveLetter")
+}
+
+function New-UsbInfoFromVolume([string] $Letter, $Volume, [bool] $AutoSelected = $false, [object[]] $Candidates = @()) {
+  $root = $Letter + ":\"
+  $hasReinstall = Test-Path -LiteralPath (Join-Path $root "Soty-Reinstall")
+  $hasInstallImage = $false
+  foreach ($path in @(
+    (Join-Path (Join-Path $root "sources") "install.wim"),
+    (Join-Path (Join-Path $root "sources") "install.esd"),
+    (Join-Path (Join-Path $root "sources") "install.swm"),
+    (Join-Path (Join-Path (Join-Path $root "Soty-Reinstall") "sources") "install.wim"),
+    (Join-Path (Join-Path (Join-Path $root "Soty-Reinstall") "sources") "install.esd"),
+    (Join-Path (Join-Path (Join-Path $root "Soty-Reinstall") "sources") "install.swm")
+  )) {
+    if (Test-Path -LiteralPath $path) { $hasInstallImage = $true; break }
+  }
+  $removable = ([string] $Volume.DriveType -eq "Removable")
+  return [pscustomobject]@{
+    found = $true
+    autoSelected = $AutoSelected
+    driveLetter = $Letter
+    root = $root
+    driveType = [string] $Volume.DriveType
+    fileSystem = [string] $Volume.FileSystem
+    sizeGB = [math]::Round(([double] $Volume.Size / 1GB), 2)
+    freeGB = [math]::Round(([double] $Volume.SizeRemaining / 1GB), 2)
+    removable = $removable
+    hasSotyReinstall = $hasReinstall
+    hasInstallImage = $hasInstallImage
+    accepted = ($removable -or $hasReinstall -or $hasInstallImage)
+    candidates = @($Candidates)
+  }
+}
+
+function Resolve-UsbDrive([string] $RequestedLetter) {
+  $letter = Normalize-UsbLetter $RequestedLetter
+  $candidates = @(Get-UsbCandidateVolumes)
+  $volume = Get-UsbVolumeSafe $letter
+  if ($volume) {
+    return New-UsbInfoFromVolume $letter $volume $false $candidates
+  }
+  $usable = @($candidates | Where-Object { $_.accepted -eq $true })
+  if (@($usable).Count -eq 1) {
+    $selectedLetter = [string] $usable[0].driveLetter
+    $selectedVolume = Get-UsbVolumeSafe $selectedLetter
+    if ($selectedVolume) {
+      return New-UsbInfoFromVolume $selectedLetter $selectedVolume $true $candidates
+    }
+  }
+  return [pscustomobject]@{
+    found = $false
+    autoSelected = $false
+    requestedDriveLetter = $letter
+    driveLetter = ""
+    root = ""
+    error = if (@($usable).Count -gt 1) { "Multiple possible reinstall USB drives found." } elseif ($letter) { "Drive " + $letter + ": was not found." } else { "No reinstall USB drive was found." }
+    ambiguous = (@($usable).Count -gt 1)
+    candidates = @($candidates)
+  }
 }
 
 function Get-SotyUserName {
@@ -125,7 +231,7 @@ function Get-InstallImageCandidate([string[]] $SourceRoots) {
 }
 
 function Get-MediaStatus([string] $Root, [string] $Letter) {
-  $usbRoot = $Letter + ":\"
+  $usbRoot = if ([string]::IsNullOrWhiteSpace($Letter)) { "" } else { $Letter + ":\" }
   $downloadProcesses = @()
   try {
     $downloadProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -135,11 +241,14 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
       } |
       Select-Object -First 8 ProcessId, Name, CommandLine)
   } catch { $downloadProcesses = @() }
-  $roots = @(
-    (Join-Path $Root "media"),
-    (Join-Path $usbRoot "sources"),
-    (Join-Path (Join-Path $usbRoot "Soty-Reinstall") "sources")
-  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $roots = @((Join-Path $Root "media"))
+  if (-not [string]::IsNullOrWhiteSpace($usbRoot)) {
+    $roots += @(
+      (Join-Path $usbRoot "sources"),
+      (Join-Path (Join-Path $usbRoot "Soty-Reinstall") "sources")
+    )
+  }
+  $roots = @($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
   $items = New-Object System.Collections.Generic.List[object]
   foreach ($root in $roots) {
     if (-not (Test-Path -LiteralPath $root)) { continue }
@@ -213,14 +322,20 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
 }
 
 function Get-ReinstallStatus([string] $Root, [string] $Letter) {
-  $usbRoot = $Letter + ":\"
-  $usbReinstall = Join-Path (Join-Path $usbRoot "Soty-Reinstall") "reinstall"
+  $usb = Resolve-UsbDrive $Letter
+  $effectiveLetter = if ($usb.found) { [string] $usb.driveLetter } else { Normalize-UsbLetter $Letter }
+  $usbRoot = if ([string]::IsNullOrWhiteSpace($effectiveLetter)) { "" } else { $effectiveLetter + ":\" }
+  $usbReinstall = if ([string]::IsNullOrWhiteSpace($usbRoot)) { "" } else { Join-Path (Join-Path $usbRoot "Soty-Reinstall") "reinstall" }
   $readyPath = Join-Path $Root "ready.json"
-  $usbReadyPath = Join-Path $usbReinstall "ready.json"
+  $usbReadyPath = if ([string]::IsNullOrWhiteSpace($usbReinstall)) { "" } else { Join-Path $usbReinstall "ready.json" }
   $ready = Read-JsonFile $readyPath
-  if (-not $ready) { $ready = Read-JsonFile $usbReadyPath }
+  if (-not $ready -and -not [string]::IsNullOrWhiteSpace($usbReadyPath)) { $ready = Read-JsonFile $usbReadyPath }
   $backupProof = if ($ready) { $ready.backupProof } else { $null }
-  $installImage = Get-InstallImageCandidate @((Join-Path $usbRoot "sources"), (Join-Path (Join-Path $usbRoot "Soty-Reinstall") "sources"))
+  $sourceRoots = @()
+  if (-not [string]::IsNullOrWhiteSpace($usbRoot)) {
+    $sourceRoots += @((Join-Path $usbRoot "sources"), (Join-Path (Join-Path $usbRoot "Soty-Reinstall") "sources"))
+  }
+  $installImage = Get-InstallImageCandidate $sourceRoots
   $prepareJobs = Get-PrepareJobs $Root
   $latestPrepare = $prepareJobs | Select-Object -First 1
   return [pscustomobject]@{
@@ -228,9 +343,10 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
     action = "status"
     computerName = $env:COMPUTERNAME
     workspaceRoot = $Root
+    usb = $usb
     usbRoot = $usbRoot
     ready = [bool] $ready
-    readyPath = if (Test-Path -LiteralPath $readyPath) { $readyPath } elseif (Test-Path -LiteralPath $usbReadyPath) { $usbReadyPath } else { "" }
+    readyPath = if (Test-Path -LiteralPath $readyPath) { $readyPath } elseif (-not [string]::IsNullOrWhiteSpace($usbReadyPath) -and (Test-Path -LiteralPath $usbReadyPath)) { $usbReadyPath } else { "" }
     caseId = if ($ready) { [string] $ready.caseId } else { "" }
     confirmationPhrase = if ($ready) { [string] $ready.confirmationPhrase } else { "" }
     managedUserName = if ($ready) { [string] $ready.managedUserName } else { "" }
@@ -239,9 +355,9 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
     backupProofOk = if ($backupProof) { [bool] $backupProof.ok } else { $false }
     personalFileTotalCount = if ($backupProof -and $null -ne $backupProof.personalFileTotalCount) { [int] $backupProof.personalFileTotalCount } else { $null }
     desktopFileCount = if ($backupProof -and $null -ne $backupProof.desktopFileCount) { [int] $backupProof.desktopFileCount } else { $null }
-    media = Get-MediaStatus $Root $Letter
+    media = Get-MediaStatus $Root $effectiveLetter
     installImage = $installImage
-    rootAutounattend = Test-Path -LiteralPath (Join-Path $usbRoot "Autounattend.xml")
+    rootAutounattend = if ([string]::IsNullOrWhiteSpace($usbRoot)) { $false } else { Test-Path -LiteralPath (Join-Path $usbRoot "Autounattend.xml") }
     oemSetupComplete = if ($installImage) {
       $sourceRoot = Split-Path -Parent $installImage
       Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path (Join-Path $sourceRoot '$OEM$') '$$') "Setup\Scripts") "SetupComplete.cmd")
@@ -281,6 +397,16 @@ function Get-ManagedScript([string] $Name, [string] $Root) {
 
 function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
   $currentStatus = Get-ReinstallStatus $Root $Letter
+  $resolvedLetter = Normalize-UsbLetter ([string] $currentStatus.usb.driveLetter)
+  if ([string]::IsNullOrWhiteSpace($resolvedLetter)) {
+    Emit ([pscustomobject]@{
+      ok = $false
+      action = "prepare"
+      blockers = @($(if ($currentStatus.usb.ambiguous) { "usb-ambiguous" } else { "usb-not-found" }))
+      status = $currentStatus
+    }) 1
+  }
+  $Letter = $resolvedLetter
   if ($currentStatus.ready -and $currentStatus.backupProofOk) {
     Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyReady = $true; status = $currentStatus }) 0
   }
@@ -326,6 +452,9 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
 
 function Invoke-ManagedArm([string] $Root, [string] $Letter) {
   $status = Get-ReinstallStatus $Root $Letter
+  $resolvedLetter = Normalize-UsbLetter ([string] $status.usb.driveLetter)
+  if ([string]::IsNullOrWhiteSpace($resolvedLetter)) { throw "reinstall USB drive was not found" }
+  $Letter = $resolvedLetter
   $managedUserName = Get-SotyUserName
   if (-not $status.ready) { throw "managed reinstall is not ready" }
   if ([string] $status.managedUserName -ne $managedUserName) { throw ("managed user must be " + $managedUserName + ", got " + [string] $status.managedUserName) }
@@ -358,20 +487,7 @@ try {
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $usb = $null
-    try {
-      $volume = Get-Volume -DriveLetter $letter -ErrorAction Stop
-      $usb = [pscustomobject]@{
-        driveLetter = $letter
-        driveType = [string] $volume.DriveType
-        fileSystem = [string] $volume.FileSystem
-        sizeGB = [math]::Round(([double] $volume.Size / 1GB), 2)
-        freeGB = [math]::Round(([double] $volume.SizeRemaining / 1GB), 2)
-        removable = ([string] $volume.DriveType -eq "Removable")
-      }
-    } catch {
-      $usb = [pscustomobject]@{ driveLetter = $letter; error = $_.Exception.Message }
-    }
+    $usb = Resolve-UsbDrive $letter
     $bitlocker = $null
     try {
       $blv = Get-BitLockerVolume -MountPoint "C:" -ErrorAction Stop
@@ -380,8 +496,10 @@ try {
     $status = Get-ReinstallStatus $WorkspaceRoot $letter
     $blockers = New-Object System.Collections.Generic.List[string]
     if (-not $isAdmin) { $blockers.Add("not-elevated") }
-    if ($usb.error) { $blockers.Add("usb-not-found") }
-    elseif ($usb.removable -ne $true) { $blockers.Add("usb-not-removable") }
+    if ($usb.found -ne $true) {
+      if ($usb.ambiguous) { $blockers.Add("usb-ambiguous") } else { $blockers.Add("usb-not-found") }
+    }
+    elseif ($usb.accepted -ne $true) { $blockers.Add("usb-not-removable") }
     elseif ($usb.freeGB -lt 12) { $blockers.Add("usb-free-space-low") }
     Emit ([pscustomobject]@{
       ok = ($blockers.Count -eq 0)

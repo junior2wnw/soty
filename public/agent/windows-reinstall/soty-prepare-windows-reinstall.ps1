@@ -30,6 +30,106 @@ function New-Directory([string] $Path) {
   New-Item -ItemType Directory -Force -Path $Path | Out-Null
 }
 
+function Normalize-UsbLetter([string] $Value) {
+  $letter = ([string] $Value).Trim().TrimEnd([char[]]":\").ToUpperInvariant()
+  if ($letter -notmatch "^[A-Z]$") { return "" }
+  return $letter
+}
+
+function Get-UsbVolumeSafe([string] $Letter) {
+  if ([string]::IsNullOrWhiteSpace($Letter)) { return $null }
+  try { return Get-Volume -DriveLetter $Letter -ErrorAction Stop } catch { return $null }
+}
+
+function Get-UsbCandidateVolumes {
+  $items = New-Object System.Collections.Generic.List[object]
+  try {
+    Get-Volume -ErrorAction SilentlyContinue |
+      Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_.DriveLetter) } |
+      ForEach-Object {
+        $letter = ([string] $_.DriveLetter).Trim().ToUpperInvariant()
+        if ($letter -match "^[A-Z]$") {
+          $root = $letter + ":\"
+          $sourceRoots = @(
+            (Join-Path $root "sources"),
+            (Join-Path (Join-Path $root "Soty-Reinstall") "sources")
+          )
+          $hasReinstall = Test-Path -LiteralPath (Join-Path $root "Soty-Reinstall")
+          $hasInstallImage = -not [string]::IsNullOrWhiteSpace((Get-InstallImageCandidate $sourceRoots).Path)
+          $removable = ([string] $_.DriveType -eq "Removable")
+          if ($removable -or $hasReinstall -or $hasInstallImage) {
+            $items.Add([pscustomobject]@{
+              driveLetter = $letter
+              root = $root
+              driveType = [string] $_.DriveType
+              fileSystem = [string] $_.FileSystem
+              sizeGB = [math]::Round(([double] $_.Size / 1GB), 2)
+              freeGB = [math]::Round(([double] $_.SizeRemaining / 1GB), 2)
+              removable = $removable
+              hasSotyReinstall = $hasReinstall
+              hasInstallImage = $hasInstallImage
+              accepted = ($removable -or $hasReinstall -or $hasInstallImage)
+            })
+          }
+        }
+      }
+  } catch {}
+  return @($items | Sort-Object @{ Expression = "hasSotyReinstall"; Descending = $true }, @{ Expression = "hasInstallImage"; Descending = $true }, "driveLetter")
+}
+
+function New-UsbSelection([string] $Letter, $Volume, [bool] $AutoSelected = $false, [object[]] $Candidates = @()) {
+  $root = $Letter + ":\"
+  $sourceRoots = @(
+    (Join-Path $root "sources"),
+    (Join-Path (Join-Path $root "Soty-Reinstall") "sources")
+  )
+  $hasReinstall = Test-Path -LiteralPath (Join-Path $root "Soty-Reinstall")
+  $hasInstallImage = -not [string]::IsNullOrWhiteSpace((Get-InstallImageCandidate $sourceRoots).Path)
+  $removable = ([string] $Volume.DriveType -eq "Removable")
+  return [pscustomobject]@{
+    found = $true
+    autoSelected = $AutoSelected
+    driveLetter = $Letter
+    root = $root
+    driveType = [string] $Volume.DriveType
+    fileSystem = [string] $Volume.FileSystem
+    sizeGB = [math]::Round(([double] $Volume.Size / 1GB), 2)
+    freeGB = [math]::Round(([double] $Volume.SizeRemaining / 1GB), 2)
+    removable = $removable
+    hasSotyReinstall = $hasReinstall
+    hasInstallImage = $hasInstallImage
+    accepted = ($removable -or $hasReinstall -or $hasInstallImage)
+    candidates = @($Candidates)
+  }
+}
+
+function Resolve-InstallUsbDrive([string] $RequestedLetter) {
+  $letter = Normalize-UsbLetter $RequestedLetter
+  $candidates = @(Get-UsbCandidateVolumes)
+  $volume = Get-UsbVolumeSafe $letter
+  if ($volume) {
+    return New-UsbSelection $letter $volume $false $candidates
+  }
+  $usable = @($candidates | Where-Object { $_.accepted -eq $true })
+  if (@($usable).Count -eq 1) {
+    $selectedLetter = [string] $usable[0].driveLetter
+    $selectedVolume = Get-UsbVolumeSafe $selectedLetter
+    if ($selectedVolume) {
+      return New-UsbSelection $selectedLetter $selectedVolume $true $candidates
+    }
+  }
+  return [pscustomobject]@{
+    found = $false
+    autoSelected = $false
+    requestedDriveLetter = $letter
+    driveLetter = ""
+    root = ""
+    ambiguous = (@($usable).Count -gt 1)
+    error = if (@($usable).Count -gt 1) { "Multiple possible reinstall USB drives found." } elseif ($letter) { "Drive " + $letter + ": was not found." } else { "No reinstall USB drive was found." }
+    candidates = @($candidates)
+  }
+}
+
 if (-not $Detached) {
   $jobsRoot = Join-Path $env:ProgramData "soty-agent\ops\jobs"
   New-Directory $jobsRoot
@@ -430,10 +530,21 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     Where-Object { $_.DisplayName -eq "Soty Windows reinstall image" } |
     Remove-BitsTransfer -Confirm:$false -ErrorAction SilentlyContinue
 
+  $initialInfo = Get-HttpDownloadInfo -Uri $Uri -LogName ($LogPrefix + "-initial-head.txt")
+  $script:lastDownloadContentLength = [int64] $initialInfo.length
+  if ($script:lastDownloadContentLength -lt 1GB) {
+    throw "Windows image URL did not advertise a valid image size; refusing a zero-byte or expired media download."
+  }
+
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   $started = Get-Date
   $attempt = 0
   $noGrowthAttempts = 0
+  $maxNoGrowthAttempts = 3
+  try {
+    $envNoGrowth = [int] $env:SOTY_WINDOWS_DOWNLOAD_MAX_NO_GROWTH_ATTEMPTS
+    if ($envNoGrowth -ge 1) { $maxNoGrowthAttempts = [math]::Min(20, $envNoGrowth) }
+  } catch {}
   $lastBytes = Get-FileLengthSafe $tmp
   while (((Get-Date) - $started).TotalSeconds -lt $MaxTotalSeconds) {
     $attempt += 1
@@ -472,6 +583,10 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     }
 
     if (-not (Test-Path -LiteralPath $tmp)) {
+      $noGrowthAttempts += 1
+      if ($noGrowthAttempts -ge $maxNoGrowthAttempts) {
+        throw "Windows image download did not create a partial file after $noGrowthAttempts attempts; the media URL is probably expired or blocked."
+      }
       Start-Sleep -Seconds ([math]::Min(300, 10 + ($attempt * 5)))
       continue
     }
@@ -484,6 +599,9 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     } else {
       $noGrowthAttempts += 1
       Log ("WARN download made no visible progress; partial size is " + $afterGb + " GB.")
+      if ($noGrowthAttempts -ge $maxNoGrowthAttempts) {
+        throw "Windows image download made no progress after $noGrowthAttempts attempts; the media URL is probably expired or blocked."
+      }
     }
     $lastBytes = $after
     if (Test-FileSha256 -Path $tmp -ExpectedSha256 $expected) {
@@ -1106,11 +1224,30 @@ try {
   & powercfg.exe /change standby-timeout-dc 0 | Out-Null
   & powercfg.exe /change hibernate-timeout-dc 0 | Out-Null
 
-  $UsbDriveLetter = $UsbDriveLetter.TrimEnd([char[]]":\")
-  $script:usbRoot = $UsbDriveLetter + ":\"
-  $usbVolume = Get-Volume -DriveLetter $UsbDriveLetter -ErrorAction Stop
-  if ($usbVolume.DriveType -ne "Removable") { throw "Drive $UsbDriveLetter is not removable." }
-  if ($usbVolume.SizeRemaining -lt 12GB) { throw "Drive $UsbDriveLetter needs at least 12 GB free." }
+  $usbSelection = Resolve-InstallUsbDrive $UsbDriveLetter
+  if ($usbSelection.found -ne $true) {
+    Finish "blocked" 2 @{
+      blockers = @($(if ($usbSelection.ambiguous) { "usb-ambiguous" } else { "usb-not-found" }))
+      usb = $usbSelection
+    }
+  }
+  if ($usbSelection.accepted -ne $true) {
+    Finish "blocked" 2 @{
+      blockers = @("usb-not-removable")
+      usb = $usbSelection
+    }
+  }
+  if ($usbSelection.freeGB -lt 12) {
+    Finish "blocked" 2 @{
+      blockers = @("usb-free-space-low")
+      usb = $usbSelection
+    }
+  }
+
+  $UsbDriveLetter = [string] $usbSelection.driveLetter
+  $script:usbRoot = [string] $usbSelection.root
+  $usbVolume = Get-UsbVolumeSafe $UsbDriveLetter
+  if (-not $usbVolume) { throw "Drive $UsbDriveLetter was not available after USB detection." }
 
   $script:reinstallRoot = Join-Path $script:usbRoot "Soty-Reinstall"
   $script:backupRoot = Join-Path (Join-Path $script:usbRoot "Soty-Backups") $script:caseId
