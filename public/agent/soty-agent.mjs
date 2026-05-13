@@ -96,6 +96,7 @@ const recentAgentOperatorMessageKeys = new Map();
 const recentCodexTurnKeys = new Map();
 const activeRelayJobs = new Set();
 let learningSyncTimer = null;
+let learningSyncInFlight = null;
 let operatorBridge = null;
 let operatorBridgeVisible = false;
 let operatorBridgeProtocol = "";
@@ -3410,7 +3411,14 @@ function recordLearningReceipt(receipt) {
   if (!clean) {
     return;
   }
+  invalidateCodexLearningMemoryCache();
   void appendLearningReceipt(clean);
+}
+
+function invalidateCodexLearningMemoryCache() {
+  cachedCodexLearningMemoryAt = 0;
+  cachedCodexLearningMemoryKey = "";
+  cachedCodexLearningMemoryText = "";
 }
 
 function recordBlockedWindowsReinstallHandoff({ kind, command }) {
@@ -3500,7 +3508,17 @@ function scheduleLearningSync(delayMs = 15_000) {
   }, Math.max(1000, delayMs));
 }
 
-async function syncLearningOutbox() {
+function syncLearningOutbox() {
+  if (learningSyncInFlight) {
+    return learningSyncInFlight;
+  }
+  learningSyncInFlight = syncLearningOutboxOnce().finally(() => {
+    learningSyncInFlight = null;
+  });
+  return learningSyncInFlight;
+}
+
+async function syncLearningOutboxOnce() {
   if (!agentRelayBaseUrl || !existsSync(learningOutboxPath)) {
     return { ok: true, sent: 0, pending: 0 };
   }
@@ -3541,6 +3559,7 @@ async function syncLearningOutbox() {
   await appendFile(learningSentPath, `${batchLines.join("\n")}\n`, "utf8").catch(() => undefined);
   const rest = lines.slice(batchLines.length);
   await writeFile(learningOutboxPath, rest.length > 0 ? `${rest.join("\n")}\n` : "", "utf8").catch(() => undefined);
+  invalidateCodexLearningMemoryCache();
   return { ok: true, sent: receipts.length, pending: rest.length };
 }
 
@@ -6254,6 +6273,10 @@ async function codexLearningMemoryPrompt(taskFamily = "") {
     cachedCodexLearningMemoryText = "memory plane unavailable: relay is not configured";
     return cachedCodexLearningMemoryText;
   }
+  await Promise.race([
+    syncLearningOutbox().catch(() => null),
+    sleep(1200).then(() => null)
+  ]);
   const report = await Promise.race([
     fetchLearningTeacherReport(500, { family: key === "generic" ? "" : key }).catch((error) => ({
       ok: false,

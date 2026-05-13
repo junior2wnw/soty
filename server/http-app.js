@@ -6,6 +6,11 @@ import { attachAgentRelay } from "./agent-relay.js";
 export function createHttpApp(distDir, { dataDir } = {}) {
   const app = express();
   app.disable("x-powered-by");
+  const devConnectSrc = String(process.env.SOTY_DEV_CONNECT_SRC || "")
+    .split(/\s+/u)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(" ");
   app.use((_req, res, next) => {
     res.setHeader("Content-Security-Policy", [
       "default-src 'self'",
@@ -15,7 +20,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' blob: data:",
       "font-src 'self'",
-      "connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ws://127.0.0.1:49424 ws://localhost:49424",
+      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ws://127.0.0.1:49424 ws://localhost:49424${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
       "manifest-src 'self'",
       "worker-src 'self'",
       "frame-ancestors 'none'",

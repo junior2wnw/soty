@@ -17,3 +17,12 @@ install-op-cases/
 /soty_*.ps1
 /usb-recovery-backup-*/
 /windows-media-tool/
+scripts/agent-codex-sessions.json
+scripts/agent-config.json
+scripts/agent-traces/
+scripts/codex-stock-home/
+scripts/codex-workspaces/
+scripts/learning-outbox.jsonl
+scripts/learning-sent.jsonl
+scripts/sotyctl.cmd
+scripts/sotyctl.ps1
