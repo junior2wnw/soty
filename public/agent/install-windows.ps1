@@ -6,6 +6,7 @@ param(
   [switch]$LaunchAppAtLogon,
   [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1",
   [string]$RelayId = "",
+  [string]$CodexProxyUrl = "",
   [switch]$InstallCodex
 )
 
@@ -32,6 +33,7 @@ $AgentPath = Join-Path $AgentDir "soty-agent.mjs"
 $RunnerPath = Join-Path $AgentDir "start-agent.ps1"
 $CtlPath = Join-Path $AgentDir "sotyctl.cmd"
 $LogPath = Join-Path $AgentDir "install.log"
+$ProxyEnvPath = Join-Path $AgentDir "proxy.env"
 $ManifestUrl = "$Base/manifest.json"
 $AgentUrl = "$Base/soty-agent.mjs"
 
@@ -397,6 +399,99 @@ shell.Run "$escapedCommand", 0, False
     return ""
   }
 
+  function Normalize-CodexProxyUrl {
+    param([string]$Value)
+    $text = ([string]$Value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return "" }
+    try {
+      $uri = [Uri]$text
+      $scheme = $uri.Scheme.ToLowerInvariant()
+      if (@("http", "https", "socks5", "socks5h") -contains $scheme) {
+        return $text
+      }
+    } catch {}
+    return ""
+  }
+
+  function Get-ProxyScheme {
+    param([string]$Value)
+    try {
+      return ([Uri]$Value).Scheme.ToLowerInvariant()
+    } catch {
+      return ""
+    }
+  }
+
+  function Resolve-ExistingCodexProxyUrl {
+    foreach ($candidate in @(
+      $CodexProxyUrl,
+      $env:SOTY_CODEX_PROXY_URL,
+      $env:SOTY_AGENT_PROXY_URL
+    )) {
+      $proxy = Normalize-CodexProxyUrl $candidate
+      if ($proxy) { return $proxy }
+    }
+
+    if (Test-Path -LiteralPath $ProxyEnvPath) {
+      try {
+        $line = Get-Content -LiteralPath $ProxyEnvPath -ErrorAction Stop |
+          Where-Object { $_ -match '^\s*SOTY_CODEX_PROXY_URL\s*=' } |
+          Select-Object -First 1
+        if ($line -match '^\s*SOTY_CODEX_PROXY_URL\s*=\s*(.+?)\s*$') {
+          $proxy = Normalize-CodexProxyUrl $Matches[1]
+          if ($proxy) { return $proxy }
+        }
+      } catch {
+        Write-Output "soty-codex-proxy:preserve-skip:proxy-env"
+      }
+    }
+
+    if (Test-Path -LiteralPath $RunnerPath) {
+      try {
+        $text = Get-Content -LiteralPath $RunnerPath -Raw
+        foreach ($name in @("SOTY_CODEX_PROXY_URL", "SOTY_AGENT_PROXY_URL")) {
+          $match = [regex]::Match($text, "$name\s*=\s*`"([^`"]+)`"")
+          if ($match.Success) {
+            $proxy = Normalize-CodexProxyUrl $match.Groups[1].Value
+            if ($proxy) { return $proxy }
+          }
+        }
+      } catch {
+        Write-Output "soty-codex-proxy:preserve-skip:runner"
+      }
+    }
+    return ""
+  }
+
+  function Protect-AgentSecretFile {
+    param([string]$Path)
+    try {
+      $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      $grants = @("*S-1-5-18:(F)", "*S-1-5-32-544:(F)")
+      if ($Scope -ne "Machine" -and $currentSid) {
+        $grants += "*${currentSid}:(F)"
+      }
+      & icacls.exe $Path /inheritance:r /grant:r $grants | Out-Null
+    } catch {
+      Write-Output "soty-codex-proxy:acl-skip"
+    }
+  }
+
+  function Write-CodexProxySecret {
+    param([string]$ProxyUrl)
+    $proxy = Normalize-CodexProxyUrl $ProxyUrl
+    if (-not $proxy) { return "" }
+    Set-Content -LiteralPath $ProxyEnvPath -Encoding UTF8 -Value "SOTY_CODEX_PROXY_URL=$proxy"
+    Protect-AgentSecretFile $ProxyEnvPath
+    $scheme = Get-ProxyScheme $proxy
+    if ($scheme) {
+      Write-Output "soty-codex-proxy:configured:$scheme"
+    } else {
+      Write-Output "soty-codex-proxy:configured"
+    }
+    return $proxy
+  }
+
   function Resolve-ExistingAgentRelayId {
     foreach ($path in @(
       (Join-Path $AgentDir "agent-config.json"),
@@ -445,6 +540,27 @@ shell.Run "$escapedCommand", 0, False
   } else {
     ""
   }
+  $ResolvedCodexProxyUrl = Resolve-ExistingCodexProxyUrl
+  if ($ResolvedCodexProxyUrl) {
+    [void](Write-CodexProxySecret $ResolvedCodexProxyUrl)
+  }
+  $ProxyEnv = @"
+`$proxyEnvPath = Join-Path `$PSScriptRoot "proxy.env"
+if (Test-Path -LiteralPath `$proxyEnvPath) {
+  try {
+    `$proxyLine = Get-Content -LiteralPath `$proxyEnvPath -ErrorAction Stop | Where-Object { `$_ -match '^\s*SOTY_CODEX_PROXY_URL\s*=' } | Select-Object -First 1
+    if (`$proxyLine -match '^\s*SOTY_CODEX_PROXY_URL\s*=\s*(.+?)\s*$') {
+      `$proxyValue = `$Matches[1].Trim()
+      try {
+        `$proxyUri = [Uri]`$proxyValue
+        if (@("http", "https", "socks5", "socks5h") -contains `$proxyUri.Scheme.ToLowerInvariant()) {
+          `$env:SOTY_CODEX_PROXY_URL = `$proxyValue
+        }
+      } catch {}
+    }
+  } catch {}
+}
+"@
   $CodexEnv = if ($RunnerPathParts.Count -gt 0) {
     $RunnerPathPrefix = ($RunnerPathParts -join ";")
 @"
@@ -461,6 +577,7 @@ shell.Run "$escapedCommand", 0, False
 `$env:SOTY_AGENT_SCOPE = "$Scope"
 `$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
 $RelayEnv
+$ProxyEnv
 $CodexEnv
 while (`$true) {
   & "$NodePath" "$AgentPath"

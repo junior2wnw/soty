@@ -476,11 +476,17 @@ async function runScenarios() {
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = await readFile(join(root, "src", "main.ts"), "utf8");
       assert(windowsInstall.includes("[switch]$InstallCodex"));
+      assert(windowsInstall.includes("[string]$CodexProxyUrl"));
+      assert(windowsInstall.includes("proxy.env"));
+      assert(windowsInstall.includes("SOTY_CODEX_PROXY_URL"));
       assert(windowsInstall.includes("if ($InstallCodex)"));
       assert(windowsInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
       assert(!windowsInstall.includes("universal-install-ops"));
       assert(!windowsInstall.includes("ops-skill"));
       assert(unixInstall.includes("INSTALL_CODEX=\"0\""));
+      assert(unixInstall.includes("--codex-proxy-url"));
+      assert(unixInstall.includes("proxy.env"));
+      assert(unixInstall.includes("SOTY_CODEX_PROXY_URL"));
       assert(unixInstall.includes("--install-codex"));
       assert(unixInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
       assert(!unixInstall.includes("universal-install-ops"));

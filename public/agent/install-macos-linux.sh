@@ -8,6 +8,7 @@ INSTALL_DIR=""
 LAUNCH_APP_AT_LOGON="0"
 APP_URL="https://xn--n1afe0b.online/?pwa=1"
 INSTALL_CODEX="0"
+CODEX_PROXY_URL="${SOTY_CODEX_PROXY_URL:-${SOTY_AGENT_PROXY_URL:-}}"
 
 die() {
   printf '%s\n' "$*" >&2
@@ -29,7 +30,7 @@ applescript_quote() {
 usage() {
   cat <<'EOF'
 Usage:
-  sh install-macos-linux.sh [--scope user|machine] [--base URL] [--relay-id ID] [--install-codex]
+  sh install-macos-linux.sh [--scope user|machine] [--base URL] [--relay-id ID] [--codex-proxy-url URL] [--install-codex]
 
 Legacy positional form is still supported:
   sh install-macos-linux.sh BASE RELAY_ID
@@ -98,6 +99,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --install-codex)
       INSTALL_CODEX="1"
+      shift
+      ;;
+    --codex-proxy-url)
+      [ "$#" -ge 2 ] || die "--codex-proxy-url requires a value"
+      CODEX_PROXY_URL="$2"
+      shift 2
+      ;;
+    --codex-proxy-url=*)
+      CODEX_PROXY_URL="${1#--codex-proxy-url=}"
       shift
       ;;
     --help|-h)
@@ -205,6 +215,7 @@ RUNNER_PATH="${AGENT_DIR}/start-agent.sh"
 CTL_PATH="${AGENT_DIR}/sotyctl"
 MANIFEST_URL="${BASE}/manifest.json"
 LOG_PATH="${AGENT_DIR}/install.log"
+PROXY_ENV_PATH="${AGENT_DIR}/proxy.env"
 
 mkdir -p "$AGENT_DIR"
 touch "$LOG_PATH" 2>/dev/null || true
@@ -398,6 +409,53 @@ write_agent_config() {
   "$NODE_PATH" -e 'const fs=require("fs"); const path=process.argv[1]; const relayId=process.argv[2]; const relayBaseUrl=process.argv[3]; let existing={}; try { existing=JSON.parse(fs.readFileSync(path,"utf8")); } catch {} fs.writeFileSync(path, JSON.stringify({relayId, relayBaseUrl, installId: typeof existing.installId==="string"?existing.installId:""}, null, 2));' "${AGENT_DIR}/agent-config.json" "$RELAY_ID" "https://xn--n1afe0b.online"
 }
 
+is_codex_proxy_url() {
+  case "$1" in
+    http://*|https://*|socks5://*|socks5h://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+proxy_scheme() {
+  printf '%s\n' "$1" | sed -n 's,^\([A-Za-z0-9+.-][A-Za-z0-9+.-]*\)://.*,\1,p' | tr '[:upper:]' '[:lower:]'
+}
+
+resolve_codex_proxy_url() {
+  if is_codex_proxy_url "$CODEX_PROXY_URL"; then
+    printf '%s\n' "$CODEX_PROXY_URL"
+    return
+  fi
+  if [ -f "$PROXY_ENV_PATH" ]; then
+    existing="$(sed -n 's/^[[:space:]]*SOTY_CODEX_PROXY_URL[[:space:]]*=[[:space:]]*//p' "$PROXY_ENV_PATH" 2>/dev/null | head -n 1 || true)"
+    if is_codex_proxy_url "$existing"; then
+      printf '%s\n' "$existing"
+      return
+    fi
+  fi
+  if [ -f "$RUNNER_PATH" ]; then
+    existing="$(sed -n 's/^[[:space:]]*export[[:space:]]*SOTY_CODEX_PROXY_URL[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' "$RUNNER_PATH" 2>/dev/null | head -n 1 || true)"
+    if is_codex_proxy_url "$existing"; then
+      printf '%s\n' "$existing"
+      return
+    fi
+  fi
+}
+
+write_codex_proxy_secret() {
+  proxy="$(resolve_codex_proxy_url || true)"
+  if [ -z "$proxy" ]; then
+    return
+  fi
+  printf 'SOTY_CODEX_PROXY_URL=%s\n' "$proxy" > "$PROXY_ENV_PATH"
+  chmod 600 "$PROXY_ENV_PATH" 2>/dev/null || true
+  scheme="$(proxy_scheme "$proxy")"
+  if [ -n "$scheme" ]; then
+    printf 'soty-codex-proxy:configured:%s\n' "$scheme"
+  else
+    printf 'soty-codex-proxy:configured\n'
+  fi
+}
+
 write_runner() {
   node_bin_dir="$(dirname "$NODE_PATH")"
   codex_bin_dir=""
@@ -411,6 +469,12 @@ export SOTY_AGENT_SCOPE="${SCOPE}"
 export SOTY_AGENT_UPDATE_URL="${MANIFEST_URL}"
 export SOTY_AGENT_RELAY_ID="${RELAY_ID}"
 export SOTY_AGENT_RELAY_URL="https://xn--n1afe0b.online"
+if [ -f "${AGENT_DIR}/proxy.env" ]; then
+  proxy="\$(sed -n 's/^[[:space:]]*SOTY_CODEX_PROXY_URL[[:space:]]*=[[:space:]]*//p' "${AGENT_DIR}/proxy.env" 2>/dev/null | head -n 1 || true)"
+  case "\$proxy" in
+    http://*|https://*|socks5://*|socks5h://*) export SOTY_CODEX_PROXY_URL="\$proxy" ;;
+  esac
+fi
 export PATH="${node_bin_dir}${codex_bin_dir:+:$codex_bin_dir}:\${PATH}"
 while true; do
   "${NODE_PATH}" "${AGENT_PATH}"
@@ -629,6 +693,7 @@ else
 fi
 install_agent_script
 write_agent_config
+write_codex_proxy_secret
 write_runner
 enable_autostart
 start_now

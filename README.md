@@ -75,6 +75,8 @@ Long agent tasks are expected to survive ordinary install/download/repair waits.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 
+Agent chat uses the stock Codex CLI. To route that stock CLI through a network proxy, set `SOTY_CODEX_PROXY_URL` before install, or pass `-CodexProxyUrl` on Windows / `--codex-proxy-url` on macOS and Linux. The installer stores it as a local `proxy.env` secret and the agent expands it only into the child Codex process as `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY`; it does not switch Codex into an OpenAI-compatible API provider mode. `/health` reports only `codexProxy: true` and the proxy scheme.
+
 Installed operator bridge:
 
 ```bash
