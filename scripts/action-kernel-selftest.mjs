@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.14");
+      assertEqual(health.body.version, "0.4.15");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -110,7 +110,15 @@ async function runScenarios({ relayUrl } = {}) {
         scope: "Machine",
         companion: false,
         system: true,
-        executionPlane: "system-controller+user-session-companion-required"
+        executionPlane: "system-controller+user-session-companion-required",
+        interactiveTaskBridge: false
+      });
+      const systemBridgeQuery = sourceWorkerQuery(relayId, deviceId, {
+        scope: "Machine",
+        companion: false,
+        system: true,
+        executionPlane: "system-controller+interactive-user-bridge",
+        interactiveTaskBridge: true
       });
       const userQuery = sourceWorkerQuery(relayId, deviceId, {
         scope: "CurrentUser",
@@ -132,12 +140,27 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(blockedUser.status, 409);
         assert(String(blockedUser.body.text || "").includes("user-session Soty Agent companion"));
 
+        await relayRequest(base, "GET", `/api/agent/source/poll?${systemBridgeQuery}`);
+        const bridgedUserStarted = await relayRequest(base, "POST", "/api/agent/source/start", {
+          relayId,
+          deviceId,
+          type: "run",
+          command: "echo user via bridge",
+          runAs: "user",
+          timeoutMs: 5000
+        });
+        assertEqual(bridgedUserStarted.status, 200);
+        const systemBridgePollForUserJob = await relayRequest(base, "GET", `/api/agent/source/poll?${systemBridgeQuery}`);
+        assertEqual(systemBridgePollForUserJob.body.jobs.length, 1);
+        assertEqual(systemBridgePollForUserJob.body.jobs[0].runAs, "user");
+
         await relayRequest(base, "GET", `/api/agent/source/poll?${userQuery}`);
         const waitingSystemPoll = relayRequest(base, "GET", `/api/agent/source/poll?${sourceWorkerQuery(relayId, deviceId, {
           scope: "Machine",
           companion: false,
           system: true,
-          executionPlane: "system-controller+user-session-companion-required",
+          executionPlane: "system-controller+interactive-user-bridge",
+          interactiveTaskBridge: true,
           wait: "1"
         })}`);
         await sleep(40);
@@ -532,12 +555,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Device execution plane"));
       assert(agent.includes("windowsInteractiveTaskSpec"));
       assert(agent.includes("LogonType Interactive"));
-      assert(agent.includes("system-controller+user-session-companion-required"));
+      assert(agent.includes("system-controller+interactive-user-bridge"));
       assert(agent.includes("SOTY_AGENT_COMPANION"));
       assert(agent.includes("ensureWindowsUserCompanion"));
       assert(agent.includes("soty-agent-user"));
       assert(agent.includes("user-session-agent-unavailable"));
       assert(agent.includes("allowWindowsInteractiveTaskBridge"));
+      assert(agent.includes("interactive-user-bridge"));
+      assert(relay.includes("interactive-user-bridge"));
+      assert(relay.includes("interactiveTaskBridge"));
       assert(agent.includes("New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited"));
       assert(!agent.includes("-RunLevel LeastPrivilege"));
       assert(relay.includes("sourceWorkerRoute"));
@@ -549,7 +575,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes('savedBy: "source-device"'));
-      assert(agent.includes("Server workspace is allowed"));
+      assert(agent.includes("cannot substitute for a missing source-device or image-generation capability"));
+      assert(agent.includes("image-generation-backend-unconfigured"));
+      assert(agent.includes("do not use workspace or public-download fallbacks"));
+      assert(agent.includes("image artifact fallback is blocked"));
       assert(agent.includes("display before wallpaper"));
       assert(agent.includes('runAs: "user"'));
       assert(agent.includes('runAs: "system"'));
@@ -660,7 +689,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.14");
+      assertEqual(manifest.version, "0.4.15");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -732,7 +761,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.14"'));
+      assert(agentSource.includes('const agentVersion = "0.4.15"'));
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
@@ -754,14 +783,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.14";', 'const agentVersion = "0.4.13";');
-      assert(oldSource.includes('const agentVersion = "0.4.13"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.15";', 'const agentVersion = "0.4.14";');
+      assert(oldSource.includes('const agentVersion = "0.4.14"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.14",
+            version: "0.4.15",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1405,9 +1434,10 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     deviceNick: "plane-device",
     wait: options.wait || "0",
     clientProtocol: "soty-source-agent.v1",
-    clientCapabilities: "runas,local-agent-health,direct-device-worker",
+    clientCapabilities: `runas,local-agent-health,direct-device-worker${options.interactiveTaskBridge ? ",interactive-user-bridge" : ""}`,
     localAgentOk: "true",
-    localAgentVersion: "0.4.14",
+    localAgentVersion: "0.4.15",
+    localAgentInteractiveTaskBridge: options.interactiveTaskBridge ? "true" : "false",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",
     localAgentExecutionPlane: options.executionPlane,

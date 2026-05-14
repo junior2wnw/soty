@@ -7,6 +7,7 @@ export interface LocalAgentStatus {
   readonly shell?: string;
   readonly version?: string;
   readonly executionPlane?: string;
+  readonly interactiveTaskBridge?: boolean;
   readonly companion?: boolean;
   readonly sourceWorker?: boolean;
   readonly windowsUser?: string;
@@ -293,6 +294,7 @@ function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<st
     version: String(status?.version || "").slice(0, 40),
     scope: String(status?.scope || "").slice(0, 40),
     executionPlane: String(status?.executionPlane || "").slice(0, 80),
+    interactiveTaskBridge: status?.interactiveTaskBridge === true,
     companion: status?.companion === true,
     sourceWorker: status?.sourceWorker === true,
     autoUpdate: status?.autoUpdate === true,
@@ -311,6 +313,7 @@ function readLocalAgentStatus(value: unknown): LocalAgentStatus | null {
     ...(typeof source.version === "string" ? { version: source.version.slice(0, 40) } : {}),
     ...(typeof source.scope === "string" ? { scope: source.scope.slice(0, 40) } : {}),
     ...(typeof source.executionPlane === "string" ? { executionPlane: source.executionPlane.slice(0, 80) } : {}),
+    ...(typeof source.interactiveTaskBridge === "boolean" ? { interactiveTaskBridge: source.interactiveTaskBridge } : {}),
     ...(typeof source.companion === "boolean" ? { companion: source.companion } : {}),
     ...(typeof source.sourceWorker === "boolean" ? { sourceWorker: source.sourceWorker } : {}),
     ...(typeof source.autoUpdate === "boolean" ? { autoUpdate: source.autoUpdate } : {}),
@@ -540,6 +543,7 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       readonly version?: string;
       readonly autoUpdate?: boolean;
       readonly executionPlane?: string;
+      readonly interactiveTaskBridge?: boolean;
       readonly companion?: boolean;
       readonly windowsUser?: string;
       readonly system?: boolean;
@@ -559,6 +563,7 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       ...(typeof message.version === "string" ? { version: message.version } : {}),
       ...(typeof message.autoUpdate === "boolean" ? { autoUpdate: message.autoUpdate } : {}),
       ...(typeof message.executionPlane === "string" ? { executionPlane: message.executionPlane } : {}),
+      ...(typeof message.interactiveTaskBridge === "boolean" ? { interactiveTaskBridge: message.interactiveTaskBridge } : {}),
       ...(typeof message.companion === "boolean" ? { companion: message.companion } : {}),
       ...(typeof message.windowsUser === "string" ? { windowsUser: message.windowsUser } : {}),
       ...(typeof message.system === "boolean" ? { system: message.system } : {}),

@@ -719,7 +719,7 @@ function localAgentInfoFrom(value) {
   const nested = value?.localAgent && typeof value.localAgent === "object" ? value.localAgent : null;
   const read = (name) => nested?.[name] ?? value?.[`localAgent${name[0].toUpperCase()}${name.slice(1)}`];
   const hasAny = nested
-    || ["Ok", "Version", "Scope", "Companion", "ExecutionPlane", "AutoUpdate", "System", "SourceWorker"].some((name) => value?.[`localAgent${name}`] !== undefined);
+    || ["Ok", "Version", "Scope", "Companion", "ExecutionPlane", "InteractiveTaskBridge", "AutoUpdate", "System", "SourceWorker"].some((name) => value?.[`localAgent${name}`] !== undefined);
   if (!hasAny) {
     return null;
   }
@@ -729,6 +729,7 @@ function localAgentInfoFrom(value) {
     scope: cleanText(read("scope"), 40),
     companion: readBoolean(read("companion")),
     executionPlane: cleanText(read("executionPlane"), 80),
+    interactiveTaskBridge: readBoolean(read("interactiveTaskBridge")),
     autoUpdate: readBoolean(read("autoUpdate")),
     system: readBoolean(read("system")),
     sourceWorker: readBoolean(read("sourceWorker"))
@@ -759,6 +760,7 @@ function publicSourceLocalAgent(value) {
     scope: cleanText(value?.scope, 40),
     companion: value?.companion === true,
     executionPlane: cleanText(value?.executionPlane, 80),
+    interactiveTaskBridge: value?.interactiveTaskBridge === true,
     autoUpdate: value?.autoUpdate === true,
     system: value?.system === true,
     sourceWorker: value?.sourceWorker === true
@@ -772,6 +774,27 @@ function sourceCapabilityBlocker(source, runAs) {
 function sourceWorkerRoute(source, runAs, now = Date.now()) {
   const plane = safeRunAs(runAs) === "system" ? "system" : "user";
   const worker = freshSourceWorker(source, plane, now);
+  if (!worker) {
+    if (plane === "user") {
+      const systemBridge = workerRoute(source, freshSourceWorker(source, "system", now), "system");
+      if (!systemBridge.blocker && systemBridge.worker?.localAgent?.interactiveTaskBridge === true) {
+        return {
+          ...systemBridge,
+          plane: "system",
+          requestedPlane: "user",
+          via: "interactive-user-bridge"
+        };
+      }
+    }
+    return {
+      plane,
+      blocker: plane === "system" ? "system-plane-unavailable" : "user-session-agent-unavailable"
+    };
+  }
+  return workerRoute(source, worker, plane);
+}
+
+function workerRoute(source, worker, plane) {
   if (!worker) {
     return {
       plane,
