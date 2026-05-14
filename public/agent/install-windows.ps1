@@ -261,7 +261,7 @@ try {
   }
 
   function Start-AgentNow {
-    if (Test-AgentHealth) { return }
+    if ((-not $SourceCompanion) -and (Test-AgentHealth)) { return }
     if ($Scope -eq "Machine") {
       try { Start-ScheduledTask -TaskName "soty-agent-machine" -ErrorAction SilentlyContinue } catch {}
       if (Wait-AgentHealth) {
@@ -270,7 +270,7 @@ try {
       }
       throw "Soty machine task did not report SYSTEM health on 127.0.0.1:49424"
     }
-    Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$RunnerPath`""
+    Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RunnerPath)
   }
 
   function Enable-AgentAutostart {
