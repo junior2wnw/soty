@@ -985,7 +985,8 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
     }, (agent) => agent.ok, refreshLocalCompanion);
     return;
   }
-  const granted = await grantAgentSourceAccess(device.id, device.nick, true);
+  localAgent = await checkLocalAgent(900);
+  const granted = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   if (!granted) {
     await typeOperatorChat(
       agentTunnelId,
@@ -1196,7 +1197,7 @@ function moveAgentLinkToFreshDialog(previousId: string, freshId: string): void {
   terminalState.delete(previousId);
   setTerminalState(freshId, "idle");
   appendTerminalLine(freshId, "+ agent link");
-  void grantAgentSourceAccess(device.id, device.nick, true);
+  void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   startAgentSourceControl(freshId);
 }
 
@@ -3291,7 +3292,7 @@ function resumeAgentSourceControl(): void {
   }
   terminalOpenId = terminalOpenId || agentTunnel.id;
   setTerminalState(agentTunnel.id, "idle");
-  void grantAgentSourceAccess(device.id, device.nick, true);
+  void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   startAgentSourceControl(agentTunnel.id);
 }
 
@@ -3317,7 +3318,7 @@ async function pollAgentSourceControl(epoch = agentSourcePollEpoch): Promise<voi
   agentSourcePolling = true;
   try {
     await refreshAgentSourceGrant(tunnelId);
-    const jobs = await pollAgentSourceCommands(device.id, 35_000, { signal: controller.signal });
+    const jobs = await pollAgentSourceCommands(device.id, 35_000, { signal: controller.signal, state: agentSourceClientState() });
     if (agentSourcePollEpoch !== epoch || controller.signal.aborted) {
       return;
     }
@@ -3346,7 +3347,8 @@ async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
     return;
   }
   agentSourceGrantRefreshAt = now + agentSourceGrantRefreshMs;
-  const ok = await grantAgentSourceAccess(device.id, device.nick, true);
+  localAgent = await checkLocalAgent(900);
+  const ok = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   if (!ok) {
     agentSourceGrantRefreshAt = now + 5000;
   }
@@ -3354,6 +3356,10 @@ async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
 
 function localAgentRunTimeoutMs(value: unknown): number {
   return safeOperatorTimeoutMs(value) || 30 * 60_000;
+}
+
+function agentSourceClientState(): { readonly localAgent: LocalAgentStatus } {
+  return { localAgent };
 }
 
 function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
@@ -3913,8 +3919,9 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   renderTiles();
   renderTerminal();
   publishOperatorTargets();
-  await grantAgentSourceAccess(device.id, device.nick, true, 2500).catch(() => false);
-  const immediateJobs = await pollAgentSourceCommands(device.id, 2500, { wait: false }).catch(() => []);
+  localAgent = await checkLocalAgent(900);
+  await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500).catch(() => false);
+  const immediateJobs = await pollAgentSourceCommands(device.id, 2500, { wait: false, state: agentSourceClientState() }).catch(() => []);
   for (const job of immediateJobs) {
     runAgentSourceJob(tunnelId, job);
   }

@@ -219,6 +219,7 @@ export function attachAgentRelay(app) {
     const source = getAgentSource(relayId, deviceId);
     source.access = req.body?.enabled !== false;
     source.deviceNick = cleanText(req.body?.deviceNick, maxSourceChars) || source.deviceNick || "";
+    applyAgentSourceClientInfo(source, req.body || {});
     touchAgentSource(source);
     flushPollWaiters(relayId);
     res.json({ ok: true, target: publicAgentSourceTarget(source) });
@@ -256,6 +257,7 @@ export function attachAgentRelay(app) {
       return;
     }
     const source = getAgentSource(relayId, deviceId);
+    applyAgentSourceClientInfo(source, req.query || {});
     touchAgentSource(source);
     const jobs = leasePendingSourceJobs(source);
     if (jobs.length > 0 || req.query.wait !== "1") {
@@ -497,6 +499,9 @@ function getAgentSource(relayId, deviceId) {
       deviceNick: "",
       access: false,
       lastSeenAt: 0,
+      clientProtocol: "",
+      clientCapabilities: [],
+      localAgent: {},
       jobs: [],
       cancels: []
     };
@@ -593,6 +598,9 @@ function publicAgentSourceDiagnostic(source, now = Date.now()) {
     lastSeenAt: source.lastSeenAt ? new Date(source.lastSeenAt).toISOString() : "",
     lastSeenAgeMs,
     sourceConnectedMs,
+    clientProtocol: source.clientProtocol || "",
+    clientCapabilities: Array.isArray(source.clientCapabilities) ? source.clientCapabilities : [],
+    localAgent: publicSourceLocalAgent(source.localAgent),
     pendingJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil <= now)).length,
     leasedJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && job.leaseUntil && job.leaseUntil > now).length,
     finishedJobs: jobs.filter((job) => Number.isSafeInteger(job.exitCode)).length,
@@ -630,6 +638,100 @@ function touchAgentSource(source) {
   source.lastSeenAt = Date.now();
   source.jobs = source.jobs.filter((job) => source.lastSeenAt - job.createdAt < sourceJobTtlMs);
   source.cancels = (source.cancels || []).filter((item) => source.lastSeenAt - item.createdAt < sourceCancelTtlMs);
+}
+
+function applyAgentSourceClientInfo(source, value) {
+  const protocol = cleanText(value?.clientProtocol, 80);
+  if (protocol) {
+    source.clientProtocol = protocol;
+  }
+  const capabilities = cleanCapabilityList(value?.clientCapabilities);
+  if (capabilities.length > 0) {
+    source.clientCapabilities = capabilities;
+  }
+  const localAgent = localAgentInfoFrom(value);
+  if (localAgent) {
+    source.localAgent = localAgent;
+  }
+}
+
+function cleanCapabilityList(value) {
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  return [...new Set(items
+    .map((item) => cleanText(item, 40))
+    .filter((item) => /^[a-z][a-z0-9-]{0,39}$/u.test(item)))]
+    .slice(0, 24);
+}
+
+function localAgentInfoFrom(value) {
+  const nested = value?.localAgent && typeof value.localAgent === "object" ? value.localAgent : null;
+  const read = (name) => nested?.[name] ?? value?.[`localAgent${name[0].toUpperCase()}${name.slice(1)}`];
+  const hasAny = nested
+    || ["Ok", "Version", "Scope", "ExecutionPlane", "AutoUpdate", "System"].some((name) => value?.[`localAgent${name}`] !== undefined);
+  if (!hasAny) {
+    return null;
+  }
+  return {
+    ok: readBoolean(read("ok")),
+    version: cleanText(read("version"), 40),
+    scope: cleanText(read("scope"), 40),
+    executionPlane: cleanText(read("executionPlane"), 80),
+    autoUpdate: readBoolean(read("autoUpdate")),
+    system: readBoolean(read("system"))
+  };
+}
+
+function readBoolean(value) {
+  return value === true || value === "true" || value === "1";
+}
+
+function publicSourceLocalAgent(value) {
+  return {
+    ok: value?.ok === true,
+    version: cleanText(value?.version, 40),
+    scope: cleanText(value?.scope, 40),
+    executionPlane: cleanText(value?.executionPlane, 80),
+    autoUpdate: value?.autoUpdate === true,
+    system: value?.system === true
+  };
+}
+
+function sourceCapabilityBlocker(source, runAs) {
+  const capabilities = new Set(Array.isArray(source?.clientCapabilities) ? source.clientCapabilities : []);
+  const localAgent = source?.localAgent || {};
+  if (!capabilities.has("runas") || !capabilities.has("local-agent-health")) {
+    return "source-client-update-required";
+  }
+  if (localAgent.ok !== true) {
+    return "local-agent-unavailable";
+  }
+  if (safeRunAs(runAs) === "system") {
+    return localAgent.system === true ? "" : "system-plane-unavailable";
+  }
+  if (localAgent.system === true && !String(localAgent.executionPlane || "").includes("interactive-user")) {
+    return "interactive-user-plane-unavailable";
+  }
+  return "";
+}
+
+function sourceCapabilityBlockedText(reason) {
+  if (reason === "source-client-update-required") {
+    return "! source client must refresh before this device can be controlled safely";
+  }
+  if (reason === "local-agent-unavailable") {
+    return "! local Soty Agent is not reachable from the source device";
+  }
+  if (reason === "system-plane-unavailable") {
+    return "! this task needs the machine agent, but the source device is not running in system mode";
+  }
+  if (reason === "interactive-user-plane-unavailable") {
+    return "! local Soty Agent is running as SYSTEM without the interactive-user execution plane";
+  }
+  return "! source device capability is unavailable";
 }
 
 function enrichAgentSource(targetRelayId, clientRelayId, source, text = "") {
@@ -763,9 +865,20 @@ function leasePendingSourceJobs(source) {
   for (const cancel of cancels) {
     cancel.leaseUntil = now + 15_000;
   }
-  const jobs = source.jobs
+  const candidates = source.jobs
     .filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil < now))
     .slice(0, 2);
+  const jobs = [];
+  for (const job of candidates) {
+    const blocker = sourceCapabilityBlocker(source, job.runAs || "user");
+    if (blocker) {
+      job.exitCode = 409;
+      job.text = sourceCapabilityBlockedText(blocker);
+      flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
+      continue;
+    }
+    jobs.push(job);
+  }
   for (const job of jobs) {
     job.leasedAt = job.leasedAt || now;
     job.leaseUntil = now + leaseMs;

@@ -2,9 +2,11 @@ export interface LocalAgentStatus {
   readonly ok: boolean;
   readonly managed?: boolean;
   readonly scope?: string;
+  readonly autoUpdate?: boolean;
   readonly platform?: string;
   readonly shell?: string;
   readonly version?: string;
+  readonly executionPlane?: string;
   readonly windowsUser?: string;
   readonly system?: boolean;
   readonly maintenance?: boolean;
@@ -16,6 +18,10 @@ export interface LocalAgentStatus {
   readonly lastSeenAt?: string;
   readonly deviceId?: string;
   readonly deviceNick?: string;
+}
+
+export interface AgentSourceClientState {
+  readonly localAgent?: LocalAgentStatus;
 }
 
 export interface LocalAgentReply {
@@ -215,7 +221,7 @@ export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
   }
 }
 
-export async function grantAgentSourceAccess(deviceId: string, deviceNick: string, enabled: boolean, timeoutMs = 1500): Promise<boolean> {
+export async function grantAgentSourceAccess(deviceId: string, deviceNick: string, enabled: boolean, state: AgentSourceClientState = {}, timeoutMs = 1500): Promise<boolean> {
   const relayId = ensureAgentRelayId();
   if (!relayId || !deviceId) {
     return false;
@@ -227,7 +233,13 @@ export async function grantAgentSourceAccess(deviceId: string, deviceNick: strin
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relayId, deviceId, deviceNick, enabled }),
+      body: JSON.stringify({
+        relayId,
+        deviceId,
+        deviceNick,
+        enabled,
+        ...agentSourceClientPayload(state)
+      }),
       signal: controller.signal
     });
     const payload = await response.json() as { readonly ok?: boolean };
@@ -242,7 +254,7 @@ export async function grantAgentSourceAccess(deviceId: string, deviceNick: strin
 export async function pollAgentSourceCommands(
   deviceId: string,
   timeoutMs = 35_000,
-  options: { readonly wait?: boolean; readonly signal?: AbortSignal } = {}
+  options: { readonly wait?: boolean; readonly signal?: AbortSignal; readonly state?: AgentSourceClientState } = {}
 ): Promise<AgentSourceCommand[]> {
   const relayId = readAgentRelayId();
   if (!relayId || !deviceId) {
@@ -257,8 +269,17 @@ export async function pollAgentSourceCommands(
     options.signal?.addEventListener("abort", abort, { once: true });
   }
   try {
-    const wait = options.wait === false ? "" : "&wait=1";
-    const url = `/api/agent/source/poll?relayId=${encodeURIComponent(relayId)}&deviceId=${encodeURIComponent(deviceId)}${wait}`;
+    const params = new URLSearchParams({
+      relayId,
+      deviceId,
+      clientProtocol: "soty-source-client.v2",
+      clientCapabilities: "runas,local-agent-health"
+    });
+    if (options.wait !== false) {
+      params.set("wait", "1");
+    }
+    appendLocalAgentQuery(params, options.state?.localAgent);
+    const url = `/api/agent/source/poll?${params.toString()}`;
     const response = await fetch(url, { cache: "no-store", signal: controller.signal });
     if (!response.ok) {
       return [];
@@ -273,6 +294,34 @@ export async function pollAgentSourceCommands(
     options.signal?.removeEventListener("abort", abort);
     window.clearTimeout(timer);
   }
+}
+
+function agentSourceClientPayload(state: AgentSourceClientState): Record<string, unknown> {
+  return {
+    clientProtocol: "soty-source-client.v2",
+    clientCapabilities: ["runas", "local-agent-health"],
+    localAgent: publicLocalAgentHealth(state.localAgent)
+  };
+}
+
+function appendLocalAgentQuery(params: URLSearchParams, status: LocalAgentStatus | undefined): void {
+  const health = publicLocalAgentHealth(status);
+  for (const [key, value] of Object.entries(health)) {
+    if (typeof value === "string" || typeof value === "boolean") {
+      params.set(`localAgent${key[0]?.toUpperCase() || ""}${key.slice(1)}`, String(value));
+    }
+  }
+}
+
+function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<string, string | boolean> {
+  return {
+    ok: status?.ok === true,
+    version: String(status?.version || "").slice(0, 40),
+    scope: String(status?.scope || "").slice(0, 40),
+    executionPlane: String(status?.executionPlane || "").slice(0, 80),
+    autoUpdate: status?.autoUpdate === true,
+    system: status?.system === true
+  };
 }
 
 export async function sendAgentSourceOutput(deviceId: string, id: string, text: string, exitCode?: number): Promise<void> {
