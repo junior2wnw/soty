@@ -162,6 +162,18 @@ async function runScenarios() {
       assert(!String(response.body.text || "").includes("git:"));
       assertEqual(mock.count("Get-Command $tool.Command"), before);
     }],
+    ["windows reinstall prompt goes through Codex dialog instead of prewritten preflight", async () => {
+      const beforePreflight = mock.count("windows-reinstall-preflight");
+      const response = await agentReply("reinstall windows");
+      assert(!String(response.body.text || "").includes("backup"));
+      assert(!String(response.body.text || "").includes("готово"));
+      assertEqual(mock.count("windows-reinstall-preflight"), beforePreflight);
+    }],
+    ["repeated prompt is not swallowed by duplicate shortcut", async () => {
+      await agentReply("repeat smoke no duplicate shortcut");
+      const response = await agentReply("repeat smoke no duplicate shortcut");
+      assert(String(response.body.text || "").trim().length > 0);
+    }],
     ["hosts path does not trigger driver fast route", async () => {
       const before = mock.count("Win32_PnPEntity");
       const response = await agentReply("проверь путь C:\\Windows\\System32\\drivers\\etc\\hosts");
@@ -396,6 +408,7 @@ async function runScenarios() {
     }],
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const main = await readFile(join(root, "src", "main.ts"), "utf8");
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
@@ -427,12 +440,14 @@ async function runScenarios() {
       assert(agent.includes('preferredTargetId: agentDialog ? "" : item.target'));
       assert(agent.includes("Use memory as short reusable hints"));
       assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));
-      assert(agent.includes("waitForTurnkeyTargetAfterCodex"));
-      assert(agent.includes("turnkeyGuardTimeoutMs"));
-      assert(agent.includes("guardTurnkeyMessages"));
-      assert(agent.includes("managedReinstallGuardTerminal"));
-      assert(agent.includes("reinstallHardPreflightBlockers"));
-      assert(agent.includes("handoff=codex-agent"));
+      assert(!agent.includes("waitForTurnkeyTargetAfterCodex"));
+      assert(!agent.includes("turnkeyGuardTimeoutMs"));
+      assert(!agent.includes("guardTurnkeyMessages"));
+      assert(!agent.includes("managedReinstallGuardTerminal"));
+      assert(!agent.includes("reinstallHardPreflightBlockers"));
+      assert(!agent.includes("handoff=codex-agent"));
+      assert(!agent.includes("tryFastWindowsReinstallGateReply"));
+      assert(!agent.includes("codex.duplicate-turn"));
       assert(agent.includes("isLikelyAgentStatusQuote"));
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
@@ -444,6 +459,8 @@ async function runScenarios() {
       assert(agent.includes("hasExplicitEventLogIntent"));
       assert(!agent.includes("shouldRunDeterministicFastRoutine"));
       assert(!agent.includes("isCreativeOrGenerativeMessage"));
+      assert(!main.includes("Ничего не менял"));
+      assert(!main.includes("Не смог сейчас ответить"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes('*.download.parts'));

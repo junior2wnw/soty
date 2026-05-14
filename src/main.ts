@@ -3929,14 +3929,7 @@ function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fall
 }
 
 function userVisibleAgentFailureText(value: string): string {
-  const text = cleanAgentReplyText(value).toLowerCase();
-  if (text.includes("timeout")) {
-    return "Не успел получить ответ. Ничего не менял. Попробуй еще раз через минуту.";
-  }
-  if (text.includes("auth") || text.includes("api key") || text.includes("openai") || text.includes("chatgpt")) {
-    return "Не смог подключиться к агенту. Ничего не менял. Проверь вход в Codex/OpenAI на этом компьютере.";
-  }
-  return "Не смог сейчас ответить в чате. Ничего не менял. Попробуй еще раз, а если повторится - перезапусти Soty Agent.";
+  return cleanAgentReplyText(value) || "! agent: no reply";
 }
 
 function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
