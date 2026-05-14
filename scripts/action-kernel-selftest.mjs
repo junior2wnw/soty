@@ -150,10 +150,17 @@ async function runScenarios() {
     ["audio volume command is classified", async () => expectFamily(await action(sourceRun("set volume SELFTEST_OK")), "audio-volume")],
     ["audio mute command is classified", async () => expectFamily(await action(sourceRun("mute audio SELFTEST_OK")), "audio-mute")],
     ["driver command is classified", async () => expectFamily(await action(sourceRun("pnputil /enum-drivers SELFTEST_OK")), "driver-check")],
-    ["driver prompt still uses driver fast route", async () => {
+    ["driver prompt goes through Codex dialog instead of prewritten fast route", async () => {
       const before = mock.count("Win32_PnPEntity");
-      await agentReply("проверь драйверы");
-      assertEqual(mock.count("Win32_PnPEntity"), before + 1);
+      const response = await agentReply("check drivers");
+      assert(!String(response.body.text || "").includes("Problem devices"));
+      assertEqual(mock.count("Win32_PnPEntity"), before);
+    }],
+    ["software prompt goes through Codex dialog instead of prewritten fast route", async () => {
+      const before = mock.count("Get-Command $tool.Command");
+      const response = await agentReply("check python pip git node npm");
+      assert(!String(response.body.text || "").includes("git:"));
+      assertEqual(mock.count("Get-Command $tool.Command"), before);
     }],
     ["hosts path does not trigger driver fast route", async () => {
       const before = mock.count("Win32_PnPEntity");
@@ -433,10 +440,10 @@ async function runScenarios() {
       assert(agent.includes("soty.agent.trace.v1"));
       assert(agent.includes("beginAgentTrace"));
       assert(agent.includes("/agent/traces"));
-      assert(agent.includes("enableFastDirectAnswers"));
+      assert(!agent.includes("enableFastDirectAnswers"));
       assert(agent.includes("hasExplicitEventLogIntent"));
-      assert(agent.includes("shouldRunDeterministicFastRoutine"));
-      assert(agent.includes("isCreativeOrGenerativeMessage"));
+      assert(!agent.includes("shouldRunDeterministicFastRoutine"));
+      assert(!agent.includes("isCreativeOrGenerativeMessage"));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes('*.download.parts'));
@@ -579,8 +586,8 @@ async function runScenarios() {
           kind: "agent-runtime",
           result: "partial",
           family: "file-work",
-          route: "agent-runtime.fast-source-script",
-          proof: "exitCode=0; fastRoutine=temp-file-hash-report; final=nonempty; quality=fail; qualityScore=56; missing=hashes,cleanup; tokens=actual; input=0; output=0; total=0; cached=0",
+          route: "codex.exec.resume+soty-mcp",
+          proof: "exitCode=0; final=nonempty; quality=fail; qualityScore=56; missing=hashes,cleanup; tokens=actual; input=1200; output=80; total=1280; cached=0",
           exitCode: 0,
           createdAt: "2026-05-13T08:00:00.000Z"
         }
