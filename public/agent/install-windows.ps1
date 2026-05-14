@@ -574,6 +574,7 @@ if (Test-Path -LiteralPath `$proxyEnvPath) {
 
 @"
 `$env:SOTY_AGENT_MANAGED = "1"
+`$env:SOTY_AGENT_AUTO_UPDATE = "1"
 `$env:SOTY_AGENT_SCOPE = "$Scope"
 `$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
 $RelayEnv

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.1";
+const agentVersion = "0.4.2";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -31,7 +31,7 @@ let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || pers
 const agentInstallId = safeInstallId(persistedAgentConfig.installId) || randomUUID();
 const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
 const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
-  || (process.env.SOTY_AGENT_AUTO_UPDATE !== "0" && process.env.SOTY_AGENT_SUPERVISED === "1");
+  || (managed && process.env.SOTY_AGENT_AUTO_UPDATE !== "0");
 const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;

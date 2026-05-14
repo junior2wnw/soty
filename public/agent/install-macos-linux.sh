@@ -465,6 +465,7 @@ write_runner() {
   cat > "$RUNNER_PATH" <<EOF
 #!/usr/bin/env sh
 export SOTY_AGENT_MANAGED=1
+export SOTY_AGENT_AUTO_UPDATE=1
 export SOTY_AGENT_SCOPE="${SCOPE}"
 export SOTY_AGENT_UPDATE_URL="${MANIFEST_URL}"
 export SOTY_AGENT_RELAY_ID="${RELAY_ID}"
