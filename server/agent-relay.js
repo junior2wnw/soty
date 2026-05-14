@@ -1155,7 +1155,7 @@ function sourceJobPickupTimeoutMs(job) {
 }
 
 function flushSourcePollWaiters(source) {
-  flushWaiters(sourcePollWaiters, source.key, () => ({ ok: true, jobs: leasePendingSourceJobs(source) }));
+  flushWaiters(sourcePollWaiters, source.key);
 }
 
 function cleanupAgentSources() {
@@ -1234,6 +1234,7 @@ function findReply(relayId, id) {
 function addWaiter(map, key, req, res, buildPayload, timeoutMs = 30_000) {
   const waiter = {
     res,
+    buildPayload,
     timer: setTimeout(() => {
       removeWaiter(map, key, waiter);
       res.json(buildPayload());
@@ -1278,7 +1279,7 @@ function flushEventWaiters(relayId, id) {
   flushWaiters(eventWaiters, replyKey(relayId, id), () => relayEventsPayload(relayId, id, 0));
 }
 
-function flushWaiters(map, key, buildPayload) {
+function flushWaiters(map, key, buildPayload = null) {
   const waiters = map.get(key);
   if (!waiters) {
     return;
@@ -1286,7 +1287,7 @@ function flushWaiters(map, key, buildPayload) {
   map.delete(key);
   for (const waiter of waiters) {
     clearTimeout(waiter.timer);
-    waiter.res.json(buildPayload());
+    waiter.res.json((buildPayload || waiter.buildPayload)());
   }
 }
 

@@ -42,7 +42,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.11");
+      assertEqual(health.body.version, "0.4.12");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -132,6 +132,14 @@ async function runScenarios({ relayUrl } = {}) {
         assert(String(blockedUser.body.text || "").includes("user-session Soty Agent companion"));
 
         await relayRequest(base, "GET", `/api/agent/source/poll?${userQuery}`);
+        const waitingSystemPoll = relayRequest(base, "GET", `/api/agent/source/poll?${sourceWorkerQuery(relayId, deviceId, {
+          scope: "Machine",
+          companion: false,
+          system: true,
+          executionPlane: "system-controller+user-session-companion-required",
+          wait: "1"
+        })}`);
+        await sleep(40);
         const userStarted = await relayRequest(base, "POST", "/api/agent/source/start", {
           relayId,
           deviceId,
@@ -141,6 +149,8 @@ async function runScenarios({ relayUrl } = {}) {
           timeoutMs: 5000
         });
         assertEqual(userStarted.status, 200);
+        const waitingSystemResult = await waitingSystemPoll;
+        assertEqual(waitingSystemResult.body.jobs.length, 0);
         const systemPollForUserJob = await relayRequest(base, "GET", `/api/agent/source/poll?${systemQuery}`);
         assertEqual(systemPollForUserJob.body.jobs.length, 0);
         const userPollForUserJob = await relayRequest(base, "GET", `/api/agent/source/poll?${userQuery}`);
@@ -532,6 +542,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(relay.includes("sourceWorkerRoute"));
       assert(relay.includes("workers: {}"));
       assert(relay.includes("user-session-agent-unavailable"));
+      assert(relay.includes("waiter.buildPayload"));
       assert(!windowsInstall.includes("Disable-CurrentUserAgentAutostart"));
       assert(!windowsInstall.includes("Stop-ExistingSotyAgentsForMachine"));
       assert(agent.includes("no active interactive Windows user session"));
@@ -639,7 +650,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.11");
+      assertEqual(manifest.version, "0.4.12");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -1290,11 +1301,11 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     relayId,
     deviceId,
     deviceNick: "plane-device",
-    wait: "0",
+    wait: options.wait || "0",
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: "runas,local-agent-health,direct-device-worker",
     localAgentOk: "true",
-    localAgentVersion: "0.4.11",
+    localAgentVersion: "0.4.12",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",
     localAgentExecutionPlane: options.executionPlane,
