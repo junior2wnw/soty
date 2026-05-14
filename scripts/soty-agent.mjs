@@ -36,6 +36,7 @@ const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "Current
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;
 const maxChatChars = 12_000;
+const maxArtifactTransferBytes = 64 * 1024 * 1024;
 const maxAgentContextChars = 16_000;
 const maxAgentRuntimePromptChars = 48_000;
 const maxLearningMarkersPerTurn = 8;
@@ -3767,7 +3768,7 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   if (attachSotyMcp) {
     args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
     args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_image"]) {
+    for (const tool of ["soty_toolkit", "soty_toolkits", "soty_reinstall", "soty_action", "soty_action_status", "soty_action_stop", "soty_action_list", "soty_link_status", "soty_run", "soty_script", "soty_file", "soty_artifact", "soty_browser", "soty_desktop", "soty_open_url", "soty_audio", "soty_image"]) {
       args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
     }
   }
@@ -4793,9 +4794,13 @@ function runtimeTargetScore(target, preferredId) {
 
 function sotyRuntimeHints() {
   return [
-    "- Identity: Лорд.",
+    "- Identity: \u041b\u043e\u0440\u0434.",
     "- Use memory as short reusable hints, not as rules.",
-    "- Use capability tools for the user's computer; verify important actions with proof.",
+    "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical eyes, hands, filesystem, browser, desktop, display, and final state.",
+    "- Server workspace is allowed for thinking, helper scripts, transformations, generated assets, and durable improvements, but it is not the user's computer and cannot prove user-device facts.",
+    "- For user-device files or generated assets, transfer the exact artifact to the source device with soty_artifact or use soty_image saving to the source device; do not replace it with a similar public download.",
+    "- For display/wallpaper/desktop tasks, measure the active user display and profile on the source device, apply there, then verify there.",
+    "- Use capability tools for the user's computer; verify important actions with source-device proof.",
     "- Keep answers brief unless the task needs detail. Hidden memory line: `soty-memory:`."
   ];
 }
@@ -5581,6 +5586,21 @@ function runMcpServer() {
         }
       },
       {
+        name: "soty_artifact",
+        description: "Transfer an exact file from the Soty Codex/server workspace to the current Soty Agent LINK source device with chunked binary copy and SHA-256 verification. Use when the server creates or transforms an artifact that must become the user's real local file.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            localPath: { type: "string", description: "Path to the existing file in the Codex/server workspace. Relative paths resolve from the current Codex workspace." },
+            targetPath: { type: "string", description: "Absolute destination path on the user's source device, for example C:\\Users\\Public\\Pictures\\wallpaper.jpg." },
+            overwrite: { type: "boolean", description: "Whether to overwrite an existing destination. Default true." },
+            timeoutMs: { type: "integer", description: "Timeout per chunk in milliseconds, 1000-86400000." }
+          },
+          required: ["localPath", "targetPath"],
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_browser",
         description: "Seamless browser automation on the current Soty Agent LINK source device. Uses installed Edge/Chrome through a local DevTools session when possible; no separate user confirmation is shown beyond the active LINK. Use for opening pages, reading title/text, JavaScript eval, click-by-text, typing into selectors, and saving screenshots.",
         inputSchema: {
@@ -5605,7 +5625,7 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", description: "One of: screenshot, windows, focus, click, type, key." },
+            action: { type: "string", description: "One of: display, screenshot, windows, focus, click, type, key. Use display before wallpaper/screen-size decisions." },
             title: { type: "string", description: "Window title substring for focus." },
             x: { type: "integer", description: "Screen X coordinate for click." },
             y: { type: "integer", description: "Screen Y coordinate for click." },
@@ -5633,7 +5653,7 @@ function runMcpServer() {
       },
       {
         name: "soty_image",
-        description: "Generate a raster image with the OpenAI Images API and save it as a local PNG/JPEG/WebP file in the Soty Codex runtime. Use for photos, wallpapers, avatars, illustrations, product shots, and other generated bitmap assets.",
+        description: "Generate a raster image with the OpenAI Images API. When a LINK source device is attached, saves the exact generated file on that source device and returns its path, bytes, and proof. Use for photos, wallpapers, avatars, illustrations, product shots, and other generated bitmap assets.",
         inputSchema: {
           type: "object",
           properties: {
@@ -5782,6 +5802,9 @@ function runMcpServer() {
       });
       return mcpToolOperatorResult(result);
     }
+    if (name === "soty_artifact") {
+      return await callSotyArtifactTool(args);
+    }
     if (name === "soty_browser") {
       const action = String(args.action || "").trim().toLowerCase();
       if (!action) {
@@ -5862,6 +5885,90 @@ function runMcpServer() {
 
   function mcpSourceUnavailableResult() {
     return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
+  }
+
+  async function callSotyArtifactTool(args) {
+    if (!mcpTarget || !mcpSourceDeviceId) {
+      return mcpSourceUnavailableResult();
+    }
+    const rawLocalPath = String(args.localPath || "").trim();
+    const targetPath = String(args.targetPath || "").trim().slice(0, 2000);
+    if (!rawLocalPath || !targetPath) {
+      return mcpToolText("! artifact", true, 2);
+    }
+    const localPath = resolve(rawLocalPath);
+    if (!existsSync(localPath)) {
+      return mcpToolJson({ ok: false, action: "artifact-push", error: "local artifact not found", localPath }, true, 2);
+    }
+    let bytes;
+    try {
+      bytes = await readFile(localPath);
+    } catch (error) {
+      return mcpToolJson({
+        ok: false,
+        action: "artifact-push",
+        error: error instanceof Error ? error.message : String(error),
+        localPath
+      }, true, 1);
+    }
+    if (bytes.length > maxArtifactTransferBytes) {
+      return mcpToolJson({
+        ok: false,
+        action: "artifact-push",
+        error: "artifact too large for inline source transfer",
+        localPath,
+        bytes: bytes.length,
+        maxBytes: maxArtifactTransferBytes
+      }, true, 413);
+    }
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const chunkSize = 512 * 1024;
+    const total = Math.max(1, Math.ceil(bytes.length / chunkSize));
+    let lastPayload = null;
+    for (let index = 0; index < total; index += 1) {
+      const chunk = bytes.subarray(index * chunkSize, Math.min(bytes.length, (index + 1) * chunkSize));
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceArtifactChunkScript({
+          targetPath,
+          chunkBase64: chunk.toString("base64"),
+          index,
+          total,
+          overwrite: args.overwrite !== false,
+          sha256,
+          bytes: bytes.length
+        }),
+        shell: "node",
+        name: `soty-artifact-${index + 1}-of-${total}`.slice(0, 120),
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 120_000)
+      });
+      if (!result.ok) {
+        return mcpToolJson({
+          ok: false,
+          action: "artifact-push",
+          localPath,
+          targetPath,
+          chunk: index + 1,
+          total,
+          sha256,
+          error: "source-device chunk write failed",
+          result: result.payload || { text: result.text, exitCode: result.exitCode }
+        }, true, result.exitCode || 1);
+      }
+      lastPayload = parseJsonObject(result.text) || result.payload || null;
+    }
+    return mcpToolJson({
+      ok: true,
+      action: "artifact-push",
+      localPath,
+      targetPath: String(lastPayload?.path || targetPath),
+      bytes: bytes.length,
+      chunks: total,
+      sha256,
+      savedBy: "source-device",
+      verified: String(lastPayload?.sha256 || "").toLowerCase() === sha256
+    });
   }
 
   async function callSotyImageTool(args) {
@@ -6980,6 +7087,44 @@ console.log(JSON.stringify({ ok: true, path: out, bytes: bytes.length }));
 `.trim();
 }
 
+function sourceArtifactChunkScript(args) {
+  const payload = Buffer.from(JSON.stringify({
+    targetPath: String(args?.targetPath || "").slice(0, 2000),
+    chunkBase64: String(args?.chunkBase64 || ""),
+    index: Number.isSafeInteger(args?.index) ? args.index : 0,
+    total: Number.isSafeInteger(args?.total) ? args.total : 1,
+    overwrite: args?.overwrite !== false,
+    sha256: String(args?.sha256 || "").slice(0, 128),
+    bytes: Number.isSafeInteger(args?.bytes) ? args.bytes : 0
+  }), "utf8").toString("base64");
+  return `
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const target = path.resolve(String(req.targetPath || ""));
+if (!target) throw new Error("empty targetPath");
+const index = Number(req.index) || 0;
+const total = Math.max(1, Number(req.total) || 1);
+if (index === 0) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  if (fs.existsSync(target) && req.overwrite === false) throw new Error("target exists");
+  fs.writeFileSync(target, Buffer.alloc(0));
+}
+fs.appendFileSync(target, Buffer.from(String(req.chunkBase64 || ""), "base64"));
+const stat = fs.statSync(target);
+const done = index + 1 >= total;
+let actualSha256 = "";
+if (done) {
+  actualSha256 = crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
+  if (String(req.sha256 || "").toLowerCase() && actualSha256 !== String(req.sha256).toLowerCase()) {
+    throw new Error("sha256 mismatch");
+  }
+}
+console.log(JSON.stringify({ ok: true, action: "artifact-push", path: target, chunk: index + 1, total, bytes: stat.size, done, sha256: actualSha256 || String(req.sha256 || "") }));
+`.trim();
+}
+
 function mcpSafeImageTimeout(value) {
   return Number.isSafeInteger(value) ? Math.max(30_000, Math.min(value, maxLongTaskTimeoutMs)) : 300_000;
 }
@@ -7563,6 +7708,58 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 function Emit($Value) { $Value | ConvertTo-Json -Depth 6 -Compress }
 switch ($action) {
+  'display' {
+    $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+      [pscustomobject]@{
+        deviceName = $_.DeviceName
+        primary = [bool]$_.Primary
+        x = $_.Bounds.X
+        y = $_.Bounds.Y
+        width = $_.Bounds.Width
+        height = $_.Bounds.Height
+        workingWidth = $_.WorkingArea.Width
+        workingHeight = $_.WorkingArea.Height
+      }
+    })
+    $video = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object {
+      [pscustomobject]@{
+        name = $_.Name
+        currentWidth = [int]($_.CurrentHorizontalResolution -as [int])
+        currentHeight = [int]($_.CurrentVerticalResolution -as [int])
+      }
+    })
+    $registrySizes = @()
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Configuration'
+    if (Test-Path $root) {
+      $registrySizes = @(Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+        $p = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+        foreach ($prefix in @('ActiveSize', 'PrimSurfSize')) {
+          $cxProp = $p.PSObject.Properties["${prefix}.cx"]
+          $cyProp = $p.PSObject.Properties["${prefix}.cy"]
+          $cx = if ($cxProp) { $cxProp.Value } else { $null }
+          $cy = if ($cyProp) { $cyProp.Value } else { $null }
+          if ($cx -and $cy) {
+            [pscustomobject]@{ source=$prefix; width=[int]$cx; height=[int]$cy; key=$_.Name }
+          }
+        }
+      } | Sort-Object width,height -Descending -Unique)
+    }
+    $best = @($video | Where-Object { $_.currentWidth -gt 0 -and $_.currentHeight -gt 0 } | Select-Object -First 1)
+    $bestWidth = if ($best.Count) { $best[0].currentWidth } elseif ($registrySizes.Count) { $registrySizes[0].width } else { $virtual.Width }
+    $bestHeight = if ($best.Count) { $best[0].currentHeight } elseif ($registrySizes.Count) { $registrySizes[0].height } else { $virtual.Height }
+    Emit ([pscustomobject]@{
+      ok=$true
+      action=$action
+      recommendedWidth=[int]$bestWidth
+      recommendedHeight=[int]$bestHeight
+      virtualScreen=[pscustomobject]@{ x=$virtual.Left; y=$virtual.Top; width=$virtual.Width; height=$virtual.Height }
+      screens=$screens
+      video=$video
+      registrySizes=@($registrySizes | Select-Object -First 12)
+      user=$env:USERNAME
+    })
+  }
   'windows' {
     $items = Get-Process | Where-Object { $_.MainWindowTitle } | Sort-Object ProcessName | Select-Object -First 80 ProcessName, Id, MainWindowTitle
     Emit ([pscustomobject]@{ ok=$true; action=$action; windows=@($items) })
