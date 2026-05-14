@@ -42,7 +42,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.10");
+      assertEqual(health.body.version, "0.4.11");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -527,6 +527,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("soty-agent-user"));
       assert(agent.includes("user-session-agent-unavailable"));
       assert(agent.includes("allowWindowsInteractiveTaskBridge"));
+      assert(agent.includes("New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited"));
+      assert(!agent.includes("-RunLevel LeastPrivilege"));
       assert(relay.includes("sourceWorkerRoute"));
       assert(relay.includes("workers: {}"));
       assert(relay.includes("user-session-agent-unavailable"));
@@ -637,7 +639,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.10");
+      assertEqual(manifest.version, "0.4.11");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -1292,7 +1294,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: "runas,local-agent-health,direct-device-worker",
     localAgentOk: "true",
-    localAgentVersion: "0.4.10",
+    localAgentVersion: "0.4.11",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",
     localAgentExecutionPlane: options.executionPlane,

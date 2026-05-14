@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.10";
+const agentVersion = "0.4.11";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -281,7 +281,7 @@ $argument = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Fil
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel LeastPrivilege
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'soty.online user session companion' -Force | Out-Null
 Start-ScheduledTask -TaskName $taskName
 `.trim();
