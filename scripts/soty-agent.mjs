@@ -2118,8 +2118,8 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 }
 
 function classifyRoutineSourceTask(lower) {
-  const text = String(lower || "");
-  if (/driver|pnputil|devmgmt|device manager|problem device|устройств|драйвер|диспетчер/u.test(text)) {
+  const text = normalizeRoutineIntentText(lower);
+  if (hasDriverCheckIntent(text)) {
     return "driver-check";
   }
   if (/battery|powercfg|sleep|lid|power plan|заряд|батаре|питани|сон|крышк/u.test(text)) {
@@ -2190,14 +2190,14 @@ function hasExplicitRoutineIntent(text) {
 }
 
 function hasRoutineTechnicalAnchor(text, family, kind = "") {
-  const value = String(text || "").toLowerCase();
+  const value = normalizeRoutineIntentText(text);
   const normalizedFamily = cleanActionToken(family, "");
   const normalizedKind = cleanActionToken(kind, "");
   if (normalizedKind === "system-eventlog-critical") {
     return hasExplicitEventLogIntent(value);
   }
   if (normalizedFamily === "driver-check") {
-    return /driver|pnputil|devmgmt|device manager|problem device|драйвер|диспетчер|устройств|pnp/iu.test(value);
+    return hasDriverCheckIntent(value);
   }
   if (normalizedFamily === "power-check") {
     return /battery|powercfg|sleep|lid|power plan|заряд|батаре|питани|сон|крышк/iu.test(value);
@@ -2228,6 +2228,9 @@ function shouldRunDeterministicFastRoutine(text, spec) {
   if (!spec) {
     return false;
   }
+  if (isCompositeAgentPrompt(text)) {
+    return false;
+  }
   if (cleanActionToken(spec.kind, "") === "system-eventlog-critical") {
     return hasExplicitEventLogIntent(text);
   }
@@ -2240,6 +2243,29 @@ function shouldRunDeterministicFastRoutine(text, spec) {
     return false;
   }
   return explicit || anchored;
+}
+
+function normalizeRoutineIntentText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/\b[a-z]:[\\/][^\s"'`<>|]+/giu, " windows-path ")
+    .replace(/\bwindows[\\/]+system32[\\/]+drivers[\\/]+etc[\\/]+hosts\b/giu, " windows-hosts-file ");
+}
+
+function hasDriverCheckIntent(text) {
+  const value = String(text || "").toLowerCase();
+  return /(?:\bdriver\b|\bdrivers\b|pnputil|devmgmt|device manager|problem device|pnp|драйвер|диспетчер\s+устройств|проблемн\w*\s+устройств|устройств\w*\s+с\s+ошиб)/iu.test(value);
+}
+
+function isCompositeAgentPrompt(text) {
+  const value = String(text || "");
+  const lower = value.toLowerCase();
+  const numbered = (value.match(/(?:^|\n)\s*\d{1,3}[).]/gu) || []).length;
+  if (numbered >= 3) {
+    return true;
+  }
+  return numbered >= 2
+    && /(?:сценари|недетерминирован|проверка\s+памят|памят[ьи]|ускорен|в\s+одном\s+.*ответ|пройди)/iu.test(lower);
 }
 
 function isRoutineAgentTaskFamily(family) {
@@ -2261,7 +2287,7 @@ function classifySourceCommand(command) {
   if (/volume|mute|audio|sound|endpointvolume|nircmd|sndvol|speaker|mic|микрофон|звук|громк/u.test(lower)) {
     return /mute|muted|выключ/u.test(lower) ? "audio-mute" : "audio-volume";
   }
-  if (/driver|pnputil|devmgmt|device manager|драйвер/u.test(lower)) {
+  if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
     return "driver-check";
   }
   if (/systemreset|reagentc\s+\/boottore/u.test(lower)) {

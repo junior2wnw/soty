@@ -150,6 +150,30 @@ async function runScenarios() {
     ["audio volume command is classified", async () => expectFamily(await action(sourceRun("set volume SELFTEST_OK")), "audio-volume")],
     ["audio mute command is classified", async () => expectFamily(await action(sourceRun("mute audio SELFTEST_OK")), "audio-mute")],
     ["driver command is classified", async () => expectFamily(await action(sourceRun("pnputil /enum-drivers SELFTEST_OK")), "driver-check")],
+    ["driver prompt still uses driver fast route", async () => {
+      const before = mock.count("Win32_PnPEntity");
+      await agentReply("проверь драйверы");
+      assertEqual(mock.count("Win32_PnPEntity"), before + 1);
+    }],
+    ["hosts path does not trigger driver fast route", async () => {
+      const before = mock.count("Win32_PnPEntity");
+      const response = await agentReply("проверь путь C:\\Windows\\System32\\drivers\\etc\\hosts");
+      assert(!String(response.body.text || "").includes("Проблемных устройств"));
+      assertEqual(mock.count("Win32_PnPEntity"), before);
+    }],
+    ["composite memory test skips deterministic fast route", async () => {
+      const before = mock.count("Win32_PnPEntity");
+      const response = await agentReply([
+        "Живой недетерминированный тест памяти и ускорения.",
+        "Метка: Оля-QA.",
+        "1) статус связи с текущим ПК;",
+        "2) python и pip;",
+        "3) путь C:\\Windows\\System32\\drivers\\etc\\hosts;",
+        "4) запомни имя и проверь память."
+      ].join("\n"));
+      assert(!String(response.body.text || "").includes("Проблемных устройств"));
+      assertEqual(mock.count("Win32_PnPEntity"), before);
+    }],
     ["power command is classified", async () => expectFamily(await action(sourceRun("powercfg /batteryreport SELFTEST_OK")), "power-check")],
     ["package command is classified", async () => expectFamily(await action(sourceRun("winget install app SELFTEST_OK")), "package-install")],
     ["service command is classified", async () => expectFamily(await action(sourceRun("Get-Service SELFTEST_OK")), "service-check")],
@@ -660,6 +684,33 @@ async function action(body) {
   return await post("/operator/action", body);
 }
 
+async function agentReply(text) {
+  return await post("/agent/reply", {
+    text,
+    context: "selftest",
+    source: {
+      tunnelId: "selftest-tunnel",
+      tunnelLabel: "Selftest",
+      deviceId: "dev1",
+      deviceNick: "selftest-source",
+      appOrigin: "https://xn--n1afe0b.online",
+      sourceRelayId: "selftest_relay_00000000000000000001",
+      operatorTargets: [
+        {
+          id: "agent-source:dev1",
+          label: "selftest-source",
+          deviceIds: ["dev1"],
+          hostDeviceId: "dev1",
+          access: true,
+          host: true,
+          selected: true,
+          lastActionAt: new Date().toISOString()
+        }
+      ]
+    }
+  });
+}
+
 async function waitForStatus(path, status) {
   for (let index = 0; index < 40; index += 1) {
     const response = await get(path);
@@ -946,7 +997,9 @@ async function startAgent({ port: requestedPort, relayUrl }) {
       SOTY_AGENT_RELAY_URL: relayUrl,
       SOTY_AGENT_REMEMBER_OUTCOMES: "0",
       SOTY_AGENT_DEV: "1",
-      SOTY_AGENT_MANAGED: "0"
+      SOTY_AGENT_MANAGED: "0",
+      SOTY_CODEX_DISABLED: "1",
+      SOTY_CODEX_RELAY_FALLBACK: "0"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
