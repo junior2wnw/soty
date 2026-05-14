@@ -4,8 +4,8 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, hasAgentRelayId, pollAgentSourceCommands, sendAgentSourceOutput } from "./features/agent";
-import type { AgentSourceCommand, LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
+import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
@@ -3282,9 +3282,6 @@ function startAgentSourceControl(tunnelId: string): void {
   agentSourcePolling = false;
   window.clearTimeout(agentSourcePollTimer);
   agentSourceGrantRefreshAt = 0;
-  if (localAgent.sourceWorker === true) {
-    return;
-  }
   void pollAgentSourceControl(agentSourcePollEpoch);
 }
 
@@ -3299,9 +3296,6 @@ function resumeAgentSourceControl(): void {
   terminalOpenId = terminalOpenId || agentTunnel.id;
   setTerminalState(agentTunnel.id, "idle");
   void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
-  if (localAgent.sourceWorker === true) {
-    return;
-  }
   startAgentSourceControl(agentTunnel.id);
 }
 
@@ -3327,15 +3321,8 @@ async function pollAgentSourceControl(epoch = agentSourcePollEpoch): Promise<voi
   agentSourcePolling = true;
   try {
     await refreshAgentSourceGrant(tunnelId);
-    if (localAgent.sourceWorker === true) {
-      return;
-    }
-    const jobs = await pollAgentSourceCommands(device.id, 35_000, { signal: controller.signal, state: agentSourceClientState() });
     if (agentSourcePollEpoch !== epoch || controller.signal.aborted) {
       return;
-    }
-    for (const job of jobs) {
-      runAgentSourceJob(tunnelId, job);
     }
   } finally {
     if (agentSourcePollController === controller) {
@@ -3343,8 +3330,8 @@ async function pollAgentSourceControl(epoch = agentSourcePollEpoch): Promise<voi
     }
     if (agentSourcePollEpoch === epoch) {
       agentSourcePolling = false;
-      if (device && agentSourceControlTunnelId === tunnelId && isAgentTunnelId(tunnelId) && localAgent.sourceWorker !== true) {
-        agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(epoch), 250);
+      if (device && agentSourceControlTunnelId === tunnelId && isAgentTunnelId(tunnelId)) {
+        agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(epoch), agentSourceGrantRefreshMs);
       }
     }
   }
@@ -3372,147 +3359,6 @@ function localAgentRunTimeoutMs(value: unknown): number {
 
 function agentSourceClientState(): { readonly localAgent: LocalAgentStatus } {
   return { localAgent };
-}
-
-function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
-  if (!device) {
-    return;
-  }
-  if (job.type === "cancel") {
-    const commandId = job.commandId || "";
-    if (commandId) {
-      stopLocalAgentRun(commandId);
-      appendTerminalLine(tunnelId, "! stop requested");
-      renderTerminal();
-      void sendAgentSourceOutput(device.id, commandId, "! cancelled", 130);
-    }
-    return;
-  }
-  let opened = false;
-  let finished = false;
-  const timeoutMs = localAgentRunTimeoutMs(job.timeoutMs);
-  let watchdogTimer = 0;
-  const ws = new WebSocket("ws://127.0.0.1:49424");
-  const fail = () => {
-    if (finished || opened || !device) {
-      return;
-    }
-    finished = true;
-    setTerminalState(tunnelId, "off");
-    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
-    renderTerminal();
-    window.clearTimeout(timer);
-    window.clearTimeout(watchdogTimer);
-    void sendAgentSourceOutput(device.id, job.id, "! 127.0.0.1:49424", 127);
-  };
-  const timer = window.setTimeout(() => {
-    fail();
-    ws.close();
-  }, 2500);
-  selectedId = tunnelId;
-  saveSelectedTunnelId(tunnelId);
-  terminalOpenId = tunnelId;
-  setTerminalState(tunnelId, "run");
-  appendTerminalLine(tunnelId, `< ${job.type === "script" ? job.name || "script" : job.command || ""}`);
-  renderTiles();
-  applySelectedText();
-  renderTerminal();
-  ws.onopen = () => {
-    opened = true;
-    window.clearTimeout(timer);
-    localAgentRuns.set(job.id, ws);
-    watchdogTimer = window.setTimeout(() => {
-      if (finished || !device) {
-        return;
-      }
-      finished = true;
-      stopLocalAgentRun(job.id);
-      setTerminalState(tunnelId, "bad");
-      appendTerminalLine(tunnelId, "! timeout");
-      renderTerminal();
-      if (localAgentRuns.get(job.id) === ws) {
-        localAgentRuns.delete(job.id);
-      }
-      void sendAgentSourceOutput(device.id, job.id, "! timeout\n", 124);
-      ws.close();
-    }, timeoutMs + 1500);
-    if (job.type === "script") {
-      ws.send(JSON.stringify({
-        type: "script",
-        id: job.id,
-        name: job.name || "script",
-        shell: job.shell || "",
-        script: job.script || "",
-        runAs: job.runAs || "",
-        timeoutMs
-      }));
-      return;
-    }
-    ws.send(JSON.stringify({
-      type: "run",
-      id: job.id,
-      command: job.command || "",
-      runAs: job.runAs || "",
-      timeoutMs
-    }));
-  };
-  ws.onmessage = (event) => {
-    if (!device) {
-      return;
-    }
-    let message: { readonly type?: string; readonly text?: string; readonly exitCode?: number };
-    try {
-      message = JSON.parse(event.data as string) as { readonly type?: string; readonly text?: string; readonly exitCode?: number };
-    } catch {
-      return;
-    }
-    if (message.type === "start") {
-      setTerminalState(tunnelId, "run");
-      renderTerminal();
-      return;
-    }
-    if (message.type === "error") {
-      finished = true;
-      window.clearTimeout(watchdogTimer);
-      setTerminalState(tunnelId, "bad");
-      const text = typeof message.text === "string" ? message.text : "!";
-      appendTerminalLine(tunnelId, text);
-      renderTerminal();
-      void sendAgentSourceOutput(device.id, job.id, text, 1);
-      return;
-    }
-    if (message.type !== "data" && message.type !== "exit") {
-      return;
-    }
-    const text = typeof message.text === "string" ? message.text : "";
-    const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
-    if (text.trim()) {
-      appendTerminalLine(tunnelId, text);
-    }
-    if (typeof exitCode === "number") {
-      finished = true;
-      window.clearTimeout(watchdogTimer);
-      setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalExitLine(tunnelId, exitCode);
-    }
-    renderTerminal();
-    void sendAgentSourceOutput(device.id, job.id, text, exitCode);
-  };
-  ws.onerror = () => fail();
-  ws.onclose = () => {
-    window.clearTimeout(timer);
-    window.clearTimeout(watchdogTimer);
-    if (opened && !finished && device) {
-      finished = true;
-      setTerminalState(tunnelId, "bad");
-      appendTerminalLine(tunnelId, "! agent disconnected");
-      renderTerminal();
-      void sendAgentSourceOutput(device.id, job.id, "! agent disconnected\n", 127);
-    }
-    if (localAgentRuns.get(job.id) === ws) {
-      localAgentRuns.delete(job.id);
-    }
-  };
 }
 
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
@@ -3933,12 +3779,6 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   publishOperatorTargets();
   localAgent = await checkLocalAgent(900);
   await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500).catch(() => false);
-  if (localAgent.sourceWorker !== true) {
-    const immediateJobs = await pollAgentSourceCommands(device.id, 2500, { wait: false, state: agentSourceClientState() }).catch(() => []);
-    for (const job of immediateJobs) {
-      runAgentSourceJob(tunnelId, job);
-    }
-  }
   startAgentSourceControl(tunnelId);
   publishOperatorTargets();
 }

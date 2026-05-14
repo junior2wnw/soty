@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.8";
+const agentVersion = "0.4.9";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7947,8 +7947,8 @@ switch ($action) {
       $registrySizes = @(Get-ChildItem -Path $root -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
         $p = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
         foreach ($prefix in @('ActiveSize', 'PrimSurfSize')) {
-          $cxProp = $p.PSObject.Properties["${prefix}.cx"]
-          $cyProp = $p.PSObject.Properties["${prefix}.cy"]
+          $cxProp = $p.PSObject.Properties[($prefix + '.cx')]
+          $cyProp = $p.PSObject.Properties[($prefix + '.cy')]
           $cx = if ($cxProp) { $cxProp.Value } else { $null }
           $cy = if ($cyProp) { $cyProp.Value } else { $null }
           if ($cx -and $cy) {

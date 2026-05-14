@@ -40,7 +40,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.8");
+      assertEqual(health.body.version, "0.4.9");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -438,6 +438,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("sourceWorker: canRunAgentSourceWorker()"));
       assert(!agent.includes("configuredAgentDeviceId"));
       assert(!agent.includes("configuredAgentDeviceNick"));
+      assert(!agent.includes('$p.PSObject.Properties["${prefix}.cx"]'));
+      assert(!agent.includes('$p.PSObject.Properties["${prefix}.cy"]'));
+      assert(agent.includes("$p.PSObject.Properties[($prefix + '.cx')]"));
+      assert(agent.includes("$p.PSObject.Properties[($prefix + '.cy')]"));
       assert(agent.includes("clean-codex+memory-plane+capability-gateway"));
       assert(agent.includes("soty_image"));
       assert(agent.includes("source device does not need an OpenAI API key"));
@@ -503,7 +507,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(relay.includes("directWorkerSeenAt"));
       assert(relay.includes("isDirectWorkerHeartbeat || !agentSourceDirectWorkerFresh(source)"));
       assert(relay.includes("installed Soty Agent must refresh before direct device control is available"));
-      assert(main.includes("localAgent.sourceWorker !== true"));
+      assert(!main.includes("localAgent.sourceWorker !== true"));
+      assert(!main.includes("function runAgentSourceJob"));
+      assert(!main.includes("pollAgentSourceCommands"));
+      assert(!main.includes("sendAgentSourceOutput"));
       assert(!main.includes("Ничего не менял"));
       assert(!main.includes("Не смог сейчас ответить"));
       assert(managed.includes("Get-MediaStatus"));
@@ -549,7 +556,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.8");
+      assertEqual(manifest.version, "0.4.9");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");

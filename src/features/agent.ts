@@ -60,18 +60,6 @@ export interface LocalAgentRequestSource {
   readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
 }
 
-export interface AgentSourceCommand {
-  readonly id: string;
-  readonly type: "run" | "script" | "cancel";
-  readonly command?: string;
-  readonly commandId?: string;
-  readonly script?: string;
-  readonly name?: string;
-  readonly shell?: string;
-  readonly runAs?: string;
-  readonly timeoutMs?: number;
-}
-
 const relayStorageKey = "soty:agent:relay-id";
 const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const maxCodexDialogMessages = 64;
@@ -257,66 +245,12 @@ export async function grantAgentSourceAccess(deviceId: string, deviceNick: strin
   }
 }
 
-export async function pollAgentSourceCommands(
-  deviceId: string,
-  timeoutMs = 35_000,
-  options: { readonly wait?: boolean; readonly signal?: AbortSignal; readonly state?: AgentSourceClientState } = {}
-): Promise<AgentSourceCommand[]> {
-  const relayId = readAgentRelayId();
-  if (!relayId || !deviceId) {
-    return [];
-  }
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs + 3000);
-  const abort = () => controller.abort();
-  if (options.signal?.aborted) {
-    controller.abort();
-  } else {
-    options.signal?.addEventListener("abort", abort, { once: true });
-  }
-  try {
-    const params = new URLSearchParams({
-      relayId,
-      deviceId,
-      clientProtocol: "soty-source-client.v2",
-      clientCapabilities: "runas,local-agent-health"
-    });
-    if (options.wait !== false) {
-      params.set("wait", "1");
-    }
-    appendLocalAgentQuery(params, options.state?.localAgent);
-    const url = `/api/agent/source/poll?${params.toString()}`;
-    const response = await fetch(url, { cache: "no-store", signal: controller.signal });
-    if (!response.ok) {
-      return [];
-    }
-    const payload = await response.json() as { readonly jobs?: readonly unknown[] };
-    return Array.isArray(payload.jobs)
-      ? payload.jobs.map(agentSourceCommandFrom).filter((item): item is AgentSourceCommand => Boolean(item))
-      : [];
-  } catch {
-    return [];
-  } finally {
-    options.signal?.removeEventListener("abort", abort);
-    window.clearTimeout(timer);
-  }
-}
-
 function agentSourceClientPayload(state: AgentSourceClientState): Record<string, unknown> {
   return {
     clientProtocol: "soty-source-client.v2",
     clientCapabilities: ["runas", "local-agent-health"],
     localAgent: publicLocalAgentHealth(state.localAgent)
   };
-}
-
-function appendLocalAgentQuery(params: URLSearchParams, status: LocalAgentStatus | undefined): void {
-  const health = publicLocalAgentHealth(status);
-  for (const [key, value] of Object.entries(health)) {
-    if (typeof value === "string" || typeof value === "boolean") {
-      params.set(`localAgent${key[0]?.toUpperCase() || ""}${key.slice(1)}`, String(value));
-    }
-  }
 }
 
 function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<string, string | boolean> {
@@ -328,48 +262,6 @@ function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<st
     sourceWorker: status?.sourceWorker === true,
     autoUpdate: status?.autoUpdate === true,
     system: status?.system === true
-  };
-}
-
-export async function sendAgentSourceOutput(deviceId: string, id: string, text: string, exitCode?: number): Promise<void> {
-  const relayId = readAgentRelayId();
-  if (!relayId || !deviceId || !id) {
-    return;
-  }
-  await fetch("/api/agent/source/output", {
-    method: "POST",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      relayId,
-      deviceId,
-      id,
-      text,
-      ...(typeof exitCode === "number" ? { exitCode } : {})
-    })
-  }).catch(() => undefined);
-}
-
-function agentSourceCommandFrom(value: unknown): AgentSourceCommand | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const item = value as Record<string, unknown>;
-  const id = typeof item.id === "string" ? item.id : "";
-  const type = item.type === "cancel" ? "cancel" : item.type === "script" ? "script" : item.type === "run" ? "run" : "";
-  if (!id || !type) {
-    return null;
-  }
-  return {
-    id,
-    type,
-    ...(typeof item.command === "string" ? { command: item.command } : {}),
-    ...(typeof item.commandId === "string" ? { commandId: item.commandId } : {}),
-    ...(typeof item.script === "string" ? { script: item.script } : {}),
-    ...(typeof item.name === "string" ? { name: item.name } : {}),
-    ...(typeof item.shell === "string" ? { shell: item.shell } : {}),
-    ...(typeof item.runAs === "string" ? { runAs: item.runAs } : {}),
-    ...(typeof item.timeoutMs === "number" ? { timeoutMs: item.timeoutMs } : {})
   };
 }
 
