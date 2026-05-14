@@ -3699,14 +3699,7 @@ async function finalizeComposerDraft(): Promise<void> {
   void sync.sendLiveDraft("");
   if (tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
-  }
-  if (tunnel && isAgentTunnel(tunnel)) {
     void sendAgentDialogMessage(tunnelId, message);
-  } else {
-    const handedToOperatorBridge = sendOperatorUserMessage(tunnelId, message, current);
-    if (!handedToOperatorBridge) {
-      void sendAgentDialogMessage(tunnelId, message);
-    }
   }
   localDrafts.delete(tunnelId);
   composer.value = "";
@@ -4063,37 +4056,6 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
   }
   tunnels = touchTunnel(tunnelId);
   renderTiles();
-}
-
-function sendOperatorUserMessage(
-  tunnelId: string,
-  text: string,
-  context = "",
-  source: { readonly deviceId?: string; readonly deviceNick?: string } = {}
-): boolean {
-  const ws = operatorSocket;
-  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  const message = normalizeChatMessage(text);
-  if (!ws || ws.readyState !== WebSocket.OPEN || !tunnel || !message) {
-    return false;
-  }
-  try {
-    ws.send(JSON.stringify({
-      type: "operator.message",
-      id: `user_${crypto.randomUUID()}`,
-      target: tunnelId,
-      label: counterpartyLabel(tunnel),
-      sourceDeviceId: source.deviceId || device?.id || "",
-      sourceDeviceNick: source.deviceNick || device?.nick || "",
-      agent: isAgentTunnel(tunnel),
-      text: message.slice(0, 12_000),
-      context: cleanAgentContext(context).slice(-16_000),
-      createdAt: new Date().toISOString()
-    }));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function removeOperatorChatSuffix(tunnelId: string, suffix: string): void {

@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.13");
+      assertEqual(health.body.version, "0.4.14");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -573,8 +573,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Лорд"));
       assert(agent.includes("response_style_rule_${index + 1}"));
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
-      assert(agent.includes("isActionableTargetOperatorMessage"));
+      assert(!agent.includes("isActionableTargetOperatorMessage"));
       assert(agent.includes('preferredTargetId: agentDialog ? "" : item.target'));
+      assert(agent.includes("Capability contract:"));
+      assert(agent.includes("soty_browser for browser work"));
+      assert(agent.includes("soty_desktop for screen/mouse/keyboard"));
+      assert(agent.includes("soty_action or soty_reinstall for long jobs"));
       assert(agent.includes("Use memory as short reusable hints"));
       assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));
       assert(!agent.includes("waitForTurnkeyTargetAfterCodex"));
@@ -585,7 +589,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("handoff=codex-agent"));
       assert(!agent.includes("tryFastWindowsReinstallGateReply"));
       assert(!agent.includes("codex.duplicate-turn"));
-      assert(agent.includes("isLikelyAgentStatusQuote"));
+      assert(!agent.includes("isLikelyAgentStatusQuote"));
+      assert(!main.includes("sendOperatorUserMessage"));
+      assert(!main.includes('type: "operator.message"'));
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
       assert(agent.includes("sourceDeviceHash"));
@@ -651,7 +657,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.13");
+      assertEqual(manifest.version, "0.4.14");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -723,7 +729,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.13"'));
+      assert(agentSource.includes('const agentVersion = "0.4.14"'));
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
@@ -745,14 +751,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.13";', 'const agentVersion = "0.4.12";');
-      assert(oldSource.includes('const agentVersion = "0.4.12"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.14";', 'const agentVersion = "0.4.13";');
+      assert(oldSource.includes('const agentVersion = "0.4.13"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.13",
+            version: "0.4.14",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1398,7 +1404,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: "runas,local-agent-health,direct-device-worker",
     localAgentOk: "true",
-    localAgentVersion: "0.4.13",
+    localAgentVersion: "0.4.14",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",
     localAgentExecutionPlane: options.executionPlane,
