@@ -61,6 +61,9 @@ export function createHttpApp(distDir, { dataDir } = {}) {
       }
     }
   }));
+  app.use("/agent", (_req, res) => {
+    res.status(404).json({ ok: false, error: "agent_asset_not_found" });
+  });
   app.get("*", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.sendFile(path.join(distDir, "index.html"));

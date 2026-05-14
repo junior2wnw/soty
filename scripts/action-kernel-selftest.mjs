@@ -686,6 +686,7 @@ async function runScenarios({ relayUrl } = {}) {
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
       let userWindowsInstallerExists = true;
       try {
         await readFile(join(root, "public", "agent", "install-windows.cmd"), "utf8");
@@ -726,6 +727,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
+      assert(httpApp.includes('app.use("/agent"'));
+      assert(httpApp.includes("agent_asset_not_found"));
       assert(unixInstall.includes("INSTALL_CODEX=\"0\""));
       assert(unixInstall.includes("--codex-proxy-url"));
       assert(unixInstall.includes("proxy.env"));
