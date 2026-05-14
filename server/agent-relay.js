@@ -264,12 +264,13 @@ export function attachAgentRelay(app) {
       res.json({ ok: true, jobs: [] });
       return;
     }
-    const jobs = leasePendingSourceJobs(source);
+    const requester = sourcePollRequester(req.query || {});
+    const jobs = leasePendingSourceJobs(source, requester);
     if (jobs.length > 0 || req.query.wait !== "1") {
       res.json({ ok: true, jobs });
       return;
     }
-    addWaiter(sourcePollWaiters, source.key, req, res, () => ({ ok: true, jobs: leasePendingSourceJobs(source) }));
+    addWaiter(sourcePollWaiters, source.key, req, res, () => ({ ok: true, jobs: leasePendingSourceJobs(source, requester) }));
   });
 
   app.post("/api/agent/source/output", jsonParser, (req, res) => {
@@ -507,6 +508,7 @@ function getAgentSource(relayId, deviceId) {
       clientProtocol: "",
       clientCapabilities: [],
       localAgent: {},
+      workers: {},
       jobs: [],
       cancels: []
     };
@@ -610,6 +612,7 @@ function publicAgentSourceDiagnostic(source, now = Date.now()) {
     clientProtocol: source.clientProtocol || "",
     clientCapabilities: Array.isArray(source.clientCapabilities) ? source.clientCapabilities : [],
     localAgent: publicSourceLocalAgent(source.localAgent),
+    workers: publicSourceWorkers(source.workers, now),
     pendingJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil <= now)).length,
     leasedJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && job.leaseUntil && job.leaseUntil > now).length,
     finishedJobs: jobs.filter((job) => Number.isSafeInteger(job.exitCode)).length,
@@ -637,6 +640,27 @@ function publicSourceJobDiagnostic(job, now = Date.now()) {
   };
 }
 
+function publicSourceWorkers(workers, now = Date.now()) {
+  const value = workers && typeof workers === "object" ? workers : {};
+  return {
+    user: publicSourceWorker(value.user, now),
+    system: publicSourceWorker(value.system, now)
+  };
+}
+
+function publicSourceWorker(worker, now = Date.now()) {
+  const seenAt = Number.isFinite(worker?.seenAt) ? worker.seenAt : 0;
+  const ageMs = seenAt ? Math.max(0, now - seenAt) : null;
+  return {
+    connected: Boolean(seenAt && ageMs < sourceConnectedMs),
+    seenAt: seenAt ? new Date(seenAt).toISOString() : "",
+    ageMs,
+    clientProtocol: cleanText(worker?.clientProtocol, 80),
+    clientCapabilities: Array.isArray(worker?.clientCapabilities) ? worker.clientCapabilities : [],
+    localAgent: publicSourceLocalAgent(worker?.localAgent)
+  };
+}
+
 function connectedAgentSources(relayId) {
   const now = Date.now();
   return [...agentSources.values()]
@@ -660,12 +684,23 @@ function applyAgentSourceClientInfo(source, value) {
     source.clientCapabilities = capabilities;
   }
   const localAgent = localAgentInfoFrom(value);
+  const workerPlane = sourceWorkerPlane(localAgent);
   if (isDirectWorkerHeartbeat) {
     source.directWorkerSeenAt = Date.now();
+  }
+  if (localAgent && isDirectWorkerHeartbeat) {
+    source.workers = source.workers && typeof source.workers === "object" ? source.workers : {};
+    source.workers[workerPlane] = {
+      seenAt: Date.now(),
+      clientProtocol: source.clientProtocol || "",
+      clientCapabilities: capabilities,
+      localAgent
+    };
   }
   if (localAgent && (isDirectWorkerHeartbeat || !agentSourceDirectWorkerFresh(source))) {
     source.localAgent = localAgent;
   }
+  source.localAgent = preferredSourceLocalAgent(source) || source.localAgent || {};
 }
 
 function cleanCapabilityList(value) {
@@ -684,7 +719,7 @@ function localAgentInfoFrom(value) {
   const nested = value?.localAgent && typeof value.localAgent === "object" ? value.localAgent : null;
   const read = (name) => nested?.[name] ?? value?.[`localAgent${name[0].toUpperCase()}${name.slice(1)}`];
   const hasAny = nested
-    || ["Ok", "Version", "Scope", "ExecutionPlane", "AutoUpdate", "System", "SourceWorker"].some((name) => value?.[`localAgent${name}`] !== undefined);
+    || ["Ok", "Version", "Scope", "Companion", "ExecutionPlane", "AutoUpdate", "System", "SourceWorker"].some((name) => value?.[`localAgent${name}`] !== undefined);
   if (!hasAny) {
     return null;
   }
@@ -692,11 +727,25 @@ function localAgentInfoFrom(value) {
     ok: readBoolean(read("ok")),
     version: cleanText(read("version"), 40),
     scope: cleanText(read("scope"), 40),
+    companion: readBoolean(read("companion")),
     executionPlane: cleanText(read("executionPlane"), 80),
     autoUpdate: readBoolean(read("autoUpdate")),
     system: readBoolean(read("system")),
     sourceWorker: readBoolean(read("sourceWorker"))
   };
+}
+
+function sourceWorkerPlane(localAgent) {
+  return localAgent?.system === true ? "system" : "user";
+}
+
+function preferredSourceLocalAgent(source, now = Date.now()) {
+  const user = freshSourceWorker(source, "user", now);
+  if (user?.localAgent) {
+    return user.localAgent;
+  }
+  const system = freshSourceWorker(source, "system", now);
+  return system?.localAgent || null;
 }
 
 function readBoolean(value) {
@@ -708,6 +757,7 @@ function publicSourceLocalAgent(value) {
     ok: value?.ok === true,
     version: cleanText(value?.version, 40),
     scope: cleanText(value?.scope, 40),
+    companion: value?.companion === true,
     executionPlane: cleanText(value?.executionPlane, 80),
     autoUpdate: value?.autoUpdate === true,
     system: value?.system === true,
@@ -716,27 +766,46 @@ function publicSourceLocalAgent(value) {
 }
 
 function sourceCapabilityBlocker(source, runAs) {
-  const capabilities = new Set(Array.isArray(source?.clientCapabilities) ? source.clientCapabilities : []);
-  const localAgent = source?.localAgent || {};
-  if (!capabilities.has("runas") || !capabilities.has("local-agent-health")) {
-    return "source-client-update-required";
+  return sourceWorkerRoute(source, runAs).blocker;
+}
+
+function sourceWorkerRoute(source, runAs, now = Date.now()) {
+  const plane = safeRunAs(runAs) === "system" ? "system" : "user";
+  const worker = freshSourceWorker(source, plane, now);
+  if (!worker) {
+    return {
+      plane,
+      blocker: plane === "system" ? "system-plane-unavailable" : "user-session-agent-unavailable"
+    };
   }
-  if (!agentSourceDirectWorkerFresh(source)) {
-    return "direct-device-worker-required";
+  const capabilities = new Set(Array.isArray(worker.clientCapabilities) ? worker.clientCapabilities : []);
+  const localAgent = worker.localAgent || {};
+  if (!capabilities.has("runas") || !capabilities.has("local-agent-health")) {
+    return { plane, worker, blocker: "source-client-update-required" };
   }
   if (!capabilities.has("direct-device-worker") || localAgent.sourceWorker !== true) {
-    return "direct-device-worker-required";
+    return { plane, worker, blocker: "direct-device-worker-required" };
   }
   if (localAgent.ok !== true) {
-    return "local-agent-unavailable";
+    return { plane, worker, blocker: "local-agent-unavailable" };
   }
-  if (safeRunAs(runAs) === "system") {
-    return localAgent.system === true ? "" : "system-plane-unavailable";
+  if (plane === "system") {
+    return localAgent.system === true
+      ? { plane, worker, blocker: "" }
+      : { plane, worker, blocker: "system-plane-unavailable" };
   }
-  if (localAgent.system === true && !String(localAgent.executionPlane || "").includes("interactive-user")) {
-    return "interactive-user-plane-unavailable";
+  if (localAgent.system === true) {
+    return { plane, worker, blocker: "user-session-agent-unavailable" };
   }
-  return "";
+  return { plane, worker, blocker: "" };
+}
+
+function freshSourceWorker(source, plane, now = Date.now()) {
+  const worker = source?.workers?.[plane];
+  if (!worker?.seenAt || now - worker.seenAt >= sourceConnectedMs) {
+    return null;
+  }
+  return worker;
 }
 
 function sourceCapabilityBlockedText(reason) {
@@ -752,8 +821,8 @@ function sourceCapabilityBlockedText(reason) {
   if (reason === "system-plane-unavailable") {
     return "! this task needs the machine agent, but the source device is not running in system mode";
   }
-  if (reason === "interactive-user-plane-unavailable") {
-    return "! local Soty Agent is running as SYSTEM without the interactive-user execution plane";
+  if (reason === "user-session-agent-unavailable") {
+    return "! user-session Soty Agent companion is not running on the source device";
   }
   return "! source device capability is unavailable";
 }
@@ -761,6 +830,15 @@ function sourceCapabilityBlockedText(reason) {
 function pollRequesterCanLeaseSourceJobs(value) {
   const capabilities = new Set(cleanCapabilityList(value?.clientCapabilities));
   return capabilities.has("direct-device-worker");
+}
+
+function sourcePollRequester(value) {
+  const localAgent = localAgentInfoFrom(value) || {};
+  return {
+    plane: sourceWorkerPlane(localAgent),
+    capabilities: cleanCapabilityList(value?.clientCapabilities),
+    localAgent
+  };
 }
 
 function agentSourceDirectWorkerFresh(source, now = Date.now()) {
@@ -889,7 +967,7 @@ function createSourceJob(source, payload) {
   return job;
 }
 
-function leasePendingSourceJobs(source) {
+function leasePendingSourceJobs(source, requester = null) {
   const now = Date.now();
   expireQueuedSourceJobs(source, now);
   const cancels = (source.cancels || [])
@@ -898,19 +976,22 @@ function leasePendingSourceJobs(source) {
   for (const cancel of cancels) {
     cancel.leaseUntil = now + 15_000;
   }
-  const candidates = source.jobs
-    .filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil < now))
-    .slice(0, 2);
   const jobs = [];
-  for (const job of candidates) {
-    const blocker = sourceCapabilityBlocker(source, job.runAs || "user");
-    if (blocker) {
+  for (const job of source.jobs.filter((item) => !Number.isSafeInteger(item.exitCode) && (!item.leaseUntil || item.leaseUntil < now))) {
+    const route = sourceWorkerRoute(source, job.runAs || "user", now);
+    if (route.blocker) {
       job.exitCode = 409;
-      job.text = sourceCapabilityBlockedText(blocker);
+      job.text = sourceCapabilityBlockedText(route.blocker);
       flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
       continue;
     }
+    if (requester?.plane && requester.plane !== route.plane) {
+      continue;
+    }
     jobs.push(job);
+    if (jobs.length >= 2) {
+      break;
+    }
   }
   for (const job of jobs) {
     job.leasedAt = job.leasedAt || now;
@@ -964,6 +1045,19 @@ function createSourceJobFromRequest(body) {
         text: agentSourceUnavailableText(diagnostic),
         exitCode: 404,
         diagnostic
+      }
+    };
+  }
+  const blocker = sourceCapabilityBlocker(source, runAs);
+  if (blocker) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      payload: {
+        ok: false,
+        text: sourceCapabilityBlockedText(blocker),
+        exitCode: 409,
+        diagnostic: agentSourceDiagnostics(relayId, deviceId)
       }
     };
   }

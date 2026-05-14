@@ -1,9 +1,9 @@
 {
-  "version": "0.4.9",
+  "version": "0.4.10",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+memory-plane+user-capability-gateway",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "180a5112eaf66511ca1488067a9e6cce6b62b09c57ff9b00ac24fc11ac3b1bc2",
+  "sha256": "cf683a8c0cbaff571a876544d381ff885cf02d33a61c167457d8e6600da27219",
   "memoryPlane": {
     "schema": "soty.memory-plane.v1",
     "controller": "soty.memctl.v1",

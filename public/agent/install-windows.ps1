@@ -225,43 +225,26 @@ try {
     }
   }
 
-  function Stop-ExistingSotyAgentsForMachine {
+  function Stop-ExistingSotyMachineAgents {
     if ($Scope -ne "Machine") { return }
     try {
+      $agentDirPattern = [regex]::Escape($AgentDir)
       $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object {
           $_.CommandLine -and
           ($_.CommandLine -match "soty-agent") -and
+          ($_.CommandLine -match $agentDirPattern) -and
           (($_.CommandLine -match "soty-agent\.mjs") -or ($_.CommandLine -match "start-agent\.ps1"))
         }
       foreach ($process in @($processes)) {
         try {
           Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-          Write-Output "soty-agent:stopped-user-process:$($process.ProcessId)"
+          Write-Output "soty-agent:stopped-machine-process:$($process.ProcessId)"
         } catch {}
       }
     } catch {
-      Write-Output "soty-agent:stop-user-agent-skipped"
+      Write-Output "soty-agent:stop-machine-agent-skipped"
     }
-  }
-
-  function Disable-CurrentUserAgentAutostart {
-    if ($Scope -ne "Machine") { return }
-    try {
-      Unregister-ScheduledTask -TaskName "soty-agent" -Confirm:$false -ErrorAction SilentlyContinue
-      Write-Output "soty-agent:user-task-disabled"
-    } catch {}
-    try {
-      Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "soty-agent" -ErrorAction SilentlyContinue
-      Write-Output "soty-agent:user-run-disabled"
-    } catch {}
-    try {
-      $startupDir = [Environment]::GetFolderPath("Startup")
-      if ($startupDir) {
-        Remove-Item -LiteralPath (Join-Path $startupDir "soty-agent.vbs") -Force -ErrorAction SilentlyContinue
-        Write-Output "soty-agent:user-startup-disabled"
-      }
-    } catch {}
   }
 
   function Wait-AgentHealth {
@@ -291,8 +274,7 @@ try {
     $runCommand = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
 
     if ($Scope -eq "Machine") {
-      Disable-CurrentUserAgentAutostart
-      Stop-ExistingSotyAgentsForMachine
+      Stop-ExistingSotyMachineAgents
       try { Stop-ScheduledTask -TaskName "soty-agent-machine" -ErrorAction SilentlyContinue } catch {}
       $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
       $Trigger = New-ScheduledTaskTrigger -AtStartup

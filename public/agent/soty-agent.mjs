@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.9";
+const agentVersion = "0.4.10";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -20,7 +20,10 @@ const learningSentPath = join(agentDir, "learning-sent.jsonl");
 const actionJobsDir = resolve(process.env.SOTY_AGENT_ACTION_JOBS_DIR || join(agentDir, "action-jobs"));
 const persistedAgentConfig = loadAgentConfig();
 const persistedCodexSessions = loadCodexSessions();
-const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || "49424", 10);
+const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
+const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
+const agentCompanion = process.env.SOTY_AGENT_COMPANION === "1";
+const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || (agentCompanion ? "0" : "49424"), 10);
 const maxLongTaskTimeoutMs = 24 * 60 * 60_000;
 const defaultTimeoutMs = safeDurationMs(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS, 30 * 60_000, maxLongTaskTimeoutMs);
 const mcpInlineToolBudgetMs = 95_000;
@@ -29,10 +32,8 @@ const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_U
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
 let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
 const agentInstallId = safeInstallId(persistedAgentConfig.installId) || randomUUID();
-const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MANAGED === "1";
 const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
   || (managed && process.env.SOTY_AGENT_AUTO_UPDATE !== "0");
-const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;
 const maxChatChars = 12_000;
@@ -200,13 +201,176 @@ function startServer() {
   });
 
   server.listen(port, "127.0.0.1", () => {
-    process.stdout.write(`soty-agent:${port}\n`);
+    const address = server.address();
+    const boundPort = typeof address === "object" && address ? address.port : port;
+    process.stdout.write(`soty-agent:${boundPort}\n`);
     void ensureCtlLauncher();
+    scheduleWindowsUserCompanion();
     void preparePersistentStockCodexHome();
     scheduleWindowsAudioWarmup();
     scheduleUpdate();
     startAgentRelay();
   });
+}
+
+function scheduleWindowsUserCompanion() {
+  if (!shouldManageWindowsUserCompanion()) {
+    return;
+  }
+  const ensure = () => {
+    void ensureWindowsUserCompanion().catch(() => undefined);
+  };
+  const initial = setTimeout(ensure, 1200);
+  initial.unref?.();
+  const interval = setInterval(ensure, 10 * 60_000);
+  interval.unref?.();
+}
+
+function shouldManageWindowsUserCompanion() {
+  return process.platform === "win32"
+    && agentScope === "Machine"
+    && !agentCompanion
+    && isWindowsSystem();
+}
+
+async function ensureWindowsUserCompanion() {
+  const bootstrapPath = join(agentDir, "start-user-agent.ps1");
+  await writeFile(bootstrapPath, windowsUserCompanionBootstrap(), "utf8");
+  registerWindowsUserCompanionRunKey(bootstrapPath);
+  launchWindowsUserCompanionOnce(bootstrapPath);
+}
+
+function registerWindowsUserCompanionRunKey(bootstrapPath) {
+  const command = `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${String(bootstrapPath).replace(/"/gu, '""')}"`;
+  try {
+    execFileSync("reg.exe", [
+      "add",
+      "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+      "/v",
+      "soty-agent-user",
+      "/t",
+      "REG_SZ",
+      "/d",
+      command,
+      "/f"
+    ], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+  } catch {
+    // A machine agent without HKLM write access can still keep serving system tasks.
+  }
+}
+
+function launchWindowsUserCompanionOnce(bootstrapPath) {
+  const script = `
+$ErrorActionPreference = 'SilentlyContinue'
+function Get-ActiveUserName {
+  $owners = @(Get-CimInstance Win32_Process -Filter "name='explorer.exe'" | ForEach-Object {
+    try {
+      $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+      if ($owner.User) {
+        if ($owner.Domain) { "$($owner.Domain)\\$($owner.User)" } else { $owner.User }
+      }
+    } catch {}
+  } | Where-Object { $_ } | Select-Object -Unique)
+  return @($owners | Select-Object -First 1)[0]
+}
+$user = Get-ActiveUserName
+if (-not $user) { exit 0 }
+$taskName = 'soty-agent-user-companion-now'
+$bootstrap = ${psSingleQuoted(bootstrapPath)}
+$argument = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + ($bootstrap -replace '"', '""') + '"'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel LeastPrivilege
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'soty.online user session companion' -Force | Out-Null
+Start-ScheduledTask -TaskName $taskName
+`.trim();
+  try {
+    execFileSync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      script
+    ], { encoding: "utf8", timeout: 12_000, windowsHide: true });
+  } catch {
+    // The HKLM Run registration starts the companion at the next user logon.
+  }
+}
+
+function windowsUserCompanionBootstrap() {
+  const nodePath = psSingleQuoted(process.execPath);
+  const manifestUrl = psSingleQuoted(updateManifestUrl);
+  const relayBaseUrl = psSingleQuoted(agentRelayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
+  return `
+$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+if ($identity -match '^NT AUTHORITY\\\\SYSTEM$') { exit 0 }
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$mutexName = 'Global\\SotyAgentUserCompanion-' + $sid
+$mutex = New-Object System.Threading.Mutex($false, $mutexName)
+if (-not $mutex.WaitOne(0)) { exit 0 }
+try {
+  $machineDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+  $machineAgent = Join-Path $machineDir 'soty-agent.mjs'
+  $machineConfig = Join-Path $machineDir 'agent-config.json'
+  $userRoot = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\\Local' }
+  $userDir = Join-Path $userRoot 'soty-agent'
+  $userAgent = Join-Path $userDir 'soty-agent.mjs'
+  $nodePath = ${nodePath}
+  function Read-MachineConfig {
+    try {
+      if (Test-Path -LiteralPath $machineConfig) {
+        return Get-Content -LiteralPath $machineConfig -Raw | ConvertFrom-Json
+      }
+    } catch {}
+    return [pscustomobject]@{}
+  }
+  function Sync-AgentFile {
+    New-Item -ItemType Directory -Force -Path $userDir | Out-Null
+    $copy = $true
+    if ((Test-Path -LiteralPath $machineAgent) -and (Test-Path -LiteralPath $userAgent)) {
+      try {
+        $copy = (Get-FileHash -Algorithm SHA256 -LiteralPath $machineAgent).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $userAgent).Hash
+      } catch { $copy = $true }
+    }
+    if ($copy -and (Test-Path -LiteralPath $machineAgent)) {
+      Copy-Item -LiteralPath $machineAgent -Destination $userAgent -Force
+    }
+  }
+  while ($true) {
+    Sync-AgentFile
+    $config = Read-MachineConfig
+    $relayId = [string]$config.relayId
+    $deviceId = [string]$config.deviceId
+    if ([string]::IsNullOrWhiteSpace($relayId) -or [string]::IsNullOrWhiteSpace($deviceId)) {
+      Start-Sleep -Seconds 5
+      continue
+    }
+    $env:SOTY_AGENT_MANAGED = '1'
+    $env:SOTY_AGENT_AUTO_UPDATE = '1'
+    $env:SOTY_AGENT_SCOPE = 'CurrentUser'
+    $env:SOTY_AGENT_COMPANION = '1'
+    $env:SOTY_AGENT_PORT = '0'
+    $env:SOTY_AGENT_UPDATE_URL = ${manifestUrl}
+    $env:SOTY_AGENT_RELAY_URL = ${relayBaseUrl}
+    $env:SOTY_AGENT_RELAY_ID = $relayId
+    $env:SOTY_AGENT_DEVICE_ID = $deviceId
+    if ($config.deviceNick) { $env:SOTY_AGENT_DEVICE_NICK = [string]$config.deviceNick }
+    & $nodePath $userAgent
+    if ($LASTEXITCODE -eq 75) { Start-Sleep -Seconds 1 } else { Start-Sleep -Seconds 3 }
+  }
+} finally {
+  try { $mutex.ReleaseMutex() } catch {}
+  try { $mutex.Dispose() } catch {}
+}
+`.trim();
+}
+
+function psSingleQuoted(value) {
+  return `'${String(value || "").replace(/'/gu, "''")}'`;
 }
 
 async function handleHttpRequest(request, response) {
@@ -3580,6 +3744,7 @@ function appendAgentSourceWorkerHealth(params) {
   params.set("localAgentOk", "true");
   params.set("localAgentVersion", agentVersion);
   params.set("localAgentScope", agentScope);
+  params.set("localAgentCompanion", agentCompanion ? "true" : "false");
   params.set("localAgentExecutionPlane", runtimeExecutionPlane());
   params.set("localAgentAutoUpdate", agentAutoUpdate ? "true" : "false");
   params.set("localAgentSystem", isSystemAgent() ? "true" : "false");
@@ -8221,6 +8386,11 @@ try {
 }
 
 async function runCommand(ws, id, command, timeoutMs, runAs = "user") {
+  if (shouldBlockWindowsSystemUserRun(runAs)) {
+    send(ws, id, "! user-session-agent-unavailable\n", 409, "error", { runAs: "user" });
+    ws.close(1011, "user-session-agent-unavailable");
+    return;
+  }
   let jobDir = "";
   let shell = shellSpec(command);
   let cleanupJobDir = false;
@@ -8299,6 +8469,11 @@ async function runCommand(ws, id, command, timeoutMs, runAs = "user") {
 }
 
 async function runScript(ws, id, payload, timeoutMs) {
+  if (shouldBlockWindowsSystemUserRun(payload.runAs || "user")) {
+    send(ws, id, "! user-session-agent-unavailable\n", 409, "error", { runAs: "user" });
+    ws.close(1011, "user-session-agent-unavailable");
+    return;
+  }
   const jobDir = join(tmpdir(), "soty-agent", safeFileName(id));
   await mkdir(jobDir, { recursive: true });
   let script = scriptSpec(payload, jobDir);
@@ -9399,6 +9574,7 @@ function runtimeHealth() {
   return {
     managed,
     scope: agentScope,
+    companion: agentCompanion,
     autoUpdate: agentAutoUpdate,
     platform: process.platform,
     shell: shellName(),
@@ -9435,8 +9611,11 @@ function runtimeHealth() {
 }
 
 function runtimeExecutionPlane() {
+  if (process.platform === "win32" && agentCompanion) {
+    return "user-session-companion";
+  }
   return process.platform === "win32" && isWindowsSystem()
-    ? "system-controller+interactive-user-default"
+    ? "system-controller+user-session-companion-required"
     : "current-process";
 }
 
@@ -9560,8 +9739,16 @@ function safeRunAs(value) {
   return text === "system" || text === "machine" || text === "elevated" ? "system" : "user";
 }
 
+function allowWindowsInteractiveTaskBridge() {
+  return process.env.SOTY_AGENT_ALLOW_INTERACTIVE_TASK_BRIDGE === "1";
+}
+
 function shouldRunInWindowsUserSession(runAs) {
-  return process.platform === "win32" && isWindowsSystem() && safeRunAs(runAs) !== "system";
+  return process.platform === "win32" && isWindowsSystem() && safeRunAs(runAs) !== "system" && allowWindowsInteractiveTaskBridge();
+}
+
+function shouldBlockWindowsSystemUserRun(runAs) {
+  return process.platform === "win32" && isWindowsSystem() && safeRunAs(runAs) !== "system" && !allowWindowsInteractiveTaskBridge();
 }
 
 function safeRelayId(value) {

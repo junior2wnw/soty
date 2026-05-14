@@ -5,7 +5,9 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import express from "express";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
+import { attachAgentRelay } from "../server/agent-relay.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceAgentPath = join(root, "scripts", "soty-agent.mjs");
@@ -40,7 +42,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.9");
+      assertEqual(health.body.version, "0.4.10");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -94,6 +96,74 @@ async function runScenarios({ relayUrl } = {}) {
       const health = await get("/health");
       assertEqual(health.body.sourceWorker, true);
       assertEqual(health.body.deviceId, "dev-direct");
+    }],
+    ["real relay routes user jobs to user companion and system jobs to machine worker", async () => {
+      const app = express();
+      attachAgentRelay(app);
+      const relayServer = createServer(app);
+      await listen(relayServer, "127.0.0.1", 0);
+      const base = `http://127.0.0.1:${relayServer.address().port}`;
+      const relayId = "relay_plane_selftest_0000000000000001";
+      const deviceId = "plane-device";
+      const systemQuery = sourceWorkerQuery(relayId, deviceId, {
+        scope: "Machine",
+        companion: false,
+        system: true,
+        executionPlane: "system-controller+user-session-companion-required"
+      });
+      const userQuery = sourceWorkerQuery(relayId, deviceId, {
+        scope: "CurrentUser",
+        companion: true,
+        system: false,
+        executionPlane: "user-session-companion"
+      });
+      try {
+        await relayRequest(base, "POST", "/api/agent/source/grant", { relayId, deviceId, enabled: true });
+        await relayRequest(base, "GET", `/api/agent/source/poll?${systemQuery}`);
+        const blockedUser = await relayRequest(base, "POST", "/api/agent/source/start", {
+          relayId,
+          deviceId,
+          type: "run",
+          command: "echo user",
+          runAs: "user",
+          timeoutMs: 5000
+        });
+        assertEqual(blockedUser.status, 409);
+        assert(String(blockedUser.body.text || "").includes("user-session Soty Agent companion"));
+
+        await relayRequest(base, "GET", `/api/agent/source/poll?${userQuery}`);
+        const userStarted = await relayRequest(base, "POST", "/api/agent/source/start", {
+          relayId,
+          deviceId,
+          type: "run",
+          command: "echo user",
+          runAs: "user",
+          timeoutMs: 5000
+        });
+        assertEqual(userStarted.status, 200);
+        const systemPollForUserJob = await relayRequest(base, "GET", `/api/agent/source/poll?${systemQuery}`);
+        assertEqual(systemPollForUserJob.body.jobs.length, 0);
+        const userPollForUserJob = await relayRequest(base, "GET", `/api/agent/source/poll?${userQuery}`);
+        assertEqual(userPollForUserJob.body.jobs.length, 1);
+        assertEqual(userPollForUserJob.body.jobs[0].runAs, "user");
+
+        const systemStarted = await relayRequest(base, "POST", "/api/agent/source/start", {
+          relayId,
+          deviceId,
+          type: "run",
+          command: "whoami",
+          runAs: "system",
+          timeoutMs: 5000
+        });
+        assertEqual(systemStarted.status, 200);
+        const userPollForSystemJob = await relayRequest(base, "GET", `/api/agent/source/poll?${userQuery}`);
+        assertEqual(userPollForSystemJob.body.jobs.length, 0);
+        const systemPollForSystemJob = await relayRequest(base, "GET", `/api/agent/source/poll?${systemQuery}`);
+        assertEqual(systemPollForSystemJob.body.jobs.length, 1);
+        assertEqual(systemPollForSystemJob.body.jobs[0].runAs, "system");
+      } finally {
+        await closeServer(relayServer);
+      }
     }],
     ["invalid json is rejected", async () => {
       const response = await raw("POST", "/operator/action", "{");
@@ -432,6 +502,7 @@ async function runScenarios({ relayUrl } = {}) {
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       const managed = await readFile(join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1"), "utf8");
+      const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
       assert(agent.includes("sotyRuntimeHints"));
       assert(agent.includes("runAgentSourceWorkerLoop"));
       assert(agent.includes("direct-device-worker"));
@@ -450,7 +521,17 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Device execution plane"));
       assert(agent.includes("windowsInteractiveTaskSpec"));
       assert(agent.includes("LogonType Interactive"));
-      assert(agent.includes("system-controller+interactive-user-default"));
+      assert(agent.includes("system-controller+user-session-companion-required"));
+      assert(agent.includes("SOTY_AGENT_COMPANION"));
+      assert(agent.includes("ensureWindowsUserCompanion"));
+      assert(agent.includes("soty-agent-user"));
+      assert(agent.includes("user-session-agent-unavailable"));
+      assert(agent.includes("allowWindowsInteractiveTaskBridge"));
+      assert(relay.includes("sourceWorkerRoute"));
+      assert(relay.includes("workers: {}"));
+      assert(relay.includes("user-session-agent-unavailable"));
+      assert(!windowsInstall.includes("Disable-CurrentUserAgentAutostart"));
+      assert(!windowsInstall.includes("Stop-ExistingSotyAgentsForMachine"));
       assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes('savedBy: "source-device"'));
@@ -556,7 +637,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.9");
+      assertEqual(manifest.version, "0.4.10");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -1200,6 +1281,41 @@ async function get(path) {
 
 async function raw(method, path, body) {
   return await request(method, path, body, { "Content-Type": "application/json" });
+}
+
+function sourceWorkerQuery(relayId, deviceId, options) {
+  return new URLSearchParams({
+    relayId,
+    deviceId,
+    deviceNick: "plane-device",
+    wait: "0",
+    clientProtocol: "soty-source-agent.v1",
+    clientCapabilities: "runas,local-agent-health,direct-device-worker",
+    localAgentOk: "true",
+    localAgentVersion: "0.4.10",
+    localAgentScope: options.scope,
+    localAgentCompanion: options.companion ? "true" : "false",
+    localAgentExecutionPlane: options.executionPlane,
+    localAgentAutoUpdate: "true",
+    localAgentSystem: options.system ? "true" : "false",
+    localAgentSourceWorker: "true"
+  }).toString();
+}
+
+async function relayRequest(base, method, path, body = undefined) {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = { text };
+  }
+  return { status: response.status, body: parsed };
 }
 
 async function request(method, path, body = undefined, headers = {}) {
