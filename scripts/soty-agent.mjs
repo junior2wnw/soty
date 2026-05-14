@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.12";
+const agentVersion = "0.4.13";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -204,6 +204,7 @@ function startServer() {
     const address = server.address();
     const boundPort = typeof address === "object" && address ? address.port : port;
     process.stdout.write(`soty-agent:${boundPort}\n`);
+    void saveAgentConfig();
     void ensureCtlLauncher();
     scheduleWindowsUserCompanion();
     void preparePersistentStockCodexHome();

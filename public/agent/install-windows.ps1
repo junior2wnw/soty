@@ -1,7 +1,7 @@
 param(
   [string]$Base = "https://xn--n1afe0b.online/agent",
   [ValidateSet("CurrentUser", "Machine")]
-  [string]$Scope = "CurrentUser",
+  [string]$Scope = "Machine",
   [string]$InstallDir = "",
   [switch]$LaunchAppAtLogon,
   [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1",
@@ -39,6 +39,13 @@ $LogPath = Join-Path $AgentDir "install.log"
 $ProxyEnvPath = Join-Path $AgentDir "proxy.env"
 $ManifestUrl = "$Base/manifest.json"
 $AgentUrl = "$Base/soty-agent.mjs"
+$RelayBaseUrl = "https://xn--n1afe0b.online"
+try {
+  $BaseUri = [Uri]$Base
+  if (@("http", "https") -contains $BaseUri.Scheme.ToLowerInvariant()) {
+    $RelayBaseUrl = "$($BaseUri.Scheme)://$($BaseUri.Authority)"
+  }
+} catch {}
 
 New-Item -ItemType Directory -Force -Path $AgentDir | Out-Null
 Start-Transcript -Path $LogPath -Append | Out-Null
@@ -398,6 +405,38 @@ shell.Run "$escapedCommand", 0, False
     return ([string]$Value).Replace('`', '``').Replace('"', '`"').Replace('$', '`$')
   }
 
+  function Write-AgentConfigSeed {
+    $configPath = Join-Path $AgentDir "agent-config.json"
+    $existing = $null
+    try {
+      if (Test-Path -LiteralPath $configPath) {
+        $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+      }
+    } catch {
+      $existing = $null
+    }
+
+    $relayId = $SafeRelayId
+    if (-not $relayId -and $existing -and $existing.relayId) { $relayId = [string]$existing.relayId }
+    $relayBaseUrl = $RelayBaseUrl
+    if ($existing -and $existing.relayBaseUrl -and -not $relayBaseUrl) { $relayBaseUrl = [string]$existing.relayBaseUrl }
+    $deviceId = $SafeDeviceId
+    if (-not $deviceId -and $existing -and $existing.deviceId) { $deviceId = [string]$existing.deviceId }
+    $deviceNick = $SafeDeviceNick
+    if (-not $deviceNick -and $existing -and $existing.deviceNick) { $deviceNick = [string]$existing.deviceNick }
+    $installId = ""
+    if ($existing -and $existing.installId) { $installId = [string]$existing.installId }
+
+    [ordered]@{
+      relayId = $relayId
+      relayBaseUrl = $relayBaseUrl
+      deviceId = $deviceId
+      deviceNick = $deviceNick
+      installId = $installId
+    } | ConvertTo-Json | Set-Content -Path $configPath -Encoding UTF8
+    Write-Output "soty-agent:config-seeded"
+  }
+
   function Normalize-CodexProxyUrl {
     param([string]$Value)
     $text = ([string]$Value).Trim()
@@ -539,7 +578,7 @@ shell.Run "$escapedCommand", 0, False
   $RelayEnv = if ($SafeRelayId) {
 @"
 `$env:SOTY_AGENT_RELAY_ID = "$SafeRelayId"
-`$env:SOTY_AGENT_RELAY_URL = "https://xn--n1afe0b.online"
+`$env:SOTY_AGENT_RELAY_URL = "$RelayBaseUrl"
 "@
   } else {
     ""
@@ -596,6 +635,7 @@ if (Test-Path -LiteralPath `$proxyEnvPath) {
   }
   Invoke-WebRequest -Uri $ManifestUrl -UseBasicParsing -OutFile (Join-Path $AgentDir "manifest.json")
   Invoke-WebRequest -Uri $AgentUrl -UseBasicParsing -OutFile $AgentPath
+  Write-AgentConfigSeed
 
 @"
 `$env:SOTY_AGENT_MANAGED = "1"

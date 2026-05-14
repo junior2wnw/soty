@@ -2,8 +2,10 @@
 setlocal
 set "BASE=https://xn--n1afe0b.online/agent"
 if not defined SOTY_AGENT_RELAY_ID set "SOTY_AGENT_RELAY_ID="
+if not defined SOTY_AGENT_DEVICE_ID set "SOTY_AGENT_DEVICE_ID="
+if not defined SOTY_AGENT_DEVICE_NICK set "SOTY_AGENT_DEVICE_NICK="
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dir = Join-Path $env:TEMP 'soty-agent-machine'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $script + '" -Base "%BASE%" -Scope Machine -LaunchAppAtLogon -RelayId "%SOTY_AGENT_RELAY_ID%"'; $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arg -Wait -PassThru; exit $p.ExitCode"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dir = Join-Path $env:TEMP 'soty-agent-machine'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $extra = ''; if (-not [string]::IsNullOrWhiteSpace('%SOTY_AGENT_DEVICE_ID%')) { $extra = ' -DeviceId "%SOTY_AGENT_DEVICE_ID%"'; if (-not [string]::IsNullOrWhiteSpace('%SOTY_AGENT_DEVICE_NICK%')) { $extra += ' -DeviceNick "%SOTY_AGENT_DEVICE_NICK%"' } }; $arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $script + '" -Base "%BASE%" -Scope Machine -LaunchAppAtLogon -RelayId "%SOTY_AGENT_RELAY_ID%"' + $extra; $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arg -Wait -PassThru; exit $p.ExitCode"
 if errorlevel 1 goto fail
 
 exit /b 0

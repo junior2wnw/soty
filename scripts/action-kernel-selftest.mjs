@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -42,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.12");
+      assertEqual(health.body.version, "0.4.13");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -650,7 +651,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.12");
+      assertEqual(manifest.version, "0.4.13");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -679,16 +680,52 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["agent installers stay lightweight by default", async () => {
       const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
+      const windowsMachineInstall = await readFile(join(root, "public", "agent", "install-windows-machine.cmd"), "utf8");
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = await readFile(join(root, "src", "main.ts"), "utf8");
+      const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
+      const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
+      const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      let userWindowsInstallerExists = true;
+      try {
+        await readFile(join(root, "public", "agent", "install-windows.cmd"), "utf8");
+      } catch {
+        userWindowsInstallerExists = false;
+      }
       assert(windowsInstall.includes("[switch]$InstallCodex"));
       assert(windowsInstall.includes("[string]$CodexProxyUrl"));
+      assert(windowsInstall.includes('[string]$Scope = "Machine"'));
       assert(windowsInstall.includes("proxy.env"));
       assert(windowsInstall.includes("SOTY_CODEX_PROXY_URL"));
       assert(windowsInstall.includes("if ($InstallCodex)"));
       assert(windowsInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(windowsInstall.includes('$env:SOTY_AGENT_AUTO_UPDATE = "1"'));
+      assert(windowsInstall.includes("if (`$code -eq 75)"));
+      assert(windowsInstall.includes("Write-AgentConfigSeed"));
+      assert(windowsInstall.includes("agent-config.json"));
       assert(!windowsInstall.includes("universal-install-ops"));
       assert(!windowsInstall.includes("ops-skill"));
+      assert(!userWindowsInstallerExists);
+      assert(windowsMachineInstall.includes("-Scope Machine"));
+      assert(windowsMachineInstall.includes("-LaunchAppAtLogon"));
+      assert(windowsMachineInstall.includes("Start-Process -FilePath 'powershell.exe' -Verb RunAs"));
+      assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
+      assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_NICK"));
+      assert(agentFeature.includes('"/agent/install-windows-machine.cmd"'));
+      assert(agentFeature.includes('"install-soty-agent-machine.cmd"'));
+      assert(!agentFeature.includes("/agent/install-windows.cmd"));
+      assert(!agentFeature.includes('"install-soty-agent.cmd"'));
+      assert(ui.includes('downloadAgentInstallerForDevice("machine", sourceDeviceForInstaller)'));
+      assert(!ui.includes('downloadAgentInstallerForDevice("user", sourceDeviceForInstaller)'));
+      assert(!ui.includes("machine-button"));
+      assert(!ui.includes("canInstallMachineAgent"));
+      assert(!ui.includes("Скачать обычный установщик"));
+      assert(tooltips.includes("Скачать Soty Agent"));
+      assert(!tooltips.includes("Скачать обычный установщик"));
+      assert(agentSource.includes('const agentVersion = "0.4.13"'));
+      assert(agentSource.includes("void saveAgentConfig();"));
+      assert(agentSource.includes("function scheduleUpdate()"));
+      assert(agentSource.includes("process.exit(75)"));
       assert(unixInstall.includes("INSTALL_CODEX=\"0\""));
       assert(unixInstall.includes("--codex-proxy-url"));
       assert(unixInstall.includes("proxy.env"));
@@ -700,6 +737,59 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Первый ответ может занять"));
       assert(!ui.includes("первый запуск может занять"));
       assert(!ui.includes("progressTimer"));
+    }],
+    ["managed agent auto-updates and exits for runner restart", async () => {
+      const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
+      const updateAgentPath = join(updateDir, "soty-agent.mjs");
+      const nextSource = await readFile(sourceAgentPath, "utf8");
+      const oldSource = nextSource.replace('const agentVersion = "0.4.13";', 'const agentVersion = "0.4.12";');
+      assert(oldSource.includes('const agentVersion = "0.4.12"'));
+      await writeFile(updateAgentPath, oldSource, "utf8");
+      const nextHash = sha256(nextSource);
+      const updateServer = createServer((request, response) => {
+        if (request.url === "/manifest.json") {
+          json(response, 200, {
+            version: "0.4.13",
+            agentUrl: "/soty-agent.mjs",
+            sha256: nextHash
+          });
+          return;
+        }
+        if (request.url === "/soty-agent.mjs") {
+          response.writeHead(200, { "Content-Type": "application/javascript", "Cache-Control": "no-store" });
+          response.end(nextSource);
+          return;
+        }
+        response.writeHead(404);
+        response.end();
+      });
+      let child = null;
+      try {
+        await listen(updateServer, "127.0.0.1", 0);
+        const manifestUrl = `http://127.0.0.1:${updateServer.address().port}/manifest.json`;
+        child = spawn(process.execPath, [updateAgentPath], {
+          env: {
+            ...process.env,
+            SOTY_AGENT_MANAGED: "1",
+            SOTY_AGENT_AUTO_UPDATE: "1",
+            SOTY_AGENT_UPDATE_URL: manifestUrl,
+            SOTY_AGENT_PORT: "0",
+            SOTY_AGENT_TRACE_DIR: join(updateDir, "traces"),
+            SOTY_AGENT_ACTION_JOBS_DIR: join(updateDir, "jobs")
+          },
+          stdio: ["ignore", "pipe", "pipe"]
+        });
+        const code = await waitForChildClose(child, 25_000);
+        assertEqual(code, 75);
+        assertEqual(sha256(await readFile(updateAgentPath)), nextHash);
+      } finally {
+        if (child && child.exitCode === null) {
+          child.kill();
+          await onceExit(child).catch(() => undefined);
+        }
+        await closeServer(updateServer);
+        await rm(updateDir, { recursive: true, force: true }).catch(() => undefined);
+      }
     }],
     ["learning teacher preserves phase and explains post-arm source loss", async () => {
       const report = buildTeacherReport([
@@ -1305,7 +1395,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: "runas,local-agent-health,direct-device-worker",
     localAgentOk: "true",
-    localAgentVersion: "0.4.12",
+    localAgentVersion: "0.4.13",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",
     localAgentExecutionPlane: options.executionPlane,
@@ -1411,8 +1501,29 @@ function onceExit(child) {
   return new Promise((resolvePromise) => child.once("exit", () => resolvePromise()));
 }
 
+function waitForChildClose(child, timeoutMs) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      rejectPromise(new Error("child close timeout"));
+    }, timeoutMs);
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      resolvePromise(code);
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      rejectPromise(error);
+    });
+  });
+}
+
 function sleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function assert(value, message = "assertion failed") {

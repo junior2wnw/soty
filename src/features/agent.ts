@@ -627,26 +627,24 @@ export function canInstallMachineAgent(): boolean {
   return !/(iphone|ipad|ipod|android|mobile)/u.test(platform);
 }
 
-export function agentInstallUrl(scope: "user" | "machine" = "user"): string {
-  return isWindowsPlatform()
-    ? (scope === "machine" ? "/agent/install-windows-machine.cmd" : "/agent/install-windows.cmd")
-    : "/agent/install-macos-linux.sh";
+export function agentInstallUrl(_scope: "user" | "machine" = "machine"): string {
+  return isWindowsPlatform() ? "/agent/install-windows-machine.cmd" : "/agent/install-macos-linux.sh";
 }
 
-export function downloadAgentInstaller(scope: "user" | "machine" = "user"): void {
+export function downloadAgentInstaller(scope: "user" | "machine" = "machine"): void {
   return downloadAgentInstallerForDevice(scope);
 }
 
 export function downloadAgentInstallerForDevice(
-  scope: "user" | "machine" = "user",
+  scope: "user" | "machine" = "machine",
   device: { readonly id?: string; readonly nick?: string } = {}
 ): void {
   const relayId = ensureAgentRelayId();
   const base = `${window.location.origin}/agent`;
   if (isWindowsPlatform()) {
     downloadText(
-      scope === "machine" ? "install-soty-agent-machine.cmd" : "install-soty-agent.cmd",
-      buildWindowsInstaller(scope, base, relayId, device),
+      "install-soty-agent-machine.cmd",
+      buildWindowsInstaller(base, relayId, device),
       "application/bat"
     );
     return;
@@ -655,33 +653,12 @@ export function downloadAgentInstallerForDevice(
 }
 
 function buildWindowsInstaller(
-  scope: "user" | "machine",
   base: string,
   relayId: string,
   device: { readonly id?: string; readonly nick?: string } = {}
 ): string {
   const deviceId = sanitizeWindowsCmdValue(device.id || "");
   const deviceNick = sanitizeWindowsCmdValue(device.nick || "");
-  if (scope === "machine") {
-    return [
-      "@echo off",
-      "setlocal",
-      `set "BASE=${base}"`,
-      `set "RELAY=${relayId}"`,
-      "",
-      "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dir = Join-Path $env:TEMP 'soty-agent-machine'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Base \"%BASE%\" -Scope Machine -LaunchAppAtLogon -RelayId \"%RELAY%\"'; $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arg -Wait -PassThru; exit $p.ExitCode\"",
-      "if errorlevel 1 goto fail",
-      "exit /b 0",
-      "",
-      ":fail",
-      "echo.",
-      "echo soty-agent machine install failed",
-      "echo %ProgramData%\\soty-agent\\install.log",
-      "pause",
-      "exit /b 1",
-      ""
-    ].join("\r\n");
-  }
   return [
     "@echo off",
     "setlocal",
@@ -690,14 +667,14 @@ function buildWindowsInstaller(
     `set "DEVICE=${deviceId}"`,
     `set "NICK=${deviceNick}"`,
     "",
-    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $local = [Environment]::GetFolderPath('LocalApplicationData'); if ([string]::IsNullOrWhiteSpace($local)) { $local = Join-Path $HOME 'AppData\\Local' }; $dir = Join-Path $local 'soty-agent'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $extra = @(); if (-not [string]::IsNullOrWhiteSpace('%DEVICE%')) { $extra += @('-SourceCompanion', '-DeviceId', '%DEVICE%', '-DeviceNick', '%NICK%') }; & $script -Base '%BASE%' -RelayId '%RELAY%' @extra\"",
+    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dir = Join-Path $env:TEMP 'soty-agent-machine'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $extra = ''; if (-not [string]::IsNullOrWhiteSpace('%DEVICE%')) { $extra = ' -DeviceId \"%DEVICE%\"'; if (-not [string]::IsNullOrWhiteSpace('%NICK%')) { $extra += ' -DeviceNick \"%NICK%\"' } }; $arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Base \"%BASE%\" -Scope Machine -LaunchAppAtLogon -RelayId \"%RELAY%\"' + $extra; $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arg -Wait -PassThru; exit $p.ExitCode\"",
     "if errorlevel 1 goto fail",
     "exit /b 0",
     "",
     ":fail",
     "echo.",
-    "echo soty-agent install failed",
-    "echo %LOCALAPPDATA%\\soty-agent\\install.log",
+    "echo soty-agent machine install failed",
+    "echo %ProgramData%\\soty-agent\\install.log",
     "pause",
     "exit /b 1",
     ""
@@ -705,7 +682,7 @@ function buildWindowsInstaller(
 }
 
 function sanitizeWindowsCmdValue(value: string): string {
-  return value.replace(/[\r\n"%]/gu, "").slice(0, 160);
+  return value.replace(/[\r\n"%']/gu, "").slice(0, 160);
 }
 
 function buildUnixInstaller(scope: "user" | "machine", base: string, relayId: string): string {

@@ -4,7 +4,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
 import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -1089,8 +1089,7 @@ function renderAgentInstall(
     <div class="agent-sheet${isReady(localAgent) ? " is-ok" : ""}" data-tooltip="Панель установки локального Soty-агента" data-tooltip-side="bottom">
       <span class="agent-mark" data-tooltip="Локальный агент нужен для команд Windows">${icon("remote")}</span>
       <button class="icon-button chess-install-button" type="button" aria-label="chess" data-tooltip="Играть с агентом в шахматы">${icon("chess")}</button>
-      <button class="icon-button download-button" type="button" aria-label="download" data-tooltip="Скачать обычный установщик">${icon("download")}</button>
-      ${canInstallMachineAgent() ? `<button class="icon-button machine-button" type="button" aria-label="machine" data-tooltip="Установить с правами администратора">${icon("shield")}</button>` : ""}
+      <button class="icon-button download-button" type="button" aria-label="download" data-tooltip="Скачать Soty Agent">${icon("download")}</button>
       <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Проверить, запущен ли агент">${icon("refresh")}</button>
       <button class="icon-button close-button" type="button" aria-label="close" data-tooltip="Закрыть панель">${icon("close")}</button>
     </div>
@@ -1098,7 +1097,7 @@ function renderAgentInstall(
   document.body.append(overlay);
   overlay.querySelector(".download-button")?.addEventListener("click", () => {
     if (sourceDeviceForInstaller?.id) {
-      downloadAgentInstallerForDevice("user", sourceDeviceForInstaller);
+      downloadAgentInstallerForDevice("machine", sourceDeviceForInstaller);
       return;
     }
     downloadAgentInstaller();
@@ -1106,9 +1105,6 @@ function renderAgentInstall(
   overlay.querySelector(".chess-install-button")?.addEventListener("click", () => {
     overlay.remove();
     void startAgentChess();
-  });
-  overlay.querySelector(".machine-button")?.addEventListener("click", () => {
-    downloadAgentInstaller("machine");
   });
   overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
     void (async () => {
