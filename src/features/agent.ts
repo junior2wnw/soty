@@ -61,6 +61,7 @@ export interface AgentSourceCommand {
   readonly script?: string;
   readonly name?: string;
   readonly shell?: string;
+  readonly runAs?: string;
   readonly timeoutMs?: number;
 }
 
@@ -311,6 +312,7 @@ function agentSourceCommandFrom(value: unknown): AgentSourceCommand | null {
     ...(typeof item.script === "string" ? { script: item.script } : {}),
     ...(typeof item.name === "string" ? { name: item.name } : {}),
     ...(typeof item.shell === "string" ? { shell: item.shell } : {}),
+    ...(typeof item.runAs === "string" ? { runAs: item.runAs } : {}),
     ...(typeof item.timeoutMs === "number" ? { timeoutMs: item.timeoutMs } : {})
   };
 }

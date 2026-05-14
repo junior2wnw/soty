@@ -110,6 +110,7 @@ export interface RemoteCommand {
   readonly id: string;
   readonly command: string;
   readonly timeoutMs?: number;
+  readonly runAs?: string;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -122,6 +123,7 @@ export interface RemoteScript {
   readonly shell: string;
   readonly script: string;
   readonly timeoutMs?: number;
+  readonly runAs?: string;
   readonly targetDeviceId: string;
   readonly deviceId: string;
   readonly nick: string;
@@ -663,10 +665,11 @@ export class TunnelSync {
     });
   }
 
-  async sendRemoteCommand(targetDeviceId: string, command: string, timeoutMs = 0): Promise<string> {
+  async sendRemoteCommand(targetDeviceId: string, command: string, timeoutMs = 0, runAs = ""): Promise<string> {
     const id = `remote_cmd_${crypto.randomUUID()}`;
     const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({
       command,
+      ...(runAs ? { runAs } : {}),
       ...(safeRemoteTimeoutMs(timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(timeoutMs) } : {})
     })));
     this.sendControl({
@@ -681,12 +684,13 @@ export class TunnelSync {
     return id;
   }
 
-  async sendRemoteScript(targetDeviceId: string, script: { readonly name?: string; readonly shell?: string; readonly script: string; readonly timeoutMs?: number }): Promise<string> {
+  async sendRemoteScript(targetDeviceId: string, script: { readonly name?: string; readonly shell?: string; readonly script: string; readonly timeoutMs?: number; readonly runAs?: string }): Promise<string> {
     const id = `remote_script_${crypto.randomUUID()}`;
     const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({
       name: script.name || "script",
       shell: script.shell || "",
       script: script.script.slice(0, 1_000_000),
+      ...(script.runAs ? { runAs: script.runAs } : {}),
       ...(safeRemoteTimeoutMs(script.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(script.timeoutMs) } : {})
     })));
     this.sendControl({
@@ -1111,7 +1115,7 @@ export class TunnelSync {
 
   private async applyRemoteCommand(command: EncryptedRemoteCommand): Promise<void> {
     const bytes = await decryptFromTunnel(this.tunnel, command.nonce, command.ciphertext);
-    const payload = JSON.parse(decode(bytes)) as { readonly command?: string; readonly timeoutMs?: number };
+    const payload = JSON.parse(decode(bytes)) as { readonly command?: string; readonly timeoutMs?: number; readonly runAs?: string };
     const text = typeof payload.command === "string" ? payload.command.slice(0, 8000) : "";
     if (!text.trim()) {
       return;
@@ -1120,6 +1124,7 @@ export class TunnelSync {
       id: command.id,
       command: text,
       ...(safeRemoteTimeoutMs(payload.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(payload.timeoutMs) } : {}),
+      ...(typeof payload.runAs === "string" ? { runAs: payload.runAs.slice(0, 20) } : {}),
       targetDeviceId: command.targetDeviceId,
       deviceId: command.deviceId || "",
       nick: command.deviceNick || command.nick || "",
@@ -1129,7 +1134,7 @@ export class TunnelSync {
 
   private async applyRemoteScript(script: EncryptedRemoteScript): Promise<void> {
     const bytes = await decryptFromTunnel(this.tunnel, script.nonce, script.ciphertext);
-    const payload = JSON.parse(decode(bytes)) as { readonly name?: string; readonly shell?: string; readonly script?: string; readonly timeoutMs?: number };
+    const payload = JSON.parse(decode(bytes)) as { readonly name?: string; readonly shell?: string; readonly script?: string; readonly timeoutMs?: number; readonly runAs?: string };
     const text = typeof payload.script === "string" ? payload.script.slice(0, 1_000_000) : "";
     if (!text.trim()) {
       return;
@@ -1140,6 +1145,7 @@ export class TunnelSync {
       shell: typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "",
       script: text,
       ...(safeRemoteTimeoutMs(payload.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(payload.timeoutMs) } : {}),
+      ...(typeof payload.runAs === "string" ? { runAs: payload.runAs.slice(0, 20) } : {}),
       targetDeviceId: script.targetDeviceId,
       deviceId: script.deviceId || "",
       nick: script.deviceNick || script.nick || "",

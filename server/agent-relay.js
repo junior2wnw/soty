@@ -784,6 +784,7 @@ function leasePendingSourceJobs(source) {
       script: job.script || "",
       name: job.name || "",
       shell: job.shell || "",
+      runAs: job.runAs || "user",
       timeoutMs: safeTimeout(job.timeoutMs),
       createdAt: new Date(job.createdAt).toISOString()
     }))
@@ -796,6 +797,7 @@ function createSourceJobFromRequest(body) {
   const type = body?.type === "run" ? "run" : body?.type === "script" ? "script" : body?.script ? "script" : "run";
   const command = cleanText(body?.command, 8_000);
   const script = cleanText(body?.script, 1_000_000);
+  const runAs = safeRunAs(body?.runAs);
   const timeoutMs = safeTimeout(body?.timeoutMs);
   if (!relayId || !deviceId || (type === "run" ? !command.trim() : !script.trim())) {
     return {
@@ -827,6 +829,7 @@ function createSourceJobFromRequest(body) {
       name: cleanText(body?.name, 120) || "script",
       shell: cleanText(body?.shell, 40)
     }),
+    runAs,
     timeoutMs
   });
   return { ok: true, httpStatus: 200, job };
@@ -1101,6 +1104,11 @@ function normalizeRelayId(value) {
 
 function cleanText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function safeRunAs(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "system" || text === "machine" || text === "elevated" ? "system" : "user";
 }
 
 function cleanReplyMessages(value) {

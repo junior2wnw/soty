@@ -362,7 +362,8 @@ function handleMessage(ws, raw) {
       {
         name: typeof message.name === "string" ? message.name : "script",
         shell: typeof message.shell === "string" ? message.shell : "",
-        script: message.script
+        script: message.script,
+        runAs: safeRunAs(message.runAs || "")
       },
       safeRunTimeoutMs(message.timeoutMs)
     );
@@ -373,11 +374,12 @@ function handleMessage(ws, raw) {
     return;
   }
 
-  runCommand(
+  void runCommand(
     ws,
     message.id,
     message.command,
-    safeRunTimeoutMs(message.timeoutMs)
+    safeRunTimeoutMs(message.timeoutMs),
+    safeRunAs(message.runAs || "")
   );
 }
 
@@ -440,6 +442,7 @@ async function handleOperatorHttpRun(request, response, headers) {
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
+  const runAs = safeRunAs(payload.runAs || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   const blocked = blockedManualWindowsRecoveryHandoff(command);
   if (blocked) {
@@ -454,7 +457,7 @@ async function handleOperatorHttpRun(request, response, headers) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers, sourceRelayId);
+    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers, sourceRelayId, runAs);
     return;
   }
   if (!operatorBridge?.open || !target || !command.trim()) {
@@ -468,6 +471,7 @@ async function handleOperatorHttpRun(request, response, headers) {
     target,
     sourceDeviceId,
     command,
+    runAs,
     timeoutMs
   });
 }
@@ -486,6 +490,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
+  const runAs = safeRunAs(payload.runAs || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   const blocked = blockedManualWindowsRecoveryHandoff(script);
   if (blocked) {
@@ -500,7 +505,7 @@ async function handleOperatorHttpScript(request, response, headers) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell }, timeoutMs, response, headers, sourceRelayId);
+    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId);
     return;
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
@@ -516,6 +521,7 @@ async function handleOperatorHttpScript(request, response, headers) {
     name,
     shell,
     script,
+    runAs,
     timeoutMs
   });
 }
@@ -687,6 +693,7 @@ function normalizeOperatorActionPayload(payload) {
   const sourceDeviceId = safeSourceText(payload.sourceDeviceId || "");
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
+  const runAs = safeRunAs(payload.runAs || "");
   const command = mode === "run" ? String(payload.command || "").slice(0, maxCommandChars) : "";
   const script = mode === "script" ? String(payload.script || "").slice(0, maxScriptChars) : "";
   if (!target) {
@@ -729,6 +736,7 @@ function normalizeOperatorActionPayload(payload) {
     script,
     name: cleanActionText(payload.name || (mode === "script" ? "action-script" : "action-run"), 120),
     shell: cleanActionText(payload.shell, 40),
+    runAs,
     risk,
     detached: payload.detached === true || payload.wait === false || shouldForceDetachedAction({ family, actionType, risk }),
     createdBy: cleanActionText(payload.createdBy || "soty-agent", 80),
@@ -761,6 +769,7 @@ async function createActionJob(action) {
     risk: action.risk,
     target: action.target,
     sourceDeviceId: action.sourceDeviceId,
+    runAs: action.runAs,
     createdBy: action.createdBy,
     idempotencyKey: action.idempotencyKey,
     createdAt,
@@ -796,6 +805,7 @@ async function createActionJob(action) {
     target: action.target,
     sourceDeviceId: action.sourceDeviceId,
     sourceRelayId: action.sourceRelayId ? "<set>" : "",
+    runAs: action.runAs,
     timeoutMs: action.timeoutMs,
     idempotencyKey: action.idempotencyKey,
     commandSig: job.commandSig,
@@ -987,12 +997,14 @@ async function executeOperatorAction(action, signal = null) {
         script: action.script,
         name: action.name,
         shell: action.shell,
+        runAs: action.runAs,
         timeoutMs: action.timeoutMs
       }, action.sourceRelayId, 1_000_000, signal)
       : await postAgentSourceJob("/api/agent/source/run", {
         deviceId,
         clientJobId: sourceJobId,
         command: action.command,
+        runAs: action.runAs,
         timeoutMs: action.timeoutMs
       }, action.sourceRelayId, 1_000_000, signal);
     signal?.removeEventListener("abort", cancelSource);
@@ -1019,13 +1031,15 @@ async function executeOperatorAction(action, signal = null) {
     sourceDeviceId,
     name: action.name,
     shell: action.shell,
-    script: action.script
+    script: action.script,
+    runAs: action.runAs
   } : {
     type: "operator.run",
     id,
     target,
     sourceDeviceId,
-    command: action.command
+    command: action.command,
+    runAs: action.runAs
   });
   const result = await promise;
   signal?.removeEventListener("abort", cancelBridge);
@@ -1728,7 +1742,7 @@ function cleanActionText(value, max) {
     .slice(0, max);
 }
 
-async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers, sourceRelayId = "") {
+async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeoutMs, response, headers, sourceRelayId = "", runAs = "user") {
   const deviceId = agentSourceDeviceId(target);
   if (!deviceId || !command.trim()) {
     sendJson(response, 400, headers, { ok: false, text: "! request", exitCode: 400 });
@@ -1741,6 +1755,7 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
   const result = await postAgentSourceJob("/api/agent/source/run", {
     deviceId,
     command,
+    runAs: safeRunAs(runAs),
     timeoutMs
   }, sourceRelayId);
   rememberAgentSourceOutcome({ kind: "run", command, result });
@@ -4797,11 +4812,13 @@ function sotyRuntimeHints() {
     "- Identity: \u041b\u043e\u0440\u0434.",
     "- Use memory as short reusable hints, not as rules.",
     "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical eyes, hands, filesystem, browser, desktop, display, and final state.",
+    "- Device execution plane: normal user tasks run through the source device's interactive user session; machine/SYSTEM context is only for explicitly privileged system toolkits.",
     "- Server workspace is allowed for thinking, helper scripts, transformations, generated assets, and durable improvements, but it is not the user's computer and cannot prove user-device facts.",
     "- For user-device files or generated assets, transfer the exact artifact to the source device with soty_artifact or use soty_image saving to the source device; do not replace it with a similar public download.",
-    "- For display/wallpaper/desktop tasks, measure the active user display and profile on the source device, apply there, then verify there.",
+    "- For display/wallpaper/desktop tasks, measure the active interactive user display and profile on the source device, apply there, then verify there.",
+    "- If an interactive source-device organ is unavailable, report that blocker; do not infer user-device facts from server, memory, or service display context.",
     "- Use capability tools for the user's computer; verify important actions with source-device proof.",
-    "- Keep answers brief unless the task needs detail. Hidden memory line: `soty-memory:`."
+    "- Keep answers brief; do not narrate skill names or internal routes unless a concrete blocker requires it. Hidden memory line: `soty-memory:`."
   ];
 }
 
@@ -5759,6 +5776,7 @@ function runMcpServer() {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
         command,
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
       return mcpToolOperatorResult(result);
@@ -5778,6 +5796,7 @@ function runMcpServer() {
         script,
         shell: String(args.shell || ""),
         name: String(args.name || "script"),
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
       return mcpToolOperatorResult(result);
@@ -5798,6 +5817,7 @@ function runMcpServer() {
         script: sourceFileScript(args),
         shell: "node",
         name: `soty-file-${action}`.slice(0, 120),
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, defaultTimeoutMs)
       });
       return mcpToolOperatorResult(result);
@@ -5816,6 +5836,7 @@ function runMcpServer() {
         script: sourceBrowserScript(args),
         shell: "node",
         name: `soty-browser-${action}`.slice(0, 120),
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 10 * 60_000)
       });
       return mcpToolOperatorResult(result);
@@ -5831,6 +5852,7 @@ function runMcpServer() {
         script: sourceDesktopScript(args),
         shell: "powershell",
         name: `soty-desktop-${action}`.slice(0, 120),
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
       return mcpToolOperatorResult(result);
@@ -5846,6 +5868,7 @@ function runMcpServer() {
         script: sourceOpenUrlScript(url),
         shell: "node",
         name: "soty-open-url",
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
       return mcpToolOperatorResult(result, "opened");
@@ -5861,6 +5884,7 @@ function runMcpServer() {
         script: windowsAudioScript(volumePercent, muteMode),
         shell: "powershell",
         name: "soty-audio",
+        runAs: "user",
         timeoutMs
       };
       let result = await mcpPostOperator("/operator/script", audioPayload);
@@ -5869,7 +5893,8 @@ function runMcpServer() {
         result = await mcpPostOperator("/operator/script", {
           ...audioPayload,
           timeoutMs: Math.max(timeoutMs, audioToolTimeoutMs),
-          name: "soty-audio-retry"
+          name: "soty-audio-retry",
+          runAs: "user"
         });
       }
       return mcpToolOperatorResult(result);
@@ -5941,6 +5966,7 @@ function runMcpServer() {
         }),
         shell: "node",
         name: `soty-artifact-${index + 1}-of-${total}`.slice(0, 120),
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 120_000)
       });
       if (!result.ok) {
@@ -5987,6 +6013,7 @@ function runMcpServer() {
         }),
         shell: "node",
         name: "soty-image-save",
+        runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 300_000)
       });
       if (save.ok) {
@@ -6095,6 +6122,7 @@ function runMcpServer() {
       ...(mode === "run" ? { command } : { script }),
       shell: String(args.shell || ""),
       name: String(args.name || `${toolkit}-${phase}`),
+      runAs: mcpRunAsForAction({ toolkit, family, risk: String(args.risk || "") }),
       toolkit,
       phase,
       family,
@@ -6120,6 +6148,15 @@ function runMcpServer() {
       return mcpToolJson(waited, waited.ok === false, waited.exitCode);
     }
     return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+  }
+
+  function mcpRunAsForAction({ toolkit = "", family = "", risk = "" } = {}) {
+    const key = `${toolkit} ${family}`.toLowerCase();
+    const danger = String(risk || "").toLowerCase();
+    if (key.includes("windows-reinstall") || danger === "destructive") {
+      return "system";
+    }
+    return "user";
   }
 
   async function mcpCurrentSourceStatus() {
@@ -6278,6 +6315,7 @@ function runMcpServer() {
         script: sourceManagedWindowsReinstallScript(request),
         shell: "powershell",
         name: `soty-reinstall-${action}`,
+        runAs: "system",
         timeoutMs: operatorTimeoutMs
       });
       return await mcpToolJsonTextWithSourceStatus(result, {
@@ -6342,6 +6380,7 @@ function runMcpServer() {
       script: sourceManagedWindowsReinstallScript(request),
       shell: "powershell",
       name: `soty-reinstall-${action}`,
+      runAs: "system",
       family: "windows-reinstall",
       kind: action,
       intent: action === "prepare"
@@ -6517,6 +6556,7 @@ function runMcpServer() {
       script: sourceManagedWindowsReinstallScript({ ...request, action: "status" }),
       shell: "powershell",
       name: "soty-reinstall-status",
+      runAs: "system",
       timeoutMs: 45_000
     });
   }
@@ -7896,8 +7936,126 @@ function agentSourceDeviceId(target) {
   return text.slice("agent-source:".length, "agent-source:".length + maxSourceChars);
 }
 
-function runCommand(ws, id, command, timeoutMs) {
-  const shell = shellSpec(command);
+async function windowsInteractiveTaskSpec(execSpec, jobDir, timeoutMs) {
+  const runnerPath = join(jobDir, "interactive-runner.ps1");
+  const bridgePath = join(jobDir, "interactive-bridge.ps1");
+  const payload = Buffer.from(JSON.stringify({
+    file: String(execSpec.file || ""),
+    args: Array.isArray(execSpec.args) ? execSpec.args.map((item) => String(item)) : [],
+    cwd: process.cwd(),
+    timeoutMs: Math.max(1000, timeoutMs),
+    stdoutPath: join(jobDir, "stdout.txt"),
+    stderrPath: join(jobDir, "stderr.txt"),
+    exitPath: join(jobDir, "exit.txt"),
+    donePath: join(jobDir, "done.txt")
+  }), "utf8").toString("base64");
+  const runner = `
+$ErrorActionPreference = 'Stop'
+$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
+function Quote-WinArg([string]$Value) {
+  if ($null -eq $Value -or $Value.Length -eq 0) { return '""' }
+  if ($Value -notmatch '[\\s"]') { return $Value }
+  return '"' + ($Value.Replace('"', '\\"')) + '"'
+}
+try {
+  $env:SOTY_AGENT_RUN_CONTEXT = 'interactive-user'
+  $argsLine = @($payload.args | ForEach-Object { Quote-WinArg ([string]$_) }) -join ' '
+  $process = Start-Process -FilePath ([string]$payload.file) -ArgumentList $argsLine -WorkingDirectory ([string]$payload.cwd) -RedirectStandardOutput ([string]$payload.stdoutPath) -RedirectStandardError ([string]$payload.stderrPath) -WindowStyle Hidden -Wait -PassThru
+  Set-Content -LiteralPath ([string]$payload.exitPath) -Encoding ASCII -Value ([string]$process.ExitCode)
+} catch {
+  Set-Content -LiteralPath ([string]$payload.stderrPath) -Encoding UTF8 -Value ($_.Exception.Message)
+  Set-Content -LiteralPath ([string]$payload.exitPath) -Encoding ASCII -Value '1'
+} finally {
+  Set-Content -LiteralPath ([string]$payload.donePath) -Encoding ASCII -Value '1'
+}
+`.trim();
+  const bridge = `
+$ErrorActionPreference = 'Stop'
+$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
+$root = ${psQuote(jobDir)}
+$runner = ${psQuote(runnerPath)}
+$taskName = 'SotyInteractive-' + [Guid]::NewGuid().ToString('N')
+function Get-ActiveUserName {
+  $explorers = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue | Sort-Object SessionId, CreationDate -Descending)
+  foreach ($explorer in $explorers) {
+    try {
+      $owner = Invoke-CimMethod -InputObject $explorer -MethodName GetOwner -ErrorAction Stop
+      if ($owner.ReturnValue -eq 0 -and -not [string]::IsNullOrWhiteSpace($owner.User)) {
+        if ([string]::IsNullOrWhiteSpace($owner.Domain)) { return $owner.User }
+        return ($owner.Domain + '\\' + $owner.User)
+      }
+    } catch {}
+  }
+  return ''
+}
+function Read-TextFile([string]$Path) {
+  if (Test-Path -LiteralPath $Path) {
+    return [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8)
+  }
+  return ''
+}
+try {
+  & icacls.exe $root /grant '*S-1-5-32-545:(OI)(CI)(M)' /T /C | Out-Null
+} catch {}
+$user = Get-ActiveUserName
+if ([string]::IsNullOrWhiteSpace($user)) {
+  Write-Error 'no active interactive Windows user session'
+  exit 127
+}
+try {
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $runner + '"')
+  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5)
+  $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType InteractiveToken -RunLevel LeastPrivilege
+  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+  Start-ScheduledTask -TaskName $taskName
+  $deadline = (Get-Date).AddMilliseconds([Math]::Max(1000, [int]$payload.timeoutMs))
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Path -LiteralPath ([string]$payload.donePath)) { break }
+    Start-Sleep -Milliseconds 250
+  }
+  if (-not (Test-Path -LiteralPath ([string]$payload.donePath))) {
+    try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
+    Write-Output (Read-TextFile ([string]$payload.stdoutPath))
+    Write-Error (Read-TextFile ([string]$payload.stderrPath))
+    exit 124
+  }
+  $stdout = Read-TextFile ([string]$payload.stdoutPath)
+  $stderr = Read-TextFile ([string]$payload.stderrPath)
+  if ($stdout) { Write-Output $stdout }
+  if ($stderr) { Write-Error $stderr }
+  $codeText = (Read-TextFile ([string]$payload.exitPath)).Trim()
+  $code = 0
+  if (-not [int]::TryParse($codeText, [ref]$code)) { $code = 1 }
+  exit $code
+} finally {
+  try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+}
+`.trim();
+  await writeFile(runnerPath, `\uFEFF${runner}`, "utf8");
+  await writeFile(bridgePath, `\uFEFF${bridge}`, "utf8");
+  return {
+    file: "powershell.exe",
+    args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", bridgePath]
+  };
+}
+
+async function runCommand(ws, id, command, timeoutMs, runAs = "user") {
+  let jobDir = "";
+  let shell = shellSpec(command);
+  let cleanupJobDir = false;
+  if (shouldRunInWindowsUserSession(runAs)) {
+    try {
+      jobDir = join(tmpdir(), "soty-agent", safeFileName(id));
+      await mkdir(jobDir, { recursive: true });
+      shell = await windowsInteractiveTaskSpec(shell, jobDir, timeoutMs);
+      cleanupJobDir = true;
+    } catch (error) {
+      send(ws, id, `${error instanceof Error ? error.message : String(error)}\n`, 127, "error");
+      ws.close(1011, "error");
+      return;
+    }
+  }
   const child = spawn(shell.file, shell.args, {
     cwd: process.cwd(),
     env: process.env,
@@ -7908,8 +8066,15 @@ function runCommand(ws, id, command, timeoutMs) {
   let timedOut = false;
   send(ws, id, "", undefined, "start", {
     cwd: process.cwd(),
-    pid: child.pid || 0
+    pid: child.pid || 0,
+    runAs: shouldRunInWindowsUserSession(runAs) ? "interactive-user" : safeRunAs(runAs)
   });
+
+  const finish = async () => {
+    if (cleanupJobDir && jobDir) {
+      await rm(jobDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
 
   const timer = setTimeout(() => {
     if (active.get(id) !== child) {
@@ -7917,12 +8082,14 @@ function runCommand(ws, id, command, timeoutMs) {
     }
     timedOut = true;
     killProcessTree(child);
+    void finish();
     send(ws, id, "!\n", 124, "exit");
   }, Math.max(1000, timeoutMs));
   addCloseHandler(ws, () => {
     if (active.get(id) === child) {
       clearTimeout(timer);
       active.delete(id);
+      void finish();
       killProcessTree(child);
     }
   });
@@ -7936,12 +8103,14 @@ function runCommand(ws, id, command, timeoutMs) {
   child.on("error", (error) => {
     clearTimeout(timer);
     active.delete(id);
+    void finish();
     send(ws, id, `${error.message}\n`, 127, "error");
     ws.close(1011, "error");
   });
   child.on("close", (code) => {
     clearTimeout(timer);
     active.delete(id);
+    void finish();
     if (!timedOut) {
       send(ws, id, "", Number.isSafeInteger(code) ? code : 0, "exit");
     }
@@ -7952,9 +8121,15 @@ function runCommand(ws, id, command, timeoutMs) {
 async function runScript(ws, id, payload, timeoutMs) {
   const jobDir = join(tmpdir(), "soty-agent", safeFileName(id));
   await mkdir(jobDir, { recursive: true });
-  const script = scriptSpec(payload, jobDir);
+  let script = scriptSpec(payload, jobDir);
   try {
     await writeFile(script.path, script.content, { encoding: "utf8", mode: 0o700 });
+    if (shouldRunInWindowsUserSession(payload.runAs || "user")) {
+      script = {
+        ...await windowsInteractiveTaskSpec(script, jobDir, timeoutMs),
+        name: script.name
+      };
+    }
   } catch (error) {
     send(ws, id, `${error instanceof Error ? error.message : String(error)}\n`, 127, "error");
     ws.close(1011, "error");
@@ -7973,7 +8148,8 @@ async function runScript(ws, id, payload, timeoutMs) {
   send(ws, id, "", undefined, "start", {
     cwd: process.cwd(),
     pid: child.pid || 0,
-    name: script.name
+    name: script.name,
+    runAs: shouldRunInWindowsUserSession(payload.runAs || "user") ? "interactive-user" : safeRunAs(payload.runAs || "")
   });
 
   const finish = async () => {
@@ -9054,6 +9230,9 @@ function runtimeHealth() {
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
     codexSessionMode,
     codexRuntimeContext: "clean-codex+memory-plane+capability-gateway",
+    executionPlane: process.platform === "win32" && isWindowsSystem()
+      ? "system-controller+interactive-user-default"
+      : "current-process",
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),
@@ -9183,6 +9362,15 @@ function safeScope(value) {
     return text;
   }
   return "CurrentUser";
+}
+
+function safeRunAs(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "system" || text === "machine" || text === "elevated" ? "system" : "user";
+}
+
+function shouldRunInWindowsUserSession(runAs) {
+  return process.platform === "win32" && isWindowsSystem() && safeRunAs(runAs) !== "system";
 }
 
 function safeRelayId(value) {

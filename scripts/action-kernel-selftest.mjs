@@ -418,10 +418,17 @@ async function runScenarios() {
       assert(agent.includes("soty_image"));
       assert(agent.includes("soty_artifact"));
       assert(agent.includes("Source-device canonical"));
+      assert(agent.includes("Device execution plane"));
+      assert(agent.includes("windowsInteractiveTaskSpec"));
+      assert(agent.includes("InteractiveToken"));
+      assert(agent.includes("system-controller+interactive-user-default"));
+      assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes('savedBy: "source-device"'));
       assert(agent.includes("Server workspace is allowed"));
       assert(agent.includes("display before wallpaper"));
+      assert(agent.includes('runAs: "user"'));
+      assert(agent.includes('runAs: "system"'));
       assert(agent.includes("soty_toolkit"));
       assert(agent.includes("automationToolkitStatus"));
       assert(agent.includes("soty_toolkits"));

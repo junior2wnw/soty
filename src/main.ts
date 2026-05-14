@@ -2021,6 +2021,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
       readonly name?: string;
       readonly shell?: string;
       readonly script?: string;
+      readonly runAs?: string;
       readonly text?: string;
       readonly speed?: string;
       readonly persona?: string;
@@ -2203,7 +2204,7 @@ function targetMentionedAtStart(text: string, targets: readonly LocalAgentOperat
     || null;
 }
 
-async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string; readonly timeoutMs?: number }): Promise<void> {
+async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string; readonly runAs?: string; readonly timeoutMs?: number }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
   const command = typeof message.command === "string" ? message.command.trim() : "";
   const sourceDeviceId = typeof message.sourceDeviceId === "string" ? message.sourceDeviceId.trim() : "";
@@ -2255,7 +2256,7 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   }
   renderTerminal();
   try {
-    const commandId = await sync.sendRemoteCommand(hostDeviceId, command, timeoutMs);
+    const commandId = await sync.sendRemoteCommand(hostDeviceId, command, timeoutMs, message.runAs || "");
     if (bridgeEpoch !== operatorBridgeEpoch || !operatorSocket || operatorSocket.readyState !== WebSocket.OPEN) {
       await sync.sendRemoteCancel(hostDeviceId, commandId).catch(() => undefined);
       sendOperatorOutput(requestId, "! operator bridge closed", 130);
@@ -2287,6 +2288,7 @@ async function runOperatorScript(message: {
   readonly name?: string;
   readonly shell?: string;
   readonly script?: string;
+  readonly runAs?: string;
   readonly timeoutMs?: number;
 }): Promise<void> {
   const requestId = typeof message.id === "string" ? message.id : "";
@@ -2345,6 +2347,7 @@ async function runOperatorScript(message: {
       name,
       shell: message.shell || "",
       script,
+      runAs: message.runAs || "",
       timeoutMs
     });
     if (bridgeEpoch !== operatorBridgeEpoch || !operatorSocket || operatorSocket.readyState !== WebSocket.OPEN) {
@@ -3422,6 +3425,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
         name: job.name || "script",
         shell: job.shell || "",
         script: job.script || "",
+        runAs: job.runAs || "",
         timeoutMs
       }));
       return;
@@ -3430,6 +3434,7 @@ function runAgentSourceJob(tunnelId: string, job: AgentSourceCommand): void {
       type: "run",
       id: job.id,
       command: job.command || "",
+      runAs: job.runAs || "",
       timeoutMs
     }));
   };
@@ -3541,6 +3546,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
       type: "run",
       id: command.id,
       command: command.command,
+      runAs: command.runAs || "",
       timeoutMs
     }));
   };
@@ -3651,6 +3657,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
       name: script.name,
       shell: script.shell,
       script: script.script,
+      runAs: script.runAs || "",
       timeoutMs
     }));
   };
