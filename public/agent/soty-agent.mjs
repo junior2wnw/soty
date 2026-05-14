@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.6";
+const agentVersion = "0.4.7";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6975,7 +6975,9 @@ async function generateOpenAiImageData(args) {
   if (!apiKey) {
     return {
       ok: false,
-      error: "OPENAI_API_KEY is not available to the Soty Agent process",
+      error: "server image-generation backend is not configured; the source device does not need an OpenAI API key",
+      capability: "server-image-generation",
+      sourceDeviceRequiresApiKey: false,
       exitCode: 78
     };
   }

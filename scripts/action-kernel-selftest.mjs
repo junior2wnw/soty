@@ -40,7 +40,7 @@ async function runScenarios() {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.6");
+      assertEqual(health.body.version, "0.4.7");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -416,6 +416,7 @@ async function runScenarios() {
       assert(agent.includes("sotyRuntimeHints"));
       assert(agent.includes("clean-codex+memory-plane+capability-gateway"));
       assert(agent.includes("soty_image"));
+      assert(agent.includes("source device does not need an OpenAI API key"));
       assert(agent.includes("soty_artifact"));
       assert(agent.includes("Source-device canonical"));
       assert(agent.includes("Device execution plane"));
@@ -517,7 +518,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.6");
+      assertEqual(manifest.version, "0.4.7");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
