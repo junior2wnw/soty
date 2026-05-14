@@ -2231,6 +2231,9 @@ function shouldRunDeterministicFastRoutine(text, spec) {
   if (isCompositeAgentPrompt(text)) {
     return false;
   }
+  if (isMemoryRecallOrFollowupPrompt(text)) {
+    return false;
+  }
   if (cleanActionToken(spec.kind, "") === "system-eventlog-critical") {
     return hasExplicitEventLogIntent(text);
   }
@@ -2273,6 +2276,13 @@ function countCompositeNumberedItems(text) {
   const anchored = (value.match(/(?:^|[\n\r;:])\s*\d{1,3}[).]/gu) || []).length;
   const loose = (value.match(/\b\d{1,3}[).]\s+\S/gu) || []).length;
   return Math.max(anchored, loose);
+}
+
+function isMemoryRecallOrFollowupPrompt(text) {
+  const value = String(text || "").toLowerCase();
+  const recall = /(?:\b(?:what\s+(?:was|is)\s+my\s+name|remember|recall|previous\s+(?:test|message|dialog|chat)|last\s+(?:test|message|dialog|chat)|memory\s+check|already\s+learned)\b|как\s+меня\s+(?:звали|зовут)|проверка\s+памят|прошл\w*\s+(?:тест|сообщ|диалог|чат)|предыдущ\w*\s+(?:тест|сообщ|диалог|чат)|запомн\w*\s+имя|уже\s+узнал)/iu.test(value);
+  const subject = /(?:\b(?:name|memory|remember|recall|previous|last|learned|test|dialog|chat)\b|имя|звали|зовут|памят|запомн|прошл|предыдущ|тест|диалог|чат|узнал)/iu.test(value);
+  return recall && subject;
 }
 
 function isRoutineAgentTaskFamily(family) {
@@ -5298,6 +5308,9 @@ function codexSessionFamilyBucket(taskFamily) {
 }
 
 function classifyTaskFamily(text, target = null) {
+  if (isMemoryRecallOrFollowupPrompt(text)) {
+    return target?.id ? "source-scoped-dialog" : "plain-dialog";
+  }
   const family = classifySourceCommand(text);
   if (family !== "generic") {
     return family;

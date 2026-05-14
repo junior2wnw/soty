@@ -180,6 +180,12 @@ async function runScenarios() {
       assert(!String(response.body.text || "").includes("C:"));
       assertEqual(mock.count("wuauserv,BITS"), before);
     }],
+    ["memory recall follow-up skips software fast route", async () => {
+      const before = mock.count("Get-Command $tool.Command");
+      const response = await agentReply("Memory check B. What was my name in the previous test? Repeat only python/pip, git, node/npm, hosts path.");
+      assert(!String(response.body.text || "").includes("git:"));
+      assertEqual(mock.count("Get-Command $tool.Command"), before);
+    }],
     ["power command is classified", async () => expectFamily(await action(sourceRun("powercfg /batteryreport SELFTEST_OK")), "power-check")],
     ["package command is classified", async () => expectFamily(await action(sourceRun("winget install app SELFTEST_OK")), "package-install")],
     ["service command is classified", async () => expectFamily(await action(sourceRun("Get-Service SELFTEST_OK")), "service-check")],
