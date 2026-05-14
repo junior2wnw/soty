@@ -2747,23 +2747,13 @@ function isAgentLinkedTunnel(tunnelId: string): boolean {
 }
 
 function applySyncedTerminal(tunnelId: string, terminal: TerminalSnapshot): void {
-  terminalLogs.set(tunnelId, [...terminal.lines]);
-  terminalState.set(tunnelId, terminal.state);
-  if (terminal.lines.length > 0 && !terminalOpenId && (tunnelId === selectedId || remoteAccess.has(tunnelId) || remoteEnabled.has(tunnelId))) {
-    terminalOpenId = tunnelId;
-  }
-  if (tunnelId === selectedId || terminalOpenId === tunnelId) {
-    renderTerminal();
-    renderTiles();
-  }
+  void tunnelId;
+  void terminal;
 }
 
-function appendTerminalLine(tunnelId: string, line: string, publish = true): void {
+function appendTerminalLine(tunnelId: string, line: string): void {
   const next = [...(terminalLogs.get(tunnelId) ?? []), line].slice(-600);
   terminalLogs.set(tunnelId, next);
-  if (publish) {
-    syncs.get(tunnelId)?.appendTerminalLine(line);
-  }
 }
 
 function appendTerminalExitLine(tunnelId: string, exitCode: number): void {
@@ -2772,11 +2762,8 @@ function appendTerminalExitLine(tunnelId: string, exitCode: number): void {
   }
 }
 
-function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad" | "off", publish = true): void {
+function setTerminalState(tunnelId: string, state: "idle" | "run" | "ok" | "bad" | "off"): void {
   terminalState.set(tunnelId, state);
-  if (publish) {
-    syncs.get(tunnelId)?.setTerminalState(state);
-  }
 }
 
 function activeChessTunnelId(): string {

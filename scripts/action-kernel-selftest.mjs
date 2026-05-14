@@ -532,6 +532,7 @@ async function runScenarios({ relayUrl } = {}) {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const relay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
+      const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
@@ -646,6 +647,20 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!main.includes("sendAgentSourceOutput"));
       assert(!main.includes("Ничего не менял"));
       assert(!main.includes("Не смог сейчас ответить"));
+      const applySyncedTerminalStart = main.indexOf("function applySyncedTerminal");
+      const applySyncedTerminalEnd = main.indexOf("function appendTerminalLine", applySyncedTerminalStart);
+      const applySyncedTerminalBody = main.slice(applySyncedTerminalStart, applySyncedTerminalEnd);
+      assert(applySyncedTerminalStart >= 0 && applySyncedTerminalEnd > applySyncedTerminalStart);
+      assert(applySyncedTerminalBody.includes("void tunnelId;"));
+      assert(applySyncedTerminalBody.includes("void terminal;"));
+      assert(!applySyncedTerminalBody.includes("terminalLogs.set"));
+      assert(!main.includes("syncs.get(tunnelId)?.appendTerminalLine"));
+      assert(!main.includes("syncs.get(tunnelId)?.setTerminalState"));
+      assert(syncSource.includes("Terminal output is a local capability surface"));
+      assert(!syncSource.includes('getArray<string>("terminalLines")'));
+      assert(!syncSource.includes('getMap<string>("terminalMeta")'));
+      assert(syncSource.includes("lines: []"));
+      assert(syncSource.includes('state: "off"'));
       assert(managed.includes("Get-MediaStatus"));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes('*.download.parts'));

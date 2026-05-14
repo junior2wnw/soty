@@ -385,8 +385,6 @@ function safeRemoteTimeoutMs(value: unknown): number {
 export class TunnelSync {
   private readonly doc = new Y.Doc();
   private readonly text = this.doc.getText("body");
-  private readonly terminalLines = this.doc.getArray<string>("terminalLines");
-  private readonly terminalMeta = this.doc.getMap<string>("terminalMeta");
   private readonly chessMeta = this.doc.getMap<string>("chessMeta");
   private ws: WebSocket | null = null;
   private destroyed = false;
@@ -444,12 +442,6 @@ export class TunnelSync {
     this.text.observe(() => {
       this.callbacks.onText(this.text.toString());
     });
-    this.terminalLines.observe(() => {
-      this.callbacks.onTerminal(this.terminalSnapshot());
-    });
-    this.terminalMeta.observe(() => {
-      this.callbacks.onTerminal(this.terminalSnapshot());
-    });
     this.chessMeta.observe(() => {
       this.callbacks.onChess(this.chessSnapshot());
     });
@@ -494,27 +486,18 @@ export class TunnelSync {
   }
 
   appendTerminalLine(line: string): void {
-    const text = cleanTerminalLine(line);
-    if (!text) {
-      return;
-    }
-    this.doc.transact(() => {
-      this.terminalLines.push([text]);
-      const overflow = this.terminalLines.length - 600;
-      if (overflow > 0) {
-        this.terminalLines.delete(0, overflow);
-      }
-    }, "local");
+    // Terminal output is a local capability surface, never shared room state.
+    void line;
   }
 
   setTerminalState(state: TerminalSnapshot["state"]): void {
-    this.terminalMeta.set("state", terminalStateFrom(state));
+    void state;
   }
 
   terminalSnapshot(): TerminalSnapshot {
     return {
-      lines: this.terminalLines.toArray().slice(-600),
-      state: terminalStateFrom(this.terminalMeta.get("state"))
+      lines: [],
+      state: "off"
     };
   }
 
