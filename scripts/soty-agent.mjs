@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.5";
+const agentVersion = "0.4.6";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7994,6 +7994,14 @@ function Read-TextFile([string]$Path) {
   }
   return ''
 }
+function Remove-PowerShellProgressCliXml([string]$Text) {
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  $trimmed = $Text.Trim()
+  if ($trimmed.StartsWith('#< CLIXML') -and $trimmed -match '<Obj S="progress"' -and $trimmed -notmatch '<S S="Error"|CategoryInfo|FullyQualifiedErrorId') {
+    return ''
+  }
+  return $Text
+}
 try {
   & icacls.exe $root /grant '*S-1-5-32-545:(OI)(CI)(M)' /T /C | Out-Null
 } catch {}
@@ -8021,7 +8029,7 @@ try {
     exit 124
   }
   $stdout = Read-TextFile ([string]$payload.stdoutPath)
-  $stderr = Read-TextFile ([string]$payload.stderrPath)
+  $stderr = Remove-PowerShellProgressCliXml (Read-TextFile ([string]$payload.stderrPath))
   if ($stdout) { Write-Output $stdout }
   if ($stderr) { [Console]::Error.Write($stderr) }
   $codeText = (Read-TextFile ([string]$payload.exitPath)).Trim()
