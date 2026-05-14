@@ -7,6 +7,7 @@ export interface LocalAgentStatus {
   readonly shell?: string;
   readonly version?: string;
   readonly executionPlane?: string;
+  readonly companion?: boolean;
   readonly sourceWorker?: boolean;
   readonly windowsUser?: string;
   readonly system?: boolean;
@@ -245,6 +246,39 @@ export async function grantAgentSourceAccess(deviceId: string, deviceNick: strin
   }
 }
 
+export async function checkAgentSourceWorker(deviceId: string, timeoutMs = 1500): Promise<LocalAgentStatus> {
+  const relayId = readAgentRelayId();
+  if (!relayId || !deviceId) {
+    return { ok: false };
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`/api/agent/source/targets?relayId=${encodeURIComponent(relayId)}`, {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return { ok: false };
+    }
+    const payload = await response.json() as {
+      readonly targets?: readonly {
+        readonly hostDeviceId?: string;
+        readonly deviceIds?: readonly string[];
+        readonly localAgent?: unknown;
+        readonly workers?: { readonly user?: { readonly localAgent?: unknown } };
+      }[];
+    };
+    const target = (payload.targets || []).find((item) => item.hostDeviceId === deviceId || item.deviceIds?.includes(deviceId));
+    const worker = readLocalAgentStatus(target?.workers?.user?.localAgent) || readLocalAgentStatus(target?.localAgent);
+    return worker ? { ...worker, relay: true } : { ok: false };
+  } catch {
+    return { ok: false };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function agentSourceClientPayload(state: AgentSourceClientState): Record<string, unknown> {
   return {
     clientProtocol: "soty-source-client.v2",
@@ -259,9 +293,28 @@ function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<st
     version: String(status?.version || "").slice(0, 40),
     scope: String(status?.scope || "").slice(0, 40),
     executionPlane: String(status?.executionPlane || "").slice(0, 80),
+    companion: status?.companion === true,
     sourceWorker: status?.sourceWorker === true,
     autoUpdate: status?.autoUpdate === true,
     system: status?.system === true
+  };
+}
+
+function readLocalAgentStatus(value: unknown): LocalAgentStatus | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const source = value as Record<string, unknown>;
+  const ok = source.ok === true;
+  return {
+    ok,
+    ...(typeof source.version === "string" ? { version: source.version.slice(0, 40) } : {}),
+    ...(typeof source.scope === "string" ? { scope: source.scope.slice(0, 40) } : {}),
+    ...(typeof source.executionPlane === "string" ? { executionPlane: source.executionPlane.slice(0, 80) } : {}),
+    ...(typeof source.companion === "boolean" ? { companion: source.companion } : {}),
+    ...(typeof source.sourceWorker === "boolean" ? { sourceWorker: source.sourceWorker } : {}),
+    ...(typeof source.autoUpdate === "boolean" ? { autoUpdate: source.autoUpdate } : {}),
+    ...(typeof source.system === "boolean" ? { system: source.system } : {})
   };
 }
 
@@ -485,6 +538,9 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       readonly platform?: string;
       readonly shell?: string;
       readonly version?: string;
+      readonly autoUpdate?: boolean;
+      readonly executionPlane?: string;
+      readonly companion?: boolean;
       readonly windowsUser?: string;
       readonly system?: boolean;
       readonly maintenance?: boolean;
@@ -501,6 +557,9 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       ...(typeof message.platform === "string" ? { platform: message.platform } : {}),
       ...(typeof message.shell === "string" ? { shell: message.shell } : {}),
       ...(typeof message.version === "string" ? { version: message.version } : {}),
+      ...(typeof message.autoUpdate === "boolean" ? { autoUpdate: message.autoUpdate } : {}),
+      ...(typeof message.executionPlane === "string" ? { executionPlane: message.executionPlane } : {}),
+      ...(typeof message.companion === "boolean" ? { companion: message.companion } : {}),
       ...(typeof message.windowsUser === "string" ? { windowsUser: message.windowsUser } : {}),
       ...(typeof message.system === "boolean" ? { system: message.system } : {}),
       ...(typeof message.maintenance === "boolean" ? { maintenance: message.maintenance } : {}),
@@ -575,12 +634,19 @@ export function agentInstallUrl(scope: "user" | "machine" = "user"): string {
 }
 
 export function downloadAgentInstaller(scope: "user" | "machine" = "user"): void {
+  return downloadAgentInstallerForDevice(scope);
+}
+
+export function downloadAgentInstallerForDevice(
+  scope: "user" | "machine" = "user",
+  device: { readonly id?: string; readonly nick?: string } = {}
+): void {
   const relayId = ensureAgentRelayId();
   const base = `${window.location.origin}/agent`;
   if (isWindowsPlatform()) {
     downloadText(
       scope === "machine" ? "install-soty-agent-machine.cmd" : "install-soty-agent.cmd",
-      buildWindowsInstaller(scope, base, relayId),
+      buildWindowsInstaller(scope, base, relayId, device),
       "application/bat"
     );
     return;
@@ -588,7 +654,14 @@ export function downloadAgentInstaller(scope: "user" | "machine" = "user"): void
   downloadText("install-soty-agent.sh", buildUnixInstaller(scope, base, relayId), "text/x-shellscript");
 }
 
-function buildWindowsInstaller(scope: "user" | "machine", base: string, relayId: string): string {
+function buildWindowsInstaller(
+  scope: "user" | "machine",
+  base: string,
+  relayId: string,
+  device: { readonly id?: string; readonly nick?: string } = {}
+): string {
+  const deviceId = sanitizeWindowsCmdValue(device.id || "");
+  const deviceNick = sanitizeWindowsCmdValue(device.nick || "");
   if (scope === "machine") {
     return [
       "@echo off",
@@ -614,8 +687,10 @@ function buildWindowsInstaller(scope: "user" | "machine", base: string, relayId:
     "setlocal",
     `set "BASE=${base}"`,
     `set "RELAY=${relayId}"`,
+    `set "DEVICE=${deviceId}"`,
+    `set "NICK=${deviceNick}"`,
     "",
-    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $local = [Environment]::GetFolderPath('LocalApplicationData'); if ([string]::IsNullOrWhiteSpace($local)) { $local = Join-Path $HOME 'AppData\\Local' }; $dir = Join-Path $local 'soty-agent'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; & $script -Base '%BASE%' -RelayId '%RELAY%'\"",
+    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $local = [Environment]::GetFolderPath('LocalApplicationData'); if ([string]::IsNullOrWhiteSpace($local)) { $local = Join-Path $HOME 'AppData\\Local' }; $dir = Join-Path $local 'soty-agent'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $extra = @(); if (-not [string]::IsNullOrWhiteSpace('%DEVICE%')) { $extra += @('-SourceCompanion', '-DeviceId', '%DEVICE%', '-DeviceNick', '%NICK%') }; & $script -Base '%BASE%' -RelayId '%RELAY%' @extra\"",
     "if errorlevel 1 goto fail",
     "exit /b 0",
     "",
@@ -627,6 +702,10 @@ function buildWindowsInstaller(scope: "user" | "machine", base: string, relayId:
     "exit /b 1",
     ""
   ].join("\r\n");
+}
+
+function sanitizeWindowsCmdValue(value: string): string {
+  return value.replace(/[\r\n"%]/gu, "").slice(0, 160);
 }
 
 function buildUnixInstaller(scope: "user" | "machine", base: string, relayId: string): string {

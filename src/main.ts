@@ -4,7 +4,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
 import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -978,17 +978,19 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (!device) {
     return;
   }
-  const companion = await refreshLocalCompanion();
+  const companion = await ensureAgentSourceCompanion();
   if (!companion.ok) {
     renderAgentInstall(agentTunnelId, () => {
       void toggleAgentRemoteGrant(agentTunnelId);
-    }, (agent) => agent.ok, refreshLocalCompanion);
+    }, isAgentSourceCompanionReady, ensureAgentSourceCompanion, device);
     return;
   }
-  if (!companion.relay || !companion.sourceWorker) {
-    await bindLocalAgentRelay(device, 1800).catch(() => false);
+  if (!isAgentSourceCompanionReady(companion)) {
+    renderAgentInstall(agentTunnelId, () => {
+      void toggleAgentRemoteGrant(agentTunnelId);
+    }, isAgentSourceCompanionReady, ensureAgentSourceCompanion, device);
+    return;
   }
-  localAgent = await checkLocalAgent(900);
   const granted = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   if (!granted) {
     await typeOperatorChat(
@@ -1006,6 +1008,38 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   renderTerminal();
   renderTiles();
   startAgentSourceControl(agentTunnelId);
+}
+
+function isAgentSourceCompanionReady(agent: LocalAgentStatus): boolean {
+  return agent.ok === true && agent.relay === true && agent.sourceWorker === true;
+}
+
+async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
+  let agent = await refreshLocalCompanion();
+  if (device && !isAgentSourceCompanionReady(agent)) {
+    const sourceAgent = await checkAgentSourceWorker(device.id, 1200);
+    if (isAgentSourceCompanionReady(sourceAgent)) {
+      localAgent = sourceAgent;
+      return sourceAgent;
+    }
+  }
+  if (!device || isAgentSourceCompanionReady(agent)) {
+    return agent;
+  }
+  if (agent.ok) {
+    await bindLocalAgentRelay(device, 1800).catch(() => false);
+    const deadline = Date.now() + 4500;
+    do {
+      await wait(350);
+      const sourceAgent = await checkAgentSourceWorker(device.id, 1200);
+      agent = isAgentSourceCompanionReady(sourceAgent) ? sourceAgent : await checkLocalAgent(1200);
+      localAgent = agent;
+      if (isAgentSourceCompanionReady(agent)) {
+        return agent;
+      }
+    } while (Date.now() < deadline);
+  }
+  return agent;
 }
 
 function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
@@ -1045,7 +1079,8 @@ function renderAgentInstall(
   tunnelId: string,
   onReady?: () => void,
   isReady: (agent: LocalAgentStatus) => boolean = (agent) => agent.ok,
-  refresh: () => Promise<LocalAgentStatus> = refreshLocalCompanion
+  refresh: () => Promise<LocalAgentStatus> = refreshLocalCompanion,
+  sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }
 ): void {
   document.querySelector(".agent-modal")?.remove();
   const overlay = document.createElement("div");
@@ -1062,6 +1097,10 @@ function renderAgentInstall(
   `;
   document.body.append(overlay);
   overlay.querySelector(".download-button")?.addEventListener("click", () => {
+    if (sourceDeviceForInstaller?.id) {
+      downloadAgentInstallerForDevice("user", sourceDeviceForInstaller);
+      return;
+    }
     downloadAgentInstaller();
   });
   overlay.querySelector(".chess-install-button")?.addEventListener("click", () => {
@@ -3346,7 +3385,11 @@ async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
     return;
   }
   agentSourceGrantRefreshAt = now + agentSourceGrantRefreshMs;
-  localAgent = await checkLocalAgent(900);
+  localAgent = await ensureAgentSourceCompanion();
+  if (!isAgentSourceCompanionReady(localAgent)) {
+    agentSourceGrantRefreshAt = now + 5000;
+    return;
+  }
   const ok = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   if (!ok) {
     agentSourceGrantRefreshAt = now + 5000;

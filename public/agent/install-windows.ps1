@@ -6,6 +6,9 @@ param(
   [switch]$LaunchAppAtLogon,
   [string]$AppUrl = "https://xn--n1afe0b.online/?pwa=1",
   [string]$RelayId = "",
+  [string]$DeviceId = "",
+  [string]$DeviceNick = "",
+  [switch]$SourceCompanion,
   [string]$CodexProxyUrl = "",
   [switch]$InstallCodex
 )
@@ -381,6 +384,20 @@ shell.Run "$escapedCommand", 0, False
     return ""
   }
 
+  function Normalize-AgentDeviceId {
+    param([string]$Value)
+    $text = ([string]$Value).Trim()
+    if ($text -match '^[A-Za-z0-9_-]{8,192}$') {
+      return $text
+    }
+    return ""
+  }
+
+  function Escape-PowerShellDoubleQuoted {
+    param([string]$Value)
+    return ([string]$Value).Replace('`', '``').Replace('"', '`"').Replace('$', '`$')
+  }
+
   function Normalize-CodexProxyUrl {
     param([string]$Value)
     $text = ([string]$Value).Trim()
@@ -514,10 +531,36 @@ shell.Run "$escapedCommand", 0, False
   if (-not $SafeRelayId) {
     $SafeRelayId = Resolve-ExistingAgentRelayId
   }
+  $SafeDeviceId = Normalize-AgentDeviceId $DeviceId
+  $SafeDeviceNick = ([string]$DeviceNick).Trim()
+  if ($SafeDeviceNick.Length -gt 80) {
+    $SafeDeviceNick = $SafeDeviceNick.Substring(0, 80)
+  }
   $RelayEnv = if ($SafeRelayId) {
 @"
 `$env:SOTY_AGENT_RELAY_ID = "$SafeRelayId"
 `$env:SOTY_AGENT_RELAY_URL = "https://xn--n1afe0b.online"
+"@
+  } else {
+    ""
+  }
+  $CompanionEnv = if ($SourceCompanion) {
+@"
+`$env:SOTY_AGENT_COMPANION = "1"
+`$env:SOTY_AGENT_PORT = "0"
+"@
+  } else {
+    ""
+  }
+  $DeviceEnv = if ($SafeDeviceId) {
+    $nickLine = if ($SafeDeviceNick) {
+      "`$env:SOTY_AGENT_DEVICE_NICK = `"$(Escape-PowerShellDoubleQuoted $SafeDeviceNick)`""
+    } else {
+      ""
+    }
+@"
+`$env:SOTY_AGENT_DEVICE_ID = "$SafeDeviceId"
+$nickLine
 "@
   } else {
     ""
@@ -560,6 +603,8 @@ if (Test-Path -LiteralPath `$proxyEnvPath) {
 `$env:SOTY_AGENT_SCOPE = "$Scope"
 `$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
 $RelayEnv
+$CompanionEnv
+$DeviceEnv
 $ProxyEnv
 $CodexEnv
 while (`$true) {
