@@ -3700,6 +3700,8 @@ async function finalizeComposerDraft(): Promise<void> {
   if (tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
     void sendAgentDialogMessage(tunnelId, message);
+  } else if (tunnel && containsLordAgentInvocation(message)) {
+    void sendAgentDialogMessage(tunnelId, message, { explicitMention: true });
   }
   localDrafts.delete(tunnelId);
   composer.value = "";
@@ -3710,13 +3712,24 @@ async function finalizeComposerDraft(): Promise<void> {
   renderWriterPop();
 }
 
-function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
+function containsLordAgentInvocation(text: string): boolean {
+  return /(^|[^\p{L}\p{N}_])(?:лорд|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+}
+
+function sendAgentDialogMessage(
+  tunnelId: string,
+  text: string,
+  options: { readonly explicitMention?: boolean } = {}
+): Promise<void> {
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  if (!tunnel || !isAgentTunnel(tunnel) || !text.trim()) {
+  const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
+  if (!tunnel || (!agentTunnel && options.explicitMention !== true) || !text.trim()) {
     return Promise.resolve();
   }
   const targets = operatorTargets();
-  const preferredTarget = preferredAgentOperatorTargetForDialog(text, targets);
+  const preferredTarget = agentTunnel
+    ? preferredAgentOperatorTargetForDialog(text, targets)
+    : targets.find((target) => target.id === tunnelId) ?? null;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const source: LocalAgentRequestSource = {
     tunnelId,
@@ -3737,7 +3750,9 @@ function sendAgentDialogMessage(tunnelId: string, text: string): Promise<void> {
       const streamedMessages: string[] = [];
       const streamedTerminal: string[] = [];
       try {
-        await prepareAgentSourceForDialog(tunnelId, tunnel);
+        if (agentTunnel) {
+          await prepareAgentSourceForDialog(tunnelId, tunnel);
+        }
         reply = await askLocalAgentReply(text, context, source, 2 * 60 * 60_000, (message) => {
           const streamed = normalizeChatMessage(cleanAgentReplyText(message));
           if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {

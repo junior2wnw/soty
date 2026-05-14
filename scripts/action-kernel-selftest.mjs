@@ -592,6 +592,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("isLikelyAgentStatusQuote"));
       assert(!main.includes("sendOperatorUserMessage"));
       assert(!main.includes('type: "operator.message"'));
+      assert(main.includes("containsLordAgentInvocation"));
+      assert(main.includes("(?:лорд|lord)"));
+      assert(main.includes("explicitMention: true"));
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
       assert(agent.includes("sourceDeviceHash"));
