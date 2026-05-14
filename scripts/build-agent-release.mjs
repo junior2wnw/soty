@@ -54,7 +54,7 @@ const automationToolkits = buildAutomationToolkits(windowsReinstall);
 const manifest = {
   version,
   schema: "soty.agent.release.v2",
-  architecture: "server-codex-brain+memory-plane+user-capability-gateway",
+  architecture: "server-codex-brain+memory-plane+user-computer-use-plane",
   agentUrl: "/agent/soty-agent.mjs",
   sha256: sha256(sourceText),
   memoryPlane: {
@@ -68,6 +68,12 @@ const manifest = {
     receiptsUrl: "/api/agent/memory/receipts",
     reportUrl: "/api/agent/memory/report"
   },
+  computerUsePlane: {
+    schema: "soty.computer-use-plane.v1",
+    entryTool: "soty_computer",
+    legacyEntrypoint: "soty_toolkit",
+    model: "discover+invoke+durable-jobs+artifacts+source-proof"
+  },
   windowsReinstall,
   automationToolkits
 };
@@ -75,6 +81,7 @@ const manifest = {
 await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 process.stdout.write(`agent:${version}:${manifest.sha256}\n`);
 process.stdout.write(`memory-plane:${manifest.memoryPlane.schema}\n`);
+process.stdout.write(`computer-use-plane:${manifest.computerUsePlane.schema}\n`);
 process.stdout.write(`windows-reinstall:${windowsReinstall.scripts.map((script) => `${script.name}:${script.sha256}`).join(",")}\n`);
 
 async function removeRetiredOpsSkillArtifacts() {
@@ -107,10 +114,11 @@ async function publishWindowsReinstallScripts() {
 function buildAutomationToolkits(windowsReinstall) {
   return {
     schema: "soty.automation-toolkits.v2",
-    architecture: "capability-gateway",
+    architecture: "computer-use-plane",
     policy: {
-      entrypoint: "soty_toolkit",
-      route: "capability-api-with-memory-hints",
+      entrypoint: "soty_computer",
+      legacyEntrypoint: "soty_toolkit",
+      route: "computer-use-plane-with-memory-hints",
       fallbackKernel: "soty_action",
       chat: "lord-sysadmin",
       responseStyle: buildResponseStylePolicy(),
@@ -122,9 +130,17 @@ function buildAutomationToolkits(windowsReinstall) {
     },
     toolkits: [
       {
+        name: "computer-use-plane",
+        entryTool: "soty_computer",
+        kind: "front-door",
+        phases: ["discover", "status", "invoke", "jobs", "job_status", "job_stop"],
+        proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
+        promotion: "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases."
+      },
+      {
         name: "capability-gateway",
         entryTool: "soty_toolkit",
-        kind: "front-door",
+        kind: "legacy-alias",
         phases: ["describe", "start", "status", "stop", "list", "reinstall"],
         proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"],
         promotion: "Thin, proofed computer-control surface for Server Codex."
