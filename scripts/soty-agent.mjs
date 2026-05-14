@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.4";
+const agentVersion = "0.4.5";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -8023,7 +8023,7 @@ try {
   $stdout = Read-TextFile ([string]$payload.stdoutPath)
   $stderr = Read-TextFile ([string]$payload.stderrPath)
   if ($stdout) { Write-Output $stdout }
-  if ($stderr) { Write-Error $stderr }
+  if ($stderr) { [Console]::Error.Write($stderr) }
   $codeText = (Read-TextFile ([string]$payload.exitPath)).Trim()
   $code = 0
   if (-not [int]::TryParse($codeText, [ref]$code)) { $code = 1 }
