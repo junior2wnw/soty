@@ -257,8 +257,13 @@ export function attachAgentRelay(app) {
       return;
     }
     const source = getAgentSource(relayId, deviceId);
+    source.deviceNick = cleanText(req.query.deviceNick, maxSourceChars) || source.deviceNick || "";
     applyAgentSourceClientInfo(source, req.query || {});
     touchAgentSource(source);
+    if (!pollRequesterCanLeaseSourceJobs(req.query || {})) {
+      res.json({ ok: true, jobs: [] });
+      return;
+    }
     const jobs = leasePendingSourceJobs(source);
     if (jobs.length > 0 || req.query.wait !== "1") {
       res.json({ ok: true, jobs });
@@ -584,6 +589,7 @@ function agentSourceDiagnosticCandidates(relayId, deviceId, now = Date.now()) {
 
 function publicAgentSourceDiagnostic(source, now = Date.now()) {
   const lastSeenAgeMs = Math.max(0, now - (source.lastSeenAt || 0));
+  const directWorkerAgeMs = source.directWorkerSeenAt ? Math.max(0, now - source.directWorkerSeenAt) : null;
   const jobs = Array.isArray(source.jobs) ? source.jobs : [];
   const cancels = Array.isArray(source.cancels) ? source.cancels : [];
   const lastJob = jobs
@@ -598,6 +604,9 @@ function publicAgentSourceDiagnostic(source, now = Date.now()) {
     lastSeenAt: source.lastSeenAt ? new Date(source.lastSeenAt).toISOString() : "",
     lastSeenAgeMs,
     sourceConnectedMs,
+    directWorkerSeenAt: source.directWorkerSeenAt ? new Date(source.directWorkerSeenAt).toISOString() : "",
+    directWorkerAgeMs,
+    directWorkerFresh: agentSourceDirectWorkerFresh(source, now),
     clientProtocol: source.clientProtocol || "",
     clientCapabilities: Array.isArray(source.clientCapabilities) ? source.clientCapabilities : [],
     localAgent: publicSourceLocalAgent(source.localAgent),
@@ -646,11 +655,15 @@ function applyAgentSourceClientInfo(source, value) {
     source.clientProtocol = protocol;
   }
   const capabilities = cleanCapabilityList(value?.clientCapabilities);
-  if (capabilities.length > 0) {
+  const isDirectWorkerHeartbeat = capabilities.includes("direct-device-worker");
+  if (capabilities.length > 0 && (capabilities.includes("direct-device-worker") || !source.clientCapabilities?.includes("direct-device-worker"))) {
     source.clientCapabilities = capabilities;
   }
   const localAgent = localAgentInfoFrom(value);
-  if (localAgent) {
+  if (isDirectWorkerHeartbeat) {
+    source.directWorkerSeenAt = Date.now();
+  }
+  if (localAgent && (isDirectWorkerHeartbeat || !agentSourceDirectWorkerFresh(source))) {
     source.localAgent = localAgent;
   }
 }
@@ -671,7 +684,7 @@ function localAgentInfoFrom(value) {
   const nested = value?.localAgent && typeof value.localAgent === "object" ? value.localAgent : null;
   const read = (name) => nested?.[name] ?? value?.[`localAgent${name[0].toUpperCase()}${name.slice(1)}`];
   const hasAny = nested
-    || ["Ok", "Version", "Scope", "ExecutionPlane", "AutoUpdate", "System"].some((name) => value?.[`localAgent${name}`] !== undefined);
+    || ["Ok", "Version", "Scope", "ExecutionPlane", "AutoUpdate", "System", "SourceWorker"].some((name) => value?.[`localAgent${name}`] !== undefined);
   if (!hasAny) {
     return null;
   }
@@ -681,7 +694,8 @@ function localAgentInfoFrom(value) {
     scope: cleanText(read("scope"), 40),
     executionPlane: cleanText(read("executionPlane"), 80),
     autoUpdate: readBoolean(read("autoUpdate")),
-    system: readBoolean(read("system"))
+    system: readBoolean(read("system")),
+    sourceWorker: readBoolean(read("sourceWorker"))
   };
 }
 
@@ -696,7 +710,8 @@ function publicSourceLocalAgent(value) {
     scope: cleanText(value?.scope, 40),
     executionPlane: cleanText(value?.executionPlane, 80),
     autoUpdate: value?.autoUpdate === true,
-    system: value?.system === true
+    system: value?.system === true,
+    sourceWorker: value?.sourceWorker === true
   };
 }
 
@@ -705,6 +720,12 @@ function sourceCapabilityBlocker(source, runAs) {
   const localAgent = source?.localAgent || {};
   if (!capabilities.has("runas") || !capabilities.has("local-agent-health")) {
     return "source-client-update-required";
+  }
+  if (!agentSourceDirectWorkerFresh(source)) {
+    return "direct-device-worker-required";
+  }
+  if (!capabilities.has("direct-device-worker") || localAgent.sourceWorker !== true) {
+    return "direct-device-worker-required";
   }
   if (localAgent.ok !== true) {
     return "local-agent-unavailable";
@@ -725,6 +746,9 @@ function sourceCapabilityBlockedText(reason) {
   if (reason === "local-agent-unavailable") {
     return "! local Soty Agent is not reachable from the source device";
   }
+  if (reason === "direct-device-worker-required") {
+    return "! installed Soty Agent must refresh before direct device control is available";
+  }
   if (reason === "system-plane-unavailable") {
     return "! this task needs the machine agent, but the source device is not running in system mode";
   }
@@ -732,6 +756,15 @@ function sourceCapabilityBlockedText(reason) {
     return "! local Soty Agent is running as SYSTEM without the interactive-user execution plane";
   }
   return "! source device capability is unavailable";
+}
+
+function pollRequesterCanLeaseSourceJobs(value) {
+  const capabilities = new Set(cleanCapabilityList(value?.clientCapabilities));
+  return capabilities.has("direct-device-worker");
+}
+
+function agentSourceDirectWorkerFresh(source, now = Date.now()) {
+  return Boolean(source?.directWorkerSeenAt && now - source.directWorkerSeenAt < sourceConnectedMs);
 }
 
 function enrichAgentSource(targetRelayId, clientRelayId, source, text = "") {

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.7";
+const agentVersion = "0.4.8";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -46,8 +46,8 @@ const maxFrameBytes = 2_500_000;
 const maxSourceChars = 180;
 const updateFetchTimeoutMs = 20_000;
 const sourceJobPickupBaseMs = 90_000;
-const configuredAgentDeviceId = safeSourceText(process.env.SOTY_AGENT_DEVICE_ID || "");
-const configuredAgentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_NICK || "");
+let agentDeviceId = safeSourceText(process.env.SOTY_AGENT_DEVICE_ID || persistedAgentConfig.deviceId || "");
+let agentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_NICK || persistedAgentConfig.deviceNick || "");
 const maxCodexDialogMessages = 64;
 const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
@@ -108,6 +108,7 @@ let cachedCodexLearningMemoryAt = 0;
 let cachedCodexLearningMemoryText = "";
 let cachedCodexLearningMemoryKey = "";
 let agentRelayStarted = false;
+let agentSourceWorkerStarted = false;
 let audioWarmupStarted = false;
 let updateCheckRunning = false;
 let deferredUpdateTimer = null;
@@ -121,10 +122,12 @@ function loadAgentConfig() {
     return {
       relayId: typeof parsed?.relayId === "string" ? parsed.relayId : "",
       relayBaseUrl: typeof parsed?.relayBaseUrl === "string" ? parsed.relayBaseUrl : "",
+      deviceId: typeof parsed?.deviceId === "string" ? parsed.deviceId : "",
+      deviceNick: typeof parsed?.deviceNick === "string" ? parsed.deviceNick : "",
       installId: typeof parsed?.installId === "string" ? parsed.installId : ""
     };
   } catch {
-    return { relayId: "", relayBaseUrl: "", installId: "" };
+    return { relayId: "", relayBaseUrl: "", deviceId: "", deviceNick: "", installId: "" };
   }
 }
 
@@ -146,6 +149,8 @@ async function saveAgentConfig() {
   await writeFile(agentConfigPath, JSON.stringify({
     relayId: agentRelayId,
     relayBaseUrl: agentRelayBaseUrl,
+    deviceId: agentDeviceId,
+    deviceNick: agentDeviceNick,
     installId: agentInstallId
   }, null, 2), "utf8").catch(() => undefined);
 }
@@ -3283,12 +3288,20 @@ async function handleAgentRelayBind(request, response, headers) {
   }
   const relayId = safeRelayId(payload?.relayId || "");
   const relayBaseUrl = safeHttpBaseUrl(payload?.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
+  const deviceId = safeSourceText(payload?.deviceId || "");
+  const deviceNick = safeSourceText(payload?.deviceNick || "");
   if (!relayId || !relayBaseUrl) {
     sendJson(response, 400, headers, { ok: false });
     return;
   }
   agentRelayId = relayId;
   agentRelayBaseUrl = relayBaseUrl;
+  if (deviceId) {
+    agentDeviceId = deviceId;
+  }
+  if (deviceNick) {
+    agentDeviceNick = deviceNick;
+  }
   await saveAgentConfig();
   startAgentRelay();
   sendJson(response, 200, headers, {
@@ -3301,12 +3314,15 @@ function startAgentRelay() {
   if (!agentRelayId || !agentRelayBaseUrl) {
     return;
   }
-  if (agentRelayStarted) {
-    return;
-  }
-  agentRelayStarted = true;
   scheduleLearningSync();
-  void runAgentRelayLoop();
+  if (!agentRelayStarted) {
+    agentRelayStarted = true;
+    void runAgentRelayLoop();
+  }
+  if (!agentSourceWorkerStarted) {
+    agentSourceWorkerStarted = true;
+    void runAgentSourceWorkerLoop();
+  }
 }
 
 async function runAgentRelayLoop() {
@@ -3507,6 +3523,160 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     await finishAgentTrace(trace, local);
     return withTraceId(local, trace);
   }
+}
+
+async function runAgentSourceWorkerLoop() {
+  let retryMs = 1000;
+  while (true) {
+    try {
+      if (!canRunAgentSourceWorker()) {
+        await sleep(3000);
+        continue;
+      }
+      const jobs = await pollAgentSourceWorker();
+      retryMs = 1000;
+      for (const job of jobs) {
+        void handleAgentSourceWorkerJob(job).catch((error) => {
+          void postAgentSourceWorkerOutput(
+            job.id,
+            agentFailureText(error instanceof Error ? error.message : String(error)),
+            1
+          );
+        });
+      }
+    } catch {
+      await sleep(retryMs);
+      retryMs = Math.min(30_000, Math.round(retryMs * 1.6));
+    }
+  }
+}
+
+function canRunAgentSourceWorker() {
+  return Boolean(agentRelayId && agentRelayBaseUrl && agentDeviceId && String(agentScope || "").toLowerCase() !== "server");
+}
+
+async function pollAgentSourceWorker() {
+  const url = new URL("/api/agent/source/poll", agentRelayBaseUrl);
+  url.searchParams.set("relayId", agentRelayId);
+  url.searchParams.set("deviceId", agentDeviceId);
+  if (agentDeviceNick) {
+    url.searchParams.set("deviceNick", agentDeviceNick);
+  }
+  url.searchParams.set("wait", "1");
+  url.searchParams.set("clientProtocol", "soty-source-agent.v1");
+  url.searchParams.set("clientCapabilities", "runas,local-agent-health,direct-device-worker");
+  appendAgentSourceWorkerHealth(url.searchParams);
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`source poll ${response.status}`);
+  }
+  const payload = await response.json();
+  return Array.isArray(payload.jobs)
+    ? payload.jobs.filter((job) => isSafeText(job?.id, 160) && (job?.type === "cancel" || isSafeText(job?.command || job?.script, maxScriptChars)))
+    : [];
+}
+
+function appendAgentSourceWorkerHealth(params) {
+  params.set("localAgentOk", "true");
+  params.set("localAgentVersion", agentVersion);
+  params.set("localAgentScope", agentScope);
+  params.set("localAgentExecutionPlane", runtimeExecutionPlane());
+  params.set("localAgentAutoUpdate", agentAutoUpdate ? "true" : "false");
+  params.set("localAgentSystem", isSystemAgent() ? "true" : "false");
+  params.set("localAgentSourceWorker", "true");
+}
+
+async function handleAgentSourceWorkerJob(job) {
+  if (job.type === "cancel") {
+    const commandId = safeSourceText(job.commandId || "");
+    if (commandId) {
+      killProcessTree(active.get(commandId));
+    }
+    return;
+  }
+  const { ws, done } = sourceWorkerRelaySocket(job.id);
+  if (job.type === "script") {
+    await runScript(ws, job.id, {
+      name: typeof job.name === "string" ? job.name : "script",
+      shell: typeof job.shell === "string" ? job.shell : "",
+      script: String(job.script || ""),
+      runAs: safeRunAs(job.runAs || "")
+    }, safeRunTimeoutMs(job.timeoutMs));
+  } else {
+    await runCommand(ws, job.id, String(job.command || ""), safeRunTimeoutMs(job.timeoutMs), safeRunAs(job.runAs || ""));
+  }
+  await done;
+}
+
+function sourceWorkerRelaySocket(id) {
+  let open = true;
+  let queue = Promise.resolve();
+  let resolveDone = () => {};
+  const done = new Promise((resolve) => {
+    resolveDone = resolve;
+  });
+  const ws = {
+    get open() {
+      return open;
+    },
+    onClose: () => {},
+    send(raw) {
+      queue = queue
+        .then(() => handleSourceWorkerFrame(id, raw))
+        .catch((error) => postAgentSourceWorkerOutput(id, agentFailureText(error instanceof Error ? error.message : String(error)), 1).catch(() => undefined));
+    },
+    close() {
+      if (!open) {
+        return;
+      }
+      open = false;
+      try {
+        ws.onClose?.();
+      } finally {
+        queue.finally(resolveDone);
+      }
+    }
+  };
+  return { ws, done };
+}
+
+async function handleSourceWorkerFrame(id, raw) {
+  let frame;
+  try {
+    frame = JSON.parse(String(raw || ""));
+  } catch {
+    return;
+  }
+  const type = String(frame?.type || "data");
+  const text = String(frame?.text || "");
+  if (type === "start" || type === "ready") {
+    return;
+  }
+  if (type === "exit" || type === "error") {
+    await postAgentSourceWorkerOutput(id, text, Number.isSafeInteger(frame.exitCode) ? frame.exitCode : type === "error" ? 1 : 0);
+    return;
+  }
+  if (text) {
+    await postAgentSourceWorkerOutput(id, text);
+  }
+}
+
+async function postAgentSourceWorkerOutput(id, text, exitCode = undefined) {
+  if (!agentRelayBaseUrl || !agentRelayId || !agentDeviceId || !id) {
+    return;
+  }
+  await fetch(new URL("/api/agent/source/output", agentRelayBaseUrl), {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      relayId: agentRelayId,
+      deviceId: agentDeviceId,
+      id,
+      text: String(text || "").slice(0, maxChatChars),
+      ...(Number.isSafeInteger(exitCode) ? { exitCode } : {})
+    })
+  });
 }
 
 async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal, trace = null }) {
@@ -9234,15 +9404,16 @@ function runtimeHealth() {
     shell: shellName(),
     version: agentVersion,
     relay: Boolean(agentRelayId),
+    deviceId: agentDeviceId,
+    deviceNick: agentDeviceNick,
+    sourceWorker: canRunAgentSourceWorker(),
     codex: hasCodexBinary(),
     codexBinary: Boolean(findCodexBinary()),
     codexAuth: hasCodexAuth(),
     codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
     codexSessionMode,
     codexRuntimeContext: "clean-codex+memory-plane+capability-gateway",
-    executionPlane: process.platform === "win32" && isWindowsSystem()
-      ? "system-controller+interactive-user-default"
-      : "current-process",
+    executionPlane: runtimeExecutionPlane(),
     codexProxy: Boolean(codexProxyUrl),
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),
@@ -9261,6 +9432,16 @@ function runtimeHealth() {
       maintenance: agentScope === "Machine" && isUnixRoot()
     })
   };
+}
+
+function runtimeExecutionPlane() {
+  return process.platform === "win32" && isWindowsSystem()
+    ? "system-controller+interactive-user-default"
+    : "current-process";
+}
+
+function isSystemAgent() {
+  return process.platform === "win32" ? isWindowsSystem() : isUnixRoot();
 }
 
 function automationToolkitStatus() {

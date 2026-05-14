@@ -7,6 +7,7 @@ export interface LocalAgentStatus {
   readonly shell?: string;
   readonly version?: string;
   readonly executionPlane?: string;
+  readonly sourceWorker?: boolean;
   readonly windowsUser?: string;
   readonly system?: boolean;
   readonly maintenance?: boolean;
@@ -200,7 +201,7 @@ export function agentRelayInviteUrl(): string {
   return url.toString();
 }
 
-export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
+export async function bindLocalAgentRelay(device?: { readonly id?: string; readonly nick?: string }, timeoutMs = 1200): Promise<boolean> {
   const relayId = ensureAgentRelayId();
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -209,7 +210,12 @@ export async function bindLocalAgentRelay(timeoutMs = 1200): Promise<boolean> {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relayId, relayBaseUrl: window.location.origin }),
+      body: JSON.stringify({
+        relayId,
+        relayBaseUrl: window.location.origin,
+        deviceId: typeof device?.id === "string" ? device.id : "",
+        deviceNick: typeof device?.nick === "string" ? device.nick : ""
+      }),
       signal: controller.signal,
       targetAddressSpace: "loopback"
     } as RequestInit & { readonly targetAddressSpace: "loopback" });
@@ -319,6 +325,7 @@ function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<st
     version: String(status?.version || "").slice(0, 40),
     scope: String(status?.scope || "").slice(0, 40),
     executionPlane: String(status?.executionPlane || "").slice(0, 80),
+    sourceWorker: status?.sourceWorker === true,
     autoUpdate: status?.autoUpdate === true,
     system: status?.system === true
   };
@@ -590,6 +597,7 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       readonly system?: boolean;
       readonly maintenance?: boolean;
       readonly relay?: boolean;
+      readonly sourceWorker?: boolean;
       readonly codex?: boolean;
       readonly codexBinary?: boolean;
       readonly codexAuth?: boolean;
@@ -605,6 +613,7 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       ...(typeof message.system === "boolean" ? { system: message.system } : {}),
       ...(typeof message.maintenance === "boolean" ? { maintenance: message.maintenance } : {}),
       ...(typeof message.relay === "boolean" ? { relay: message.relay } : {}),
+      ...(typeof message.sourceWorker === "boolean" ? { sourceWorker: message.sourceWorker } : {}),
       ...(typeof message.codex === "boolean" ? { codex: message.codex } : {}),
       ...(typeof message.codexBinary === "boolean" ? { codexBinary: message.codexBinary } : {}),
       ...(typeof message.codexAuth === "boolean" ? { codexAuth: message.codexAuth } : {})

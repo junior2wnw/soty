@@ -35,12 +35,12 @@ try {
   }
 }
 
-async function runScenarios() {
+async function runScenarios({ relayUrl } = {}) {
   const cases = [
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.7");
+      assertEqual(health.body.version, "0.4.8");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -76,6 +76,24 @@ async function runScenarios() {
       assertEqual(list.status, 200);
       assert(Array.isArray(list.body.jobs));
       assertEqual(list.body.jobs.length, 0);
+    }],
+    ["installed agent leases source jobs directly", async () => {
+      mock.resetDirectSource();
+      const bind = await post("/agent/relay", {
+        relayId: "selftest_relay_00000000000000000001",
+        relayBaseUrl: relayUrl,
+        deviceId: "dev-direct",
+        deviceNick: "selftest-direct"
+      });
+      assertEqual(bind.status, 200);
+      assertEqual(bind.body.ok, true);
+      const output = await waitForDirectSourceOutput("direct_selftest_1");
+      assert(output.text.includes("DIRECT_SOURCE_OK"));
+      assertEqual(output.exitCode, 0);
+      assert(mock.directPolls().some((item) => String(item.clientCapabilities || "").includes("direct-device-worker")));
+      const health = await get("/health");
+      assertEqual(health.body.sourceWorker, true);
+      assertEqual(health.body.deviceId, "dev-direct");
     }],
     ["invalid json is rejected", async () => {
       const response = await raw("POST", "/operator/action", "{");
@@ -408,12 +426,16 @@ async function runScenarios() {
     }],
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const relay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       const managed = await readFile(join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1"), "utf8");
       assert(agent.includes("sotyRuntimeHints"));
+      assert(agent.includes("runAgentSourceWorkerLoop"));
+      assert(agent.includes("direct-device-worker"));
+      assert(agent.includes("sourceWorker: canRunAgentSourceWorker()"));
       assert(agent.includes("clean-codex+memory-plane+capability-gateway"));
       assert(agent.includes("soty_image"));
       assert(agent.includes("source device does not need an OpenAI API key"));
@@ -473,6 +495,13 @@ async function runScenarios() {
       assert(agent.includes("hasExplicitEventLogIntent"));
       assert(!agent.includes("shouldRunDeterministicFastRoutine"));
       assert(!agent.includes("isCreativeOrGenerativeMessage"));
+      assert(relay.includes("pollRequesterCanLeaseSourceJobs"));
+      assert(relay.includes("direct-device-worker-required"));
+      assert(relay.includes("agentSourceDirectWorkerFresh"));
+      assert(relay.includes("directWorkerSeenAt"));
+      assert(relay.includes("isDirectWorkerHeartbeat || !agentSourceDirectWorkerFresh(source)"));
+      assert(relay.includes("installed Soty Agent must refresh before direct device control is available"));
+      assert(main.includes("localAgent.sourceWorker !== true"));
       assert(!main.includes("Ничего не менял"));
       assert(!main.includes("Не смог сейчас ответить"));
       assert(managed.includes("Get-MediaStatus"));
@@ -518,7 +547,7 @@ async function runScenarios() {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.7");
+      assertEqual(manifest.version, "0.4.8");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -792,6 +821,17 @@ async function waitForCall(needle) {
   throw new Error(`call ${needle} did not arrive`);
 }
 
+async function waitForDirectSourceOutput(id) {
+  for (let index = 0; index < 80; index += 1) {
+    const output = mock.directOutput(id);
+    if (Number.isSafeInteger(output?.exitCode)) {
+      return output;
+    }
+    await sleep(100);
+  }
+  throw new Error(`direct source output ${id} did not arrive`);
+}
+
 function expectStatus(response, status) {
   assertEqual(response.body.status, status);
   return response;
@@ -820,6 +860,9 @@ function createMockRelay() {
   const calls = [];
   const cancels = [];
   const sourceJobs = new Map();
+  const directSourcePolls = [];
+  const directSourceOutputs = new Map();
+  let directSourceJobLeased = false;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname === "/agent/manifest.json") {
@@ -961,6 +1004,44 @@ function createMockRelay() {
       });
       return;
     }
+    if (url.pathname === "/api/agent/source/poll") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      directSourcePolls.push(query);
+      if (String(query.clientCapabilities || "").includes("direct-device-worker") && !directSourceJobLeased) {
+        directSourceJobLeased = true;
+        json(response, 200, {
+          ok: true,
+          jobs: [{
+            id: "direct_selftest_1",
+            type: "script",
+            name: "direct-selftest.mjs",
+            shell: "node",
+            script: "console.log('DIRECT_SOURCE_OK')",
+            runAs: "user",
+            timeoutMs: 5000
+          }]
+        });
+        return;
+      }
+      if (query.wait === "1") {
+        await sleep(100);
+      }
+      json(response, 200, { ok: true, jobs: [] });
+      return;
+    }
+    if (url.pathname === "/api/agent/source/output") {
+      const body = await readBody(request);
+      const payload = JSON.parse(body || "{}");
+      const id = String(payload.id || "");
+      const previous = directSourceOutputs.get(id) || { text: "", exitCode: undefined };
+      const next = {
+        text: `${previous.text || ""}${String(payload.text || "")}`,
+        exitCode: Number.isSafeInteger(payload.exitCode) ? payload.exitCode : previous.exitCode
+      };
+      directSourceOutputs.set(id, next);
+      json(response, 200, { ok: true });
+      return;
+    }
     if (url.pathname === "/api/agent/source/cancel") {
       const body = await readBody(request);
       const payload = JSON.parse(body || "{}");
@@ -993,7 +1074,14 @@ function createMockRelay() {
     server,
     count: (needle) => calls.filter((item) => item.includes(needle)).length,
     cancelCount: (id) => cancels.filter((item) => item === id).length,
-    lastCommandWith: (needle) => [...calls].reverse().find((item) => item.includes(needle)) || ""
+    lastCommandWith: (needle) => [...calls].reverse().find((item) => item.includes(needle)) || "",
+    directPolls: () => directSourcePolls.slice(),
+    directOutput: (id) => directSourceOutputs.get(id),
+    resetDirectSource: () => {
+      directSourcePolls.length = 0;
+      directSourceOutputs.clear();
+      directSourceJobLeased = false;
+    }
   };
 }
 
