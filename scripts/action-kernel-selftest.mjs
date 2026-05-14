@@ -436,6 +436,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("runAgentSourceWorkerLoop"));
       assert(agent.includes("direct-device-worker"));
       assert(agent.includes("sourceWorker: canRunAgentSourceWorker()"));
+      assert(!agent.includes("configuredAgentDeviceId"));
+      assert(!agent.includes("configuredAgentDeviceNick"));
       assert(agent.includes("clean-codex+memory-plane+capability-gateway"));
       assert(agent.includes("soty_image"));
       assert(agent.includes("source device does not need an OpenAI API key"));

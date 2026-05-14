@@ -3374,13 +3374,13 @@ async function pollAgentRelay() {
   url.searchParams.set("codex", "1");
   if (operatorDeviceId) {
     url.searchParams.set("deviceId", operatorDeviceId);
-  } else if (configuredAgentDeviceId) {
-    url.searchParams.set("deviceId", configuredAgentDeviceId);
+  } else if (agentDeviceId) {
+    url.searchParams.set("deviceId", agentDeviceId);
   }
   if (operatorDeviceNick) {
     url.searchParams.set("deviceNick", operatorDeviceNick);
-  } else if (configuredAgentDeviceNick) {
-    url.searchParams.set("deviceNick", configuredAgentDeviceNick);
+  } else if (agentDeviceNick) {
+    url.searchParams.set("deviceNick", agentDeviceNick);
   }
   url.searchParams.set("scope", agentScope);
   url.searchParams.set("wait", "1");
