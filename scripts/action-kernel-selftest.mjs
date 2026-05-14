@@ -174,6 +174,12 @@ async function runScenarios() {
       assert(!String(response.body.text || "").includes("Проблемных устройств"));
       assertEqual(mock.count("Win32_PnPEntity"), before);
     }],
+    ["inline composite memory test skips system performance fast route", async () => {
+      const before = mock.count("wuauserv,BITS");
+      const response = await agentReply("Live nondeterministic memory speed test. 1) link status; 2) python and pip; 3) disk memory CPU check; 4) path C:\\Windows\\System32\\drivers\\etc\\hosts; 5) remember name.");
+      assert(!String(response.body.text || "").includes("C:"));
+      assertEqual(mock.count("wuauserv,BITS"), before);
+    }],
     ["power command is classified", async () => expectFamily(await action(sourceRun("powercfg /batteryreport SELFTEST_OK")), "power-check")],
     ["package command is classified", async () => expectFamily(await action(sourceRun("winget install app SELFTEST_OK")), "package-install")],
     ["service command is classified", async () => expectFamily(await action(sourceRun("Get-Service SELFTEST_OK")), "service-check")],

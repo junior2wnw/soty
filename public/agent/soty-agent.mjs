@@ -2260,12 +2260,19 @@ function hasDriverCheckIntent(text) {
 function isCompositeAgentPrompt(text) {
   const value = String(text || "");
   const lower = value.toLowerCase();
-  const numbered = (value.match(/(?:^|\n)\s*\d{1,3}[).]/gu) || []).length;
+  const numbered = countCompositeNumberedItems(value);
   if (numbered >= 3) {
     return true;
   }
   return numbered >= 2
-    && /(?:сценари|недетерминирован|проверка\s+памят|памят[ьи]|ускорен|в\s+одном\s+.*ответ|пройди)/iu.test(lower);
+    && /(?:scenario|multi-?scenario|nondeterministic|memory|speed|acceleration|one\s+.*answer|go\s+through|сценари|недетерминирован|проверка\s+памят|памят[ьи]|ускорен|в\s+одном\s+.*ответ|пройди)/iu.test(lower);
+}
+
+function countCompositeNumberedItems(text) {
+  const value = String(text || "");
+  const anchored = (value.match(/(?:^|[\n\r;:])\s*\d{1,3}[).]/gu) || []).length;
+  const loose = (value.match(/\b\d{1,3}[).]\s+\S/gu) || []).length;
+  return Math.max(anchored, loose);
 }
 
 function isRoutineAgentTaskFamily(family) {
