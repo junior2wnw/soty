@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.21");
+      assertEqual(health.body.version, "0.4.22");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -573,6 +573,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiFetchJsonViaProxy"));
       assert(agent.includes("connectViaSocksProxy"));
       assert(agent.includes("codexProxyUrl"));
+      assert(agent.includes("function openAiApiKey()"));
+      assert(agent.includes("SOTY_OPENAI_API_KEY"));
+      assert(agent.includes("isOpenAiApiKey"));
       assert(agent.includes("standard capability tools as the remote computer interface"));
       assert(agent.includes("Do not describe internal transport"));
       assert(agent.includes("For generated wallpaper tasks, call `image_gen` before desktop/display checks"));
@@ -739,7 +742,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.21");
+      assertEqual(manifest.version, "0.4.22");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -828,7 +831,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.21"'));
+      assert(agentSource.includes('const agentVersion = "0.4.22"'));
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
@@ -850,14 +853,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.21";', 'const agentVersion = "0.4.20";');
-      assert(oldSource.includes('const agentVersion = "0.4.20"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.22";', 'const agentVersion = "0.4.21";');
+      assert(oldSource.includes('const agentVersion = "0.4.21"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.21",
+            version: "0.4.22",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1503,7 +1506,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: `runas,local-agent-health,direct-device-worker${options.interactiveTaskBridge ? ",interactive-user-bridge" : ""}`,
     localAgentOk: "true",
-    localAgentVersion: "0.4.21",
+    localAgentVersion: "0.4.22",
     localAgentInteractiveTaskBridge: options.interactiveTaskBridge ? "true" : "false",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",

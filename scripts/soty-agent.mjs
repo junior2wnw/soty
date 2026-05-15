@@ -10,7 +10,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { connect as tlsConnect } from "node:tls";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.21";
+const agentVersion = "0.4.22";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7743,15 +7743,16 @@ async function generateOpenAiImageData(args) {
   if (!prompt) {
     return { ok: false, error: "prompt is required", exitCode: 2 };
   }
-  const apiKey = String(process.env.SOTY_OPENAI_API_KEY || process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || "").trim();
+  const apiKey = openAiApiKey();
   if (!apiKey) {
     return {
       ok: false,
-      error: "image-generation-unavailable: configure standard server image generation; the source device does not need image credentials; do not use workspace or public-download fallbacks",
+      error: "image-generation-unavailable: configure SOTY_OPENAI_API_KEY or OPENAI_API_KEY with an OpenAI API key; the source device does not need image credentials; do not use workspace or public-download fallbacks",
       capability: "image_gen",
       backendConfigured: false,
       noFallback: true,
       sourceDeviceRequiresApiKey: false,
+      proxyConfigured: Boolean(codexProxyUrl),
       exitCode: 78
     };
   }
@@ -7831,6 +7832,20 @@ async function generateOpenAiImageData(args) {
     format,
     revisedPrompt: String(payload?.data?.[0]?.revised_prompt || "").slice(0, 2000)
   };
+}
+
+function openAiApiKey() {
+  for (const name of ["SOTY_OPENAI_API_KEY", "OPENAI_API_KEY"]) {
+    const value = String(process.env[name] || "").trim();
+    if (isOpenAiApiKey(value)) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function isOpenAiApiKey(value) {
+  return /^sk-[A-Za-z0-9_-]{20,}$/u.test(String(value || "").trim());
 }
 
 async function openAiFetchJson(url, options = {}, timeoutMs = 300_000) {
