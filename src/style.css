@@ -98,7 +98,6 @@ svg {
 .counterparty-mark,
 .nick-form,
 .access-sheet,
-.agent-sheet,
 .qr-sheet {
   border: 2px solid var(--edge);
   background: var(--panel);
@@ -1091,6 +1090,11 @@ svg {
   color: var(--green);
 }
 
+.side-action.needs-agent {
+  border-color: #d7b46a;
+  color: #f4d27a;
+}
+
 .terminal-panel {
   position: absolute;
   left: 14px;
@@ -1614,7 +1618,6 @@ svg {
   transform: translateY(0);
 }
 
-.agent-modal,
 .access-modal,
 .qr-modal {
   position: fixed;
@@ -1675,35 +1678,6 @@ svg {
 }
 
 .access-actions .access-accept {
-  background: var(--green);
-  color: #071009;
-}
-
-.agent-sheet {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 54px;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
-}
-
-.agent-mark,
-.agent-sheet .icon-button {
-  width: 54px;
-  height: 54px;
-  display: grid;
-  place-items: center;
-}
-
-.agent-mark {
-  background: #17202a;
-  color: var(--ink);
-  border: 1px solid #3d515f;
-}
-
-.agent-sheet.is-ok .agent-mark,
-.agent-sheet.is-ok .refresh-button {
   background: var(--green);
   color: #071009;
 }

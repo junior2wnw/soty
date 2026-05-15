@@ -4,7 +4,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstaller, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
 import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -86,6 +86,14 @@ installTooltips();
 const agentDialogLabel = "Агент";
 const legacyAgentDialogLabel = "Codex";
 const agentDialogMinVersion = "0.3.16";
+const agentReleaseCheckTtlMs = 60_000;
+
+type AgentButtonMode = "download" | "update" | "link";
+
+type AgentRelease = {
+  readonly version: string;
+  readonly sha256?: string;
+};
 
 let installPrompt: BeforeInstallPromptEvent | null = null;
 let device: DeviceRecord | null = null;
@@ -124,6 +132,9 @@ let localAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
 let agentProbe: Promise<LocalAgentStatus> | null = null;
 let companionProbe: Promise<LocalAgentStatus> | null = null;
+let agentRelease: AgentRelease | null = null;
+let agentReleaseProbe: Promise<AgentRelease | null> | null = null;
+let agentReleaseCheckedAt = 0;
 let agentSourceGrantRefreshAt = 0;
 const agentSourceGrantRefreshMs = 30_000;
 type WriterLine = {
@@ -258,6 +269,7 @@ async function boot(): Promise<void> {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
+  void refreshAgentButtonState();
 }
 
 async function registerServiceWorker(): Promise<void> {
@@ -373,6 +385,7 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
   }
   renderApp();
   applyRestoredTextSnapshots(restoredTexts);
+  void refreshAgentButtonState();
 }
 
 async function restoreFromOperatorExportText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {
@@ -831,13 +844,21 @@ function renderApp(): void {
     void openChessForSelected();
   });
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
-    if (selectedId) {
+    void (async () => {
+      if (!selectedId) {
+        return;
+      }
+      const mode = await refreshAgentButtonState(true);
+      if (mode !== "link") {
+        requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
+        return;
+      }
       if (isAgentTunnelId(selectedId)) {
         void toggleAgentRemoteGrant(selectedId);
       } else {
         void toggleRemoteGrant(selectedId);
       }
-    }
+    })();
   });
   app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
     if (selectedId) {
@@ -955,9 +976,10 @@ async function toggleRemoteGrant(id: string): Promise<void> {
 }
 
 async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<boolean> {
-  const agent = await refreshLocalCompanion();
-  if (!agent.ok) {
-    renderAgentInstall(id);
+  const mode = await refreshAgentButtonState(true);
+  if (mode !== "link") {
+    markAgentDownloadNeeded();
+    requestAgentDownload();
     return false;
   }
 
@@ -978,17 +1000,21 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (!device) {
     return;
   }
+  const mode = await refreshAgentButtonState(true);
+  if (mode !== "link") {
+    markAgentDownloadNeeded();
+    requestAgentDownload(device);
+    return;
+  }
   const companion = await ensureAgentSourceCompanion();
   if (!companion.ok) {
-    renderAgentInstall(agentTunnelId, () => {
-      void toggleAgentRemoteGrant(agentTunnelId);
-    }, isAgentSourceCompanionReady, ensureAgentSourceCompanion, device);
+    markAgentDownloadNeeded();
+    requestAgentDownload(device);
     return;
   }
   if (!isAgentSourceCompanionReady(companion)) {
-    renderAgentInstall(agentTunnelId, () => {
-      void toggleAgentRemoteGrant(agentTunnelId);
-    }, isAgentSourceCompanionReady, ensureAgentSourceCompanion, device);
+    markAgentDownloadNeeded();
+    requestAgentDownload(device);
     return;
   }
   const granted = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
@@ -1011,7 +1037,11 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
 }
 
 function isAgentSourceCompanionReady(agent: LocalAgentStatus): boolean {
-  return agent.ok === true && agent.relay === true && agent.sourceWorker === true;
+  return agent.ok === true
+    && agent.relay === true
+    && agent.sourceWorker === true
+    && agent.autoUpdate !== false
+    && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
 }
 
 async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
@@ -1055,7 +1085,7 @@ async function refreshLocalAgent(): Promise<LocalAgentStatus> {
     agentProbe = null;
   });
   localAgent = await agentProbe;
-  document.querySelector(".agent-sheet")?.classList.toggle("is-ok", localAgent.ok);
+  renderDialogChrome();
   if (localAgent.ok) {
     agentProbeTimer = window.setTimeout(() => void refreshLocalAgent(), 30_000);
   }
@@ -1068,58 +1098,91 @@ async function refreshLocalCompanion(): Promise<LocalAgentStatus> {
     companionProbe = null;
   });
   localAgent = await companionProbe;
-  document.querySelector(".agent-sheet")?.classList.toggle("is-ok", localAgent.ok);
+  renderDialogChrome();
   if (localAgent.ok) {
     agentProbeTimer = window.setTimeout(() => void refreshLocalCompanion(), 30_000);
   }
   return localAgent;
 }
 
-function renderAgentInstall(
-  tunnelId: string,
-  onReady?: () => void,
-  isReady: (agent: LocalAgentStatus) => boolean = (agent) => agent.ok,
-  refresh: () => Promise<LocalAgentStatus> = refreshLocalCompanion,
-  sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }
-): void {
-  document.querySelector(".agent-modal")?.remove();
-  const overlay = document.createElement("div");
-  overlay.className = "agent-modal";
-  overlay.innerHTML = `
-    <div class="agent-sheet${isReady(localAgent) ? " is-ok" : ""}" data-tooltip="Панель установки локального Soty-агента" data-tooltip-side="bottom">
-      <span class="agent-mark" data-tooltip="Локальный агент нужен для команд Windows">${icon("remote")}</span>
-      <button class="icon-button chess-install-button" type="button" aria-label="chess" data-tooltip="Играть с агентом в шахматы">${icon("chess")}</button>
-      <button class="icon-button download-button" type="button" aria-label="download" data-tooltip="Скачать Soty Agent">${icon("download")}</button>
-      <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Проверить, запущен ли агент">${icon("refresh")}</button>
-      <button class="icon-button close-button" type="button" aria-label="close" data-tooltip="Закрыть панель">${icon("close")}</button>
-    </div>
-  `;
-  document.body.append(overlay);
-  overlay.querySelector(".download-button")?.addEventListener("click", () => {
-    if (sourceDeviceForInstaller?.id) {
-      downloadAgentInstallerForDevice("machine", sourceDeviceForInstaller);
-      return;
+async function refreshAgentRelease(force = false): Promise<AgentRelease | null> {
+  const fresh = agentRelease && Date.now() - agentReleaseCheckedAt < agentReleaseCheckTtlMs;
+  if (!force && fresh) {
+    return agentRelease;
+  }
+  if (agentReleaseProbe) {
+    return agentReleaseProbe;
+  }
+  agentReleaseProbe = fetchAgentRelease()
+    .then((release) => {
+      agentRelease = release;
+      agentReleaseCheckedAt = Date.now();
+      return release;
+    })
+    .finally(() => {
+      agentReleaseProbe = null;
+      renderDialogChrome();
+    });
+  return agentReleaseProbe;
+}
+
+async function fetchAgentRelease(): Promise<AgentRelease | null> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch("/agent/manifest.json", {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return null;
     }
-    downloadAgentInstaller();
-  });
-  overlay.querySelector(".chess-install-button")?.addEventListener("click", () => {
-    overlay.remove();
-    void startAgentChess();
-  });
-  overlay.querySelector(".refresh-button")?.addEventListener("click", () => {
-    void (async () => {
-      const agent = await refresh();
-      if (isReady(agent)) {
-        overlay.remove();
-        if (onReady) {
-          onReady();
-          return;
-        }
-        void toggleRemoteGrant(tunnelId);
-      }
-    })();
-  });
-  overlay.querySelector(".close-button")?.addEventListener("click", () => overlay.remove());
+    const payload = await response.json() as {
+      readonly version?: unknown;
+      readonly sha256?: unknown;
+    };
+    const version = typeof payload.version === "string" ? payload.version.trim() : "";
+    if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9_.-]+)?$/u.test(version)) {
+      return null;
+    }
+    return {
+      version,
+      ...(typeof payload.sha256 === "string" && /^[a-f0-9]{64}$/iu.test(payload.sha256) ? { sha256: payload.sha256.toLowerCase() } : {})
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> {
+  await refreshAgentRelease(force);
+  localAgent = await checkLocalCompanionAgent(1200);
+  renderDialogChrome();
+  return agentButtonMode(localAgent);
+}
+
+function agentButtonMode(agent: LocalAgentStatus = localAgent): AgentButtonMode {
+  if (!agent.ok || agent.scope === "Relay") {
+    return "download";
+  }
+  if (agent.autoUpdate === false) {
+    return "update";
+  }
+  if (agentRelease?.version && compareVersion(agent.version || "0.0.0", agentRelease.version) < 0) {
+    return "update";
+  }
+  return "link";
+}
+
+function requestAgentDownload(sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }): void {
+  downloadAgentInstallerForDevice("machine", sourceDeviceForInstaller?.id ? sourceDeviceForInstaller : device || {});
+}
+
+function markAgentDownloadNeeded(): void {
+  void refreshAgentRelease(true);
+  renderDialogChrome();
 }
 
 function closeRemoteMode(tunnelId: string): void {
@@ -1299,11 +1362,8 @@ async function startAgentDialog(): Promise<void> {
     });
   }
   if (!agentSupportsDialogInbox(agent)) {
-    renderAgentInstall(tunnel.id, () => {
-      void ensureOperatorBridge();
-      publishOperatorTargets();
-      composer?.focus();
-    }, agentSupportsDialogInbox, refreshLocalAgent);
+    markAgentDownloadNeeded();
+    composer?.focus();
     return;
   }
   await ensureOperatorBridge();
@@ -1417,6 +1477,7 @@ function renderDialogChrome(): void {
   const id = app.querySelector<HTMLElement>(".dialog-id");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
+  const mode = agentButtonMode();
   if (shell) {
     shell.style.setProperty("--peer-color", color);
   }
@@ -1427,20 +1488,32 @@ function renderDialogChrome(): void {
     name.textContent = label;
   }
   if (state) {
-    const remote = remoteAccess.has(selectedId) ? "REMOTE READY" : remoteEnabled.has(selectedId) ? "HOST LINK" : "LIVE TEXT";
+    const remote = mode === "download"
+      ? "AGENT SETUP"
+      : mode === "update"
+        ? "AGENT UPDATE"
+        : remoteAccess.has(selectedId) ? "REMOTE READY" : remoteEnabled.has(selectedId) ? "HOST LINK" : "LIVE TEXT";
     state.textContent = remote;
   }
   if (id) {
     id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
   }
   if (remoteButton) {
-    remoteButton.classList.toggle("is-on", remoteEnabled.has(selectedId));
-    remoteButton.classList.toggle("has-access", remoteAccess.has(selectedId));
-    remoteButton.dataset.tooltip = remoteEnabled.has(selectedId)
-      ? "Выключить удаленное подключение"
-      : remoteAccess.has(selectedId)
-        ? "Открыть удаленные команды"
-        : "Включить удаленное подключение";
+    const needsAgent = mode !== "link";
+    remoteButton.classList.toggle("is-on", !needsAgent && remoteEnabled.has(selectedId));
+    remoteButton.classList.toggle("has-access", !needsAgent && remoteAccess.has(selectedId));
+    remoteButton.classList.toggle("needs-agent", needsAgent);
+    remoteButton.setAttribute("aria-label", needsAgent ? "download" : "remote");
+    remoteButton.innerHTML = needsAgent
+      ? `${icon("download")}<span>${mode === "update" ? "UPDATE" : "DOWNLOAD"}</span>`
+      : `${icon("remote")}<span>LINK</span>`;
+    remoteButton.dataset.tooltip = needsAgent
+      ? (mode === "update" ? "Download current Soty Agent" : "Download Soty Agent")
+      : remoteEnabled.has(selectedId)
+        ? "Turn off remote link"
+        : remoteAccess.has(selectedId)
+          ? "Open remote commands"
+          : "Enable remote link";
   }
 }
 
@@ -1878,7 +1951,8 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
       const agent = await refreshLocalCompanion();
       if (!agent.ok) {
         overlay.remove();
-        renderAgentInstall(tunnelId);
+        markAgentDownloadNeeded();
+        requestAgentDownload();
         return;
       }
       remoteEnabled = setRemoteEnabled(tunnelId, true);
@@ -3780,7 +3854,7 @@ function sendAgentDialogMessage(
         }
       }
       if (shouldOfferAgentInstall(reply)) {
-        renderAgentInstall(tunnelId, () => composer?.focus(), agentSupportsDialogInbox, refreshLocalAgent);
+        markAgentDownloadNeeded();
       }
       const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
       if (!appended && !reply.ok && body) {

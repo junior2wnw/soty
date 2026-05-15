@@ -10051,12 +10051,17 @@ function safeFileName(value) {
 function originAllowed(origin) {
   return !origin
     || allowedOrigins.has(origin)
-    || ((!managed || process.env.SOTY_AGENT_DEV === "1") && localDevOrigin(origin));
+    || localDevOrigin(origin);
 }
 
 function localDevOrigin(origin) {
-  return origin.startsWith("http://localhost:")
-    || origin.startsWith("http://127.0.0.1:");
+  try {
+    const url = new URL(origin);
+    return (url.protocol === "http:" || url.protocol === "https:")
+      && ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function createOutputDecoder() {

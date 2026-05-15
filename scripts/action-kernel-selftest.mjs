@@ -75,6 +75,54 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.responseStyle.id, "lord-sysadmin");
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
     }],
+    ["managed agent allows trusted web origins for local health", async () => {
+      const managedPort = await freePort();
+      const managedDir = await mkdtemp(join(tmpdir(), "soty-managed-origin-selftest-"));
+      const child = spawn(process.execPath, [
+        agentPath,
+        "--port",
+        String(managedPort),
+        "--relay-id",
+        "selftest_relay_00000000000000000001",
+        "--update-url",
+        `${relayUrl}/agent/manifest.json`
+      ], {
+        cwd: managedDir,
+        env: {
+          ...process.env,
+          SOTY_AGENT_MANAGED: "1",
+          SOTY_AGENT_AUTO_UPDATE: "0",
+          SOTY_AGENT_ACTION_JOBS_DIR: join(managedDir, "jobs"),
+          SOTY_AGENT_TRACE_DIR: join(managedDir, "traces"),
+          SOTY_CODEX_DISABLED: "1",
+          SOTY_CODEX_RELAY_FALLBACK: "0"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      try {
+        await waitForAgentHealth(managedPort);
+        const localhost = await requestPort(managedPort, "GET", "/health", undefined, {
+          Origin: "http://127.0.0.1:5173"
+        });
+        assertEqual(localhost.status, 200);
+        assertEqual(localhost.headers["access-control-allow-origin"], "http://127.0.0.1:5173");
+        const ipv6 = await requestPort(managedPort, "OPTIONS", "/health", undefined, {
+          Origin: "http://[::1]:5173",
+          "Access-Control-Request-Method": "GET",
+          "Access-Control-Request-Private-Network": "true"
+        });
+        assertEqual(ipv6.status, 204);
+        assertEqual(ipv6.headers["access-control-allow-origin"], "http://[::1]:5173");
+        const untrusted = await requestPort(managedPort, "GET", "/health", undefined, {
+          Origin: "https://example.invalid"
+        });
+        assertEqual(untrusted.status, 403);
+      } finally {
+        child.kill();
+        await onceExit(child).catch(() => undefined);
+        await rm(managedDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }],
     ["trace endpoint lists diagnostic turns", async () => {
       const traces = await get("/agent/traces?limit=5");
       assertEqual(traces.status, 200);
@@ -843,8 +891,17 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentFeature.includes('"install-soty-agent-machine.cmd"'));
       assert(!agentFeature.includes("/agent/install-windows.cmd"));
       assert(!agentFeature.includes('"install-soty-agent.cmd"'));
-      assert(ui.includes('downloadAgentInstallerForDevice("machine", sourceDeviceForInstaller)'));
-      assert(!ui.includes('downloadAgentInstallerForDevice("user", sourceDeviceForInstaller)'));
+      assert(ui.includes("agentButtonMode"));
+      assert(ui.includes("refreshAgentButtonState"));
+      assert(ui.includes("agentReleaseCheckTtlMs"));
+      assert(ui.includes('downloadAgentInstallerForDevice("machine"'));
+      assert(ui.includes('remoteButton.innerHTML = needsAgent'));
+      assert(ui.includes('mode === "update" ? "UPDATE" : "DOWNLOAD"'));
+      assert(ui.includes('remoteButton.classList.toggle("needs-agent", needsAgent)'));
+      assert(!ui.includes('downloadAgentInstallerForDevice("user"'));
+      assert(!ui.includes("renderAgentInstall"));
+      assert(!ui.includes("agent-modal"));
+      assert(!ui.includes("agent-sheet"));
       assert(!ui.includes("machine-button"));
       assert(!ui.includes("canInstallMachineAgent"));
       assert(!ui.includes("Скачать обычный установщик"));
@@ -1553,7 +1610,11 @@ async function relayRequest(base, method, path, body = undefined) {
 }
 
 async function request(method, path, body = undefined, headers = {}) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+  return await requestPort(port, method, path, body, headers);
+}
+
+async function requestPort(targetPort, method, path, body = undefined, headers = {}) {
+  const response = await fetch(`http://127.0.0.1:${targetPort}${path}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body })
@@ -1565,7 +1626,25 @@ async function request(method, path, body = undefined, headers = {}) {
   } catch {
     parsed = { text };
   }
-  return { status: response.status, body: parsed };
+  return { status: response.status, body: parsed, headers: Object.fromEntries(response.headers.entries()) };
+}
+
+async function waitForAgentHealth(targetPort) {
+  const deadline = Date.now() + 10_000;
+  let lastStatus = "";
+  while (Date.now() < deadline) {
+    try {
+      const health = await requestPort(targetPort, "GET", "/health");
+      if (health.status === 200 && health.body?.ok === true) {
+        return health;
+      }
+      lastStatus = `status=${health.status}`;
+    } catch (error) {
+      lastStatus = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(100);
+  }
+  throw new Error(`managed agent did not become healthy: ${lastStatus}`);
 }
 
 async function runCli(args) {
