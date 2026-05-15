@@ -1,9 +1,36 @@
 {
-  "version": "0.4.22",
+  "version": "0.4.23",
   "schema": "soty.agent.release.v2",
-  "architecture": "server-codex-brain+memory-plane+user-computer-use-plane",
+  "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "782cb80bba373378f7124b886dc9b4bd759ec95ae4a3a7b5caf687440ce70dbc",
+  "sha256": "bd4c1106746eecd85700ed8296964a56bb0d65c570c6e2be514ba556af8c29ff",
+  "openAiToolPlane": {
+    "schema": "openai.responses-tools+mcp.v1",
+    "builtInTools": [
+      "web_search",
+      "image_generation",
+      "computer_use_preview",
+      "code_interpreter",
+      "shell",
+      "apply_patch"
+    ],
+    "codexCliFeatureFlags": [
+      "image_generation",
+      "computer_use",
+      "browser_use",
+      "tool_search"
+    ],
+    "webSearch": "native --search",
+    "mcp": {
+      "server": "soty",
+      "entryTool": "computer",
+      "publicTools": [
+        "computer"
+      ],
+      "legacyAliasesHidden": true
+    },
+    "rule": "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
+  },
   "memoryPlane": {
     "schema": "soty.memory-plane.v1",
     "controller": "soty.memctl.v1",
@@ -20,13 +47,22 @@
     "schema": "soty.computer-use-plane.v1",
     "entryTool": "computer",
     "legacyEntrypoint": "soty_computer",
+    "mcpTools": [
+      "computer"
+    ],
     "standardTools": [
-      "computer",
-      "image_gen",
-      "artifact"
+      "computer"
+    ],
+    "openAiBuiltInTools": [
+      "web_search",
+      "image_generation",
+      "computer_use_preview",
+      "code_interpreter",
+      "shell",
+      "apply_patch"
     ],
     "model": "discover+invoke+durable-jobs+artifacts+source-proof",
-    "imagePipeline": "image_gen+source-save-apply-verify",
+    "imagePipeline": "openai.image_generation+computer.artifact-save-apply-verify",
     "routeProfileSchema": "soty.route-profiles.v1"
   },
   "routeProfiles": {
@@ -141,7 +177,7 @@
   },
   "automationToolkits": {
     "schema": "soty.automation-toolkits.v2",
-    "architecture": "computer-use-plane",
+    "architecture": "openai-built-in-tools+soty-mcp-computer",
     "policy": {
       "entrypoint": "computer",
       "legacyEntrypoint": "soty_computer",
@@ -157,6 +193,33 @@
         "tone": "brief-sysadmin",
         "maxUserFacingLines": 0,
         "phraseBank": []
+      },
+      "openAiToolPlane": {
+        "schema": "openai.responses-tools+mcp.v1",
+        "builtInTools": [
+          "web_search",
+          "image_generation",
+          "computer_use_preview",
+          "code_interpreter",
+          "shell",
+          "apply_patch"
+        ],
+        "codexCliFeatureFlags": [
+          "image_generation",
+          "computer_use",
+          "browser_use",
+          "tool_search"
+        ],
+        "webSearch": "native --search",
+        "mcp": {
+          "server": "soty",
+          "entryTool": "computer",
+          "publicTools": [
+            "computer"
+          ],
+          "legacyAliasesHidden": true
+        },
+        "rule": "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
       },
       "diagnostics": {
         "trace": "soty.agent.trace.v1",
@@ -191,7 +254,7 @@
           "exitCode",
           "artifactSha256"
         ],
-        "promotion": "Standard computer-use capability for Server Codex; legacy soty_* tools are hidden aliases.",
+        "promotion": "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         "routeProfiles": [
           "soty-windows-reinstall-managed-fast-lane"
         ]

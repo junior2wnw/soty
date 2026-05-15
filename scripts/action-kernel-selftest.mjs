@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.22");
+      assertEqual(health.body.version, "0.4.23");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -54,11 +54,15 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.computerUsePlane.schema, "soty.computer-use-plane.v1");
       assertEqual(health.body.computerUsePlane.entryTool, "computer");
       assertEqual(health.body.computerUsePlane.legacyEntrypoint, "soty_computer");
-      assert(health.body.computerUsePlane.standardTools.includes("image_gen"));
+      assert(health.body.openAiToolPlane.builtInTools.includes("image_generation"));
+      assert(health.body.openAiToolPlane.mcp.publicTools.includes("computer"));
+      assert(!health.body.openAiToolPlane.mcp.publicTools.includes("image_gen"));
+      assert(health.body.computerUsePlane.standardTools.includes("computer"));
+      assert(!health.body.computerUsePlane.standardTools.includes("image_gen"));
       assertEqual(health.body.computerUsePlane.routeProfiles.schema, "soty.route-profiles.v1");
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-windows-reinstall-managed-fast-lane"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
-      assert(health.body.computerUsePlane.capabilities.includes("image_gen+source-save"));
+      assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "computer");
       assertEqual(health.body.automationToolkits.legacyFrontDoor, "soty_computer");
@@ -564,25 +568,25 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("$p.PSObject.Properties[($prefix + '.cy')]"));
       assert(agent.includes("clean-codex+memory-plane+computer-use-plane"));
       assert(agent.includes("computer"));
-      assert(agent.includes("image_gen"));
-      assert(agent.includes("standardTools: [\"computer\", \"image_gen\", \"artifact\"]"));
-      assert(agent.includes('name: "image_gen"'));
-      assert(agent.includes('return tools.filter((tool) => ["computer", "image_gen", "artifact"].includes(tool.name))'));
-      assert(agent.includes("source device does not need image credentials"));
-      assert(agent.includes("Image generation is the standard `image_gen` capability"));
-      assert(agent.includes("openAiFetchJsonViaProxy"));
-      assert(agent.includes("connectViaSocksProxy"));
+      assert(agent.includes("openAiBuiltInTools"));
+      assert(agent.includes("codexNativeOpenAiToolFeatures"));
+      assert(agent.includes("--enable\", feature"));
+      assert(agent.includes("openAiToolPlaneStatus"));
+      assert(agent.includes("standardTools: [...sotyMcpPublicTools]"));
+      assert(!agent.includes('name: "image_gen"'));
+      assert(agent.includes("return tools.filter((tool) => sotyMcpPublicTools.includes(tool.name))"));
+      assert(agent.includes("The user's source device does not need image credentials"));
+      assert(agent.includes("Image generation is a native OpenAI built-in"));
+      assert(!agent.includes('if (name === "soty_image")'));
+      assert(!agent.includes('image_gen: "soty_image"'));
       assert(agent.includes("codexProxyUrl"));
-      assert(agent.includes("function openAiApiKey()"));
-      assert(agent.includes("SOTY_OPENAI_API_KEY"));
-      assert(agent.includes("isOpenAiApiKey"));
-      assert(agent.includes("standard capability tools as the remote computer interface"));
+      assert(agent.includes("use native OpenAI tools plus Soty MCP `computer`"));
       assert(agent.includes("Do not describe internal transport"));
-      assert(agent.includes("For generated wallpaper tasks, call `image_gen` before desktop/display checks"));
+      assert(agent.includes("For generated wallpaper tasks, generate with the native OpenAI image tool before desktop/display checks"));
       assert(!agent.includes("For generated wallpaper tasks, call soty_image"));
       assert(agent.includes("Do not say local image generation route"));
       assert(agent.includes("stop and report that blocker only"));
-      assert(agent.includes('name: "artifact"'));
+      assert(!agent.includes('name: "artifact"'));
       assert(agent.includes("Source-device canonical"));
       assert(agent.includes("User-facing device model"));
       assert(agent.includes("windowsInteractiveTaskSpec"));
@@ -607,10 +611,19 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes('savedBy: "source-device"'));
-      assert(agent.includes("cannot substitute for a missing source-device or standard image generation capability"));
-      assert(agent.includes("image-generation-unavailable"));
-      assert(agent.includes("do not use workspace or public-download fallbacks"));
-      assert(agent.includes("image artifact fallback is blocked"));
+      assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
+      assert(agent.includes("native-openai-image-generation-required"));
+      assert(!agent.includes("SOTY_OPENAI_API_KEY"));
+      assert(!agent.includes("image-generation-unavailable"));
+      assert(!agent.includes("generateOpenAiImageData"));
+      assert(!agent.includes("callSotyImageTool"));
+      assert(!agent.includes("openAiFetchJsonViaProxy"));
+      assert(!agent.includes("connectViaSocksProxy"));
+      assert(!agent.includes("sourceSaveGeneratedImageScript"));
+      assert(!agent.includes("SOTY_IMAGE_MODEL"));
+      assert(!agent.includes("name: \"image_gen\""));
+      assert(agent.includes("Do not create workspace/public-download/ASCII/SVG placeholder images as a fallback"));
+      assert(!agent.includes("image artifact fallback is blocked"));
       assert(agent.includes("image_gen"));
       assert(agent.includes('runAs: "user"'));
       assert(agent.includes('runAs: "system"'));
@@ -742,8 +755,12 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.22");
+      assertEqual(manifest.version, "0.4.23");
       assertEqual(manifest.schema, "soty.agent.release.v2");
+      assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
+      assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
+      assertEqual(manifest.openAiToolPlane.mcp.entryTool, "computer");
+      assert(!manifest.openAiToolPlane.mcp.publicTools.includes("image_gen"));
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
       assertEqual(manifest.memoryPlane.querySchema, "soty.memory.query.v2");
@@ -759,8 +776,10 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.computerUsePlane.schema, "soty.computer-use-plane.v1");
       assertEqual(manifest.computerUsePlane.entryTool, "computer");
       assertEqual(manifest.computerUsePlane.legacyEntrypoint, "soty_computer");
-      assert(manifest.computerUsePlane.standardTools.includes("image_gen"));
-      assertEqual(manifest.computerUsePlane.imagePipeline, "image_gen+source-save-apply-verify");
+      assert(manifest.computerUsePlane.standardTools.includes("computer"));
+      assert(!manifest.computerUsePlane.standardTools.includes("image_gen"));
+      assert(manifest.computerUsePlane.openAiBuiltInTools.includes("image_generation"));
+      assertEqual(manifest.computerUsePlane.imagePipeline, "openai.image_generation+computer.artifact-save-apply-verify");
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
@@ -831,7 +850,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.22"'));
+      assert(agentSource.includes('const agentVersion = "0.4.23"'));
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
@@ -853,14 +872,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.22";', 'const agentVersion = "0.4.21";');
-      assert(oldSource.includes('const agentVersion = "0.4.21"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.23";', 'const agentVersion = "0.4.22";');
+      assert(oldSource.includes('const agentVersion = "0.4.22"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.22",
+            version: "0.4.23",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1506,7 +1525,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: `runas,local-agent-health,direct-device-worker${options.interactiveTaskBridge ? ",interactive-user-bridge" : ""}`,
     localAgentOk: "true",
-    localAgentVersion: "0.4.22",
+    localAgentVersion: "0.4.23",
     localAgentInteractiveTaskBridge: options.interactiveTaskBridge ? "true" : "false",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",

@@ -51,13 +51,15 @@ await removeRetiredOpsSkillArtifacts();
 const windowsReinstall = await publishWindowsReinstallScripts();
 const routeProfiles = buildRouteProfiles(windowsReinstall);
 const automationToolkits = buildAutomationToolkits(windowsReinstall, routeProfiles);
+const openAiToolPlane = buildOpenAiToolPlane();
 
 const manifest = {
   version,
   schema: "soty.agent.release.v2",
-  architecture: "server-codex-brain+memory-plane+user-computer-use-plane",
+  architecture: "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   agentUrl: "/agent/soty-agent.mjs",
   sha256: sha256(sourceText),
+  openAiToolPlane,
   memoryPlane: {
     schema: "soty.memory-plane.v1",
     controller: "soty.memctl.v1",
@@ -74,9 +76,11 @@ const manifest = {
     schema: "soty.computer-use-plane.v1",
     entryTool: "computer",
     legacyEntrypoint: "soty_computer",
-    standardTools: ["computer", "image_gen", "artifact"],
+    mcpTools: ["computer"],
+    standardTools: ["computer"],
+    openAiBuiltInTools: openAiToolPlane.builtInTools,
     model: "discover+invoke+durable-jobs+artifacts+source-proof",
-    imagePipeline: "image_gen+source-save-apply-verify",
+    imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
     routeProfileSchema: "soty.route-profiles.v1"
   },
   routeProfiles,
@@ -114,6 +118,22 @@ async function publishWindowsReinstallScripts() {
   return {
     scriptsBaseUrl: "/agent/windows-reinstall/",
     scripts
+  };
+}
+
+function buildOpenAiToolPlane() {
+  return {
+    schema: "openai.responses-tools+mcp.v1",
+    builtInTools: ["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"],
+    codexCliFeatureFlags: ["image_generation", "computer_use", "browser_use", "tool_search"],
+    webSearch: "native --search",
+    mcp: {
+      server: "soty",
+      entryTool: "computer",
+      publicTools: ["computer"],
+      legacyAliasesHidden: true
+    },
+    rule: "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
   };
 }
 
@@ -172,9 +192,10 @@ function buildRouteProfiles(windowsReinstall) {
 }
 
 function buildAutomationToolkits(windowsReinstall, routeProfiles) {
+  const openAiToolPlane = buildOpenAiToolPlane();
   return {
     schema: "soty.automation-toolkits.v2",
-    architecture: "computer-use-plane",
+    architecture: "openai-built-in-tools+soty-mcp-computer",
     policy: {
       entrypoint: "computer",
       legacyEntrypoint: "soty_computer",
@@ -183,6 +204,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
       routeProfiles: "soty.route-profiles.v1",
       chat: "lord-sysadmin",
       responseStyle: buildResponseStylePolicy(),
+      openAiToolPlane,
       diagnostics: {
         trace: "soty.agent.trace.v1",
         eval: "soty-agent-eval"
@@ -196,7 +218,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
         kind: "front-door",
         phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "job_stop"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
-        promotion: "Standard computer-use capability for Server Codex; legacy soty_* tools are hidden aliases.",
+        promotion: "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
       },
       {
