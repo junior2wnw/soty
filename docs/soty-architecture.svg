@@ -1,79 +1,138 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
-  <title id="title">Soty Agent Architecture</title>
-  <desc id="desc">Server Codex brain with reusable memory plane and a thin user-device capability gateway.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">Архитектура Soty: Codex, память и компьютер пользователя</title>
+  <desc id="desc">Архитектура Soty: Codex работает на сервере, память ускоряет будущие задачи, а установленный агент дает Codex единый доступ к конкретному компьютеру пользователя без смешивания устройств.</desc>
   <defs>
     <style>
-      .bg { fill: #f7f8fb; }
-      .band { fill: #ffffff; stroke: #d7dde8; stroke-width: 2; }
-      .box { fill: #ffffff; stroke: #26384f; stroke-width: 2.4; rx: 10; }
-      .accent { fill: #e9f7f0; stroke: #157347; }
-      .warn { fill: #fff4e5; stroke: #b96b00; }
-      .dark { fill: #24364b; }
-      .text { font-family: "Segoe UI", Arial, sans-serif; fill: #152033; font-size: 22px; }
-      .small { font-size: 17px; fill: #405066; }
-      .tiny { font-size: 14px; fill: #5d6b7e; }
-      .title { font-size: 34px; font-weight: 700; fill: #152033; }
-      .label { font-size: 18px; font-weight: 700; fill: #152033; }
+      .bg { fill: #f6f7f9; }
+      .panel { fill: #ffffff; stroke: #cfd7e3; stroke-width: 2; }
+      .box { fill: #ffffff; stroke: #243247; stroke-width: 2.4; }
+      .soft { fill: #eef4fb; stroke: #315b8c; }
+      .green { fill: #edf8f0; stroke: #187148; }
+      .gold { fill: #fff6df; stroke: #a96a00; }
+      .red { fill: #fff0f0; stroke: #b03a3a; }
+      .dark { fill: #1f2d3f; }
+      .muted { fill: #667386; }
+      .text { font-family: "Segoe UI", Arial, sans-serif; fill: #172132; font-size: 22px; }
+      .small { font-family: "Segoe UI", Arial, sans-serif; fill: #415066; font-size: 17px; }
+      .tiny { font-family: "Segoe UI", Arial, sans-serif; fill: #5d6b7e; font-size: 14px; }
+      .title { font-family: "Segoe UI", Arial, sans-serif; fill: #101827; font-size: 36px; font-weight: 700; }
+      .subtitle { font-family: "Segoe UI", Arial, sans-serif; fill: #415066; font-size: 18px; }
+      .label { font-family: "Segoe UI", Arial, sans-serif; fill: #101827; font-size: 19px; font-weight: 700; }
       .white { fill: #ffffff; }
-      .arrow { stroke: #26384f; stroke-width: 3; fill: none; marker-end: url(#arrow); }
-      .arrow-soft { stroke: #157347; stroke-width: 3; fill: none; marker-end: url(#arrowGreen); stroke-dasharray: 8 8; }
+      .mono { font-family: Consolas, "Cascadia Mono", monospace; fill: #172132; font-size: 17px; }
+      .arrow { stroke: #243247; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .arrowGreen { stroke: #187148; stroke-width: 3; fill: none; marker-end: url(#arrowGreen); }
+      .arrowSoft { stroke: #315b8c; stroke-width: 2.6; fill: none; marker-end: url(#arrowBlue); }
+      .dash { stroke-dasharray: 9 8; }
+      .thin { stroke-width: 2; }
     </style>
     <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
-      <path d="M2,2 L10,6 L2,10 Z" fill="#26384f" />
+      <path d="M2,2 L10,6 L2,10 Z" fill="#243247" />
     </marker>
     <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
-      <path d="M2,2 L10,6 L2,10 Z" fill="#157347" />
+      <path d="M2,2 L10,6 L2,10 Z" fill="#187148" />
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#315b8c" />
     </marker>
   </defs>
 
-  <rect class="bg" width="1280" height="720" />
-  <text class="title" x="64" y="70">Soty: clean Codex + MemCtl + user capability gateway</text>
-  <text class="small" x="64" y="104">Simple contract: the server thinks, memory accelerates, the installed agent sees and acts on the user's computer.</text>
+  <rect class="bg" width="1600" height="1000" />
+  <text class="title" x="64" y="62">Архитектура Soty</text>
+  <text class="subtitle" x="64" y="94">Codex думает на сервере. Память ускоряет. Картинки генерирует backend. Действия идут только на выбранный ПК.</text>
+  <text class="mono" x="1260" y="64">agent 0.4.17</text>
+  <text class="mono" x="1260" y="92">soty.computer-use-plane.v1</text>
 
-  <rect class="band" x="48" y="140" width="1184" height="236" rx="16" />
-  <text class="label" x="76" y="178">Server plane</text>
+  <rect class="panel" x="46" y="130" width="1508" height="234" rx="18" />
+  <text class="label" x="74" y="166">Серверная часть</text>
 
-  <rect class="box" x="92" y="210" width="260" height="116" />
-  <text class="text" x="122" y="252">Codex brain</text>
-  <text class="small" x="122" y="282">plans, reasons, answers</text>
-  <text class="tiny" x="122" y="307">no bundled skill wrapper</text>
+  <rect class="box soft" x="82" y="198" width="236" height="112" rx="10" />
+  <text class="text" x="110" y="238">Сайт / PWA</text>
+  <text class="small" x="110" y="267">комнаты, UI, текст чата</text>
+  <text class="tiny" x="110" y="292">без состояния ПК в CRDT</text>
 
-  <rect class="box accent" x="510" y="198" width="260" height="142" />
-  <text class="text" x="540" y="240">MemCtl</text>
-  <text class="small" x="540" y="270">sanitized receipts</text>
-  <text class="small" x="540" y="298">scored reusable hints</text>
-  <text class="tiny" x="540" y="323">promotion, conflict checks, retrieval</text>
+  <rect class="box soft" x="382" y="198" width="236" height="112" rx="10" />
+  <text class="text" x="410" y="238">Адресный relay</text>
+  <text class="small" x="410" y="267">relayId + deviceId</text>
+  <text class="tiny" x="410" y="292">команды только этому устройству</text>
 
-  <rect class="box" x="928" y="210" width="244" height="116" />
-  <text class="text" x="958" y="252">Release manifest v2</text>
-  <text class="small" x="958" y="282">agent + toolkits</text>
-  <text class="tiny" x="958" y="307">no ops-skill artifacts</text>
+  <rect class="box" x="682" y="190" width="252" height="128" rx="10" />
+  <text class="text" x="710" y="232">Codex на сервере</text>
+  <text class="small" x="710" y="261">обычный Codex + MCP</text>
+  <text class="small" x="710" y="289">думает, планирует, отвечает</text>
 
-  <path class="arrow-soft" d="M352 268 C416 232, 446 232, 510 268" />
-  <path class="arrow-soft" d="M770 268 C842 232, 862 232, 928 268" />
-  <path class="arrow-soft" d="M640 340 C640 388, 640 414, 640 452" />
+  <rect class="box green" x="998" y="182" width="242" height="144" rx="10" />
+  <text class="text" x="1026" y="224">Память</text>
+  <text class="mono" x="1026" y="253">MemCtl v1</text>
+  <text class="small" x="1026" y="282">опыт, маршруты</text>
+  <text class="tiny" x="1026" y="306">подсказки, а не жесткие правила</text>
 
-  <rect class="band" x="48" y="430" width="1184" height="210" rx="16" />
-  <text class="label" x="76" y="468">User device plane</text>
+  <rect class="box gold" x="1304" y="198" width="208" height="112" rx="10" />
+  <text class="text" x="1332" y="238">Релиз</text>
+  <text class="small" x="1332" y="267">manifest v2</text>
+  <text class="tiny" x="1332" y="292">автообновление 0.4.17</text>
 
-  <rect class="box" x="92" y="500" width="292" height="100" />
-  <text class="text" x="122" y="542">Soty Agent</text>
-  <text class="small" x="122" y="572">light install, optional Codex CLI</text>
+  <path class="arrow" d="M318 254 H382" />
+  <path class="arrow" d="M618 254 H682" />
+  <path class="arrowGreen dash" d="M934 236 C956 214, 970 206, 998 206" />
+  <path class="arrowGreen dash" d="M998 300 C960 314, 944 312, 910 300" />
+  <path class="arrowSoft" d="M1240 254 H1304" />
 
-  <rect class="box accent" x="494" y="488" width="292" height="124" />
-  <text class="text" x="524" y="530">Capability gateway</text>
-  <text class="small" x="524" y="560">file, shell, browser, desktop</text>
-  <text class="tiny" x="524" y="586">durable jobs with proof paths</text>
+  <rect class="panel" x="46" y="414" width="1508" height="398" rx="18" />
+  <text class="label" x="74" y="450">Компьютер пользователя: единая computer-use plane</text>
 
-  <rect class="box warn" x="894" y="500" width="278" height="100" />
-  <text class="text" x="924" y="542">Proof receipts</text>
-  <text class="small" x="924" y="572">result, route, timing, hashes</text>
+  <rect class="box" x="82" y="494" width="246" height="128" rx="10" />
+  <text class="text" x="110" y="536">Soty Agent</text>
+  <text class="small" x="110" y="565">один machine-агент</text>
+  <text class="small" x="110" y="593">сам обновляется</text>
 
-  <path class="arrow" d="M352 550 C414 550, 432 550, 494 550" />
-  <path class="arrow" d="M786 550 C838 550, 842 550, 894 550" />
-  <path class="arrow-soft" d="M1033 500 C1033 410, 802 398, 700 340" />
-  <path class="arrow" d="M640 452 C640 412, 384 372, 260 326" />
+  <rect class="box green" x="392" y="476" width="284" height="164" rx="10" />
+  <text class="text" x="420" y="518">Единый вход MCP</text>
+  <text class="mono" x="420" y="548">soty_computer</text>
+  <text class="small" x="420" y="578">узнать, выполнить, следить</text>
+  <text class="tiny" x="420" y="605">старые soty_* теперь алиасы</text>
 
-  <rect class="dark" x="64" y="664" width="1152" height="34" rx="8" />
-  <text class="tiny white" x="84" y="686">Invariant: memory suggests, Codex decides, capability tools act, proof closes the loop.</text>
+  <rect class="box soft" x="746" y="456" width="294" height="204" rx="10" />
+  <text class="text" x="774" y="498">Возможности ПК</text>
+  <text class="small" x="774" y="528">команды, скрипты, файлы</text>
+  <text class="small" x="774" y="557">браузер, экран, рабочий стол</text>
+  <text class="small" x="774" y="586">мышь, клавиатура, звук</text>
+  <text class="small" x="774" y="615">картинки: только сохранить/применить</text>
+
+  <rect class="box gold" x="1110" y="456" width="256" height="204" rx="10" />
+  <text class="text" x="1138" y="498">Где выполняется</text>
+  <text class="small" x="1138" y="528">системная служба</text>
+  <text class="small" x="1138" y="557">сессия пользователя</text>
+  <text class="small" x="1138" y="586">мост в сессию пользователя</text>
+  <text class="tiny" x="1138" y="615">обычные задачи идут от пользователя</text>
+
+  <rect class="box" x="392" y="694" width="284" height="76" rx="10" />
+  <text class="text" x="420" y="727">Долгие задачи</text>
+  <text class="tiny" x="420" y="752">статус, отмена, ожидание, логи, файлы</text>
+
+  <rect class="box" x="746" y="694" width="294" height="76" rx="10" />
+  <text class="text" x="774" y="727">Доказательства</text>
+  <text class="tiny" x="774" y="752">код выхода, путь, hash, скриншот, файл</text>
+
+  <rect class="box red" x="1110" y="694" width="256" height="76" rx="10" />
+  <text class="text" x="1138" y="727">Локальная консоль</text>
+  <text class="tiny" x="1138" y="752">не синхронизируется через чат</text>
+
+  <path class="arrow" d="M328 558 H392" />
+  <path class="arrow" d="M676 558 H746" />
+  <path class="arrow" d="M1040 558 H1110" />
+  <path class="arrowSoft" d="M534 640 V694" />
+  <path class="arrowSoft" d="M893 660 V694" />
+  <path class="arrowSoft" d="M1238 660 V694" />
+  <path class="arrowGreen dash" d="M1040 732 C1180 830, 1490 802, 1490 366 C1490 318, 1250 344, 1130 326" />
+  <path class="arrowGreen dash" d="M534 476 C548 406, 598 348, 682 304" />
+
+  <rect class="panel" x="46" y="842" width="1508" height="116" rx="18" />
+  <text class="label" x="74" y="878">Главные правила изоляции</text>
+  <text class="small" x="74" y="906">1. Текст чата может быть общим для участников комнаты.</text>
+  <text class="small" x="74" y="930">2. Любое действие с компьютером адресуется только по relayId + deviceId.</text>
+  <text class="small" x="74" y="954">3. Консоль, экран, задачи и доказательства остаются локальными для устройства.</text>
+
+  <rect class="dark" x="64" y="966" width="1472" height="24" rx="7" />
+  <text class="tiny white" x="84" y="983">Правило системы: память ускоряет, Codex решает, soty_computer действует ровно на одном выбранном компьютере, доказательство закрывает задачу.</text>
 </svg>

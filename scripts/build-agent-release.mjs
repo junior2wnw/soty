@@ -72,7 +72,8 @@ const manifest = {
     schema: "soty.computer-use-plane.v1",
     entryTool: "soty_computer",
     legacyEntrypoint: "soty_toolkit",
-    model: "discover+invoke+durable-jobs+artifacts+source-proof"
+    model: "discover+invoke+durable-jobs+artifacts+source-proof",
+    imagePipeline: "backend-generate+source-save-apply-verify"
   },
   windowsReinstall,
   automationToolkits

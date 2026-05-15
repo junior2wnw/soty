@@ -1,9 +1,9 @@
 {
-  "version": "0.4.16",
+  "version": "0.4.17",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+memory-plane+user-computer-use-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "323a64b5c121728be5039bb41a6570ec91fc1c7340c595e9d5a8ba59124e452e",
+  "sha256": "50f25700650c10bd7af54532315eaf2c84dd065a2bb9d9c1172fe62403ba816f",
   "memoryPlane": {
     "schema": "soty.memory-plane.v1",
     "controller": "soty.memctl.v1",
@@ -19,7 +19,8 @@
     "schema": "soty.computer-use-plane.v1",
     "entryTool": "soty_computer",
     "legacyEntrypoint": "soty_toolkit",
-    "model": "discover+invoke+durable-jobs+artifacts+source-proof"
+    "model": "discover+invoke+durable-jobs+artifacts+source-proof",
+    "imagePipeline": "backend-generate+source-save-apply-verify"
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",

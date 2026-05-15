@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.16");
+      assertEqual(health.body.version, "0.4.17");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -54,6 +54,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.computerUsePlane.schema, "soty.computer-use-plane.v1");
       assertEqual(health.body.computerUsePlane.entryTool, "soty_computer");
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
+      assert(health.body.computerUsePlane.capabilities.includes("image-backend+source-save"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "soty_computer");
       assertEqual(health.body.automationToolkits.legacyFrontDoor, "soty_toolkit");
@@ -560,6 +561,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("soty_computer"));
       assert(agent.includes("soty_image"));
       assert(agent.includes("source device does not need an OpenAI API key"));
+      assert(agent.includes("Image generation is backend-side"));
+      assert(agent.includes("backend-generate plus source-device save"));
+      assert(agent.includes("do not say local image generation route"));
+      assert(agent.includes("stop and report that backend blocker only"));
       assert(agent.includes("soty_artifact"));
       assert(agent.includes("Source-device canonical"));
       assert(agent.includes("Device execution plane"));
@@ -585,7 +590,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes('savedBy: "source-device"'));
-      assert(agent.includes("cannot substitute for a missing source-device or image-generation capability"));
+      assert(agent.includes("cannot substitute for a missing source-device or image-generation backend"));
       assert(agent.includes("image-generation-backend-unconfigured"));
       assert(agent.includes("do not use workspace or public-download fallbacks"));
       assert(agent.includes("image artifact fallback is blocked"));
@@ -715,7 +720,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.16");
+      assertEqual(manifest.version, "0.4.17");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.memoryPlane.schema, "soty.memory-plane.v1");
       assertEqual(manifest.memoryPlane.controller, "soty.memctl.v1");
@@ -726,6 +731,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(manifest.computerUsePlane.schema, "soty.computer-use-plane.v1");
       assertEqual(manifest.computerUsePlane.entryTool, "soty_computer");
+      assertEqual(manifest.computerUsePlane.imagePipeline, "backend-generate+source-save-apply-verify");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "soty_computer");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_toolkit");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "soty_action");
@@ -793,7 +799,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.16"'));
+      assert(agentSource.includes('const agentVersion = "0.4.17"'));
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
@@ -815,14 +821,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.16";', 'const agentVersion = "0.4.15";');
-      assert(oldSource.includes('const agentVersion = "0.4.15"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.17";', 'const agentVersion = "0.4.16";');
+      assert(oldSource.includes('const agentVersion = "0.4.16"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.16",
+            version: "0.4.17",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1468,7 +1474,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: `runas,local-agent-health,direct-device-worker${options.interactiveTaskBridge ? ",interactive-user-bridge" : ""}`,
     localAgentOk: "true",
-    localAgentVersion: "0.4.16",
+    localAgentVersion: "0.4.17",
     localAgentInteractiveTaskBridge: options.interactiveTaskBridge ? "true" : "false",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",
