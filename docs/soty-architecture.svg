@@ -39,8 +39,8 @@
 
   <rect class="bg" width="1600" height="1000" />
   <text class="title" x="64" y="62">Архитектура Soty</text>
-  <text class="subtitle" x="64" y="94">Codex думает на сервере. Память ускоряет. Картинки генерирует backend. Действия идут только на выбранный ПК.</text>
-  <text class="mono" x="1260" y="64">agent 0.4.19</text>
+  <text class="subtitle" x="64" y="94">Codex думает на сервере. Память ускоряет. Картинки генерирует image_gen. Действия идут только на выбранный ПК.</text>
+  <text class="mono" x="1260" y="64">agent 0.4.20</text>
   <text class="mono" x="1260" y="92">soty.computer-use-plane.v1</text>
 
   <rect class="panel" x="46" y="130" width="1508" height="234" rx="18" />
@@ -70,7 +70,7 @@
   <rect class="box gold" x="1304" y="198" width="208" height="112" rx="10" />
   <text class="text" x="1332" y="238">Релиз</text>
   <text class="small" x="1332" y="267">manifest v2</text>
-  <text class="tiny" x="1332" y="292">автообновление 0.4.19</text>
+  <text class="tiny" x="1332" y="292">автообновление 0.4.20</text>
 
   <path class="arrow" d="M318 254 H382" />
   <path class="arrow" d="M618 254 H682" />
@@ -88,9 +88,9 @@
 
   <rect class="box green" x="392" y="476" width="284" height="164" rx="10" />
   <text class="text" x="420" y="518">Единый вход MCP</text>
-  <text class="mono" x="420" y="548">soty_computer</text>
+  <text class="mono" x="420" y="548">computer</text>
   <text class="small" x="420" y="578">узнать, выполнить, следить</text>
-  <text class="tiny" x="420" y="605">старые soty_* теперь алиасы</text>
+  <text class="tiny" x="420" y="605">soty_* скрыты: только legacy-алиасы</text>
 
   <rect class="box soft" x="746" y="456" width="294" height="204" rx="10" />
   <text class="text" x="774" y="498">Возможности ПК</text>
@@ -134,5 +134,5 @@
   <text class="small" x="74" y="954">3. Консоль, экран, задачи и доказательства остаются локальными для устройства.</text>
 
   <rect class="dark" x="64" y="966" width="1472" height="24" rx="7" />
-  <text class="tiny white" x="84" y="983">Правило системы: память ускоряет, Codex решает, soty_computer действует ровно на одном выбранном компьютере, доказательство закрывает задачу.</text>
+  <text class="tiny white" x="84" y="983">Правило системы: память ускоряет, Codex решает, computer действует ровно на одном выбранном компьютере, доказательство закрывает задачу.</text>
 </svg>

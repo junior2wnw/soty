@@ -72,10 +72,11 @@ const manifest = {
   },
   computerUsePlane: {
     schema: "soty.computer-use-plane.v1",
-    entryTool: "soty_computer",
-    legacyEntrypoint: "soty_toolkit",
+    entryTool: "computer",
+    legacyEntrypoint: "soty_computer",
+    standardTools: ["computer", "image_gen", "artifact"],
     model: "discover+invoke+durable-jobs+artifacts+source-proof",
-    imagePipeline: "backend-generate+source-save-apply-verify",
+    imagePipeline: "image_gen+source-save-apply-verify",
     routeProfileSchema: "soty.route-profiles.v1"
   },
   routeProfiles,
@@ -135,7 +136,7 @@ function buildRouteProfiles(windowsReinstall) {
         id: "soty-windows-reinstall-managed-fast-lane",
         family: "windows-reinstall",
         title: "Managed Windows reinstall fast lane",
-        entryTool: "soty_computer",
+        entryTool: "computer",
         capability: "os-reinstall",
         legacyTool: "soty_reinstall",
         defaultOperation: "reinstall",
@@ -175,10 +176,10 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
     schema: "soty.automation-toolkits.v2",
     architecture: "computer-use-plane",
     policy: {
-      entrypoint: "soty_computer",
-      legacyEntrypoint: "soty_toolkit",
+      entrypoint: "computer",
+      legacyEntrypoint: "soty_computer",
       route: "computer-use-plane-with-memory-hints",
-      fallbackKernel: "soty_action",
+      fallbackKernel: "jobs",
       routeProfiles: "soty.route-profiles.v1",
       chat: "lord-sysadmin",
       responseStyle: buildResponseStylePolicy(),
@@ -191,16 +192,16 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
     toolkits: [
       {
         name: "computer-use-plane",
-        entryTool: "soty_computer",
+        entryTool: "computer",
         kind: "front-door",
         phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "job_stop"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
-        promotion: "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases.",
+        promotion: "Standard computer-use capability for Server Codex; legacy soty_* tools are hidden aliases.",
         routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
       },
       {
         name: "capability-gateway",
-        entryTool: "soty_toolkit",
+        entryTool: "computer",
         kind: "legacy-alias",
         phases: ["describe", "start", "status", "stop", "list", "reinstall"],
         proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"],
@@ -208,7 +209,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
       },
       {
         name: "durable-action",
-        entryTool: "soty_action",
+        entryTool: "jobs",
         kind: "generic-kernel",
         phases: ["start", "status", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"],
@@ -216,7 +217,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
       },
       {
         name: "windows-reinstall",
-        entryTool: "soty_reinstall",
+        entryTool: "computer",
         kind: "managed-toolkit",
         phases: ["preflight", "prepare", "status", "arm"],
         scriptSet: "windowsReinstall",

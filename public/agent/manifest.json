@@ -1,9 +1,9 @@
 {
-  "version": "0.4.19",
+  "version": "0.4.20",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+memory-plane+user-computer-use-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "726fd9750c5e9674aba834cd7b666fae45721c362448b9695c24bb13097e657f",
+  "sha256": "ef1ca58e9d7dd5d793cdc300a5ae280fe48a1c3cc76f627393885f362bf39a15",
   "memoryPlane": {
     "schema": "soty.memory-plane.v1",
     "controller": "soty.memctl.v1",
@@ -18,10 +18,15 @@
   },
   "computerUsePlane": {
     "schema": "soty.computer-use-plane.v1",
-    "entryTool": "soty_computer",
-    "legacyEntrypoint": "soty_toolkit",
+    "entryTool": "computer",
+    "legacyEntrypoint": "soty_computer",
+    "standardTools": [
+      "computer",
+      "image_gen",
+      "artifact"
+    ],
     "model": "discover+invoke+durable-jobs+artifacts+source-proof",
-    "imagePipeline": "backend-generate+source-save-apply-verify",
+    "imagePipeline": "image_gen+source-save-apply-verify",
     "routeProfileSchema": "soty.route-profiles.v1"
   },
   "routeProfiles": {
@@ -37,7 +42,7 @@
         "id": "soty-windows-reinstall-managed-fast-lane",
         "family": "windows-reinstall",
         "title": "Managed Windows reinstall fast lane",
-        "entryTool": "soty_computer",
+        "entryTool": "computer",
         "capability": "os-reinstall",
         "legacyTool": "soty_reinstall",
         "defaultOperation": "reinstall",
@@ -138,10 +143,10 @@
     "schema": "soty.automation-toolkits.v2",
     "architecture": "computer-use-plane",
     "policy": {
-      "entrypoint": "soty_computer",
-      "legacyEntrypoint": "soty_toolkit",
+      "entrypoint": "computer",
+      "legacyEntrypoint": "soty_computer",
       "route": "computer-use-plane-with-memory-hints",
-      "fallbackKernel": "soty_action",
+      "fallbackKernel": "jobs",
       "routeProfiles": "soty.route-profiles.v1",
       "chat": "lord-sysadmin",
       "responseStyle": {
@@ -167,7 +172,7 @@
     "toolkits": [
       {
         "name": "computer-use-plane",
-        "entryTool": "soty_computer",
+        "entryTool": "computer",
         "kind": "front-door",
         "phases": [
           "discover",
@@ -186,14 +191,14 @@
           "exitCode",
           "artifactSha256"
         ],
-        "promotion": "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases.",
+        "promotion": "Standard computer-use capability for Server Codex; legacy soty_* tools are hidden aliases.",
         "routeProfiles": [
           "soty-windows-reinstall-managed-fast-lane"
         ]
       },
       {
         "name": "capability-gateway",
-        "entryTool": "soty_toolkit",
+        "entryTool": "computer",
         "kind": "legacy-alias",
         "phases": [
           "describe",
@@ -215,7 +220,7 @@
       },
       {
         "name": "durable-action",
-        "entryTool": "soty_action",
+        "entryTool": "jobs",
         "kind": "generic-kernel",
         "phases": [
           "start",
@@ -232,7 +237,7 @@
       },
       {
         "name": "windows-reinstall",
-        "entryTool": "soty_reinstall",
+        "entryTool": "computer",
         "kind": "managed-toolkit",
         "phases": [
           "preflight",
@@ -286,7 +291,7 @@
           "id": "soty-windows-reinstall-managed-fast-lane",
           "family": "windows-reinstall",
           "title": "Managed Windows reinstall fast lane",
-          "entryTool": "soty_computer",
+          "entryTool": "computer",
           "capability": "os-reinstall",
           "legacyTool": "soty_reinstall",
           "defaultOperation": "reinstall",
