@@ -845,7 +845,7 @@ function sourceCapabilityBlockedText(reason) {
     return "! this task needs the machine agent, but the source device is not running in system mode";
   }
   if (reason === "user-session-agent-unavailable") {
-    return "! user-session Soty Agent companion is not running on the source device";
+    return "! the selected computer is connected, but its user desktop session is not available right now";
   }
   return "! source device capability is unavailable";
 }
