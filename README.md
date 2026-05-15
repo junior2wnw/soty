@@ -10,10 +10,10 @@ The browser side stays deliberately simple:
 - after approval, the tunnel remains until a counterparty closes it;
 - the upper field contains counterparties as movable hex cells;
 - the lower field is one shared text surface;
-- every character, deletion, line break, and file moves through the same tunnel;
+- every character, deletion, line break, command result, and file moves through the same tunnel;
 - direct WebRTC data channels are used when the devices and networks allow it;
 - the relay remains the reliable path for signaling, reconnects, history, and fallback delivery;
-- file transfer works from the counterparty menu and drag and drop;
+- file transfer works from the counterparty menu, drag and drop, and agent-initiated device file publishing;
 - the bell icon sends one small wake pulse through the existing tunnel;
 - the remote icon grants one-way command access to the selected counterparty;
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
@@ -75,7 +75,7 @@ Long agent tasks are expected to survive ordinary install/download/repair waits.
 
 On Windows the agent uses PowerShell by default. Use `SOTY_AGENT_SHELL=cmd` when a device should run commands through `cmd.exe`.
 
-Agent chat uses the stock Codex CLI with native OpenAI/Codex tools enabled where the CLI supports them, plus one Soty MCP server. OpenAI built-ins such as web search and image generation remain native tools; Soty MCP exposes the selected user's computer as `computer` and does not reimplement or shadow built-in tool names. For a generated wallpaper, Codex generates with native image generation, then uses `computer` to transfer/apply/verify the exact artifact on the selected device. To route that stock CLI through a network proxy, set `SOTY_CODEX_PROXY_URL` before install, or pass `-CodexProxyUrl` on Windows / `--codex-proxy-url` on macOS and Linux. The installer stores it as a local `proxy.env` secret and the agent expands it only into the child Codex process as `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY`; it does not switch Codex into an OpenAI-compatible API provider mode. `/health` reports only `codexProxy: true` and the proxy scheme.
+Agent chat uses the stock Codex CLI with native OpenAI/Codex tools enabled where the CLI supports them, plus one Soty MCP server. OpenAI built-ins such as web search and image generation remain native tools; Soty MCP exposes the selected user's computer as `computer` and does not reimplement or shadow built-in tool names. For a generated wallpaper, Codex generates with native image generation, then uses `computer` to transfer/apply/verify the exact artifact on the selected device. For a file that already lives on a granted device, Codex uses `computer` file `action=download`/`publish`; the granted device streams the exact bytes into the encrypted Soty room file rail. Public upload services, temporary local HTTP servers, pasted base64, and "download this from a third-party link" are not the normal file-transfer route. To route that stock CLI through a network proxy, set `SOTY_CODEX_PROXY_URL` before install, or pass `-CodexProxyUrl` on Windows / `--codex-proxy-url` on macOS and Linux. The installer stores it as a local `proxy.env` secret and the agent expands it only into the child Codex process as `HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY`; it does not switch Codex into an OpenAI-compatible API provider mode. `/health` reports only `codexProxy: true` and the proxy scheme.
 
 Installed operator bridge:
 
@@ -111,7 +111,7 @@ Installed operator bridge:
 
 The bridge works when the PWA is open on the controlling device. `run` and `script` also require remote access to the named counterparty.
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
-Use `say` to queue live typing into the shared text surface through the PWA; it returns after the message is queued so long operator notes do not hold the HTTP request open. Use `read` to fetch messages sent from the PWA after Enter, or `listen` to long-poll them as JSON lines for an IDE-side assistant loop. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Use `import` on a fresh PWA to create a new local device from that backup and restore rooms/text snapshots. Remote command grants are session-only and are intentionally not backed up or restored.
+Use `say` to queue live typing into the shared text surface through the PWA; it returns after the message is queued so long operator notes do not hold the HTTP request open. Use `read` to fetch messages sent from the PWA after Enter, or `listen` to long-poll them as JSON lines for an IDE-side assistant loop. Use `computer` file `action=download`/`publish` from the agent dialog to pull a granted device file into the room file rail. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Use `import` on a fresh PWA to create a new local device from that backup and restore rooms/text snapshots. Remote command grants are session-only and are intentionally not backed up or restored.
 
 Emergency local repair:
 

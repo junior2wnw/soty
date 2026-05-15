@@ -659,6 +659,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes('savedBy: "source-device"'));
+      assert(agent.includes("Soty is the data plane"));
+      assert(agent.includes("action=download/publish"));
+      assert(agent.includes('emitSotyFileControl("BEGIN"'));
+      assert(agent.includes("SOTY_FILE_CHUNK"));
+      assert(agent.includes("soty-room-file-rail"));
+      assert(agent.includes("Never use 0x0.st, file.io, temp.sh, bashupload"));
       assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
       assert(agent.includes("native-openai-image-generation-required"));
       assert(!agent.includes("SOTY_OPENAI_API_KEY"));
@@ -894,6 +900,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("agentButtonMode"));
       assert(ui.includes("refreshAgentButtonState"));
       assert(ui.includes("agentReleaseCheckTtlMs"));
+      assert(ui.includes("sendFileChunkFromBytes"));
+      assert(ui.includes("processLocalAgentDataPlaneOutput"));
+      assert(ui.includes("SOTY_FILE_CHUNK"));
+      assert(!ui.includes("renderInstall"));
+      assert(!ui.includes("install-button"));
       assert(ui.includes('downloadAgentInstallerForDevice("machine"'));
       assert(ui.includes('remoteButton.innerHTML = needsAgent'));
       assert(ui.includes('mode === "update" ? "UPDATE" : "DOWNLOAD"'));

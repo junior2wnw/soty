@@ -605,6 +605,50 @@ export class TunnelSync {
     };
   }
 
+  async sendFileChunkFromBytes(
+    fileId: string,
+    meta: { readonly name: string; readonly type?: string; readonly size: number },
+    chunk: Uint8Array,
+    index: number,
+    total: number
+  ): Promise<void> {
+    const safeFileId = cleanFileId(fileId);
+    const safeIndex = Math.max(0, Math.trunc(index));
+    const safeTotal = Math.max(1, Math.trunc(total));
+    if (!safeFileId || safeIndex >= safeTotal) {
+      throw new Error("bad file chunk");
+    }
+    const fileName = cleanFileName(meta.name || "file");
+    const fileType = (meta.type || "application/octet-stream").slice(0, 160);
+    const fileSize = Math.max(0, Math.trunc(meta.size || 0));
+    const encrypted = await encryptForTunnel(this.tunnel, chunk);
+    const encryptedMeta = safeIndex === 0
+      ? await encryptForTunnel(this.tunnel, encode(JSON.stringify({
+        name: fileName,
+        type: fileType,
+        size: fileSize
+      })))
+      : null;
+    this.sendControl({
+      type: "file",
+      file: {
+        kind: "chunk",
+        id: `${safeFileId}_${safeIndex}`,
+        fileId: safeFileId,
+        index: safeIndex,
+        total: safeTotal,
+        totalBytes: fileSize,
+        bytes: chunk.byteLength,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext,
+        ...(encryptedMeta ? {
+          metaNonce: encryptedMeta.nonce,
+          metaCiphertext: encryptedMeta.ciphertext
+        } : {})
+      }
+    });
+  }
+
   deleteFile(fileId: string): void {
     this.fileTransfers.delete(fileId);
     this.sendControl({
@@ -1834,6 +1878,10 @@ function controlMessageId(message: ControlMessage): string {
 
 function cleanFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]/gu, "_").slice(0, 120) || "file";
+}
+
+function cleanFileId(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
 }
 
 function wait(ms: number): Promise<void> {

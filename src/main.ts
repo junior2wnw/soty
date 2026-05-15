@@ -47,10 +47,6 @@ import {
 import "./style.css";
 import type { Color, Move, PieceSymbol, Square } from "chess.js";
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt(): Promise<void>;
-}
-
 type BarcodeResult = {
   readonly rawValue?: string;
 };
@@ -95,7 +91,6 @@ type AgentRelease = {
   readonly sha256?: string;
 };
 
-let installPrompt: BeforeInstallPromptEvent | null = null;
 let device: DeviceRecord | null = null;
 let tunnels: TunnelRecord[] = [];
 let selectedId = "";
@@ -185,6 +180,18 @@ const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
 const operatorStartingTunnels = new Set<string>();
 const localAgentRuns = new Map<string, WebSocket>();
 const operatorChatQueues = new Map<string, Promise<void>>();
+type SotyFileStreamState = {
+  readonly tunnelId: string;
+  readonly commandId: string;
+  readonly fileId: string;
+  readonly name: string;
+  readonly type: string;
+  readonly size: number;
+  readonly total: number;
+  sent: number;
+};
+const sotyFileLineBuffers = new Map<string, string>();
+const sotyFileStreams = new Map<string, SotyFileStreamState>();
 const operatorBridgeProtocol = "soty.operator-bridge.v2";
 const agentReplyQueues = new Map<string, Promise<void>>();
 const agentThinking = new Set<string>();
@@ -196,14 +203,9 @@ let agentSourcePollController: AbortController | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
-  installPrompt = event as BeforeInstallPromptEvent;
-  if (!isAppRuntime()) {
-    renderInstall();
-  }
 });
 
 window.addEventListener("appinstalled", () => {
-  installPrompt = null;
   rememberAppRuntime();
   void boot();
 });
@@ -237,15 +239,13 @@ async function boot(): Promise<void> {
   await registerServiceWorker();
 
   const capturedJoin = captureJoinInviteFromLocation();
-  const appRuntime = isAppRuntime();
   if (capturedJoin) {
-    window.history.replaceState({}, "", appRuntime ? "/?pwa=1" : "/");
+    window.history.replaceState({}, "", "/");
   }
   clearPendingInvite();
 
-  if (!appRuntime) {
-    renderInstall();
-    return;
+  if (!isAppRuntime()) {
+    rememberAppRuntime();
   }
 
   device = await loadDevice();
@@ -313,23 +313,6 @@ function shouldResetLocalState(): boolean {
   return url.searchParams.get("reset-local") === "1"
     || url.searchParams.get("soty-reset") === "1"
     || url.searchParams.get("repair") === "reset";
-}
-
-function renderInstall(): void {
-  app.innerHTML = `
-    <section class="install">
-      <div class="install-mark">${icon("install")}</div>
-      <button class="install-button" type="button" aria-label="install" data-tooltip="Установить Соты как приложение">${icon("install")}</button>
-    </section>
-  `;
-  app.querySelector("button")?.addEventListener("click", () => {
-    if (installPrompt) {
-      void installPrompt.prompt();
-      return;
-    }
-    rememberAppRuntime();
-    void boot();
-  });
 }
 
 function renderNick(): void {
@@ -3461,6 +3444,165 @@ function agentSourceClientState(): { readonly localAgent: LocalAgentStatus } {
   return { localAgent };
 }
 
+function processLocalAgentDataPlaneOutput(tunnelId: string, commandId: string, rawText: string, flush = false): string {
+  if (!rawText && !flush) {
+    return "";
+  }
+  const previous = sotyFileLineBuffers.get(commandId) || "";
+  const combined = `${previous}${rawText || ""}`;
+  const lines = combined.split("\n");
+  const tail = flush ? "" : lines.pop() ?? "";
+  if (tail) {
+    sotyFileLineBuffers.set(commandId, tail.slice(0, 900_000));
+  } else {
+    sotyFileLineBuffers.delete(commandId);
+  }
+  const visible: string[] = [];
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/u, "");
+    if (handleSotyFileProtocolLine(tunnelId, commandId, line)) {
+      continue;
+    }
+    visible.push(line);
+  }
+  if (flush && tail && !handleSotyFileProtocolLine(tunnelId, commandId, tail.replace(/\r$/u, ""))) {
+    visible.push(tail);
+  }
+  if (visible.length === 0) {
+    return "";
+  }
+  return `${visible.join("\n")}${rawText.endsWith("\n") || flush ? "\n" : ""}`;
+}
+
+function handleSotyFileProtocolLine(tunnelId: string, commandId: string, line: string): boolean {
+  if (!line.startsWith("SOTY_FILE_")) {
+    return false;
+  }
+  if (line.startsWith("SOTY_FILE_BEGIN ")) {
+    const meta = parseSotyFileMetadata(line.slice("SOTY_FILE_BEGIN ".length));
+    if (!meta) {
+      appendTerminalLine(tunnelId, "! file transfer metadata");
+      return true;
+    }
+    sotyFileStreams.set(meta.fileId, {
+      tunnelId,
+      commandId,
+      fileId: meta.fileId,
+      name: meta.name,
+      type: meta.type,
+      size: meta.size,
+      total: meta.total,
+      sent: 0
+    });
+    appendTerminalLine(tunnelId, `+ file ${meta.name} ${formatFileSize(meta.size)}`);
+    return true;
+  }
+  if (line.startsWith("SOTY_FILE_CHUNK ")) {
+    const match = /^SOTY_FILE_CHUNK\s+([A-Za-z0-9_-]{1,120})\s+(\d{1,8})\s+([+/=0-9A-Za-z]+)$/u.exec(line);
+    if (!match) {
+      appendTerminalLine(tunnelId, "! file transfer chunk");
+      return true;
+    }
+    const fileId = match[1] || "";
+    const index = Number.parseInt(match[2] || "0", 10);
+    const state = sotyFileStreams.get(fileId);
+    const sync = syncs.get(tunnelId);
+    if (!state || !sync || !Number.isSafeInteger(index)) {
+      appendTerminalLine(tunnelId, "! file transfer state");
+      return true;
+    }
+    try {
+      const chunk = base64ToBytes(match[3] || "");
+      void sync.sendFileChunkFromBytes(fileId, {
+        name: state.name,
+        type: state.type,
+        size: state.size
+      }, chunk, index, state.total).catch(() => {
+        appendTerminalLine(tunnelId, "! file transfer send");
+        renderTerminal();
+      });
+      state.sent += 1;
+    } catch {
+      appendTerminalLine(tunnelId, "! file transfer decode");
+    }
+    return true;
+  }
+  if (line.startsWith("SOTY_FILE_END ")) {
+    const payload = parseSotyFileEnd(line.slice("SOTY_FILE_END ".length));
+    const state = payload?.fileId ? sotyFileStreams.get(payload.fileId) : null;
+    if (state) {
+      appendTerminalLine(tunnelId, `+ file ready ${state.name}`);
+      sotyFileStreams.delete(state.fileId);
+    }
+    return true;
+  }
+  return true;
+}
+
+function parseSotyFileMetadata(value: string): SotyFileStreamState | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(value.trim()))) as {
+      readonly id?: unknown;
+      readonly name?: unknown;
+      readonly type?: unknown;
+      readonly size?: unknown;
+      readonly total?: unknown;
+    };
+    const fileId = String(parsed.id || "").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
+    const name = cleanDownloadedFileName(String(parsed.name || "file"));
+    const type = String(parsed.type || "application/octet-stream").slice(0, 160);
+    const size = Number.isSafeInteger(parsed.size) ? Math.max(0, Number(parsed.size)) : 0;
+    const total = Number.isSafeInteger(parsed.total) ? Math.max(1, Math.min(Number(parsed.total), 8192)) : 1;
+    if (!fileId || !name) {
+      return null;
+    }
+    return { tunnelId: "", commandId: "", fileId, name, type, size, total, sent: 0 };
+  } catch {
+    return null;
+  }
+}
+
+function parseSotyFileEnd(value: string): { readonly fileId: string; readonly sha256?: string } | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(value.trim()))) as {
+      readonly id?: unknown;
+      readonly sha256?: unknown;
+    };
+    const fileId = String(parsed.id || "").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
+    if (!fileId) {
+      return null;
+    }
+    const sha256 = typeof parsed.sha256 === "string" && /^[a-f0-9]{64}$/iu.test(parsed.sha256)
+      ? parsed.sha256.toLowerCase()
+      : undefined;
+    return { fileId, ...(sha256 ? { sha256 } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value.replace(/-/gu, "+").replace(/_/gu, "/"));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function cleanDownloadedFileName(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/gu, "_").slice(0, 120) || "file";
+}
+
+function cleanupSotyFileDataPlane(commandId: string): void {
+  sotyFileLineBuffers.delete(commandId);
+  for (const [fileId, state] of [...sotyFileStreams.entries()]) {
+    if (state.commandId === commandId) {
+      sotyFileStreams.delete(fileId);
+    }
+  }
+}
+
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   const sync = syncs.get(tunnelId);
   if (!sync || !command.deviceId) {
@@ -3476,6 +3618,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
       return;
     }
     finished = true;
+    cleanupSotyFileDataPlane(command.id);
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
@@ -3497,6 +3640,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
       }
       finished = true;
       stopLocalAgentRun(command.id);
+      cleanupSotyFileDataPlane(command.id);
       setTerminalState(tunnelId, "bad");
       appendTerminalLine(tunnelId, "! timeout");
       renderTerminal();
@@ -3529,6 +3673,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     if (message.type === "error") {
       finished = true;
       window.clearTimeout(watchdogTimer);
+      cleanupSotyFileDataPlane(command.id);
       setTerminalState(tunnelId, "bad");
       const text = typeof message.text === "string" ? message.text : "!";
       appendTerminalLine(tunnelId, text);
@@ -3539,14 +3684,16 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     if (message.type !== "data" && message.type !== "exit") {
       return;
     }
-    const text = typeof message.text === "string" ? message.text : "";
+    const rawText = typeof message.text === "string" ? message.text : "";
     const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+    const text = processLocalAgentDataPlaneOutput(tunnelId, command.id, rawText, typeof exitCode === "number");
     if (text.trim()) {
       appendTerminalLine(tunnelId, text);
     }
     if (typeof exitCode === "number") {
       finished = true;
       window.clearTimeout(watchdogTimer);
+      cleanupSotyFileDataPlane(command.id);
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
       appendTerminalExitLine(tunnelId, exitCode);
     }
@@ -3559,6 +3706,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     window.clearTimeout(watchdogTimer);
     if (opened && !finished) {
       finished = true;
+      cleanupSotyFileDataPlane(command.id);
       setTerminalState(tunnelId, "bad");
       appendTerminalLine(tunnelId, "! agent disconnected");
       renderTerminal();
@@ -3585,6 +3733,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
       return;
     }
     finished = true;
+    cleanupSotyFileDataPlane(script.id);
     setTerminalState(tunnelId, "off");
     appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
     renderTerminal();
@@ -3606,6 +3755,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
       }
       finished = true;
       stopLocalAgentRun(script.id);
+      cleanupSotyFileDataPlane(script.id);
       setTerminalState(tunnelId, "bad");
       appendTerminalLine(tunnelId, "! timeout");
       renderTerminal();
@@ -3640,6 +3790,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     if (message.type === "error") {
       finished = true;
       window.clearTimeout(watchdogTimer);
+      cleanupSotyFileDataPlane(script.id);
       setTerminalState(tunnelId, "bad");
       const text = typeof message.text === "string" ? message.text : "!";
       appendTerminalLine(tunnelId, text);
@@ -3650,14 +3801,16 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     if (message.type !== "data" && message.type !== "exit") {
       return;
     }
-    const text = typeof message.text === "string" ? message.text : "";
+    const rawText = typeof message.text === "string" ? message.text : "";
     const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+    const text = processLocalAgentDataPlaneOutput(tunnelId, script.id, rawText, typeof exitCode === "number");
     if (text.trim()) {
       appendTerminalLine(tunnelId, text);
     }
     if (typeof exitCode === "number") {
       finished = true;
       window.clearTimeout(watchdogTimer);
+      cleanupSotyFileDataPlane(script.id);
       setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
       appendTerminalExitLine(tunnelId, exitCode);
     }
@@ -3670,6 +3823,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     window.clearTimeout(watchdogTimer);
     if (opened && !finished) {
       finished = true;
+      cleanupSotyFileDataPlane(script.id);
       setTerminalState(tunnelId, "bad");
       appendTerminalLine(tunnelId, "! agent disconnected");
       renderTerminal();

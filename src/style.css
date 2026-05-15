@@ -73,7 +73,6 @@ svg {
   display: block;
 }
 
-.install,
 .nick-screen,
 .pair-screen {
   width: 100%;
@@ -88,13 +87,6 @@ svg {
   background-size: 28px 28px;
 }
 
-.install {
-  align-content: center;
-  gap: 20px;
-  text-align: center;
-}
-
-.install-mark,
 .counterparty-mark,
 .nick-form,
 .access-sheet,
@@ -106,20 +98,6 @@ svg {
     0 18px 50px rgba(0, 0, 0, 0.36);
 }
 
-.install-mark {
-  width: 88px;
-  height: 88px;
-  display: grid;
-  place-items: center;
-  color: var(--green);
-}
-
-.install-mark svg {
-  width: 42px;
-  height: 42px;
-}
-
-.install-button,
 .icon-button,
 .retro-icon-button {
   display: grid;
@@ -133,18 +111,12 @@ svg {
   cursor: pointer;
 }
 
-.install-button {
-  width: 64px;
-  height: 64px;
-}
-
 .icon-button,
 .retro-icon-button {
   width: 46px;
   height: 46px;
 }
 
-.install-button:active,
 .icon-button:active,
 .retro-icon-button:active,
 .hex:active,
