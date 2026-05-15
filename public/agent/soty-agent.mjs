@@ -4,11 +4,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { appendFile, chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { connect as netConnect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { connect as tlsConnect } from "node:tls";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.20";
+const agentVersion = "0.4.21";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7768,24 +7770,21 @@ async function generateOpenAiImageData(args) {
   if (background) {
     body.background = background;
   }
-  const controller = new AbortController();
   const timeoutMs = mcpSafeImageTimeout(args?.timeoutMs);
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
+  let response = { ok: false, status: 0 };
   let payload;
   try {
-    response = await fetch("https://api.openai.com/v1/images/generations", {
+    const result = await openAiFetchJson("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    payload = await response.json().catch(() => ({}));
+      body: JSON.stringify(body)
+    }, timeoutMs);
+    response = result.response;
+    payload = result.json;
   } catch (error) {
-    clearTimeout(timer);
     return {
       ok: false,
       error: error?.name === "AbortError" ? "image generation timed out" : cleanImageError(error),
@@ -7795,8 +7794,6 @@ async function generateOpenAiImageData(args) {
       format,
       exitCode: error?.name === "AbortError" ? 124 : 1
     };
-  } finally {
-    clearTimeout(timer);
   }
   if (!response.ok) {
     return {
@@ -7834,6 +7831,335 @@ async function generateOpenAiImageData(args) {
     format,
     revisedPrompt: String(payload?.data?.[0]?.revised_prompt || "").slice(0, 2000)
   };
+}
+
+async function openAiFetchJson(url, options = {}, timeoutMs = 300_000) {
+  if (!codexProxyUrl) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      const json = await response.json().catch(() => ({}));
+      return {
+        response: { ok: response.ok, status: response.status },
+        json
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return await openAiFetchJsonViaProxy(url, options, timeoutMs);
+}
+
+async function openAiFetchJsonViaProxy(url, options = {}, timeoutMs = 300_000) {
+  const target = new URL(url);
+  const proxy = new URL(codexProxyUrl);
+  const protocol = proxy.protocol.toLowerCase();
+  if (protocol === "socks5:" || protocol === "socks5h:") {
+    const socket = await connectViaSocksProxy(proxy, target, timeoutMs);
+    return await httpsJsonOverSocket(socket, target, options, timeoutMs);
+  }
+  if (protocol === "http:" || protocol === "https:") {
+    const socket = await connectViaHttpProxy(proxy, target, timeoutMs);
+    return await httpsJsonOverSocket(socket, target, options, timeoutMs);
+  }
+  throw new Error(`unsupported proxy scheme: ${proxy.protocol}`);
+}
+
+async function connectViaSocksProxy(proxy, target, timeoutMs) {
+  const socket = await openTcpSocket(proxy.hostname, Number(proxy.port || 1080), timeoutMs);
+  const username = decodeURIComponent(proxy.username || "");
+  const password = decodeURIComponent(proxy.password || "");
+  const wantsAuth = Boolean(username || password);
+  socket.write(Buffer.from(wantsAuth ? [0x05, 0x02, 0x00, 0x02] : [0x05, 0x01, 0x00]));
+  const method = await readSocketAtLeast(socket, 2, timeoutMs);
+  if (method[0] !== 0x05 || (wantsAuth ? method[1] !== 0x02 : method[1] !== 0x00)) {
+    socket.destroy();
+    throw new Error("SOCKS proxy rejected authentication method");
+  }
+  if (wantsAuth) {
+    const user = Buffer.from(username, "utf8");
+    const pass = Buffer.from(password, "utf8");
+    if (user.length > 255 || pass.length > 255) {
+      socket.destroy();
+      throw new Error("SOCKS proxy credentials are too long");
+    }
+    socket.write(Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]));
+    const auth = await readSocketAtLeast(socket, 2, timeoutMs);
+    if (auth[1] !== 0x00) {
+      socket.destroy();
+      throw new Error("SOCKS proxy authentication failed");
+    }
+  }
+  const host = Buffer.from(target.hostname, "utf8");
+  if (host.length > 255) {
+    socket.destroy();
+    throw new Error("target hostname is too long for SOCKS proxy");
+  }
+  const port = Number(target.port || 443);
+  const connectRequest = Buffer.concat([
+    Buffer.from([0x05, 0x01, 0x00, 0x03, host.length]),
+    host,
+    Buffer.from([(port >> 8) & 0xff, port & 0xff])
+  ]);
+  socket.write(connectRequest);
+  const head = await readSocketAtLeast(socket, 4, timeoutMs);
+  if (head[1] !== 0x00) {
+    socket.destroy();
+    throw new Error(`SOCKS proxy connect failed: ${head[1]}`);
+  }
+  const atyp = head[3];
+  const restLength = atyp === 0x01 ? 6 : atyp === 0x04 ? 18 : atyp === 0x03 ? 1 : 0;
+  if (restLength) {
+    const rest = await readSocketAtLeast(socket, restLength, timeoutMs);
+    if (atyp === 0x03) {
+      await readSocketAtLeast(socket, rest[0] + 2, timeoutMs);
+    }
+  }
+  return socket;
+}
+
+async function connectViaHttpProxy(proxy, target, timeoutMs) {
+  const proxyPort = Number(proxy.port || (proxy.protocol === "https:" ? 443 : 80));
+  const socket = proxy.protocol === "https:"
+    ? await openTlsSocket(proxy.hostname, proxyPort, proxy.hostname, timeoutMs)
+    : await openTcpSocket(proxy.hostname, proxyPort, timeoutMs);
+  const targetHost = `${target.hostname}:${target.port || 443}`;
+  const headers = [
+    `CONNECT ${targetHost} HTTP/1.1`,
+    `Host: ${targetHost}`,
+    "Connection: close"
+  ];
+  if (proxy.username || proxy.password) {
+    const auth = Buffer.from(`${decodeURIComponent(proxy.username || "")}:${decodeURIComponent(proxy.password || "")}`, "utf8").toString("base64");
+    headers.push(`Proxy-Authorization: Basic ${auth}`);
+  }
+  socket.write(`${headers.join("\r\n")}\r\n\r\n`);
+  const response = await readSocketUntil(socket, "\r\n\r\n", timeoutMs, 64 * 1024);
+  const status = response.toString("latin1").match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/u)?.[1] || "";
+  if (status !== "200") {
+    socket.destroy();
+    throw new Error(`HTTP proxy CONNECT failed: ${status || "no-status"}`);
+  }
+  return socket;
+}
+
+async function httpsJsonOverSocket(socket, target, options = {}, timeoutMs = 300_000) {
+  const tlsSocket = await wrapTlsSocket(socket, target.hostname, timeoutMs);
+  const body = String(options.body || "");
+  const headers = {
+    Host: target.host,
+    Accept: "application/json",
+    "Accept-Encoding": "identity",
+    Connection: "close",
+    "Content-Length": String(Buffer.byteLength(body)),
+    ...(options.headers || {})
+  };
+  const headerText = Object.entries(headers)
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join("\r\n");
+  const method = String(options.method || "GET").toUpperCase();
+  const path = `${target.pathname || "/"}${target.search || ""}`;
+  tlsSocket.write(`${method} ${path} HTTP/1.1\r\n${headerText}\r\n\r\n${body}`);
+  const raw = await collectSocket(tlsSocket, timeoutMs, 96 * 1024 * 1024);
+  const parsed = parseHttpResponse(raw);
+  let json = {};
+  try {
+    json = JSON.parse(parsed.body.toString("utf8"));
+  } catch {
+    json = {};
+  }
+  return {
+    response: { ok: parsed.status >= 200 && parsed.status < 300, status: parsed.status },
+    json
+  };
+}
+
+function parseHttpResponse(raw) {
+  const headerEnd = raw.indexOf("\r\n\r\n");
+  if (headerEnd < 0) {
+    throw new Error("OpenAI proxy response missing HTTP headers");
+  }
+  const header = raw.slice(0, headerEnd).toString("latin1");
+  const status = Number.parseInt(header.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/u)?.[1] || "0", 10);
+  let body = raw.slice(headerEnd + 4);
+  if (/transfer-encoding:\s*chunked/iu.test(header)) {
+    body = decodeChunkedBody(body);
+  }
+  return { status, body };
+}
+
+function decodeChunkedBody(buffer) {
+  let offset = 0;
+  const chunks = [];
+  while (offset < buffer.length) {
+    const lineEnd = buffer.indexOf("\r\n", offset);
+    if (lineEnd < 0) {
+      break;
+    }
+    const sizeText = buffer.slice(offset, lineEnd).toString("ascii").split(";")[0].trim();
+    const size = Number.parseInt(sizeText, 16);
+    if (!Number.isFinite(size) || size < 0) {
+      throw new Error("invalid chunked response from OpenAI");
+    }
+    offset = lineEnd + 2;
+    if (size === 0) {
+      break;
+    }
+    chunks.push(buffer.slice(offset, offset + size));
+    offset += size + 2;
+  }
+  return Buffer.concat(chunks);
+}
+
+function openTcpSocket(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(Object.assign(new Error("proxy connection timed out"), { name: "AbortError" }));
+    }, timeoutMs);
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function openTlsSocket(host, port, servername, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = tlsConnect({ host, port, servername, ALPNProtocols: ["http/1.1"] });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(Object.assign(new Error("proxy TLS connection timed out"), { name: "AbortError" }));
+    }, timeoutMs);
+    socket.once("secureConnect", () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function wrapTlsSocket(socket, servername, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const tlsSocket = tlsConnect({ socket, servername, ALPNProtocols: ["http/1.1"] });
+    const timer = setTimeout(() => {
+      tlsSocket.destroy();
+      reject(Object.assign(new Error("OpenAI TLS connection timed out"), { name: "AbortError" }));
+    }, timeoutMs);
+    tlsSocket.once("secureConnect", () => {
+      clearTimeout(timer);
+      resolve(tlsSocket);
+    });
+    tlsSocket.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function readSocketAtLeast(socket, minBytes, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let length = 0;
+    const timer = setTimeout(() => done(Object.assign(new Error("proxy read timed out"), { name: "AbortError" })), timeoutMs);
+    const done = (error, value = null) => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("error", onError);
+      error ? reject(error) : resolve(value);
+    };
+    const onError = (error) => done(error);
+    const onData = (chunk) => {
+      chunks.push(chunk);
+      length += chunk.length;
+      if (length >= minBytes) {
+        const joined = Buffer.concat(chunks, length);
+        const extra = joined.slice(minBytes);
+        if (extra.length) {
+          socket.unshift(extra);
+        }
+        done(null, joined.slice(0, minBytes));
+      }
+    };
+    socket.on("data", onData);
+    socket.once("error", onError);
+  });
+}
+
+function readSocketUntil(socket, marker, timeoutMs, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let length = 0;
+    const markerBuffer = Buffer.from(marker, "latin1");
+    const timer = setTimeout(() => done(Object.assign(new Error("proxy read timed out"), { name: "AbortError" })), timeoutMs);
+    const done = (error, value = null) => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("error", onError);
+      error ? reject(error) : resolve(value);
+    };
+    const onError = (error) => done(error);
+    const onData = (chunk) => {
+      chunks.push(chunk);
+      length += chunk.length;
+      if (length > maxBytes) {
+        done(new Error("proxy response too large"));
+        return;
+      }
+      const joined = Buffer.concat(chunks, length);
+      const markerAt = joined.indexOf(markerBuffer);
+      if (markerAt >= 0) {
+        const end = markerAt + markerBuffer.length;
+        const extra = joined.slice(end);
+        if (extra.length) {
+          socket.unshift(extra);
+        }
+        done(null, joined.slice(0, end));
+      }
+    };
+    socket.on("data", onData);
+    socket.once("error", onError);
+  });
+}
+
+function collectSocket(socket, timeoutMs, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let length = 0;
+    const timer = setTimeout(() => done(Object.assign(new Error("OpenAI request timed out"), { name: "AbortError" })), timeoutMs);
+    const done = (error, value = null) => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("end", onEnd);
+      socket.off("error", onError);
+      error ? reject(error) : resolve(value);
+    };
+    const onError = (error) => done(error);
+    const onEnd = () => done(null, Buffer.concat(chunks, length));
+    const onData = (chunk) => {
+      chunks.push(chunk);
+      length += chunk.length;
+      if (length > maxBytes) {
+        socket.destroy();
+        done(new Error("OpenAI response too large"));
+      }
+    };
+    socket.on("data", onData);
+    socket.once("end", onEnd);
+    socket.once("error", onError);
+  });
 }
 
 async function saveGeneratedImageLocal(image, args) {
