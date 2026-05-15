@@ -49,7 +49,8 @@ await mkdir(outputDir, { recursive: true });
 await writeFile(outputPath, sourceText, { mode: 0o755 });
 await removeRetiredOpsSkillArtifacts();
 const windowsReinstall = await publishWindowsReinstallScripts();
-const automationToolkits = buildAutomationToolkits(windowsReinstall);
+const routeProfiles = buildRouteProfiles(windowsReinstall);
+const automationToolkits = buildAutomationToolkits(windowsReinstall, routeProfiles);
 
 const manifest = {
   version,
@@ -63,6 +64,7 @@ const manifest = {
     backend: "append-only-jsonl",
     querySchema: "soty.memory.query.v2",
     reportSchema: "soty.memory.report.v2",
+    routeProfileSchema: "soty.route-profiles.v1",
     healthUrl: "/api/agent/memory/health",
     queryUrl: "/api/agent/memory/query",
     receiptsUrl: "/api/agent/memory/receipts",
@@ -73,8 +75,10 @@ const manifest = {
     entryTool: "soty_computer",
     legacyEntrypoint: "soty_toolkit",
     model: "discover+invoke+durable-jobs+artifacts+source-proof",
-    imagePipeline: "backend-generate+source-save-apply-verify"
+    imagePipeline: "backend-generate+source-save-apply-verify",
+    routeProfileSchema: "soty.route-profiles.v1"
   },
+  routeProfiles,
   windowsReinstall,
   automationToolkits
 };
@@ -112,7 +116,61 @@ async function publishWindowsReinstallScripts() {
   };
 }
 
-function buildAutomationToolkits(windowsReinstall) {
+function buildRouteProfiles(windowsReinstall) {
+  const scriptProof = windowsReinstall.scripts.map((script) => ({
+    name: script.name,
+    sha256: script.sha256,
+    bytes: script.bytes
+  }));
+  return {
+    schema: "soty.route-profiles.v1",
+    model: "memory-derived-route-profile+first-class-capability",
+    promotionPolicy: {
+      candidateAfter: "one proofed run",
+      provenAfter: "two compatible successful runs without newer conflicting failure",
+      promotedInto: "manifest-pinned capability, proof checks, eval/selftest"
+    },
+    profiles: [
+      {
+        id: "soty-windows-reinstall-managed-fast-lane",
+        family: "windows-reinstall",
+        title: "Managed Windows reinstall fast lane",
+        entryTool: "soty_computer",
+        capability: "os-reinstall",
+        legacyTool: "soty_reinstall",
+        defaultOperation: "reinstall",
+        defaultAction: "prepare",
+        context: "windows-machine-worker",
+        phases: ["preflight", "prepare", "status", "arm"],
+        route: [
+          "prove selected source device and machine/system worker",
+          "start managed prepare once with stable idempotency",
+          "download Windows media with resumable HTTP range route on the selected PC",
+          "prove backup, install media, unattended account, Autounattend, postinstall",
+          "ask destructive confirmation only after proof is complete",
+          "arm reinstall and stop probing while reboot return path is expected"
+        ],
+        doNot: [
+          "do not ask the user to manually download ISO when the source computer is attached",
+          "do not open Microsoft download pages as the normal route",
+          "do not replace the managed downloader with ad-hoc browser automation",
+          "do not start a second prepare while one is active"
+        ],
+        proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "postArmReturnPath"],
+        scripts: scriptProof,
+        learning: {
+          reuseKey: "soty-windows-reinstall-managed-fast-lane",
+          scriptUse: "prepare/status/arm",
+          successCriteria: "backupProof+installMedia+unattend+postinstall",
+          contextFingerprint: "windows-machine-worker",
+          receipt: "append-only sanitized route proof"
+        }
+      }
+    ]
+  };
+}
+
+function buildAutomationToolkits(windowsReinstall, routeProfiles) {
   return {
     schema: "soty.automation-toolkits.v2",
     architecture: "computer-use-plane",
@@ -121,6 +179,7 @@ function buildAutomationToolkits(windowsReinstall) {
       legacyEntrypoint: "soty_toolkit",
       route: "computer-use-plane-with-memory-hints",
       fallbackKernel: "soty_action",
+      routeProfiles: "soty.route-profiles.v1",
       chat: "lord-sysadmin",
       responseStyle: buildResponseStylePolicy(),
       diagnostics: {
@@ -134,9 +193,10 @@ function buildAutomationToolkits(windowsReinstall) {
         name: "computer-use-plane",
         entryTool: "soty_computer",
         kind: "front-door",
-        phases: ["discover", "status", "invoke", "jobs", "job_status", "job_stop"],
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "job_stop"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
-        promotion: "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases."
+        promotion: "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases.",
+        routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
       },
       {
         name: "capability-gateway",
@@ -165,9 +225,11 @@ function buildAutomationToolkits(windowsReinstall) {
           sha256: script.sha256,
           bytes: script.bytes
         })),
-        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"]
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"],
+        routeProfile: "soty-windows-reinstall-managed-fast-lane"
       }
-    ]
+    ],
+    routeProfiles
   };
 }
 

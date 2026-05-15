@@ -1,15 +1,16 @@
 {
-  "version": "0.4.18",
+  "version": "0.4.19",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+memory-plane+user-computer-use-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "396b0dfeccc8e54a7f7915a427928e3e11bf12d709767376d928bd4d34d86dab",
+  "sha256": "726fd9750c5e9674aba834cd7b666fae45721c362448b9695c24bb13097e657f",
   "memoryPlane": {
     "schema": "soty.memory-plane.v1",
     "controller": "soty.memctl.v1",
     "backend": "append-only-jsonl",
     "querySchema": "soty.memory.query.v2",
     "reportSchema": "soty.memory.report.v2",
+    "routeProfileSchema": "soty.route-profiles.v1",
     "healthUrl": "/api/agent/memory/health",
     "queryUrl": "/api/agent/memory/query",
     "receiptsUrl": "/api/agent/memory/receipts",
@@ -20,7 +21,89 @@
     "entryTool": "soty_computer",
     "legacyEntrypoint": "soty_toolkit",
     "model": "discover+invoke+durable-jobs+artifacts+source-proof",
-    "imagePipeline": "backend-generate+source-save-apply-verify"
+    "imagePipeline": "backend-generate+source-save-apply-verify",
+    "routeProfileSchema": "soty.route-profiles.v1"
+  },
+  "routeProfiles": {
+    "schema": "soty.route-profiles.v1",
+    "model": "memory-derived-route-profile+first-class-capability",
+    "promotionPolicy": {
+      "candidateAfter": "one proofed run",
+      "provenAfter": "two compatible successful runs without newer conflicting failure",
+      "promotedInto": "manifest-pinned capability, proof checks, eval/selftest"
+    },
+    "profiles": [
+      {
+        "id": "soty-windows-reinstall-managed-fast-lane",
+        "family": "windows-reinstall",
+        "title": "Managed Windows reinstall fast lane",
+        "entryTool": "soty_computer",
+        "capability": "os-reinstall",
+        "legacyTool": "soty_reinstall",
+        "defaultOperation": "reinstall",
+        "defaultAction": "prepare",
+        "context": "windows-machine-worker",
+        "phases": [
+          "preflight",
+          "prepare",
+          "status",
+          "arm"
+        ],
+        "route": [
+          "prove selected source device and machine/system worker",
+          "start managed prepare once with stable idempotency",
+          "download Windows media with resumable HTTP range route on the selected PC",
+          "prove backup, install media, unattended account, Autounattend, postinstall",
+          "ask destructive confirmation only after proof is complete",
+          "arm reinstall and stop probing while reboot return path is expected"
+        ],
+        "doNot": [
+          "do not ask the user to manually download ISO when the source computer is attached",
+          "do not open Microsoft download pages as the normal route",
+          "do not replace the managed downloader with ad-hoc browser automation",
+          "do not start a second prepare while one is active"
+        ],
+        "proof": [
+          "machineWorker",
+          "scriptSha256",
+          "mediaSha256",
+          "backupProof",
+          "installMedia",
+          "autounattend",
+          "setupcomplete",
+          "postArmReturnPath"
+        ],
+        "scripts": [
+          {
+            "name": "managed",
+            "sha256": "05b6d111f58955fa717d20aac2bcbf6e436772fe809beeafc93ea66ef6fed618",
+            "bytes": 25094
+          },
+          {
+            "name": "prepare",
+            "sha256": "fa22b0d9a2c206f1a226879b27d6cc54d3fb472228a3f675ab6a4a813c575752",
+            "bytes": 66339
+          },
+          {
+            "name": "arm",
+            "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
+            "bytes": 8194
+          },
+          {
+            "name": "makeFastUsb",
+            "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
+            "bytes": 14537
+          }
+        ],
+        "learning": {
+          "reuseKey": "soty-windows-reinstall-managed-fast-lane",
+          "scriptUse": "prepare/status/arm",
+          "successCriteria": "backupProof+installMedia+unattend+postinstall",
+          "contextFingerprint": "windows-machine-worker",
+          "receipt": "append-only sanitized route proof"
+        }
+      }
+    ]
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
@@ -59,6 +142,7 @@
       "legacyEntrypoint": "soty_toolkit",
       "route": "computer-use-plane-with-memory-hints",
       "fallbackKernel": "soty_action",
+      "routeProfiles": "soty.route-profiles.v1",
       "chat": "lord-sysadmin",
       "responseStyle": {
         "schema": "soty.response-style.v1",
@@ -87,6 +171,7 @@
         "kind": "front-door",
         "phases": [
           "discover",
+          "route_profiles",
           "status",
           "invoke",
           "jobs",
@@ -101,7 +186,10 @@
           "exitCode",
           "artifactSha256"
         ],
-        "promotion": "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases."
+        "promotion": "Single MCP computer-use plane for Server Codex; legacy soty_* tools are aliases.",
+        "routeProfiles": [
+          "soty-windows-reinstall-managed-fast-lane"
+        ]
       },
       {
         "name": "capability-gateway",
@@ -181,8 +269,90 @@
           "unattend",
           "postinstall",
           "rebooting"
-        ]
+        ],
+        "routeProfile": "soty-windows-reinstall-managed-fast-lane"
       }
-    ]
+    ],
+    "routeProfiles": {
+      "schema": "soty.route-profiles.v1",
+      "model": "memory-derived-route-profile+first-class-capability",
+      "promotionPolicy": {
+        "candidateAfter": "one proofed run",
+        "provenAfter": "two compatible successful runs without newer conflicting failure",
+        "promotedInto": "manifest-pinned capability, proof checks, eval/selftest"
+      },
+      "profiles": [
+        {
+          "id": "soty-windows-reinstall-managed-fast-lane",
+          "family": "windows-reinstall",
+          "title": "Managed Windows reinstall fast lane",
+          "entryTool": "soty_computer",
+          "capability": "os-reinstall",
+          "legacyTool": "soty_reinstall",
+          "defaultOperation": "reinstall",
+          "defaultAction": "prepare",
+          "context": "windows-machine-worker",
+          "phases": [
+            "preflight",
+            "prepare",
+            "status",
+            "arm"
+          ],
+          "route": [
+            "prove selected source device and machine/system worker",
+            "start managed prepare once with stable idempotency",
+            "download Windows media with resumable HTTP range route on the selected PC",
+            "prove backup, install media, unattended account, Autounattend, postinstall",
+            "ask destructive confirmation only after proof is complete",
+            "arm reinstall and stop probing while reboot return path is expected"
+          ],
+          "doNot": [
+            "do not ask the user to manually download ISO when the source computer is attached",
+            "do not open Microsoft download pages as the normal route",
+            "do not replace the managed downloader with ad-hoc browser automation",
+            "do not start a second prepare while one is active"
+          ],
+          "proof": [
+            "machineWorker",
+            "scriptSha256",
+            "mediaSha256",
+            "backupProof",
+            "installMedia",
+            "autounattend",
+            "setupcomplete",
+            "postArmReturnPath"
+          ],
+          "scripts": [
+            {
+              "name": "managed",
+              "sha256": "05b6d111f58955fa717d20aac2bcbf6e436772fe809beeafc93ea66ef6fed618",
+              "bytes": 25094
+            },
+            {
+              "name": "prepare",
+              "sha256": "fa22b0d9a2c206f1a226879b27d6cc54d3fb472228a3f675ab6a4a813c575752",
+              "bytes": 66339
+            },
+            {
+              "name": "arm",
+              "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
+              "bytes": 8194
+            },
+            {
+              "name": "makeFastUsb",
+              "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
+              "bytes": 14537
+            }
+          ],
+          "learning": {
+            "reuseKey": "soty-windows-reinstall-managed-fast-lane",
+            "scriptUse": "prepare/status/arm",
+            "successCriteria": "backupProof+installMedia+unattend+postinstall",
+            "contextFingerprint": "windows-machine-worker",
+            "receipt": "append-only sanitized route proof"
+          }
+        }
+      ]
+    }
   }
 }

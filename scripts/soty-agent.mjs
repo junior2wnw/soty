@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.18";
+const agentVersion = "0.4.19";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5101,6 +5101,63 @@ function runtimeTargetScore(target, preferredId) {
   return score;
 }
 
+const windowsReinstallRouteProfileId = "soty-windows-reinstall-managed-fast-lane";
+
+function routeProfilesStatus() {
+  return {
+    schema: "soty.route-profiles.v1",
+    model: "memory-derived-route-profile+first-class-capability",
+    promotionPolicy: {
+      candidateAfter: "one proofed run",
+      provenAfter: "two compatible successful runs without newer conflicting failure",
+      promotedInto: "manifest-pinned capability, proof checks, eval/selftest"
+    },
+    profiles: [windowsReinstallRouteProfile()]
+  };
+}
+
+function windowsReinstallRouteProfile() {
+  return {
+    id: windowsReinstallRouteProfileId,
+    family: "windows-reinstall",
+    title: "Managed Windows reinstall fast lane",
+    entryTool: "soty_computer",
+    capability: "os-reinstall",
+    legacyTool: "soty_reinstall",
+    defaultOperation: "reinstall",
+    defaultAction: "prepare",
+    context: "windows-machine-worker",
+    phases: ["preflight", "prepare", "status", "arm"],
+    route: [
+      "prove selected source device and machine/system worker",
+      "start managed prepare once with stable idempotency",
+      "download Windows media with resumable HTTP range route on the selected PC",
+      "prove backup, install media, unattended account, Autounattend, postinstall",
+      "ask destructive confirmation only after proof is complete",
+      "arm reinstall and stop probing while reboot return path is expected"
+    ],
+    doNot: [
+      "do not ask the user to manually download ISO when the source computer is attached",
+      "do not open Microsoft download pages as the normal route",
+      "do not replace the managed downloader with ad-hoc browser automation",
+      "do not start a second prepare while one is active"
+    ],
+    proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "postArmReturnPath"],
+    learning: windowsReinstallRouteLearning()
+  };
+}
+
+function windowsReinstallRouteLearning(action = "") {
+  const phase = cleanActionToken(action || "route", "route");
+  return {
+    reuseKey: windowsReinstallRouteProfileId,
+    scriptUse: phase === "route" ? "prepare/status/arm" : phase,
+    successCriteria: "backupProof+installMedia+unattend+postinstall",
+    contextFingerprint: "windows-machine-worker",
+    receipt: "append-only sanitized route proof"
+  };
+}
+
 function sotyRuntimeHints() {
   return [
     "- Identity: \u041b\u043e\u0440\u0434.",
@@ -5108,6 +5165,8 @@ function sotyRuntimeHints() {
     "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
     "- Stock Codex model: use MCP tools as the remote computer interface. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run in the selected user's desktop session; system tasks run in the selected computer's system context. If the needed desktop session is unavailable, say that the user's desktop session is unavailable on the selected computer.",
+    "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
+    "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call soty_computer with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or image-generation backend.",
     "- Image generation is backend-side: the Soty/OpenAI image key belongs to the Soty image backend, not the user's source device. The source device only saves, applies, and verifies the generated file.",
     "- For user-device files or backend-generated assets, transfer the exact artifact to the source device with soty_artifact or use soty_image backend-generate plus source-device save; do not replace it with a similar public download or a fake/generated-by-other-route asset.",
@@ -5188,6 +5247,8 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "",
     "Computer-use plane:",
     "- When a source device target is present, use Soty MCP as one computer-use plane through soty_computer: discover/status when health is unclear, then invoke the needed capability. The legacy soty_* tools are compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
+    "- For repeated lifecycle work, ask soty_computer discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
+    "- For Windows reinstall/reset, the default attached-device route is soty_computer { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\" }. Use status/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for destructive confirmation.",
     "- For generated image or generated wallpaper tasks, call soty_image first. Do not check desktop/display first just to choose a size; backend availability is the first gate and size can be adjusted after a generated artifact exists.",
     "- Do not say local image generation route: the pipeline is backend generation, then source-device save/apply/verify.",
@@ -5708,13 +5769,14 @@ function runMcpServer() {
     return [
       {
         name: "soty_computer",
-        description: "Single Soty computer-use capability plane for the selected user's computer. Use this as the front door for device perception and action: discover, status, shell/script/action jobs, files, artifacts, browser, desktop/screen/keyboard/mouse, audio, backend image generation with source-device save/apply/verify, and managed reinstall. Legacy soty_* tools are compatibility aliases behind this plane, not the boundary of what the device can do. Do not expose internal transport names to the user.",
+        description: "Single Soty computer-use capability plane for the selected user's computer. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action jobs, files, artifacts, browser, desktop/screen/keyboard/mouse, audio, backend image generation with source-device save/apply/verify, and managed reinstall. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the boundary of what the device can do. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, status, run, script, action, job_status, job_stop, jobs, file, artifact, browser, desktop, open_url, audio, image, reinstall, or toolkit." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, job_status, job_stop, jobs, file, artifact, browser, desktop, open_url, audio, image, reinstall, or toolkit." },
             capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, audio, artifact, image, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
+            routeProfile: { type: "string", description: "Optional route profile id to reuse, for example soty-windows-reinstall-managed-fast-lane." },
             command: { type: "string", description: "Command for shell/action work." },
             script: { type: "string", description: "Script body for script/action work." },
             shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
@@ -5905,7 +5967,7 @@ function runMcpServer() {
       },
       {
         name: "soty_reinstall",
-        description: "Managed Soty Windows reinstall toolkit for preflight, prepare, status, and arm.",
+        description: "Managed Soty Windows reinstall toolkit for preflight, prepare, status, and arm. This is the first-class route for attached Windows computers: it downloads/verifies Windows media itself on the selected PC, prepares backup/unattended/postinstall proof, and learns sanitized route outcomes. Do not ask the user to manually download an ISO while this capability is available.",
         inputSchema: {
           type: "object",
           properties: {
@@ -6273,7 +6335,14 @@ function runMcpServer() {
       return mcpToolJson({
         ok: true,
         ...computerUsePlaneStatus(),
-        automationToolkits: automationToolkitStatus()
+        automationToolkits: automationToolkitStatus(),
+        routeProfiles: routeProfilesStatus()
+      });
+    }
+    if (["route-profiles", "route_profiles", "profiles", "routes"].includes(operation)) {
+      return mcpToolJson({
+        ok: true,
+        routeProfiles: routeProfilesStatus()
       });
     }
     const alias = computerToolAlias(operation, capability, args);
@@ -6294,7 +6363,7 @@ function runMcpServer() {
 
   function computerToolAlias(operation, capability, args = {}) {
     const key = `${operation} ${capability}`.toLowerCase();
-    if (["discover", "describe", "capabilities", "tools", "plane"].includes(operation)) {
+    if (["discover", "describe", "capabilities", "tools", "plane", "route-profiles", "route_profiles", "profiles", "routes"].includes(operation)) {
       return "";
     }
     if (["health", "link", "source", "source-status"].includes(operation)) {
@@ -6379,7 +6448,7 @@ function runMcpServer() {
     if (alias === "soty_reinstall" && !next.action) {
       next.action = ["preflight", "prepare", "status", "arm"].includes(operation)
         ? operation
-        : (next.phase || "status");
+        : (next.phase || (operation === "reinstall" ? "prepare" : "status"));
     }
     if (alias === "soty_action") {
       if (!next.mode) {
@@ -6405,6 +6474,12 @@ function runMcpServer() {
       sourceDeviceId: mcpSourceDeviceId ? "<set>" : "",
       model: "discover+invoke+durable-jobs+artifacts+source-proof",
       imagePipeline: "backend-generate+source-save-apply-verify",
+      routeProfiles: routeProfilesStatus(),
+      selfImprovement: {
+        schema: "soty.capability-learning.v1",
+        loop: "real-run -> sanitized receipt -> route profile -> first-class capability -> eval -> stronger route",
+        receipts: "append-only sanitized proof, never raw private transcripts"
+      },
       capabilities: [
         "discover",
         "status",
@@ -6809,6 +6884,7 @@ function runMcpServer() {
     if (!["preflight", "prepare", "status", "arm"].includes(action)) {
       return mcpToolText("! reinstall-action", true, 2);
     }
+    const toolStartedAt = Date.now();
     const usbDriveLetter = normalizeUsbDriveLetter(args.usbDriveLetter || "D");
     const request = {
       action,
@@ -6820,11 +6896,18 @@ function runMcpServer() {
       workspaceRoot: "C:\\ProgramData\\Soty\\WindowsReinstall"
     };
     if (action === "arm" && !request.confirmationPhrase) {
+      recordSotyReinstallRouteReceipt(action, {
+        ok: false,
+        action,
+        status: "blocked",
+        blocker: "confirmation-phrase",
+        exitCode: 2
+      }, toolStartedAt);
       return mcpToolText("! confirmation-phrase", true, 2);
     }
     if (action === "preflight" || action === "status") {
       if (action === "status" && mcpPostArmReboot && Date.now() - mcpPostArmReboot.createdAt < 90 * 60_000) {
-        return mcpToolJson({
+        const rebootingPayload = {
           ok: true,
           action: "status",
           status: "rebooting",
@@ -6833,7 +6916,9 @@ function runMcpServer() {
           exitCode: 0,
           postArm: mcpPostArmReboot,
           agentGuidance: "Stop source/LINK status probes after arm rebooting=true. Tell the user connection may drop during reinstall and wait for the return path."
-        });
+        };
+        recordSotyReinstallRouteReceipt(action, rebootingPayload, toolStartedAt);
+        return mcpToolJson(rebootingPayload);
       }
       const minimumTimeoutMs = action === "preflight" ? 90_000 : 45_000;
       const operatorTimeoutMs = Math.max(mcpSafeTimeout(args.timeoutMs, minimumTimeoutMs), minimumTimeoutMs);
@@ -6855,6 +6940,7 @@ function runMcpServer() {
         runAs: "system",
         timeoutMs: operatorTimeoutMs
       });
+      recordSotyReinstallRouteReceipt(action, reinstallPayloadFromOperatorResult(result), toolStartedAt);
       return await mcpToolJsonTextWithSourceStatus(result, {
         toolkit: "windows-reinstall",
         action,
@@ -6875,6 +6961,7 @@ function runMcpServer() {
         };
         const terminal = evaluateReinstallPrepareTerminal(existingStatus, existingInitial, 0);
         if (terminal) {
+          recordSotyReinstallRouteReceipt(action, terminal, toolStartedAt);
           return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
         }
         if (isReinstallPrepareActive(existingStatus)) {
@@ -6886,9 +6973,10 @@ function runMcpServer() {
               waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
               requestedWaitTimeoutMs
             });
+            recordSotyReinstallRouteReceipt(action, waited, toolStartedAt);
             return mcpToolJson(waited, waited.ok === false, waited.exitCode);
           }
-          return mcpToolJson({
+          const runningPayload = {
             ...existingInitial,
             statusSnapshot: existingStatus,
             nextTool: {
@@ -6900,7 +6988,9 @@ function runMcpServer() {
               }
             },
             agentGuidance: "An existing managed prepare is already active. Continue with soty_reinstall status; do not start another prepare."
-          });
+          };
+          recordSotyReinstallRouteReceipt(action, runningPayload, toolStartedAt);
+          return mcpToolJson(runningPayload);
         }
       }
     }
@@ -6924,6 +7014,11 @@ function runMcpServer() {
         ? "managed Windows reinstall prepare: backup, media, unattended account, postinstall"
         : "managed Windows reinstall arm after exact destructive confirmation",
       risk: action === "arm" ? "destructive" : "high",
+      reuseKey: windowsReinstallRouteLearning(action).reuseKey,
+      scriptUse: windowsReinstallRouteLearning(action).scriptUse,
+      successCriteria: windowsReinstallRouteLearning(action).successCriteria,
+      contextFingerprint: windowsReinstallRouteLearning(action).contextFingerprint,
+      improvement: String(args.improvement || `routeProfile=${windowsReinstallRouteProfileId}`).slice(0, 240),
       idempotencyKey: action === "prepare"
         ? `windows-reinstall-prepare-${usbDriveLetter}-${sourceToken}-m${keyMinute}-v${agentVersion}`
         : `windows-reinstall-arm-${usbDriveLetter}-${sourceToken}-${keyDate}-${phraseHash}-v${agentVersion}`,
@@ -6940,7 +7035,7 @@ function runMcpServer() {
       });
       const postArm = rememberPostArmReboot(terminal);
       if (postArm) {
-        return mcpToolJson({
+        const postArmPayload = {
           ...terminal,
           ok: true,
           action: "arm",
@@ -6950,8 +7045,11 @@ function runMcpServer() {
           exitCode: 0,
           postArm,
           agentGuidance: "Do not call soty_reinstall status, soty_link_status, hostname, or health probes against this source after rebooting=true. Give the user the post-arm handoff and wait for the designed return path."
-        });
+        };
+        recordSotyReinstallRouteReceipt(action, postArmPayload, toolStartedAt);
+        return mcpToolJson(postArmPayload);
       }
+      recordSotyReinstallRouteReceipt(action, terminal, toolStartedAt);
       return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
     }
     if (shouldWait) {
@@ -6962,9 +7060,108 @@ function runMcpServer() {
         waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
         requestedWaitTimeoutMs
       });
+      recordSotyReinstallRouteReceipt(action, waited, toolStartedAt);
       return mcpToolJson(waited, waited.ok === false, waited.exitCode);
     }
+    recordSotyReinstallRouteReceipt(action, payload, toolStartedAt);
     return mcpToolJson(payload, !result.ok, result.exitCode);
+  }
+
+  function reinstallPayloadFromOperatorResult(result) {
+    return parseJsonObject(result?.text || result?.payload?.text || "")
+      || (result?.payload && typeof result.payload === "object" ? result.payload : null)
+      || mcpOperatorPayload(result);
+  }
+
+  function recordSotyReinstallRouteReceipt(action, payload, startedAt = Date.now()) {
+    const cleanAction = cleanActionToken(action || "", "status");
+    const body = payload && typeof payload === "object" ? payload : {};
+    const exitCode = Number.isSafeInteger(body.exitCode) ? body.exitCode : (body.ok === false ? 1 : 0);
+    const status = String(body.status || body.terminalReason || body.blocker || "").toLowerCase();
+    const result = reinstallLearningResult(body, status, exitCode);
+    recordLearningReceipt({
+      kind: "action-job",
+      toolkit: "windows-reinstall",
+      phase: cleanAction,
+      family: "windows-reinstall",
+      result,
+      route: `soty_reinstall.${cleanAction}`,
+      commandSig: `windows-reinstall:${cleanAction}`,
+      taskSig: `windows-reinstall:${windowsReinstallRouteProfileId}:${cleanAction}`,
+      proof: buildSotyReinstallRouteProof(cleanAction, body, status, exitCode),
+      exitCode,
+      durationMs: Math.max(0, Date.now() - startedAt)
+    });
+  }
+
+  function reinstallLearningResult(body, status, exitCode) {
+    if (body?.ok === true && (status === "rebooting" || status === "needs-confirmation" || status === "ready" || status === "completed")) {
+      return "ok";
+    }
+    if (body?.ok === true && status === "running") {
+      return "partial";
+    }
+    if (body?.ok === true && !status) {
+      return "ok";
+    }
+    if (status.includes("running") || status.includes("still-running")) {
+      return "partial";
+    }
+    if (status.includes("blocked") || body?.blocker) {
+      return "blocked";
+    }
+    if (exitCode === 124) {
+      return "timeout";
+    }
+    return body?.ok === false ? "failed" : "partial";
+  }
+
+  function buildSotyReinstallRouteProof(action, body, status, exitCode) {
+    const learning = windowsReinstallRouteLearning(action);
+    const statusSnapshot = body?.statusSnapshot && typeof body.statusSnapshot === "object" ? body.statusSnapshot : body;
+    const backupOk = body?.backupProofOk === true || statusSnapshot?.backupProofOk === true || statusSnapshot?.backupProof?.ok === true;
+    const installMedia = Boolean(body?.installImage || statusSnapshot?.installImage || statusSnapshot?.media?.path || statusSnapshot?.media?.ready);
+    const unattended = body?.rootAutounattend === true || statusSnapshot?.rootAutounattend === true;
+    const postinstall = body?.oemSetupComplete === true || statusSnapshot?.oemSetupComplete === true;
+    const media = statusSnapshot?.media && typeof statusSnapshot.media === "object" ? statusSnapshot.media : null;
+    const parts = [
+      `toolkit=windows-reinstall`,
+      `phase=${cleanProofToken(action)}`,
+      `routeProfile=${windowsReinstallRouteProfileId}`,
+      `exitCode=${Number.isSafeInteger(exitCode) ? exitCode : 0}`,
+      `status=${cleanProofToken(status || body?.terminalReason || body?.status || "unknown")}`,
+      `reuseKey=${learning.reuseKey}`,
+      `scriptUse=${learning.scriptUse}`,
+      "successCriteria=set",
+      `context=${learning.contextFingerprint}`,
+      backupOk ? "backupProof=ok" : "backupProof=missing",
+      installMedia ? "installMedia=ok" : "installMedia=missing",
+      unattended ? "unattend=ok" : "unattend=missing",
+      postinstall ? "postinstall=ok" : "postinstall=missing",
+      media?.downloading === true ? "media=downloading" : "",
+      media?.active === true ? "mediaActive=true" : "",
+      Number.isFinite(Number(media?.gb)) ? `mediaGb=${Math.max(0, Math.min(20, Number(media.gb))).toFixed(2)}` : "",
+      `qualityScore=${reinstallRouteQualityScore({ action, body, status, backupOk, installMedia, unattended, postinstall })}`
+    ].filter(Boolean);
+    return parts.join("; ").slice(0, 900);
+  }
+
+  function reinstallRouteQualityScore({ action, body, status, backupOk, installMedia, unattended, postinstall }) {
+    if (body?.ok === false || status.includes("blocked") || body?.blocker) {
+      return 60;
+    }
+    if (action === "prepare") {
+      if (status === "needs-confirmation" || body?.terminalReason === "user-confirmation-required") {
+        return backupOk && installMedia && unattended && postinstall ? 98 : 82;
+      }
+      if (status.includes("running")) {
+        return 78;
+      }
+    }
+    if (action === "arm" && (status === "rebooting" || body?.postArm?.rebooting === true)) {
+      return 96;
+    }
+    return body?.ok === true ? 88 : 70;
   }
 
   async function waitForMcpActionTerminal(initial, { waitTimeoutMs = maxLongTaskTimeoutMs, progressKind = "action", pollDelayMs = 15_000 } = {}) {
@@ -9839,6 +10036,8 @@ function runtimeComputerUsePlaneStatus() {
     legacyToolsAreAliases: true,
     executionPlane: runtimeExecutionPlane(),
     sourceWorker: canRunAgentSourceWorker(),
+    routeProfiles: routeProfilesStatus(),
+    selfImprovement: "real-run+sanitized-receipts+route-profile+capability-promotion",
     capabilities: [
       "discover",
       "status",
@@ -9863,6 +10062,7 @@ function automationToolkitStatus() {
   return {
     schema: "soty.automation-toolkits.v2",
     policy: "computer-use-plane-with-memory-hints",
+    routeProfileSchema: "soty.route-profiles.v1",
     chat: activeAgentResponseStyle.id,
     responseStyle: agentResponseStyleStatus(),
     frontDoor: "soty_computer",
@@ -9873,15 +10073,17 @@ function automationToolkitStatus() {
       schema: "soty.computer-use-plane.v1",
       entryTool: "soty_computer",
       legacyToolsAreAliases: true,
-      imagePipeline: "backend-generate+source-save-apply-verify"
+      imagePipeline: "backend-generate+source-save-apply-verify",
+      routeProfileSchema: "soty.route-profiles.v1"
     },
     available: ["computer-use-plane", "capability-gateway", "durable-action", "windows-reinstall"],
     toolkits: [
       {
         name: "computer-use-plane",
         entryTool: "soty_computer",
-        phases: ["discover", "status", "invoke", "jobs", "job_status", "job_stop"],
-        proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"]
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "job_stop"],
+        proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
+        routeProfiles: [windowsReinstallRouteProfileId]
       },
       {
         name: "capability-gateway",
@@ -9899,9 +10101,11 @@ function automationToolkitStatus() {
         name: "windows-reinstall",
         entryTool: "soty_reinstall",
         phases: ["preflight", "prepare", "status", "arm"],
-        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"]
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"],
+        routeProfile: windowsReinstallRouteProfileId
       }
-    ]
+    ],
+    routeProfiles: routeProfilesStatus()
   };
 }
 
