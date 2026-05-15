@@ -111,11 +111,15 @@ export async function askLocalAgentReply(
   source: LocalAgentRequestSource = {},
   timeoutMs = 2 * 60 * 60_000,
   onMessage?: LocalAgentMessageHandler,
-  onTerminal?: LocalAgentMessageHandler
+  onTerminal?: LocalAgentMessageHandler,
+  signal?: AbortSignal
 ): Promise<LocalAgentReply> {
+  if (signal?.aborted) {
+    return cancelledAgentReply();
+  }
   const relayId = readAgentRelayId() || ensureAgentRelayId();
   if (relayId) {
-    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, true);
+    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, true, signal);
     if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
     }
@@ -125,7 +129,8 @@ export async function askLocalAgentReply(
     text,
     context,
     { ...source, localAgentDirect: true },
-    timeoutMs
+    timeoutMs,
+    signal
   );
   const directNeedsServerFallback = direct ? shouldUseServerAgentReplyFallback(direct) : false;
   if (direct && !directNeedsServerFallback) {
@@ -139,7 +144,7 @@ export async function askLocalAgentReply(
   }
 
   if (relayId) {
-    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, directNeedsServerFallback);
+    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, directNeedsServerFallback, signal);
     if (relay && !shouldRetryAgentRelayReply(relay)) {
       return relay;
     }
@@ -325,17 +330,20 @@ async function askLocalAgentReplyHttp(
   text: string,
   context: string,
   source: LocalAgentRequestSource,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<LocalAgentReply | null> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  if (signal?.aborted) {
+    return cancelledAgentReply();
+  }
+  const timeout = timeoutAbortSignal(timeoutMs, signal);
   try {
     const response = await fetch("http://127.0.0.1:49424/agent/reply", {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, context, source }),
-      signal: controller.signal,
+      signal: timeout.signal,
       targetAddressSpace: "loopback"
     } as RequestInit & { readonly targetAddressSpace: "loopback" });
     const payload = await response.json() as {
@@ -355,9 +363,12 @@ async function askLocalAgentReplyHttp(
       ...(typeof payload.exitCode === "number" ? { exitCode: payload.exitCode } : {})
     };
   } catch {
+    if (signal?.aborted) {
+      return cancelledAgentReply();
+    }
     return null;
   } finally {
-    window.clearTimeout(timer);
+    timeout.cleanup();
   }
 }
 
@@ -368,19 +379,30 @@ async function askAgentRelayReply(
   timeoutMs: number,
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler,
-  preferServer = false
+  preferServer = false,
+  signal?: AbortSignal
 ): Promise<LocalAgentReply | null> {
   const relayId = readAgentRelayId() || ensureAgentRelayId();
   if (!relayId) {
     return null;
   }
+  if (signal?.aborted) {
+    return cancelledAgentReply();
+  }
   try {
-    const request = await fetch("/api/agent/relay/request", {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relayId, text, context, source, ...(preferServer ? { preferServer: true } : {}) })
-    });
+    const requestTimeout = timeoutAbortSignal(30_000, signal);
+    let request: Response;
+    try {
+      request = await fetch("/api/agent/relay/request", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relayId, text, context, source, ...(preferServer ? { preferServer: true } : {}) }),
+        signal: requestTimeout.signal
+      });
+    } finally {
+      requestTimeout.cleanup();
+    }
     const created = await request.json() as { readonly ok?: boolean; readonly id?: string };
     if (!request.ok || !created.ok || typeof created.id !== "string") {
       const error = typeof (created as { readonly error?: unknown }).error === "string"
@@ -391,15 +413,41 @@ async function askAgentRelayReply(
         request.status || 502
       );
     }
+    const createdId = created.id;
     let stopEvents = false;
+    let cancelSent = false;
+    const cancelRelay = () => {
+      stopEvents = true;
+      cancelSent = true;
+      void cancelAgentRelayReply(relayId, createdId).catch(() => undefined);
+    };
+    if (signal?.aborted) {
+      await cancelAgentRelayReply(relayId, createdId).catch(() => undefined);
+      return cancelledAgentReply();
+    }
+    signal?.addEventListener("abort", cancelRelay, { once: true });
     const eventStream = onMessage || onTerminal
-      ? watchAgentRelayEvents(relayId, created.id, timeoutMs, onMessage, onTerminal, () => stopEvents)
+      ? watchAgentRelayEvents(relayId, createdId, timeoutMs, onMessage, onTerminal, () => stopEvents, signal)
       : Promise.resolve();
-    const reply = await waitForAgentRelayReply(relayId, created.id, timeoutMs);
-    stopEvents = true;
-    void eventStream.catch(() => undefined);
-    return reply || relayFailure("! agent-relay: local Codex bridge did not pick up the request", 124);
+    try {
+      const reply = await waitForAgentRelayReply(relayId, createdId, timeoutMs, signal);
+      stopEvents = true;
+      void eventStream.catch(() => undefined);
+      if (signal?.aborted) {
+        if (!cancelSent) {
+          await cancelAgentRelayReply(relayId, createdId).catch(() => undefined);
+        }
+        return cancelledAgentReply();
+      }
+      return reply || relayFailure("! agent-relay: local Codex bridge did not pick up the request", 124);
+    } finally {
+      stopEvents = true;
+      signal?.removeEventListener("abort", cancelRelay);
+    }
   } catch {
+    if (signal?.aborted) {
+      return cancelledAgentReply();
+    }
     return relayFailure("! agent-relay: browser could not reach relay", 127);
   }
 }
@@ -410,17 +458,17 @@ async function watchAgentRelayEvents(
   timeoutMs: number,
   onMessage: LocalAgentMessageHandler | undefined,
   onTerminal: LocalAgentMessageHandler | undefined,
-  stopped: () => boolean
+  stopped: () => boolean,
+  signal?: AbortSignal
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let after = 0;
-  while (!stopped() && Date.now() < deadline) {
+  while (!stopped() && !signal?.aborted && Date.now() < deadline) {
     const remaining = deadline - Date.now();
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), Math.min(35_000, Math.max(1000, remaining)));
+    const timeout = timeoutAbortSignal(Math.min(35_000, Math.max(1000, remaining)), signal);
     try {
       const url = `/api/agent/relay/events?relayId=${encodeURIComponent(relayId)}&id=${encodeURIComponent(id)}&after=${after}&wait=1`;
-      const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+      const response = await fetch(url, { cache: "no-store", signal: timeout.signal });
       if (!response.ok) {
         return;
       }
@@ -454,7 +502,7 @@ async function watchAgentRelayEvents(
     } catch {
       // Keep the final reply poll authoritative; streaming is best-effort.
     } finally {
-      window.clearTimeout(timer);
+      timeout.cleanup();
     }
   }
 }
@@ -462,16 +510,16 @@ async function watchAgentRelayEvents(
 async function waitForAgentRelayReply(
   relayId: string,
   id: string,
-  timeoutMs: number
+  timeoutMs: number,
+  signal?: AbortSignal
 ): Promise<LocalAgentReply | null> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  while (!signal?.aborted && Date.now() < deadline) {
     const remaining = deadline - Date.now();
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), Math.min(35_000, Math.max(1000, remaining)));
+    const timeout = timeoutAbortSignal(Math.min(35_000, Math.max(1000, remaining)), signal);
     try {
       const url = `/api/agent/relay/reply?relayId=${encodeURIComponent(relayId)}&id=${encodeURIComponent(id)}&wait=1`;
-      const response = await fetch(url, { cache: "no-store", signal: controller.signal });
+      const response = await fetch(url, { cache: "no-store", signal: timeout.signal });
       if (!response.ok) {
         return relayFailure("! agent-relay: reply was lost", response.status);
       }
@@ -498,14 +546,54 @@ async function waitForAgentRelayReply(
     } catch {
       // Keep polling until the outer timeout. A single long-poll can be interrupted by network switches.
     } finally {
-      window.clearTimeout(timer);
+      timeout.cleanup();
     }
+  }
+  if (signal?.aborted) {
+    return cancelledAgentReply();
   }
   return null;
 }
 
 function relayFailure(text: string, exitCode: number): LocalAgentReply {
   return { ok: false, text, exitCode };
+}
+
+function cancelledAgentReply(): LocalAgentReply {
+  return { ok: false, text: "! cancelled", exitCode: 130 };
+}
+
+function timeoutAbortSignal(timeoutMs: number, externalSignal?: AbortSignal): { readonly signal: AbortSignal; readonly cleanup: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener("abort", abort, { once: true });
+  }
+  const timer = window.setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      window.clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", abort);
+    }
+  };
+}
+
+async function cancelAgentRelayReply(relayId: string, id: string): Promise<void> {
+  const timeout = timeoutAbortSignal(2500);
+  try {
+    await fetch("/api/agent/relay/cancel", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relayId, id }),
+      signal: timeout.signal
+    });
+  } finally {
+    timeout.cleanup();
+  }
 }
 
 function cleanReplyMessages(value: readonly unknown[] | undefined): string[] {

@@ -194,7 +194,10 @@ const sotyFileLineBuffers = new Map<string, string>();
 const sotyFileStreams = new Map<string, SotyFileStreamState>();
 const operatorBridgeProtocol = "soty.operator-bridge.v2";
 const agentReplyQueues = new Map<string, Promise<void>>();
+const agentReplyControllers = new Map<string, AbortController>();
+const agentDirectedTargets = new Map<string, string>();
 const agentThinking = new Set<string>();
+let agentDoneAudio: AudioContext | null = null;
 let agentSourceControlTunnelId = "";
 let agentSourcePollTimer = 0;
 let agentSourcePolling = false;
@@ -677,6 +680,7 @@ function renderApp(): void {
             <small class="dialog-state">OFFLINE</small>
           </span>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
+          <select class="agent-target-select" aria-label="agent target" data-tooltip="Agent target"></select>
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
@@ -766,6 +770,19 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
+  });
+  app.querySelector<HTMLSelectElement>(".agent-target-select")?.addEventListener("change", (event) => {
+    const select = event.currentTarget;
+    if (!(select instanceof HTMLSelectElement) || !selectedId) {
+      return;
+    }
+    const value = select.value.trim();
+    if (value) {
+      agentDirectedTargets.set(selectedId, value);
+    } else {
+      agentDirectedTargets.delete(selectedId);
+    }
+    renderDialogChrome();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -1459,10 +1476,19 @@ function renderDialogChrome(): void {
   const state = app.querySelector<HTMLElement>(".dialog-state");
   const id = app.querySelector<HTMLElement>(".dialog-id");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
+  const head = app.querySelector<HTMLElement>(".dialog-head");
+  const targetSelect = app.querySelector<HTMLSelectElement>(".agent-target-select");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
+  const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
+  const targets = operatorTargets();
+  const showTargetSelect = Boolean(tunnel && isAgentTunnel(tunnel) && targets.length > 0);
   if (shell) {
     shell.style.setProperty("--peer-color", color);
+    shell.classList.toggle("has-agent-target", showTargetSelect);
+  }
+  if (head) {
+    head.classList.toggle("has-agent-target", showTargetSelect);
   }
   if (avatar) {
     avatar.textContent = initials(label);
@@ -1480,6 +1506,27 @@ function renderDialogChrome(): void {
   }
   if (id) {
     id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
+  }
+  if (targetSelect) {
+    targetSelect.classList.toggle("is-visible", showTargetSelect);
+    targetSelect.disabled = !showTargetSelect;
+    if (showTargetSelect) {
+      const selectedTarget = selectedAgentDirectedTarget(selectedId, targets);
+      targetSelect.replaceChildren(
+        new Option("AUTO", ""),
+        ...targets.map((target) => new Option(`${target.access ? "LINK " : ""}${target.label}`.slice(0, 64), target.id))
+      );
+      targetSelect.value = selectedTarget?.id || "";
+    } else {
+      targetSelect.replaceChildren();
+    }
+  }
+  if (sendButton) {
+    const stopping = agentThinking.has(selectedId);
+    sendButton.classList.toggle("is-stop", stopping);
+    sendButton.setAttribute("aria-label", stopping ? "stop" : "send");
+    sendButton.dataset.tooltip = stopping ? "Stop agent" : "Send message";
+    sendButton.innerHTML = icon(stopping ? "stop" : "send");
   }
   if (remoteButton) {
     const needsAgent = mode !== "link";
@@ -2272,9 +2319,14 @@ function operatorTargets(): LocalAgentOperatorTarget[] {
 }
 
 function preferredAgentOperatorTargetForDialog(
+  tunnelId: string,
   text: string,
   targets: readonly LocalAgentOperatorTarget[]
 ): LocalAgentOperatorTarget | null {
+  const directed = selectedAgentDirectedTarget(tunnelId, targets);
+  if (directed) {
+    return directed;
+  }
   const accessTargets = targets.filter((target) => target.access === true);
   const byPrefix = targetMentionedAtStart(text, accessTargets)
     || targetMentionedAtStart(text, targets);
@@ -2282,6 +2334,21 @@ function preferredAgentOperatorTargetForDialog(
     return byPrefix;
   }
   return null;
+}
+
+function selectedAgentDirectedTarget(
+  tunnelId: string,
+  targets: readonly LocalAgentOperatorTarget[]
+): LocalAgentOperatorTarget | null {
+  const id = agentDirectedTargets.get(tunnelId) || "";
+  if (!id) {
+    return null;
+  }
+  const target = targets.find((item) => item.id === id) || null;
+  if (!target) {
+    agentDirectedTargets.delete(tunnelId);
+  }
+  return target;
 }
 
 function targetMentionedAtStart(text: string, targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
@@ -3891,6 +3958,11 @@ async function finalizeComposerDraft(): Promise<void> {
   if (!sync) {
     return;
   }
+  if (agentThinking.has(tunnelId)) {
+    stopAgentDialogReply(tunnelId);
+    return;
+  }
+  primeAgentDoneSound();
   const draft = composer.value || localDrafts.get(tunnelId) || "";
   const message = normalizeChatMessage(draft);
   if (!message) {
@@ -3931,6 +4003,68 @@ function containsLordAgentInvocation(text: string): boolean {
   return /(^|[^\p{L}\p{N}_])(?:лорд|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
 }
 
+function stopAgentDialogReply(tunnelId: string): void {
+  const controller = agentReplyControllers.get(tunnelId);
+  if (!controller) {
+    return;
+  }
+  controller.abort();
+  agentReplyControllers.delete(tunnelId);
+  appendTerminalLine(tunnelId, "! agent stop requested");
+  setAgentThinking(tunnelId, false);
+}
+
+function primeAgentDoneSound(): void {
+  const context = ensureAgentDoneAudio();
+  if (!context) {
+    return;
+  }
+  void context.resume().catch(() => undefined);
+}
+
+function playAgentDoneSound(): void {
+  const context = ensureAgentDoneAudio();
+  if (!context) {
+    return;
+  }
+  void context.resume().catch(() => undefined);
+  const now = context.currentTime + 0.015;
+  playAgentDoneTone(context, now, 740, 0.16);
+  playAgentDoneTone(context, now + 0.18, 520, 0.22);
+}
+
+function playAgentDoneTone(context: AudioContext, start: number, frequency: number, duration: number): void {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "triangle";
+  oscillator.frequency.setValueAtTime(frequency, start);
+  oscillator.frequency.exponentialRampToValueAtTime(Math.max(80, frequency * 0.82), start + duration);
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(0.085, start + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.03);
+}
+
+function ensureAgentDoneAudio(): AudioContext | null {
+  if (agentDoneAudio) {
+    return agentDoneAudio;
+  }
+  const ctor = window.AudioContext
+    || (window as unknown as { readonly webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!ctor) {
+    return null;
+  }
+  try {
+    agentDoneAudio = new ctor();
+  } catch {
+    return null;
+  }
+  return agentDoneAudio;
+}
+
 function sendAgentDialogMessage(
   tunnelId: string,
   text: string,
@@ -3943,7 +4077,7 @@ function sendAgentDialogMessage(
   }
   const targets = operatorTargets();
   const preferredTarget = agentTunnel
-    ? preferredAgentOperatorTargetForDialog(text, targets)
+    ? preferredAgentOperatorTargetForDialog(tunnelId, text, targets)
     : targets.find((target) => target.id === tunnelId) ?? null;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const source: LocalAgentRequestSource = {
@@ -3960,6 +4094,8 @@ function sendAgentDialogMessage(
   const next = previous
     .catch(() => undefined)
     .then(async () => {
+      const controller = new AbortController();
+      agentReplyControllers.set(tunnelId, controller);
       setAgentThinking(tunnelId, true);
       let reply: LocalAgentReply;
       const streamedMessages: string[] = [];
@@ -3982,9 +4118,15 @@ function sendAgentDialogMessage(
           }
           streamedTerminal.push(streamed);
           appendAgentTerminalTranscript(tunnelId, streamed);
-        });
+        }, controller.signal);
       } finally {
+        if (agentReplyControllers.get(tunnelId) === controller) {
+          agentReplyControllers.delete(tunnelId);
+        }
         setAgentThinking(tunnelId, false);
+      }
+      if (controller.signal.aborted) {
+        return;
       }
       let finalReply = reply;
       let body = normalizeChatMessage(cleanAgentReplyText(reply.text));
@@ -4015,6 +4157,7 @@ function sendAgentDialogMessage(
         appendAgentChatMessage(tunnelId, userVisibleAgentFailureText(body));
         appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
       }
+      playAgentDoneSound();
     });
   agentReplyQueues.set(tunnelId, next);
   void next.finally(() => {
@@ -4126,6 +4269,7 @@ function setAgentThinking(tunnelId: string, active: boolean): void {
     agentThinking.delete(tunnelId);
   }
   if (tunnelId === selectedId) {
+    renderDialogChrome();
     renderTextPaint();
     renderWriterPop();
   }

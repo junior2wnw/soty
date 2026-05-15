@@ -124,6 +124,10 @@ export function attachAgentRelay(app) {
       res.status(404).json({ ok: false });
       return;
     }
+    if (job.cancelRequested === true && job.reply?.exitCode === 130 && req.body?.exitCode !== 130) {
+      res.json({ ok: true, cancelled: true });
+      return;
+    }
     job.reply = {
       ok: Boolean(req.body?.ok),
       text: cleanText(req.body?.text, maxReplyChars),
@@ -174,6 +178,49 @@ export function attachAgentRelay(app) {
       flushEventWaiters(job.clientRelayId, id);
     }
     res.json({ ok: true, event });
+  });
+
+  app.post("/api/agent/relay/cancel", jsonParser, (req, res) => {
+    const relayId = normalizeRelayId(req.body?.relayId);
+    const id = cleanText(req.body?.id, 120);
+    if (!relayId || !id) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    cleanupChannels();
+    const found = findRelayJob(relayId, id);
+    if (!found) {
+      res.status(404).json({ ok: false });
+      return;
+    }
+    const channel = getChannel(found.relayId);
+    found.job.cancelRequested = true;
+    found.job.reply = found.job.reply || {
+      ok: false,
+      text: "! cancelled",
+      messages: ["Stopped."],
+      terminal: ["! cancelled"],
+      exitCode: 130
+    };
+    found.job.leaseUntil = 0;
+    channel.cancels = channel.cancels || [];
+    if (!channel.cancels.some((item) => item.commandId === id)) {
+      channel.cancels.push({
+        id: `cancel_${randomUUID()}`,
+        type: "cancel",
+        commandId: id,
+        createdAt: Date.now(),
+        leaseUntil: 0
+      });
+    }
+    flushPollWaiters(found.relayId);
+    flushReplyWaiters(found.relayId, id);
+    flushEventWaiters(found.relayId, id);
+    if (found.job.clientRelayId) {
+      flushReplyWaiters(found.job.clientRelayId, id);
+      flushEventWaiters(found.job.clientRelayId, id);
+    }
+    res.json({ ok: true, id });
   });
 
   app.get("/api/agent/relay/reply", (req, res) => {
@@ -407,6 +454,7 @@ function getChannel(relayId) {
   if (!channel) {
     channel = {
       jobs: [],
+      cancels: [],
       lastPollAt: 0,
       agentVersion: "",
       codex: false,
@@ -479,19 +527,35 @@ function channelActivityAt(channel, now = Date.now()) {
 
 function leasePendingJobs(channel) {
   const now = Date.now();
+  channel.cancels = (channel.cancels || []).filter((item) => now - item.createdAt < sourceCancelTtlMs);
+  const cancels = channel.cancels
+    .filter((item) => !item.leaseUntil || item.leaseUntil < now)
+    .slice(0, 8);
+  for (const cancel of cancels) {
+    cancel.leaseUntil = now + 15_000;
+  }
   const jobs = channel.jobs
-    .filter((job) => !job.reply && (!job.leaseUntil || job.leaseUntil < now))
+    .filter((job) => !job.reply && job.cancelRequested !== true && (!job.leaseUntil || job.leaseUntil < now))
     .slice(0, 2);
   for (const job of jobs) {
     job.leaseUntil = now + leaseMs;
   }
-  return jobs.map((job) => ({
-    id: job.id,
-    text: job.text,
-    context: job.context,
-    source: job.source || {},
-    createdAt: new Date(job.createdAt).toISOString()
-  }));
+  return [
+    ...cancels.map((item) => ({
+      id: item.id,
+      type: "cancel",
+      commandId: item.commandId,
+      createdAt: new Date(item.createdAt).toISOString()
+    })),
+    ...jobs.map((job) => ({
+      id: job.id,
+      type: "reply",
+      text: job.text,
+      context: job.context,
+      source: job.source || {},
+      createdAt: new Date(job.createdAt).toISOString()
+    }))
+  ];
 }
 
 function getAgentSource(relayId, deviceId) {
@@ -1318,8 +1382,9 @@ function cleanupChannels() {
   const now = Date.now();
   for (const [relayId, channel] of channels) {
     channel.jobs = channel.jobs.filter((job) => now - job.createdAt < requestTtlMs);
+    channel.cancels = (channel.cancels || []).filter((item) => now - item.createdAt < sourceCancelTtlMs);
     const idle = now - Math.max(channel.touchedAt || 0, channel.lastPollAt || 0) > idleChannelTtlMs;
-    if (idle && channel.jobs.length === 0) {
+    if (idle && channel.jobs.length === 0 && channel.cancels.length === 0) {
       channels.delete(relayId);
     }
   }

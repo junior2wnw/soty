@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.23");
+      assertEqual(health.body.version, "0.4.24");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -809,7 +809,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.23");
+      assertEqual(manifest.version, "0.4.24");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -867,6 +867,7 @@ async function runScenarios({ relayUrl } = {}) {
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const agentRelay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
       let userWindowsInstallerExists = true;
       try {
@@ -918,7 +919,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.23"'));
+      assert(agentSource.includes('const agentVersion = "0.4.24"'));
+      assert(ui.includes("agentReplyControllers"));
+      assert(ui.includes("stopAgentDialogReply"));
+      assert(ui.includes("agent-target-select"));
+      assert(ui.includes("selectedAgentDirectedTarget"));
+      assert(ui.includes("playAgentDoneSound"));
+      assert(agentFeature.includes("cancelAgentRelayReply"));
+      assert(agentRelay.includes('"/api/agent/relay/cancel"'));
+      assert(agentRelay.includes("cancelRequested"));
       assert(agentSource.includes("void saveAgentConfig();"));
       assert(agentSource.includes("function scheduleUpdate()"));
       assert(agentSource.includes("process.exit(75)"));
@@ -940,14 +949,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.23";', 'const agentVersion = "0.4.22";');
-      assert(oldSource.includes('const agentVersion = "0.4.22"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.24";', 'const agentVersion = "0.4.23";');
+      assert(oldSource.includes('const agentVersion = "0.4.23"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.23",
+            version: "0.4.24",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1593,7 +1602,7 @@ function sourceWorkerQuery(relayId, deviceId, options) {
     clientProtocol: "soty-source-agent.v1",
     clientCapabilities: `runas,local-agent-health,direct-device-worker${options.interactiveTaskBridge ? ",interactive-user-bridge" : ""}`,
     localAgentOk: "true",
-    localAgentVersion: "0.4.23",
+    localAgentVersion: "0.4.24",
     localAgentInteractiveTaskBridge: options.interactiveTaskBridge ? "true" : "false",
     localAgentScope: options.scope,
     localAgentCompanion: options.companion ? "true" : "false",

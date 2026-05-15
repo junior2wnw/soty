@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.23";
+const agentVersion = "0.4.24";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -115,7 +115,7 @@ const operatorMessages = [];
 const operatorMessageWaiters = new Set();
 const agentOperatorReplyQueues = new Map();
 const recentAgentOperatorMessageKeys = new Map();
-const activeRelayJobs = new Set();
+const activeRelayJobs = new Map();
 let learningSyncTimer = null;
 let learningSyncInFlight = null;
 let operatorBridge = null;
@@ -3405,17 +3405,30 @@ async function handleAgentReply(request, response, headers) {
     sendJson(response, 400, headers, { ok: false, text: "! text", exitCode: 400 });
     return;
   }
-  const terminal = [];
-  const result = await askCodexForAgentReply(text, context, source, null, (message) => {
-    const clean = cleanTerminalTranscript(message);
-    if (clean && terminal[terminal.length - 1] !== clean) {
-      terminal.push(clean);
+  const abortController = new AbortController();
+  const cancelOnClientClose = () => {
+    if (!response.writableEnded) {
+      abortController.abort();
     }
-  });
-  sendJson(response, result.ok ? 200 : 502, headers, {
-    ...result,
-    ...(terminal.length > 0 ? { terminal } : {})
-  });
+  };
+  response.on?.("close", cancelOnClientClose);
+  const terminal = [];
+  try {
+    const result = await askCodexForAgentReply(text, context, source, null, (message) => {
+      const clean = cleanTerminalTranscript(message);
+      if (clean && terminal[terminal.length - 1] !== clean) {
+        terminal.push(clean);
+      }
+    }, { signal: abortController.signal });
+    if (!response.writableEnded && !response.destroyed) {
+      sendJson(response, result.ok ? 200 : 502, headers, {
+        ...result,
+        ...(terminal.length > 0 ? { terminal } : {})
+      });
+    }
+  } finally {
+    response.off?.("close", cancelOnClientClose);
+  }
 }
 
 async function handleAgentRelayBind(request, response, headers) {
@@ -3480,6 +3493,10 @@ async function runAgentRelayLoop() {
       const jobs = await pollAgentRelay();
       retryMs = 1000;
       for (const job of jobs) {
+        if (job.type === "cancel") {
+          cancelActiveRelayJob(job.commandId || job.id);
+          continue;
+        }
         scheduleAgentRelayJob(job);
       }
     } catch {
@@ -3490,18 +3507,28 @@ async function runAgentRelayLoop() {
 }
 
 function scheduleAgentRelayJob(job) {
-  const task = handleAgentRelayJob(job)
+  const abortController = new AbortController();
+  const task = handleAgentRelayJob(job, abortController.signal)
     .catch(async (error) => {
       await postAgentRelayReply(job.id, {
         ok: false,
-        text: agentFailureText(error instanceof Error ? error.message : String(error)),
-        exitCode: 1
+        text: isAbortError(error) || abortController.signal.aborted ? "! cancelled" : agentFailureText(error instanceof Error ? error.message : String(error)),
+        exitCode: isAbortError(error) || abortController.signal.aborted ? 130 : 1
       }).catch(() => undefined);
     })
     .finally(() => {
-      activeRelayJobs.delete(task);
+      activeRelayJobs.delete(job.id);
     });
-  activeRelayJobs.add(task);
+  activeRelayJobs.set(job.id, { task, abortController });
+}
+
+function cancelActiveRelayJob(id) {
+  const entry = activeRelayJobs.get(String(id || ""));
+  if (!entry) {
+    return false;
+  }
+  entry.abortController.abort();
+  return true;
 }
 
 async function pollAgentRelay() {
@@ -3530,17 +3557,22 @@ async function pollAgentRelay() {
   }
   const payload = await response.json();
   return Array.isArray(payload.jobs)
-    ? payload.jobs.filter((job) => isSafeText(job?.id, 160) && isSafeText(job?.text, maxChatChars))
+    ? payload.jobs.filter((job) => isSafeText(job?.id, 160) && (
+      job?.type === "cancel"
+        ? isSafeText(job?.commandId, 160)
+        : isSafeText(job?.text, maxChatChars)
+    ))
     : [];
 }
 
-async function handleAgentRelayJob(job) {
+async function handleAgentRelayJob(job, signal = null) {
   const result = await askCodexForAgentReply(
     String(job.text || "").slice(0, maxChatChars),
     String(job.context || "").slice(-maxAgentContextChars),
     sanitizeAgentSource(job.source),
     (message) => postAgentRelayEvent(job.id, message),
-    (message) => postAgentRelayEvent(job.id, message, "agent_terminal")
+    (message) => postAgentRelayEvent(job.id, message, "agent_terminal"),
+    { signal }
   );
   await postAgentRelayReply(job.id, result);
 }
@@ -3586,7 +3618,11 @@ async function postAgentRelayEvent(id, message, type = "agent_message") {
   }).catch(() => undefined);
 }
 
-async function askCodexForAgentReply(text, context, source = {}, onMessage = null, onTerminal = null) {
+async function askCodexForAgentReply(text, context, source = {}, onMessage = null, onTerminal = null, options = {}) {
+  const signal = options?.signal || null;
+  if (signal?.aborted) {
+    return { ok: false, text: "! cancelled", exitCode: 130 };
+  }
   const trace = await beginAgentTrace({ entrypoint: "agent.reply", text, context, source });
   try {
     traceStep(trace, "agent.start", {
@@ -3598,7 +3634,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     if (!codexBin) {
       traceStep(trace, "codex.missing", { codexDisabled, relayFallback: codexRelayFallback });
       const relay = codexRelayFallback
-        ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal)
+        ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { signal })
         : null;
       if (relay) {
         traceRouting(trace, { finalRoute: "codex.relay-fallback" });
@@ -3633,10 +3669,11 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       source,
       onMessage,
       onTerminal,
-      trace
+      trace,
+      signal
     });
     if (shouldUseCodexRelayFallback(local)) {
-      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true });
+      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true, signal });
       if (relay) {
         traceRouting(trace, { finalRoute: "codex.relay-fallback-after-local" });
         await finishAgentTrace(trace, relay);
@@ -3646,6 +3683,12 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     await finishAgentTrace(trace, local);
     return withTraceId(local, trace);
   } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      const cancelled = { ok: false, text: "! cancelled", exitCode: 130 };
+      traceStep(trace, "agent.cancelled", {});
+      await finishAgentTrace(trace, cancelled);
+      return withTraceId(cancelled, trace);
+    }
     const local = {
       ok: false,
       text: agentFailureText(error instanceof Error ? error.message : String(error)),
@@ -3653,7 +3696,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     };
     traceStep(trace, "agent.error", { message: error instanceof Error ? error.message : String(error) });
     if (shouldUseCodexRelayFallback(local)) {
-      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true });
+      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true, signal });
       if (relay) {
         traceRouting(trace, { finalRoute: "codex.relay-fallback-after-error" });
         await finishAgentTrace(trace, relay);
@@ -3826,7 +3869,10 @@ async function postAgentSourceWorkerOutput(id, text, exitCode = undefined) {
   });
 }
 
-async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal, trace = null }) {
+async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "", source, onMessage, onTerminal, trace = null, signal = null }) {
+  if (signal?.aborted) {
+    return { ok: false, text: "! cancelled", exitCode: 130 };
+  }
   const startedAt = Date.now();
   const safeSource = sanitizeAgentSource(source);
   const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
@@ -3899,7 +3945,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     usage: emptyCodexUsage(),
     trace
   };
-  let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal);
+  let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
   if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
     const freshState = {
       threadId: "",
@@ -3921,7 +3967,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     });
     delete persistedCodexSessions[sessionKey];
     await saveCodexSessions();
-    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, codexOnMessage, onTerminal);
+    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
     state.threadId = freshState.threadId;
     state.lastMessage = freshState.lastMessage;
     state.messages = freshState.messages;
@@ -3936,6 +3982,30 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const lastFromFile = cleanAgentChatReply(lastFileRaw);
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
+  if (result.exitCode === 130 || signal?.aborted) {
+    recordLearningReceipt({
+      kind: "codex-turn",
+      family: taskFamily,
+      result: "cancelled",
+      route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+      taskSig: taskSignature(text),
+      proof: "exitCode=130; user-cancelled",
+      exitCode: 130,
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
+    traceRouting(trace, { finalRoute: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume" });
+    traceStep(trace, "codex.cancelled", {
+      messages: messages.length,
+      terminal: state.terminal.length
+    });
+    return {
+      ok: false,
+      text: "! cancelled",
+      ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
+      exitCode: 130
+    };
+  }
   if (state.threadId) {
     persistedCodexSessions[sessionKey] = {
       threadId: state.threadId,
@@ -4303,7 +4373,7 @@ function quoteWindowsCommandArg(value) {
   return `"${text.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
 }
 
-function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, onMessage = null, onTerminal = null) {
+function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, onMessage = null, onTerminal = null, signal = null) {
   return new Promise((resolve, reject) => {
     traceStep(state?.trace, "codex.spawn", {
       file: basename(file || ""),
@@ -4321,6 +4391,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
     let stderr = "";
     let jsonBuffer = "";
     let done = false;
+    let forcedExitCode = null;
     let sawStartupActivity = false;
     const markStartupActivity = () => {
       if (sawStartupActivity) {
@@ -4336,20 +4407,38 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       done = true;
       clearTimeout(timer);
       clearTimeout(startupTimer);
+      signal?.removeEventListener?.("abort", cancelCodexRun);
       void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
       void traceWriteText(state?.trace, "stderr-tail.txt", stderr, 24_000);
+      const finalExitCode = Number.isSafeInteger(forcedExitCode)
+        ? forcedExitCode
+        : Number.isSafeInteger(exitCode) ? exitCode : 0;
       traceStep(state?.trace, "codex.exit", {
-        exitCode: Number.isSafeInteger(exitCode) ? exitCode : 0,
+        exitCode: finalExitCode,
         stdoutChars: stdout.length,
         stderrChars: stderr.length,
         events: state?.trace?.doc?.codex?.eventCount || 0
       });
       resolve({
-        exitCode: Number.isSafeInteger(exitCode) ? exitCode : 0,
+        exitCode: finalExitCode,
         stdout: stdout.slice(-12_000),
         stderr: stderr.slice(-12_000)
       });
     };
+    const cancelCodexRun = () => {
+      if (done) {
+        return;
+      }
+      forcedExitCode = 130;
+      stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! cancelled\n`.slice(-24_000);
+      traceStep(state?.trace, "codex.cancel-requested", {});
+      killProcessTree(child);
+    };
+    if (signal?.aborted) {
+      cancelCodexRun();
+    } else {
+      signal?.addEventListener?.("abort", cancelCodexRun, { once: true });
+    }
     const timer = setTimeout(() => {
       if (done) {
         return;
@@ -4370,6 +4459,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       }
       done = true;
       clearTimeout(timer);
+      signal?.removeEventListener?.("abort", cancelCodexRun);
       killProcessTree(child);
       traceStep(state?.trace, "codex.startup-timeout", {
         timeoutMs: codexStartupTimeoutMs,
@@ -4403,6 +4493,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
       done = true;
       clearTimeout(timer);
       clearTimeout(startupTimer);
+      signal?.removeEventListener?.("abort", cancelCodexRun);
       traceStep(state?.trace, "codex.spawn-error", {
         message: error instanceof Error ? error.message : String(error)
       });
@@ -4941,6 +5032,10 @@ function internalAgentReceiptText(line) {
 }
 
 async function askCodexRelayFallback(text, context, source = {}, onMessage = null, onTerminal = null, options = {}) {
+  const signal = options?.signal || null;
+  if (signal?.aborted) {
+    return { ok: false, text: "! cancelled", exitCode: 130 };
+  }
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
   if (!relayBaseUrl) {
     return null;
@@ -4954,6 +5049,7 @@ async function askCodexRelayFallback(text, context, source = {}, onMessage = nul
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
+      signal,
       body: JSON.stringify({
         relayId: requestRelayId,
         text: String(text || "").slice(0, maxChatChars),
@@ -4968,29 +5064,66 @@ async function askCodexRelayFallback(text, context, source = {}, onMessage = nul
     }
     const replyRelayId = safeRelayId(created.relayId || requestRelayId);
     let stopEvents = false;
+    let cancelSent = false;
+    const cancelRelayFallback = () => {
+      stopEvents = true;
+      cancelSent = true;
+      void cancelCodexRelayFallbackJob(relayBaseUrl, replyRelayId, created.id).catch(() => undefined);
+    };
+    if (signal?.aborted) {
+      await cancelCodexRelayFallbackJob(relayBaseUrl, replyRelayId, created.id).catch(() => undefined);
+      return { ok: false, text: "! cancelled", exitCode: 130 };
+    }
+    signal?.addEventListener?.("abort", cancelRelayFallback, { once: true });
     const eventStream = typeof onMessage === "function" || typeof onTerminal === "function"
-      ? watchCodexRelayFallbackEvents(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs, onMessage, onTerminal, () => stopEvents)
+      ? watchCodexRelayFallbackEvents(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs, onMessage, onTerminal, () => stopEvents, signal)
       : Promise.resolve();
-    const reply = await waitForCodexRelayFallbackReply(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs);
-    stopEvents = true;
-    void eventStream.catch(() => undefined);
-    return reply;
-  } catch {
+    try {
+      const reply = await waitForCodexRelayFallbackReply(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs, signal);
+      stopEvents = true;
+      void eventStream.catch(() => undefined);
+      if (signal?.aborted) {
+        if (!cancelSent) {
+          await cancelCodexRelayFallbackJob(relayBaseUrl, replyRelayId, created.id).catch(() => undefined);
+        }
+        return { ok: false, text: "! cancelled", exitCode: 130 };
+      }
+      return reply;
+    } finally {
+      stopEvents = true;
+      signal?.removeEventListener?.("abort", cancelRelayFallback);
+    }
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) {
+      return { ok: false, text: "! cancelled", exitCode: 130 };
+    }
     return null;
   }
 }
 
-async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, timeoutMs, onMessage, onTerminal, stopped) {
+async function cancelCodexRelayFallbackJob(relayBaseUrl, relayId, id) {
+  if (!relayBaseUrl || !relayId || !id) {
+    return;
+  }
+  await fetch(new URL("/api/agent/relay/cancel", relayBaseUrl), {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ relayId, id })
+  });
+}
+
+async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, timeoutMs, onMessage, onTerminal, stopped, signal = null) {
   const deadline = Date.now() + Math.max(5000, timeoutMs || 120000);
   let after = 0;
-  while (!stopped() && Date.now() < deadline) {
+  while (!stopped() && !signal?.aborted && Date.now() < deadline) {
     const url = new URL("/api/agent/relay/events", relayBaseUrl);
     url.searchParams.set("relayId", relayId);
     url.searchParams.set("id", id);
     url.searchParams.set("after", String(after));
     url.searchParams.set("wait", "1");
     try {
-      const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(url, { cache: "no-store", signal });
       if (!response.ok) {
         return;
       }
@@ -5026,18 +5159,18 @@ async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, timeoutM
   }
 }
 
-async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeoutMs) {
+async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeoutMs, signal = null) {
   if (!relayId || !id) {
     return null;
   }
   const deadline = Date.now() + Math.max(5000, timeoutMs || 120000);
-  while (Date.now() < deadline) {
+  while (!signal?.aborted && Date.now() < deadline) {
     const url = new URL("/api/agent/relay/reply", relayBaseUrl);
     url.searchParams.set("relayId", relayId);
     url.searchParams.set("id", id);
     url.searchParams.set("wait", "1");
     try {
-      const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(url, { cache: "no-store", signal });
       if (!response.ok) {
         return null;
       }
@@ -5056,7 +5189,7 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
       // Keep waiting until the outer timeout; transient network switches are common on remote devices.
     }
   }
-  return null;
+  return signal?.aborted ? { ok: false, text: "! cancelled", exitCode: 130 } : null;
 }
 
 async function buildAgentRuntimeContext({ text, context = "", source = {}, target = null, sourceTargets = [], sessionRecord = null, jobDir = "" }) {
