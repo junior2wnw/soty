@@ -81,7 +81,26 @@ const manifest = {
     openAiBuiltInTools: openAiToolPlane.builtInTools,
     model: "discover+invoke+durable-jobs+artifacts+source-proof",
     imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
-    routeProfileSchema: "soty.route-profiles.v1"
+    routeProfileSchema: "soty.route-profiles.v1",
+    capabilities: [
+      "discover",
+      "status",
+      "shell",
+      "script",
+      "durable-action",
+      "filesystem",
+      "soty-room-file-download",
+      "artifact",
+      "browser",
+      "desktop",
+      "screen",
+      "keyboard",
+      "mouse",
+      "wallpaper",
+      "audio",
+      "generated-asset-save-apply-verify",
+      "managed-windows-reinstall"
+    ]
   },
   routeProfiles,
   windowsReinstall,
@@ -186,6 +205,38 @@ function buildRouteProfiles(windowsReinstall) {
           contextFingerprint: "windows-machine-worker",
           receipt: "append-only sanitized route proof"
         }
+      },
+      {
+        id: "soty-generated-asset-wallpaper-fast-lane",
+        family: "generated-image-wallpaper",
+        title: "Native image generation to source-device wallpaper",
+        entryTool: "computer",
+        capability: "generated-asset-save-apply-verify",
+        defaultOperation: "artifact",
+        defaultAction: "wallpaper",
+        context: "codex-generated-image+source-user-desktop",
+        phases: ["generate-native", "artifact", "wallpaper", "verify"],
+        route: [
+          "generate the image with native OpenAI image_gen/image_generation",
+          "use the exact newest generated_images artifact path when Codex did not expose a direct path",
+          "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
+          "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
+          "verify with source-device proof: file path, SHA-256/bytes, display or wallpaper state"
+        ],
+        doNot: [
+          "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
+          "do not ask for OPENAI_API_KEY on the source device",
+          "do not replace the generated artifact with a stock/public image",
+          "do not check desktop/display before native generation just to choose size"
+        ],
+        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "display"],
+        learning: {
+          reuseKey: "soty-generated-asset-wallpaper-fast-lane",
+          scriptUse: "image_gen/artifact/wallpaper/verify",
+          successCriteria: "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
+          contextFingerprint: "codex-generated-image+source-user-desktop",
+          receipt: "append-only sanitized route proof"
+        }
       }
     ]
   };
@@ -236,6 +287,15 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
         phases: ["start", "status", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"],
         promotion: "Durable supervised execution for long or repeatable jobs."
+      },
+      {
+        name: "generated-asset",
+        entryTool: "computer",
+        kind: "managed-toolkit",
+        phases: ["image_gen", "artifact", "wallpaper", "verify"],
+        proof: ["localPath", "targetPath", "artifactSha256", "wallpaperPath", "display"],
+        routeProfile: "soty-generated-asset-wallpaper-fast-lane",
+        promotion: "Native OpenAI image generation with Soty artifact transfer and source desktop wallpaper proof."
       },
       {
         name: "windows-reinstall",

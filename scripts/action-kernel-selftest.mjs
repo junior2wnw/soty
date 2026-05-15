@@ -43,7 +43,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.24");
+      assertEqual(health.body.version, "0.4.25");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -61,7 +61,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!health.body.computerUsePlane.standardTools.includes("image_gen"));
       assertEqual(health.body.computerUsePlane.routeProfiles.schema, "soty.route-profiles.v1");
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-windows-reinstall-managed-fast-lane"));
+      assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
+      assert(health.body.computerUsePlane.capabilities.includes("wallpaper"));
       assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "computer");
@@ -665,6 +667,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("SOTY_FILE_CHUNK"));
       assert(agent.includes("soty-room-file-rail"));
       assert(agent.includes("Never use 0x0.st, file.io, temp.sh, bashupload"));
+      assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
+      assert(agent.includes("SOTY_ROUTES.md"));
+      assert(agent.includes("operation=artifact localPath=/agent/codex-stock-home/generated_images"));
+      assert(agent.includes("operation=wallpaper"));
+      assert(agent.includes("Hard stop: no shell base64/split"));
+      assert(agent.includes("Do not inspect `imagegen` SKILL.md"));
+      assert(agent.includes("If you already used shell/base64/public upload"));
+      assert(agent.includes("'wallpaper' {"));
+      assert(agent.includes("SystemParametersInfo(20, 0"));
       assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
       assert(agent.includes("native-openai-image-generation-required"));
       assert(!agent.includes("SOTY_OPENAI_API_KEY"));
@@ -809,7 +820,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.24");
+      assertEqual(manifest.version, "0.4.25");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -824,6 +835,10 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.routeProfiles.profiles[0].id, "soty-windows-reinstall-managed-fast-lane");
       assertEqual(manifest.routeProfiles.profiles[0].defaultAction, "prepare");
       assert(manifest.routeProfiles.profiles[0].doNot.some((item) => item.includes("manually download ISO")));
+      const generatedAssetProfile = manifest.routeProfiles.profiles.find((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane");
+      assert(generatedAssetProfile);
+      assertEqual(generatedAssetProfile.defaultAction, "wallpaper");
+      assert(generatedAssetProfile.doNot.some((item) => item.includes("public upload hosts")));
       assertEqual(manifest.windowsReinstall.scripts.length, 4);
       assert(manifest.windowsReinstall.scripts.some((script) => script.name === "managed"));
       assertEqual(manifest.automationToolkits.schema, "soty.automation-toolkits.v2");
@@ -834,6 +849,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!manifest.computerUsePlane.standardTools.includes("image_gen"));
       assert(manifest.computerUsePlane.openAiBuiltInTools.includes("image_generation"));
       assertEqual(manifest.computerUsePlane.imagePipeline, "openai.image_generation+computer.artifact-save-apply-verify");
+      assert(manifest.computerUsePlane.capabilities.includes("wallpaper"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
@@ -858,6 +874,9 @@ async function runScenarios({ relayUrl } = {}) {
       const durableKernel = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "durable-action");
       assert(durableKernel);
       assertEqual(durableKernel.entryTool, "jobs");
+      const generatedAssetToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "generated-asset");
+      assert(generatedAssetToolkit);
+      assertEqual(generatedAssetToolkit.routeProfile, "soty-generated-asset-wallpaper-fast-lane");
     }],
     ["agent installers stay lightweight by default", async () => {
       const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
@@ -919,7 +938,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.24"'));
+      assert(agentSource.includes('const agentVersion = "0.4.25"'));
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("stopAgentDialogReply"));
       assert(ui.includes("agent-target-select"));
@@ -949,14 +968,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.24";', 'const agentVersion = "0.4.23";');
-      assert(oldSource.includes('const agentVersion = "0.4.23"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.25";', 'const agentVersion = "0.4.24";');
+      assert(oldSource.includes('const agentVersion = "0.4.24"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.24",
+            version: "0.4.25",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
