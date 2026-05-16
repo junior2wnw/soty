@@ -4,8 +4,8 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId } from "./features/agent";
-import type { LocalAgentOperatorTarget, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
+import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
@@ -124,12 +124,21 @@ let chessOpenId = "";
 let chessSelectedSquare: Square | "" = "";
 let chessPromotion: { readonly tunnelId: string; readonly from: Square; readonly to: Square } | null = null;
 let localAgent: LocalAgentStatus = { ok: false };
+let agentButtonAgent: LocalAgentStatus = { ok: false };
 let agentProbeTimer = 0;
 let agentProbe: Promise<LocalAgentStatus> | null = null;
 let companionProbe: Promise<LocalAgentStatus> | null = null;
 let agentRelease: AgentRelease | null = null;
 let agentReleaseProbe: Promise<AgentRelease | null> | null = null;
 let agentReleaseCheckedAt = 0;
+let agentButtonProbe: Promise<AgentButtonMode> | null = null;
+let agentButtonWatchTimer = 0;
+let agentButtonWatchFastUntil = 0;
+const agentButtonWatchFastMs = 2_000;
+const agentButtonWatchNormalMs = 8_000;
+const agentButtonWatchLinkMs = 20_000;
+const agentButtonWatchHiddenMs = 60_000;
+const agentButtonInstallWatchMs = 10 * 60_000;
 let agentSourceGrantRefreshAt = 0;
 const agentSourceGrantRefreshMs = 30_000;
 type WriterLine = {
@@ -195,7 +204,6 @@ const sotyFileStreams = new Map<string, SotyFileStreamState>();
 const operatorBridgeProtocol = "soty.operator-bridge.v2";
 const agentReplyQueues = new Map<string, Promise<void>>();
 const agentReplyControllers = new Map<string, AbortController>();
-const agentDirectedTargets = new Map<string, string>();
 const agentThinking = new Set<string>();
 let agentDoneAudio: AudioContext | null = null;
 let agentSourceControlTunnelId = "";
@@ -214,11 +222,21 @@ window.addEventListener("appinstalled", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
+  sendOperatorVisibility();
+  if (document.visibilityState === "hidden") {
+    void ensureOperatorBridge();
+    return;
+  }
   if (document.visibilityState === "visible" && selectedId) {
     clearTunnelNotices(selectedId);
     tunnels = markTunnel(selectedId, false);
     renderTiles();
+    startAgentButtonWatcher(true);
   }
+});
+
+window.addEventListener("online", () => {
+  startAgentButtonWatcher(true);
 });
 
 void boot();
@@ -268,11 +286,13 @@ async function boot(): Promise<void> {
     tunnels = upsertTunnel(createTunnel());
   }
   selectedId = loadSelectedTunnelId() || tunnels[0]?.id || "";
+  restorePendingAgentDialogSelection();
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
-  void refreshAgentButtonState();
+  startAgentButtonWatcher(true);
+  resumePendingAgentDialogReplies();
 }
 
 async function registerServiceWorker(): Promise<void> {
@@ -366,12 +386,14 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
     tunnels = upsertTunnel(createTunnel());
   }
   selectedId = loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
+  restorePendingAgentDialogSelection();
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
   applyRestoredTextSnapshots(restoredTexts);
-  void refreshAgentButtonState();
+  startAgentButtonWatcher(true);
+  resumePendingAgentDialogReplies();
 }
 
 async function restoreFromOperatorExportText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {
@@ -680,7 +702,6 @@ function renderApp(): void {
             <small class="dialog-state">OFFLINE</small>
           </span>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
-          <select class="agent-target-select" aria-label="agent target" data-tooltip="Agent target"></select>
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
@@ -770,19 +791,6 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
-  });
-  app.querySelector<HTMLSelectElement>(".agent-target-select")?.addEventListener("change", (event) => {
-    const select = event.currentTarget;
-    if (!(select instanceof HTMLSelectElement) || !selectedId) {
-      return;
-    }
-    const value = select.value.trim();
-    if (value) {
-      agentDirectedTargets.set(selectedId, value);
-    } else {
-      agentDirectedTargets.delete(selectedId);
-    }
-    renderDialogChrome();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -1156,14 +1164,84 @@ async function fetchAgentRelease(): Promise<AgentRelease | null> {
   }
 }
 
-async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> {
-  await refreshAgentRelease(force);
-  localAgent = await checkLocalCompanionAgent(1200);
-  renderDialogChrome();
-  return agentButtonMode(localAgent);
+function startAgentButtonWatcher(force = false): void {
+  if (!device) {
+    return;
+  }
+  scheduleAgentButtonRefresh(force ? 0 : nextAgentButtonWatchDelay(), force);
 }
 
-function agentButtonMode(agent: LocalAgentStatus = localAgent): AgentButtonMode {
+function watchAgentInstallProgress(): void {
+  agentButtonWatchFastUntil = Math.max(agentButtonWatchFastUntil, Date.now() + agentButtonInstallWatchMs);
+  startAgentButtonWatcher(true);
+}
+
+function scheduleAgentButtonRefresh(delayMs: number, force = false): void {
+  window.clearTimeout(agentButtonWatchTimer);
+  if (!device) {
+    return;
+  }
+  agentButtonWatchTimer = window.setTimeout(() => void runAgentButtonWatcher(force), Math.max(0, delayMs));
+}
+
+async function runAgentButtonWatcher(force = false): Promise<void> {
+  if (!device) {
+    return;
+  }
+  try {
+    await refreshAgentButtonState(force);
+  } catch {
+    renderDialogChrome();
+  } finally {
+    if (device) {
+      scheduleAgentButtonRefresh(nextAgentButtonWatchDelay());
+    }
+  }
+}
+
+function nextAgentButtonWatchDelay(): number {
+  if (document.visibilityState === "hidden") {
+    return agentButtonWatchHiddenMs;
+  }
+  if (Date.now() < agentButtonWatchFastUntil) {
+    return agentButtonWatchFastMs;
+  }
+  return agentButtonMode() === "link" ? agentButtonWatchLinkMs : agentButtonWatchNormalMs;
+}
+
+async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> {
+  if (agentButtonProbe) {
+    return agentButtonProbe;
+  }
+  const probe = (async () => {
+    await refreshAgentRelease(force);
+    const directAgent = await checkLocalCompanionAgent(1200);
+    const relayedMachineAgent = device?.id
+      ? await checkAgentSourceMachineAgent(device.id, 1200)
+      : { ok: false };
+    localAgent = directAgent;
+    agentButtonAgent = chooseAgentButtonStatus(directAgent, relayedMachineAgent);
+    renderDialogChrome();
+    return agentButtonMode(agentButtonAgent);
+  })();
+  agentButtonProbe = probe;
+  try {
+    return await probe;
+  } finally {
+    if (agentButtonProbe === probe) {
+      agentButtonProbe = null;
+    }
+  }
+}
+
+function chooseAgentButtonStatus(directAgent: LocalAgentStatus, relayedMachineAgent: LocalAgentStatus): LocalAgentStatus {
+  if (isAgentMachineLinkReady(relayedMachineAgent)) {
+    return relayedMachineAgent;
+  }
+  return directAgent;
+}
+
+function agentButtonMode(agent: LocalAgentStatus = agentButtonAgent): AgentButtonMode {
   if (!agent.ok || agent.scope === "Relay") {
     return "download";
   }
@@ -1173,15 +1251,33 @@ function agentButtonMode(agent: LocalAgentStatus = localAgent): AgentButtonMode 
   if (agentRelease?.version && compareVersion(agent.version || "0.0.0", agentRelease.version) < 0) {
     return "update";
   }
+  if (!isAgentMachineLinkReady(agent)) {
+    return "download";
+  }
   return "link";
 }
 
+function isAgentMachineLinkReady(agent: LocalAgentStatus): boolean {
+  return agent.ok === true
+    && agent.sourceWorker === true
+    && agent.system === true
+    && agent.scope === "Machine"
+    && agent.autoUpdate !== false
+    && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
+}
+
 function requestAgentDownload(sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }): void {
-  downloadAgentInstallerForDevice("machine", sourceDeviceForInstaller?.id ? sourceDeviceForInstaller : device || {});
+  downloadAgentInstallerForDevice(
+    "machine",
+    sourceDeviceForInstaller?.id ? sourceDeviceForInstaller : device || {},
+    agentRelease?.version || ""
+  );
+  watchAgentInstallProgress();
 }
 
 function markAgentDownloadNeeded(): void {
   void refreshAgentRelease(true);
+  watchAgentInstallProgress();
   renderDialogChrome();
 }
 
@@ -1322,6 +1418,7 @@ function clearCurrentDialog(tunnelId: string): void {
   activeActivityTicks.delete(tunnelId);
   clearLiveDraftState(tunnelId);
   agentThinking.delete(tunnelId);
+  clearPendingAgentRelayRepliesForTunnel(tunnelId);
   void sync.sendLiveDraft("");
   if (tunnelId === selectedId) {
     if (textarea) {
@@ -1476,19 +1573,11 @@ function renderDialogChrome(): void {
   const state = app.querySelector<HTMLElement>(".dialog-state");
   const id = app.querySelector<HTMLElement>(".dialog-id");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
-  const head = app.querySelector<HTMLElement>(".dialog-head");
-  const targetSelect = app.querySelector<HTMLSelectElement>(".agent-target-select");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
-  const targets = operatorTargets();
-  const showTargetSelect = Boolean(tunnel && isAgentTunnel(tunnel) && targets.length > 0);
   if (shell) {
     shell.style.setProperty("--peer-color", color);
-    shell.classList.toggle("has-agent-target", showTargetSelect);
-  }
-  if (head) {
-    head.classList.toggle("has-agent-target", showTargetSelect);
   }
   if (avatar) {
     avatar.textContent = initials(label);
@@ -1506,20 +1595,6 @@ function renderDialogChrome(): void {
   }
   if (id) {
     id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
-  }
-  if (targetSelect) {
-    targetSelect.classList.toggle("is-visible", showTargetSelect);
-    targetSelect.disabled = !showTargetSelect;
-    if (showTargetSelect) {
-      const selectedTarget = selectedAgentDirectedTarget(selectedId, targets);
-      targetSelect.replaceChildren(
-        new Option("AUTO", ""),
-        ...targets.map((target) => new Option(`${target.access ? "LINK " : ""}${target.label}`.slice(0, 64), target.id))
-      );
-      targetSelect.value = selectedTarget?.id || "";
-    } else {
-      targetSelect.replaceChildren();
-    }
   }
   if (sendButton) {
     const stopping = agentThinking.has(selectedId);
@@ -2290,17 +2365,31 @@ function publishOperatorTargets(): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     return;
   }
+  const targets = operatorTargets();
+  const activeTunnel = selectedId ? loadTunnels().find((item) => item.id === selectedId) || null : null;
   ws.send(JSON.stringify({
     type: "operator.targets",
     deviceId: device?.id || "",
     deviceNick: device?.nick || "",
-    targets: operatorTargets()
+    targets,
+    deviceNetwork: agentDeviceNetworkContext(selectedId, activeTunnel, targets)
+  }));
+}
+
+function sendOperatorVisibility(): void {
+  const ws = operatorSocket;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(JSON.stringify({
+    type: "operator.visibility",
+    visible: document.visibilityState === "visible"
   }));
 }
 
 function operatorTargets(): LocalAgentOperatorTarget[] {
   return sortedVisibleTunnels()
-    .filter((tunnel) => !isAgentTunnel(tunnel))
+    .filter((tunnel) => !isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id))
     .map((tunnel, index) => {
       const deviceIds = [...new Set((peerDevices.get(tunnel.id) ?? []).map((peer) => peer.id).filter(Boolean))];
       const hostDeviceId = remoteAccess.get(tunnel.id) || "";
@@ -2309,7 +2398,7 @@ function operatorTargets(): LocalAgentOperatorTarget[] {
         label: counterpartyLabel(tunnel),
         deviceIds,
         hostDeviceId,
-        access: remoteAccess.has(tunnel.id),
+        access: true,
         host: remoteEnabled.has(tunnel.id),
         selected: tunnel.id === selectedId,
         rank: index + 1,
@@ -2318,53 +2407,49 @@ function operatorTargets(): LocalAgentOperatorTarget[] {
     });
 }
 
-function preferredAgentOperatorTargetForDialog(
+function agentDeviceNetworkContext(
   tunnelId: string,
-  text: string,
-  targets: readonly LocalAgentOperatorTarget[]
-): LocalAgentOperatorTarget | null {
-  const directed = selectedAgentDirectedTarget(tunnelId, targets);
-  if (directed) {
-    return directed;
+  tunnel: TunnelRecord | null,
+  targets: readonly LocalAgentOperatorTarget[] = operatorTargets()
+): LocalAgentDeviceNetwork {
+  const selectedTarget = tunnel && isAgentTunnel(tunnel)
+    ? defaultAgentDialogTarget(targets)
+    : linkedOperatorTargetForTunnel(tunnelId, targets);
+  const selectedTargetDeviceId = selectedTarget?.hostDeviceId || selectedTarget?.deviceIds?.[0] || "";
+  return {
+    protocol: "soty-device-network.v1",
+    controllerDeviceId: device?.id || "",
+    controllerDeviceNick: device?.nick || "",
+    activeTunnelId: tunnelId || "",
+    activeTunnelLabel: tunnel ? counterpartyLabel(tunnel) : "",
+    activeTunnelKind: tunnel && isAgentTunnel(tunnel) ? "agent" : "peer",
+    selectedTargetId: selectedTarget?.id || "",
+    selectedTargetLabel: selectedTarget?.label || "",
+    selectedTargetDeviceId,
+    selectedTargetAccess: selectedTarget?.access === true,
+    selectedTargetLink: Boolean(selectedTarget),
+    capabilities: [
+      "chat-selected-target",
+      "linked-device-actions",
+      "room-file-transfer",
+      "artifact-transfer",
+      "desktop-actions",
+      "multi-device-context"
+    ],
+    targets: [...targets]
+  };
+}
+
+function linkedOperatorTargetForTunnel(tunnelId: string, targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
+  if (!tunnelId) {
+    return null;
   }
+  return targets.find((target) => target.id === tunnelId) || null;
+}
+
+function defaultAgentDialogTarget(targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
   const accessTargets = targets.filter((target) => target.access === true);
-  const byPrefix = targetMentionedAtStart(text, accessTargets)
-    || targetMentionedAtStart(text, targets);
-  if (byPrefix?.access === true) {
-    return byPrefix;
-  }
-  return null;
-}
-
-function selectedAgentDirectedTarget(
-  tunnelId: string,
-  targets: readonly LocalAgentOperatorTarget[]
-): LocalAgentOperatorTarget | null {
-  const id = agentDirectedTargets.get(tunnelId) || "";
-  if (!id) {
-    return null;
-  }
-  const target = targets.find((item) => item.id === id) || null;
-  if (!target) {
-    agentDirectedTargets.delete(tunnelId);
-  }
-  return target;
-}
-
-function targetMentionedAtStart(text: string, targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
-  const body = normalizeChatMessage(text).trim();
-  const match = /^([^:\n]{1,80})\s*:/u.exec(body);
-  if (!match) {
-    return null;
-  }
-  const needle = cleanNick(match[1] || "").toLowerCase();
-  if (!needle) {
-    return null;
-  }
-  return targets.find((target) => cleanNick(target.label).toLowerCase() === needle)
-    || targets.find((target) => target.id.toLowerCase() === needle)
-    || targets.find((target) => cleanNick(target.label).toLowerCase().includes(needle))
-    || null;
+  return accessTargets.length === 1 ? accessTargets[0] ?? null : null;
 }
 
 async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string; readonly runAs?: string; readonly timeoutMs?: number }): Promise<void> {
@@ -4000,16 +4085,25 @@ async function finalizeComposerDraft(): Promise<void> {
 }
 
 function containsLordAgentInvocation(text: string): boolean {
-  return /(^|[^\p{L}\p{N}_])(?:лорд|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+  return /(^|[^\p{L}\p{N}_])(?:\u043b\u043e\u0440\u0434|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+}
+
+function stripLordAgentInvocation(text: string): string {
+  const body = normalizeChatMessage(text);
+  const stripped = body.replace(/^\s*(?:\u043b\u043e\u0440\u0434|lord)\s*[,.:;!?-]*\s*/iu, "").trim();
+  return stripped || body;
 }
 
 function stopAgentDialogReply(tunnelId: string): void {
   const controller = agentReplyControllers.get(tunnelId);
   if (!controller) {
+    clearPendingAgentRelayRepliesForTunnel(tunnelId);
+    setAgentThinking(tunnelId, false);
     return;
   }
   controller.abort();
   agentReplyControllers.delete(tunnelId);
+  clearPendingAgentRelayRepliesForTunnel(tunnelId);
   appendTerminalLine(tunnelId, "! agent stop requested");
   setAgentThinking(tunnelId, false);
 }
@@ -4065,6 +4159,79 @@ function ensureAgentDoneAudio(): AudioContext | null {
   return agentDoneAudio;
 }
 
+function restorePendingAgentDialogSelection(): void {
+  const pending = loadPendingAgentRelayReplies()
+    .find((reply) => loadTunnels().some((tunnel) => tunnel.id === reply.tunnelId && isAgentReplyTunnel(tunnel)));
+  if (!pending) {
+    return;
+  }
+  selectedId = pending.tunnelId;
+  saveSelectedTunnelId(pending.tunnelId);
+}
+
+function resumePendingAgentDialogReplies(): void {
+  for (const pending of loadPendingAgentRelayReplies()) {
+    const tunnel = loadTunnels().find((item) => item.id === pending.tunnelId);
+    if (!tunnel || !isAgentReplyTunnel(tunnel)) {
+      clearPendingAgentRelayReply(pending.id);
+      continue;
+    }
+    if (agentReplyQueues.has(pending.tunnelId)) {
+      continue;
+    }
+    const next = resumeAgentDialogReply(pending);
+    agentReplyQueues.set(pending.tunnelId, next);
+    void next.finally(() => {
+      if (agentReplyQueues.get(pending.tunnelId) === next) {
+        agentReplyQueues.delete(pending.tunnelId);
+      }
+    });
+  }
+}
+
+function isAgentReplyTunnel(tunnel: TunnelRecord): boolean {
+  return isAgentTunnel(tunnel) || remoteAccess.has(tunnel.id);
+}
+
+async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Promise<void> {
+  const tunnelId = pending.tunnelId;
+  const controller = new AbortController();
+  agentReplyControllers.set(tunnelId, controller);
+  setAgentThinking(tunnelId, true);
+  appendTerminalLine(tunnelId, "+ agent reply resumed");
+  const streamedMessages = pending.messages
+    .map((message) => normalizeChatMessage(cleanAgentReplyText(message)))
+    .filter(Boolean);
+  const streamedTerminal = pending.terminal
+    .map((message) => cleanTerminalTranscript(message))
+    .filter(Boolean);
+  try {
+    const reply = await resumeAgentRelayReply(pending, (message) => {
+      const streamed = normalizeChatMessage(cleanAgentReplyText(message));
+      if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
+        return;
+      }
+      streamedMessages.push(streamed);
+      appendAgentChatMessage(tunnelId, streamed);
+    }, (message) => {
+      const streamed = cleanTerminalTranscript(message);
+      if (!streamed || streamedTerminal[streamedTerminal.length - 1] === streamed) {
+        return;
+      }
+      streamedTerminal.push(streamed);
+      appendAgentTerminalTranscript(tunnelId, streamed);
+    }, controller.signal);
+    if (!controller.signal.aborted) {
+      finishAgentDialogReply(tunnelId, reply, streamedMessages, streamedTerminal);
+    }
+  } finally {
+    if (agentReplyControllers.get(tunnelId) === controller) {
+      agentReplyControllers.delete(tunnelId);
+    }
+    setAgentThinking(tunnelId, false);
+  }
+}
+
 function sendAgentDialogMessage(
   tunnelId: string,
   text: string,
@@ -4076,9 +4243,11 @@ function sendAgentDialogMessage(
     return Promise.resolve();
   }
   const targets = operatorTargets();
+  const deviceNetwork = agentDeviceNetworkContext(tunnelId, tunnel, targets);
   const preferredTarget = agentTunnel
-    ? preferredAgentOperatorTargetForDialog(tunnelId, text, targets)
-    : targets.find((target) => target.id === tunnelId) ?? null;
+    ? defaultAgentDialogTarget(targets)
+    : linkedOperatorTargetForTunnel(tunnelId, targets);
+  const taskText = options.explicitMention === true ? stripLordAgentInvocation(text) : text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const source: LocalAgentRequestSource = {
     tunnelId,
@@ -4088,7 +4257,8 @@ function sendAgentDialogMessage(
     appOrigin: window.location.origin,
     preferredTargetId: preferredTarget?.id || "",
     preferredTargetLabel: preferredTarget?.label || "",
-    operatorTargets: targets
+    operatorTargets: targets,
+    deviceNetwork
   };
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const next = previous
@@ -4103,8 +4273,10 @@ function sendAgentDialogMessage(
       try {
         if (agentTunnel) {
           await prepareAgentSourceForDialog(tunnelId, tunnel);
+        } else if (options.explicitMention === true) {
+          await preparePeerAgentInvocation(tunnelId);
         }
-        reply = await askLocalAgentReply(text, context, source, 2 * 60 * 60_000, (message) => {
+        reply = await askLocalAgentReply(taskText, context, source, 2 * 60 * 60_000, (message) => {
           const streamed = normalizeChatMessage(cleanAgentReplyText(message));
           if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
             return;
@@ -4128,36 +4300,7 @@ function sendAgentDialogMessage(
       if (controller.signal.aborted) {
         return;
       }
-      let finalReply = reply;
-      let body = normalizeChatMessage(cleanAgentReplyText(reply.text));
-      if (streamedMessages.length > 0) {
-        const delivered = new Set(streamedMessages);
-        const remainingMessages = (reply.messages ?? [])
-          .map((message) => normalizeChatMessage(cleanAgentReplyText(message)))
-          .filter((message) => message && !delivered.has(message));
-        finalReply = {
-          ...reply,
-          text: "",
-          ...(remainingMessages.length > 0 ? { messages: remainingMessages } : { messages: [] })
-        };
-        body = "";
-      }
-      const deliveredTerminal = new Set(streamedTerminal);
-      for (const message of reply.terminal ?? []) {
-        const terminal = cleanTerminalTranscript(message);
-        if (terminal && !deliveredTerminal.has(terminal)) {
-          appendAgentTerminalTranscript(tunnelId, terminal);
-        }
-      }
-      if (shouldOfferAgentInstall(reply)) {
-        markAgentDownloadNeeded();
-      }
-      const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
-      if (!appended && !reply.ok && body) {
-        appendAgentChatMessage(tunnelId, userVisibleAgentFailureText(body));
-        appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
-      }
-      playAgentDoneSound();
+      finishAgentDialogReply(tunnelId, reply, streamedMessages, streamedTerminal);
     });
   agentReplyQueues.set(tunnelId, next);
   void next.finally(() => {
@@ -4186,6 +4329,60 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500).catch(() => false);
   startAgentSourceControl(tunnelId);
   publishOperatorTargets();
+}
+
+async function preparePeerAgentInvocation(tunnelId: string): Promise<void> {
+  if (!device) {
+    return;
+  }
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  if (!tunnel || isAgentTunnel(tunnel) || !remoteAccess.has(tunnelId)) {
+    return;
+  }
+  if (!terminalState.has(tunnelId)) {
+    setTerminalState(tunnelId, "idle");
+  }
+  ensureSync(tunnel);
+  await ensureOperatorBridge();
+  publishOperatorTargets();
+}
+
+function finishAgentDialogReply(
+  tunnelId: string,
+  reply: LocalAgentReply,
+  streamedMessages: readonly string[],
+  streamedTerminal: readonly string[]
+): void {
+  let finalReply = reply;
+  let body = normalizeChatMessage(cleanAgentReplyText(reply.text));
+  if (streamedMessages.length > 0) {
+    const delivered = new Set(streamedMessages);
+    const remainingMessages = (reply.messages ?? [])
+      .map((message) => normalizeChatMessage(cleanAgentReplyText(message)))
+      .filter((message) => message && !delivered.has(message));
+    finalReply = {
+      ...reply,
+      text: "",
+      ...(remainingMessages.length > 0 ? { messages: remainingMessages } : { messages: [] })
+    };
+    body = "";
+  }
+  const deliveredTerminal = new Set(streamedTerminal);
+  for (const message of reply.terminal ?? []) {
+    const terminal = cleanTerminalTranscript(message);
+    if (terminal && !deliveredTerminal.has(terminal)) {
+      appendAgentTerminalTranscript(tunnelId, terminal);
+    }
+  }
+  if (shouldOfferAgentInstall(reply)) {
+    markAgentDownloadNeeded();
+  }
+  const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
+  if (!appended && !reply.ok && body) {
+    appendAgentChatMessage(tunnelId, userVisibleAgentFailureText(body));
+    appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
+  }
+  playAgentDoneSound();
 }
 
 function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fallback: string): boolean {

@@ -956,16 +956,41 @@ function withSourceRelay(source, sourceRelayId) {
 function enrichWithAgentSourceTarget(source, agentSource, forcePreferred, text = "") {
   const target = publicAgentSourceTarget(agentSource);
   const existing = Array.isArray(source.operatorTargets) ? source.operatorTargets : [];
-  const hasPreferred = preferredTargetMentioned(text, source, existing);
+  const preferred = forcePreferred ? null : preferredLinkedOperatorTarget(source, text, existing);
   return {
     ...source,
-    preferredTargetId: !forcePreferred && hasPreferred ? source.preferredTargetId : target.id,
-    preferredTargetLabel: !forcePreferred && hasPreferred ? source.preferredTargetLabel : target.label,
-    operatorTargets: [
-      ...existing.filter((item) => item.id !== target.id),
-      target
-    ]
+    preferredTargetId: preferred?.id || target.id,
+    preferredTargetLabel: preferred?.label || target.label,
+    operatorTargets: mergeOperatorTargets(existing, [target]),
+    ...(source.deviceNetwork?.protocol ? {
+      deviceNetwork: {
+        ...source.deviceNetwork,
+        targets: mergeOperatorTargets(source.deviceNetwork.targets, [target])
+      }
+    } : {})
   };
+}
+
+function preferredLinkedOperatorTarget(source, text, targets) {
+  return preferredTargetAlreadySelected(source, targets)
+    || preferredTargetMentioned(text, targets);
+}
+
+function preferredTargetAlreadySelected(source, targets) {
+  const preferredId = normalizeTargetText(source?.preferredTargetId);
+  const preferredLabel = normalizeTargetText(source?.preferredTargetLabel);
+  if (!preferredId && !preferredLabel) {
+    return null;
+  }
+  return targets.find((target) => {
+    if (target?.access !== true) {
+      return false;
+    }
+    const id = normalizeTargetText(target?.id);
+    const label = normalizeTargetText(target?.label);
+    return (preferredId && id === preferredId)
+      || (preferredLabel && label === preferredLabel);
+  }) || null;
 }
 
 function findMentionedAgentSource(targetRelayId, clientRelayId, text) {
@@ -990,25 +1015,33 @@ function agentSourceMatchesPrefix(source, prefix) {
     || (deviceId && prefix === `agent-source:${deviceId}`);
 }
 
-function preferredTargetMentioned(text, source, targets) {
+function preferredTargetMentioned(text, targets) {
   const prefix = targetPrefix(text);
-  if (!prefix) {
-    return false;
+  const body = normalizeTargetText(text);
+  if (!prefix && !body) {
+    return null;
   }
-  const preferredId = normalizeTargetText(source.preferredTargetId);
-  const preferredLabel = normalizeTargetText(source.preferredTargetLabel);
-  if (preferredId && prefix === preferredId) {
-    return true;
-  }
-  if (preferredLabel && (prefix === preferredLabel || preferredLabel.includes(prefix) || prefix.includes(preferredLabel))) {
-    return true;
-  }
-  return targets.some((target) => {
+  return [...targets]
+    .sort((left, right) => normalizeTargetText(right?.label).length - normalizeTargetText(left?.label).length)
+    .find((target) => {
+    if (target?.access !== true) {
+      return false;
+    }
     const id = normalizeTargetText(target?.id);
     const label = normalizeTargetText(target?.label);
-    return (id && prefix === id)
-      || (label && (prefix === label || label.includes(prefix) || prefix.includes(label)));
-  });
+    return targetTextMatches(prefix, id)
+      || targetTextMatches(prefix, label)
+      || targetTextMentions(body, id)
+      || targetTextMentions(body, label);
+  }) || null;
+}
+
+function targetTextMatches(value, needle) {
+  return Boolean(value && needle && (value === needle || needle.includes(value) || value.includes(needle)));
+}
+
+function targetTextMentions(value, needle) {
+  return Boolean(value && needle && needle.length >= 2 && (value === needle || value.includes(needle)));
 }
 
 function targetPrefix(text) {
@@ -1017,7 +1050,7 @@ function targetPrefix(text) {
 }
 
 function normalizeTargetText(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "").replace(/\s+/gu, " ").trim().toLowerCase();
 }
 
 function publicAgentSourceTarget(source) {
@@ -1274,6 +1307,8 @@ function cleanAgentSource(value) {
   if (!value || typeof value !== "object") {
     return {};
   }
+  const deviceNetwork = cleanDeviceNetwork(value.deviceNetwork);
+  const operatorTargets = mergeOperatorTargets(cleanOperatorTargets(value.operatorTargets), deviceNetwork.targets);
   return {
     tunnelId: cleanText(value.tunnelId, maxSourceChars),
     tunnelLabel: cleanText(value.tunnelLabel, maxSourceChars),
@@ -1281,11 +1316,68 @@ function cleanAgentSource(value) {
     deviceNick: cleanText(value.deviceNick, maxSourceChars),
     appOrigin: cleanText(value.appOrigin, maxSourceChars),
     sourceRelayId: normalizeRelayId(value.sourceRelayId),
-    preferredTargetId: cleanText(value.preferredTargetId, maxSourceChars),
-    preferredTargetLabel: cleanText(value.preferredTargetLabel, maxSourceChars),
+    preferredTargetId: cleanText(value.preferredTargetId, maxSourceChars) || deviceNetwork.selectedTargetId,
+    preferredTargetLabel: cleanText(value.preferredTargetLabel, maxSourceChars) || deviceNetwork.selectedTargetLabel,
     localAgentDirect: value.localAgentDirect === true,
-    operatorTargets: cleanOperatorTargets(value.operatorTargets)
+    operatorTargets,
+    deviceNetwork
   };
+}
+
+function cleanDeviceNetwork(value) {
+  if (!value || typeof value !== "object") {
+    return emptyDeviceNetwork();
+  }
+  return {
+    protocol: "soty-device-network.v1",
+    controllerDeviceId: cleanText(value.controllerDeviceId, maxSourceChars),
+    controllerDeviceNick: cleanText(value.controllerDeviceNick, maxSourceChars),
+    activeTunnelId: cleanText(value.activeTunnelId, maxSourceChars),
+    activeTunnelLabel: cleanText(value.activeTunnelLabel, maxSourceChars),
+    activeTunnelKind: value.activeTunnelKind === "agent" ? "agent" : "peer",
+    selectedTargetId: cleanText(value.selectedTargetId, maxSourceChars),
+    selectedTargetLabel: cleanText(value.selectedTargetLabel, maxSourceChars),
+    selectedTargetDeviceId: cleanText(value.selectedTargetDeviceId, maxSourceChars),
+    selectedTargetAccess: value.selectedTargetAccess === true,
+    selectedTargetLink: value.selectedTargetLink === true,
+    capabilities: cleanStringList(value.capabilities, 32, 80),
+    targets: cleanOperatorTargets(value.targets)
+  };
+}
+
+function emptyDeviceNetwork() {
+  return {
+    protocol: "soty-device-network.v1",
+    controllerDeviceId: "",
+    controllerDeviceNick: "",
+    activeTunnelId: "",
+    activeTunnelLabel: "",
+    activeTunnelKind: "peer",
+    selectedTargetId: "",
+    selectedTargetLabel: "",
+    selectedTargetDeviceId: "",
+    selectedTargetAccess: false,
+    selectedTargetLink: false,
+    capabilities: [],
+    targets: []
+  };
+}
+
+function cleanStringList(value, maxItems, maxChars) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.map((item) => cleanText(item, maxChars)).filter(Boolean))].slice(0, maxItems);
+}
+
+function mergeOperatorTargets(...groups) {
+  const merged = new Map();
+  for (const target of groups.flat()) {
+    if (target?.id && !merged.has(target.id)) {
+      merged.set(target.id, target);
+    }
+  }
+  return [...merged.values()].slice(0, 64);
 }
 
 function cleanOperatorTargets(value) {

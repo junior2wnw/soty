@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import WebSocket from "ws";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 import { attachAgentRelay } from "../server/agent-relay.js";
 
@@ -43,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.25");
+      assertEqual(health.body.version, "0.4.43");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -266,6 +267,167 @@ async function runScenarios({ relayUrl } = {}) {
         await closeServer(relayServer);
       }
     }],
+    ["agent relay preserves selected linked operator target", async () => {
+      const app = express();
+      attachAgentRelay(app);
+      const relayServer = createServer(app);
+      await listen(relayServer, "127.0.0.1", 0);
+      const base = `http://127.0.0.1:${relayServer.address().port}`;
+      const clientRelayId = "relay_selected_target_client_00000001";
+      const serverRelayId = "srv_codex_selected_target_00000001";
+      const sourceDeviceId = "dev-current";
+      try {
+        await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
+        await relayRequest(base, "POST", "/api/agent/source/grant", {
+          relayId: clientRelayId,
+          deviceId: sourceDeviceId,
+          deviceNick: "current-comp",
+          enabled: true
+        });
+        await relayRequest(base, "GET", `/api/agent/source/poll?${sourceWorkerQuery(clientRelayId, sourceDeviceId, {
+          scope: "Machine",
+          companion: false,
+          system: true,
+          executionPlane: "system-controller+interactive-user-bridge",
+          interactiveTaskBridge: true
+        })}`);
+        const created = await relayRequest(base, "POST", "/api/agent/relay/request", {
+          relayId: clientRelayId,
+          text: "put wallpaper there",
+          context: "",
+          source: {
+            tunnelId: "agent-dialog",
+            tunnelLabel: "Agent",
+            deviceId: sourceDeviceId,
+            deviceNick: "current-comp",
+            preferredTargetId: "room-way",
+            preferredTargetLabel: "вай вай",
+            operatorTargets: [
+              {
+                id: "room-way",
+                label: "вай вай",
+                deviceIds: ["dev-way"],
+                hostDeviceId: "dev-way",
+                access: true,
+                host: false,
+                selected: false,
+                lastActionAt: new Date().toISOString()
+              }
+            ]
+          }
+        });
+        assertEqual(created.status, 200);
+        const poll = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
+        assertEqual(poll.status, 200);
+        assertEqual(poll.body.jobs.length, 1);
+        assertEqual(poll.body.jobs[0].source.preferredTargetId, "room-way");
+        assertEqual(poll.body.jobs[0].source.preferredTargetLabel, "вай вай");
+        assert(poll.body.jobs[0].source.operatorTargets.some((target) => target.id === "agent-source:dev-current"));
+        const mentioned = await relayRequest(base, "POST", "/api/agent/relay/request", {
+          relayId: clientRelayId,
+          text: "на вай вай поменяй обои",
+          context: "",
+          source: {
+            tunnelId: "agent-dialog",
+            tunnelLabel: "Agent",
+            deviceId: sourceDeviceId,
+            deviceNick: "current-comp",
+            operatorTargets: [
+              {
+                id: "room-way",
+                label: "вай вай",
+                deviceIds: ["dev-way"],
+                hostDeviceId: "dev-way",
+                access: true,
+                host: false,
+                selected: false,
+                lastActionAt: new Date().toISOString()
+              }
+            ],
+            deviceNetwork: {
+              protocol: "soty-device-network.v1",
+              controllerDeviceId: sourceDeviceId,
+              controllerDeviceNick: "current-comp",
+              activeTunnelId: "room-way",
+              activeTunnelLabel: "room-way",
+              activeTunnelKind: "peer",
+              selectedTargetId: "room-way",
+              selectedTargetLabel: "room-way",
+              selectedTargetDeviceId: "dev-way",
+              selectedTargetAccess: true,
+              selectedTargetLink: true,
+              capabilities: ["linked-device-actions", "multi-device-context"],
+              targets: [
+                {
+                  id: "room-way",
+                  label: "room-way",
+                  deviceIds: ["dev-way"],
+                  hostDeviceId: "dev-way",
+                  access: true,
+                  host: false,
+                  selected: true,
+                  lastActionAt: new Date().toISOString()
+                }
+              ]
+            }
+          }
+        });
+        assertEqual(mentioned.status, 200);
+        const pollMention = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
+        assertEqual(pollMention.status, 200);
+        const mentionedJob = pollMention.body.jobs.find((job) => job.id === mentioned.body.id);
+        assert(mentionedJob);
+        assertEqual(mentionedJob.source.preferredTargetId, "room-way");
+        assertEqual(mentionedJob.source.deviceNetwork.selectedTargetId, "room-way");
+        assert(mentionedJob.source.deviceNetwork.capabilities.includes("multi-device-context"));
+        const agentDialogDefault = await relayRequest(base, "POST", "/api/agent/relay/request", {
+          relayId: clientRelayId,
+          text: "install vscode",
+          context: "",
+          source: {
+            tunnelId: "agent-dialog",
+            tunnelLabel: "Agent",
+            deviceId: sourceDeviceId,
+            deviceNick: "current-comp",
+            deviceNetwork: {
+              protocol: "soty-device-network.v1",
+              controllerDeviceId: sourceDeviceId,
+              controllerDeviceNick: "current-comp",
+              activeTunnelId: "agent-dialog",
+              activeTunnelLabel: "Agent",
+              activeTunnelKind: "agent",
+              selectedTargetId: "room-way",
+              selectedTargetLabel: "room-way",
+              selectedTargetDeviceId: "dev-way",
+              selectedTargetAccess: true,
+              selectedTargetLink: true,
+              capabilities: ["linked-device-actions", "multi-device-context"],
+              targets: [
+                {
+                  id: "room-way",
+                  label: "room-way",
+                  deviceIds: ["dev-way"],
+                  hostDeviceId: "dev-way",
+                  access: true,
+                  host: false,
+                  selected: true,
+                  lastActionAt: new Date().toISOString()
+                }
+              ]
+            }
+          }
+        });
+        assertEqual(agentDialogDefault.status, 200);
+        const pollAgentDialogDefault = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
+        const defaultJob = pollAgentDialogDefault.body.jobs.find((job) => job.id === agentDialogDefault.body.id);
+        assert(defaultJob);
+        assertEqual(defaultJob.source.preferredTargetId, "room-way");
+        assertEqual(defaultJob.source.operatorTargets[0].id, "room-way");
+        assertEqual(mentionedJob.source.preferredTargetLabel, "вай вай");
+      } finally {
+        await closeServer(relayServer);
+      }
+    }],
     ["invalid json is rejected", async () => {
       const response = await raw("POST", "/operator/action", "{");
       assertEqual(response.status, 400);
@@ -286,6 +448,63 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(response.body.text, "! script");
     }],
     ["source run succeeds", async () => expectStatus(await action(sourceRun("SELFTEST_OK run")), "ok")],
+    ["linked pwa target without local operator bridge uses source device route", async () => {
+      const response = await action({
+        target: "room-a",
+        sourceDeviceId: "dev1",
+        command: "SELFTEST_OK linked target"
+      });
+      expectStatus(response, "ok");
+      assertEqual(response.body.route, "agent-source.run");
+    }],
+    ["server linked pwa target proxies through controller source before device source fallback", async () => {
+      const response = await post("/operator/run", {
+        target: "room-a",
+        sourceDeviceId: "dev-way",
+        controllerDeviceId: "dev1",
+        sourceRelayId: "selftest_relay_00000000000000000001",
+        command: "SELFTEST_OK controller proxy",
+        timeoutMs: 5000
+      });
+      assertEqual(response.status, 200);
+      assertEqual(response.body.ok, true);
+      const proxyScript = mock.lastCommandWith("FromBase64String");
+      assert(proxyScript.includes("127.0.0.1"));
+      const encoded = /FromBase64String\("([^"]+)"\)/u.exec(proxyScript)?.[1] || "";
+      const proxiedPayload = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      assertEqual(proxiedPayload.sourceDeviceId, "");
+      assertEqual(proxiedPayload.command, "SELFTEST_OK controller proxy");
+    }],
+    ["linked pwa target with local operator bridge stays on bridge route", async () => {
+      const bridge = await attachSelftestOperatorBridge([{
+        id: "room-a",
+        label: "room-a",
+        deviceIds: ["dev1"],
+        hostDeviceId: "dev1",
+        access: true,
+        host: false,
+        selected: true,
+        lastActionAt: new Date().toISOString()
+      }]);
+      try {
+        const before = mock.count("SELFTEST_OK bridge target");
+        const response = await post("/operator/run", {
+          target: "room-a",
+          sourceDeviceId: "dev1",
+          command: "SELFTEST_OK bridge target",
+          timeoutMs: 5000
+        });
+        assertEqual(response.status, 200);
+        assertEqual(response.body.ok, true);
+        assert(response.body.text.includes("SELFTEST_OK bridge output"));
+        assertEqual(mock.count("SELFTEST_OK bridge target"), before);
+        assertEqual(bridge.calls.length, 1);
+        assertEqual(bridge.calls[0].target, "room-a");
+        assertEqual(bridge.calls[0].sourceDeviceId, "");
+      } finally {
+        bridge.close();
+      }
+    }],
     ["source script succeeds", async () => expectStatus(await action(sourceScript("SELFTEST_OK script")), "ok")],
     ["source run failure is captured", async () => {
       const response = await action(sourceRun("SELFTEST_FAIL"));
@@ -606,10 +825,17 @@ async function runScenarios({ relayUrl } = {}) {
       const fastUsb = await readFile(join(root, "scripts", "windows", "soty-make-fast-usb.ps1"), "utf8");
       const managed = await readFile(join(root, "scripts", "windows", "soty-managed-windows-reinstall.ps1"), "utf8");
       const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
+      assert(prepare.includes("[int] $IdleTimeoutSec = 0"));
+      assert(prepare.includes('"dism-export-drivers.txt" 900 300'));
+      assert(managed.includes('@("running-or-started", "running", "created")'));
       assert(agent.includes("sotyRuntimeHints"));
       assert(agent.includes("runAgentSourceWorkerLoop"));
       assert(agent.includes("direct-device-worker"));
       assert(agent.includes("sourceWorker: canRunAgentSourceWorker()"));
+  assert(main.includes("checkAgentSourceMachineAgent"));
+  assert(main.includes("isAgentMachineLinkReady"));
+  assert(main.includes('agent.scope === "Machine"'));
+  assert(main.includes("agent.system === true"));
       assert(!agent.includes("configuredAgentDeviceId"));
       assert(!agent.includes("configuredAgentDeviceNick"));
       assert(!agent.includes('$p.PSObject.Properties["${prefix}.cx"]'));
@@ -645,6 +871,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("SOTY_AGENT_COMPANION"));
       assert(agent.includes("ensureWindowsUserCompanion"));
       assert(agent.includes("soty-agent-user"));
+      assert(agent.includes("start-user-agent.vbs"));
+      assert(agent.includes("wscript.exe //B //Nologo"));
+      assert(agent.includes("companion.out.log"));
+      assert(agent.includes("RedirectStandardOutput"));
+      assert(!agent.includes("& $nodePath $userAgent"));
       assert(agent.includes("user-session-agent-unavailable"));
       assert(agent.includes("allowWindowsInteractiveTaskBridge"));
       assert(agent.includes("interactive-user-bridge"));
@@ -656,13 +887,30 @@ async function runScenarios({ relayUrl } = {}) {
       assert(relay.includes("workers: {}"));
       assert(relay.includes("user-session-agent-unavailable"));
       assert(relay.includes("waiter.buildPayload"));
+      assert(windowsInstall.includes("Reset-BrokenNodeOptions"));
+      assert(windowsInstall.includes("soty-node-require-shim|C:Users.*soty-node-require-shim"));
+      assert(windowsInstall.includes('$env:NODE_OPTIONS = ""'));
+      assert(windowsInstall.includes("set NODE_OPTIONS="));
+      assert(windowsInstall.includes("Test-NodePathAllowedForScope"));
+      assert(windowsInstall.includes("soty-node:using:portable-cache"));
+      assert(windowsInstall.includes("Stop-ExistingSotyAgents"));
+      assert(windowsInstall.includes("soty-agent:stopped-existing-process"));
       assert(!windowsInstall.includes("Disable-CurrentUserAgentAutostart"));
-      assert(!windowsInstall.includes("Stop-ExistingSotyAgentsForMachine"));
       assert(agent.includes("no active interactive Windows user session"));
+      assert(agent.includes("hasBrokenSotyNodeOptions"));
+      assert(agent.includes("cleanChildProcessEnv"));
+      assert(agent.includes("Never set persistent `NODE_OPTIONS`"));
+      assert(agent.includes("Do not create or persist `NODE_OPTIONS=--require ...` shims"));
       assert(agent.includes("sourceArtifactChunkScript"));
+      assert(agent.includes("expandArtifactTargetPath"));
+      assert(agent.includes('await import("node:fs")'));
+      assert(!agent.includes('const fs = require("node:fs")'));
+      assert(!agent.includes('const { spawn } = require("node:child_process")'));
       assert(agent.includes('savedBy: "source-device"'));
       assert(agent.includes("Soty is the data plane"));
       assert(agent.includes("action=download/publish"));
+      assert(agent.includes("Do not stage user artifacts under `C:\\\\Windows\\\\Temp`"));
+      assert(agent.includes("C:\\\\ProgramData\\\\soty-agent\\\\artifacts"));
       assert(agent.includes('emitSotyFileControl("BEGIN"'));
       assert(agent.includes("SOTY_FILE_CHUNK"));
       assert(agent.includes("soty-room-file-rail"));
@@ -672,6 +920,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("operation=artifact localPath=/agent/codex-stock-home/generated_images"));
       assert(agent.includes("operation=wallpaper"));
       assert(agent.includes("Hard stop: no shell base64/split"));
+      assert(agent.includes("Do not use `C:\\\\Windows\\\\Temp`"));
       assert(agent.includes("Do not inspect `imagegen` SKILL.md"));
       assert(agent.includes("If you already used shell/base64/public upload"));
       assert(agent.includes("'wallpaper' {"));
@@ -726,6 +975,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes('operation: \\"reinstall\\", capability: \\"os-reinstall\\", action: \\"prepare\\"'));
       assert(agent.includes("Do not ask the user to manually download an ISO"));
       assert(agent.includes("recordSotyReinstallRouteReceipt"));
+      assert(agent.includes("activeCodexTargetTurns"));
+      assert(agent.includes("codex.active-target-suppressed"));
+      assert(agent.includes("codexActiveTargetTurnKey"));
+      assert(agent.includes("maybeWaitForWindowsReinstallTerminalAfterCodex"));
+      assert(agent.includes("windows-reinstall-post-codex"));
+      assert(agent.includes("postCodexGuard"));
+      assert(agent.includes("markInterruptedAgentTracesAtStartup"));
+      assert(agent.includes("agent.trace-interrupted-on-startup"));
       assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));
       assert(!agent.includes("waitForTurnkeyTargetAfterCodex"));
       assert(!agent.includes("turnkeyGuardTimeoutMs"));
@@ -739,7 +996,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!main.includes("sendOperatorUserMessage"));
       assert(!main.includes('type: "operator.message"'));
       assert(main.includes("containsLordAgentInvocation"));
-      assert(main.includes("(?:лорд|lord)"));
+      assert(main.includes("(?:\\u043b\\u043e\\u0440\\u0434|lord)"));
+      assert(main.includes("stripLordAgentInvocation"));
       assert(main.includes("explicitMention: true"));
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
@@ -781,6 +1039,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes('*.download.parts'));
       assert(managed.includes("partBytes"));
+      assert(managed.includes("Get-PrepareProcesses"));
+      assert(managed.includes("stale-orphaned"));
+      assert(managed.includes("activeProcessCount"));
       assert(managed.includes("Get-ManagedScript"));
       assert(managed.includes("managed account must be passwordless"));
       assert(managed.includes("[System.IO.File]::Open"));
@@ -812,6 +1073,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!prepare.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
       assert(!fastUsb.includes("$AllowTemporaryManagedPassword -or -not $NoTemporaryManagedPassword"));
       assert(prepare.includes("personal-folders-Desktop-Documents-Downloads-Pictures-Videos-Music"));
+      assert(prepare.includes("soty-machine-agent-download-current-installer"));
+      assert(prepare.includes("InstallSotyAgentMachine 'setupcomplete' 12"));
+      assert(prepare.includes('InstallSotyAgentMachine "firstlogon" 18'));
+      assert(prepare.includes("New-ScheduledTaskPrincipal"));
+      assert(prepare.includes("-RunLevel Highest"));
+      assert(prepare.includes('sotyAgentBackupMode = "download-current-machine-installer"'));
       assert(prepare.includes("personalFolderCounts"));
       assert(prepare.includes("Preferred Windows edition from current OS"));
       assert(prepare.includes("Test-WindowsEditionMatch"));
@@ -820,7 +1087,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.25");
+      assertEqual(manifest.version, "0.4.43");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -881,6 +1148,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["agent installers stay lightweight by default", async () => {
       const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
       const windowsMachineInstall = await readFile(join(root, "public", "agent", "install-windows-machine.cmd"), "utf8");
+      const windowsMachineBootstrap = await readFile(join(root, "public", "agent", "install-windows-machine-bootstrap.ps1"), "utf8");
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = await readFile(join(root, "src", "main.ts"), "utf8");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
@@ -905,27 +1173,80 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsInstall.includes("if (`$code -eq 75)"));
       assert(windowsInstall.includes("Write-AgentConfigSeed"));
       assert(windowsInstall.includes("agent-config.json"));
+      assert(windowsInstall.includes("function Invoke-SotyDownload"));
+      assert(windowsInstall.includes("function Invoke-SotyProcess"));
+      assert(windowsInstall.includes("function ConvertTo-SotyProcessArguments"));
+      assert(windowsInstall.includes("function Get-NodeReleaseCandidates"));
+      assert(windowsInstall.includes("node-probe.mjs"));
+      assert(windowsInstall.includes("System.Diagnostics.ProcessStartInfo"));
+      assert(windowsInstall.includes("$processInfo.UseShellExecute = $false"));
+      assert(windowsInstall.includes('$processInfo.EnvironmentVariables["NODE_OPTIONS"] = ""'));
+      assert(windowsInstall.includes('"-sS", "--retry", "2"'));
+      assert(!windowsInstall.includes('Start-Process -FilePath $Path -ArgumentList @("-e"'));
+      assert(windowsInstall.includes("v24.13.1"));
+      assert(!windowsInstall.includes("winget"));
+      assert(windowsInstall.includes("function Write-SotyStep"));
+      assert(windowsInstall.includes("function Write-SotyLog"));
+      assert(!windowsInstall.includes("Write-Output"));
+      assert(windowsInstall.includes("Should-ClearNodeOptions"));
+      assert(windowsInstall.includes("HKCU:\\Environment"));
+      assert(windowsInstall.includes("Registry::HKEY_USERS"));
+      assert(windowsInstall.includes("soty-node-options:cleared:user-hive"));
+      assert(windowsInstall.includes("soty-install:step:"));
+      assert(windowsInstall.includes("Invoke-SotyDownload -Uri $ManifestUrl"));
+      assert(windowsInstall.includes("Wait-AgentHealth 75"));
+      assert(windowsInstall.includes("start-agent.status.log"));
+      assert(windowsInstall.includes("start-agent.err.log"));
+      assert(windowsInstall.includes("Stop-SotyPortOwnerIfStale"));
+      assert(windowsInstall.includes("Get-SotyTaskDiagnostics"));
+      assert(windowsInstall.includes("soty-agent:start-diagnostic:"));
+      assert(windowsInstall.includes("[System.Net.WebRequest]::Create"));
       assert(!windowsInstall.includes("universal-install-ops"));
       assert(!windowsInstall.includes("ops-skill"));
       assert(!userWindowsInstallerExists);
-      assert(windowsMachineInstall.includes("-Scope Machine"));
-      assert(windowsMachineInstall.includes("-LaunchAppAtLogon"));
-      assert(windowsMachineInstall.includes("Start-Process -FilePath 'powershell.exe' -Verb RunAs"));
+      assert(windowsMachineBootstrap.includes("''-Scope'', ''Machine''"));
+      assert(windowsMachineBootstrap.includes("''-LaunchAppAtLogon''"));
+      assert(windowsMachineInstall.includes("install-windows-machine-bootstrap.ps1?v=%INSTALLER_REVISION%"));
+      assert(windowsMachineInstall.includes("-TimeoutSec 45 -ErrorAction Stop"));
+      assert(windowsMachineInstall.includes("bootstrap.log"));
+      assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
+      assert(windowsMachineInstall.includes("--- install.log tail ---"));
+      assert(windowsMachineInstall.includes("node-probe.err.log"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.43"));
+      assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
+      assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_NICK"));
+      assert(windowsMachineBootstrap.includes("Start-Process -FilePath \"powershell.exe\" -Verb RunAs"));
+      assert(windowsMachineBootstrap.includes("$stage = Join-Path $env:ProgramData ''Soty\\agent-install''"));
+      assert(windowsMachineBootstrap.includes("Wait-SotyMachineHealth -Seconds 25 -ExpectedVersion $Revision"));
+      assert(windowsMachineBootstrap.includes("[version]$actualVersion -ge [version]$ExpectedVersion"));
+      assert(windowsMachineBootstrap.includes("bootstrap-health-ok-after-nonzero"));
       assert(agentFeature.includes('"/agent/install-windows-machine.cmd"'));
-      assert(agentFeature.includes('"install-soty-agent-machine.cmd"'));
+      assert(agentFeature.includes("install-soty-agent-machine-${revision}.cmd"));
+      assert(agentFeature.includes("sanitizeInstallerRevision"));
+      assert(agentFeature.includes("install-windows-machine-bootstrap.ps1${installerQuery}"));
+      assert(agentFeature.includes("bootstrap-elevated.log"));
+      assert(agentFeature.includes("--- install.log tail ---"));
+      assert(agentFeature.includes("node-probe.err.log"));
       assert(!agentFeature.includes("/agent/install-windows.cmd"));
       assert(!agentFeature.includes('"install-soty-agent.cmd"'));
       assert(ui.includes("agentButtonMode"));
       assert(ui.includes("refreshAgentButtonState"));
       assert(ui.includes("agentReleaseCheckTtlMs"));
+      assert(ui.includes("startAgentButtonWatcher"));
+      assert(ui.includes("watchAgentInstallProgress"));
+      assert(ui.includes("agentButtonWatchFastMs"));
+      assert(ui.includes("agentButtonWatchHiddenMs"));
+      assert(ui.includes('window.addEventListener("online"'));
+      assert(ui.includes('document.visibilityState === "hidden"'));
       assert(ui.includes("sendFileChunkFromBytes"));
       assert(ui.includes("processLocalAgentDataPlaneOutput"));
       assert(ui.includes("SOTY_FILE_CHUNK"));
       assert(!ui.includes("renderInstall"));
       assert(!ui.includes("install-button"));
-      assert(ui.includes('downloadAgentInstallerForDevice("machine"'));
+      assert(ui.includes('downloadAgentInstallerForDevice('));
+      assert(ui.includes('"machine",'));
       assert(ui.includes('remoteButton.innerHTML = needsAgent'));
       assert(ui.includes('mode === "update" ? "UPDATE" : "DOWNLOAD"'));
       assert(ui.includes('remoteButton.classList.toggle("needs-agent", needsAgent)'));
@@ -938,11 +1259,51 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.25"'));
+      assert(agentSource.includes('const agentVersion = "0.4.43"'));
+      assert(agentSource.includes("targetMentionedInRequest"));
+      assert(agentSource.includes("targetMentionedAnywhere"));
+      assert(agentSource.includes("BusyBox find may not support `-printf`"));
+      assert(agentSource.includes("soty-agent-machine:bootstrap-download"));
+      assert(agentSource.includes("install-windows-machine-bootstrap.ps1?v="));
+      assert(agentSource.includes("$revision = '"));
+      assert(agentSource.includes("--controller-device"));
+      assert(agentSource.includes("maybeProxyOperatorHttpViaController"));
+      assert(agentSource.includes("operatorBridgeProxyScript"));
+      assert(agentSource.includes("soty-operator-bridge-proxy"));
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("stopAgentDialogReply"));
-      assert(ui.includes("agent-target-select"));
-      assert(ui.includes("selectedAgentDirectedTarget"));
+      assert(ui.includes("restorePendingAgentDialogSelection"));
+      assert(ui.includes("resumePendingAgentDialogReplies"));
+      assert(ui.includes("isAgentReplyTunnel"));
+      assert(ui.includes("finishAgentDialogReply"));
+      assert(agentFeature.includes("pendingRelayRepliesStorageKey"));
+      assert(agentFeature.includes("loadPendingAgentRelayReplies"));
+      assert(agentFeature.includes("resumeAgentRelayReply"));
+      assert(!agentFeature.includes("shouldPreferLocalOperatorBridge"));
+      assert(!agentFeature.includes("preferLocalOperatorBridge"));
+      assert(!ui.includes("agent-target-select"));
+      assert(!ui.includes("selectedAgentDirectedTarget"));
+      assert(!ui.includes("agentDirectedTargets"));
+      assert(ui.includes("preparePeerAgentInvocation"));
+      assert(ui.includes("stripLordAgentInvocation"));
+      assert(ui.includes("operatorTargets: targets"));
+      assert(ui.includes("defaultAgentDialogTarget"));
+      assert(ui.includes("agentDeviceNetworkContext"));
+      assert(ui.includes("deviceNetwork"));
+      assert(ui.includes('type: "operator.visibility"'));
+      assert(agentSource.includes('message.type === "operator.visibility"'));
+      assert(agentSource.includes("Connected Soty device network"));
+      assert(agentSource.includes("soty-device-network.v1"));
+      assert(agentSource.includes("formatRuntimeDeviceNetwork"));
+      assert(agentRelay.includes("cleanDeviceNetwork"));
+      assert(ui.includes("!isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id)"));
+      assert(ui.includes("access: true"));
+      assert(agentSource.includes("matchingAgentSourceTarget"));
+      assert(agentSource.includes("agent-channel=true"));
+      assert(agentSource.includes("link-only=true"));
+      assert(agentSource.includes("accessTargets.find((target) => target.id === safe.preferredTargetId"));
+      assert(agentSource.includes(".filter((item) => item.access === true)"));
+      assert(agentRelay.includes("preferredTargetAlreadySelected"));
       assert(ui.includes("playAgentDoneSound"));
       assert(agentFeature.includes("cancelAgentRelayReply"));
       assert(agentRelay.includes('"/api/agent/relay/cancel"'));
@@ -968,14 +1329,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.25";', 'const agentVersion = "0.4.24";');
-      assert(oldSource.includes('const agentVersion = "0.4.24"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.43";', 'const agentVersion = "0.4.42";');
+      assert(oldSource.includes('const agentVersion = "0.4.42"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.25",
+            version: "0.4.43",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1174,6 +1535,54 @@ function sourceRun(command) {
   return { target: "agent-source:dev1", command };
 }
 
+async function attachSelftestOperatorBridge(targets) {
+  const calls = [];
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("operator bridge attach timeout")), 5000);
+    ws.once("open", () => {
+      ws.send(JSON.stringify({
+        type: "operator.attach",
+        visible: true,
+        protocol: "selftest",
+        capabilities: ["run", "script"]
+      }));
+    });
+    ws.on("message", (chunk) => {
+      const message = JSON.parse(chunk.toString("utf8"));
+      if (message.type === "operator.ready") {
+        ws.send(JSON.stringify({
+          type: "operator.targets",
+          deviceId: "dev-controller",
+          deviceNick: "controller",
+          targets
+        }));
+        clearTimeout(timer);
+        resolve();
+        return;
+      }
+      if (message.type === "operator.run" || message.type === "operator.script") {
+        calls.push(message);
+        ws.send(JSON.stringify({
+          type: "operator.output",
+          id: message.id,
+          text: `SELFTEST_OK bridge output for ${message.command || message.name || "script"}`,
+          exitCode: 0
+        }));
+      }
+    });
+    ws.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+  await sleep(50);
+  return {
+    calls,
+    close: () => ws.close()
+  };
+}
+
 function sourceScript(script) {
   return { mode: "script", target: "agent-source:dev1", script, shell: "powershell" };
 }
@@ -1293,6 +1702,10 @@ function createMockRelay() {
       const payload = JSON.parse(body || "{}");
       const text = String(payload.command || payload.script || "");
       calls.push(text);
+      if (payload.deviceId === "dev-way") {
+        json(response, 404, mockSourceMissing(payload));
+        return;
+      }
       if (text.includes("SELFTEST_BAD_JSON")) {
         response.writeHead(200, { "Content-Type": "application/json" });
         response.end("{");
@@ -1345,6 +1758,10 @@ function createMockRelay() {
       const payload = JSON.parse(body || "{}");
       const text = String(payload.command || payload.script || "");
       calls.push(text);
+      if (payload.deviceId === "dev-way") {
+        json(response, 404, mockSourceMissing(payload));
+        return;
+      }
       if (text.includes("SELFTEST_HANG")) {
         await sleep(5000);
       }

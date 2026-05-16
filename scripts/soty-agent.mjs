@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.25";
+const agentVersion = "0.4.43";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -116,6 +116,7 @@ const operatorMessageWaiters = new Set();
 const agentOperatorReplyQueues = new Map();
 const recentAgentOperatorMessageKeys = new Map();
 const activeRelayJobs = new Map();
+const activeCodexTargetTurns = new Map();
 let learningSyncTimer = null;
 let learningSyncInFlight = null;
 let operatorBridge = null;
@@ -123,6 +124,7 @@ let operatorBridgeVisible = false;
 let operatorBridgeProtocol = "";
 let operatorBridgeCapabilities = [];
 let operatorTargets = [];
+let operatorDeviceNetwork = emptyDeviceNetwork();
 let operatorDeviceId = "";
 let operatorDeviceNick = "";
 let cachedWindowsWhoami = "";
@@ -233,6 +235,7 @@ function startServer() {
     void preparePersistentStockCodexHome();
     scheduleWindowsAudioWarmup();
     scheduleUpdate();
+    void markInterruptedAgentTracesAtStartup();
     startAgentRelay();
   });
 }
@@ -259,13 +262,15 @@ function shouldManageWindowsUserCompanion() {
 
 async function ensureWindowsUserCompanion() {
   const bootstrapPath = join(agentDir, "start-user-agent.ps1");
+  const launcherPath = join(agentDir, "start-user-agent.vbs");
   await writeFile(bootstrapPath, windowsUserCompanionBootstrap(), "utf8");
-  registerWindowsUserCompanionRunKey(bootstrapPath);
-  launchWindowsUserCompanionOnce(bootstrapPath);
+  await writeFile(launcherPath, windowsHiddenPowerShellLauncher(bootstrapPath), "utf8");
+  registerWindowsUserCompanionRunKey(launcherPath);
+  launchWindowsUserCompanionOnce(launcherPath);
 }
 
-function registerWindowsUserCompanionRunKey(bootstrapPath) {
-  const command = `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${String(bootstrapPath).replace(/"/gu, '""')}"`;
+function registerWindowsUserCompanionRunKey(launcherPath) {
+  const command = `wscript.exe //B //Nologo "${String(launcherPath).replace(/"/gu, '""')}"`;
   try {
     execFileSync("reg.exe", [
       "add",
@@ -283,7 +288,7 @@ function registerWindowsUserCompanionRunKey(bootstrapPath) {
   }
 }
 
-function launchWindowsUserCompanionOnce(bootstrapPath) {
+function launchWindowsUserCompanionOnce(launcherPath) {
   const script = `
 $ErrorActionPreference = 'SilentlyContinue'
 function Get-ActiveUserName {
@@ -300,9 +305,9 @@ function Get-ActiveUserName {
 $user = Get-ActiveUserName
 if (-not $user) { exit 0 }
 $taskName = 'soty-agent-user-companion-now'
-$bootstrap = ${psSingleQuoted(bootstrapPath)}
-$argument = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + ($bootstrap -replace '"', '""') + '"'
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument
+$launcher = ${psSingleQuoted(launcherPath)}
+$argument = '//B //Nologo "' + ($launcher -replace '"', '""') + '"'
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $argument
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
@@ -321,6 +326,15 @@ Start-ScheduledTask -TaskName $taskName
   } catch {
     // The HKLM Run registration starts the companion at the next user logon.
   }
+}
+
+function windowsHiddenPowerShellLauncher(bootstrapPath) {
+  const escapedPath = String(bootstrapPath || "").replace(/"/gu, '""');
+  return [
+    'Set shell = CreateObject("WScript.Shell")',
+    `command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${escapedPath}"""`,
+    "shell.Run command, 0, False"
+  ].join("\r\n");
 }
 
 function windowsUserCompanionBootstrap() {
@@ -343,7 +357,13 @@ try {
   $userRoot = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\\Local' }
   $userDir = Join-Path $userRoot 'soty-agent'
   $userAgent = Join-Path $userDir 'soty-agent.mjs'
+  $stdoutLog = Join-Path $userDir 'companion.out.log'
+  $stderrLog = Join-Path $userDir 'companion.err.log'
   $nodePath = ${nodePath}
+  function Quote-WinArg([string]$Value) {
+    if ($null -eq $Value) { return '""' }
+    return '"' + ($Value -replace '"', '\\"') + '"'
+  }
   function Read-MachineConfig {
     try {
       if (Test-Path -LiteralPath $machineConfig) {
@@ -383,8 +403,13 @@ try {
     $env:SOTY_AGENT_RELAY_ID = $relayId
     $env:SOTY_AGENT_DEVICE_ID = $deviceId
     if ($config.deviceNick) { $env:SOTY_AGENT_DEVICE_NICK = [string]$config.deviceNick }
-    & $nodePath $userAgent
-    if ($LASTEXITCODE -eq 75) { Start-Sleep -Seconds 1 } else { Start-Sleep -Seconds 3 }
+    if ($env:NODE_OPTIONS -match 'soty-node-require-shim|C:Users.*soty-node-require-shim|--require\\s+["'']?.*(\\\\|/)(Temp|AppData)(\\\\|/).*\\.cjs') {
+      Remove-Item Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+    }
+    $argsLine = Quote-WinArg $userAgent
+    $process = Start-Process -FilePath $nodePath -ArgumentList $argsLine -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -Wait -PassThru
+    $code = if ($process -and $null -ne $process.ExitCode) { [int]$process.ExitCode } else { 1 }
+    if ($code -eq 75) { Start-Sleep -Seconds 1 } else { Start-Sleep -Seconds 3 }
   }
 } finally {
   try { $mutex.ReleaseMutex() } catch {}
@@ -430,7 +455,8 @@ async function handleHttpRequest(request, response) {
       attached: Boolean(operatorBridge?.open),
       bridgeProtocol: operatorBridgeProtocol,
       bridgeCapabilities: operatorBridgeCapabilities,
-      targets: operatorTargets
+      targets: operatorTargets,
+      deviceNetwork: operatorDeviceNetwork
     });
     return;
   }
@@ -594,8 +620,13 @@ function handleOperatorMessage(ws, message) {
   }
   if (message.type === "operator.targets" && ws === operatorBridge) {
     operatorTargets = sanitizeTargets(message.targets);
+    operatorDeviceNetwork = sanitizeDeviceNetwork(message.deviceNetwork);
     operatorDeviceId = safeSourceText(message.deviceId);
     operatorDeviceNick = safeSourceText(message.deviceNick);
+    return;
+  }
+  if (message.type === "operator.visibility" && ws === operatorBridge) {
+    operatorBridgeVisible = message.visible === true;
     return;
   }
   if (message.type === "operator.message" && ws === operatorBridge) {
@@ -614,6 +645,7 @@ function cleanupOperatorSocket(ws) {
     operatorBridgeProtocol = "";
     operatorBridgeCapabilities = [];
     operatorTargets = [];
+    operatorDeviceNetwork = emptyDeviceNetwork();
     operatorDeviceId = "";
     operatorDeviceNick = "";
     for (const run of operatorRuns.values()) {
@@ -634,6 +666,7 @@ async function handleOperatorHttpRun(request, response, headers) {
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
+  const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const runAs = safeRunAs(payload.runAs || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
@@ -641,6 +674,19 @@ async function handleOperatorHttpRun(request, response, headers) {
   if (blocked) {
     recordBlockedWindowsReinstallHandoff({ kind: "run", command });
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
+    return;
+  }
+  if (await maybeProxyOperatorHttpViaController({
+    kind: "run",
+    target,
+    sourceDeviceId,
+    sourceRelayId,
+    controllerDeviceId,
+    body: { target, sourceDeviceId, command, runAs, timeoutMs },
+    timeoutMs,
+    response,
+    headers
+  })) {
     return;
   }
   ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
@@ -680,6 +726,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
+  const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
@@ -689,6 +736,19 @@ async function handleOperatorHttpScript(request, response, headers) {
   if (blocked) {
     recordBlockedWindowsReinstallHandoff({ kind: "script", command: script });
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
+    return;
+  }
+  if (await maybeProxyOperatorHttpViaController({
+    kind: "script",
+    target,
+    sourceDeviceId,
+    sourceRelayId,
+    controllerDeviceId,
+    body: { target, sourceDeviceId, script, name, shell, runAs, timeoutMs },
+    timeoutMs,
+    response,
+    headers
+  })) {
     return;
   }
   ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
@@ -1577,6 +1637,52 @@ async function pruneAgentTraces() {
   }
 }
 
+async function markInterruptedAgentTracesAtStartup() {
+  if (!agentTraceEnabled) {
+    return;
+  }
+  const entries = await readdir(agentTracesDir, { withFileTypes: true }).catch(() => []);
+  const now = new Date().toISOString();
+  await Promise.all(entries
+    .filter((entry) => entry.isDirectory() && /^[0-9]{14}-/u.test(entry.name))
+    .map(async (entry) => {
+      const jsonPath = join(agentTracesDir, entry.name, "trace.json");
+      let doc;
+      try {
+        doc = JSON.parse(await readFile(jsonPath, "utf8"));
+      } catch {
+        return;
+      }
+      if (doc?.status !== "running") {
+        return;
+      }
+      doc.status = "interrupted";
+      doc.endedAt = now;
+      doc.durationMs = Date.parse(now) - Date.parse(doc.startedAt || now);
+      doc.result = traceValue({
+        ok: false,
+        exitCode: 130,
+        textChars: 0,
+        textPreview: "Agent process restarted before this trace reached a terminal result.",
+        interruptedPid: Number.isSafeInteger(doc.pid) ? doc.pid : undefined,
+        currentPid: process.pid
+      }, 3000, 4);
+      doc.steps = Array.isArray(doc.steps) ? doc.steps : [];
+      doc.steps.push({
+        at: now,
+        name: "agent.trace-interrupted-on-startup",
+        details: traceValue({
+          previousPid: Number.isSafeInteger(doc.pid) ? doc.pid : undefined,
+          currentPid: process.pid
+        }, 1000, 2)
+      });
+      while (doc.steps.length > 160) {
+        doc.steps.shift();
+      }
+      await writeJsonAtomic(jsonPath, doc).catch(() => undefined);
+    }));
+}
+
 function agentTraceStatus() {
   return {
     schema: "soty.agent.trace.v1",
@@ -1959,8 +2065,23 @@ async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId
   if (isAgentSourceTarget(target)) {
     return { target, sourceDeviceId };
   }
-  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, await activeAgentSourceTargets(sourceRelayId));
+  const operatorTarget = operatorTargetByText(target);
+  if (operatorBridge?.open && operatorTarget?.access === true) {
+    return {
+      target: operatorTarget.id || target,
+      sourceDeviceId: ""
+    };
+  }
+  const sourceTargets = await activeAgentSourceTargets(sourceRelayId);
+  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets);
   if (!sourceTarget) {
+    const fallbackDeviceId = operatorHttpTargetDeviceId(target, sourceDeviceId);
+    if (!operatorBridge?.open && fallbackDeviceId) {
+      return {
+        target: `agent-source:${fallbackDeviceId}`,
+        sourceDeviceId: fallbackDeviceId
+      };
+    }
     return { target, sourceDeviceId };
   }
   const deviceId = agentSourceDeviceId(sourceTarget.id);
@@ -1968,6 +2089,90 @@ async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId
     target: sourceTarget.id,
     sourceDeviceId: deviceId || sourceDeviceId || ""
   };
+}
+
+async function maybeProxyOperatorHttpViaController({
+  kind,
+  target,
+  sourceDeviceId,
+  sourceRelayId,
+  controllerDeviceId,
+  body,
+  timeoutMs,
+  response,
+  headers
+}) {
+  if (operatorBridge?.open || isAgentSourceTarget(target) || !target || !sourceRelayId || !controllerDeviceId) {
+    return false;
+  }
+  const hasWork = kind === "run"
+    ? String(body?.command || "").trim()
+    : String(body?.script || "").trim();
+  if (!hasWork) {
+    return false;
+  }
+  const controllerTarget = `agent-source:${controllerDeviceId}`;
+  const proxyBody = { ...body, sourceDeviceId: "" };
+  const proxyScript = operatorBridgeProxyScript(kind === "run" ? "/operator/run" : "/operator/script", proxyBody, timeoutMs);
+  await handleAgentSourceHttpScript(
+    controllerTarget,
+    controllerDeviceId,
+    {
+      script: proxyScript,
+      name: `soty-operator-bridge-proxy-${kind}`,
+      shell: "powershell",
+      runAs: "user"
+    },
+    Math.max(timeoutMs, 30_000),
+    response,
+    headers,
+    sourceRelayId
+  );
+  return true;
+}
+
+function operatorBridgeProxyScript(path, body, timeoutMs) {
+  const payload = Buffer.from(JSON.stringify(body), "utf8").toString("base64");
+  const timeoutSec = Math.max(5, Math.min(7200, Math.ceil(safeRunTimeoutMs(timeoutMs) / 1000)));
+  const safePath = path === "/operator/run" ? "/operator/run" : "/operator/script";
+  return `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${payload}"))
+$content = ""
+try {
+  $response = Invoke-WebRequest -Uri "http://127.0.0.1:${port}${safePath}" -Method POST -Headers @{ Origin = "https://xn--n1afe0b.online" } -ContentType "application/json; charset=utf-8" -Body $json -TimeoutSec ${timeoutSec} -UseBasicParsing
+  $content = [string] $response.Content
+} catch {
+  try {
+    if ($_.Exception.Response) {
+      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+      $content = $reader.ReadToEnd()
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($content)) {
+    Write-Output ("! operator-bridge-proxy: " + $_.Exception.Message)
+    exit 1
+  }
+}
+try {
+  $payload = $content | ConvertFrom-Json
+} catch {
+  Write-Output $content
+  exit 1
+}
+if ($null -ne $payload.text -and -not [string]::IsNullOrWhiteSpace([string] $payload.text)) {
+  Write-Output ([string] $payload.text).TrimEnd()
+}
+if ($payload.ok -eq $true) {
+  exit 0
+}
+if ($null -ne $payload.exitCode) {
+  exit ([int] $payload.exitCode)
+}
+exit 1
+`.trim();
 }
 
 function operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets) {
@@ -1995,6 +2200,17 @@ function operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets) {
     || sources.find((item) => item.id.toLowerCase() === needle)
     || sources.find((item) => cleanTargetNeedle(item.label).includes(needle))
     || null;
+}
+
+function operatorHttpTargetDeviceId(target, sourceDeviceId) {
+  const requestedDeviceId = String(sourceDeviceId || "").trim();
+  if (requestedDeviceId) {
+    return requestedDeviceId;
+  }
+  const operatorTarget = operatorTargetByText(target);
+  return operatorTarget?.hostDeviceId
+    || (operatorTarget?.deviceIds?.length === 1 ? operatorTarget.deviceIds[0] : "")
+    || "";
 }
 
 function operatorTargetByText(target) {
@@ -3301,7 +3517,8 @@ async function replyToAgentOperatorMessage(item) {
     appOrigin: agentRelayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online",
     preferredTargetId: agentDialog ? "" : item.target,
     preferredTargetLabel: agentDialog ? "" : item.label,
-    operatorTargets
+    operatorTargets,
+    deviceNetwork: operatorDeviceNetwork
   };
   const streamedMessages = [];
   const result = await askCodexForAgentReply(item.text, item.context || "", source, (message) => {
@@ -3651,11 +3868,10 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     }
 
     const codexHome = await preparePersistentStockCodexHome();
-    const childEnv = withAgentToolPath({
-      ...process.env,
+    const childEnv = withAgentToolPath(cleanChildProcessEnv({
       ...codexNetworkProxyEnv(),
       CODEX_HOME: codexHome
-    });
+    }));
     traceStep(trace, "codex.local.ready", {
       codexBinary: basename(codexBin),
       codexHome,
@@ -3880,6 +4096,37 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = classifyTaskFamily(text, target);
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
+  const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
+  const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
+  if (activeTargetTurn && activeTargetTurn.done !== true) {
+    const suppressed = activeCodexTargetTurnReply(activeTargetTurn, taskFamily);
+    traceRouting(trace, {
+      finalRoute: "codex.active-target-suppressed",
+      taskFamily,
+      activeTaskFamily: activeTargetTurn.taskFamily || "",
+      targetId: target?.id || "",
+      activeAgeMs: Math.max(0, Date.now() - (activeTargetTurn.startedAt || Date.now()))
+    });
+    traceStep(trace, "codex.active-target-suppressed", {
+      taskFamily,
+      activeTaskFamily: activeTargetTurn.taskFamily || "",
+      targetId: target?.id || "",
+      jobDir: activeTargetTurn.jobDir || "",
+      lastMessage: Boolean(activeTargetTurn.lastMessage)
+    });
+    recordLearningReceipt({
+      kind: "agent-runtime",
+      family: taskFamily,
+      result: "partial",
+      route: "codex.active-target-suppressed",
+      taskSig: taskSignature(text),
+      proof: `activeTargetTurn=true; activeFamily=${cleanProofToken(activeTargetTurn.taskFamily || "")}; targetHash=${learningContext.targetHash || ""}`,
+      exitCode: 0,
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
+    return suppressed;
+  }
   traceRouting(trace, {
     route: "codex.local",
     taskFamily,
@@ -3915,7 +4162,34 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   if (agentTraceFullPrompt) {
     await traceWriteText(trace, "prompt.txt", prompt, maxAgentRuntimePromptChars + 2000);
   }
-  const codexOnMessage = onMessage;
+  const activeTurn = activeTargetTurnKey
+    ? {
+      startedAt,
+      taskFamily,
+      targetId: target?.id || "",
+      targetLabel: target?.label || "",
+      jobDir,
+      outPath,
+      lastMessage: "",
+      lastMessageAt: 0,
+      done: false
+    }
+    : null;
+  if (activeTargetTurnKey && activeTurn) {
+    activeCodexTargetTurns.set(activeTargetTurnKey, activeTurn);
+  }
+  const codexOnMessage = (message) => {
+    if (activeTurn) {
+      const clean = cleanAgentChatReply(message);
+      if (clean) {
+        activeTurn.lastMessage = clean;
+        activeTurn.lastMessageAt = Date.now();
+      }
+    }
+    if (typeof onMessage === "function") {
+      onMessage(message);
+    }
+  };
   const args = codexSotySessionArgs({
     jobDir,
     target,
@@ -3945,36 +4219,46 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     usage: emptyCodexUsage(),
     trace
   };
-  let result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
-  if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
-    const freshState = {
-      threadId: "",
-      lastMessage: "",
-      messages: [],
-      terminal: [],
-      terminalKeys: new Set(),
-      learningMarkers: [],
-      usage: emptyCodexUsage(),
-      trace
-    };
-    const freshArgs = codexSotySessionArgs({
-      jobDir,
-      target,
-      source: safeSource,
-      outPath,
-      threadId: "",
-      taskFamily
-    });
-    delete persistedCodexSessions[sessionKey];
-    await saveCodexSessions();
-    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
-    state.threadId = freshState.threadId;
-    state.lastMessage = freshState.lastMessage;
-    state.messages = freshState.messages;
-    state.terminal = freshState.terminal;
-    state.terminalKeys = freshState.terminalKeys;
-    state.learningMarkers = freshState.learningMarkers;
-    state.usage = freshState.usage;
+  let result;
+  try {
+    result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
+    if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
+      const freshState = {
+        threadId: "",
+        lastMessage: "",
+        messages: [],
+        terminal: [],
+        terminalKeys: new Set(),
+        learningMarkers: [],
+        usage: emptyCodexUsage(),
+        trace
+      };
+      const freshArgs = codexSotySessionArgs({
+        jobDir,
+        target,
+        source: safeSource,
+        outPath,
+        threadId: "",
+        taskFamily
+      });
+      delete persistedCodexSessions[sessionKey];
+      await saveCodexSessions();
+      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
+      state.threadId = freshState.threadId;
+      state.lastMessage = freshState.lastMessage;
+      state.messages = freshState.messages;
+      state.terminal = freshState.terminal;
+      state.terminalKeys = freshState.terminalKeys;
+      state.learningMarkers = freshState.learningMarkers;
+      state.usage = freshState.usage;
+    }
+  } finally {
+    if (activeTurn) {
+      activeTurn.done = true;
+    }
+    if (activeTargetTurnKey && activeCodexTargetTurns.get(activeTargetTurnKey) === activeTurn) {
+      activeCodexTargetTurns.delete(activeTargetTurnKey);
+    }
   }
   const lastFileRaw = existsSync(outPath) ? await readFile(outPath, "utf8") : "";
   await traceWriteText(trace, "last-message.txt", lastFileRaw, maxChatChars + 2000);
@@ -4049,14 +4333,61 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         exitCode: 125
       };
     }
+    let postCodexGuardPayload = null;
+    if (taskFamily === "windows-reinstall" && target?.id) {
+      const guardOnMessage = (message) => {
+        if (activeTurn) {
+          const clean = cleanAgentChatReply(message);
+          if (clean) {
+            activeTurn.lastMessage = clean;
+            activeTurn.lastMessageAt = Date.now();
+          }
+        }
+        if (typeof onMessage === "function") {
+          onMessage(message);
+        }
+      };
+      const reactivateGuard = Boolean(activeTargetTurnKey && activeTurn);
+      if (reactivateGuard) {
+        activeTurn.done = false;
+        activeTurn.guard = "windows-reinstall-post-codex";
+        activeCodexTargetTurns.set(activeTargetTurnKey, activeTurn);
+      }
+      try {
+        postCodexGuardPayload = await maybeWaitForWindowsReinstallTerminalAfterCodex({
+          taskFamily,
+          source: safeSource,
+          target,
+          finalText,
+          onMessage: guardOnMessage,
+          trace,
+          signal
+        });
+      } finally {
+        if (reactivateGuard) {
+          activeTurn.done = true;
+          if (activeCodexTargetTurns.get(activeTargetTurnKey) === activeTurn) {
+            activeCodexTargetTurns.delete(activeTargetTurnKey);
+          }
+        }
+      }
+      if (postCodexGuardPayload?.text) {
+        finalText = cleanAgentChatReply(postCodexGuardPayload.text);
+        messages = compactCodexMessages([...messages, finalText]);
+      }
+    }
+    const codexTurnResult = postCodexGuardPayload?.ok === false ? "blocked" : "ok";
+    const codexTurnExitCode = postCodexGuardPayload?.ok === false
+      ? (Number.isSafeInteger(postCodexGuardPayload.exitCode) ? postCodexGuardPayload.exitCode : 1)
+      : 0;
     recordLearningReceipt({
       kind: "codex-turn",
       family: taskFamily,
-      result: "ok",
+      result: codexTurnResult,
       route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
       taskSig: taskSignature(text),
-      proof: `exitCode=0; messages=${messages.length}; final=nonempty; ${codexUsageProof(state.usage, prompt, finalText)}`,
-      exitCode: 0,
+      proof: `exitCode=${codexTurnExitCode}; messages=${messages.length}; final=nonempty; postCodexGuard=${postCodexGuardPayload ? cleanProofToken(postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "none"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
+      exitCode: codexTurnExitCode,
       durationMs: Date.now() - startedAt,
       ...learningContext
     });
@@ -4073,14 +4404,15 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     traceStep(trace, "codex.ok", {
       messages: messages.length,
       terminal: state.terminal.length,
+      postCodexGuard: postCodexGuardPayload ? (postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "",
       usage: state.usage
     });
     return {
-      ok: true,
+      ok: postCodexGuardPayload?.ok === false ? false : true,
       text: finalText.slice(0, maxChatChars),
       ...(messages.length > 0 ? { messages } : {}),
       ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
-      exitCode: 0
+      exitCode: codexTurnExitCode
     };
   }
   if (trace?.doc) {
@@ -4137,6 +4469,312 @@ function parseJsonObjectLoose(value) {
   return null;
 }
 
+async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, source, target, finalText = "", onMessage, trace = null, signal = null } = {}) {
+  if (cleanActionToken(taskFamily, "") !== "windows-reinstall" || !target?.id || signal?.aborted) {
+    return null;
+  }
+  const lowerFinalText = String(finalText || "").toLowerCase();
+  if (lowerFinalText.includes("rebooting") || lowerFinalText.includes("post-arm") || lowerFinalText.includes("перезагруз")) {
+    return null;
+  }
+  const started = Date.now();
+  const request = managedReinstallGuardRequest();
+  let statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
+  let status = parseManagedReinstallStatusAfterCodex(statusResult);
+  traceStep(trace, "windows-reinstall.post-codex-guard.probe", {
+    statusOk: Boolean(status),
+    resultOk: Boolean(statusResult?.ok),
+    exitCode: statusResult?.exitCode || 0,
+    finalText: Boolean(finalText)
+  });
+  if (!status) {
+    return null;
+  }
+  const immediate = evaluateManagedReinstallTerminalAfterCodex(status, 0);
+  if (immediate) {
+    traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
+      terminalReason: immediate.terminalReason || "",
+      status: immediate.status || "",
+      blocker: immediate.blocker || ""
+    });
+    return {
+      ...immediate,
+      text: formatManagedReinstallTerminalAfterCodex(immediate, status)
+    };
+  }
+  if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
+    return null;
+  }
+  await postCodexGuardProgress(onMessage, "Codex finished its chat turn, but Windows reinstall preparation is still active. Keeping the task open until it reaches ready state or a blocker.");
+  let lastProgressAt = Date.now();
+  while (Date.now() - started < maxLongTaskTimeoutMs) {
+    if (signal?.aborted) {
+      return {
+        ok: false,
+        action: "prepare",
+        status: "cancelled",
+        text: "! cancelled",
+        exitCode: 130,
+        statusSnapshot: status
+      };
+    }
+    await sleep(Math.min(managedReinstallGuardPollDelayMs(status), 120_000));
+    statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
+    status = parseManagedReinstallStatusAfterCodex(statusResult);
+    if (!status) {
+      traceStep(trace, "windows-reinstall.post-codex-guard.status-unavailable", {
+        resultOk: Boolean(statusResult?.ok),
+        exitCode: statusResult?.exitCode || 0
+      });
+      return {
+        ok: false,
+        action: "prepare",
+        status: "blocked",
+        blocker: "source-status-unavailable",
+        text: "Cannot continue monitoring the PC through Soty. Ask the user to open or restart Soty Agent on that PC, then retry status.",
+        exitCode: statusResult?.exitCode || 127,
+        lastProbe: statusResult?.payload || statusResult || null
+      };
+    }
+    const terminal = evaluateManagedReinstallTerminalAfterCodex(status, Date.now() - started);
+    if (terminal) {
+      traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
+        terminalReason: terminal.terminalReason || "",
+        status: terminal.status || "",
+        blocker: terminal.blocker || "",
+        elapsedMs: Date.now() - started
+      });
+      return {
+        ...terminal,
+        text: formatManagedReinstallTerminalAfterCodex(terminal, status)
+      };
+    }
+    if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
+      return null;
+    }
+    if (Date.now() - lastProgressAt > managedReinstallGuardProgressIntervalMs(status)) {
+      lastProgressAt = Date.now();
+      await postCodexGuardProgress(onMessage, formatManagedReinstallProgressAfterCodex(status));
+    }
+  }
+  return {
+    ok: false,
+    action: "prepare",
+    status: "blocked",
+    blocker: "turnkey-wait-timeout",
+    text: "Windows reinstall preparation did not reach ready state or a blocker before the long runtime guard limit.",
+    exitCode: 124,
+    statusSnapshot: status
+  };
+}
+
+function managedReinstallGuardRequest() {
+  return {
+    action: "status",
+    usbDriveLetter: "D",
+    confirmationPhrase: "",
+    useExistingUsbInstallImage: false,
+    manifestUrl: updateManifestUrl,
+    panelSiteUrl: originFromUrl(updateManifestUrl) || agentRelayBaseUrl || "https://xn--n1afe0b.online",
+    workspaceRoot: "C:\\ProgramData\\Soty\\WindowsReinstall"
+  };
+}
+
+async function readManagedReinstallStatusAfterCodex(source, target, request, signal = null) {
+  if (signal?.aborted) {
+    return { ok: false, payload: { ok: false, text: "! cancelled" }, exitCode: 130 };
+  }
+  try {
+    const safeSource = sanitizeAgentSource(source);
+    const response = await fetch(`http://127.0.0.1:${port}/operator/script`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "https://xn--n1afe0b.online"
+      },
+      body: JSON.stringify({
+        target: target?.id || "",
+        sourceDeviceId: bridgeSourceDeviceId(target, safeSource),
+        ...(safeSource.sourceRelayId ? { sourceRelayId: safeSource.sourceRelayId } : {}),
+        script: sourceManagedWindowsReinstallScript({ ...request, action: "status" }),
+        shell: "powershell",
+        name: "soty-reinstall-status-post-codex",
+        runAs: "system",
+        timeoutMs: 45_000
+      }),
+      signal: signal || undefined
+    });
+    const payload = await response.json().catch(() => ({}));
+    return {
+      ok: Boolean(response.ok && payload?.ok),
+      text: String(payload?.text || ""),
+      payload,
+      exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.ok ? 0 : response.status)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      payload: { ok: false, text: error instanceof Error ? error.message : String(error) },
+      exitCode: 1
+    };
+  }
+}
+
+function parseManagedReinstallStatusAfterCodex(result) {
+  const parsed = parseJsonObjectLoose(result?.text || result?.payload?.text || "");
+  return parsed && parsed.action === "status" ? parsed : null;
+}
+
+function evaluateManagedReinstallTerminalAfterCodex(status, elapsedMs) {
+  const readyBlockers = managedReinstallReadyBlockersAfterCodex(status);
+  if (status?.ready === true && readyBlockers.length === 0) {
+    return {
+      ok: true,
+      action: "prepare",
+      status: "needs-confirmation",
+      terminalReason: "user-confirmation-required",
+      exitCode: 0,
+      elapsedMs,
+      confirmationPhrase: String(status.confirmationPhrase || ""),
+      statusSnapshot: status
+    };
+  }
+  if (status?.ready === true && readyBlockers.length > 0) {
+    return {
+      ok: false,
+      action: "prepare",
+      status: "blocked",
+      blocker: "ready-proof-incomplete",
+      blockers: readyBlockers,
+      exitCode: 1,
+      elapsedMs,
+      statusSnapshot: status
+    };
+  }
+  if (isManagedReinstallPrepareActiveAfterCodex(status)) {
+    return null;
+  }
+  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+  const latestStatus = String(latest?.status || "").toLowerCase();
+  if (latest && latestStatus && !["running-or-started", "running", "created"].includes(latestStatus)) {
+    return {
+      ok: false,
+      action: "prepare",
+      status: "blocked",
+      blocker: "prepare-job-finished-without-ready",
+      latestPrepare: latest,
+      exitCode: Number.isSafeInteger(latest.exitCode) ? latest.exitCode : 1,
+      elapsedMs,
+      statusSnapshot: status
+    };
+  }
+  const media = status?.media && typeof status.media === "object" ? status.media : null;
+  const mediaComplete = Boolean(status?.installImage || media?.complete === true);
+  const missingFinalMarkers = readyBlockers.includes("autounattend") || readyBlockers.includes("setupcomplete") || readyBlockers.includes("backup-proof");
+  if (mediaComplete && missingFinalMarkers) {
+    return {
+      ok: false,
+      action: "prepare",
+      status: "blocked",
+      blocker: "prepare-stopped-before-final-markers",
+      blockers: readyBlockers,
+      exitCode: 1,
+      elapsedMs,
+      statusSnapshot: status
+    };
+  }
+  return null;
+}
+
+function isManagedReinstallPrepareActiveAfterCodex(status) {
+  const media = status?.media && typeof status.media === "object" ? status.media : null;
+  const mediaActive = media?.downloading === true && (
+    media?.active === true
+    || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < 900)
+  );
+  if (mediaActive) {
+    return true;
+  }
+  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+  const latestStatus = String(latest?.status || "").toLowerCase();
+  if (!["running-or-started", "running", "created"].includes(latestStatus)) {
+    return false;
+  }
+  const activeProcessCount = Number(latest?.activeProcessCount);
+  const updatedAgeSeconds = Number(latest?.updatedAgeSeconds);
+  if (Number.isFinite(activeProcessCount) && activeProcessCount <= 0 && Number.isFinite(updatedAgeSeconds) && updatedAgeSeconds >= 900) {
+    return false;
+  }
+  return true;
+}
+
+function managedReinstallReadyBlockersAfterCodex(status) {
+  const blockers = [];
+  if (String(status?.managedUserName || "") !== "РЎРѕС‚С‹") {
+    blockers.push("managed-user-name");
+  }
+  if (String(status?.managedUserPasswordMode || "") !== "blank-no-password") {
+    blockers.push("managed-user-password-mode");
+  }
+  if (status?.backupProofOk !== true) {
+    blockers.push("backup-proof");
+  }
+  if (!String(status?.installImage || "")) {
+    blockers.push("install-image");
+  }
+  if (status?.rootAutounattend !== true) {
+    blockers.push("autounattend");
+  }
+  if (status?.oemSetupComplete !== true) {
+    blockers.push("setupcomplete");
+  }
+  return blockers;
+}
+
+function managedReinstallGuardPollDelayMs(status) {
+  return status?.media?.downloading === true ? 120_000 : 60_000;
+}
+
+function managedReinstallGuardProgressIntervalMs(status) {
+  return status?.media?.downloading === true ? 30 * 60_000 : 20 * 60_000;
+}
+
+function formatManagedReinstallProgressAfterCodex(status) {
+  const media = status?.media && typeof status.media === "object" ? status.media : null;
+  if (media?.downloading === true) {
+    const gb = Number.isFinite(Number(media.gb)) ? `, downloaded about ${media.gb} GB` : "";
+    return `Windows reinstall preparation is still downloading the install image${gb}. I am keeping the task open and will stop only on ready state or a blocker.`;
+  }
+  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+  if (latest?.stdoutTail && /backup|driver|robocopy|export/iu.test(String(latest.stdoutTail))) {
+    return "Windows reinstall preparation is still working on backup, drivers, or install files. I am keeping the task open.";
+  }
+  return "Windows reinstall preparation is still active. I am keeping the task open until ready state or a blocker.";
+}
+
+function formatManagedReinstallTerminalAfterCodex(terminal, status) {
+  if (terminal?.status === "needs-confirmation") {
+    const phrase = String(terminal.confirmationPhrase || status?.confirmationPhrase || "").trim();
+    return phrase
+      ? `Preparation is complete. Exact destructive confirmation is still required before wiping the Windows disk: ${phrase}`
+      : "Preparation is complete. Exact destructive confirmation is still required before wiping the Windows disk.";
+  }
+  const blocker = String(terminal?.blocker || "blocked");
+  const blockers = Array.isArray(terminal?.blockers) && terminal.blockers.length > 0
+    ? ` (${terminal.blockers.join(", ")})`
+    : "";
+  return `Windows reinstall preparation reached a blocker: ${blocker}${blockers}.`;
+}
+
+async function postCodexGuardProgress(onMessage, text) {
+  const clean = String(text || "").trim().slice(0, 1000);
+  if (!clean || typeof onMessage !== "function") {
+    return;
+  }
+  await Promise.resolve(onMessage(clean)).catch(() => undefined);
+}
+
 function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", taskFamily = "generic" }) {
   const resumeThreadId = safeCodexThreadId(threadId);
   const args = [
@@ -4169,6 +4807,9 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   ];
   if (sourceRelayId) {
     mcpArgs.push("--source-relay", sourceRelayId);
+  }
+  if (safeSource.deviceId) {
+    mcpArgs.push("--controller-device", safeSource.deviceId);
   }
   if (targetId && sourceDeviceId) {
     mcpArgs.push("--target", targetId, "--source-device", sourceDeviceId);
@@ -4273,6 +4914,34 @@ function codexSessionKey(source, target = null, taskFamily = "generic") {
   return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 180);
 }
 
+function codexActiveTargetTurnKey(source, target = null) {
+  const safe = sanitizeAgentSource(source);
+  const targetId = String(target?.id || safe.preferredTargetId || "").trim();
+  if (!targetId) {
+    return "";
+  }
+  const key = [
+    safe.sourceRelayId || agentRelayId || safe.tunnelId || "relay",
+    safe.deviceId || "",
+    targetId
+  ].filter(Boolean).join("@");
+  return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 220);
+}
+
+function activeCodexTargetTurnReply(entry, taskFamily = "") {
+  const ageSeconds = Math.max(0, Math.round((Date.now() - (entry?.startedAt || Date.now())) / 1000));
+  const ageText = ageSeconds >= 90
+    ? `${Math.round(ageSeconds / 60)} min`
+    : `${ageSeconds}s`;
+  const last = cleanAgentChatReply(entry?.lastMessage || "");
+  const suffix = last ? `\n\nПоследний статус:\n${last.slice(0, 1600)}` : "";
+  return {
+    ok: true,
+    text: `На этом ПК уже выполняется предыдущая задача (${entry?.taskFamily || taskFamily || "agent"}, ${ageText}). Второй запуск не начинаю, чтобы не мешать текущему процессу.${suffix}`.slice(0, maxChatChars),
+    exitCode: 0
+  };
+}
+
 function codexSessionFamilyBucket(taskFamily) {
   const family = String(taskFamily || "generic").trim().toLowerCase();
   if (!family || family === "generic") {
@@ -4297,12 +4966,12 @@ function codexSessionFamilyBucket(taskFamily) {
 }
 
 function classifyTaskFamily(text, target = null) {
-  if (isMemoryRecallOrFollowupPrompt(text)) {
-    return target?.id ? "source-scoped-dialog" : "plain-dialog";
-  }
   const family = classifySourceCommand(text);
   if (family !== "generic") {
     return family;
+  }
+  if (isMemoryRecallOrFollowupPrompt(text)) {
+    return target?.id ? "source-scoped-dialog" : "plain-dialog";
   }
   return target?.id ? "source-scoped-dialog" : "plain-dialog";
 }
@@ -4354,6 +5023,19 @@ function safeCodexWorkspacePath(value) {
 function safeCodexThreadId(value) {
   const text = String(value || "").trim();
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(text) ? text : "";
+}
+
+function hasBrokenSotyNodeOptions(value) {
+  const text = String(value || "");
+  return /soty-node-require-shim|C:Users.*soty-node-require-shim|--require\s+["']?.*(?:\\|\/)(?:Temp|AppData)(?:\\|\/).*\.cjs/iu.test(text);
+}
+
+function cleanChildProcessEnv(extra = {}) {
+  const env = { ...process.env, ...extra };
+  if (hasBrokenSotyNodeOptions(env.NODE_OPTIONS)) {
+    delete env.NODE_OPTIONS;
+  }
+  return env;
 }
 
 function spawnCommand(file, args, options) {
@@ -4861,16 +5543,17 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
     return null;
   }
   const preferred = preferredOperatorTarget(safe);
-  const mentionedTarget = targetMentionedAtStart(text, runtimeActiveTargets(safe, preferred, sourceTargets));
+  const preferredSource = preferred ? matchingAgentSourceTarget(preferred, sourceTargets) : null;
+  const mentionedTarget = targetMentionedInRequest(text, runtimeActiveTargets(safe, preferredSource || preferred, sourceTargets));
   if (mentionedTarget) {
-    return mentionedTarget;
+    return matchingAgentSourceTarget(mentionedTarget, sourceTargets) || mentionedTarget;
   }
   if (preferred) {
-    return preferred;
+    return preferredSource || preferred;
   }
   const implicitTarget = implicitOperatorTargetForRequest(safe, text, sourceTargets);
   if (implicitTarget) {
-    return implicitTarget;
+    return matchingAgentSourceTarget(implicitTarget, sourceTargets) || implicitTarget;
   }
   const [linked] = sourceAgentLinkTargets(safe, sourceTargets);
   if (linked) {
@@ -4880,6 +5563,29 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
     return sourceDeviceFallbackTarget(safe);
   }
   return null;
+}
+
+function matchingAgentSourceTarget(target, sourceTargets = []) {
+  if (!target) {
+    return null;
+  }
+  if (isAgentSourceTarget(target.id)) {
+    return target;
+  }
+  const candidates = sanitizeTargets(sourceTargets).filter((item) => isAgentSourceTarget(item.id));
+  const deviceIds = new Set([
+    target.hostDeviceId,
+    ...(Array.isArray(target.deviceIds) ? target.deviceIds : [])
+  ].map((item) => String(item || "").trim()).filter(Boolean));
+  if (deviceIds.size === 0) {
+    return null;
+  }
+  return candidates.find((item) => {
+    const sourceDeviceId = agentSourceDeviceId(item.id) || item.hostDeviceId || "";
+    return deviceIds.has(sourceDeviceId)
+      || (item.hostDeviceId && deviceIds.has(item.hostDeviceId))
+      || item.deviceIds.some((deviceId) => deviceIds.has(deviceId));
+  }) || null;
 }
 
 function implicitOperatorTargetForRequest(source, text = "", sourceTargets = []) {
@@ -4943,19 +5649,24 @@ function preferredOperatorTarget(source) {
   const accessTargets = allTargets.filter((target) => target.access === true);
   const preferredId = String(safe.preferredTargetId || "").trim().toLowerCase();
   if (preferredId) {
-    const byId = allTargets.find((target) => target.id === safe.preferredTargetId || target.id.toLowerCase() === preferredId);
+    const byId = accessTargets.find((target) => target.id === safe.preferredTargetId || target.id.toLowerCase() === preferredId);
     if (byId) {
       return byId;
     }
   }
   const preferredLabel = String(safe.preferredTargetLabel || "").trim().toLowerCase();
   if (preferredLabel) {
-    const byLabel = allTargets.find((target) => target.label.toLowerCase() === preferredLabel);
+    const byLabel = accessTargets.find((target) => target.label.toLowerCase() === preferredLabel);
     if (byLabel) {
       return byLabel;
     }
   }
   return accessTargets.length === 1 ? accessTargets[0] : null;
+}
+
+function targetMentionedInRequest(text, targets) {
+  return targetMentionedAtStart(text, targets)
+    || targetMentionedAnywhere(text, targets);
 }
 
 function targetMentionedAtStart(text, targets) {
@@ -4972,6 +5683,25 @@ function targetMentionedAtStart(text, targets) {
     || sorted.find((target) => target.id.toLowerCase() === needle)
     || sorted.find((target) => cleanTargetNeedle(target.label).includes(needle))
     || null;
+}
+
+function targetMentionedAnywhere(text, targets) {
+  const body = cleanTargetNeedle(text);
+  if (!body) {
+    return null;
+  }
+  return sanitizeTargets(targets)
+    .filter((target) => target.access === true)
+    .sort((left, right) => cleanTargetNeedle(right.label).length - cleanTargetNeedle(left.label).length)
+    .find((target) => targetNeedleMentioned(body, cleanTargetNeedle(target.label))
+      || targetNeedleMentioned(body, target.id.toLowerCase())) || null;
+}
+
+function targetNeedleMentioned(body, needle) {
+  if (!needle || needle.length < 2) {
+    return false;
+  }
+  return body === needle || body.includes(needle);
 }
 
 function cleanTargetNeedle(value) {
@@ -5199,9 +5929,10 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   const sourceDeviceId = promptInline(bridgeSourceDeviceId(target, safeSource) || safeSource.deviceId || "");
   const targetLabel = promptInline(target?.label || safeSource.preferredTargetLabel || "");
   const targetId = promptInline(target?.id || safeSource.preferredTargetId || "");
+  const deviceNetwork = runtimeDeviceNetwork(safeSource, target, sourceTargets);
   const activeTargets = runtimeActiveTargets(safeSource, target, sourceTargets)
     .slice(0, 8)
-    .map((item) => `${promptInline(item.label)} (${promptInline(item.id)})${item.access ? " access=true" : ""}`)
+    .map((item) => `${promptInline(item.label)} (${promptInline(item.id)})${item.access ? " access=true" : ""}${isAgentSourceTarget(item.id) ? " agent-channel=true" : " link-only=true"}`)
     .join("\n");
   return {
     taskFamily,
@@ -5219,6 +5950,8 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       label: targetLabel,
       sourceDeviceId
     },
+    deviceNetwork,
+    deviceNetworkText: formatRuntimeDeviceNetwork(deviceNetwork),
     activeTargets,
     session: {
       resumed: Boolean(sessionRecord?.threadId),
@@ -5228,6 +5961,63 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
     },
     memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, routineTask ? 1400 : 4000)
   };
+}
+
+function runtimeDeviceNetwork(source, target = null, sourceTargets = []) {
+  const safe = sanitizeAgentSource(source);
+  const network = sanitizeDeviceNetwork(safe.deviceNetwork);
+  const activeTargets = runtimeActiveTargets(safe, target, sourceTargets)
+    .slice(0, 16)
+    .map((item) => ({
+      id: promptInline(item.id),
+      label: promptInline(item.label),
+      sourceDeviceId: promptInline(agentSourceDeviceId(item.id) || item.hostDeviceId || item.deviceIds?.[0] || ""),
+      access: item.access === true,
+      selected: item.selected === true || item.id === (target?.id || safe.preferredTargetId),
+      channel: isAgentSourceTarget(item.id) ? "agent-source" : "link-room"
+    }));
+  return {
+    protocol: "soty-device-network.v1",
+    controller: {
+      deviceId: promptInline(network.controllerDeviceId || safe.deviceId),
+      deviceNick: promptInline(network.controllerDeviceNick || safe.deviceNick)
+    },
+    activeChat: {
+      tunnelId: promptInline(network.activeTunnelId || safe.tunnelId),
+      label: promptInline(network.activeTunnelLabel || safe.tunnelLabel),
+      kind: network.activeTunnelKind === "agent" ? "agent" : "peer"
+    },
+    selectedTarget: {
+      id: promptInline(target?.id || network.selectedTargetId || safe.preferredTargetId),
+      label: promptInline(target?.label || network.selectedTargetLabel || safe.preferredTargetLabel),
+      sourceDeviceId: promptInline(bridgeSourceDeviceId(target, safe) || network.selectedTargetDeviceId || ""),
+      access: Boolean(target?.access === true || network.selectedTargetAccess === true),
+      link: Boolean(network.selectedTargetLink || target)
+    },
+    capabilities: sanitizeStringList(network.capabilities, 32, 80),
+    targets: activeTargets
+  };
+}
+
+function formatRuntimeDeviceNetwork(network) {
+  if (!network || typeof network !== "object") {
+    return "none";
+  }
+  const lines = [
+    `protocol=${network.protocol || "soty-device-network.v1"}`,
+    `controller=${network.controller?.deviceNick || "unknown"} (${network.controller?.deviceId || "no-id"})`,
+    `active_chat=${network.activeChat?.label || "none"} (${network.activeChat?.tunnelId || "none"}) kind=${network.activeChat?.kind || "peer"}`,
+    `selected_target=${network.selectedTarget?.label || "none"} (${network.selectedTarget?.id || "none"}) sourceDeviceId=${network.selectedTarget?.sourceDeviceId || "none"} access=${network.selectedTarget?.access ? "true" : "false"}`
+  ];
+  const capabilities = Array.isArray(network.capabilities) ? network.capabilities.filter(Boolean).join(",") : "";
+  if (capabilities) {
+    lines.push(`capabilities=${capabilities}`);
+  }
+  const targets = Array.isArray(network.targets) ? network.targets : [];
+  for (const item of targets.slice(0, 12)) {
+    lines.push(`- ${item.label || "target"} (${item.id || "no-id"}) sourceDeviceId=${item.sourceDeviceId || "none"} access=${item.access ? "true" : "false"} channel=${item.channel || "link-room"} selected=${item.selected ? "true" : "false"}`);
+  }
+  return lines.join("\n") || "none";
 }
 
 function runtimeActiveTargets(source, target = null, sourceTargets = []) {
@@ -5249,6 +6039,7 @@ function runtimeActiveTargets(source, target = null, sourceTargets = []) {
     add(item);
   }
   return [...merged.values()]
+    .filter((item) => item.access === true)
     .sort((left, right) => runtimeTargetScore(right, preferredId) - runtimeTargetScore(left, preferredId));
 }
 
@@ -5364,6 +6155,7 @@ function sotyRuntimeHints() {
     "- Identity: \u041b\u043e\u0440\u0434.",
     "- Use memory as short reusable hints, not as rules.",
     "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
+    "- Linked-device canonical: if the connected device network lists a Link target with access=true, that target is a first-class computer for you. Use the same `computer` capabilities through the controller device; do not fall back to the controller computer unless the request names the controller or the Link target is unavailable.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run in the selected user's desktop session; system tasks run in the selected computer's system context. If the needed desktop session is unavailable, say that the user's desktop session is unavailable on the selected computer.",
@@ -5374,6 +6166,8 @@ function sotyRuntimeHints() {
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Soty is the data plane for files and artifacts. For source-device -> current room, use `computer` operation=file action=download/publish. For server/Codex artifact -> source-device, use `computer` operation=artifact. Never use 0x0.st, file.io, temp.sh, bashupload, ad-hoc local HTTP servers, pasted base64, or public upload services while Soty file/artifact operations are available.",
     "- For user-device files or generated assets, transfer the exact artifact through Soty file/artifact operations; do not replace it with a similar public download or a fake/generated-by-other-route asset.",
+    "- Do not stage user artifacts under `C:\\Windows\\Temp` / `%WINDIR%\\Temp`; normal interactive users may not write there. Use `C:\\Users\\Public\\Pictures` for wallpapers/images and `C:\\ProgramData\\soty-agent\\artifacts` for other Soty artifacts.",
+    "- Never set persistent `NODE_OPTIONS`, `--require`, or a `soty-node-require-shim` on a user's computer. If such a shim exists, remove it before running Node; use `.mjs`/dynamic `import()` or the Soty artifact/file tools instead.",
     "- For generated wallpaper tasks, generate with the native OpenAI image tool before desktop/display checks. Only after a real generated artifact exists, measure the selected user's display/profile on the source device, apply there, then verify there.",
     "- If a generated image already exists under $CODEX_HOME/generated_images, call `computer` operation=artifact with that localPath. Hard stop: no shell base64/split, no curl/wget upload, no public host, no local HTTP server.",
     "- For non-image display/wallpaper/desktop tasks, measure the active user display/profile on the source device, apply there, then verify there.",
@@ -5398,7 +6192,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "Use this route whenever native Codex/OpenAI image generation creates a bitmap that must land on the user's device:",
     "",
     "1. Generate with the native OpenAI/Codex built-in tool: `image_gen` / `image_generation`.",
-    "2. If the generated file path is not already visible, find the newest file under `$CODEX_HOME/generated_images` or `/agent/codex-stock-home/generated_images`.",
+    "2. If the generated file path is not already visible, find the newest file under `$CODEX_HOME/generated_images` or `/agent/codex-stock-home/generated_images` with a portable command such as `ls -t ${CODEX_HOME:-/agent/codex-stock-home}/generated_images/*/*.png /agent/codex-stock-home/generated_images/*/*.png 2>/dev/null | head -1`. BusyBox find may not support `-printf`; do not use `find -printf`.",
     "3. Transfer the exact file through Soty:",
     "",
     "```json",
@@ -5414,6 +6208,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "5. Verify with source-device proof: saved path, bytes/SHA-256, wallpaper state, and display when relevant.",
     "",
     "Hard stop: no shell base64/split, no curl/wget upload, no public hosts (`0x0.st`, `file.io`, `temp.sh`, `bashupload`), no temporary local HTTP server.",
+    "Do not use `C:\\Windows\\Temp` / `%WINDIR%\\Temp` for generated artifacts or wallpapers; use `C:\\Users\\Public\\Pictures` for wallpaper images or `C:\\ProgramData\\soty-agent\\artifacts` for general artifacts.",
     "Do not inspect the imagegen skill for transfer instructions; that skill describes generation. Soty transfer is `computer` operation=artifact.",
     "If you already started a shell/base64/public-upload route for a generated image, stop that route and switch immediately to `computer` operation=artifact.",
     "",
@@ -5447,6 +6242,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "## Active Soty Targets",
     runtimeContext.activeTargets || "none",
+    "",
+    "## Connected Soty Device Network",
+    runtimeContext.deviceNetworkText || "none",
     "",
     "## Visible Soty Shared Text Context",
     runtimeContext.visibleContext || "none",
@@ -5490,6 +6288,8 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for destructive confirmation.",
     "- For generated image or generated wallpaper tasks, use the native OpenAI image-generation tool first. Do not check desktop/display first just to choose a size; generation availability is the first gate and size can be adjusted after a generated artifact exists.",
     "- After native image generation, follow `SOTY_ROUTES.md`: find the real output under the Codex home generated_images directory if needed, then move bytes with `computer` operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>; never upload generated images to public temporary hosts or serve them with local HTTP.",
+    "- For generated wallpapers/images, save to `C:\\Users\\Public\\Pictures\\...`; for other source-device artifacts, save to `C:\\ProgramData\\soty-agent\\artifacts\\...`. Avoid `C:\\Windows\\Temp` because it can deny writes from the interactive bridge.",
+    "- Do not create or persist `NODE_OPTIONS=--require ...` shims on source devices. They break future Node/agent installs on Windows; prefer ESM `import()` or Soty file/artifact operations.",
     "- For wallpaper, after artifact transfer call `computer` operation=wallpaper (or desktop action=wallpaper) with the saved source-device path and fit=fill, then verify with source-device proof.",
     "- Do not inspect `imagegen` SKILL.md to find transfer instructions; it covers generation only. Soty artifact transfer is the route for generated-image bytes.",
     "- If you already used shell/base64/public upload for a generated image, stop that route and switch immediately to `computer` operation=artifact.",
@@ -5502,6 +6302,15 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "",
     "Active Soty targets:",
     runtime.activeTargets || "none",
+    "",
+    "Connected Soty device network:",
+    runtime.deviceNetworkText || "none",
+    "",
+    "Device targeting rule:",
+    "- Link means capability forwarding: when device B gave Link access to controller A, every computer/file/artifact/desktop/browser/action/reinstall function available to A's agent plane must be used for B through A when B is the selected or named target.",
+    "- If the active chat has a selected_target with access=true, treat that device as the default action target. In the Agent chat, choose a named Link target from the device network; if there is exactly one Link target, it may be the default for device tasks.",
+    "- Never confuse controller and target: controller is the route, selected/named Link target is the computer where user-visible work happens. Report a target blocker only after trying the attached `computer` capability for that target.",
+    "- For tasks involving several linked devices, keep controller and target names explicit and operate through the same device network context.",
     "",
     "Visible Soty shared-text context:",
     runtime.visibleContext || cleanPromptBlock(context, maxAgentContextChars) || "none",
@@ -5666,6 +6475,8 @@ function sanitizeAgentSource(value) {
     return {};
   }
   const clean = (field) => String(field || "").trim().slice(0, maxSourceChars);
+  const deviceNetwork = sanitizeDeviceNetwork(value.deviceNetwork);
+  const operatorTargetList = mergeOperatorTargets(sanitizeTargets(value.operatorTargets), deviceNetwork.targets);
   return {
     tunnelId: clean(value.tunnelId),
     tunnelLabel: clean(value.tunnelLabel),
@@ -5673,18 +6484,80 @@ function sanitizeAgentSource(value) {
     deviceNick: clean(value.deviceNick),
     appOrigin: clean(value.appOrigin),
     sourceRelayId: safeRelayId(value.sourceRelayId),
-    preferredTargetId: clean(value.preferredTargetId),
-    preferredTargetLabel: clean(value.preferredTargetLabel),
+    preferredTargetId: clean(value.preferredTargetId) || deviceNetwork.selectedTargetId,
+    preferredTargetLabel: clean(value.preferredTargetLabel) || deviceNetwork.selectedTargetLabel,
     localAgentDirect: value.localAgentDirect === true,
-    operatorTargets: sanitizeTargets(value.operatorTargets)
+    operatorTargets: operatorTargetList,
+    deviceNetwork
   };
+}
+
+function sanitizeDeviceNetwork(value) {
+  if (!value || typeof value !== "object") {
+    return emptyDeviceNetwork();
+  }
+  const clean = (field) => String(field || "").trim().slice(0, maxSourceChars);
+  return {
+    protocol: "soty-device-network.v1",
+    controllerDeviceId: clean(value.controllerDeviceId),
+    controllerDeviceNick: clean(value.controllerDeviceNick),
+    activeTunnelId: clean(value.activeTunnelId),
+    activeTunnelLabel: clean(value.activeTunnelLabel),
+    activeTunnelKind: value.activeTunnelKind === "agent" ? "agent" : "peer",
+    selectedTargetId: clean(value.selectedTargetId),
+    selectedTargetLabel: clean(value.selectedTargetLabel),
+    selectedTargetDeviceId: clean(value.selectedTargetDeviceId),
+    selectedTargetAccess: value.selectedTargetAccess === true,
+    selectedTargetLink: value.selectedTargetLink === true,
+    capabilities: sanitizeStringList(value.capabilities, 32, 80),
+    targets: sanitizeTargets(value.targets)
+  };
+}
+
+function emptyDeviceNetwork() {
+  return {
+    protocol: "soty-device-network.v1",
+    controllerDeviceId: "",
+    controllerDeviceNick: "",
+    activeTunnelId: "",
+    activeTunnelLabel: "",
+    activeTunnelKind: "peer",
+    selectedTargetId: "",
+    selectedTargetLabel: "",
+    selectedTargetDeviceId: "",
+    selectedTargetAccess: false,
+    selectedTargetLink: false,
+    capabilities: [],
+    targets: []
+  };
+}
+
+function sanitizeStringList(value, maxItems, maxChars) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value
+    .filter((item) => typeof item === "string")
+    .map((item) => item.trim().slice(0, maxChars))
+    .filter(Boolean))]
+    .slice(0, maxItems);
+}
+
+function mergeOperatorTargets(...groups) {
+  const merged = new Map();
+  for (const target of groups.flat()) {
+    if (target?.id && !merged.has(target.id)) {
+      merged.set(target.id, target);
+    }
+  }
+  return [...merged.values()].slice(0, 128);
 }
 
 function sourceMatchedOperatorTargets(source, extraTargets = []) {
   const safe = sanitizeAgentSource(source);
   const sourceDeviceId = safe.deviceId;
   const merged = new Map();
-  for (const target of sanitizeTargets(source?.operatorTargets)) {
+  for (const target of sanitizeTargets(safe.operatorTargets)) {
     merged.set(target.id, target);
   }
   for (const target of operatorTargets) {
@@ -5921,6 +6794,7 @@ function runMcpServer() {
   const mcpTarget = arg("--target") || process.env.SOTY_MCP_TARGET || "";
   const mcpSourceDeviceId = arg("--source-device") || process.env.SOTY_MCP_SOURCE_DEVICE || "";
   const mcpSourceRelayId = safeRelayId(arg("--source-relay") || process.env.SOTY_MCP_SOURCE_RELAY || "");
+  const mcpControllerDeviceId = safeSourceText(arg("--controller-device") || process.env.SOTY_MCP_CONTROLLER_DEVICE || "");
   let mcpPostArmReboot = null;
   let mcpBuffer = Buffer.alloc(0);
   process.stdin.on("data", (chunk) => {
@@ -6010,7 +6884,7 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected user's computer. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, generated-asset save/apply/verify, and managed reinstall. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, generated-asset save/apply/verify, and managed reinstall. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
@@ -6735,6 +7609,8 @@ function runMcpServer() {
       sourceAttached: Boolean(mcpTarget && mcpSourceDeviceId),
       target: mcpTarget ? "<set>" : "",
       sourceDeviceId: mcpSourceDeviceId ? "<set>" : "",
+      controllerDeviceId: mcpControllerDeviceId ? "<set>" : "",
+      linkedTargetViaController: Boolean(mcpTarget && mcpSourceDeviceId && mcpControllerDeviceId && mcpSourceDeviceId !== mcpControllerDeviceId),
       model: "discover+invoke+durable-jobs+artifacts+source-proof",
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       openAiToolPlane: openAiToolPlaneStatus(),
@@ -7691,6 +8567,23 @@ function runMcpServer() {
         statusSnapshot: status
       };
     }
+    const media = status?.media && typeof status.media === "object" ? status.media : null;
+    const mediaComplete = Boolean(status?.installImage || media?.complete === true);
+    const missingFinalMarkers = readyBlockers.includes("autounattend") || readyBlockers.includes("setupcomplete") || readyBlockers.includes("backup-proof");
+    if (mediaComplete && missingFinalMarkers) {
+      return {
+        ok: false,
+        action: "prepare",
+        status: "blocked",
+        blocker: "prepare-stopped-before-final-markers",
+        blockers: readyBlockers,
+        text: "Preparation stopped before producing all final reinstall markers.",
+        exitCode: 1,
+        elapsedMs,
+        initial,
+        statusSnapshot: status
+      };
+    }
     return null;
   }
 
@@ -7705,7 +8598,15 @@ function runMcpServer() {
     }
     const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
     const latestStatus = String(latest?.status || "").toLowerCase();
-    return latestStatus === "running-or-started" || latestStatus === "running" || latestStatus === "created";
+    if (latestStatus !== "running-or-started" && latestStatus !== "running" && latestStatus !== "created") {
+      return false;
+    }
+    const activeProcessCount = Number(latest?.activeProcessCount);
+    const updatedAgeSeconds = Number(latest?.updatedAgeSeconds);
+    if (Number.isFinite(activeProcessCount) && activeProcessCount <= 0 && Number.isFinite(updatedAgeSeconds) && updatedAgeSeconds >= 900) {
+      return false;
+    }
+    return true;
   }
 
   function reinstallReadyBlockers(status) {
@@ -7795,7 +8696,8 @@ function runMcpServer() {
         ...(body === undefined ? {} : {
           body: JSON.stringify({
             ...body,
-            ...(mcpSourceRelayId ? { sourceRelayId: mcpSourceRelayId } : {})
+            ...(mcpSourceRelayId ? { sourceRelayId: mcpSourceRelayId } : {}),
+            ...(mcpControllerDeviceId ? { controllerDeviceId: mcpControllerDeviceId } : {})
           })
         })
       });
@@ -7886,7 +8788,7 @@ function quotePowerShell(value) {
 function sourceOpenUrlScript(url) {
   const payload = Buffer.from(JSON.stringify({ url: String(url || "").slice(0, 4000) }), "utf8").toString("base64");
   return `
-const { spawn } = require("node:child_process");
+const { spawn } = await import("node:child_process");
 const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
 const url = String(req.url || "");
 if (!/^https?:\\/\\//i.test(url)) {
@@ -7920,12 +8822,23 @@ function sourceArtifactChunkScript(args) {
     bytes: Number.isSafeInteger(args?.bytes) ? args.bytes : 0
   }), "utf8").toString("base64");
   return `
-const fs = require("node:fs");
-const path = require("node:path");
-const crypto = require("node:crypto");
+const fs = await import("node:fs");
+const path = await import("node:path");
+const os = await import("node:os");
+const crypto = await import("node:crypto");
 const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
-const target = path.resolve(String(req.targetPath || ""));
-if (!target) throw new Error("empty targetPath");
+function expandArtifactTargetPath(value) {
+  let text = String(value || "").trim();
+  if (!text) throw new Error("empty targetPath");
+  if (text === "~" || text.startsWith("~/") || text.startsWith("~\\\\")) {
+    text = path.join(os.homedir(), text.slice(2));
+  }
+  text = text
+    .replace(/%([^%]+)%/g, (_, name) => process.env[name] || "")
+    .replace(/\\$\\{([^}]+)\\}|\\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, braced, plain) => process.env[braced || plain] || "");
+  return path.resolve(text);
+}
+const target = expandArtifactTargetPath(req.targetPath);
 const index = Number(req.index) || 0;
 const total = Math.max(1, Number(req.total) || 1);
 if (index === 0) {
@@ -8025,7 +8938,7 @@ function runWindowsAudioWarmup() {
     windowsAudioScript(-1, -1)
   ], {
     cwd: process.cwd(),
-    env: process.env,
+    env: cleanChildProcessEnv(),
     windowsHide: true,
     stdio: "ignore"
   });
@@ -8142,10 +9055,10 @@ function sourceFileScript(args) {
     maxBytes: Number.isSafeInteger(args.maxBytes) ? Math.max(1, Math.min(args.maxBytes, 512_000_000)) : 512_000_000
   }), "utf8").toString("base64");
   return `
-const fs = require("node:fs");
-const path = require("node:path");
-const os = require("node:os");
-const crypto = require("node:crypto");
+const fs = await import("node:fs");
+const path = await import("node:path");
+const os = await import("node:os");
+const crypto = await import("node:crypto");
 const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
 const emit = (value) => console.log(JSON.stringify(value));
 function expandPath(value) {
@@ -8323,10 +9236,10 @@ function sourceBrowserScript(args) {
     maxChars: Number.isSafeInteger(args.maxChars) ? Math.max(1000, Math.min(args.maxChars, 12000)) : 9000
   }), "utf8").toString("base64");
   const driver = Buffer.from(`
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const { spawn, spawnSync } = require("node:child_process");
+const fs = await import("node:fs");
+const os = await import("node:os");
+const path = await import("node:path");
+const { spawn, spawnSync } = await import("node:child_process");
 const req = JSON.parse(Buffer.from("${request}", "base64").toString("utf8"));
 const port = 9222;
 const base = "http://127.0.0.1:" + port;
@@ -8794,6 +9707,9 @@ function Quote-WinArg([string]$Value) {
 }
 try {
   $env:SOTY_AGENT_RUN_CONTEXT = 'interactive-user'
+  if ($env:NODE_OPTIONS -match 'soty-node-require-shim|C:Users.*soty-node-require-shim|--require\s+["'']?.*(\\|/)(Temp|AppData)(\\|/).*\.cjs') {
+    Remove-Item Env:NODE_OPTIONS -ErrorAction SilentlyContinue
+  }
   $argsLine = @($payload.args | ForEach-Object { Quote-WinArg ([string]$_) }) -join ' '
   $process = Start-Process -FilePath ([string]$payload.file) -ArgumentList $argsLine -WorkingDirectory ([string]$payload.cwd) -RedirectStandardOutput ([string]$payload.stdoutPath) -RedirectStandardError ([string]$payload.stderrPath) -WindowStyle Hidden -Wait -PassThru
   Set-Content -LiteralPath ([string]$payload.exitPath) -Encoding ASCII -Value ([string]$process.ExitCode)
@@ -8906,7 +9822,7 @@ async function runCommand(ws, id, command, timeoutMs, runAs = "user") {
   }
   const child = spawn(shell.file, shell.args, {
     cwd: process.cwd(),
-    env: process.env,
+    env: cleanChildProcessEnv(),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -8992,7 +9908,7 @@ async function runScript(ws, id, payload, timeoutMs) {
 
   const child = spawn(script.file, script.args, {
     cwd: process.cwd(),
-    env: process.env,
+    env: cleanChildProcessEnv(),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -9907,10 +10823,13 @@ function machineInstallLauncherScript() {
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
     "$dir = Join-Path $env:TEMP 'soty-agent-machine'",
     "New-Item -ItemType Directory -Force -Path $dir | Out-Null",
-    "$script = Join-Path $dir 'install-windows.ps1'",
-    "Invoke-WebRequest -Uri 'https://xn--n1afe0b.online/agent/install-windows.ps1' -UseBasicParsing -OutFile $script",
-    "$args = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Scope Machine -LaunchAppAtLogon'",
-    "Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $args"
+    "$bootstrap = Join-Path $dir 'install-windows-machine-bootstrap.ps1'",
+    "$log = Join-Path $dir 'bootstrap.log'",
+    `$revision = '${agentVersion}'`,
+    "'soty-agent-machine:bootstrap-download:' + $revision | Out-File -LiteralPath $log -Encoding ASCII",
+    "Invoke-WebRequest -Uri ('https://xn--n1afe0b.online/agent/install-windows-machine-bootstrap.ps1?v=' + $revision) -UseBasicParsing -OutFile $bootstrap -TimeoutSec 45 -ErrorAction Stop",
+    "& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrap -Base 'https://xn--n1afe0b.online/agent' -Revision $revision",
+    "exit $LASTEXITCODE"
   ].join("\r\n");
 }
 

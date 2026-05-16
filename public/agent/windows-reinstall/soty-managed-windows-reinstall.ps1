@@ -185,12 +185,62 @@ function Count-FilesSafe([string] $Path) {
   try { return @((Get-ChildItem -LiteralPath $Path -File -Recurse -ErrorAction SilentlyContinue)).Count } catch { return 0 }
 }
 
+function Get-PrepareProcesses([string] $Root) {
+  try {
+    $rootLower = ([string] $Root).ToLowerInvariant()
+    return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $name = [string]$_.Name
+        $cmd = ([string]$_.CommandLine).ToLowerInvariant()
+        ($name -match "^(powershell|pwsh|dism|dismhost|robocopy|curl)\.exe$") -and (
+          $cmd -match "soty-prepare-windows-reinstall|prepare-windows-reinstall|soty windows reinstall image|dism-export-drivers" -or
+          (($name -match "^(dism|dismhost|robocopy|curl)\.exe$") -and $cmd -match "windowsreinstall|install\.(wim|esd|swm)|\.download")
+        )
+      } |
+      Select-Object -First 16 ProcessId, Name, CommandLine)
+  } catch {
+    return @()
+  }
+}
+
+function Test-PrepareProcessMatchesJob($Process, [string] $JobId, [string] $JobPath, [string] $Root) {
+  $cmd = ([string] $Process.CommandLine).ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
+  $jobIdLower = ([string] $JobId).ToLowerInvariant()
+  $jobPathLower = ([string] $JobPath).ToLowerInvariant()
+  $rootLower = ([string] $Root).ToLowerInvariant()
+  if (-not [string]::IsNullOrWhiteSpace($jobIdLower) -and $cmd.Contains($jobIdLower)) { return $true }
+  if (-not [string]::IsNullOrWhiteSpace($jobPathLower) -and $cmd.Contains($jobPathLower)) { return $true }
+  if ($cmd -match "soty-prepare-windows-reinstall|prepare-windows-reinstall" -and -not [string]::IsNullOrWhiteSpace($rootLower) -and $cmd.Contains($rootLower)) { return $true }
+  if ($cmd -match "dism-export-drivers|soty windows reinstall image" -and -not [string]::IsNullOrWhiteSpace($rootLower) -and $cmd.Contains($rootLower)) { return $true }
+  return $false
+}
+
+function Get-PrepareJobUpdatedUtc([string] $JobPath, [string[]] $ExtraPaths) {
+  $updated = [datetime]::MinValue
+  try {
+    $job = Get-Item -LiteralPath $JobPath -ErrorAction SilentlyContinue
+    if ($job -and $job.LastWriteTimeUtc -gt $updated) { $updated = $job.LastWriteTimeUtc }
+  } catch {}
+  foreach ($path in @($ExtraPaths)) {
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) { continue }
+    try {
+      $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+      if ($item -and $item.LastWriteTimeUtc -gt $updated) { $updated = $item.LastWriteTimeUtc }
+    } catch {}
+  }
+  if ($updated -le [datetime]::MinValue) { return (Get-Date).ToUniversalTime() }
+  return $updated.ToUniversalTime()
+}
+
 function Get-PrepareJobs([string] $Root) {
   $roots = @(
     (Join-Path $env:ProgramData "soty-agent\ops\jobs"),
     (Join-Path $Root "jobs")
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   $items = New-Object System.Collections.Generic.List[object]
+  $nowUtc = (Get-Date).ToUniversalTime()
+  $prepareProcesses = Get-PrepareProcesses $Root
   foreach ($jobsRoot in $roots) {
     if (-not (Test-Path -LiteralPath $jobsRoot)) { continue }
     Get-ChildItem -LiteralPath $jobsRoot -Directory -ErrorAction SilentlyContinue |
@@ -198,25 +248,46 @@ function Get-PrepareJobs([string] $Root) {
       Sort-Object LastWriteTimeUtc -Descending |
       Select-Object -First 8 |
       ForEach-Object {
-        $resultPath = Join-Path $_.FullName "result.json"
+        $jobId = $_.Name
+        $jobPath = $_.FullName
+        $resultPath = Join-Path $jobPath "result.json"
         $result = Read-JsonFile $resultPath
-        $stdoutPath = Join-Path $_.FullName "stdout.txt"
-        $stderrPath = Join-Path $_.FullName "stderr.txt"
+        $stdoutPath = Join-Path $jobPath "stdout.txt"
+        $stderrPath = Join-Path $jobPath "stderr.txt"
+        $extraPaths = @(
+          $resultPath,
+          $stdoutPath,
+          $stderrPath,
+          (Join-Path $jobPath "dism-export-drivers.txt"),
+          (Join-Path $jobPath "backup-proof.json")
+        )
+        $updatedUtc = Get-PrepareJobUpdatedUtc $jobPath $extraPaths
+        $updatedAgeSeconds = [math]::Round(($nowUtc - $updatedUtc).TotalSeconds, 0)
+        $activeForJob = @($prepareProcesses | Where-Object { Test-PrepareProcessMatchesJob $_ $jobId $jobPath $Root })
+        $status = if ($result) { [string] $result.status } else { "running-or-started" }
+        if (-not $result -and @($activeForJob).Count -eq 0 -and $updatedAgeSeconds -ge 900) {
+          $status = "stale-orphaned"
+        }
         $items.Add([pscustomobject]@{
-          id = $_.Name
-          path = $_.FullName
-          status = if ($result) { [string] $result.status } else { "running-or-started" }
+          id = $jobId
+          path = $jobPath
+          status = $status
           ok = if ($result) { [bool] $result.ok } else { $false }
           exitCode = if ($result -and $null -ne $result.exitCode) { [int] $result.exitCode } else { $null }
           caseId = if ($result) { [string] $result.caseId } else { "" }
           resultPath = if (Test-Path -LiteralPath $resultPath) { $resultPath } else { "" }
           stdoutTail = Tail-Text $stdoutPath 2500
           stderrTail = Tail-Text $stderrPath 1500
-          updated = $_.LastWriteTimeUtc.ToString("o")
+          updated = $updatedUtc.ToString("o")
+          updatedAgeSeconds = $updatedAgeSeconds
+          activeProcessCount = @($activeForJob).Count
+          activeProcesses = @($activeForJob | Select-Object -First 4 ProcessId, Name)
         })
       }
   }
-  return @($items | Sort-Object updated -Descending | Select-Object -First 8)
+  return @($items |
+    Sort-Object @{ Expression = { if (@("running-or-started", "running", "created") -contains ([string] $_.status).ToLowerInvariant()) { 0 } else { 1 } }; Ascending = $true }, @{ Expression = { [string] $_.updated }; Descending = $true } |
+    Select-Object -First 8)
 }
 
 function Get-InstallImageCandidate([string[]] $SourceRoots) {

@@ -239,16 +239,35 @@ function Invoke-LoggedCli([string] $FilePath, [string[]] $ArgumentList, [string]
   }
 }
 
-function Invoke-LoggedCliWithTimeout([string] $FilePath, [string[]] $ArgumentList, [string] $LogName, [int] $TimeoutSec) {
+function Invoke-LoggedCliWithTimeout([string] $FilePath, [string[]] $ArgumentList, [string] $LogName, [int] $TimeoutSec, [int] $IdleTimeoutSec = 0) {
   $log = Join-Path $JobRoot $LogName
   $err = $log + ".err"
   Remove-Item -LiteralPath $log, $err -Force -ErrorAction SilentlyContinue
   Log ("Running with timeout " + $TimeoutSec + "s: " + $FilePath + " " + ($ArgumentList -join " "))
   $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
-  if (-not $process.WaitForExit($TimeoutSec * 1000)) {
-    try { $process.Kill() } catch {}
-    throw ($FilePath + " timed out after " + $TimeoutSec + "s. See " + $log)
+  $started = Get-Date
+  $lastProgressAt = Get-Date
+  $lastSize = [int64]-1
+  while ($true) {
+    Start-Sleep -Seconds 2
+    try { $process.Refresh() } catch {}
+    $currentSize = (Get-FileLengthSafe $log) + (Get-FileLengthSafe $err)
+    if ($currentSize -ne $lastSize) {
+      $lastSize = $currentSize
+      $lastProgressAt = Get-Date
+    }
+    if ($process.HasExited) { break }
+    $elapsed = ((Get-Date) - $started).TotalSeconds
+    if ($elapsed -ge $TimeoutSec) {
+      try { $process.Kill() } catch {}
+      throw ($FilePath + " timed out after " + $TimeoutSec + "s. See " + $log)
+    }
+    if ($IdleTimeoutSec -gt 0 -and (((Get-Date) - $lastProgressAt).TotalSeconds -ge $IdleTimeoutSec)) {
+      try { $process.Kill() } catch {}
+      throw ($FilePath + " had no log progress for " + $IdleTimeoutSec + "s. See " + $log)
+    }
   }
+  try { $process.WaitForExit() } catch {}
   try { $process.Refresh() } catch {}
   if (Test-Path -LiteralPath $err) {
     Add-Content -LiteralPath $log -Value (Get-Content -LiteralPath $err -Raw) -Encoding UTF8
@@ -733,6 +752,8 @@ function Get-ReinstallBackupProof {
     driverInfCount = Count-Files -Path $driverRoot -Filter "*.inf" -Recurse
     sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
     sotyBrowserArtifactCount = $sotyBrowserArtifactCount
+    sotyAgentBackupMode = "download-current-machine-installer"
+    sotyAgentInstallerWillDownload = $true
     personalFolderCounts = $personalFolderCounts
     personalFileTotalCount = $personalFileTotalCount
     personalFoldersBackedUp = $personalFilesBackedUp
@@ -959,18 +980,84 @@ if (Test-Path -LiteralPath `$driversRoot) {
 }
 try {
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+} catch { Log ('soty install failed: ' + `$_.Exception.ToString()) }
+function TestSotyMachineAgent {
+  try {
+    `$health = Invoke-RestMethod -Uri 'http://127.0.0.1:49424/health' -Headers @{ Origin = 'https://xn--n1afe0b.online' } -TimeoutSec 3
+    return (([string]`$health.scope -eq 'Machine') -and (`$health.system -eq `$true) -and (`$health.sourceWorker -eq `$true))
+  } catch {
+    return `$false
+  }
+}
+function InstallSotyAgentMachine([string]`$Phase, [int]`$Attempts = 12) {
+  if (TestSotyMachineAgent) {
+    Log ('soty machine agent already healthy before ' + `$Phase)
+    return
+  }
   `$dir = Join-Path `$env:ProgramData 'Soty\agent-install'
   New-Item -ItemType Directory -Force -Path `$dir | Out-Null
   `$installer = Join-Path `$dir 'install-windows.ps1'
-  Invoke-WebRequest -Uri '$panel/agent/install-windows.ps1' -UseBasicParsing -OutFile `$installer
-  & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$installer -Scope Machine -LaunchAppAtLogon | Out-File -LiteralPath (Join-Path `$logRoot 'soty-agent-install.log') -Encoding UTF8
-} catch { Log ('soty install failed: ' + `$_.Exception.ToString()) }
+  for (`$i = 1; `$i -le `$Attempts; `$i += 1) {
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Invoke-WebRequest -Uri '$panel/agent/install-windows.ps1' -UseBasicParsing -OutFile `$installer -TimeoutSec 45
+      `$installLog = Join-Path `$logRoot ('soty-agent-install-' + `$Phase + '.log')
+      & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$installer -Base '$panel/agent' -Scope Machine -LaunchAppAtLogon | Out-File -LiteralPath `$installLog -Encoding UTF8
+      Start-Sleep -Seconds 2
+      if (TestSotyMachineAgent) {
+        Log ('soty machine agent installed during ' + `$Phase)
+        return
+      }
+      Log ('soty machine agent install did not become healthy during ' + `$Phase + ' attempt ' + `$i)
+    } catch {
+      Log ('soty machine agent download/install failed during ' + `$Phase + ' attempt ' + `$i + ': ' + `$_.Exception.Message)
+    }
+    Start-Sleep -Seconds 5
+  }
+  Log ('WARN soty machine agent is still not healthy after ' + `$Phase + ' installer retries')
+}
+InstallSotyAgentMachine 'setupcomplete' 12
 `$firstLogon = Join-Path `$logRoot 'first-logon-restore.ps1'
 @'
 `$ErrorActionPreference = "Continue"
 `$backupRoot = "`$backupRoot"
 `$log = "C:\ProgramData\Soty\WindowsReinstall\logs\first-logon-restore.log"
 function Log([string]`$Message) { Add-Content -LiteralPath `$log -Value ("[" + (Get-Date).ToString("o") + "] " + `$Message) -Encoding UTF8 }
+function TestSotyMachineAgent {
+  try {
+    `$health = Invoke-RestMethod -Uri "http://127.0.0.1:49424/health" -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 3
+    return (([string]`$health.scope -eq "Machine") -and (`$health.system -eq `$true) -and (`$health.sourceWorker -eq `$true))
+  } catch {
+    return `$false
+  }
+}
+function InstallSotyAgentMachine([string]`$Phase, [int]`$Attempts = 18) {
+  if (TestSotyMachineAgent) {
+    Log ("soty machine agent already healthy before " + `$Phase)
+    return
+  }
+  `$dir = Join-Path `$env:ProgramData "Soty\agent-install"
+  New-Item -ItemType Directory -Force -Path `$dir | Out-Null
+  `$installer = Join-Path `$dir "install-windows.ps1"
+  for (`$i = 1; `$i -le `$Attempts; `$i += 1) {
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Invoke-WebRequest -Uri "$panel/agent/install-windows.ps1" -UseBasicParsing -OutFile `$installer -TimeoutSec 45
+      `$installLog = "C:\ProgramData\Soty\WindowsReinstall\logs\soty-agent-install-firstlogon.log"
+      & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `$installer -Base "$panel/agent" -Scope Machine -LaunchAppAtLogon | Out-File -LiteralPath `$installLog -Encoding UTF8
+      Start-Sleep -Seconds 2
+      if (TestSotyMachineAgent) {
+        Log ("soty machine agent installed during " + `$Phase)
+        return
+      }
+      Log ("soty machine agent install did not become healthy during " + `$Phase + " attempt " + `$i)
+    } catch {
+      Log ("soty machine agent download/install failed during " + `$Phase + " attempt " + `$i + ": " + `$_.Exception.Message)
+    }
+    Start-Sleep -Seconds 5
+  }
+  Log ("WARN soty machine agent is still not healthy after " + `$Phase + " installer retries")
+}
 function CopyDir([string]`$Source, [string]`$Dest) {
   if (-not (Test-Path -LiteralPath `$Source)) { return }
   New-Item -ItemType Directory -Force -Path `$Dest | Out-Null
@@ -988,6 +1075,7 @@ if (`$resetManagedPasswordToBlank) {
     Log "managed user password reset to blank"
   } catch { Log ("managed password cleanup warning: " + `$_.Exception.Message) }
 }
+InstallSotyAgentMachine "firstlogon" 18
 `$personalFolders = @("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music")
 foreach (`$folderName in `$personalFolders) {
   `$folderBackup = Join-Path `$backupRoot "personal-files\$SourceProfileName\`$folderName"
@@ -1035,7 +1123,8 @@ Log "first logon restore finished"
 '@ | Set-Content -LiteralPath `$firstLogon -Encoding UTF8
 `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + `$firstLogon + '"')
 `$trigger = New-ScheduledTaskTrigger -AtLogOn -User '$ManagedUserName'
-Register-ScheduledTask -TaskName 'Soty-FirstLogon-Restore' -Action `$action -Trigger `$trigger -Description 'Restore Soty PWA state on first managed logon' -Force | Out-Null
+`$principal = New-ScheduledTaskPrincipal -UserId '$ManagedUserName' -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName 'Soty-FirstLogon-Restore' -Action `$action -Trigger `$trigger -Principal `$principal -Description 'Restore Soty PWA state on first managed logon' -Force | Out-Null
 Log 'postinstall finished'
 "@
   [System.IO.File]::WriteAllText($Path, $post, (New-Object System.Text.UTF8Encoding($true)))
@@ -1297,15 +1386,16 @@ try {
     "exported-drivers",
     "soty-operator-export",
     "soty-browser-return-state",
+    "soty-machine-agent-download-current-installer",
     "personal-folders-Desktop-Documents-Downloads-Pictures-Videos-Music"
   )
   New-Directory $wifiRoot
   New-Directory $driverRoot
   New-Directory $sotyStateRoot
   New-Directory $personalFilesRoot
-  Log "Backup scope: Wi-Fi profiles, exported drivers, Soty operator export, Soty browser return state, and personal folders: Desktop, Documents, Downloads, Pictures, Videos, Music."
+  Log "Backup scope: Wi-Fi profiles, exported drivers, Soty operator export, Soty browser return state, fresh Soty machine-agent download during restore, and personal folders: Desktop, Documents, Downloads, Pictures, Videos, Music."
   try { & netsh.exe wlan export profile key=clear folder="$wifiRoot" | Out-File -LiteralPath (Join-Path $JobRoot "netsh-wifi-export.txt") -Encoding UTF8 } catch { Log ("WARN wifi export failed: " + $_.Exception.Message) }
-  try { Invoke-LoggedCliWithTimeout dism.exe @("/online", "/export-driver", "/destination:$driverRoot") "dism-export-drivers.txt" 1800 } catch { Log ("WARN driver export failed: " + $_.Exception.Message) }
+  try { Invoke-LoggedCliWithTimeout dism.exe @("/online", "/export-driver", "/destination:$driverRoot") "dism-export-drivers.txt" 900 300 } catch { Log ("WARN driver export failed: " + $_.Exception.Message) }
   if (Save-SotyOperatorExport $operatorExportPath) { $sotyOperatorExportBackedUp = $true }
   if (Test-Path -LiteralPath $sourceProfile) {
     foreach ($folderName in $personalFolderNames) {

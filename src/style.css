@@ -564,28 +564,6 @@ svg {
   color: var(--cyan);
 }
 
-.agent-target-select {
-  display: none;
-  min-width: 0;
-  height: 40px;
-  border: 1px solid #3d515f;
-  outline: 0;
-  padding: 0 9px;
-  background: #06090d;
-  color: var(--amber);
-  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  font-size: 12px;
-}
-
-.agent-target-select.is-visible {
-  display: block;
-}
-
-.agent-target-select:focus {
-  border-color: var(--green);
-  box-shadow: 0 0 0 2px rgba(109, 255, 143, 0.14);
-}
-
 .editor {
   position: relative;
   min-height: 0;
@@ -1864,21 +1842,6 @@ svg {
 
   .dialog-head {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
-  }
-
-  .dialog-shell.has-agent-target {
-    grid-template-rows: 96px minmax(0, 1fr);
-  }
-
-  .dialog-head.has-agent-target {
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
-    grid-template-rows: 36px 36px;
-  }
-
-  .dialog-head.has-agent-target .agent-target-select {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    height: 36px;
   }
 
   .dialog-avatar {

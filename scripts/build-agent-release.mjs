@@ -10,6 +10,7 @@ const sourcePath = join(root, "scripts", "soty-agent.mjs");
 const outputDir = join(root, "public", "agent");
 const outputPath = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
+const windowsMachineCmdPath = join(outputDir, "install-windows-machine.cmd");
 const windowsReinstallDir = join(outputDir, "windows-reinstall");
 const retiredOpsSkillArtifacts = [
   join(outputDir, "ops-skill.zip"),
@@ -47,6 +48,7 @@ if (!version) {
 
 await mkdir(outputDir, { recursive: true });
 await writeFile(outputPath, sourceText, { mode: 0o755 });
+await updateWindowsMachineInstallerRevision(version);
 await removeRetiredOpsSkillArtifacts();
 const windowsReinstall = await publishWindowsReinstallScripts();
 const routeProfiles = buildRouteProfiles(windowsReinstall);
@@ -115,6 +117,19 @@ process.stdout.write(`windows-reinstall:${windowsReinstall.scripts.map((script) 
 
 async function removeRetiredOpsSkillArtifacts() {
   await Promise.all(retiredOpsSkillArtifacts.map((path) => rm(path, { force: true }).catch(() => undefined)));
+}
+
+async function updateWindowsMachineInstallerRevision(version) {
+  if (!existsSync(windowsMachineCmdPath)) {
+    return;
+  }
+  const text = await readFile(windowsMachineCmdPath, "utf8");
+  const next = text
+    .replace(/soty-agent-machine-bootstrap:[^\r\n]+/u, `soty-agent-machine-bootstrap:${version}`)
+    .replace(/set "INSTALLER_REVISION=[^"]*"/u, `set "INSTALLER_REVISION=${version}"`);
+  if (next !== text) {
+    await writeFile(windowsMachineCmdPath, next);
+  }
 }
 
 async function publishWindowsReinstallScripts() {

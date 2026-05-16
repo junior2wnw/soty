@@ -37,6 +37,18 @@ export interface LocalAgentReply {
 
 export type LocalAgentMessageHandler = (message: string) => void;
 
+export interface LocalAgentPendingRelayReply {
+  readonly relayId: string;
+  readonly id: string;
+  readonly tunnelId: string;
+  readonly text: string;
+  readonly createdAt: number;
+  readonly timeoutAt: number;
+  readonly after: number;
+  readonly messages: readonly string[];
+  readonly terminal: readonly string[];
+}
+
 export interface LocalAgentOperatorTarget {
   readonly id: string;
   readonly label: string;
@@ -47,6 +59,22 @@ export interface LocalAgentOperatorTarget {
   readonly selected?: boolean;
   readonly rank?: number;
   readonly lastActionAt?: string;
+}
+
+export interface LocalAgentDeviceNetwork {
+  readonly protocol: "soty-device-network.v1";
+  readonly controllerDeviceId: string;
+  readonly controllerDeviceNick: string;
+  readonly activeTunnelId: string;
+  readonly activeTunnelLabel: string;
+  readonly activeTunnelKind: "agent" | "peer";
+  readonly selectedTargetId: string;
+  readonly selectedTargetLabel: string;
+  readonly selectedTargetDeviceId: string;
+  readonly selectedTargetAccess: boolean;
+  readonly selectedTargetLink: boolean;
+  readonly capabilities: readonly string[];
+  readonly targets: readonly LocalAgentOperatorTarget[];
 }
 
 export interface LocalAgentRequestSource {
@@ -60,12 +88,15 @@ export interface LocalAgentRequestSource {
   readonly preferredTargetLabel?: string;
   readonly localAgentDirect?: boolean;
   readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
+  readonly deviceNetwork?: LocalAgentDeviceNetwork;
 }
 
 const relayStorageKey = "soty:agent:relay-id";
+const pendingRelayRepliesStorageKey = "soty:agent:pending-relay-replies:v1";
 const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const maxCodexDialogMessages = 64;
 const localAgentBlockedText = "! agent-relay: agent bridge is not connected";
+const pendingRelayReplyTtlMs = 2 * 60 * 60_000 + 30 * 60_000;
 
 export function adoptAgentRelayFromUrl(): boolean {
   const url = new URL(window.location.href);
@@ -272,12 +303,53 @@ export async function checkAgentSourceWorker(deviceId: string, timeoutMs = 1500)
         readonly hostDeviceId?: string;
         readonly deviceIds?: readonly string[];
         readonly localAgent?: unknown;
-        readonly workers?: { readonly user?: { readonly localAgent?: unknown } };
+        readonly workers?: {
+          readonly user?: { readonly localAgent?: unknown };
+          readonly system?: { readonly localAgent?: unknown };
+        };
       }[];
     };
     const target = (payload.targets || []).find((item) => item.hostDeviceId === deviceId || item.deviceIds?.includes(deviceId));
     const worker = readLocalAgentStatus(target?.workers?.user?.localAgent) || readLocalAgentStatus(target?.localAgent);
     return worker ? { ...worker, relay: true } : { ok: false };
+  } catch {
+    return { ok: false };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function checkAgentSourceMachineAgent(deviceId: string, timeoutMs = 1500): Promise<LocalAgentStatus> {
+  const relayId = readAgentRelayId();
+  if (!relayId || !deviceId) {
+    return { ok: false };
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`/api/agent/source/targets?relayId=${encodeURIComponent(relayId)}`, {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return { ok: false };
+    }
+    const payload = await response.json() as {
+      readonly targets?: readonly {
+        readonly hostDeviceId?: string;
+        readonly deviceIds?: readonly string[];
+        readonly localAgent?: unknown;
+        readonly workers?: {
+          readonly system?: { readonly localAgent?: unknown };
+          readonly user?: { readonly localAgent?: unknown };
+        };
+      }[];
+    };
+    const target = (payload.targets || []).find((item) => item.hostDeviceId === deviceId || item.deviceIds?.includes(deviceId));
+    const systemWorker = readLocalAgentStatus(target?.workers?.system?.localAgent);
+    const targetAgent = readLocalAgentStatus(target?.localAgent);
+    const machine = systemWorker || (targetAgent?.system === true ? targetAgent : null);
+    return machine ? { ...machine, relay: true } : { ok: false };
   } catch {
     return { ok: false };
   } finally {
@@ -414,6 +486,17 @@ async function askAgentRelayReply(
       );
     }
     const createdId = created.id;
+    rememberPendingAgentRelayReply({
+      relayId,
+      id: createdId,
+      tunnelId: source.tunnelId || "",
+      text,
+      createdAt: Date.now(),
+      timeoutAt: Date.now() + timeoutMs,
+      after: 0,
+      messages: [],
+      terminal: []
+    });
     let stopEvents = false;
     let cancelSent = false;
     const cancelRelay = () => {
@@ -439,6 +522,7 @@ async function askAgentRelayReply(
         }
         return cancelledAgentReply();
       }
+      clearPendingAgentRelayReply(createdId);
       return reply || relayFailure("! agent-relay: local Codex bridge did not pick up the request", 124);
     } finally {
       stopEvents = true;
@@ -452,6 +536,52 @@ async function askAgentRelayReply(
   }
 }
 
+export async function resumeAgentRelayReply(
+  pending: LocalAgentPendingRelayReply,
+  onMessage?: LocalAgentMessageHandler,
+  onTerminal?: LocalAgentMessageHandler,
+  signal?: AbortSignal
+): Promise<LocalAgentReply> {
+  const relayId = sanitizeRelayId(pending.relayId);
+  const id = cleanPendingRelayReplyId(pending.id);
+  if (!relayId || !id) {
+    return relayFailure("! agent-relay: pending reply is invalid", 400);
+  }
+  if (signal?.aborted) {
+    return cancelledAgentReply();
+  }
+  const timeoutMs = Math.max(1000, Math.min(pendingRelayReplyTtlMs, pending.timeoutAt - Date.now()));
+  let stopEvents = false;
+  let cancelSent = false;
+  const cancelRelay = () => {
+    stopEvents = true;
+    cancelSent = true;
+    clearPendingAgentRelayReply(id);
+    void cancelAgentRelayReply(relayId, id).catch(() => undefined);
+  };
+  signal?.addEventListener("abort", cancelRelay, { once: true });
+  const eventStream = onMessage || onTerminal
+    ? watchAgentRelayEvents(relayId, id, timeoutMs, onMessage, onTerminal, () => stopEvents, signal, pending.after || 0)
+    : Promise.resolve();
+  try {
+    const reply = await waitForAgentRelayReply(relayId, id, timeoutMs, signal);
+    stopEvents = true;
+    void eventStream.catch(() => undefined);
+    if (signal?.aborted) {
+      if (!cancelSent) {
+        clearPendingAgentRelayReply(id);
+        await cancelAgentRelayReply(relayId, id).catch(() => undefined);
+      }
+      return cancelledAgentReply();
+    }
+    clearPendingAgentRelayReply(id);
+    return reply || relayFailure("! agent-relay: running reply did not finish", 124);
+  } finally {
+    stopEvents = true;
+    signal?.removeEventListener("abort", cancelRelay);
+  }
+}
+
 async function watchAgentRelayEvents(
   relayId: string,
   id: string,
@@ -459,10 +589,11 @@ async function watchAgentRelayEvents(
   onMessage: LocalAgentMessageHandler | undefined,
   onTerminal: LocalAgentMessageHandler | undefined,
   stopped: () => boolean,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  initialAfter = 0
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  let after = 0;
+  let after = Math.max(0, initialAfter);
   while (!stopped() && !signal?.aborted && Date.now() < deadline) {
     const remaining = deadline - Date.now();
     const timeout = timeoutAbortSignal(Math.min(35_000, Math.max(1000, remaining)), signal);
@@ -492,8 +623,12 @@ async function watchAgentRelayEvents(
         const type = event.type || "agent_message";
         if (type === "agent_terminal" && typeof event.text === "string" && event.text.trim() && onTerminal) {
           onTerminal(event.text);
+          recordPendingAgentRelayEvent(id, seq, "agent_terminal", event.text);
         } else if (type === "agent_message" && typeof event.text === "string" && event.text.trim() && onMessage) {
           onMessage(event.text);
+          recordPendingAgentRelayEvent(id, seq, "agent_message", event.text);
+        } else {
+          updatePendingAgentRelayReply(id, { after: seq });
         }
       }
       if (payload.done) {
@@ -594,6 +729,142 @@ async function cancelAgentRelayReply(relayId: string, id: string): Promise<void>
   } finally {
     timeout.cleanup();
   }
+}
+
+export function loadPendingAgentRelayReplies(): LocalAgentPendingRelayReply[] {
+  const now = Date.now();
+  const replies = readPendingAgentRelayReplies()
+    .filter((reply) => reply.id && reply.relayId && reply.tunnelId && reply.timeoutAt > now)
+    .filter((reply) => now - reply.createdAt < pendingRelayReplyTtlMs)
+    .sort((left, right) => right.createdAt - left.createdAt);
+  writePendingAgentRelayReplies(replies);
+  return replies;
+}
+
+export function clearPendingAgentRelayReply(id: string): void {
+  const cleanId = cleanPendingRelayReplyId(id);
+  if (!cleanId) {
+    return;
+  }
+  writePendingAgentRelayReplies(readPendingAgentRelayReplies().filter((reply) => reply.id !== cleanId));
+}
+
+export function clearPendingAgentRelayRepliesForTunnel(tunnelId: string): void {
+  const cleanTunnelId = String(tunnelId || "").trim();
+  if (!cleanTunnelId) {
+    return;
+  }
+  writePendingAgentRelayReplies(readPendingAgentRelayReplies().filter((reply) => reply.tunnelId !== cleanTunnelId));
+}
+
+function rememberPendingAgentRelayReply(reply: LocalAgentPendingRelayReply): void {
+  const clean = sanitizePendingAgentRelayReply(reply);
+  if (!clean) {
+    return;
+  }
+  const replies = readPendingAgentRelayReplies().filter((item) => item.id !== clean.id);
+  writePendingAgentRelayReplies([clean, ...replies].slice(0, 8));
+}
+
+function recordPendingAgentRelayEvent(id: string, after: number, type: string, text: string): void {
+  const cleanText = String(text || "").replace(/\r\n?/gu, "\n").trim().slice(0, 12_000);
+  if (!cleanText) {
+    updatePendingAgentRelayReply(id, { after });
+    return;
+  }
+  const replies = readPendingAgentRelayReplies();
+  const index = replies.findIndex((reply) => reply.id === cleanPendingRelayReplyId(id));
+  if (index < 0) {
+    return;
+  }
+  const current = replies[index];
+  if (!current) {
+    return;
+  }
+  const terminal = type === "agent_terminal";
+  const values = [...new Set([...(terminal ? current.terminal : current.messages), cleanText])].slice(-maxCodexDialogMessages);
+  const next: LocalAgentPendingRelayReply = {
+    ...current,
+    after: Math.max(current.after || 0, after),
+    ...(terminal ? { terminal: values } : { messages: values })
+  };
+  replies[index] = next;
+  writePendingAgentRelayReplies(replies);
+}
+
+function updatePendingAgentRelayReply(id: string, patch: Partial<LocalAgentPendingRelayReply>): void {
+  const cleanId = cleanPendingRelayReplyId(id);
+  if (!cleanId) {
+    return;
+  }
+  const replies = readPendingAgentRelayReplies();
+  const index = replies.findIndex((reply) => reply.id === cleanId);
+  if (index < 0) {
+    return;
+  }
+  const current = replies[index];
+  if (!current) {
+    return;
+  }
+  replies[index] = sanitizePendingAgentRelayReply({ ...current, ...patch }) || current;
+  writePendingAgentRelayReplies(replies);
+}
+
+function readPendingAgentRelayReplies(): LocalAgentPendingRelayReply[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(pendingRelayRepliesStorageKey) || "[]") as unknown;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .map((item) => sanitizePendingAgentRelayReply(item))
+      .filter((item): item is LocalAgentPendingRelayReply => Boolean(item));
+  } catch {
+    return [];
+  }
+}
+
+function writePendingAgentRelayReplies(replies: readonly LocalAgentPendingRelayReply[]): void {
+  try {
+    localStorage.setItem(pendingRelayRepliesStorageKey, JSON.stringify(replies.slice(0, 8)));
+  } catch {
+    // Resume is a convenience layer; the relay job itself keeps running without this cache.
+  }
+}
+
+function sanitizePendingAgentRelayReply(value: unknown): LocalAgentPendingRelayReply | null {
+  const record = value && typeof value === "object" ? value as Partial<LocalAgentPendingRelayReply> : {};
+  const relayId = sanitizeRelayId(record.relayId || "");
+  const id = cleanPendingRelayReplyId(record.id || "");
+  const tunnelId = String(record.tunnelId || "").trim().slice(0, 180);
+  if (!relayId || !id || !tunnelId) {
+    return null;
+  }
+  const createdAt = Number.isFinite(record.createdAt) ? Number(record.createdAt) : Date.now();
+  const timeoutAt = Number.isFinite(record.timeoutAt) ? Number(record.timeoutAt) : createdAt + 2 * 60 * 60_000;
+  const cleanMessages = (items: readonly unknown[] | undefined) => Array.isArray(items)
+    ? items
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, 12_000))
+      .filter(Boolean)
+      .slice(-maxCodexDialogMessages)
+    : [];
+  return {
+    relayId,
+    id,
+    tunnelId,
+    text: String(record.text || "").trim().slice(0, 1000),
+    createdAt,
+    timeoutAt,
+    after: Math.max(0, Number.isFinite(record.after) ? Number(record.after) : 0),
+    messages: cleanMessages(record.messages),
+    terminal: cleanMessages(record.terminal)
+  };
+}
+
+function cleanPendingRelayReplyId(value: string): string {
+  const text = String(value || "").trim().slice(0, 120);
+  return /^[A-Za-z0-9_.:-]{4,120}$/u.test(text) ? text : "";
 }
 
 function cleanReplyMessages(value: readonly unknown[] | undefined): string[] {
@@ -730,14 +1001,16 @@ export function downloadAgentInstaller(scope: "user" | "machine" = "machine"): v
 
 export function downloadAgentInstallerForDevice(
   scope: "user" | "machine" = "machine",
-  device: { readonly id?: string; readonly nick?: string } = {}
+  device: { readonly id?: string; readonly nick?: string } = {},
+  releaseVersion = ""
 ): void {
   const relayId = ensureAgentRelayId();
   const base = `${window.location.origin}/agent`;
   if (isWindowsPlatform()) {
+    const revision = sanitizeInstallerRevision(releaseVersion);
     downloadText(
-      "install-soty-agent-machine.cmd",
-      buildWindowsInstaller(base, relayId, device),
+      revision ? `install-soty-agent-machine-${revision}.cmd` : "install-soty-agent-machine.cmd",
+      buildWindowsInstaller(base, relayId, device, revision),
       "application/bat"
     );
     return;
@@ -748,19 +1021,25 @@ export function downloadAgentInstallerForDevice(
 function buildWindowsInstaller(
   base: string,
   relayId: string,
-  device: { readonly id?: string; readonly nick?: string } = {}
+  device: { readonly id?: string; readonly nick?: string } = {},
+  revision = ""
 ): string {
   const deviceId = sanitizeWindowsCmdValue(device.id || "");
   const deviceNick = sanitizeWindowsCmdValue(device.nick || "");
+  const installerRevision = sanitizeWindowsCmdValue(revision);
+  const installerQuery = installerRevision ? "?v=%INSTALLER_REVISION%" : "";
   return [
     "@echo off",
+    `rem soty-agent-machine-bootstrap:${installerRevision || "unknown"}`,
     "setlocal",
     `set "BASE=${base}"`,
     `set "RELAY=${relayId}"`,
     `set "DEVICE=${deviceId}"`,
     `set "NICK=${deviceNick}"`,
+    `set "INSTALLER_REVISION=${installerRevision}"`,
     "",
-    "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dir = Join-Path $env:TEMP 'soty-agent-machine'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $script = Join-Path $dir 'install-windows.ps1'; Invoke-WebRequest -Uri '%BASE%/install-windows.ps1' -UseBasicParsing -OutFile $script; $extra = ''; if (-not [string]::IsNullOrWhiteSpace('%DEVICE%')) { $extra = ' -DeviceId \"%DEVICE%\"'; if (-not [string]::IsNullOrWhiteSpace('%NICK%')) { $extra += ' -DeviceNick \"%NICK%\"' } }; $arg = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $script + '\" -Base \"%BASE%\" -Scope Machine -LaunchAppAtLogon -RelayId \"%RELAY%\"' + $extra; $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arg -Wait -PassThru; exit $p.ExitCode\"",
+    "echo Downloading Soty Agent installer %INSTALLER_REVISION%...",
+    `powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dir = Join-Path $env:TEMP 'soty-agent-machine'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $bootstrap = Join-Path $dir 'install-windows-machine-bootstrap.ps1'; $log = Join-Path $dir 'bootstrap.log'; 'soty-agent-machine:bootstrap-download:%INSTALLER_REVISION%' | Out-File -LiteralPath $log -Encoding ASCII; Invoke-WebRequest -Uri '%BASE%/install-windows-machine-bootstrap.ps1${installerQuery}' -UseBasicParsing -OutFile $bootstrap -TimeoutSec 45 -ErrorAction Stop; & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrap -Base '%BASE%' -Revision '%INSTALLER_REVISION%' -RelayId '%RELAY%' -DeviceId '%DEVICE%' -DeviceNick '%NICK%'; exit $LASTEXITCODE"`,
     "if errorlevel 1 goto fail",
     "exit /b 0",
     "",
@@ -768,6 +1047,38 @@ function buildWindowsInstaller(
     "echo.",
     "echo soty-agent machine install failed",
     "echo %ProgramData%\\soty-agent\\install.log",
+    "echo %TEMP%\\soty-agent-machine\\bootstrap.log",
+    "echo %ProgramData%\\Soty\\agent-install\\bootstrap-elevated.log",
+    "echo.",
+    "if exist \"%TEMP%\\soty-agent-machine\\bootstrap.log\" (",
+    "  echo --- bootstrap.log ---",
+    "  type \"%TEMP%\\soty-agent-machine\\bootstrap.log\"",
+    ")",
+    "if exist \"%ProgramData%\\Soty\\agent-install\\bootstrap-elevated.log\" (",
+    "  echo.",
+    "  echo --- bootstrap-elevated.log ---",
+    "  type \"%ProgramData%\\Soty\\agent-install\\bootstrap-elevated.log\"",
+    ")",
+    "if exist \"%ProgramData%\\soty-agent\\install.log\" (",
+    "  echo.",
+    "  echo --- install.log tail ---",
+    "  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"Get-Content -LiteralPath '%ProgramData%\\soty-agent\\install.log' -Tail 80\"",
+    ")",
+    "if exist \"%ProgramData%\\soty-agent\\node-probe.err.log\" (",
+    "  echo.",
+    "  echo --- node-probe.err.log ---",
+    "  type \"%ProgramData%\\soty-agent\\node-probe.err.log\"",
+    ")",
+    "if exist \"%ProgramData%\\soty-agent\\start-agent.status.log\" (",
+    "  echo.",
+    "  echo --- start-agent.status.log ---",
+    "  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"Get-Content -LiteralPath '%ProgramData%\\soty-agent\\start-agent.status.log' -Tail 40\"",
+    ")",
+    "if exist \"%ProgramData%\\soty-agent\\start-agent.err.log\" (",
+    "  echo.",
+    "  echo --- start-agent.err.log ---",
+    "  powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command \"Get-Content -LiteralPath '%ProgramData%\\soty-agent\\start-agent.err.log' -Tail 80\"",
+    ")",
     "pause",
     "exit /b 1",
     ""
@@ -776,6 +1087,10 @@ function buildWindowsInstaller(
 
 function sanitizeWindowsCmdValue(value: string): string {
   return value.replace(/[\r\n"%']/gu, "").slice(0, 160);
+}
+
+function sanitizeInstallerRevision(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]/gu, "").slice(0, 40);
 }
 
 function buildUnixInstaller(scope: "user" | "machine", base: string, relayId: string): string {
