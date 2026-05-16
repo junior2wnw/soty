@@ -186,6 +186,7 @@ type OperatorRemoteRun = {
   readonly label: string;
 };
 const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
+const operatorRemoteRunTimers = new Map<string, number>();
 const operatorStartingTunnels = new Set<string>();
 const localAgentRuns = new Map<string, WebSocket>();
 const operatorChatQueues = new Map<string, Promise<void>>();
@@ -202,7 +203,7 @@ type SotyFileStreamState = {
 const sotyFileLineBuffers = new Map<string, string>();
 const sotyFileStreams = new Map<string, SotyFileStreamState>();
 const operatorBridgeProtocol = "soty.operator-bridge.v2";
-const agentReplyQueues = new Map<string, Promise<void>>();
+const agentReplyQueues = new Map<string, Promise<LocalAgentReply | null | void>>();
 const agentReplyControllers = new Map<string, AbortController>();
 const agentThinking = new Set<string>();
 let agentDoneAudio: AudioContext | null = null;
@@ -2171,6 +2172,7 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
     if (typeof output.exitCode === "number") {
       operatorPending.delete(output.commandId);
       operatorRemoteRuns.delete(operatorId);
+      clearOperatorRemoteRunTimer(operatorId);
     }
   }
   terminalOpenId = tunnelId;
@@ -2314,6 +2316,7 @@ function closeOperatorBridge(): void {
 }
 
 function operatorTargetBusy(tunnelId: string): boolean {
+  expireOperatorRemoteRunTimeouts();
   if (operatorStartingTunnels.has(tunnelId)) {
     return true;
   }
@@ -2344,16 +2347,54 @@ function cancelAllOperatorRemoteRuns(reason: string): void {
   }
 }
 
-function cancelOperatorRemoteRun(requestId: string, run: OperatorRemoteRun, reason: string): void {
+function cancelOperatorRemoteRun(requestId: string, run: OperatorRemoteRun, reason: string, exitCode = 130): void {
+  clearOperatorRemoteRunTimer(requestId);
   appendTerminalLine(run.tunnelId, reason);
   setTerminalState(run.tunnelId, "bad");
   const sync = syncs.get(run.tunnelId);
   if (sync) {
     void sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
   }
-  sendOperatorOutput(requestId, `${reason}\n`, 130);
+  sendOperatorOutput(requestId, `${reason}\n`, exitCode);
   operatorRemoteRuns.delete(requestId);
   operatorPending.delete(run.commandId);
+}
+
+function clearOperatorRemoteRunTimer(requestId: string): void {
+  const timer = operatorRemoteRunTimers.get(requestId);
+  if (timer) {
+    window.clearTimeout(timer);
+    operatorRemoteRunTimers.delete(requestId);
+  }
+}
+
+function scheduleOperatorRemoteRunTimeout(requestId: string, run: OperatorRemoteRun): void {
+  clearOperatorRemoteRunTimer(requestId);
+  const timeoutMs = Math.max(1000, run.timeoutMs || 0);
+  const timer = window.setTimeout(() => {
+    const current = operatorRemoteRuns.get(requestId);
+    if (!current) {
+      return;
+    }
+    cancelOperatorRemoteRun(requestId, current, "! timeout", 124);
+    renderTerminal();
+  }, timeoutMs + 3000);
+  operatorRemoteRunTimers.set(requestId, timer);
+}
+
+function expireOperatorRemoteRunTimeouts(now = Date.now()): void {
+  let changed = false;
+  for (const [requestId, run] of [...operatorRemoteRuns.entries()]) {
+    const timeoutMs = Math.max(1000, run.timeoutMs || 0);
+    if (now - run.startedAt <= timeoutMs + 3000) {
+      continue;
+    }
+    cancelOperatorRemoteRun(requestId, run, "! timeout", 124);
+    changed = true;
+  }
+  if (changed) {
+    renderTerminal();
+  }
 }
 
 function hasOperatorTargets(): boolean {
@@ -2511,7 +2552,7 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
       return;
     }
     operatorPending.set(commandId, requestId);
-    operatorRemoteRuns.set(requestId, {
+    const run: OperatorRemoteRun = {
       commandId,
       tunnelId: tunnel.id,
       hostDeviceId,
@@ -2519,7 +2560,9 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
       timeoutMs,
       kind: "run",
       label: command.slice(0, 120)
-    });
+    };
+    operatorRemoteRuns.set(requestId, run);
+    scheduleOperatorRemoteRunTimeout(requestId, run);
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
@@ -2604,7 +2647,7 @@ async function runOperatorScript(message: {
       return;
     }
     operatorPending.set(commandId, requestId);
-    operatorRemoteRuns.set(requestId, {
+    const run: OperatorRemoteRun = {
       commandId,
       tunnelId: tunnel.id,
       hostDeviceId,
@@ -2612,7 +2655,9 @@ async function runOperatorScript(message: {
       timeoutMs,
       kind: "script",
       label: name.slice(0, 120)
-    });
+    };
+    operatorRemoteRuns.set(requestId, run);
+    scheduleOperatorRemoteRunTimeout(requestId, run);
   } catch {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
@@ -2638,6 +2683,7 @@ async function runOperatorCancel(message: { readonly id?: string }): Promise<voi
   await sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
   operatorRemoteRuns.delete(requestId);
   operatorPending.delete(run.commandId);
+  clearOperatorRemoteRunTimer(requestId);
   sendOperatorOutput(requestId, "! stopped\n", 130);
 }
 
@@ -2676,6 +2722,9 @@ async function runOperatorChat(message: {
   operatorChatQueues.set(tunnel.id, next);
   try {
     await next;
+    if (!isAgentTunnel(tunnel) && containsLordAgentInvocation(text)) {
+      void sendAgentDialogMessage(tunnel.id, text, { explicitMention: true });
+    }
     sendOperatorOutput(requestId, "sent\n", 0);
   } catch {
     sendOperatorOutput(requestId, "! chat", 500);
@@ -2725,11 +2774,53 @@ async function runOperatorAgentMessage(message: {
   renderTextPaint();
   renderWriterPop();
   try {
-    await sendAgentDialogMessage(tunnel.id, body);
-    sendOperatorOutput(requestId, "done\n", 0);
+    const reply = await sendAgentDialogMessage(tunnel.id, body);
+    sendOperatorOutput(
+      requestId,
+      formatAgentReplyForOperator(reply),
+      typeof reply?.exitCode === "number" ? reply.exitCode : (reply?.ok === false ? 1 : 0)
+    );
   } catch {
     sendOperatorOutput(requestId, "! agent-message", 500);
   }
+}
+
+function formatAgentReplyForOperator(reply: LocalAgentReply | null | void): string {
+  if (!reply) {
+    return "done\n";
+  }
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const pushUnique = (value: string) => {
+    const clean = normalizeChatMessage(value);
+    const key = clean.replace(/\s+/gu, " ").trim();
+    if (!clean || !key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    parts.push(clean);
+  };
+  for (const message of reply.messages ?? []) {
+    pushUnique(cleanAgentReplyText(message));
+  }
+  const text = normalizeChatMessage(cleanAgentReplyText(reply.text));
+  const messageBody = parts.join("\n\n").trim();
+  const compactText = text.replace(/\s+/gu, " ").trim();
+  const compactMessages = messageBody.replace(/\s+/gu, " ").trim();
+  if (text && !parts.includes(text) && (!compactMessages || !compactText.includes(compactMessages))) {
+    pushUnique(text);
+  }
+  for (const message of reply.terminal ?? []) {
+    const terminal = cleanTerminalTranscript(message);
+    if (terminal) {
+      pushUnique(terminal);
+    }
+  }
+  const body = parts.join("\n\n").trim();
+  if (body) {
+    return `${body}\n`;
+  }
+  return reply.ok ? "done\n" : "! agent-message\n";
 }
 
 async function runOperatorAgentNew(message: { readonly id?: string }): Promise<void> {
@@ -4236,11 +4327,11 @@ function sendAgentDialogMessage(
   tunnelId: string,
   text: string,
   options: { readonly explicitMention?: boolean } = {}
-): Promise<void> {
+): Promise<LocalAgentReply | null> {
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
   if (!tunnel || (!agentTunnel && options.explicitMention !== true) || !text.trim()) {
-    return Promise.resolve();
+    return Promise.resolve(null);
   }
   const targets = operatorTargets();
   const deviceNetwork = agentDeviceNetworkContext(tunnelId, tunnel, targets);
@@ -4298,9 +4389,14 @@ function sendAgentDialogMessage(
         setAgentThinking(tunnelId, false);
       }
       if (controller.signal.aborted) {
-        return;
+        return {
+          ok: false,
+          text: "! cancelled",
+          exitCode: 130
+        };
       }
       finishAgentDialogReply(tunnelId, reply, streamedMessages, streamedTerminal);
+      return reply;
     });
   agentReplyQueues.set(tunnelId, next);
   void next.finally(() => {

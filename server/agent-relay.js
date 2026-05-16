@@ -16,19 +16,77 @@ const sourceConnectedMs = 90_000;
 const sourceJobPickupBaseMs = 90_000;
 const sourceJobTtlMs = maxTaskTimeoutMs + 20 * 60_000;
 const sourceCancelTtlMs = 5 * 60_000;
+const artifactTtlMs = 30 * 60_000;
+const maxArtifactBytes = 64 * 1024 * 1024;
 const maxJobsPerChannel = 80;
 const maxDiagnosticSources = 16;
 const channels = new Map();
 const agentSources = new Map();
+const artifacts = new Map();
 const pollWaiters = new Map();
 const replyWaiters = new Map();
 const eventWaiters = new Map();
 const sourcePollWaiters = new Map();
 const sourceReplyWaiters = new Map();
 const jsonParser = express.json({ limit: "2mb", type: "application/json" });
+const artifactParser = express.raw({ limit: `${maxArtifactBytes}b`, type: "application/octet-stream" });
 const configuredServerCodexRelayId = normalizeRelayId(process.env.SOTY_SERVER_CODEX_RELAY_ID || process.env.SOTY_AGENT_RELAY_ID || "");
 
 export function attachAgentRelay(app) {
+  app.post("/api/agent/artifacts", artifactParser, (req, res) => {
+    const relayId = normalizeRelayId(req.query.relayId || req.headers["x-soty-relay-id"]);
+    const deviceId = cleanText(req.query.deviceId || req.headers["x-soty-device-id"], maxSourceChars);
+    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!relayId || !deviceId || bytes.length < 1 || bytes.length > maxArtifactBytes) {
+      res.status(400).json({ ok: false, text: "! artifact", exitCode: 400 });
+      return;
+    }
+    cleanupArtifacts();
+    const token = `${Date.now().toString(36)}_${randomUUID().replace(/-/gu, "")}`;
+    const name = cleanDownloadName(req.headers["x-soty-artifact-name"]);
+    const mimeType = cleanMimeType(req.headers["x-soty-artifact-type"]);
+    const sha256 = cleanHex(req.headers["x-soty-artifact-sha256"], 64);
+    artifacts.set(token, {
+      bytes,
+      name,
+      mimeType,
+      sha256,
+      relayId,
+      deviceId,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + artifactTtlMs
+    });
+    res.json({
+      ok: true,
+      id: token,
+      url: `/api/agent/artifacts/${encodeURIComponent(token)}`,
+      bytes: bytes.length,
+      sha256,
+      expiresAt: new Date(Date.now() + artifactTtlMs).toISOString()
+    });
+  });
+
+  app.get("/api/agent/artifacts/:id", (req, res) => {
+    cleanupArtifacts();
+    const token = cleanArtifactToken(req.params.id);
+    const artifact = token ? artifacts.get(token) : null;
+    if (!artifact) {
+      res.status(404).json({ ok: false, text: "! artifact", exitCode: 404 });
+      return;
+    }
+    artifact.lastReadAt = Date.now();
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Type", artifact.mimeType || "application/octet-stream");
+    res.setHeader("Content-Length", String(artifact.bytes.length));
+    if (artifact.name) {
+      res.setHeader("Content-Disposition", `attachment; filename="${artifact.name.replace(/["\\]/gu, "_")}"`);
+    }
+    if (artifact.sha256) {
+      res.setHeader("X-Soty-Artifact-Sha256", artifact.sha256);
+    }
+    res.end(artifact.bytes);
+  });
+
   app.get("/api/agent/relay/status", (req, res) => {
     const relayId = normalizeRelayId(req.query.relayId);
     if (!relayId) {
@@ -1055,6 +1113,7 @@ function normalizeTargetText(value) {
 
 function publicAgentSourceTarget(source) {
   return {
+    relayId: source.relayId,
     id: agentSourceTargetId(source.deviceId),
     label: source.deviceNick || "Agent device",
     deviceIds: [source.deviceId],
@@ -1481,6 +1540,7 @@ function cleanupChannels() {
     }
   }
   cleanupAgentSources();
+  cleanupArtifacts();
 }
 
 function replyKey(relayId, id) {
@@ -1525,6 +1585,39 @@ function normalizeRelayId(value) {
 
 function cleanText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function cleanArtifactToken(value) {
+  const text = String(value || "").trim();
+  return /^[0-9a-z]+_[0-9a-f]{32}$/u.test(text) ? text : "";
+}
+
+function cleanDownloadName(value) {
+  return String(Array.isArray(value) ? value[0] : value || "")
+    .replace(/[\\/:*?"<>|]/gu, "_")
+    .trim()
+    .slice(0, 160) || "artifact.bin";
+}
+
+function cleanMimeType(value) {
+  const text = String(Array.isArray(value) ? value[0] : value || "").trim().slice(0, 160);
+  return /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/u.test(text)
+    ? text
+    : "application/octet-stream";
+}
+
+function cleanHex(value, length) {
+  const text = String(Array.isArray(value) ? value[0] : value || "").trim().toLowerCase();
+  return new RegExp(`^[0-9a-f]{${length}}$`, "u").test(text) ? text : "";
+}
+
+function cleanupArtifacts() {
+  const now = Date.now();
+  for (const [token, artifact] of artifacts) {
+    if (!artifact || now > artifact.expiresAt) {
+      artifacts.delete(token);
+    }
+  }
 }
 
 function safeRunAs(value) {

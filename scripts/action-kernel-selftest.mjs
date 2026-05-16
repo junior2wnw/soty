@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.43");
+      assertEqual(health.body.version, "0.4.44");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -448,6 +448,10 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(response.body.text, "! script");
     }],
     ["source run succeeds", async () => expectStatus(await action(sourceRun("SELFTEST_OK run")), "ok")],
+    ["explicit run ignores empty script field", async () => {
+      const response = await action({ mode: "run", target: "agent-source:dev1", command: "SELFTEST_OK run mode", script: "" });
+      expectStatus(response, "ok");
+    }],
     ["linked pwa target without local operator bridge uses source device route", async () => {
       const response = await action({
         target: "room-a",
@@ -470,17 +474,57 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(response.body.ok, true);
       const proxyScript = mock.lastCommandWith("FromBase64String");
       assert(proxyScript.includes("127.0.0.1"));
-      const encoded = /FromBase64String\("([^"]+)"\)/u.exec(proxyScript)?.[1] || "";
-      const proxiedPayload = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      const proxiedPayload = decodeProxyPayloadFromScript(proxyScript);
       assertEqual(proxiedPayload.sourceDeviceId, "");
       assertEqual(proxiedPayload.command, "SELFTEST_OK controller proxy");
     }],
+    ["server linked pwa durable action proxies through controller source before device source fallback", async () => {
+      const response = await post("/operator/action", {
+        target: "room-a",
+        sourceDeviceId: "dev-way",
+        controllerDeviceId: "dev1",
+        sourceRelayId: "selftest_relay_00000000000000000001",
+        command: "SELFTEST_OK controller action proxy",
+        family: "shell",
+        timeoutMs: 5000
+      });
+      assertEqual(response.status, 200);
+      assertEqual(response.body.ok, true);
+      assertEqual(response.body.proxiedViaController, true);
+      const proxyScript = mock.lastCommandWith("/operator/action");
+      assert(proxyScript.includes("127.0.0.1"));
+      const proxiedPayload = decodeProxyPayloadFromScript(proxyScript);
+      assertEqual(proxiedPayload.sourceDeviceId, "dev-way");
+      assertEqual(proxiedPayload.command, "SELFTEST_OK controller action proxy");
+      assertEqual(proxiedPayload.script, undefined);
+    }],
+    ["server linked pwa durable action chunks large proxy payload", async () => {
+      const marker = "SELFTEST_OK large controller action proxy";
+      const response = await post("/operator/action", {
+        mode: "script",
+        target: "room-a",
+        sourceDeviceId: "dev-way",
+        controllerDeviceId: "dev1",
+        sourceRelayId: "selftest_relay_00000000000000000001",
+        script: `${marker}\n# ${"x".repeat(200_000)}`,
+        family: "shell",
+        timeoutMs: 5000
+      });
+      assertEqual(response.status, 200);
+      assertEqual(response.body.ok, true);
+      const proxyScript = mock.lastCommandWith("[string]::Concat");
+      assert(proxyScript.includes("[string]::Concat"));
+      assert(proxyScript.split(/\r?\n/u).every((line) => line.length < 10_000));
+      const proxiedPayload = decodeProxyPayloadFromScript(proxyScript);
+      assertEqual(proxiedPayload.sourceDeviceId, "dev-way");
+      assert(proxiedPayload.script.includes(marker));
+    }],
     ["linked pwa target with local operator bridge stays on bridge route", async () => {
       const bridge = await attachSelftestOperatorBridge([{
-        id: "room-a",
-        label: "room-a",
-        deviceIds: ["dev1"],
-        hostDeviceId: "dev1",
+        id: "room-bridge",
+        label: "room-bridge",
+        deviceIds: ["dev-bridge-only"],
+        hostDeviceId: "dev-bridge-only",
         access: true,
         host: false,
         selected: true,
@@ -489,8 +533,8 @@ async function runScenarios({ relayUrl } = {}) {
       try {
         const before = mock.count("SELFTEST_OK bridge target");
         const response = await post("/operator/run", {
-          target: "room-a",
-          sourceDeviceId: "dev1",
+          target: "room-bridge",
+          sourceDeviceId: "dev-bridge-only",
           command: "SELFTEST_OK bridge target",
           timeoutMs: 5000
         });
@@ -499,8 +543,64 @@ async function runScenarios({ relayUrl } = {}) {
         assert(response.body.text.includes("SELFTEST_OK bridge output"));
         assertEqual(mock.count("SELFTEST_OK bridge target"), before);
         assertEqual(bridge.calls.length, 1);
-        assertEqual(bridge.calls[0].target, "room-a");
+        assertEqual(bridge.calls[0].target, "room-bridge");
         assertEqual(bridge.calls[0].sourceDeviceId, "");
+      } finally {
+        bridge.close();
+      }
+    }],
+    ["operator bridge action timeout cancels remote run", async () => {
+      const bridge = await attachSelftestOperatorBridge([{
+        id: "room-bridge-timeout",
+        label: "room-bridge-timeout",
+        deviceIds: ["dev-bridge-timeout"],
+        hostDeviceId: "dev-bridge-timeout",
+        access: true,
+        host: false,
+        selected: true,
+        lastActionAt: new Date().toISOString()
+      }], { respond: false });
+      try {
+        const response = await action({
+          mode: "run",
+          target: "room-bridge-timeout",
+          sourceDeviceId: "dev-bridge-timeout",
+          command: "SELFTEST_TIMEOUT_BRIDGE_CANCEL",
+          timeoutMs: 1000
+        });
+        expectStatus(response, "timeout");
+        assertEqual(response.body.exitCode, 124);
+        assertEqual(bridge.calls.length, 1);
+        assertEqual(bridge.cancels.length, 1);
+        assertEqual(bridge.cancels[0].id, bridge.calls[0].id);
+      } finally {
+        bridge.close();
+      }
+    }],
+    ["linked pwa target prefers direct source worker over local bridge", async () => {
+      const bridge = await attachSelftestOperatorBridge([{
+        id: "room-direct",
+        label: "direct-linked-device",
+        deviceIds: ["dev-direct"],
+        hostDeviceId: "dev-direct",
+        access: true,
+        host: false,
+        selected: true,
+        lastActionAt: new Date().toISOString()
+      }]);
+      try {
+        const before = mock.count("SELFTEST_OK direct linked source");
+        const response = await action({
+          mode: "run",
+          target: "room-direct",
+          sourceDeviceId: "dev-direct",
+          command: "SELFTEST_OK direct linked source",
+          timeoutMs: 5000
+        });
+        expectStatus(response, "ok");
+        assertEqual(response.body.route, "agent-source.run");
+        assertEqual(mock.count("SELFTEST_OK direct linked source"), before + 1);
+        assertEqual(bridge.calls.length, 0);
       } finally {
         bridge.close();
       }
@@ -1087,7 +1187,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.43");
+      assertEqual(manifest.version, "0.4.44");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1212,7 +1312,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.43"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.44"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1259,7 +1359,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.43"'));
+      assert(agentSource.includes('const agentVersion = "0.4.44"'));
       assert(agentSource.includes("targetMentionedInRequest"));
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
@@ -1270,6 +1370,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("maybeProxyOperatorHttpViaController"));
       assert(agentSource.includes("operatorBridgeProxyScript"));
       assert(agentSource.includes("soty-operator-bridge-proxy"));
+      assert(agentSource.includes("sourceArtifactDownloadPowerShellScript"));
+      assert(agentSource.includes("soty-relay-artifact"));
+      assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('operation === "browser"'));
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("stopAgentDialogReply"));
       assert(ui.includes("restorePendingAgentDialogSelection"));
@@ -1296,6 +1399,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("soty-device-network.v1"));
       assert(agentSource.includes("formatRuntimeDeviceNetwork"));
       assert(agentRelay.includes("cleanDeviceNetwork"));
+      assert(agentRelay.includes('"/api/agent/artifacts"'));
+      assert(agentRelay.includes('"/api/agent/artifacts/:id"'));
       assert(ui.includes("!isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id)"));
       assert(ui.includes("access: true"));
       assert(agentSource.includes("matchingAgentSourceTarget"));
@@ -1329,14 +1434,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.43";', 'const agentVersion = "0.4.42";');
-      assert(oldSource.includes('const agentVersion = "0.4.42"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.44";', 'const agentVersion = "0.4.43";');
+      assert(oldSource.includes('const agentVersion = "0.4.43"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.43",
+            version: "0.4.44",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1535,8 +1640,20 @@ function sourceRun(command) {
   return { target: "agent-source:dev1", command };
 }
 
-async function attachSelftestOperatorBridge(targets) {
+function decodeProxyPayloadFromScript(script) {
+  const inline = /FromBase64String\("([^"]+)"\)/u.exec(script)?.[1] || "";
+  if (inline) {
+    return JSON.parse(Buffer.from(inline, "base64").toString("utf8"));
+  }
+  const chunks = [...String(script || "").matchAll(/^\s*"([A-Za-z0-9+/=]*)"\s*$/gmu)]
+    .map((match) => match[1] || "");
+  assert(chunks.length > 0, "proxy payload base64 chunks missing");
+  return JSON.parse(Buffer.from(chunks.join(""), "base64").toString("utf8"));
+}
+
+async function attachSelftestOperatorBridge(targets, options = {}) {
   const calls = [];
+  const cancels = [];
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("operator bridge attach timeout")), 5000);
@@ -1561,8 +1678,15 @@ async function attachSelftestOperatorBridge(targets) {
         resolve();
         return;
       }
+      if (message.type === "operator.cancel") {
+        cancels.push(message);
+        return;
+      }
       if (message.type === "operator.run" || message.type === "operator.script") {
         calls.push(message);
+        if (options.respond === false) {
+          return;
+        }
         ws.send(JSON.stringify({
           type: "operator.output",
           id: message.id,
@@ -1579,6 +1703,7 @@ async function attachSelftestOperatorBridge(targets) {
   await sleep(50);
   return {
     calls,
+    cancels,
     close: () => ws.close()
   };
 }
@@ -1814,10 +1939,21 @@ function createMockRelay() {
       return;
     }
     if (url.pathname === "/api/agent/source/status") {
+      const requestedDeviceId = url.searchParams.get("deviceId") || "";
+      const directCandidate = requestedDeviceId === "dev-direct"
+        ? [{
+          relayId: "selftest_direct_relay_00000000001",
+          deviceId: "dev-direct",
+          deviceNick: "direct-linked-device",
+          access: true,
+          connected: true,
+          lastSeenAt: new Date().toISOString()
+        }]
+        : [];
       json(response, 200, {
         ok: true,
         relayId: url.searchParams.get("relayId") || "",
-        deviceId: url.searchParams.get("deviceId") || "",
+        deviceId: requestedDeviceId,
         runnable: true,
         reason: "ok",
         sourceConnectedMs: 90000,
@@ -1836,7 +1972,7 @@ function createMockRelay() {
           cancels: 0,
           lastJob: null
         },
-        candidates: []
+        candidates: directCandidate
       });
       return;
     }

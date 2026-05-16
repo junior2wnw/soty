@@ -5,10 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { appendFile, chmod, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.43";
+const agentVersion = "0.4.44";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -61,7 +61,7 @@ const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexNativeWebSearch = process.env.SOTY_CODEX_WEB_SEARCH !== "0";
-const codexNativeOpenAiToolFeatures = Object.freeze(["image_generation", "computer_use", "browser_use", "tool_search"]);
+const codexNativeOpenAiToolFeatures = Object.freeze(["image_generation", "tool_search"]);
 const openAiBuiltInTools = Object.freeze(["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"]);
 const sotyMcpPublicTools = Object.freeze(["computer"]);
 const sotyMcpLegacyTools = Object.freeze([
@@ -474,7 +474,7 @@ async function handleHttpRequest(request, response) {
     return;
   }
   if (url.pathname === "/operator/actions" && request.method === "GET") {
-    await handleOperatorHttpActions(response, headers);
+    await handleOperatorHttpActions(url, response, headers);
     return;
   }
   if (url.pathname === "/operator/action" && request.method === "POST") {
@@ -483,12 +483,12 @@ async function handleHttpRequest(request, response) {
   }
   const actionMatch = url.pathname.match(/^\/operator\/action\/([A-Za-z0-9_-]{8,96})$/u);
   if (actionMatch && request.method === "GET") {
-    await handleOperatorHttpActionStatus(actionMatch[1], response, headers);
+    await handleOperatorHttpActionStatus(actionMatch[1], url, response, headers);
     return;
   }
   const actionStopMatch = url.pathname.match(/^\/operator\/action\/([A-Za-z0-9_-]{8,96})\/stop$/u);
   if (actionStopMatch && request.method === "POST") {
-    await handleOperatorHttpActionStop(actionStopMatch[1], response, headers);
+    await handleOperatorHttpActionStop(actionStopMatch[1], request, url, response, headers);
     return;
   }
   if (url.pathname === "/operator/run" && request.method === "POST") {
@@ -665,7 +665,7 @@ async function handleOperatorHttpRun(request, response, headers) {
   }
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
-  const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
+  let sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const runAs = safeRunAs(payload.runAs || "");
@@ -689,7 +689,7 @@ async function handleOperatorHttpRun(request, response, headers) {
   })) {
     return;
   }
-  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -725,7 +725,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   }
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
-  const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
+  let sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
@@ -751,7 +751,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   })) {
     return;
   }
-  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -840,23 +840,69 @@ async function operatorSourceStatus({ target = "", sourceRelayId = "", sourceDev
   }
 }
 
-async function handleOperatorHttpActions(response, headers) {
+async function handleOperatorHttpActions(url, response, headers) {
+  const sourceRelayId = safeRelayId(url.searchParams.get("sourceRelayId") || "");
+  const controllerDeviceId = safeSourceText(url.searchParams.get("controllerDeviceId") || "");
+  if (!operatorBridge?.open && sourceRelayId && controllerDeviceId) {
+    const proxied = await proxyOperatorHttpViaController({
+      path: "/operator/actions",
+      method: "GET",
+      sourceRelayId,
+      controllerDeviceId,
+      timeoutMs: 20_000
+    });
+    sendJson(response, proxied.httpStatus, headers, proxied.payload);
+    return;
+  }
   const jobs = await listActionJobs();
   sendJson(response, 200, headers, { ok: true, jobs });
 }
 
-async function handleOperatorHttpActionStatus(jobId, response, headers) {
+async function handleOperatorHttpActionStatus(jobId, url, response, headers) {
   const job = await readActionJob(jobId);
   if (!job) {
+    const sourceRelayId = safeRelayId(url.searchParams.get("sourceRelayId") || "");
+    const controllerDeviceId = safeSourceText(url.searchParams.get("controllerDeviceId") || "");
+    if (!operatorBridge?.open && sourceRelayId && controllerDeviceId) {
+      const proxied = await proxyOperatorHttpViaController({
+        path: `/operator/action/${encodeURIComponent(jobId)}`,
+        method: "GET",
+        sourceRelayId,
+        controllerDeviceId,
+        timeoutMs: 20_000
+      });
+      sendJson(response, proxied.httpStatus, headers, proxied.payload);
+      return;
+    }
     sendJson(response, 404, headers, { ok: false, text: "! action-job", exitCode: 404 });
     return;
   }
   sendJson(response, 200, headers, { ok: true, ...job });
 }
 
-async function handleOperatorHttpActionStop(jobId, response, headers) {
+async function handleOperatorHttpActionStop(jobId, request, url, response, headers) {
+  let requestPayload = {};
+  try {
+    requestPayload = await readJsonBody(request, 4096);
+  } catch {
+    requestPayload = {};
+  }
+  const sourceRelayId = safeRelayId(requestPayload.sourceRelayId || url.searchParams.get("sourceRelayId") || "");
+  const controllerDeviceId = safeSourceText(requestPayload.controllerDeviceId || url.searchParams.get("controllerDeviceId") || "");
   const entry = await readActionJob(jobId);
   if (!entry?.job) {
+    if (!operatorBridge?.open && sourceRelayId && controllerDeviceId) {
+      const proxied = await proxyOperatorHttpViaController({
+        path: `/operator/action/${encodeURIComponent(jobId)}/stop`,
+        method: "POST",
+        body: {},
+        sourceRelayId,
+        controllerDeviceId,
+        timeoutMs: 20_000
+      });
+      sendJson(response, proxied.httpStatus, headers, proxied.payload);
+      return;
+    }
     sendJson(response, 404, headers, { ok: false, text: "! action-job", exitCode: 404 });
     return;
   }
@@ -897,6 +943,9 @@ async function handleOperatorHttpAction(request, response, headers) {
       text: blocked,
       exitCode: 422
     });
+    return;
+  }
+  if (await maybeProxyOperatorHttpActionViaController(action, response, headers)) {
     return;
   }
   if (action.idempotencyKey) {
@@ -941,10 +990,12 @@ function normalizeOperatorActionPayload(payload) {
   if (!payload || typeof payload !== "object") {
     return { ok: false, text: "! request" };
   }
-  const mode = payload.mode === "script" || typeof payload.script === "string" ? "script" : "run";
+  const requestedMode = payload.mode === "script" ? "script" : payload.mode === "run" ? "run" : "";
+  const mode = requestedMode || (typeof payload.script === "string" && payload.script.trim() ? "script" : "run");
   const target = cleanActionText(payload.target, 160);
   const sourceDeviceId = safeSourceText(payload.sourceDeviceId || "");
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
+  const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   const runAs = safeRunAs(payload.runAs || "");
   const command = mode === "run" ? String(payload.command || "").slice(0, maxCommandChars) : "";
@@ -984,6 +1035,7 @@ function normalizeOperatorActionPayload(payload) {
     target,
     sourceDeviceId,
     sourceRelayId,
+    controllerDeviceId,
     timeoutMs,
     command,
     script,
@@ -1232,7 +1284,8 @@ async function executeOperatorAction(action, signal = null) {
   }
   let target = action.target;
   let sourceDeviceId = action.sourceDeviceId;
-  ({ target, sourceDeviceId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, action.sourceRelayId));
+  let sourceRelayId = action.sourceRelayId;
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -1240,7 +1293,7 @@ async function executeOperatorAction(action, signal = null) {
     }
     const sourceJobId = cleanActionId(action.jobId || "") || `act_${randomUUID().replace(/-/gu, "").slice(0, 24)}`;
     const cancelSource = () => {
-      void cancelAgentSourceJob(action.sourceRelayId, deviceId, sourceJobId).catch(() => undefined);
+      void cancelAgentSourceJob(sourceRelayId, deviceId, sourceJobId).catch(() => undefined);
     };
     signal?.addEventListener("abort", cancelSource, { once: true });
     const result = action.mode === "script"
@@ -1252,14 +1305,14 @@ async function executeOperatorAction(action, signal = null) {
         shell: action.shell,
         runAs: action.runAs,
         timeoutMs: action.timeoutMs
-      }, action.sourceRelayId, 1_000_000, signal)
+      }, sourceRelayId, 1_000_000, signal)
       : await postAgentSourceJob("/api/agent/source/run", {
         deviceId,
         clientJobId: sourceJobId,
         command: action.command,
         runAs: action.runAs,
         timeoutMs: action.timeoutMs
-      }, action.sourceRelayId, 1_000_000, signal);
+      }, sourceRelayId, 1_000_000, signal);
     signal?.removeEventListener("abort", cancelSource);
     return {
       ...result,
@@ -1328,7 +1381,12 @@ function registerOperatorPromiseRun(timeoutMs) {
       });
     };
     cancelRun = finish;
-    timer = setTimeout(() => finish(124, "! timeout"), timeoutMs);
+    timer = setTimeout(() => {
+      if (operatorBridge?.open) {
+        sendRaw(operatorBridge, { type: "operator.cancel", id });
+      }
+      finish(124, "! timeout");
+    }, timeoutMs);
     operatorRuns.set(id, {
       append: (text) => {
         body = `${body}${text}`.slice(-1_000_000);
@@ -2063,32 +2121,35 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
 
 async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "") {
   if (isAgentSourceTarget(target)) {
-    return { target, sourceDeviceId };
+    return { target, sourceDeviceId, sourceRelayId };
   }
   const operatorTarget = operatorTargetByText(target);
+  const fallbackDeviceId = operatorHttpTargetDeviceId(target, sourceDeviceId);
+  const sourceTargets = await activeAgentSourceTargets(sourceRelayId, fallbackDeviceId);
+  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets);
+  if (sourceTarget) {
+    const deviceId = agentSourceDeviceId(sourceTarget.id);
+    return {
+      target: sourceTarget.id,
+      sourceDeviceId: deviceId || sourceDeviceId || "",
+      sourceRelayId: safeRelayId(sourceTarget.relayId || "") || sourceRelayId
+    };
+  }
   if (operatorBridge?.open && operatorTarget?.access === true) {
     return {
       target: operatorTarget.id || target,
-      sourceDeviceId: ""
+      sourceDeviceId: "",
+      sourceRelayId
     };
   }
-  const sourceTargets = await activeAgentSourceTargets(sourceRelayId);
-  const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets);
-  if (!sourceTarget) {
-    const fallbackDeviceId = operatorHttpTargetDeviceId(target, sourceDeviceId);
-    if (!operatorBridge?.open && fallbackDeviceId) {
-      return {
-        target: `agent-source:${fallbackDeviceId}`,
-        sourceDeviceId: fallbackDeviceId
-      };
-    }
-    return { target, sourceDeviceId };
+  if (!operatorBridge?.open && fallbackDeviceId) {
+    return {
+      target: `agent-source:${fallbackDeviceId}`,
+      sourceDeviceId: fallbackDeviceId,
+      sourceRelayId
+    };
   }
-  const deviceId = agentSourceDeviceId(sourceTarget.id);
-  return {
-    target: sourceTarget.id,
-    sourceDeviceId: deviceId || sourceDeviceId || ""
-  };
+  return { target, sourceDeviceId, sourceRelayId };
 }
 
 async function maybeProxyOperatorHttpViaController({
@@ -2131,15 +2192,148 @@ async function maybeProxyOperatorHttpViaController({
   return true;
 }
 
+async function maybeProxyOperatorHttpActionViaController(action, response, headers) {
+  if (operatorBridge?.open || isAgentSourceTarget(action.target) || !action.target || !action.sourceRelayId || !action.controllerDeviceId) {
+    return false;
+  }
+  const body = {
+    mode: action.mode,
+    target: action.target,
+    sourceDeviceId: action.sourceDeviceId,
+    ...(action.mode === "script" ? { script: action.script } : { command: action.command }),
+    name: action.name,
+    shell: action.shell,
+    runAs: action.runAs,
+    timeoutMs: action.timeoutMs,
+    family: action.family,
+    kind: action.actionType,
+    phase: action.phase,
+    toolkit: action.toolkit,
+    intent: action.intent,
+    risk: action.risk,
+    idempotencyKey: action.idempotencyKey,
+    improvement: action.improvement,
+    reuseKey: action.reuseKey,
+    pivotFrom: action.pivotFrom,
+    successCriteria: action.successCriteria,
+    scriptUse: action.scriptUse,
+    contextFingerprint: action.contextFingerprint,
+    detached: action.detached
+  };
+  const proxied = await proxyOperatorHttpViaController({
+    path: "/operator/action",
+    method: "POST",
+    body,
+    sourceRelayId: action.sourceRelayId,
+    controllerDeviceId: action.controllerDeviceId,
+    timeoutMs: action.timeoutMs
+  });
+  sendJson(response, proxied.httpStatus, headers, proxied.payload);
+  return true;
+}
+
+async function proxyOperatorHttpViaController({ path, method = "POST", body = undefined, sourceRelayId, controllerDeviceId, timeoutMs = 30_000 }) {
+  const controllerTarget = `agent-source:${controllerDeviceId}`;
+  const result = await postAgentSourceJob("/api/agent/source/script", {
+    deviceId: controllerDeviceId,
+    script: operatorBridgeProxyJsonScript({ path, method, body, timeoutMs }),
+    name: "soty-operator-bridge-proxy",
+    shell: "powershell",
+    runAs: "user",
+    timeoutMs: Math.max(timeoutMs, 30_000)
+  }, sourceRelayId, 1_000_000);
+  const payload = parseJsonObjectLoose(result.text) || {
+    ok: result.ok === true,
+    text: String(result.text || ""),
+    exitCode: Number.isSafeInteger(result.exitCode) ? result.exitCode : (result.ok ? 0 : 1)
+  };
+  return {
+    httpStatus: payload.ok === false ? 200 : 200,
+    payload: {
+      ...payload,
+      proxiedViaController: true,
+      controllerTarget
+    }
+  };
+}
+
+function operatorBridgeProxyJsonScript({ path, method = "POST", body = undefined, timeoutMs = 30_000 }) {
+  const safeMethod = String(method || "POST").toUpperCase() === "GET" ? "GET" : "POST";
+  const safePath = safeOperatorProxyPath(path);
+  const payload = Buffer.from(JSON.stringify(body === undefined ? {} : body), "utf8").toString("base64");
+  const timeoutSec = Math.max(5, Math.min(7200, Math.ceil(safeRunTimeoutMs(timeoutMs) / 1000)));
+  const payloadBlock = powershellBase64Variable("payload64", payload);
+  const bodyBlock = safeMethod === "GET"
+    ? ""
+    : `
+${payloadBlock}
+$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload64))
+$params.Body = $json
+`.trim();
+  return `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$params = @{
+  Uri = "http://127.0.0.1:${port}${safePath}"
+  Method = "${safeMethod}"
+  Headers = @{ Origin = "https://xn--n1afe0b.online" }
+  TimeoutSec = ${timeoutSec}
+  UseBasicParsing = $true
+}
+if ("${safeMethod}" -ne "GET") {
+  $params.ContentType = "application/json; charset=utf-8"
+}
+${bodyBlock}
+$content = ""
+try {
+  $response = Invoke-WebRequest @params
+  $content = [string] $response.Content
+} catch {
+  try {
+    if ($_.Exception.Response) {
+      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+      $content = $reader.ReadToEnd()
+    }
+  } catch {}
+  if ([string]::IsNullOrWhiteSpace($content)) {
+    [pscustomobject]@{ ok = $false; text = ("! operator-bridge-proxy: " + $_.Exception.Message); exitCode = 1 } | ConvertTo-Json -Compress
+    exit 1
+  }
+}
+Write-Output $content
+try { $payload = $content | ConvertFrom-Json } catch { exit 1 }
+if ($payload.ok -eq $true) { exit 0 }
+if ($null -ne $payload.exitCode) { exit ([int] $payload.exitCode) }
+exit 1
+`.trim();
+}
+
+function safeOperatorProxyPath(path) {
+  const value = String(path || "");
+  if (value === "/operator/actions" || value === "/operator/action") {
+    return value;
+  }
+  if (/^\/operator\/action\/[A-Za-z0-9_-]{8,96}(?:\/stop)?$/u.test(value)) {
+    return value;
+  }
+  if (value === "/operator/run" || value === "/operator/script") {
+    return value;
+  }
+  return "/operator/actions";
+}
+
 function operatorBridgeProxyScript(path, body, timeoutMs) {
   const payload = Buffer.from(JSON.stringify(body), "utf8").toString("base64");
+  const payloadBlock = powershellBase64Variable("payload64", payload);
   const timeoutSec = Math.max(5, Math.min(7200, Math.ceil(safeRunTimeoutMs(timeoutMs) / 1000)));
   const safePath = path === "/operator/run" ? "/operator/run" : "/operator/script";
   return `
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${payload}"))
+${payloadBlock}
+$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload64))
 $content = ""
 try {
   $response = Invoke-WebRequest -Uri "http://127.0.0.1:${port}${safePath}" -Method POST -Headers @{ Origin = "https://xn--n1afe0b.online" } -ContentType "application/json; charset=utf-8" -Body $json -TimeoutSec ${timeoutSec} -UseBasicParsing
@@ -2173,6 +2367,12 @@ if ($null -ne $payload.exitCode) {
 }
 exit 1
 `.trim();
+}
+
+function powershellBase64Variable(name, payload) {
+  const safeName = /^[A-Za-z_][A-Za-z0-9_]*$/u.test(String(name || "")) ? name : "payload64";
+  const chunks = String(payload || "").match(/.{1,7600}/gu) || [""];
+  return `$${safeName} = [string]::Concat(@(\n${chunks.map((chunk) => `  "${chunk}"`).join("\n")}\n))`;
 }
 
 function operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets) {
@@ -5617,25 +5817,58 @@ function sourceDeviceFallbackTarget(source) {
   };
 }
 
-async function activeAgentSourceTargets(relayId = "") {
+async function activeAgentSourceTargets(relayId = "", deviceId = "") {
   const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
   const sourceRelayId = safeRelayId(relayId) || agentRelayId;
   if (!relayBaseUrl || !sourceRelayId) {
     return [];
   }
+  const targets = [];
   try {
     const url = new URL("/api/agent/source/targets", relayBaseUrl);
     url.searchParams.set("relayId", sourceRelayId);
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json();
-    if (!response.ok || !payload?.ok) {
-      return [];
+    if (response.ok && payload?.ok) {
+      targets.push(...sanitizeTargets(payload.targets));
     }
-    return sanitizeTargets(payload.targets)
-      .sort((left, right) => targetLastActionMs(right) - targetLastActionMs(left));
   } catch {
-    return [];
+    // Fall through to device diagnostics below.
   }
+  const safeDeviceId = safeSourceText(deviceId || "");
+  if (safeDeviceId) {
+    try {
+      const url = new URL("/api/agent/source/status", relayBaseUrl);
+      url.searchParams.set("relayId", sourceRelayId);
+      url.searchParams.set("deviceId", safeDeviceId);
+      const response = await fetch(url, { cache: "no-store" });
+      const payload = await response.json();
+      if (response.ok && payload?.ok && Array.isArray(payload.candidates)) {
+        targets.push(...payload.candidates.map(agentSourceDiagnosticTarget));
+      }
+    } catch {
+      // Diagnostics are best-effort; the regular relay target list may still be enough.
+    }
+  }
+  return mergeOperatorTargets(sanitizeTargets(targets))
+    .sort((left, right) => targetLastActionMs(right) - targetLastActionMs(left));
+}
+
+function agentSourceDiagnosticTarget(source) {
+  const deviceId = safeSourceText(source?.deviceId || "");
+  const relayId = safeRelayId(source?.relayId || "");
+  return {
+    relayId,
+    id: deviceId ? `agent-source:${deviceId}` : "",
+    label: safeSourceText(source?.deviceNick || "") || "Agent device",
+    deviceIds: deviceId ? [deviceId] : [],
+    hostDeviceId: deviceId,
+    access: source?.access === true,
+    host: true,
+    selected: source?.connected === true,
+    rank: 0,
+    lastActionAt: typeof source?.lastSeenAt === "string" ? source.lastSeenAt : ""
+  };
 }
 
 function targetLastActionMs(target) {
@@ -7529,6 +7762,12 @@ function runMcpServer() {
     if (operation === "open-url" || operation === "open_url" || capability === "url") {
       return "soty_open_url";
     }
+    if (["run", "script", "action", "execute", "shell", "long-job", "long_job"].includes(operation)
+      || /\b(?:shell|console|service|package|install|repair|diagnostic|probe|verify|long-job|long_job)\b/u.test(key)
+      || args.command
+      || args.script) {
+      return "soty_action";
+    }
     if (operation === "browser" || key.includes("browser")) {
       return "soty_browser";
     }
@@ -7547,12 +7786,6 @@ function runMcpServer() {
     }
     if (operation === "script" && args.durable === false) {
       return "soty_script";
-    }
-    if (["run", "script", "action", "execute", "shell", "long-job", "long_job"].includes(operation)
-      || /\b(?:shell|console|service|package|install|repair|diagnostic|probe|verify|long-job|long_job)\b/u.test(key)
-      || args.command
-      || args.script) {
-      return "soty_action";
     }
     return "";
   }
@@ -7682,7 +7915,29 @@ function runMcpServer() {
       }, true, 413);
     }
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const chunkSize = 512 * 1024;
+    const relayDownload = await callSotyRelayArtifactDownload({
+      bytes,
+      localPath,
+      targetPath,
+      sha256,
+      timeoutMs: mcpSafeTimeout(args.timeoutMs || args.waitTimeoutMs, 120_000)
+    });
+    if (relayDownload.ok) {
+      return mcpToolJson(relayDownload.payload);
+    }
+    if (bytes.length > 64 * 1024) {
+      return mcpToolJson({
+        ok: false,
+        action: "artifact-push",
+        error: "relay artifact download failed",
+        localPath,
+        targetPath,
+        bytes: bytes.length,
+        sha256,
+        result: relayDownload.payload || { text: relayDownload.text, exitCode: relayDownload.exitCode }
+      }, true, relayDownload.exitCode || 1);
+    }
+    const chunkSize = 64 * 1024;
     const total = Math.max(1, Math.ceil(bytes.length / chunkSize));
     let lastPayload = null;
     for (let index = 0; index < total; index += 1) {
@@ -7702,7 +7957,7 @@ function runMcpServer() {
         shell: "node",
         name: `soty-artifact-${index + 1}-of-${total}`.slice(0, 120),
         runAs: "user",
-        timeoutMs: mcpSafeTimeout(args.timeoutMs, 120_000)
+        timeoutMs: mcpSafeTimeout(args.timeoutMs || args.waitTimeoutMs, 120_000)
       });
       if (!result.ok) {
         return mcpToolJson({
@@ -7732,9 +7987,154 @@ function runMcpServer() {
     });
   }
 
+  async function callSotyRelayArtifactDownload({ bytes, localPath, targetPath, sha256, timeoutMs }) {
+    const published = await publishMcpArtifactToRelay(bytes, { localPath, sha256 });
+    if (!published.ok) {
+      return published;
+    }
+    const windowsTarget = artifactTargetLooksWindows(targetPath);
+    const result = await mcpPostOperator("/operator/script", {
+      target: mcpTarget,
+      sourceDeviceId: mcpSourceDeviceId,
+      script: windowsTarget
+        ? sourceArtifactDownloadPowerShellScript({
+          url: published.downloadUrl,
+          targetPath,
+          sha256,
+          bytes: bytes.length,
+          timeoutMs
+        })
+        : sourceArtifactDownloadNodeScript({
+          url: published.downloadUrl,
+          targetPath,
+          sha256,
+          bytes: bytes.length
+        }),
+      shell: windowsTarget ? "powershell" : "node",
+      name: "soty-artifact-download",
+      runAs: "user",
+      timeoutMs
+    });
+    const payload = parseJsonObject(result.text) || result.payload || {};
+    if (!result.ok) {
+      return {
+        ok: false,
+        text: result.text,
+        exitCode: result.exitCode,
+        payload: {
+          ok: false,
+          action: "artifact-push",
+          stage: "target-download",
+          relayArtifactId: published.id,
+          localPath,
+          targetPath,
+          bytes: bytes.length,
+          sha256,
+          result: result.payload || { text: result.text, exitCode: result.exitCode }
+        }
+      };
+    }
+    const actualSha256 = String(payload.sha256 || "").toLowerCase();
+    return {
+      ok: true,
+      exitCode: 0,
+      payload: {
+        ok: true,
+        action: "artifact-push",
+        localPath,
+        targetPath: String(payload.path || targetPath),
+        bytes: Number.isSafeInteger(payload.bytes) ? payload.bytes : bytes.length,
+        sha256,
+        savedBy: "soty-relay-artifact",
+        relayArtifactId: published.id,
+        verified: actualSha256 === sha256
+      }
+    };
+  }
+
+  async function publishMcpArtifactToRelay(bytes, { localPath, sha256 }) {
+    const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
+    const relayId = mcpSourceRelayId || agentRelayId;
+    const deviceId = mcpControllerDeviceId || mcpSourceDeviceId || agentDeviceId || "server";
+    if (!relayBaseUrl || !relayId || !deviceId) {
+      return { ok: false, text: "! artifact relay", exitCode: 409 };
+    }
+    try {
+      const url = new URL("/api/agent/artifacts", relayBaseUrl);
+      url.searchParams.set("relayId", relayId);
+      url.searchParams.set("deviceId", deviceId);
+      const response = await fetch(url, {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Soty-Relay-Id": relayId,
+          "X-Soty-Device-Id": deviceId,
+          "X-Soty-Artifact-Name": headerSafeText(basename(localPath || "artifact.bin"), 160),
+          "X-Soty-Artifact-Type": mimeFromPath(localPath),
+          "X-Soty-Artifact-Sha256": sha256
+        },
+        body: bytes
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.ok !== true || !payload.url) {
+        return {
+          ok: false,
+          text: String(payload?.text || "! artifact relay").slice(0, maxChatChars),
+          exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.status || 1),
+          payload
+        };
+      }
+      return {
+        ok: true,
+        id: String(payload.id || ""),
+        downloadUrl: new URL(String(payload.url || ""), relayBaseUrl).toString(),
+        bytes: Number.isSafeInteger(payload.bytes) ? payload.bytes : bytes.length,
+        sha256: String(payload.sha256 || sha256).toLowerCase()
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        text: `! artifact relay: ${error instanceof Error ? error.message : String(error)}`.slice(0, maxChatChars),
+        exitCode: 127
+      };
+    }
+  }
+
+  function artifactTargetLooksWindows(targetPath) {
+    const text = String(targetPath || "").trim();
+    return /^[A-Za-z]:[\\/]/u.test(text) || text.includes("\\") || text.startsWith("%") || text.startsWith("~\\");
+  }
+
+  function headerSafeText(value, max) {
+    return String(value || "artifact.bin").replace(/[^\x20-\x7E]/gu, "_").slice(0, max) || "artifact.bin";
+  }
+
+  function mimeFromPath(value) {
+    const ext = extname(String(value || "")).toLowerCase();
+    return ({
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".webp": "image/webp",
+      ".gif": "image/gif",
+      ".txt": "text/plain",
+      ".json": "application/json",
+      ".pdf": "application/pdf",
+      ".zip": "application/zip"
+    })[ext] || "application/octet-stream";
+  }
+
   async function callSotyToolkitTool(args) {
     const rawOperation = String(args.operation || "").trim().toLowerCase();
-    const operation = cleanActionToken(rawOperation || (args.jobId ? "status" : (args.action ? "reinstall" : (args.command || args.script ? "start" : "describe"))), "describe");
+    const operationAlias = rawOperation === "shell"
+      ? "run"
+      : rawOperation === "job_status"
+        ? "status"
+        : rawOperation === "job_stop"
+          ? "stop"
+          : rawOperation;
+    const operation = cleanActionToken(operationAlias || (args.jobId ? "status" : (args.action ? "reinstall" : (args.command || args.script ? "start" : "describe"))), "describe");
     const toolkit = normalizeToolkitName(args.toolkit || (args.action ? "windows-reinstall" : ""));
     const phase = cleanActionToken(args.phase || args.action || operation, operation);
     if (operation === "describe" || operation === "toolkits") {
@@ -8687,7 +9087,16 @@ function runMcpServer() {
 
   async function mcpRequestOperator(method, path, body = undefined) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      const url = new URL(`http://127.0.0.1:${port}${path}`);
+      if (String(method || "GET").toUpperCase() === "GET") {
+        if (mcpSourceRelayId) {
+          url.searchParams.set("sourceRelayId", mcpSourceRelayId);
+        }
+        if (mcpControllerDeviceId) {
+          url.searchParams.set("controllerDeviceId", mcpControllerDeviceId);
+        }
+      }
+      const response = await fetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
@@ -8857,6 +9266,98 @@ if (done) {
   }
 }
 console.log(JSON.stringify({ ok: true, action: "artifact-push", path: target, chunk: index + 1, total, bytes: stat.size, done, sha256: actualSha256 || String(req.sha256 || "") }));
+`.trim();
+}
+
+function sourceArtifactDownloadPowerShellScript(args) {
+  const urlBlock = powershellBase64Variable("url64", Buffer.from(String(args?.url || ""), "utf8").toString("base64"));
+  const targetBlock = powershellBase64Variable("targetPath64", Buffer.from(String(args?.targetPath || ""), "utf8").toString("base64"));
+  const expectedSha256 = String(args?.sha256 || "").toLowerCase().replace(/[^0-9a-f]/gu, "").slice(0, 64);
+  const expectedBytes = Number.isSafeInteger(args?.bytes) ? Math.max(0, args.bytes) : 0;
+  const timeoutSec = Math.max(10, Math.min(7200, Math.ceil(safeRunTimeoutMs(args?.timeoutMs || 120_000) / 1000)));
+  return `
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+${urlBlock}
+${targetBlock}
+$uri = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($url64))
+$targetRaw = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($targetPath64))
+$expectedSha256 = "${expectedSha256}"
+$expectedBytes = [int64] ${expectedBytes}
+function Expand-SotyArtifactPath([string] $Value) {
+  $text = ([string] $Value).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) { throw "empty targetPath" }
+  if ($text -eq "~") { return $HOME }
+  if ($text.StartsWith("~\\") -or $text.StartsWith("~/")) { return (Join-Path $HOME $text.Substring(2)) }
+  return [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($text))
+}
+$target = Expand-SotyArtifactPath $targetRaw
+$dir = [System.IO.Path]::GetDirectoryName($target)
+if (-not [string]::IsNullOrWhiteSpace($dir)) { [System.IO.Directory]::CreateDirectory($dir) | Out-Null }
+$tmp = $target + ".soty-download"
+if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+try {
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  } catch {}
+  Invoke-WebRequest -Uri $uri -OutFile $tmp -UseBasicParsing -TimeoutSec ${timeoutSec} -ErrorAction Stop
+} catch {
+  if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+  throw
+}
+$stat = Get-Item -LiteralPath $tmp
+if ($expectedBytes -gt 0 -and [int64] $stat.Length -ne $expectedBytes) {
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+  throw ("artifact size mismatch: " + $stat.Length + " != " + $expectedBytes)
+}
+$actualSha256 = ""
+if ($expectedSha256) {
+  $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $tmp).Hash.ToLowerInvariant()
+  if ($actualSha256 -ne $expectedSha256) {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    throw "sha256 mismatch"
+  }
+}
+Move-Item -LiteralPath $tmp -Destination $target -Force
+[pscustomobject]@{ ok = $true; action = "artifact-push"; path = $target; bytes = [int64] $stat.Length; sha256 = $actualSha256; savedBy = "soty-relay-artifact" } | ConvertTo-Json -Compress
+`.trim();
+}
+
+function sourceArtifactDownloadNodeScript(args) {
+  const payload = Buffer.from(JSON.stringify({
+    url: String(args?.url || ""),
+    targetPath: String(args?.targetPath || "").slice(0, 2000),
+    sha256: String(args?.sha256 || "").toLowerCase().slice(0, 128),
+    bytes: Number.isSafeInteger(args?.bytes) ? args.bytes : 0
+  }), "utf8").toString("base64");
+  return `
+const fs = await import("node:fs");
+const path = await import("node:path");
+const os = await import("node:os");
+const crypto = await import("node:crypto");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+function expandArtifactTargetPath(value) {
+  let text = String(value || "").trim();
+  if (!text) throw new Error("empty targetPath");
+  if (text === "~" || text.startsWith("~/") || text.startsWith("~\\\\")) {
+    text = path.join(os.homedir(), text.slice(2));
+  }
+  text = text
+    .replace(/%([^%]+)%/g, (_, name) => process.env[name] || "")
+    .replace(/\\$\\{([^}]+)\\}|\\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, braced, plain) => process.env[braced || plain] || "");
+  return path.resolve(text);
+}
+const response = await fetch(req.url, { cache: "no-store" });
+if (!response.ok) throw new Error("artifact download failed: " + response.status);
+const bytes = Buffer.from(await response.arrayBuffer());
+if (Number(req.bytes) > 0 && bytes.length !== Number(req.bytes)) throw new Error("artifact size mismatch");
+const actualSha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+if (String(req.sha256 || "") && actualSha256 !== String(req.sha256).toLowerCase()) throw new Error("sha256 mismatch");
+const target = expandArtifactTargetPath(req.targetPath);
+fs.mkdirSync(path.dirname(target), { recursive: true });
+fs.writeFileSync(target, bytes);
+console.log(JSON.stringify({ ok: true, action: "artifact-push", path: target, bytes: bytes.length, sha256: actualSha256, savedBy: "soty-relay-artifact" }));
 `.trim();
 }
 
@@ -9615,6 +10116,7 @@ function sanitizeTargets(value) {
   }
   return value
     .map((item) => ({
+      relayId: typeof item?.relayId === "string" ? safeRelayId(item.relayId) : "",
       id: typeof item?.id === "string" ? item.id.slice(0, 160) : "",
       label: typeof item?.label === "string" ? item.label.slice(0, 160) : "",
       deviceIds: Array.isArray(item?.deviceIds)
