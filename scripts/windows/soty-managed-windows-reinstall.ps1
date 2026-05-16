@@ -208,11 +208,8 @@ function Test-PrepareProcessMatchesJob($Process, [string] $JobId, [string] $JobP
   if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
   $jobIdLower = ([string] $JobId).ToLowerInvariant()
   $jobPathLower = ([string] $JobPath).ToLowerInvariant()
-  $rootLower = ([string] $Root).ToLowerInvariant()
   if (-not [string]::IsNullOrWhiteSpace($jobIdLower) -and $cmd.Contains($jobIdLower)) { return $true }
   if (-not [string]::IsNullOrWhiteSpace($jobPathLower) -and $cmd.Contains($jobPathLower)) { return $true }
-  if ($cmd -match "soty-prepare-windows-reinstall|prepare-windows-reinstall" -and -not [string]::IsNullOrWhiteSpace($rootLower) -and $cmd.Contains($rootLower)) { return $true }
-  if ($cmd -match "dism-export-drivers|soty windows reinstall image" -and -not [string]::IsNullOrWhiteSpace($rootLower) -and $cmd.Contains($rootLower)) { return $true }
   return $false
 }
 
@@ -409,6 +406,7 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
   $installImage = Get-InstallImageCandidate $sourceRoots
   $prepareJobs = Get-PrepareJobs $Root
   $latestPrepare = $prepareJobs | Select-Object -First 1
+  $activePrepareProcesses = @(Get-PrepareProcesses $Root)
   return [pscustomobject]@{
     ok = $true
     action = "status"
@@ -433,6 +431,8 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
       $sourceRoot = Split-Path -Parent $installImage
       Test-Path -LiteralPath (Join-Path (Join-Path (Join-Path (Join-Path $sourceRoot '$OEM$') '$$') "Setup\Scripts") "SetupComplete.cmd")
     } else { $false }
+    activePrepareProcessCount = @($activePrepareProcesses).Count
+    activePrepareProcesses = @($activePrepareProcesses | Select-Object -First 4 ProcessId, Name)
     latestPrepare = $latestPrepare
     prepareJobs = @($prepareJobs)
   }

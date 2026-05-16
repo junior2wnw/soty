@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.50";
+const agentVersion = "0.4.51";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -9277,6 +9277,9 @@ function runMcpServer() {
     if (mediaActive) {
       return true;
     }
+    if (hasActiveReinstallPrepareJob(status)) {
+      return true;
+    }
     const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
     const latestStatus = String(latest?.status || "").toLowerCase();
     if (latestStatus !== "running-or-started" && latestStatus !== "running" && latestStatus !== "created") {
@@ -9288,6 +9291,15 @@ function runMcpServer() {
       return false;
     }
     return true;
+  }
+
+  function hasActiveReinstallPrepareJob(status) {
+    const topLevelActive = Number(status?.activePrepareProcessCount);
+    if (Number.isFinite(topLevelActive) && topLevelActive > 0) {
+      return true;
+    }
+    const jobs = Array.isArray(status?.prepareJobs) ? status.prepareJobs : [];
+    return jobs.some((job) => Number(job?.activeProcessCount) > 0);
   }
 
   function reinstallReadyBlockers(status) {

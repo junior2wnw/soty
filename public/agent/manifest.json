@@ -1,9 +1,9 @@
 {
-  "version": "0.4.50",
+  "version": "0.4.51",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "8bafabad71e5f4671e871efcffea687d424b894eb5914683335ac9ceaeb14f42",
+  "sha256": "35899333b36d360eaf8e7d7196f5848533a26e116aa496cdbcb54b46274ef345",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -137,8 +137,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "66754fa65a84136ea2faa1d6e00d7053bfc8baa660d87534172e0044971fa5b4",
-            "bytes": 28743
+            "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
+            "bytes": 28566
           },
           {
             "name": "prepare",
@@ -216,8 +216,8 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "66754fa65a84136ea2faa1d6e00d7053bfc8baa660d87534172e0044971fa5b4",
-        "bytes": 28743
+        "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
+        "bytes": 28566
       },
       {
         "name": "prepare",
@@ -399,8 +399,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "66754fa65a84136ea2faa1d6e00d7053bfc8baa660d87534172e0044971fa5b4",
-            "bytes": 28743
+            "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
+            "bytes": 28566
           },
           {
             "name": "prepare",
@@ -480,8 +480,8 @@
           "scripts": [
             {
               "name": "managed",
-              "sha256": "66754fa65a84136ea2faa1d6e00d7053bfc8baa660d87534172e0044971fa5b4",
-              "bytes": 28743
+              "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
+              "bytes": 28566
             },
             {
               "name": "prepare",
