@@ -5183,7 +5183,6 @@ function renderTextPaint(): void {
   const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
   const stickToBottom = scroll ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 180 : false;
   const labels = writerLines.get(selectedId) ?? new Map();
-  const hideAgentChrome = loadTunnels().some((item) => item.id === selectedId && isAgentTunnel(item));
   const text = textarea.value;
   const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
   const active = activeActivities.get(selectedId);
@@ -5200,6 +5199,7 @@ function renderTextPaint(): void {
     return;
   }
   let operatorBlock = false;
+  let operatorBlockNick = "";
   const bubbles: {
     key: string;
     side: string;
@@ -5214,20 +5214,32 @@ function renderTextPaint(): void {
     const line = lines[index] ?? "";
     const label = labels.get(index);
     let state = classifyChatLine(line, operatorBlock);
+    const operatorNick = operatorNameFromLine(line);
+    if (operatorNick) {
+      operatorBlockNick = operatorNick;
+    }
     if (label && label.deviceId !== "operator" && !isAgentChromeLineClass(state.className)) {
       state = { className: "is-user-line", operatorBlock: false };
     }
     operatorBlock = state.operatorBlock;
-    if (hideAgentChrome && isAgentChromeLineClass(state.className)) {
+    if (isAgentChromeLineClass(state.className)) {
+      if (!operatorBlock) {
+        operatorBlockNick = "";
+      }
       continue;
     }
     if (!line.trim()) {
+      operatorBlock = false;
+      operatorBlockNick = "";
       if (bubbles.length > 0) {
         bubbles[bubbles.length - 1]?.lines.push("");
       }
       continue;
     }
-    const speaker = speakerForLine(line, state.className, label);
+    const speaker = speakerForLine(line, state.className, label, operatorBlockNick);
+    if (!operatorBlock) {
+      operatorBlockNick = "";
+    }
     const live = active && index === activeLine ? active : null;
     const key = `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}`;
     const current = bubbles[bubbles.length - 1];
@@ -5278,7 +5290,11 @@ function renderTextPaint(): void {
       }
     });
   }
-  textPaint.innerHTML = bubbles.map((bubble) => {
+  // Busy state belongs to the composer chrome, not to chat history.
+  const visibleBubbles = bubbles.filter((bubble) =>
+    bubble.className !== "is-agent-thinking" && (bubble.live || bubble.lines.some((line) => line.trim()))
+  );
+  textPaint.innerHTML = visibleBubbles.map((bubble) => {
     const body = bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
       : bubble.lines
@@ -5320,7 +5336,8 @@ function speakerForLine(
     readonly deviceId: string;
     readonly color: string;
     readonly time: string;
-  }
+  },
+  operatorBlockNick = ""
 ): { readonly nick: string; readonly deviceId: string; readonly color: string; readonly side: string } {
   const operator = operatorNameFromLine(line);
   if (label && label.deviceId !== "operator" && className !== "is-operator-head" && className !== "is-operator-reply") {
@@ -5332,7 +5349,7 @@ function speakerForLine(
     };
   }
   if (operator || className === "is-operator-head" || className === "is-operator-body" || className === "is-operator-reply" || label?.deviceId === "operator") {
-    const nick = operator || label?.nick || (isAgentTunnelId(selectedId) ? agentDialogLabel : "Operator");
+    const nick = operator || label?.nick || cleanNick(operatorBlockNick) || (isAgentTunnelId(selectedId) ? agentDialogLabel : "Operator");
     return {
       nick,
       deviceId: "operator",

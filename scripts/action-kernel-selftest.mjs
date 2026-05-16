@@ -1383,6 +1383,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("resumePendingAgentDialogReplies"));
       assert(ui.includes("isAgentReplyTunnel"));
       assert(ui.includes("finishAgentDialogReply"));
+      assert(ui.includes("operatorBlockNick"));
+      assert(ui.includes("speakerForLine(line, state.className, label, operatorBlockNick)"));
+      assert(ui.includes("if (isAgentChromeLineClass(state.className))"));
+      assert(ui.includes('bubble.className !== "is-agent-thinking"'));
+      assert(!ui.includes("hideAgentChrome"));
       assert(agentFeature.includes("pendingRelayRepliesStorageKey"));
       assert(agentFeature.includes("loadPendingAgentRelayReplies"));
       assert(agentFeature.includes("resumeAgentRelayReply"));
