@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.57";
+const agentVersion = "0.4.58";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2193,14 +2193,16 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
     sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
     return;
   }
-  const result = await postAgentSourceJob("/api/agent/source/run", {
-    deviceId,
-    command,
-    runAs: safeRunAs(runAs),
-    timeoutMs
-  }, sourceRelayId);
-  rememberAgentSourceOutcome({ kind: "run", command, result });
-  sendJson(response, 200, headers, result);
+  await sendLongOperatorJson(response, headers, async (signal) => {
+    const result = await postAgentSourceJob("/api/agent/source/run", {
+      deviceId,
+      command,
+      runAs: safeRunAs(runAs),
+      timeoutMs
+    }, sourceRelayId, maxChatChars, signal);
+    rememberAgentSourceOutcome({ kind: "run", command, result });
+    return result;
+  });
 }
 
 async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "", options = {}) {
@@ -2520,13 +2522,15 @@ async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, time
     sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
     return;
   }
-  const result = await postAgentSourceJob("/api/agent/source/script", {
-    deviceId,
-    ...payload,
-    timeoutMs
-  }, sourceRelayId, maxTextLength);
-  rememberAgentSourceOutcome({ kind: "script", command: payload.script, result });
-  sendJson(response, 200, headers, result);
+  await sendLongOperatorJson(response, headers, async (signal) => {
+    const result = await postAgentSourceJob("/api/agent/source/script", {
+      deviceId,
+      ...payload,
+      timeoutMs
+    }, sourceRelayId, maxTextLength, signal);
+    rememberAgentSourceOutcome({ kind: "script", command: payload.script, result });
+    return result;
+  });
 }
 
 async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxChatChars, signal = null) {
@@ -3735,6 +3739,33 @@ function startOperatorRunJsonStream(response, headers) {
   const timer = setInterval(writeKeepalive, 25_000);
   timer.unref?.();
   return () => clearInterval(timer);
+}
+
+async function sendLongOperatorJson(response, headers, work) {
+  const abortController = new AbortController();
+  let done = false;
+  const stopKeepalive = startOperatorRunJsonStream(response, headers);
+  const cancelOnClientClose = () => {
+    if (!done) {
+      abortController.abort();
+    }
+  };
+  response.on?.("close", cancelOnClientClose);
+  let payload;
+  try {
+    payload = await work(abortController.signal);
+  } catch (error) {
+    payload = isAbortError(error) || abortController.signal.aborted
+      ? { ok: false, text: "! cancelled", exitCode: 130 }
+      : { ok: false, text: agentFailureText(error instanceof Error ? error.message : String(error)), exitCode: 1 };
+  } finally {
+    done = true;
+    stopKeepalive();
+    response.off?.("close", cancelOnClientClose);
+  }
+  if (!response.writableEnded && !response.destroyed) {
+    response.end(JSON.stringify(payload || { ok: false, text: "! empty", exitCode: 1 }));
+  }
 }
 
 function handleOperatorOutput(message) {
