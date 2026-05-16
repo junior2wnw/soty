@@ -79,6 +79,9 @@ export interface ReceivedFile {
   readonly nick: string;
   readonly deviceId: string;
   readonly createdAt: string;
+  readonly autoDownload?: boolean;
+  readonly delivery?: string;
+  readonly commandId?: string;
 }
 
 export interface NoticeKnock {
@@ -303,7 +306,14 @@ interface FileTransfer {
   readonly seen: Set<number>;
   total: number;
   totalBytes: number;
-  meta?: { readonly name?: string; readonly type?: string; readonly size?: number };
+  meta?: {
+    readonly name?: string;
+    readonly type?: string;
+    readonly size?: number;
+    readonly autoDownload?: boolean;
+    readonly delivery?: string;
+    readonly commandId?: string;
+  };
   createdAt?: string;
   deviceId?: string;
   deviceNick?: string;
@@ -607,7 +617,14 @@ export class TunnelSync {
 
   async sendFileChunkFromBytes(
     fileId: string,
-    meta: { readonly name: string; readonly type?: string; readonly size: number },
+    meta: {
+      readonly name: string;
+      readonly type?: string;
+      readonly size: number;
+      readonly autoDownload?: boolean;
+      readonly delivery?: string;
+      readonly commandId?: string;
+    },
     chunk: Uint8Array,
     index: number,
     total: number
@@ -626,7 +643,10 @@ export class TunnelSync {
       ? await encryptForTunnel(this.tunnel, encode(JSON.stringify({
         name: fileName,
         type: fileType,
-        size: fileSize
+        size: fileSize,
+        ...(meta.autoDownload === true ? { autoDownload: true } : {}),
+        ...(meta.delivery ? { delivery: String(meta.delivery).slice(0, 80) } : {}),
+        ...(meta.commandId ? { commandId: String(meta.commandId).slice(0, 120) } : {})
       })))
       : null;
     this.sendControl({
@@ -1044,7 +1064,14 @@ export class TunnelSync {
       decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext),
       decryptFromTunnel(this.tunnel, file.nonce, file.ciphertext)
     ]);
-    const meta = JSON.parse(decode(metaBytes)) as { readonly name?: string; readonly type?: string; readonly size?: number };
+    const meta = JSON.parse(decode(metaBytes)) as {
+      readonly name?: string;
+      readonly type?: string;
+      readonly size?: number;
+      readonly autoDownload?: boolean;
+      readonly delivery?: string;
+      readonly commandId?: string;
+    };
     const type = meta.type || "application/octet-stream";
     const body = bodyBytes.buffer.slice(bodyBytes.byteOffset, bodyBytes.byteOffset + bodyBytes.byteLength) as ArrayBuffer;
     const blob = new Blob([body], { type });
@@ -1057,7 +1084,10 @@ export class TunnelSync {
       url: URL.createObjectURL(blob),
       nick: file.deviceNick || "",
       deviceId: file.deviceId || "",
-      createdAt: file.createdAt || new Date().toISOString()
+      createdAt: file.createdAt || new Date().toISOString(),
+      ...(meta.autoDownload === true ? { autoDownload: true } : {}),
+      ...(meta.delivery ? { delivery: String(meta.delivery).slice(0, 80) } : {}),
+      ...(meta.commandId ? { commandId: String(meta.commandId).slice(0, 120) } : {})
     });
     rememberBounded(this.completedFileIds, file.id);
   }
@@ -1086,7 +1116,14 @@ export class TunnelSync {
     }
     if (file.metaNonce && file.metaCiphertext) {
       const metaBytes = await decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext);
-      transfer.meta = JSON.parse(decode(metaBytes)) as { readonly name?: string; readonly type?: string; readonly size?: number };
+      transfer.meta = JSON.parse(decode(metaBytes)) as {
+        readonly name?: string;
+        readonly type?: string;
+        readonly size?: number;
+        readonly autoDownload?: boolean;
+        readonly delivery?: string;
+        readonly commandId?: string;
+      };
     }
     if (!transfer.seen.has(file.index)) {
       transfer.chunks[file.index] = await decryptFromTunnel(this.tunnel, file.nonce, file.ciphertext);
@@ -1111,7 +1148,10 @@ export class TunnelSync {
       url: URL.createObjectURL(blob),
       nick: transfer.deviceNick || "",
       deviceId: transfer.deviceId || "",
-      createdAt: transfer.createdAt || new Date().toISOString()
+      createdAt: transfer.createdAt || new Date().toISOString(),
+      ...(transfer.meta.autoDownload === true ? { autoDownload: true } : {}),
+      ...(transfer.meta.delivery ? { delivery: String(transfer.meta.delivery).slice(0, 80) } : {}),
+      ...(transfer.meta.commandId ? { commandId: String(transfer.meta.commandId).slice(0, 120) } : {})
     });
     this.fileTransfers.delete(file.fileId);
     rememberBounded(this.completedFileIds, file.fileId);

@@ -8,7 +8,7 @@ import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkA
 import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
-import { filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
+import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
@@ -119,6 +119,7 @@ const chessStoreKey = "soty:chess:v1";
 const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
+const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
 const chessAgentTimers = new Map<string, number>();
@@ -203,6 +204,9 @@ type SotyFileStreamState = {
   readonly type: string;
   readonly size: number;
   readonly total: number;
+  readonly autoDownload: boolean;
+  readonly delivery: string;
+  readonly sourceCommandId: string;
   sent: number;
 };
 const sotyFileLineBuffers = new Map<string, string>();
@@ -1851,6 +1855,7 @@ function ensureSync(tunnel: TunnelRecord): void {
     onFile: (file) => {
       const next = [file, ...(files.get(tunnel.id) ?? []).filter((item) => item.id !== file.id)];
       files.set(tunnel.id, next);
+      maybeAutoDownloadReceivedFile(tunnel.id, file);
       tunnels = tunnel.id === selectedId ? touchTunnel(tunnel.id) : markTunnel(tunnel.id, true);
       if (tunnel.id === selectedId) {
         renderFiles();
@@ -2309,6 +2314,47 @@ function applyRemoteCancel(tunnelId: string, cancel: RemoteCancel): void {
     void syncs.get(tunnelId)?.sendRemoteOutput(cancel.deviceId, cancel.commandId, "! cancelled\n", 130);
   }
   renderTerminal();
+}
+
+function maybeAutoDownloadReceivedFile(tunnelId: string, file: ReceivedFile): void {
+  if (file.autoDownload !== true || file.delivery !== "controller-browser-downloads") {
+    return;
+  }
+  const createdAt = Date.parse(file.createdAt || "");
+  if (!Number.isFinite(createdAt) || Date.now() - createdAt > 2 * 60_000) {
+    return;
+  }
+  const key = `${tunnelId}:${file.id}`;
+  const seen = loadAutoDownloadedFiles();
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  saveAutoDownloadedFiles(seen);
+  downloadReceivedFile(file);
+  appendTerminalLine(tunnelId, `+ saved to Downloads ${file.name}`);
+  const operatorId = file.commandId ? operatorPending.get(file.commandId) : "";
+  if (operatorId) {
+    sendOperatorOutput(operatorId, `controllerDownload=${file.name}\n`);
+  }
+  renderTerminal();
+}
+
+function loadAutoDownloadedFiles(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(autoDownloadedFilesKey) || "[]");
+    return new Set(Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveAutoDownloadedFiles(seen: Set<string>): void {
+  try {
+    localStorage.setItem(autoDownloadedFilesKey, JSON.stringify([...seen].slice(-200)));
+  } catch {
+    // Ignore storage failures; duplicate prevention is only a convenience.
+  }
 }
 
 function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
@@ -3900,6 +3946,9 @@ function handleSotyFileProtocolLine(tunnelId: string, commandId: string, line: s
       type: meta.type,
       size: meta.size,
       total: meta.total,
+      autoDownload: meta.autoDownload,
+      delivery: meta.delivery,
+      sourceCommandId: commandId,
       sent: 0
     });
     appendTerminalLine(tunnelId, `+ file ${meta.name} ${formatFileSize(meta.size)}`);
@@ -3924,7 +3973,10 @@ function handleSotyFileProtocolLine(tunnelId: string, commandId: string, line: s
       void sync.sendFileChunkFromBytes(fileId, {
         name: state.name,
         type: state.type,
-        size: state.size
+        size: state.size,
+        autoDownload: state.autoDownload,
+        delivery: state.delivery,
+        commandId: state.sourceCommandId
       }, chunk, index, state.total).catch(() => {
         appendTerminalLine(tunnelId, "! file transfer send");
         renderTerminal();
@@ -3955,6 +4007,8 @@ function parseSotyFileMetadata(value: string): SotyFileStreamState | null {
       readonly type?: unknown;
       readonly size?: unknown;
       readonly total?: unknown;
+      readonly autoDownload?: unknown;
+      readonly delivery?: unknown;
     };
     const fileId = String(parsed.id || "").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
     const name = cleanDownloadedFileName(String(parsed.name || "file"));
@@ -3964,7 +4018,20 @@ function parseSotyFileMetadata(value: string): SotyFileStreamState | null {
     if (!fileId || !name) {
       return null;
     }
-    return { tunnelId: "", commandId: "", fileId, name, type, size, total, sent: 0 };
+    const delivery = String(parsed.delivery || "").slice(0, 80);
+    return {
+      tunnelId: "",
+      commandId: "",
+      fileId,
+      name,
+      type,
+      size,
+      total,
+      autoDownload: parsed.autoDownload === true,
+      delivery,
+      sourceCommandId: "",
+      sent: 0
+    };
   } catch {
     return null;
   }

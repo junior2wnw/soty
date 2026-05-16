@@ -65,7 +65,7 @@ export function renderFileRail(
   installRailScroll(root);
 }
 
-function downloadReceivedFile(file: ReceivedFile): void {
+export function downloadReceivedFile(file: ReceivedFile): void {
   const body = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
   const blob = new Blob([body], { type: file.type || "application/octet-stream" });
   const url = URL.createObjectURL(blob);

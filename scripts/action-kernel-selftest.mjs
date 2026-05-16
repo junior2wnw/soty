@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.46");
+      assertEqual(health.body.version, "0.4.47");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1010,12 +1010,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes('const { spawn } = require("node:child_process")'));
       assert(agent.includes('savedBy: "source-device"'));
       assert(agent.includes("Soty is the data plane"));
-      assert(agent.includes("action=download/publish"));
+      assert(agent.includes("action=download"));
       assert(agent.includes("Do not stage user artifacts under `C:\\\\Windows\\\\Temp`"));
       assert(agent.includes("C:\\\\ProgramData\\\\soty-agent\\\\artifacts"));
       assert(agent.includes('emitSotyFileControl("BEGIN"'));
       assert(agent.includes("SOTY_FILE_CHUNK"));
-      assert(agent.includes("soty-room-file-rail"));
+      assert(agent.includes("room-file-rail"));
       assert(agent.includes("Never use 0x0.st, file.io, temp.sh, bashupload"));
       assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
       assert(agent.includes("SOTY_ROUTES.md"));
@@ -1191,7 +1191,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.46");
+      assertEqual(manifest.version, "0.4.47");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1257,6 +1257,7 @@ async function runScenarios({ relayUrl } = {}) {
       const ui = await readFile(join(root, "src", "main.ts"), "utf8");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
+      const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const agentRelay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
@@ -1316,7 +1317,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.46"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.47"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1363,7 +1364,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.46"'));
+      assert(agentSource.includes('const agentVersion = "0.4.47"'));
       assert(agentSource.includes("targetMentionedInRequest"));
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
@@ -1376,6 +1377,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("soty-operator-bridge-proxy"));
       assert(agentSource.includes("sourceArtifactDownloadPowerShellScript"));
       assert(agentSource.includes("soty-relay-artifact"));
+      assert(agentSource.includes("Cross-device file transfer"));
+      assert(agentSource.includes("controller-browser-downloads"));
+      assert(agentSource.includes("action=download means source device -> controller/current computer Downloads"));
+      assert(agentSource.includes("mcpToolJsonText(result)"));
       assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('operation === "browser"'));
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("stopAgentDialogReply"));
@@ -1419,6 +1424,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes(".filter((item) => item.access === true)"));
       assert(agentRelay.includes("preferredTargetAlreadySelected"));
       assert(ui.includes("playAgentDoneSound"));
+      assert(ui.includes("maybeAutoDownloadReceivedFile"));
+      assert(ui.includes("controllerDownload="));
+      assert(ui.includes("autoDownloadedFilesKey"));
+      assert(syncSource.includes("autoDownload?: boolean"));
+      assert(syncSource.includes("commandId?: string"));
+      assert(syncSource.includes("delivery?: string"));
       assert(agentFeature.includes("cancelAgentRelayReply"));
       assert(agentRelay.includes('"/api/agent/relay/cancel"'));
       assert(agentRelay.includes("cancelRequested"));
@@ -1444,14 +1455,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.46";', 'const agentVersion = "0.4.45";');
-      assert(oldSource.includes('const agentVersion = "0.4.45"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.47";', 'const agentVersion = "0.4.46";');
+      assert(oldSource.includes('const agentVersion = "0.4.46"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.46",
+            version: "0.4.47",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
