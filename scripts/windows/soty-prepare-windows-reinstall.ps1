@@ -328,20 +328,71 @@ function Invoke-HttpRangeDownloadAttempt([string] $Uri, [string] $TempPath, [str
   }
 }
 
+function Get-ContentRangeTotal([string] $Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return [int64]0 }
+  if ($Value -match '/(\d+)\s*$') { return [int64] $matches[1] }
+  return [int64]0
+}
+
+function Get-CurlHeaderBlocks([string] $Text) {
+  $blocks = @()
+  $current = New-Object System.Collections.Generic.List[string]
+  foreach ($line in ($Text -split "`r?`n")) {
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      if ($current.Count -gt 0) {
+        $blocks += ,@($current.ToArray())
+        $current.Clear()
+      }
+      continue
+    }
+    $current.Add($line) | Out-Null
+  }
+  if ($current.Count -gt 0) { $blocks += ,@($current.ToArray()) }
+  return @($blocks)
+}
+
+function Convert-HttpHeaderBlockToInfo([string[]] $Lines) {
+  $info = [ordered]@{ statusCode = 0; length = [int64]0; acceptRanges = $false; contentRangeTotal = [int64]0 }
+  foreach ($line in $Lines) {
+    if ($line -match '^HTTP/\S+\s+(\d+)') { $info.statusCode = [int] $matches[1] }
+    if ($line -match '^\s*Content-Length:\s*(\d+)') { $info.length = [int64] $matches[1] }
+    if ($line -match '^\s*Accept-Ranges:\s*bytes\b') { $info.acceptRanges = $true }
+    if ($line -match '^\s*Content-Range:\s*(.+)$') {
+      $total = Get-ContentRangeTotal ([string] $matches[1])
+      if ($total -gt 0) {
+        $info.contentRangeTotal = $total
+        $info.acceptRanges = $true
+      }
+    }
+  }
+  if ($info.contentRangeTotal -gt 0) { $info.length = [int64] $info.contentRangeTotal }
+  return [pscustomobject] $info
+}
+
 function Get-HttpDownloadInfo([string] $Uri, [string] $LogName) {
   $result = [ordered]@{ length = [int64]0; acceptRanges = $false; source = "" }
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if ($curl) {
     try {
-      $head = & curl.exe -I -L --max-time 30 --retry 2 --retry-delay 2 $Uri 2>&1
+      $head = & curl.exe --silent --show-error -I -L --max-time 30 --retry 2 --retry-delay 2 $Uri 2>&1
       $text = ($head | Out-String)
       Set-Content -LiteralPath (Join-Path $JobRoot $LogName) -Encoding UTF8 -Value $text
-      foreach ($line in ($text -split "`r?`n")) {
-        if ($line -match '^\s*Content-Length:\s*(\d+)') { $result.length = [int64] $matches[1] }
-        if ($line -match '^\s*Accept-Ranges:\s*bytes\b') { $result.acceptRanges = $true }
+      $blocks = @(Get-CurlHeaderBlocks $text)
+      $parsed = @($blocks | ForEach-Object { Convert-HttpHeaderBlockToInfo $_ })
+      $finalSuccess = @($parsed | Where-Object { $_.statusCode -ge 200 -and $_.statusCode -lt 300 }) | Select-Object -Last 1
+      if ($finalSuccess) {
+        $result.length = [int64] $finalSuccess.length
+        $result.acceptRanges = [bool] $finalSuccess.acceptRanges
+        if ($result.length -gt 0) {
+          $result.source = "curl-head-final"
+          return [pscustomobject] $result
+        }
       }
-      if ($result.length -gt 0) {
-        $result.source = "curl-head"
+      $rangeSuccess = @($parsed | Where-Object { $_.contentRangeTotal -gt 0 }) | Select-Object -Last 1
+      if ($rangeSuccess) {
+        $result.length = [int64] $rangeSuccess.contentRangeTotal
+        $result.acceptRanges = $true
+        $result.source = "curl-head-content-range"
         return [pscustomobject] $result
       }
     } catch {
@@ -365,6 +416,67 @@ function Get-HttpDownloadInfo([string] $Uri, [string] $LogName) {
   } catch {
     Log ("WARN download HEAD via .NET failed: " + $_.Exception.Message)
   }
+  return [pscustomobject] $result
+}
+
+function Get-HttpRangeProbeInfo([string] $Uri, [string] $LogName) {
+  $result = [ordered]@{ length = [int64]0; acceptRanges = $false; statusCode = 0; probeBytes = [int64]0; source = ""; error = "" }
+  $probePath = Join-Path $JobRoot ($LogName + ".probe")
+  $logPath = Join-Path $JobRoot $LogName
+  Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
+  $response = $null
+  $stream = $null
+  $file = $null
+  try {
+    $request = [System.Net.HttpWebRequest]::Create($Uri)
+    $request.Method = "GET"
+    $request.AllowAutoRedirect = $true
+    $request.Timeout = 60000
+    $request.ReadWriteTimeout = 60000
+    $request.UserAgent = "Soty Windows reinstall media downloader"
+    $request.AddRange(0, 1048575)
+    $response = $request.GetResponse()
+    $result.statusCode = [int] $response.StatusCode
+    $contentRangeTotal = Get-ContentRangeTotal ([string] $response.Headers["Content-Range"])
+    if ($contentRangeTotal -gt 0) {
+      $result.length = [int64] $contentRangeTotal
+      $result.acceptRanges = $true
+      $result.source = "http-range-probe-content-range"
+    } elseif ([int64] $response.ContentLength -gt 0 -and $result.statusCode -eq 200) {
+      $result.length = [int64] $response.ContentLength
+      $result.acceptRanges = $false
+      $result.source = "http-range-probe-content-length"
+    } else {
+      $result.source = "http-range-probe-bytes"
+    }
+    $stream = $response.GetResponseStream()
+    $file = [System.IO.File]::Open($probePath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    $buffer = New-Object byte[] 65536
+    while ($result.probeBytes -lt 1048576) {
+      $remaining = [int][math]::Min($buffer.Length, 1048576 - $result.probeBytes)
+      $read = $stream.Read($buffer, 0, $remaining)
+      if ($read -le 0) { break }
+      $file.Write($buffer, 0, $read)
+      $result.probeBytes = [int64]($result.probeBytes + $read)
+    }
+  } catch {
+    $result.error = $_.Exception.Message
+    Log ("WARN download range probe failed: " + $_.Exception.Message)
+  } finally {
+    if ($file) { $file.Dispose() }
+    if ($stream) { $stream.Dispose() }
+    if ($response) { $response.Dispose() }
+  }
+  $lines = @(
+    "statusCode=" + $result.statusCode,
+    "length=" + $result.length,
+    "acceptRanges=" + $result.acceptRanges,
+    "probeBytes=" + $result.probeBytes,
+    "source=" + $result.source,
+    "error=" + $result.error
+  )
+  Set-Content -LiteralPath $logPath -Encoding UTF8 -Value ($lines -join "`r`n")
+  Remove-Item -LiteralPath $probePath -Force -ErrorAction SilentlyContinue
   return [pscustomobject] $result
 }
 
@@ -552,7 +664,16 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
   $initialInfo = Get-HttpDownloadInfo -Uri $Uri -LogName ($LogPrefix + "-initial-head.txt")
   $script:lastDownloadContentLength = [int64] $initialInfo.length
   if ($script:lastDownloadContentLength -lt 1GB) {
-    throw "Windows image URL did not advertise a valid image size; refusing a zero-byte or expired media download."
+    $probeInfo = Get-HttpRangeProbeInfo -Uri $Uri -LogName ($LogPrefix + "-initial-range-probe.txt")
+    if ([int64] $probeInfo.length -ge 1GB) {
+      $script:lastDownloadContentLength = [int64] $probeInfo.length
+      Log ("Windows image size resolved by guarded range probe: " + [math]::Round($script:lastDownloadContentLength / 1GB, 3) + " GB.")
+    } elseif ([int64] $probeInfo.probeBytes -gt 0 -and $expected -match '^[a-f0-9]{64}$') {
+      $script:lastDownloadContentLength = [int64]0
+      Log "Windows image URL did not advertise a reliable total size; continuing with guarded streaming download and SHA256 verification."
+    } else {
+      throw "Windows image URL did not advertise a valid image size and the guarded range probe returned no image bytes; refusing a zero-byte or expired media download."
+    }
   }
 
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
@@ -570,6 +691,7 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     $before = Get-FileLengthSafe $tmp
     $beforeGb = [math]::Round($before / 1GB, 3)
     Log ("Download attempt " + $attempt + " starting at " + $beforeGb + " GB.")
+    $attemptCompleted = $false
     try {
       $usedParallel = $false
       if ($curl) {
@@ -597,6 +719,7 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
       } else {
         Invoke-HttpRangeDownloadAttempt -Uri $Uri -TempPath $tmp -LogName ($LogPrefix + "-attempt-" + $attempt + ".txt")
       }
+      $attemptCompleted = $true
     } catch {
       Log ("WARN download attempt " + $attempt + " did not finish: " + $_.Exception.Message)
     }
@@ -627,6 +750,9 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
       Move-Item -LiteralPath $tmp -Destination $Destination -Force
       Log ("Windows image download verified: " + $Destination)
       return
+    }
+    if ($attemptCompleted -and $script:lastDownloadContentLength -le 0 -and (Get-FileLengthSafe $tmp) -ge 1GB) {
+      throw "Windows image download completed without an advertised total size, but SHA256 did not match; refusing to use unverified media."
     }
     if ($script:lastDownloadContentLength -gt 0 -and (Get-FileLengthSafe $tmp) -ge $script:lastDownloadContentLength) {
       Log "WARN downloaded image reached the expected size but SHA256 did not match; restarting with a clean media download."
