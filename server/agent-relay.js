@@ -1033,8 +1033,12 @@ function enrichWithAgentSourceTarget(source, agentSource, forcePreferred, text =
 }
 
 function preferredLinkedOperatorTarget(source, text, targets) {
-  return preferredTargetAlreadySelected(source, targets)
-    || preferredTargetMentioned(text, targets);
+  return preferredTargetMentioned(text, targets)
+    || (sourceAllowsAlreadySelectedTarget(source) ? preferredTargetAlreadySelected(source, targets) : null);
+}
+
+function sourceAllowsAlreadySelectedTarget(source) {
+  return source?.deviceNetwork?.activeTunnelKind !== "agent";
 }
 
 function preferredTargetAlreadySelected(source, targets) {
@@ -1378,6 +1382,10 @@ function cleanAgentSource(value) {
     return {};
   }
   const deviceNetwork = cleanDeviceNetwork(value.deviceNetwork);
+  const selectedTarget = selectedDeviceNetworkTarget(deviceNetwork);
+  const explicitPreferredAllowed = deviceNetwork.activeTunnelKind !== "agent";
+  const explicitPreferredId = explicitPreferredAllowed ? cleanText(value.preferredTargetId, maxSourceChars) : "";
+  const explicitPreferredLabel = explicitPreferredAllowed ? cleanText(value.preferredTargetLabel, maxSourceChars) : "";
   const operatorTargets = mergeOperatorTargets(cleanOperatorTargets(value.operatorTargets), deviceNetwork.targets);
   return {
     tunnelId: cleanText(value.tunnelId, maxSourceChars),
@@ -1386,8 +1394,8 @@ function cleanAgentSource(value) {
     deviceNick: cleanText(value.deviceNick, maxSourceChars),
     appOrigin: cleanText(value.appOrigin, maxSourceChars),
     sourceRelayId: normalizeRelayId(value.sourceRelayId),
-    preferredTargetId: cleanText(value.preferredTargetId, maxSourceChars) || deviceNetwork.selectedTargetId,
-    preferredTargetLabel: cleanText(value.preferredTargetLabel, maxSourceChars) || deviceNetwork.selectedTargetLabel,
+    preferredTargetId: explicitPreferredId || selectedTarget.id,
+    preferredTargetLabel: explicitPreferredLabel || selectedTarget.label,
     localAgentDirect: value.localAgentDirect === true,
     operatorTargets,
     deviceNetwork
@@ -1398,20 +1406,39 @@ function cleanDeviceNetwork(value) {
   if (!value || typeof value !== "object") {
     return emptyDeviceNetwork();
   }
+  const activeTunnelKind = value.activeTunnelKind === "agent" ? "agent" : "peer";
+  const selectedAllowed = activeTunnelKind === "peer"
+    && value.selectedTargetAccess === true
+    && value.selectedTargetLink === true;
+  const targets = cleanOperatorTargets(value.targets)
+    .map((target) => activeTunnelKind === "agent" ? { ...target, selected: false } : target);
   return {
     protocol: "soty-device-network.v1",
     controllerDeviceId: cleanText(value.controllerDeviceId, maxSourceChars),
     controllerDeviceNick: cleanText(value.controllerDeviceNick, maxSourceChars),
     activeTunnelId: cleanText(value.activeTunnelId, maxSourceChars),
     activeTunnelLabel: cleanText(value.activeTunnelLabel, maxSourceChars),
-    activeTunnelKind: value.activeTunnelKind === "agent" ? "agent" : "peer",
-    selectedTargetId: cleanText(value.selectedTargetId, maxSourceChars),
-    selectedTargetLabel: cleanText(value.selectedTargetLabel, maxSourceChars),
-    selectedTargetDeviceId: cleanText(value.selectedTargetDeviceId, maxSourceChars),
-    selectedTargetAccess: value.selectedTargetAccess === true,
-    selectedTargetLink: value.selectedTargetLink === true,
+    activeTunnelKind,
+    selectedTargetId: selectedAllowed ? cleanText(value.selectedTargetId, maxSourceChars) : "",
+    selectedTargetLabel: selectedAllowed ? cleanText(value.selectedTargetLabel, maxSourceChars) : "",
+    selectedTargetDeviceId: selectedAllowed ? cleanText(value.selectedTargetDeviceId, maxSourceChars) : "",
+    selectedTargetAccess: selectedAllowed,
+    selectedTargetLink: selectedAllowed,
     capabilities: cleanStringList(value.capabilities, 32, 80),
-    targets: cleanOperatorTargets(value.targets)
+    targets
+  };
+}
+
+function selectedDeviceNetworkTarget(deviceNetwork) {
+  if (!deviceNetwork || deviceNetwork.activeTunnelKind !== "peer") {
+    return { id: "", label: "" };
+  }
+  if (deviceNetwork.selectedTargetAccess !== true || deviceNetwork.selectedTargetLink !== true) {
+    return { id: "", label: "" };
+  }
+  return {
+    id: deviceNetwork.selectedTargetId || "",
+    label: deviceNetwork.selectedTargetLabel || ""
   };
 }
 

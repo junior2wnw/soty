@@ -443,6 +443,61 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(mentionedJob.source.preferredTargetId, "room-way");
         assertEqual(mentionedJob.source.deviceNetwork.selectedTargetId, "room-way");
         assert(mentionedJob.source.deviceNetwork.capabilities.includes("multi-device-context"));
+        const agentMentioned = await relayRequest(base, "POST", "/api/agent/relay/request", {
+          relayId: clientRelayId,
+          text: "room-way: set wallpaper",
+          context: "",
+          source: {
+            tunnelId: "agent-dialog",
+            tunnelLabel: "Agent",
+            deviceId: sourceDeviceId,
+            deviceNick: "current-comp",
+            operatorTargets: [
+              {
+                id: "room-way",
+                label: "room-way",
+                deviceIds: ["dev-way"],
+                hostDeviceId: "dev-way",
+                access: true,
+                host: false,
+                selected: false,
+                lastActionAt: new Date().toISOString()
+              }
+            ],
+            deviceNetwork: {
+              protocol: "soty-device-network.v1",
+              controllerDeviceId: sourceDeviceId,
+              controllerDeviceNick: "current-comp",
+              activeTunnelId: "agent-dialog",
+              activeTunnelLabel: "Agent",
+              activeTunnelKind: "agent",
+              selectedTargetId: "",
+              selectedTargetLabel: "",
+              selectedTargetDeviceId: "",
+              selectedTargetAccess: false,
+              selectedTargetLink: false,
+              capabilities: ["linked-device-actions", "multi-device-context"],
+              targets: [
+                {
+                  id: "room-way",
+                  label: "room-way",
+                  deviceIds: ["dev-way"],
+                  hostDeviceId: "dev-way",
+                  access: true,
+                  host: false,
+                  selected: false,
+                  lastActionAt: new Date().toISOString()
+                }
+              ]
+            }
+          }
+        });
+        assertEqual(agentMentioned.status, 200);
+        const pollAgentMentioned = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
+        const agentMentionedJob = pollAgentMentioned.body.jobs.find((job) => job.id === agentMentioned.body.id);
+        assert(agentMentionedJob);
+        assertEqual(agentMentionedJob.source.preferredTargetId, "room-way");
+        assertEqual(agentMentionedJob.source.deviceNetwork.selectedTargetId, "");
         const agentDialogDefault = await relayRequest(base, "POST", "/api/agent/relay/request", {
           relayId: clientRelayId,
           text: "install vscode",
@@ -452,6 +507,8 @@ async function runScenarios({ relayUrl } = {}) {
             tunnelLabel: "Agent",
             deviceId: sourceDeviceId,
             deviceNick: "current-comp",
+            preferredTargetId: "room-way",
+            preferredTargetLabel: "room-way",
             deviceNetwork: {
               protocol: "soty-device-network.v1",
               controllerDeviceId: sourceDeviceId,
@@ -484,8 +541,14 @@ async function runScenarios({ relayUrl } = {}) {
         const pollAgentDialogDefault = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
         const defaultJob = pollAgentDialogDefault.body.jobs.find((job) => job.id === agentDialogDefault.body.id);
         assert(defaultJob);
-        assertEqual(defaultJob.source.preferredTargetId, "room-way");
-        assertEqual(defaultJob.source.operatorTargets[0].id, "room-way");
+        assertEqual(defaultJob.source.preferredTargetId, "agent-source:dev-current");
+        assertEqual(defaultJob.source.preferredTargetLabel, "plane-device");
+        assertEqual(defaultJob.source.deviceNetwork.selectedTargetId, "");
+        assertEqual(defaultJob.source.deviceNetwork.selectedTargetLink, false);
+        const defaultLinkedTarget = defaultJob.source.operatorTargets.find((target) => target.id === "room-way");
+        assert(defaultLinkedTarget);
+        assertEqual(defaultLinkedTarget.selected, false);
+        assert(defaultJob.source.operatorTargets.some((target) => target.id === "agent-source:dev-current"));
         assertEqual(mentionedJob.source.preferredTargetLabel, "вай вай");
       } finally {
         await closeServer(relayServer);
@@ -1139,6 +1202,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("desktop action is running as SYSTEM; retry through the selected interactive user route"));
       assert(agent.includes("New-Item -Path $desktopKey -Force"));
       assert(agent.includes("SystemParametersInfo(20, 0"));
+      assert(agent.includes("systemParametersInfoOk"));
+      assert(agent.includes("verification='registry-current-wallpaper-matches-path'"));
+      assert(agent.includes("currentWallpaper"));
+      assert(agent.includes("Wallpaper honesty"));
+      assert(agent.includes("Do not choose a Link device merely because it is the only available Link target"));
+      assert(!agent.includes("return accessTargets.length === 1 ? accessTargets[0] : null"));
       assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
       assert(agent.includes("native-openai-image-generation-required"));
       assert(!agent.includes("SOTY_OPENAI_API_KEY"));
@@ -1543,7 +1612,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("preparePeerAgentInvocation"));
       assert(ui.includes("stripLordAgentInvocation"));
       assert(ui.includes("operatorTargets: targets"));
-      assert(ui.includes("defaultAgentDialogTarget"));
+      assert(!ui.includes("defaultAgentDialogTarget"));
+      assert(ui.includes("const selectedTarget = tunnel && isAgentTunnel(tunnel)\n    ? null"));
+      assert(ui.includes("const preferredTarget = agentTunnel\n    ? null"));
+      assert(ui.includes("createFreshDialog(agentDialogLabel, { agent: true })"));
+      assert(ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));
@@ -1560,8 +1633,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("agent-channel=true"));
       assert(agentSource.includes("link-only=true"));
       assert(agentSource.includes("accessTargets.find((target) => target.id === safe.preferredTargetId"));
+      assert(agentSource.includes('safe.deviceNetwork?.activeTunnelKind !== "agent" || isAgentSourceTarget(preferred.id)'));
       assert(agentSource.includes(".filter((item) => item.access === true)"));
       assert(agentRelay.includes("preferredTargetAlreadySelected"));
+      assert(agentRelay.includes("sourceAllowsAlreadySelectedTarget"));
+      assert(agentRelay.includes("selectedDeviceNetworkTarget"));
+      assert(agentRelay.includes("preferredTargetMentioned(text, targets)\n    || (sourceAllowsAlreadySelectedTarget"));
       assert(ui.includes("playAgentDoneSound"));
       assert(ui.includes("maybeAutoDownloadReceivedFile"));
       assert(ui.includes("controllerDownload="));

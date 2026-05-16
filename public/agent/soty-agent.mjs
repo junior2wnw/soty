@@ -5935,7 +5935,7 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   if (mentionedTarget) {
     return matchingAgentSourceTarget(mentionedTarget, sourceTargets) || mentionedTarget;
   }
-  if (preferred) {
+  if (preferred && (safe.deviceNetwork?.activeTunnelKind !== "agent" || isAgentSourceTarget(preferred.id))) {
     return preferredSource || preferred;
   }
   const implicitTarget = implicitOperatorTargetForRequest(safe, text, sourceTargets);
@@ -6081,7 +6081,7 @@ function preferredOperatorTarget(source) {
       return byLabel;
     }
   }
-  return accessTargets.length === 1 ? accessTargets[0] : null;
+  return null;
 }
 
 function targetMentionedInRequest(text, targets) {
@@ -6386,6 +6386,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
 function runtimeDeviceNetwork(source, target = null, sourceTargets = []) {
   const safe = sanitizeAgentSource(source);
   const network = sanitizeDeviceNetwork(safe.deviceNetwork);
+  const selectedNetworkTarget = selectedDeviceNetworkTarget(network);
   const activeTargets = runtimeActiveTargets(safe, target, sourceTargets)
     .slice(0, 16)
     .map((item) => ({
@@ -6408,9 +6409,9 @@ function runtimeDeviceNetwork(source, target = null, sourceTargets = []) {
       kind: network.activeTunnelKind === "agent" ? "agent" : "peer"
     },
     selectedTarget: {
-      id: promptInline(target?.id || network.selectedTargetId || safe.preferredTargetId),
-      label: promptInline(target?.label || network.selectedTargetLabel || safe.preferredTargetLabel),
-      sourceDeviceId: promptInline(bridgeSourceDeviceId(target, safe) || network.selectedTargetDeviceId || ""),
+      id: promptInline(target?.id || selectedNetworkTarget.id || safe.preferredTargetId),
+      label: promptInline(target?.label || selectedNetworkTarget.label || safe.preferredTargetLabel),
+      sourceDeviceId: promptInline(bridgeSourceDeviceId(target, safe) || selectedNetworkTarget.sourceDeviceId || ""),
       access: Boolean(target?.access === true || network.selectedTargetAccess === true),
       link: Boolean(network.selectedTargetLink || target)
     },
@@ -6551,7 +6552,7 @@ function generatedAssetRouteProfile() {
       "use the exact newest generated_images artifact path when Codex did not expose a direct path",
       "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
       "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
-      "verify with source-device proof: file path, SHA-256/bytes, display or wallpaper state"
+      "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
     ],
     doNot: [
       "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
@@ -6559,7 +6560,7 @@ function generatedAssetRouteProfile() {
       "do not replace the generated artifact with a stock/public image",
       "do not check desktop/display before native generation just to choose size"
     ],
-    proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "display"],
+    proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
     learning: {
       reuseKey: generatedAssetRouteProfileId,
       scriptUse: "image_gen/artifact/wallpaper/verify",
@@ -6588,6 +6589,7 @@ function sotyRuntimeHints() {
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For Windows reinstall status, do not search local files, grep route docs, or crawl ProgramData. Call `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
+    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Do not choose a Link device merely because it is the only available Link target; use a Link device only when the user names it in the Agent chat or when the request came from that device chat via `lord`/`лорд`.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Soty is the data plane for files and artifacts. For source-device -> controller computer Downloads, use `computer` operation=file action=download: it streams exact bytes through the encrypted Soty room and asks the controller browser to save the file to its Downloads. For source-device -> room file rail only, use action=publish. For server/Codex artifact -> source-device, use `computer` operation=artifact. Never use 0x0.st, file.io, temp.sh, bashupload, ad-hoc local HTTP servers, pasted base64, or public upload services while Soty file/artifact operations are available.",
@@ -6597,6 +6599,7 @@ function sotyRuntimeHints() {
     "- Do not stage user artifacts under `C:\\Windows\\Temp` / `%WINDIR%\\Temp`; normal interactive users may not write there. Use `C:\\Users\\Public\\Pictures` for wallpapers/images and `C:\\ProgramData\\soty-agent\\artifacts` for other Soty artifacts.",
     "- Never set persistent `NODE_OPTIONS`, `--require`, or a `soty-node-require-shim` on a user's computer. If such a shim exists, remove it before running Node; use `.mjs`/dynamic `import()` or the Soty artifact/file tools instead.",
     "- For generated wallpaper tasks, generate with the native OpenAI image tool before desktop/display checks. Only after a real generated artifact exists, measure the selected user's display/profile on the source device, apply there, then verify there.",
+    "- Wallpaper honesty: file bytes/SHA-256 prove only that the image was saved. Claim wallpaper applied only after `computer` operation=wallpaper or desktop action=wallpaper returns ok=true and `currentWallpaper` matches the requested source-device path.",
     "- If a generated image already exists under $CODEX_HOME/generated_images, call `computer` operation=artifact with that localPath. Hard stop: no shell base64/split, no curl/wget upload, no public host, no local HTTP server.",
     "- For non-image display/wallpaper/desktop tasks, measure the active user display/profile on the source device, apply there, then verify there.",
     "- If a needed source-device capability is unavailable, report the user-facing blocker; do not infer user-device facts from server, memory, or service display context.",
@@ -6634,6 +6637,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "```",
     "",
     "5. Verify with source-device proof: saved path, bytes/SHA-256, wallpaper state, and display when relevant.",
+    "Wallpaper proof is strict: `ok=true` and `currentWallpaper` must equal the requested source-device path. File bytes/SHA-256 alone do not prove that wallpaper changed.",
     "",
     "Hard stop: no shell base64/split, no curl/wget upload, no public hosts (`0x0.st`, `file.io`, `temp.sh`, `bashupload`), no temporary local HTTP server.",
     "Do not use `C:\\Windows\\Temp` / `%WINDIR%\\Temp` for generated artifacts or wallpapers; use `C:\\Users\\Public\\Pictures` for wallpaper images or `C:\\ProgramData\\soty-agent\\artifacts` for general artifacts.",
@@ -6969,6 +6973,7 @@ function sanitizeAgentSource(value) {
   }
   const clean = (field) => String(field || "").trim().slice(0, maxSourceChars);
   const deviceNetwork = sanitizeDeviceNetwork(value.deviceNetwork);
+  const selectedTarget = selectedDeviceNetworkTarget(deviceNetwork);
   const operatorTargetList = mergeOperatorTargets(sanitizeTargets(value.operatorTargets), deviceNetwork.targets);
   return {
     tunnelId: clean(value.tunnelId),
@@ -6977,8 +6982,8 @@ function sanitizeAgentSource(value) {
     deviceNick: clean(value.deviceNick),
     appOrigin: clean(value.appOrigin),
     sourceRelayId: safeRelayId(value.sourceRelayId),
-    preferredTargetId: clean(value.preferredTargetId) || deviceNetwork.selectedTargetId,
-    preferredTargetLabel: clean(value.preferredTargetLabel) || deviceNetwork.selectedTargetLabel,
+    preferredTargetId: clean(value.preferredTargetId) || selectedTarget.id,
+    preferredTargetLabel: clean(value.preferredTargetLabel) || selectedTarget.label,
     localAgentDirect: value.localAgentDirect === true,
     operatorTargets: operatorTargetList,
     deviceNetwork
@@ -6990,20 +6995,40 @@ function sanitizeDeviceNetwork(value) {
     return emptyDeviceNetwork();
   }
   const clean = (field) => String(field || "").trim().slice(0, maxSourceChars);
+  const activeTunnelKind = value.activeTunnelKind === "agent" ? "agent" : "peer";
+  const selectedAllowed = activeTunnelKind === "peer"
+    && value.selectedTargetAccess === true
+    && value.selectedTargetLink === true;
+  const targets = sanitizeTargets(value.targets)
+    .map((target) => activeTunnelKind === "agent" ? { ...target, selected: false } : target);
   return {
     protocol: "soty-device-network.v1",
     controllerDeviceId: clean(value.controllerDeviceId),
     controllerDeviceNick: clean(value.controllerDeviceNick),
     activeTunnelId: clean(value.activeTunnelId),
     activeTunnelLabel: clean(value.activeTunnelLabel),
-    activeTunnelKind: value.activeTunnelKind === "agent" ? "agent" : "peer",
-    selectedTargetId: clean(value.selectedTargetId),
-    selectedTargetLabel: clean(value.selectedTargetLabel),
-    selectedTargetDeviceId: clean(value.selectedTargetDeviceId),
-    selectedTargetAccess: value.selectedTargetAccess === true,
-    selectedTargetLink: value.selectedTargetLink === true,
+    activeTunnelKind,
+    selectedTargetId: selectedAllowed ? clean(value.selectedTargetId) : "",
+    selectedTargetLabel: selectedAllowed ? clean(value.selectedTargetLabel) : "",
+    selectedTargetDeviceId: selectedAllowed ? clean(value.selectedTargetDeviceId) : "",
+    selectedTargetAccess: selectedAllowed,
+    selectedTargetLink: selectedAllowed,
     capabilities: sanitizeStringList(value.capabilities, 32, 80),
-    targets: sanitizeTargets(value.targets)
+    targets
+  };
+}
+
+function selectedDeviceNetworkTarget(deviceNetwork) {
+  if (!deviceNetwork || deviceNetwork.activeTunnelKind !== "peer") {
+    return { id: "", label: "", sourceDeviceId: "" };
+  }
+  if (deviceNetwork.selectedTargetAccess !== true || deviceNetwork.selectedTargetLink !== true) {
+    return { id: "", label: "", sourceDeviceId: "" };
+  }
+  return {
+    id: deviceNetwork.selectedTargetId || "",
+    label: deviceNetwork.selectedTargetLabel || "",
+    sourceDeviceId: deviceNetwork.selectedTargetDeviceId || ""
   };
 }
 
@@ -7902,7 +7927,7 @@ function runMcpServer() {
         runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
-      return mcpToolOperatorResult(result);
+      return mcpToolJsonText(result);
     }
     if (name === "soty_open_url") {
       const url = String(args.url || "").trim();
@@ -9652,13 +9677,13 @@ function runMcpServer() {
   }
 
   function mcpToolJsonText(result) {
-    if (!result?.ok && result?.payload && typeof result.payload === "object") {
-      return mcpToolJson(result.payload, true, result.exitCode);
-    }
     const text = String(result?.text || "").trim();
     const parsed = parseJsonObject(text);
     if (parsed) {
       return mcpToolJson(parsed, !result.ok || parsed.ok === false, result.exitCode);
+    }
+    if (!result?.ok && result?.payload && typeof result.payload === "object") {
+      return mcpToolJson(result.payload, true, result.exitCode);
     }
     return mcpToolText(text, !result.ok, result.exitCode);
   }
@@ -10464,6 +10489,10 @@ function Emit($Value) { $Value | ConvertTo-Json -Depth 6 -Compress }
 function CurrentIdentityName {
   try { return [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { return '' }
 }
+function NormalizePathForCompare([string]$Value) {
+  if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
+  try { return ([System.IO.Path]::GetFullPath($Value)).TrimEnd('\') } catch { return ([string]$Value).Trim() }
+}
 switch ($action) {
   'display' {
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -10579,11 +10608,16 @@ public class SotyWallpaper {
 "@
     }
     $ok = [SotyWallpaper]::SystemParametersInfo(20, 0, $item.FullName, 3)
+    Start-Sleep -Milliseconds 250
     $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $current = (Get-ItemProperty -Path $desktopKey -Name Wallpaper -ErrorAction SilentlyContinue).Wallpaper
+    $requestedPath = NormalizePathForCompare $item.FullName
+    $currentPath = NormalizePathForCompare ([string]$current)
+    $applied = [bool]$ok -and $requestedPath -and ($currentPath -ieq $requestedPath)
+    $exitCode = if ($applied) { 0 } else { 42 }
     Emit ([pscustomobject]@{
-      ok=[bool]$ok
+      ok=[bool]$applied
       action=$action
       path=$item.FullName
       bytes=[int64]$item.Length
@@ -10591,11 +10625,16 @@ public class SotyWallpaper {
       fit=$fit
       wallpaperStyle=$style
       tileWallpaper=$tile
+      systemParametersInfoOk=[bool]$ok
+      verification='registry-current-wallpaper-matches-path'
       currentWallpaper=[string]$current
+      requestedWallpaper=[string]$item.FullName
       display=[pscustomobject]@{ x=$virtual.Left; y=$virtual.Top; width=$virtual.Width; height=$virtual.Height }
       user=$env:USERNAME
       identity=$identityName
+      exitCode=$exitCode
     })
+    if (-not $applied) { exit $exitCode }
   }
   'click' {
     if (-not ('SotyMouse' -as [type])) {

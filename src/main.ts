@@ -2656,7 +2656,7 @@ function agentDeviceNetworkContext(
   targets: readonly LocalAgentOperatorTarget[] = operatorTargets()
 ): LocalAgentDeviceNetwork {
   const selectedTarget = tunnel && isAgentTunnel(tunnel)
-    ? defaultAgentDialogTarget(targets)
+    ? null
     : linkedOperatorTargetForTunnel(tunnelId, targets);
   const selectedTargetDeviceId = selectedTarget?.hostDeviceId || selectedTarget?.deviceIds?.[0] || "";
   return {
@@ -2688,11 +2688,6 @@ function linkedOperatorTargetForTunnel(tunnelId: string, targets: readonly Local
     return null;
   }
   return targets.find((target) => target.id === tunnelId) || null;
-}
-
-function defaultAgentDialogTarget(targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
-  const accessTargets = targets.filter((target) => target.access === true);
-  return accessTargets.length === 1 ? accessTargets[0] ?? null : null;
 }
 
 async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string; readonly runAs?: string; readonly timeoutMs?: number }): Promise<void> {
@@ -4569,7 +4564,7 @@ function sendAgentDialogMessage(
   const targets = operatorTargets();
   const deviceNetwork = agentDeviceNetworkContext(tunnelId, tunnel, targets);
   const preferredTarget = agentTunnel
-    ? defaultAgentDialogTarget(targets)
+    ? null
     : linkedOperatorTargetForTunnel(tunnelId, targets);
   const taskText = options.explicitMention === true ? stripLordAgentInvocation(text) : text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
