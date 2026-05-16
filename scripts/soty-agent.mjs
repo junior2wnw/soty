@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.45";
+const agentVersion = "0.4.46";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6392,7 +6392,7 @@ function sotyRuntimeHints() {
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
-    "- User-facing device model: ordinary desktop tasks run in the selected user's desktop session; system tasks run in the selected computer's system context. If the needed desktop session is unavailable, say that the user's desktop session is unavailable on the selected computer.",
+    "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
@@ -9945,11 +9945,15 @@ function sourceDesktopScript(args) {
   }), "utf8").toString("base64");
   return `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
 $action = ([string]$req.action).Trim().ToLowerInvariant()
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 function Emit($Value) { $Value | ConvertTo-Json -Depth 6 -Compress }
+function CurrentIdentityName {
+  try { return [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { return '' }
+}
 switch ($action) {
   'display' {
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -10028,6 +10032,10 @@ switch ($action) {
     Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; width=$bounds.Width; height=$bounds.Height; bytes=(Get-Item -LiteralPath $path).Length })
   }
   'wallpaper' {
+    $identityName = CurrentIdentityName
+    if ($identityName -match '^(NT AUTHORITY|WORKGROUP)\\(SYSTEM|СИСТЕМА)$') {
+      throw 'desktop action is running as SYSTEM; retry through the selected interactive user route'
+    }
     $imagePath = [string]$req.path
     if ([string]::IsNullOrWhiteSpace($imagePath)) { throw 'empty wallpaper path' }
     $item = Get-Item -LiteralPath $imagePath -ErrorAction Stop
@@ -10044,6 +10052,9 @@ switch ($action) {
       default { $style = '10'; $tile = '0' }
     }
     $desktopKey = 'HKCU:\Control Panel\Desktop'
+    if (-not (Test-Path -LiteralPath $desktopKey)) {
+      New-Item -Path $desktopKey -Force | Out-Null
+    }
     Set-ItemProperty -Path $desktopKey -Name WallpaperStyle -Value $style
     Set-ItemProperty -Path $desktopKey -Name TileWallpaper -Value $tile
     Set-ItemProperty -Path $desktopKey -Name Wallpaper -Value $item.FullName
@@ -10073,6 +10084,7 @@ public class SotyWallpaper {
       currentWallpaper=[string]$current
       display=[pscustomobject]@{ x=$virtual.Left; y=$virtual.Top; width=$virtual.Width; height=$virtual.Height }
       user=$env:USERNAME
+      identity=$identityName
     })
   }
   'click' {

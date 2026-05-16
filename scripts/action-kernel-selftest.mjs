@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.45");
+      assertEqual(health.body.version, "0.4.46");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -965,6 +965,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes('name: "artifact"'));
       assert(agent.includes("Source-device canonical"));
       assert(agent.includes("User-facing device model"));
+      assert(agent.includes("try the remote desktop/interactive route first"));
+      assert(!agent.includes("If the needed desktop session is unavailable, say that the user's desktop session is unavailable"));
       assert(agent.includes("windowsInteractiveTaskSpec"));
       assert(agent.includes("LogonType Interactive"));
       assert(agent.includes("system-controller+interactive-user-bridge"));
@@ -1024,6 +1026,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Do not inspect `imagegen` SKILL.md"));
       assert(agent.includes("If you already used shell/base64/public upload"));
       assert(agent.includes("'wallpaper' {"));
+      assert(agent.includes("desktop action is running as SYSTEM; retry through the selected interactive user route"));
+      assert(agent.includes("New-Item -Path $desktopKey -Force"));
       assert(agent.includes("SystemParametersInfo(20, 0"));
       assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
       assert(agent.includes("native-openai-image-generation-required"));
@@ -1187,7 +1191,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.45");
+      assertEqual(manifest.version, "0.4.46");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1312,7 +1316,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.45"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.46"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1359,7 +1363,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.45"'));
+      assert(agentSource.includes('const agentVersion = "0.4.46"'));
       assert(agentSource.includes("targetMentionedInRequest"));
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
@@ -1435,14 +1439,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.45";', 'const agentVersion = "0.4.44";');
-      assert(oldSource.includes('const agentVersion = "0.4.44"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.46";', 'const agentVersion = "0.4.45";');
+      assert(oldSource.includes('const agentVersion = "0.4.45"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.45",
+            version: "0.4.46",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
