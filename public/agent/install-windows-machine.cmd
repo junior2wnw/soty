@@ -1,8 +1,8 @@
 @echo off
-rem soty-agent-machine-bootstrap:0.4.55
+rem soty-agent-machine-bootstrap:0.4.56
 setlocal
 set "BASE=https://xn--n1afe0b.online/agent"
-set "INSTALLER_REVISION=0.4.55"
+set "INSTALLER_REVISION=0.4.56"
 if not defined SOTY_AGENT_RELAY_ID set "SOTY_AGENT_RELAY_ID="
 if not defined SOTY_AGENT_DEVICE_ID set "SOTY_AGENT_DEVICE_ID="
 if not defined SOTY_AGENT_DEVICE_NICK set "SOTY_AGENT_DEVICE_NICK="

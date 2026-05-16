@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.55";
+const agentVersion = "0.4.56";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -755,6 +755,18 @@ async function handleOperatorHttpRun(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId, {
+    allowFallbackSource: !controllerDeviceId
+  }));
+  if (isAgentSourceTarget(target)) {
+    const deviceId = agentSourceDeviceId(target);
+    if (sourceDeviceId && sourceDeviceId !== deviceId) {
+      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+      return;
+    }
+    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers, sourceRelayId, runAs);
+    return;
+  }
   if (await maybeProxyOperatorHttpViaController({
     kind: "run",
     target,
@@ -766,16 +778,6 @@ async function handleOperatorHttpRun(request, response, headers) {
     response,
     headers
   })) {
-    return;
-  }
-  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
-  if (isAgentSourceTarget(target)) {
-    const deviceId = agentSourceDeviceId(target);
-    if (sourceDeviceId && sourceDeviceId !== deviceId) {
-      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
-      return;
-    }
-    await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers, sourceRelayId, runAs);
     return;
   }
   if (!operatorBridge?.open || !target || !command.trim()) {
@@ -818,6 +820,18 @@ async function handleOperatorHttpScript(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId, {
+    allowFallbackSource: !controllerDeviceId
+  }));
+  if (isAgentSourceTarget(target)) {
+    const deviceId = agentSourceDeviceId(target);
+    if (sourceDeviceId && sourceDeviceId !== deviceId) {
+      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+      return;
+    }
+    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId, maxTextLength);
+    return;
+  }
   if (await maybeProxyOperatorHttpViaController({
     kind: "script",
     target,
@@ -829,16 +843,6 @@ async function handleOperatorHttpScript(request, response, headers) {
     response,
     headers
   })) {
-    return;
-  }
-  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
-  if (isAgentSourceTarget(target)) {
-    const deviceId = agentSourceDeviceId(target);
-    if (sourceDeviceId && sourceDeviceId !== deviceId) {
-      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
-      return;
-    }
-    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId, maxTextLength);
     return;
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
@@ -2199,7 +2203,7 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
   sendJson(response, 200, headers, result);
 }
 
-async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "") {
+async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "", options = {}) {
   if (isAgentSourceTarget(target)) {
     return { target, sourceDeviceId, sourceRelayId };
   }
@@ -2222,7 +2226,7 @@ async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId
       sourceRelayId
     };
   }
-  if (!operatorBridge?.open && fallbackDeviceId) {
+  if (options.allowFallbackSource !== false && !operatorBridge?.open && fallbackDeviceId) {
     return {
       target: `agent-source:${fallbackDeviceId}`,
       sourceDeviceId: fallbackDeviceId,
@@ -2255,6 +2259,7 @@ async function maybeProxyOperatorHttpViaController({
   const controllerTarget = `agent-source:${controllerDeviceId}`;
   const proxyBody = { ...body, sourceDeviceId: "" };
   const proxyScript = operatorBridgeProxyScript(kind === "run" ? "/operator/run" : "/operator/script", proxyBody, timeoutMs);
+  const maxTextLength = safeOperatorTextLength(body?.maxTextLength, maxChatChars);
   await handleAgentSourceHttpScript(
     controllerTarget,
     controllerDeviceId,
@@ -2267,7 +2272,8 @@ async function maybeProxyOperatorHttpViaController({
     Math.max(timeoutMs, 30_000),
     response,
     headers,
-    sourceRelayId
+    sourceRelayId,
+    maxTextLength
   );
   return true;
 }
