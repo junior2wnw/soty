@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.47");
+      assertEqual(health.body.version, "0.4.48");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -65,6 +65,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
       assert(health.body.computerUsePlane.capabilities.includes("wallpaper"));
+      assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
       assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "computer");
@@ -73,6 +74,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.automationToolkits.available.includes("computer-use-plane"));
       assert(health.body.automationToolkits.available.includes("capability-gateway"));
       assert(health.body.automationToolkits.available.includes("durable-action"));
+      assert(health.body.automationToolkits.available.includes("turnkey-monitoring"));
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
       assertEqual(health.body.automationToolkits.defaultKernel, "jobs");
       assertEqual(health.body.automationToolkits.responseStyle.id, "lord-sysadmin");
@@ -1053,6 +1055,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("sourceManagedWindowsReinstallBootstrap"));
       assert(agent.includes("86400000"));
       assert(agent.includes("mcpInlineToolBudgetMs"));
+      assert(agent.includes("turnkeyStatusRecoveryWindowMs"));
+      assert(agent.includes("withTurnkeyPollingGuidance"));
+      assert(agent.includes("mcpWaitBeforeStatusPoll"));
+      assert(agent.includes("Long Turnkey Job"));
+      assert(agent.includes("Turnkey ownership"));
+      assert(agent.includes("Do not ask the user to type `continue`"));
+      assert(agent.includes("If a tool returns running/still-running/nextTool"));
+      assert(agent.includes("turnkey-monitoring"));
+      assert(!agent.includes("write `продолжай`"));
       assert(agent.includes("maybeRedirectManagedReinstallProbe"));
       assert(agent.includes("managed-reinstall-toolkit-required"));
       assert(agent.includes("waitMs"));
@@ -1114,6 +1125,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("shouldRunDeterministicFastRoutine"));
       assert(!agent.includes("isCreativeOrGenerativeMessage"));
       assert(relay.includes("pollRequesterCanLeaseSourceJobs"));
+      assert(relay.includes("const maxTaskTimeoutMs = 24 * 60 * 60_000"));
       assert(relay.includes("direct-device-worker-required"));
       assert(relay.includes("agentSourceDirectWorkerFresh"));
       assert(relay.includes("directWorkerSeenAt"));
@@ -1191,7 +1203,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.47");
+      assertEqual(manifest.version, "0.4.48");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1317,7 +1329,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.47"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.48"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1364,7 +1376,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.47"'));
+      assert(agentSource.includes('const agentVersion = "0.4.48"'));
       assert(agentSource.includes("targetMentionedInRequest"));
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
@@ -1455,14 +1467,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.47";', 'const agentVersion = "0.4.46";');
-      assert(oldSource.includes('const agentVersion = "0.4.46"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.48";', 'const agentVersion = "0.4.47";');
+      assert(oldSource.includes('const agentVersion = "0.4.47"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.47",
+            version: "0.4.48",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

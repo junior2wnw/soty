@@ -90,6 +90,7 @@ const manifest = {
       "shell",
       "script",
       "durable-action",
+      "turnkey-monitoring",
       "filesystem",
       "soty-room-file-download",
       "artifact",
@@ -282,7 +283,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
         name: "computer-use-plane",
         entryTool: "computer",
         kind: "front-door",
-        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "job_stop"],
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
         promotion: "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
@@ -299,7 +300,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
         name: "durable-action",
         entryTool: "jobs",
         kind: "generic-kernel",
-        phases: ["start", "status", "stop"],
+        phases: ["start", "status", "wait", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"],
         promotion: "Durable supervised execution for long or repeatable jobs."
       },

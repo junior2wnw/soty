@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.47";
+const agentVersion = "0.4.48";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -27,6 +27,7 @@ const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || (ag
 const maxLongTaskTimeoutMs = 24 * 60 * 60_000;
 const defaultTimeoutMs = safeDurationMs(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS, 30 * 60_000, maxLongTaskTimeoutMs);
 const mcpInlineToolBudgetMs = 95_000;
+const turnkeyStatusRecoveryWindowMs = 30 * 60_000;
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
 let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
@@ -4707,6 +4708,8 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
   }
   await postCodexGuardProgress(onMessage, "Codex finished its chat turn, but Windows reinstall preparation is still active. Keeping the task open until it reaches ready state or a blocker.");
   let lastProgressAt = Date.now();
+  let firstStatusUnavailableAt = 0;
+  let lastUnavailableProgressAt = 0;
   while (Date.now() - started < maxLongTaskTimeoutMs) {
     if (signal?.aborted) {
       return {
@@ -4726,16 +4729,29 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
         resultOk: Boolean(statusResult?.ok),
         exitCode: statusResult?.exitCode || 0
       });
+      if (!firstStatusUnavailableAt) {
+        firstStatusUnavailableAt = Date.now();
+      }
+      const unavailableMs = Date.now() - firstStatusUnavailableAt;
+      if (unavailableMs < turnkeyStatusRecoveryWindowMs) {
+        if (Date.now() - lastUnavailableProgressAt > 15 * 60_000) {
+          lastUnavailableProgressAt = Date.now();
+          await postCodexGuardProgress(onMessage, "Waiting for the selected PC to return Soty status. I am not dropping the task.");
+        }
+        continue;
+      }
       return {
         ok: false,
         action: "prepare",
         status: "blocked",
         blocker: "source-status-unavailable",
-        text: "Cannot continue monitoring the PC through Soty. Ask the user to open or restart Soty Agent on that PC, then retry status.",
+        text: "Cannot continue monitoring because the selected PC did not return Soty status during the recovery window.",
         exitCode: statusResult?.exitCode || 127,
+        unavailableMs,
         lastProbe: statusResult?.payload || statusResult || null
       };
     }
+    firstStatusUnavailableAt = 0;
     const terminal = evaluateManagedReinstallTerminalAfterCodex(status, Date.now() - started);
     if (terminal) {
       traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
@@ -6394,6 +6410,10 @@ function sotyRuntimeHints() {
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
+    "- Turnkey ownership: do the task end-to-end. Ask the user only for destructive confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
+    "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
+    "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages. Avoid local shell sleeps and avoid noisy user updates while the durable job is healthy.",
+    "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
@@ -6464,7 +6484,25 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "4. Final answer should say the file was sent to Downloads on this computer as `<filename>` and include bytes/SHA-256 when the tool returned them. Do not invent `C:\\\\Users\\\\...\\\\Downloads` unless that exact local path was verified on the controller.",
     "",
-    "Use `action=publish` only when the user asked to publish/share into the room file rail, not when they asked for Downloads."
+    "Use `action=publish` only when the user asked to publish/share into the room file rail, not when they asked for Downloads.",
+    "",
+    "## Long Turnkey Job",
+    "",
+    "Use this route whenever an install, repair, backup, download, browser automation, Windows reinstall prepare, or other user-facing task may outlive a short chat turn:",
+    "",
+    "1. Start one durable job through `computer` operation=action/script/run or the route-profile capability. Use a stable `idempotencyKey` for retries.",
+    "2. Wait through the tool itself whenever possible: `waitForCompletion:true` and a realistic `waitTimeoutMs`, up to `86400000` for all-day work.",
+    "3. If you already have a `jobId`, poll with:",
+    "",
+    "```json",
+    "{\"operation\":\"job_status\",\"jobId\":\"<jobId>\",\"waitMs\":60000}",
+    "```",
+    "",
+    "4. If the result is still running and includes `nextTool`, call it yourself. Do not ask the user to write `continue` or to check status.",
+    "5. Send progress rarely, only when it changes what the user needs to know. Otherwise sleep and poll.",
+    "6. Stop only on completed, failed, blocked-needs-user, waiting-confirmation, or a source-device outage that survived the recovery window.",
+    "",
+    "Record reusable proof/improvement when this route teaches a better deterministic script or check."
   ].join("\n");
   const agents = [
     "# Soty Runtime",
@@ -6536,6 +6574,10 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "Computer-use plane:",
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
+    "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
+    "- Ask the user only when the task truly requires human input: destructive confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
+    "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
+    "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
     "- For Windows reinstall/reset, the default attached-device route is `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\" }. Use status/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for destructive confirmation.",
     "- For generated image or generated wallpaper tasks, use the native OpenAI image-generation tool first. Do not check desktop/display first just to choose a size; generation availability is the first gate and size can be adjusted after a generated artifact exists.",
@@ -7178,6 +7220,7 @@ function runMcpServer() {
             idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
             waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
+            waitMs: { type: "integer", description: "For status/job_status: sleep inside the Soty tool before reading status again. Use this instead of asking the user to continue." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." },
             improvement: { type: "string", description: "Optional sanitized reusable improvement note." },
@@ -7210,6 +7253,7 @@ function runMcpServer() {
             idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
             waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
+            waitMs: { type: "integer", description: "For status: sleep inside the Soty toolkit before reading status again. Use this instead of asking the user to continue." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
             timeoutMs: { type: "integer", description: "Per-action timeout in milliseconds, 1000-86400000." },
             jobId: { type: "string", description: "Job id for status/stop." },
@@ -7293,7 +7337,8 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            jobId: { type: "string", description: "Action job id returned by soty_action." }
+            jobId: { type: "string", description: "Action job id returned by soty_action." },
+            waitMs: { type: "integer", description: "Sleep inside this tool before reading status. Use for turnkey polling instead of asking the user to continue." }
           },
           required: ["jobId"],
           additionalProperties: false
@@ -7541,12 +7586,13 @@ function runMcpServer() {
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
         return mcpToolText("! action-job", true, 2);
       }
+      await mcpWaitBeforeStatusPoll(args);
       const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
       const payload = result.payload || result;
       if (isManagedReinstallActionPayload(payload)) {
         return await mcpToolManagedReinstallActionStatus(payload, result);
       }
-      return mcpToolJson(payload, !result.ok, result.exitCode);
+      return mcpToolJson(withTurnkeyPollingGuidance(payload, { jobId }), !result.ok, result.exitCode);
     }
     if (name === "soty_action_stop") {
       const jobId = String(args.jobId || "").trim();
@@ -7881,6 +7927,7 @@ function runMcpServer() {
         "shell",
         "script",
         "durable-action",
+        "turnkey-monitoring",
         "filesystem",
         "soty-room-file-download",
         "artifact",
@@ -8179,8 +8226,9 @@ function runMcpServer() {
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
         return mcpToolText("! action-job", true, 2);
       }
+      await mcpWaitBeforeStatusPoll(args);
       const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
-      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+      return mcpToolJson(withTurnkeyPollingGuidance(result.payload || result, { jobId }), !result.ok, result.exitCode);
     }
     if (operation === "stop") {
       const jobId = String(args.jobId || "").trim();
@@ -8260,7 +8308,7 @@ function runMcpServer() {
       });
       return mcpToolJson(waited, waited.ok === false, waited.exitCode);
     }
-    return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    return mcpToolJson(withTurnkeyPollingGuidance(result.payload || result), !result.ok, result.exitCode);
   }
 
   function mcpRunAsForAction({ toolkit = "", family = "", risk = "" } = {}) {
@@ -8333,6 +8381,56 @@ function runMcpServer() {
       payload.exitCode = Number.isSafeInteger(result?.exitCode) ? result.exitCode : (payload.ok ? 0 : 1);
     }
     return payload;
+  }
+
+  async function mcpWaitBeforeStatusPoll(args = {}) {
+    const requested = Number.parseInt(String(args.waitMs ?? args.waitForChangeMs ?? "0"), 10);
+    if (!Number.isSafeInteger(requested) || requested <= 0) {
+      return 0;
+    }
+    const waitMs = Math.max(1000, Math.min(requested, maxLongTaskTimeoutMs));
+    await sleep(waitMs);
+    return waitMs;
+  }
+
+  function withTurnkeyPollingGuidance(payload, { jobId = "" } = {}) {
+    const body = payload && typeof payload === "object" ? { ...payload } : { text: String(payload || "") };
+    const job = body.job && typeof body.job === "object" ? body.job : {};
+    const status = String(body.status || job.status || "").toLowerCase();
+    const terminal = isTurnkeyTerminalStatus(status) || Number.isSafeInteger(body.exitCode) || Number.isSafeInteger(job.exitCode);
+    if (!terminal && (jobId || body.jobId || body.id || job.id)) {
+      const id = String(jobId || body.jobId || body.id || job.id);
+      body.nextTool = {
+        name: "computer",
+        args: {
+          operation: "job_status",
+          jobId: id,
+          waitMs: 60_000
+        }
+      };
+      body.agentGuidance = "This is not terminal. Keep ownership: call nextTool yourself until completed, failed, blocked-needs-user, or waiting-confirmation. Do not ask the user to write continue or poll status.";
+    }
+    return body;
+  }
+
+  function isTurnkeyTerminalStatus(status) {
+    const value = String(status || "").toLowerCase();
+    return [
+      "ok",
+      "completed",
+      "complete",
+      "done",
+      "failed",
+      "failure",
+      "cancelled",
+      "canceled",
+      "timeout",
+      "timed-out",
+      "blocked",
+      "blocked-needs-user",
+      "waiting-confirmation",
+      "needs-confirmation"
+    ].includes(value);
   }
 
   function isSourceRouteFailure(result) {
@@ -8471,7 +8569,7 @@ function runMcpServer() {
             const waited = await waitForSotyReinstallPrepare({
               request,
               initial: existingInitial,
-              waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
+              waitTimeoutMs: requestedWaitTimeoutMs,
               requestedWaitTimeoutMs
             });
             recordSotyReinstallRouteReceipt(action, waited, toolStartedAt);
@@ -8560,7 +8658,7 @@ function runMcpServer() {
       const waited = await waitForSotyReinstallPrepare({
         request,
         initial: payload,
-        waitTimeoutMs: Math.min(requestedWaitTimeoutMs, mcpInlineToolBudgetMs),
+        waitTimeoutMs: requestedWaitTimeoutMs,
         requestedWaitTimeoutMs
       });
       recordSotyReinstallRouteReceipt(action, waited, toolStartedAt);
@@ -8682,7 +8780,7 @@ function runMcpServer() {
       }
       if (Date.now() - lastProgressAt > 15 * 60_000) {
         lastProgressAt = Date.now();
-        await postMcpAgentProgress("Работа продолжается. Остановлюсь на результате, ошибке или нужном действии от вас.");
+        await postMcpAgentProgress("Работа продолжается. Я проверяю редко и остановлюсь только на результате, ошибке или действительно нужном действии от вас.");
       }
       await sleep(Math.max(250, Math.min(15_000, pollDelayMs)));
       const result = await mcpRequestOperator("GET", `/operator/action/${encodeURIComponent(jobId)}`);
@@ -8697,9 +8795,18 @@ function runMcpServer() {
       ...lastPayload,
       ok: false,
       status: "blocked",
-      text: "Live wait limit reached before the action reached a terminal state. Ask the user to keep the PC and Soty Agent open and write `продолжай` to resume monitoring.",
+      text: "The long monitoring window ended before the action reached a terminal state. Keep the existing jobId and resume monitoring with computer operation=job_status; do not ask the user to poll manually.",
       blocker: "turnkey-wait-timeout",
-      exitCode: 124
+      exitCode: 124,
+      nextTool: {
+        name: "computer",
+        args: {
+          operation: "job_status",
+          jobId,
+          waitMs: 60_000
+        }
+      },
+      agentGuidance: "If the chat turn can continue, call nextTool yourself. Only report a blocker if the runtime cannot continue at all."
     };
   }
 
@@ -8708,12 +8815,15 @@ function runMcpServer() {
     let lastStatus = null;
     let lastPayload = initial;
     let lastProgressAt = Date.now();
+    let firstStatusFailureAt = 0;
+    let lastStatusFailureProgressAt = 0;
     let consecutiveStatusFailures = 0;
     while (Date.now() - started < waitTimeoutMs) {
       const statusResult = await readSotyReinstallStatus(request);
       const status = parseReinstallStatusResult(statusResult);
       if (status) {
         consecutiveStatusFailures = 0;
+        firstStatusFailureAt = 0;
         lastStatus = status;
         const terminal = evaluateReinstallPrepareTerminal(status, initial, Date.now() - started);
         if (terminal) {
@@ -8725,19 +8835,29 @@ function runMcpServer() {
         }
       } else {
         consecutiveStatusFailures += 1;
+        if (!firstStatusFailureAt) {
+          firstStatusFailureAt = Date.now();
+        }
         lastPayload = statusResult.payload || statusResult;
-        if (consecutiveStatusFailures >= 2) {
+        const unavailableMs = Date.now() - firstStatusFailureAt;
+        if (unavailableMs >= turnkeyStatusRecoveryWindowMs) {
           return {
             ok: false,
             action: "prepare",
             status: "blocked",
             blocker: "source-status-unavailable",
-            text: "I cannot continue monitoring the PC through Soty. Ask the user to open or restart Soty Agent on that PC, then retry status.",
+            text: "Monitoring is blocked because the selected PC did not return structured Soty status during the recovery window. Reconnect or start Soty Agent on that PC, then I can resume from the existing managed prepare state.",
             exitCode: statusResult.exitCode || 127,
+            consecutiveStatusFailures,
+            unavailableMs,
             initial,
             lastStatus,
             lastProbe: lastPayload
           };
+        }
+        if (Date.now() - lastStatusFailureProgressAt > 15 * 60_000) {
+          lastStatusFailureProgressAt = Date.now();
+          await postMcpAgentProgress("Пока жду возвращения статуса выбранного компьютера. Задачу не сбрасываю и продолжу проверку сам.");
         }
       }
       const elapsedMs = Date.now() - started;
@@ -8780,8 +8900,19 @@ function runMcpServer() {
       action: "prepare",
       status: "blocked",
       blocker: "turnkey-wait-timeout",
-      text: "Preparation did not reach ready or failed state before the live wait limit. Ask the user to keep the PC and Soty Agent open and write `продолжай` to resume monitoring.",
+      text: "Preparation did not reach ready or failed state before the long monitoring window ended. Resume with computer operation=reinstall action=status; do not ask the user to poll manually.",
       exitCode: 124,
+      nextTool: {
+        name: "computer",
+        args: {
+          operation: "reinstall",
+          capability: "os-reinstall",
+          action: "status",
+          waitMs: 60_000,
+          timeoutMs: 45_000
+        }
+      },
+      agentGuidance: "If the chat turn can continue, call nextTool yourself. Only report a blocker if the runtime cannot continue at all.",
       initial,
       lastStatus,
       lastProbe: lastPayload
@@ -8948,7 +9079,7 @@ function runMcpServer() {
         action: "prepare",
         status: "needs-confirmation",
         terminalReason: "user-confirmation-required",
-        text: "Preparation is complete. Ask the user for the exact confirmation phrase before wiping the Windows disk.",
+        text: "Preparation is complete. Destructive confirmation is required before wiping the Windows disk.",
         exitCode: 0,
         elapsedMs,
         confirmationPhrase: String(status.confirmationPhrase || ""),
@@ -11630,6 +11761,7 @@ function runtimeComputerUsePlaneStatus() {
       "shell",
       "script",
       "durable-action",
+      "turnkey-monitoring",
       "filesystem",
       "soty-room-file-download",
       "artifact",
@@ -11669,12 +11801,12 @@ function automationToolkitStatus() {
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       routeProfileSchema: "soty.route-profiles.v1"
     },
-    available: ["computer-use-plane", "capability-gateway", "durable-action", "generated-asset", "windows-reinstall"],
+    available: ["computer-use-plane", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
     toolkits: [
       {
         name: "computer-use-plane",
         entryTool: "computer",
-        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "job_stop"],
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
         routeProfiles: [windowsReinstallRouteProfileId, generatedAssetRouteProfileId]
       },
@@ -11687,7 +11819,7 @@ function automationToolkitStatus() {
       {
         name: "durable-action",
         entryTool: "jobs",
-        phases: ["start", "status", "stop"],
+        phases: ["start", "status", "wait", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"]
       },
       {

@@ -1,9 +1,9 @@
 {
-  "version": "0.4.47",
+  "version": "0.4.48",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "7e398cfcc7700b37355fb8a9ff6b5286e56bc7dcd6fc50c00b2a7b209423f70d",
+  "sha256": "18a25e3b06ab849bb13c518bd1f23c0061a0df1ae60cacc9b5d736d67499fb60",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -70,6 +70,7 @@
       "shell",
       "script",
       "durable-action",
+      "turnkey-monitoring",
       "filesystem",
       "soty-room-file-download",
       "artifact",
@@ -307,6 +308,7 @@
           "invoke",
           "jobs",
           "job_status",
+          "wait",
           "job_stop"
         ],
         "proof": [
@@ -352,6 +354,7 @@
         "phases": [
           "start",
           "status",
+          "wait",
           "stop"
         ],
         "proof": [
