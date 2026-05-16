@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.52";
+const agentVersion = "0.4.53";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -811,6 +811,7 @@ async function handleOperatorHttpScript(request, response, headers) {
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
   const runAs = safeRunAs(payload.runAs || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
+  const maxTextLength = safeOperatorTextLength(payload.maxTextLength, maxChatChars);
   const blocked = blockedManualWindowsRecoveryHandoff(script);
   if (blocked) {
     recordBlockedWindowsReinstallHandoff({ kind: "script", command: script });
@@ -823,7 +824,7 @@ async function handleOperatorHttpScript(request, response, headers) {
     sourceDeviceId,
     sourceRelayId,
     controllerDeviceId,
-    body: { target, sourceDeviceId, script, name, shell, runAs, timeoutMs },
+    body: { target, sourceDeviceId, script, name, shell, runAs, timeoutMs, maxTextLength },
     timeoutMs,
     response,
     headers
@@ -837,7 +838,7 @@ async function handleOperatorHttpScript(request, response, headers) {
       sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
       return;
     }
-    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId);
+    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId, maxTextLength);
     return;
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
@@ -2503,7 +2504,7 @@ function operatorTargetByText(target) {
     || null;
 }
 
-async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers, sourceRelayId = "") {
+async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers, sourceRelayId = "", maxTextLength = maxChatChars) {
   const deviceId = agentSourceDeviceId(target);
   if (!deviceId || !String(payload.script || "").trim()) {
     sendJson(response, 400, headers, { ok: false, text: "! request", exitCode: 400 });
@@ -2517,7 +2518,7 @@ async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, time
     deviceId,
     ...payload,
     timeoutMs
-  }, sourceRelayId);
+  }, sourceRelayId, maxTextLength);
   rememberAgentSourceOutcome({ kind: "script", command: payload.script, result });
   sendJson(response, 200, headers, result);
 }
@@ -8655,9 +8656,19 @@ function runMcpServer() {
         shell: "powershell",
         name: `soty-reinstall-${action}`,
         runAs: "system",
-        timeoutMs: operatorTimeoutMs
+        timeoutMs: operatorTimeoutMs,
+        maxTextLength: action === "status" ? 1_000_000 : maxChatChars
       });
-      recordSotyReinstallRouteReceipt(action, reinstallPayloadFromOperatorResult(result), toolStartedAt);
+      const reinstallPayload = reinstallPayloadFromOperatorResult(result);
+      if (action === "status") {
+        const statusPayload = parseReinstallStatusResult(result);
+        if (statusPayload) {
+          const statusResponse = compactReinstallStatusToolPayload(statusPayload);
+          recordSotyReinstallRouteReceipt(action, statusResponse, toolStartedAt);
+          return mcpToolJson(statusResponse, statusResponse.ok === false, statusResponse.exitCode);
+        }
+      }
+      recordSotyReinstallRouteReceipt(action, reinstallPayload, toolStartedAt);
       return await mcpToolJsonTextWithSourceStatus(result, {
         toolkit: "windows-reinstall",
         action,
@@ -9045,7 +9056,8 @@ function runMcpServer() {
       shell: "powershell",
       name: "soty-reinstall-status",
       runAs: "system",
-      timeoutMs: 45_000
+      timeoutMs: 45_000,
+      maxTextLength: 1_000_000
     });
   }
 
@@ -9222,6 +9234,98 @@ function runMcpServer() {
   function parseReinstallStatusResult(result) {
     const parsed = parseJsonObject(result?.text || result?.payload?.text || "");
     return parsed && parsed.action === "status" ? parsed : null;
+  }
+
+  function compactReinstallStatus(status) {
+    const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
+    const media = status?.media && typeof status.media === "object" ? status.media : null;
+    return {
+      action: "status",
+      computerName: cleanActionText(status?.computerName || "", 80),
+      usbRoot: cleanActionText(status?.usbRoot || "", 40),
+      ready: status?.ready === true,
+      confirmationPhrase: cleanActionText(status?.confirmationPhrase || "", 300),
+      backupProofOk: status?.backupProofOk === true,
+      installImage: cleanActionText(status?.installImage || "", 260),
+      rootAutounattend: status?.rootAutounattend === true,
+      oemSetupComplete: status?.oemSetupComplete === true,
+      managedUserName: cleanActionText(status?.managedUserName || "", 80),
+      managedUserPasswordMode: cleanActionText(status?.managedUserPasswordMode || "", 80),
+      activePrepareProcessCount: Number.isFinite(Number(status?.activePrepareProcessCount)) ? Number(status.activePrepareProcessCount) : 0,
+      media: media ? {
+        found: media.found === true,
+        path: cleanActionText(media.path || "", 260),
+        name: cleanActionText(media.name || "", 120),
+        bytes: Number.isFinite(Number(media.bytes)) ? Number(media.bytes) : 0,
+        gb: Number.isFinite(Number(media.gb)) ? Number(media.gb) : 0,
+        downloading: media.downloading === true,
+        complete: media.complete === true,
+        active: media.active === true,
+        activeProcessCount: Number.isFinite(Number(media.activeProcessCount)) ? Number(media.activeProcessCount) : 0,
+        updatedAgeSeconds: Number.isFinite(Number(media.updatedAgeSeconds)) ? Number(media.updatedAgeSeconds) : null
+      } : null,
+      latestPrepare: latest ? {
+        id: cleanActionId(latest.id || ""),
+        status: cleanActionText(latest.status || "", 80),
+        ok: latest.ok === true,
+        exitCode: Number.isSafeInteger(latest.exitCode) ? latest.exitCode : null,
+        caseId: cleanActionText(latest.caseId || "", 80),
+        updatedAgeSeconds: Number.isFinite(Number(latest.updatedAgeSeconds)) ? Number(latest.updatedAgeSeconds) : null,
+        activeProcessCount: Number.isFinite(Number(latest.activeProcessCount)) ? Number(latest.activeProcessCount) : 0,
+        stderrTail: cleanActionText(latest.stderrTail || "", 1000)
+      } : null,
+      prepareJobCount: Array.isArray(status?.prepareJobs) ? status.prepareJobs.length : 0
+    };
+  }
+
+  function compactReinstallStatusToolPayload(status) {
+    const compact = compactReinstallStatus(status);
+    const terminal = evaluateReinstallPrepareTerminal(status, { action: "status" }, 0);
+    if (terminal) {
+      return {
+        ...terminal,
+        initial: undefined,
+        statusSnapshot: compact,
+        media: compact.media,
+        latestPrepare: compact.latestPrepare,
+        agentGuidance: terminal.status === "needs-confirmation"
+          ? "Ready proof is complete. Ask only for the exact destructive confirmation phrase before arm."
+          : "This is a fresh managed reinstall status result. Do not use old prepare job tails or local shell probes instead of this compact status."
+      };
+    }
+    if (isReinstallPrepareActive(status)) {
+      const waitMs = Math.min(reinstallPollDelayMs(status), 60_000);
+      return {
+        ...compact,
+        ok: true,
+        action: "status",
+        status: "running",
+        terminalReason: "managed-prepare-still-running",
+        text: "Managed Windows reinstall prepare is still running.",
+        exitCode: 0,
+        nextTool: {
+          name: "computer",
+          args: {
+            operation: "reinstall",
+            capability: "os-reinstall",
+            action: "status",
+            waitMs,
+            timeoutMs: 45_000
+          }
+        },
+        agentGuidance: "This is non-terminal. Keep ownership and poll nextTool yourself. Ignore older failed prepare jobs while latestPrepare is running or media.active=true."
+      };
+    }
+    return {
+      ...compact,
+      ok: true,
+      action: "status",
+      status: compact.ready ? "needs-confirmation" : "idle",
+      text: compact.ready
+        ? "Preparation is ready and awaits exact destructive confirmation."
+        : "No active managed Windows reinstall prepare is running.",
+      exitCode: 0
+    };
   }
 
   function evaluateReinstallPrepareTerminal(status, initial, elapsedMs) {
@@ -11643,6 +11747,11 @@ function safeDurationMs(value, fallback, max = maxLongTaskTimeoutMs) {
 
 function safeRunTimeoutMs(value) {
   return safeDurationMs(value, defaultTimeoutMs, maxLongTaskTimeoutMs);
+}
+
+function safeOperatorTextLength(value, fallback = maxChatChars) {
+  const length = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(length) ? Math.max(1000, Math.min(length, 1_000_000)) : fallback;
 }
 
 function safeCtlTimeout(value) {
