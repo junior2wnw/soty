@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 const maxChatChars = 12_000;
 const maxContextChars = 16_000;
 const maxReplyChars = 12_000;
+const maxSourceReplyChars = 1_000_000;
 const maxReplyMessages = 64;
 const maxSourceChars = 180;
 const maxTaskTimeoutMs = 24 * 60 * 60_000;
@@ -393,7 +394,8 @@ export function attachAgentRelay(app) {
       return;
     }
     touchAgentSource(source);
-    job.text = `${job.text || ""}${cleanText(req.body?.text, maxReplyChars)}`.slice(-maxReplyChars);
+    const replyLimit = sourceJobReplyLimit(job);
+    job.text = `${job.text || ""}${cleanText(req.body?.text, replyLimit)}`.slice(-replyLimit);
     if (Number.isSafeInteger(req.body?.exitCode)) {
       if (!(job.cancelRequested === true && job.exitCode === 130 && req.body.exitCode !== 130)) {
         job.exitCode = req.body.exitCode;
@@ -419,7 +421,8 @@ export function attachAgentRelay(app) {
     }
     touchAgentSource(source);
     job.cancelRequested = true;
-    job.text = `${job.text || ""}${job.text ? "\n" : ""}! cancelled`.slice(-maxReplyChars);
+    const replyLimit = sourceJobReplyLimit(job);
+    job.text = `${job.text || ""}${job.text ? "\n" : ""}! cancelled`.slice(-replyLimit);
     job.exitCode = 130;
     source.cancels = source.cancels || [];
     if (!source.cancels.some((item) => item.commandId === id)) {
@@ -1192,6 +1195,7 @@ function leasePendingSourceJobs(source, requester = null) {
       shell: job.shell || "",
       runAs: job.runAs || "user",
       timeoutMs: safeTimeout(job.timeoutMs),
+      maxTextLength: sourceJobReplyLimit(job),
       createdAt: new Date(job.createdAt).toISOString()
     }))
   ];
@@ -1205,6 +1209,7 @@ function createSourceJobFromRequest(body) {
   const script = cleanText(body?.script, 1_000_000);
   const runAs = safeRunAs(body?.runAs);
   const timeoutMs = safeTimeout(body?.timeoutMs);
+  const maxTextLength = safeSourceReplyChars(body?.maxTextLength);
   if (!relayId || !deviceId || (type === "run" ? !command.trim() : !script.trim())) {
     return {
       ok: false,
@@ -1249,7 +1254,8 @@ function createSourceJobFromRequest(body) {
       shell: cleanText(body?.shell, 40)
     }),
     runAs,
-    timeoutMs
+    timeoutMs,
+    maxTextLength
   });
   return { ok: true, httpStatus: 200, job };
 }
@@ -1298,6 +1304,10 @@ function sourceJobReply(job) {
   };
 }
 
+function sourceJobReplyLimit(job) {
+  return safeSourceReplyChars(job?.maxTextLength);
+}
+
 function sourceJobDiagnostic(job, now = Date.now()) {
   const source = findAgentSource(job.sourceRelayId, job.sourceDeviceId);
   const leased = Boolean(job.leaseUntil);
@@ -1323,7 +1333,8 @@ function expireQueuedSourceJobs(source, now = Date.now()) {
       continue;
     }
     job.exitCode = 124;
-    job.text = `${job.text || ""}${job.text ? "\n" : ""}! pickup timeout\n`.slice(-maxReplyChars);
+    const replyLimit = sourceJobReplyLimit(job);
+    job.text = `${job.text || ""}${job.text ? "\n" : ""}! pickup timeout\n`.slice(-replyLimit);
     flushWaiters(sourceReplyWaiters, job.id, () => sourceJobReply(job));
   }
 }
@@ -1585,6 +1596,13 @@ function normalizeRelayId(value) {
 
 function cleanText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function safeSourceReplyChars(value) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(parsed)
+    ? Math.max(1000, Math.min(parsed, maxSourceReplyChars))
+    : maxReplyChars;
 }
 
 function cleanArtifactToken(value) {

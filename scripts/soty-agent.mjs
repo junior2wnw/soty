@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.53";
+const agentVersion = "0.4.54";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -4230,10 +4230,12 @@ async function runAgentSourceWorkerLoop() {
       retryMs = 1000;
       for (const job of jobs) {
         void handleAgentSourceWorkerJob(job).catch((error) => {
+          const maxTextLength = safeOperatorTextLength(job?.maxTextLength, maxChatChars);
           void postAgentSourceWorkerOutput(
             job.id,
             agentFailureText(error instanceof Error ? error.message : String(error)),
-            1
+            1,
+            maxTextLength
           );
         });
       }
@@ -4294,7 +4296,8 @@ async function handleAgentSourceWorkerJob(job) {
     }
     return;
   }
-  const { ws, done } = sourceWorkerRelaySocket(job.id);
+  const maxTextLength = safeOperatorTextLength(job.maxTextLength, maxChatChars);
+  const { ws, done } = sourceWorkerRelaySocket(job.id, maxTextLength);
   if (job.type === "script") {
     await runScript(ws, job.id, {
       name: typeof job.name === "string" ? job.name : "script",
@@ -4308,7 +4311,7 @@ async function handleAgentSourceWorkerJob(job) {
   await done;
 }
 
-function sourceWorkerRelaySocket(id) {
+function sourceWorkerRelaySocket(id, maxTextLength = maxChatChars) {
   let open = true;
   let queue = Promise.resolve();
   let resolveDone = () => {};
@@ -4322,8 +4325,8 @@ function sourceWorkerRelaySocket(id) {
     onClose: () => {},
     send(raw) {
       queue = queue
-        .then(() => handleSourceWorkerFrame(id, raw))
-        .catch((error) => postAgentSourceWorkerOutput(id, agentFailureText(error instanceof Error ? error.message : String(error)), 1).catch(() => undefined));
+        .then(() => handleSourceWorkerFrame(id, raw, maxTextLength))
+        .catch((error) => postAgentSourceWorkerOutput(id, agentFailureText(error instanceof Error ? error.message : String(error)), 1, maxTextLength).catch(() => undefined));
     },
     close() {
       if (!open) {
@@ -4340,7 +4343,7 @@ function sourceWorkerRelaySocket(id) {
   return { ws, done };
 }
 
-async function handleSourceWorkerFrame(id, raw) {
+async function handleSourceWorkerFrame(id, raw, maxTextLength = maxChatChars) {
   let frame;
   try {
     frame = JSON.parse(String(raw || ""));
@@ -4353,18 +4356,19 @@ async function handleSourceWorkerFrame(id, raw) {
     return;
   }
   if (type === "exit" || type === "error") {
-    await postAgentSourceWorkerOutput(id, text, Number.isSafeInteger(frame.exitCode) ? frame.exitCode : type === "error" ? 1 : 0);
+    await postAgentSourceWorkerOutput(id, text, Number.isSafeInteger(frame.exitCode) ? frame.exitCode : type === "error" ? 1 : 0, maxTextLength);
     return;
   }
   if (text) {
-    await postAgentSourceWorkerOutput(id, text);
+    await postAgentSourceWorkerOutput(id, text, undefined, maxTextLength);
   }
 }
 
-async function postAgentSourceWorkerOutput(id, text, exitCode = undefined) {
+async function postAgentSourceWorkerOutput(id, text, exitCode = undefined, maxTextLength = maxChatChars) {
   if (!agentRelayBaseUrl || !agentRelayId || !agentDeviceId || !id) {
     return;
   }
+  const textLimit = safeOperatorTextLength(maxTextLength, maxChatChars);
   await fetch(new URL("/api/agent/source/output", agentRelayBaseUrl), {
     method: "POST",
     cache: "no-store",
@@ -4373,7 +4377,7 @@ async function postAgentSourceWorkerOutput(id, text, exitCode = undefined) {
       relayId: agentRelayId,
       deviceId: agentDeviceId,
       id,
-      text: String(text || "").slice(0, maxChatChars),
+      text: String(text || "").slice(0, textLimit),
       ...(Number.isSafeInteger(exitCode) ? { exitCode } : {})
     })
   });
