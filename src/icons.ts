@@ -1,4 +1,4 @@
-export type IconName = "install" | "qr" | "scan" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess";
+export type IconName = "install" | "qr" | "scan" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
@@ -17,7 +17,9 @@ const paths: Record<IconName, string> = {
   shield: "M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm0 2.2 6 2.3V11c0 3.8-2.4 7.4-6 8.8-3.6-1.4-6-5-6-8.8V6.5l6-2.3Zm-1 10.6 5.2-5.2-1.4-1.4L11 12l-1.8-1.8-1.4 1.4 3.2 3.2Z",
   send: "M2 21 23 12 2 3v7l15 2-15 2v7Z",
   stop: "M6 6h12v12H6V6Z",
-  chess: "M8 3h8v2h-2v3h2l2 4v8H6v-8l2-4h2V5H8V3Zm3 2v3h2V5h-2Zm-2 5-1 2h8l-1-2H9Zm-1 4v4h8v-4H8Z"
+  chess: "M8 3h8v2h-2v3h2l2 4v8H6v-8l2-4h2V5H8V3Zm3 2v3h2V5h-2Zm-2 5-1 2h8l-1-2H9Zm-1 4v4h8v-4H8Z",
+  collapse: "M5 11h14v2H5v-2Zm4-6h6v2H9V5Zm0 12h6v2H9v-2Z",
+  expand: "M5 11h14v2H5v-2Zm2-8h10v2H7V3Zm0 16h10v2H7v-2Z"
 };
 
 export function icon(name: IconName): string {

@@ -1098,18 +1098,32 @@ svg {
   display: grid;
 }
 
+.terminal-panel.is-collapsed {
+  height: 48px;
+  grid-template-rows: 30px;
+  padding-bottom: 8px;
+}
+
 .editor.terminal-host .terminal-panel {
   grid-template-rows: 34px minmax(0, 1fr);
+}
+
+.editor.terminal-host .terminal-panel.is-collapsed {
+  grid-template-rows: 30px;
 }
 
 .editor.terminal-active .chat-scroll {
   padding-bottom: calc(var(--terminal-height) + 28px);
 }
 
+.editor.terminal-active.terminal-collapsed .chat-scroll {
+  padding-bottom: 78px;
+}
+
 .terminal-head {
   min-width: 0;
   display: grid;
-  grid-template-columns: 12px 34px minmax(0, 1fr) 30px;
+  grid-template-columns: 12px 34px minmax(0, 1fr) 30px 30px;
   align-items: center;
   gap: 9px;
 }
@@ -1166,6 +1180,7 @@ svg {
   font-weight: 800;
 }
 
+.terminal-collapse,
 .terminal-close {
   width: 30px;
   height: 30px;
@@ -1173,6 +1188,11 @@ svg {
   place-items: center;
   background: transparent;
   color: var(--ink);
+}
+
+.terminal-panel.is-collapsed .terminal-output,
+.terminal-panel.is-collapsed .terminal-form {
+  display: none;
 }
 
 .terminal-output {

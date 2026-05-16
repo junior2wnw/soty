@@ -116,10 +116,14 @@ let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
 const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
 const chessStoreKey = "soty:chess:v1";
+const terminalCollapsedKey = "soty:terminal-collapsed:v1";
+const textSnapshotsKey = "soty:text-snapshots:v1";
+const chatScrollKey = "soty:chat-scroll:v1";
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
 const chessAgentTimers = new Map<string, number>();
 const chessWelcomedGames = new Set<string>();
+const textSnapshotTimers = new Map<string, number>();
 let chessOpenId = "";
 let chessSelectedSquare: Square | "" = "";
 let chessPromotion: { readonly tunnelId: string; readonly from: Square; readonly to: Square } | null = null;
@@ -176,6 +180,7 @@ let operatorReconnectTimer = 0;
 let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
 let operatorBridgeEpoch = 0;
+let terminalCollapsed = loadTerminalCollapsed();
 type OperatorRemoteRun = {
   readonly commandId: string;
   readonly tunnelId: string;
@@ -391,6 +396,15 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
+  const snapshots = loadTextSnapshots();
+  for (const tunnel of tunnels) {
+    if (!restoredTexts.has(tunnel.id)) {
+      const snapshot = snapshots.get(tunnel.id);
+      if (snapshot) {
+        restoredTexts.set(tunnel.id, snapshot);
+      }
+    }
+  }
   renderApp();
   applyRestoredTextSnapshots(restoredTexts);
   startAgentButtonWatcher(true);
@@ -534,11 +548,128 @@ function applyRestoredTextSnapshots(restoredTexts: Map<string, string>): void {
   }
   for (const [tunnelId, text] of restoredTexts) {
     texts.set(tunnelId, text);
+    saveTextSnapshotNow(tunnelId, text);
     syncs.get(tunnelId)?.setText(text);
   }
   if (selectedId && restoredTexts.has(selectedId)) {
     applySelectedText();
   }
+}
+
+function loadTextSnapshots(): Map<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(textSnapshotsKey) || "{}");
+    if (!isRecord(parsed)) {
+      return new Map();
+    }
+    const result = new Map<string, string>();
+    for (const [tunnelId, record] of Object.entries(parsed)) {
+      if (!isRecord(record) || typeof record.text !== "string") {
+        continue;
+      }
+      result.set(tunnelId, record.text.slice(0, 200_000));
+    }
+    return result;
+  } catch {
+    return new Map();
+  }
+}
+
+function saveTextSnapshotNow(tunnelId: string, text: string): void {
+  if (!tunnelId) {
+    return;
+  }
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(textSnapshotsKey) || "{}");
+    const current = isRecord(parsed) ? parsed : {};
+    const now = Date.now();
+    const next: Record<string, { readonly text: string; readonly at: number }> = {};
+    next[tunnelId] = { text: text.slice(-200_000), at: now };
+    for (const [id, record] of Object.entries(current)) {
+      if (id === tunnelId || !isRecord(record) || typeof record.text !== "string") {
+        continue;
+      }
+      const at = typeof record.at === "number" && Number.isFinite(record.at) ? record.at : 0;
+      next[id] = { text: record.text.slice(-200_000), at };
+    }
+    const keep = Object.entries(next)
+      .sort((left, right) => right[1].at - left[1].at)
+      .slice(0, 40);
+    localStorage.setItem(textSnapshotsKey, JSON.stringify(Object.fromEntries(keep)));
+  } catch {
+    // Local snapshots are best-effort; realtime sync is still the source of truth.
+  }
+}
+
+function scheduleTextSnapshot(tunnelId: string, text: string): void {
+  if (!tunnelId) {
+    return;
+  }
+  const previous = textSnapshotTimers.get(tunnelId);
+  if (previous) {
+    window.clearTimeout(previous);
+  }
+  const timer = window.setTimeout(() => {
+    textSnapshotTimers.delete(tunnelId);
+    saveTextSnapshotNow(tunnelId, text);
+  }, 180);
+  textSnapshotTimers.set(tunnelId, timer);
+}
+
+function loadChatScroll(): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(chatScrollKey) || "{}");
+    if (!isRecord(parsed)) {
+      return {};
+    }
+    const result: Record<string, number> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+        result[id] = Math.round(value);
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function saveChatScroll(tunnelId: string, top: number): void {
+  if (!tunnelId || !Number.isFinite(top)) {
+    return;
+  }
+  try {
+    const current = loadChatScroll();
+    current[tunnelId] = Math.max(0, Math.round(top));
+    const keep = Object.entries(current).slice(-60);
+    localStorage.setItem(chatScrollKey, JSON.stringify(Object.fromEntries(keep)));
+  } catch {
+    // Scroll memory is cosmetic.
+  }
+}
+
+function rememberCurrentChatScroll(): void {
+  const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
+  if (scroll && selectedId) {
+    saveChatScroll(selectedId, scroll.scrollTop);
+  }
+}
+
+function restoreSelectedChatScroll(): void {
+  const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
+  if (!scroll || !selectedId) {
+    return;
+  }
+  const top = loadChatScroll()[selectedId];
+  if (typeof top !== "number" || !Number.isFinite(top)) {
+    return;
+  }
+  window.setTimeout(() => {
+    const current = app.querySelector<HTMLDivElement>(".chat-scroll");
+    if (current && selectedId) {
+      current.scrollTop = Math.min(Math.max(0, top), current.scrollHeight);
+    }
+  }, 0);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -722,6 +853,7 @@ function renderApp(): void {
             <span class="terminal-led"></span>
             <span class="terminal-peer"></span>
             <span class="terminal-glyph">$</span>
+            <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
             <button class="terminal-close" type="button" aria-label="close" data-tooltip="Закрыть удаленные команды">${icon("close")}</button>
           </div>
           <div class="terminal-output"></div>
@@ -784,6 +916,9 @@ function renderApp(): void {
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
+  app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
+    rememberCurrentChatScroll();
+  }, { passive: true });
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
   });
@@ -830,6 +965,11 @@ function renderApp(): void {
       closeRemoteMode(tunnelId);
     }
   });
+  app.querySelector<HTMLButtonElement>(".terminal-collapse")?.addEventListener("click", () => {
+    terminalCollapsed = !terminalCollapsed;
+    saveTerminalCollapsed(terminalCollapsed);
+    renderTerminal();
+  });
   app.querySelector<HTMLFormElement>(".terminal-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     void sendTerminalCommand();
@@ -864,6 +1004,8 @@ function renderApp(): void {
       }
       if (isAgentTunnelId(selectedId)) {
         void toggleAgentRemoteGrant(selectedId);
+      } else if (remoteAccess.has(selectedId) && !remoteEnabled.has(selectedId)) {
+        openRemoteCommands(selectedId);
       } else {
         void toggleRemoteGrant(selectedId);
       }
@@ -879,7 +1021,7 @@ function renderApp(): void {
   renderFiles();
   renderTerminal();
   renderChess();
-  void ensureOperatorBridge();
+  void ensureOperatorBridge(true);
   resumeAgentSourceControl();
 }
 
@@ -999,6 +1141,16 @@ async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<bool
   renderTerminal();
   renderTiles();
   return true;
+}
+
+function openRemoteCommands(id: string): void {
+  terminalOpenId = id;
+  terminalCollapsed = false;
+  saveTerminalCollapsed(false);
+  if (!terminalState.has(id)) {
+    setTerminalState(id, "idle");
+  }
+  renderTerminal();
 }
 
 async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
@@ -1341,6 +1493,7 @@ function normalizeSelectedTunnel(): void {
 }
 
 function selectTunnel(id: string): void {
+  rememberCurrentChatScroll();
   selectedId = id;
   saveSelectedTunnelId(id);
 }
@@ -1413,6 +1566,7 @@ function clearCurrentDialog(tunnelId: string): void {
   }
   sync.setText("");
   texts.set(tunnelId, "");
+  saveTextSnapshotNow(tunnelId, "");
   localDrafts.delete(tunnelId);
   writerLines.delete(tunnelId);
   activeActivities.delete(tunnelId);
@@ -1512,6 +1666,7 @@ function createFreshDialog(
   tunnels = next;
   localDrafts.delete(active?.id || "");
   texts.set(fresh.id, "");
+  saveTextSnapshotNow(fresh.id, "");
   ensureSync(fresh);
   return fresh;
 }
@@ -1630,6 +1785,7 @@ function ensureSync(tunnel: TunnelRecord): void {
   syncs.set(tunnel.id, new TunnelSync(tunnel, device, {
     onText: (text) => {
       texts.set(tunnel.id, text);
+      scheduleTextSnapshot(tunnel.id, text);
       if (tunnel.id === selectedId) {
         applySelectedText();
       }
@@ -2765,6 +2921,7 @@ async function runOperatorAgentMessage(message: {
   const next = `${current}${separator}${body}\n`;
   texts.set(tunnel.id, next);
   sync.setText(next);
+  saveTextSnapshotNow(tunnel.id, next);
   localDrafts.delete(tunnel.id);
   clearLiveDraftState(tunnel.id);
   void sync.sendLiveDraft("");
@@ -3006,6 +3163,7 @@ function renderTerminal(): void {
   const editor = app.querySelector<HTMLElement>(".editor");
   const form = app.querySelector<HTMLFormElement>(".terminal-form");
   const peer = app.querySelector<HTMLSpanElement>(".terminal-peer");
+  const collapseButton = app.querySelector<HTMLButtonElement>(".terminal-collapse");
   if (!panel || !output || !editor || !form || !peer) {
     return;
   }
@@ -3016,16 +3174,23 @@ function renderTerminal(): void {
   const active = !chessActive && (controller || host);
   const state = tunnelId ? terminalState.get(tunnelId) ?? "idle" : "idle";
   editor.classList.toggle("terminal-active", active);
+  editor.classList.toggle("terminal-collapsed", active && terminalCollapsed);
   editor.classList.toggle("terminal-controller", controller);
   editor.classList.toggle("terminal-host", host && !controller);
+  panel.classList.toggle("is-collapsed", active && terminalCollapsed);
   panel.dataset.state = state;
   form.hidden = !controller;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   peer.textContent = tunnel ? initials(counterpartyLabel(tunnel)) : ".";
+  if (collapseButton) {
+    collapseButton.innerHTML = icon(terminalCollapsed ? "expand" : "collapse");
+    collapseButton.setAttribute("aria-label", terminalCollapsed ? "expand" : "collapse");
+    collapseButton.dataset.tooltip = terminalCollapsed ? "Развернуть окно команд" : "Свернуть окно команд";
+  }
   output.innerHTML = (terminalLogs.get(tunnelId) ?? [])
     .map((line) => `<pre>${escapeHtml(line || " ")}</pre>`)
     .join("");
-  if (active) {
+  if (active && !terminalCollapsed) {
     output.scrollTop = output.scrollHeight;
     window.setTimeout(() => app.querySelector<HTMLInputElement>(".terminal-form input")?.focus(), 0);
   }
@@ -4154,6 +4319,7 @@ async function finalizeComposerDraft(): Promise<void> {
   textarea.value = next;
   texts.set(tunnelId, next);
   sync.setText(next);
+  saveTextSnapshotNow(tunnelId, next);
   const pendingLiveDraftTimer = liveDraftSendTimers.get(tunnelId);
   if (pendingLiveDraftTimer) {
     window.clearTimeout(pendingLiveDraftTimer);
@@ -4526,6 +4692,7 @@ function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
   };
   sync.setText(next);
   texts.set(tunnelId, next);
+  saveTextSnapshotNow(tunnelId, next);
   rememberWriter(tunnelId, activity);
   clearLiveDraftState(tunnelId);
   if (tunnelId === selectedId && textarea) {
@@ -4600,6 +4767,9 @@ function isInternalAgentRouteLine(text: string): boolean {
   if (!text) {
     return false;
   }
+  if (/(?:уш[её]л[ао]?\s+в\s+таймаут|таймаут.*статус(?:\s+задания)?|сниму\s+статус\s+этого\s+же\s+задания|сниму\s+статус\s+задания|повторяю\s+через\s+(?:shell|script|desktop)|fallback|route\s+timeout)/iu.test(text)) {
+    return true;
+  }
   return /(?:использую\s+`?\$ops`?|`?\$ops`?\s+подтвердил|горячий маршрут|маршрутизатор|action_packet|helper_fit|source-scoped|soty\s+mcp|operator(?:ский)?\s+bridge|preflight|managed\s+staging|рантайм|серверном рантайме|ворот[ауы]? готовности|маршрут требует|маршрут подтвердил|точный технический блокер|agent-source\s+\d+|exitCode|timeoutMs)/iu.test(text);
 }
 
@@ -4664,6 +4834,7 @@ function applySelectedText(focus = false): void {
   renderLineTags();
   renderTextPaint();
   renderWriterPop();
+  restoreSelectedChatScroll();
 }
 
 async function typeOperatorChat(tunnelId: string, rawText: string, speed: string): Promise<void> {
@@ -4702,6 +4873,7 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
   const next = `${before}${text}`;
   sync.setText(next);
   texts.set(tunnelId, next);
+  scheduleTextSnapshot(tunnelId, next);
   rememberWriter(tunnelId, {
     deviceId: "operator",
     nick: isAgentTunnelId(tunnelId) ? agentDialogLabel : "Operator",
@@ -4734,6 +4906,7 @@ function removeOperatorChatSuffix(tunnelId: string, suffix: string): void {
   const next = current.slice(0, -suffix.length);
   sync.setText(next);
   texts.set(tunnelId, next);
+  scheduleTextSnapshot(tunnelId, next);
   if (tunnelId === selectedId && textarea) {
     textarea.value = next;
     textarea.setSelectionRange(next.length, next.length);
@@ -5705,6 +5878,22 @@ function setupSplitter(): void {
   splitter.addEventListener("pointerup", () => {
     dragging = false;
   });
+}
+
+function loadTerminalCollapsed(): boolean {
+  try {
+    return localStorage.getItem(terminalCollapsedKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveTerminalCollapsed(value: boolean): void {
+  try {
+    localStorage.setItem(terminalCollapsedKey, value ? "1" : "0");
+  } catch {
+    // Ignore storage failures; the current in-memory setting still applies.
+  }
 }
 
 function escapeHtml(value: string): string {

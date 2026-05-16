@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.44";
+const agentVersion = "0.4.45";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6389,6 +6389,7 @@ function sotyRuntimeHints() {
     "- Use memory as short reusable hints, not as rules.",
     "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
     "- Linked-device canonical: if the connected device network lists a Link target with access=true, that target is a first-class computer for you. Use the same `computer` capabilities through the controller device; do not fall back to the controller computer unless the request names the controller or the Link target is unavailable.",
+    "- Linked-device UX: for simple shell/file/browser/desktop checks on a Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run in the selected user's desktop session; system tasks run in the selected computer's system context. If the needed desktop session is unavailable, say that the user's desktop session is unavailable on the selected computer.",
@@ -6543,6 +6544,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- Link means capability forwarding: when device B gave Link access to controller A, every computer/file/artifact/desktop/browser/action/reinstall function available to A's agent plane must be used for B through A when B is the selected or named target.",
     "- If the active chat has a selected_target with access=true, treat that device as the default action target. In the Agent chat, choose a named Link target from the device network; if there is exactly one Link target, it may be the default for device tasks.",
     "- Never confuse controller and target: controller is the route, selected/named Link target is the computer where user-visible work happens. Report a target blocker only after trying the attached `computer` capability for that target.",
+    "- Do not narrate recoverable transport retries, command timeouts, status polling, or fallback routing when the target action ultimately succeeds. Users should see the outcome, not the plumbing.",
     "- For tasks involving several linked devices, keep controller and target names explicit and operate through the same device network context.",
     "",
     "Visible Soty shared-text context:",
@@ -11876,12 +11878,10 @@ async function checkForUpdate() {
     if (!isSafeManifest(manifest)) {
       return;
     }
-    if (compareVersion(manifest.version, agentVersion) <= 0) {
-      return;
-    }
     const scriptPath = fileURLToPath(import.meta.url);
     const currentHash = sha256(await readFile(scriptPath));
-    if (manifest.sha256 === currentHash) {
+    const versionCompare = compareVersion(manifest.version, agentVersion);
+    if (versionCompare < 0 || (versionCompare === 0 && manifest.sha256 === currentHash)) {
       return;
     }
     if (shouldDeferAgentUpdate()) {
