@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.48");
+      assertEqual(health.body.version, "0.4.49");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -97,6 +97,8 @@ async function runScenarios({ relayUrl } = {}) {
           ...process.env,
           SOTY_AGENT_MANAGED: "1",
           SOTY_AGENT_AUTO_UPDATE: "0",
+          SOTY_AGENT_DEVICE_ID: "dev-managed",
+          SOTY_AGENT_DEVICE_NICK: "managed-source",
           SOTY_AGENT_ACTION_JOBS_DIR: join(managedDir, "jobs"),
           SOTY_AGENT_TRACE_DIR: join(managedDir, "traces"),
           SOTY_CODEX_DISABLED: "1",
@@ -122,6 +124,19 @@ async function runScenarios({ relayUrl } = {}) {
           Origin: "https://example.invalid"
         });
         assertEqual(untrusted.status, 403);
+        const bind = await requestPort(managedPort, "POST", "/agent/relay", JSON.stringify({
+          relayId: "selftest_relay_empty_profile_000001",
+          relayBaseUrl: relayUrl,
+          deviceId: "dev-empty-profile",
+          deviceNick: "empty-profile"
+        }), { "Content-Type": "application/json" });
+        assertEqual(bind.status, 200);
+        assertEqual(bind.body.ok, true);
+        assertEqual(bind.body.rebound, false);
+        assertEqual(bind.body.currentDeviceId, "dev-managed");
+        const health = await requestPort(managedPort, "GET", "/health");
+        assertEqual(health.body.deviceId, "dev-managed");
+        assertEqual(health.body.deviceNick, "managed-source");
       } finally {
         child.kill();
         await onceExit(child).catch(() => undefined);
@@ -548,6 +563,37 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(bridge.calls[0].target, "room-bridge");
         assertEqual(bridge.calls[0].sourceDeviceId, "");
       } finally {
+        bridge.close();
+      }
+    }],
+    ["empty operator bridge does not replace linked target bridge", async () => {
+      const bridge = await attachSelftestOperatorBridge([{
+        id: "room-bridge-keep",
+        label: "room-bridge-keep",
+        deviceIds: ["dev-bridge-keep"],
+        hostDeviceId: "dev-bridge-keep",
+        access: true,
+        host: false,
+        selected: true,
+        lastActionAt: new Date().toISOString()
+      }]);
+      const emptyBridge = await attachSelftestOperatorBridge([], { closeOnOutput: false });
+      try {
+        const targets = await get("/operator/targets");
+        assert(targets.body.targets.some((target) => target.id === "room-bridge-keep"));
+        const response = await post("/operator/run", {
+          target: "room-bridge-keep",
+          sourceDeviceId: "dev-bridge-keep",
+          command: "SELFTEST_OK bridge target survives empty tab",
+          timeoutMs: 5000
+        });
+        assertEqual(response.status, 200);
+        assertEqual(response.body.ok, true);
+        assert(response.body.text.includes("SELFTEST_OK bridge output"));
+        assertEqual(bridge.calls.length, 1);
+        assertEqual(emptyBridge.calls.length, 0);
+      } finally {
+        emptyBridge.close();
         bridge.close();
       }
     }],
@@ -1058,6 +1104,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("turnkeyStatusRecoveryWindowMs"));
       assert(agent.includes("withTurnkeyPollingGuidance"));
       assert(agent.includes("mcpWaitBeforeStatusPoll"));
+      assert(agent.includes("managed-prepare-still-running"));
+      assert(agent.includes("Ignore older failed prepare jobs while latestPrepare is running"));
+      assert(agent.includes("const stillRunning = [\"created\", \"running\", \"monitoring\""));
       assert(agent.includes("Long Turnkey Job"));
       assert(agent.includes("Turnkey ownership"));
       assert(agent.includes("Do not ask the user to type `continue`"));
@@ -1203,7 +1252,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.48");
+      assertEqual(manifest.version, "0.4.49");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1329,7 +1378,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.48"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.49"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1376,7 +1425,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.48"'));
+      assert(agentSource.includes('const agentVersion = "0.4.49"'));
       assert(agentSource.includes("targetMentionedInRequest"));
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
@@ -1467,14 +1516,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.48";', 'const agentVersion = "0.4.47";');
-      assert(oldSource.includes('const agentVersion = "0.4.47"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.49";', 'const agentVersion = "0.4.48";');
+      assert(oldSource.includes('const agentVersion = "0.4.48"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.48",
+            version: "0.4.49",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

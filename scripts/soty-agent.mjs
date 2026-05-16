@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.48";
+const agentVersion = "0.4.49";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -128,6 +128,7 @@ let operatorTargets = [];
 let operatorDeviceNetwork = emptyDeviceNetwork();
 let operatorDeviceId = "";
 let operatorDeviceNick = "";
+const operatorBridgeStandbys = new Map();
 let cachedWindowsWhoami = "";
 let cachedCodexProbeAt = 0;
 let cachedCodexAvailable = false;
@@ -605,17 +606,13 @@ function handleMessage(ws, raw) {
 
 function handleOperatorMessage(ws, message) {
   if (message.type === "operator.attach") {
-    const visible = message.visible === true;
-    if (operatorBridge?.open && operatorBridge !== ws && operatorBridgeVisible && !visible) {
-      sendRaw(ws, { type: "operator.ready", accepted: false });
+    const state = operatorBridgeAttachState(message);
+    if (operatorBridge?.open && operatorBridge !== ws && operatorTargets.length > 0) {
+      operatorBridgeStandbys.set(ws, state);
+      sendRaw(ws, { type: "operator.ready", standby: true });
       return;
     }
-    operatorBridge = ws;
-    operatorBridgeVisible = visible;
-    operatorBridgeProtocol = typeof message.protocol === "string" ? message.protocol.slice(0, 80) : "";
-    operatorBridgeCapabilities = Array.isArray(message.capabilities)
-      ? message.capabilities.filter((item) => typeof item === "string").slice(0, 24).map((item) => item.slice(0, 80))
-      : [];
+    promoteOperatorBridge(ws, state);
     sendRaw(ws, { type: "operator.ready" });
     return;
   }
@@ -626,8 +623,29 @@ function handleOperatorMessage(ws, message) {
     operatorDeviceNick = safeSourceText(message.deviceNick);
     return;
   }
+  if (message.type === "operator.targets" && operatorBridgeStandbys.has(ws)) {
+    const state = {
+      ...operatorBridgeStandbys.get(ws),
+      targets: sanitizeTargets(message.targets),
+      deviceNetwork: sanitizeDeviceNetwork(message.deviceNetwork),
+      deviceId: safeSourceText(message.deviceId),
+      deviceNick: safeSourceText(message.deviceNick)
+    };
+    operatorBridgeStandbys.set(ws, state);
+    maybePromoteOperatorStandby(ws);
+    return;
+  }
   if (message.type === "operator.visibility" && ws === operatorBridge) {
     operatorBridgeVisible = message.visible === true;
+    return;
+  }
+  if (message.type === "operator.visibility" && operatorBridgeStandbys.has(ws)) {
+    const state = {
+      ...operatorBridgeStandbys.get(ws),
+      visible: message.visible === true
+    };
+    operatorBridgeStandbys.set(ws, state);
+    maybePromoteOperatorStandby(ws);
     return;
   }
   if (message.type === "operator.message" && ws === operatorBridge) {
@@ -640,6 +658,9 @@ function handleOperatorMessage(ws, message) {
 }
 
 function cleanupOperatorSocket(ws) {
+  if (operatorBridgeStandbys.delete(ws)) {
+    return;
+  }
   if (operatorBridge === ws) {
     operatorBridge = null;
     operatorBridgeVisible = false;
@@ -653,6 +674,63 @@ function cleanupOperatorSocket(ws) {
       run.finish(127, "! bridge");
     }
     operatorRuns.clear();
+    promoteBestOperatorStandby();
+  }
+}
+
+function operatorBridgeAttachState(message) {
+  return {
+    visible: message.visible === true,
+    protocol: typeof message.protocol === "string" ? message.protocol.slice(0, 80) : "",
+    capabilities: Array.isArray(message.capabilities)
+      ? message.capabilities.filter((item) => typeof item === "string").slice(0, 24).map((item) => item.slice(0, 80))
+      : [],
+    targets: [],
+    deviceNetwork: emptyDeviceNetwork(),
+    deviceId: "",
+    deviceNick: "",
+    attachedAt: Date.now()
+  };
+}
+
+function promoteOperatorBridge(ws, state = operatorBridgeAttachState({})) {
+  operatorBridgeStandbys.delete(ws);
+  operatorBridge = ws;
+  operatorBridgeVisible = state.visible === true;
+  operatorBridgeProtocol = state.protocol || "";
+  operatorBridgeCapabilities = Array.isArray(state.capabilities) ? state.capabilities : [];
+  operatorTargets = Array.isArray(state.targets) ? state.targets : [];
+  operatorDeviceNetwork = state.deviceNetwork || emptyDeviceNetwork();
+  operatorDeviceId = state.deviceId || "";
+  operatorDeviceNick = state.deviceNick || "";
+}
+
+function maybePromoteOperatorStandby(ws) {
+  const state = operatorBridgeStandbys.get(ws);
+  if (!state || !ws?.open) {
+    return;
+  }
+  if (!operatorBridge?.open || operatorTargets.length === 0 || (!operatorBridgeVisible && state.visible && state.targets.length > 0)) {
+    promoteOperatorBridge(ws, state);
+  }
+}
+
+function promoteBestOperatorStandby() {
+  let best = null;
+  for (const [ws, state] of operatorBridgeStandbys.entries()) {
+    if (!ws?.open) {
+      operatorBridgeStandbys.delete(ws);
+      continue;
+    }
+    const score = (state.targets?.length ? 10_000 : 0)
+      + (state.visible ? 1000 : 0)
+      + Math.min(999, Math.max(0, state.attachedAt || 0));
+    if (!best || score > best.score) {
+      best = { ws, state, score };
+    }
+  }
+  if (best) {
+    promoteOperatorBridge(best.ws, best.state);
   }
 }
 
@@ -3865,6 +3943,16 @@ async function handleAgentRelayBind(request, response, headers) {
     sendJson(response, 400, headers, { ok: false });
     return;
   }
+  if (agentDeviceId && deviceId && agentDeviceId !== deviceId && !allowAgentDeviceRebind()) {
+    sendJson(response, 200, headers, {
+      ok: true,
+      rebound: false,
+      currentDeviceId: agentDeviceId,
+      ignoredDeviceId: deviceId,
+      ...runtimeHealth()
+    });
+    return;
+  }
   agentRelayId = relayId;
   agentRelayBaseUrl = relayBaseUrl;
   if (deviceId) {
@@ -3879,6 +3967,10 @@ async function handleAgentRelayBind(request, response, headers) {
     ok: true,
     ...runtimeHealth()
   });
+}
+
+function allowAgentDeviceRebind() {
+  return process.env.SOTY_AGENT_ALLOW_REBIND === "1" || !managed || String(agentScope || "").toLowerCase() === "dev";
 }
 
 function startAgentRelay() {
@@ -8397,7 +8489,8 @@ function runMcpServer() {
     const body = payload && typeof payload === "object" ? { ...payload } : { text: String(payload || "") };
     const job = body.job && typeof body.job === "object" ? body.job : {};
     const status = String(body.status || job.status || "").toLowerCase();
-    const terminal = isTurnkeyTerminalStatus(status) || Number.isSafeInteger(body.exitCode) || Number.isSafeInteger(job.exitCode);
+    const stillRunning = ["created", "running", "monitoring", "in-progress", "in_progress", "partial"].includes(status);
+    const terminal = isTurnkeyTerminalStatus(status) || (!stillRunning && (Number.isSafeInteger(body.exitCode) || Number.isSafeInteger(job.exitCode)));
     if (!terminal && (jobId || body.jobId || body.id || job.id)) {
       const id = String(jobId || body.jobId || body.id || job.id);
       body.nextTool = {
@@ -8972,6 +9065,41 @@ function runMcpServer() {
     }
     const statusResult = await readSotyReinstallStatus(managedReinstallStatusRequest());
     const liveStatus = parseReinstallStatusResult(statusResult);
+    const job = payload?.job && typeof payload.job === "object" ? payload.job : {};
+    const resultBody = payload?.result && typeof payload.result === "object" ? payload.result : {};
+    const phase = String(payload?.phase || resultBody.phase || job.phase || job.kind || "").toLowerCase();
+    if (phase === "prepare" && liveStatus) {
+      const terminal = evaluateReinstallPrepareTerminal(liveStatus, payload, 0);
+      if (terminal) {
+        return mcpToolJson({
+          ...payload,
+          ...terminal,
+          liveStatus,
+          liveStatusOk: true,
+          agentGuidance: "Managed Windows reinstall prepare reached a terminal state. If this is needs-confirmation, ask only for the exact destructive confirmation phrase; otherwise report the concrete blocker."
+        }, terminal.ok === false, terminal.exitCode);
+      }
+      const waitMs = Math.min(reinstallPollDelayMs(liveStatus), 60_000);
+      return mcpToolJson({
+        ...payload,
+        ok: true,
+        status: "running",
+        terminalReason: "managed-prepare-still-running",
+        liveStatus,
+        liveStatusOk: true,
+        nextTool: {
+          name: "computer",
+          args: {
+            operation: "reinstall",
+            capability: "os-reinstall",
+            action: "status",
+            waitMs,
+            timeoutMs: 45_000
+          }
+        },
+        agentGuidance: "Managed Windows reinstall prepare is still active. Keep ownership: call nextTool yourself until ready/needs-confirmation or a blocker. Ignore older failed prepare jobs while latestPrepare is running."
+      }, false, 0);
+    }
     const body = {
       ...payload,
       liveStatus: liveStatus || mcpOperatorPayload(statusResult),
