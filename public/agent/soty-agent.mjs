@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.56";
+const agentVersion = "0.4.57";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3672,6 +3672,7 @@ function registerOperatorRun(response, headers, timeoutMs) {
   const id = `operator_${randomUUID()}`;
   let body = "";
   let done = false;
+  const stopKeepalive = startOperatorRunJsonStream(response, headers);
   const cancelBridgeRun = () => {
     if (operatorBridge?.open) {
       sendRaw(operatorBridge, { type: "operator.cancel", id });
@@ -3683,16 +3684,19 @@ function registerOperatorRun(response, headers, timeoutMs) {
     }
     done = true;
     clearTimeout(timer);
+    stopKeepalive();
     response.off?.("close", cancelOnClientClose);
     operatorRuns.delete(id);
     if (extraText) {
       body += `${body ? "\n" : ""}${extraText}`;
     }
-    sendJson(response, 200, headers, {
-      ok: exitCode === 0,
-      text: body,
-      exitCode
-    });
+    if (!response.writableEnded && !response.destroyed) {
+      response.end(JSON.stringify({
+        ok: exitCode === 0,
+        text: body,
+        exitCode
+      }));
+    }
   };
   const cancelOnClientClose = () => {
     if (done) {
@@ -3713,6 +3717,24 @@ function registerOperatorRun(response, headers, timeoutMs) {
     finish
   });
   return id;
+}
+
+function startOperatorRunJsonStream(response, headers) {
+  response.writeHead(200, {
+    ...headers,
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Accel-Buffering": "no"
+  });
+  const writeKeepalive = () => {
+    if (!response.writableEnded && !response.destroyed) {
+      response.write(" ");
+    }
+  };
+  writeKeepalive();
+  const timer = setInterval(writeKeepalive, 25_000);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 function handleOperatorOutput(message) {
