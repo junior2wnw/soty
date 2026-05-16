@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "11342ec9beabd6457d0c08fcd041cf9f646ff5e24a17597619b2804e19570dc0",
+  "sha256": "73627ecf1161b1edd4208b416548530ee7ff2a3f4854f11b55fe57374f48115f",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -115,7 +115,7 @@
           "start managed prepare once with stable idempotency",
           "download Windows media with resumable HTTP range route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
-          "ask destructive confirmation only after proof is complete",
+          "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"
         ],
         "doNot": [
@@ -458,7 +458,7 @@
             "start managed prepare once with stable idempotency",
             "download Windows media with resumable HTTP range route on the selected PC",
             "prove backup, install media, unattended account, Autounattend, postinstall",
-            "ask destructive confirmation only after proof is complete",
+            "ask final reinstall confirmation only after proof is complete",
             "arm reinstall and stop probing while reboot return path is expected"
           ],
           "doNot": [

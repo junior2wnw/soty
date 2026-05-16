@@ -829,6 +829,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["low risk is inferred", async () => expectRisk(await action(sourceRun("whoami SELFTEST_OK")), "low")],
     ["medium risk is inferred", async () => expectRisk(await action(sourceRun("winget install app SELFTEST_OK")), "medium")],
     ["high disk risk is inferred and detached", async () => expectDetachedRisk(await action(sourceRun("diskpart SELFTEST_OK high-detached")), "high")],
+    ["critical risk is detached", async () => expectDetachedRisk(await action({ ...sourceRun("SELFTEST_OK critical-detached"), risk: "critical" }), "critical")],
     ["windows reinstall risk is high and detached", async () => expectDetachedRisk(await action({ ...sourceRun("reinstall windows SELFTEST_OK win-detached"), family: "windows-reinstall" }), "high")],
     ["windows reinstall risk cannot be downgraded", async () => expectDetachedRisk(await action({ ...sourceRun("reinstall windows SELFTEST_OK win-risk-floor"), family: "windows-reinstall", risk: "medium" }), "high")],
     ["prepare action is detached by default", async () => {

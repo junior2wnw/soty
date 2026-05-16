@@ -203,7 +203,7 @@ function buildRouteProfiles(windowsReinstall) {
           "start managed prepare once with stable idempotency",
           "download Windows media with resumable HTTP range route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
-          "ask destructive confirmation only after proof is complete",
+          "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"
         ],
         doNot: [

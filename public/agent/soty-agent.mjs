@@ -2104,18 +2104,28 @@ function summarizeActionJob(job) {
   };
 }
 
-function cleanActionRisk(value) {
+const actionRiskLevels = ["low", "medium", "high", "critical"];
+const legacyActionRiskAliases = new Map([
+  ["destructive", "critical"]
+]);
+
+function normalizeActionRisk(value) {
   const text = String(value || "").trim().toLowerCase();
-  return ["low", "medium", "high", "destructive"].includes(text) ? text : "medium";
+  return legacyActionRiskAliases.get(text) || text;
+}
+
+function cleanActionRisk(value) {
+  const risk = normalizeActionRisk(value);
+  return actionRiskLevels.includes(risk) ? risk : "medium";
 }
 
 function cleanActionRiskOrEmpty(value) {
-  const text = String(value || "").trim().toLowerCase();
-  return ["low", "medium", "high", "destructive"].includes(text) ? text : "";
+  const risk = normalizeActionRisk(value);
+  return actionRiskLevels.includes(risk) ? risk : "";
 }
 
 function maxActionRisk(left, right) {
-  const ranks = { low: 0, medium: 1, high: 2, destructive: 3 };
+  const ranks = { low: 0, medium: 1, high: 2, critical: 3 };
   return (ranks[cleanActionRisk(left)] >= ranks[cleanActionRisk(right)])
     ? cleanActionRisk(left)
     : cleanActionRisk(right);
@@ -2125,10 +2135,11 @@ function shouldForceDetachedAction({ family, actionType, risk }) {
   if (family === "windows-reinstall") {
     return true;
   }
-  if (risk === "high" || risk === "destructive") {
+  const normalizedRisk = cleanActionRisk(risk);
+  if (normalizedRisk === "high" || normalizedRisk === "critical") {
     return true;
   }
-  return actionType === "prepare" && risk !== "low";
+  return actionType === "prepare" && normalizedRisk !== "low";
 }
 
 function toolkitForFamily(family) {
@@ -5133,8 +5144,8 @@ function formatManagedReinstallTerminalAfterCodex(terminal, status) {
   if (terminal?.status === "needs-confirmation") {
     const phrase = String(terminal.confirmationPhrase || status?.confirmationPhrase || "").trim();
     return phrase
-      ? `Preparation is complete. Exact destructive confirmation is still required before wiping the Windows disk: ${phrase}`
-      : "Preparation is complete. Exact destructive confirmation is still required before wiping the Windows disk.";
+      ? `Preparation is complete. Exact final reinstall confirmation is still required before starting the final Windows reinstall step: ${phrase}`
+      : "Preparation is complete. Exact final reinstall confirmation is still required before starting the final Windows reinstall step.";
   }
   const blocker = String(terminal?.blocker || "blocked");
   const blockers = Array.isArray(terminal?.blockers) && terminal.blockers.length > 0
@@ -6499,7 +6510,7 @@ function windowsReinstallRouteProfile() {
       "start managed prepare once with stable idempotency",
       "download Windows media with resumable HTTP range route on the selected PC",
       "prove backup, install media, unattended account, Autounattend, postinstall",
-      "ask destructive confirmation only after proof is complete",
+      "ask final reinstall confirmation only after proof is complete",
       "arm reinstall and stop probing while reboot return path is expected"
     ],
     doNot: [
@@ -6570,7 +6581,7 @@ function sotyRuntimeHints() {
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
-    "- Turnkey ownership: do the task end-to-end. Ask the user only for destructive confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
+    "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages. Avoid local shell sleeps and avoid noisy user updates while the durable job is healthy.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
@@ -6668,7 +6679,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "2. If `media.active` is true, the result is `running` even when older prepare jobs failed.",
     "3. Ignore older failed prepare jobs while the current latest prepare is running or media is active.",
     "4. Stop only on `ready`/`needs-confirmation`, a fresh `blocker`, or a proven source-device outage after the recovery window.",
-    "5. Never arm, reboot, wipe, format, or clear disks without a separate exact destructive confirmation phrase after ready proof.",
+    "5. Never arm or start the final reinstall/reset step without a separate exact final reinstall confirmation phrase after ready proof.",
     "",
     "## Long Turnkey Job",
     "",
@@ -6759,12 +6770,12 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
     "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
-    "- Ask the user only when the task truly requires human input: destructive confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
+    "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
     "- For Windows reinstall/reset, the default attached-device route is `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\" }. Use status/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- For Windows reinstall status, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 }. Do not use shell/grep/SOTY_ROUTES/local file crawling to rediscover this route. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running and ignore older failed prepare jobs.",
-    "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for destructive confirmation.",
+    "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for final confirmation.",
     "- For generated image or generated wallpaper tasks, use the native OpenAI image-generation tool first. Do not check desktop/display first just to choose a size; generation availability is the first gate and size can be adjusted after a generated artifact exists.",
     "- After native image generation, follow `SOTY_ROUTES.md`: find the real output under the Codex home generated_images directory if needed, then move bytes with `computer` operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>; never upload generated images to public temporary hosts or serve them with local HTTP.",
     "- For generated wallpapers/images, save to `C:\\Users\\Public\\Pictures\\...`; for other source-device artifacts, save to `C:\\ProgramData\\soty-agent\\artifacts\\...`. Avoid `C:\\Windows\\Temp` because it can deny writes from the interactive bridge.",
@@ -7401,7 +7412,7 @@ function runMcpServer() {
             family: { type: "string", description: "Optional task family for learning and routing." },
             kind: { type: "string", description: "Optional action kind." },
             intent: { type: "string", description: "Short intent for reusable learning." },
-            risk: { type: "string", description: "low, medium, high, or destructive." },
+            risk: { type: "string", description: "low, medium, high, or critical." },
             idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
             waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
@@ -7434,7 +7445,7 @@ function runMcpServer() {
             name: { type: "string", description: "Short operator label." },
             family: { type: "string", description: "Task family, for example package-install, service-check, browser-restore, driver-check, generic." },
             intent: { type: "string", description: "Short intent for reusable learning." },
-            risk: { type: "string", description: "low, medium, high, or destructive." },
+            risk: { type: "string", description: "low, medium, high, or critical." },
             idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
             waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
@@ -7444,7 +7455,7 @@ function runMcpServer() {
             jobId: { type: "string", description: "Job id for status/stop." },
             action: { type: "string", description: "Windows reinstall action when toolkit=windows-reinstall: preflight, prepare, status, or arm." },
             usbDriveLetter: { type: "string", description: "Windows reinstall USB drive letter." },
-            confirmationPhrase: { type: "string", description: "Exact destructive confirmation phrase for arm." },
+            confirmationPhrase: { type: "string", description: "Exact final reinstall confirmation phrase for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "Windows reinstall prepare: require existing valid USB install image." },
             improvement: { type: "string", description: "Optional sanitized reusable improvement note when this run proves a safe toolkit improvement." },
             reuseKey: { type: "string", description: "Stable reusable route/script key when this action should help unrelated future tasks reuse the same method." },
@@ -7500,7 +7511,7 @@ function runMcpServer() {
             family: { type: "string", description: "Task family, for example windows-reinstall, package-install, service-check, driver-check, generic." },
             kind: { type: "string", description: "Action kind, for example prepare, verify, install, repair, backup, probe." },
             intent: { type: "string", description: "Short operator intent for future learning." },
-            risk: { type: "string", description: "low, medium, high, or destructive." },
+            risk: { type: "string", description: "low, medium, high, or critical." },
             idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll with soty_action_status." },
             waitForCompletion: { type: "boolean", description: "When true, keep the tool call open until the action reaches a terminal state. Use this for turnkey user-facing tasks unless the user explicitly asked for background mode." },
@@ -7576,7 +7587,7 @@ function runMcpServer() {
           properties: {
             action: { type: "string", description: "One of: preflight, prepare, status, arm." },
             usbDriveLetter: { type: "string", description: "Removable install USB drive letter, for example D. Defaults to D." },
-            confirmationPhrase: { type: "string", description: "Exact destructive confirmation phrase. Required only for arm." },
+            confirmationPhrase: { type: "string", description: "Exact final reinstall confirmation phrase. Required only for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "When true, prepare refuses to download Windows and requires a valid existing USB install image." },
             waitForCompletion: { type: "boolean", description: "Default true for prepare. Keep true unless the user explicitly asked to run in background." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, default up to 86400000 for prepare." },
@@ -8498,8 +8509,8 @@ function runMcpServer() {
 
   function mcpRunAsForAction({ toolkit = "", family = "", risk = "" } = {}) {
     const key = `${toolkit} ${family}`.toLowerCase();
-    const danger = String(risk || "").toLowerCase();
-    if (key.includes("windows-reinstall") || danger === "destructive") {
+    const normalizedRisk = cleanActionRisk(risk);
+    if (key.includes("windows-reinstall") || normalizedRisk === "critical") {
       return "system";
     }
     return "user";
@@ -8809,8 +8820,8 @@ function runMcpServer() {
       kind: action,
       intent: action === "prepare"
         ? "managed Windows reinstall prepare: backup, media, unattended account, postinstall"
-        : "managed Windows reinstall arm after exact destructive confirmation",
-      risk: action === "arm" ? "destructive" : "high",
+        : "managed Windows reinstall arm after exact final reinstall confirmation",
+      risk: action === "arm" ? "critical" : "high",
       reuseKey: windowsReinstallRouteLearning(action).reuseKey,
       scriptUse: windowsReinstallRouteLearning(action).scriptUse,
       successCriteria: windowsReinstallRouteLearning(action).successCriteria,
@@ -9180,7 +9191,7 @@ function runMcpServer() {
           ...terminal,
           liveStatus,
           liveStatusOk: true,
-          agentGuidance: "Managed Windows reinstall prepare reached a terminal state. If this is needs-confirmation, ask only for the exact destructive confirmation phrase; otherwise report the concrete blocker."
+          agentGuidance: "Managed Windows reinstall prepare reached a terminal state. If this is needs-confirmation, ask only for the exact final reinstall confirmation phrase; otherwise report the concrete blocker."
         }, terminal.ok === false, terminal.exitCode);
       }
       const waitMs = Math.min(reinstallPollDelayMs(liveStatus), 60_000);
@@ -9356,7 +9367,7 @@ function runMcpServer() {
         media: compact.media,
         latestPrepare: compact.latestPrepare,
         agentGuidance: terminal.status === "needs-confirmation"
-          ? "Ready proof is complete. Ask only for the exact destructive confirmation phrase before arm."
+          ? "Ready proof is complete. Ask only for the exact final reinstall confirmation phrase before arm."
           : "This is a fresh managed reinstall status result. Do not use old prepare job tails or local shell probes instead of this compact status."
       };
     }
@@ -9389,7 +9400,7 @@ function runMcpServer() {
       action: "status",
       status: compact.ready ? "needs-confirmation" : "idle",
       text: compact.ready
-        ? "Preparation is ready and awaits exact destructive confirmation."
+        ? "Preparation is ready and awaits exact final reinstall confirmation."
         : "No active managed Windows reinstall prepare is running.",
       exitCode: 0
     };
@@ -9403,7 +9414,7 @@ function runMcpServer() {
         action: "prepare",
         status: "needs-confirmation",
         terminalReason: "user-confirmation-required",
-        text: "Preparation is complete. Destructive confirmation is required before wiping the Windows disk.",
+        text: "Preparation is complete. Final reinstall confirmation is required before starting the final Windows reinstall step.",
         exitCode: 0,
         elapsedMs,
         confirmationPhrase: String(status.confirmationPhrase || ""),
@@ -11166,7 +11177,7 @@ async function runControlCli(args) {
       const target = parsed.args[0] || "";
       const remoteCommand = parsed.args.slice(1).join(" ");
       if (!target || !remoteCommand) {
-        process.stderr.write("sotyctl action run [--toolkit=name] [--phase=name] [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <command>\n");
+        process.stderr.write("sotyctl action run [--toolkit=name] [--phase=name] [--family=name] [--kind=name] [--risk=low|medium|high|critical] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <command>\n");
         process.exit(2);
       }
       const response = await fetch(`http://127.0.0.1:${port}/operator/action`, {
@@ -11189,7 +11200,7 @@ async function runControlCli(args) {
       const filePath = parsed.args[1] || "";
       const shell = parsed.shell || parsed.args[2] || "";
       if (!target || !filePath) {
-        process.stderr.write("sotyctl action script [--toolkit=name] [--phase=name] [--family=name] [--kind=name] [--risk=low|medium|high|destructive] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
+        process.stderr.write("sotyctl action script [--toolkit=name] [--phase=name] [--family=name] [--kind=name] [--risk=low|medium|high|critical] [--idempotency-key=key] [--detached] [--source-device=id] [--timeout=ms] <target> <file> [shell]\n");
         process.exit(2);
       }
       const script = await readFile(filePath, "utf8");
