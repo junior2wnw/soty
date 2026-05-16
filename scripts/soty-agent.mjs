@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.54";
+const agentVersion = "0.4.55";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2538,10 +2538,12 @@ async function postAgentSourceJob(path, body, relayId = "", maxTextLength = maxC
 
 async function postAgentSourceJobAsync(path, body, jobRelayId, relayBaseUrl, maxTextLength = maxChatChars, signal = null) {
   const type = path.endsWith("/script") ? "script" : "run";
+  const sourceMaxTextLength = safeOperatorTextLength(body?.maxTextLength, maxTextLength);
   const start = await fetchAgentSourceJson(new URL("/api/agent/source/start", relayBaseUrl), {
     relayId: jobRelayId,
     type,
-    ...body
+    ...body,
+    maxTextLength: sourceMaxTextLength
   }, signal);
   if (start.unsupported) {
     return { supported: false };
@@ -2617,13 +2619,15 @@ async function postAgentSourceJobAsync(path, body, jobRelayId, relayBaseUrl, max
 
 async function postAgentSourceJobSync(path, body, jobRelayId, relayBaseUrl, maxTextLength = maxChatChars, signal = null) {
   try {
+    const sourceMaxTextLength = safeOperatorTextLength(body?.maxTextLength, maxTextLength);
     const response = await fetch(new URL(path, relayBaseUrl), {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         relayId: jobRelayId,
-        ...body
+        ...body,
+        maxTextLength: sourceMaxTextLength
       }),
       ...(signal ? { signal } : {})
     });
