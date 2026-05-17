@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.61";
+const agentVersion = "0.4.62";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5729,10 +5729,23 @@ function sourceDeviceRuntimeTarget(source, sourceTargets = []) {
   }
   const sourceId = `agent-source:${safe.deviceId}`;
   const candidates = mergeOperatorTargets(sanitizeTargets(sourceTargets), sanitizeTargets(safe.operatorTargets));
-  return candidates.find((target) => target.id === sourceId)
+  const directTarget = candidates.find((target) => target.id === sourceId)
     || candidates.find((target) => isAgentSourceTarget(target.id) && agentSourceDeviceId(target.id) === safe.deviceId)
-    || candidates.find((target) => isAgentSourceTarget(target.id) && targetMatchesSourceDevice(target, safe.deviceId))
-    || sourceDeviceFallbackTarget(safe);
+    || candidates.find((target) => isAgentSourceTarget(target.id) && targetMatchesSourceDevice(target, safe.deviceId));
+  if (directTarget) {
+    return directTarget;
+  }
+  return sourceHasExecutableLocalAgent(safe) ? sourceDeviceFallbackTarget(safe) : null;
+}
+
+function sourceHasExecutableLocalAgent(source) {
+  const localAgent = source?.localAgent || {};
+  return localAgent.ok === true && (
+    localAgent.sourceWorker === true
+    || localAgent.companion === true
+    || localAgent.relay === true
+    || localAgent.codex === true
+  );
 }
 
 async function activeAgentSourceTargets(relayId = "", deviceId = "") {
@@ -6101,7 +6114,10 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       tunnelLabel: promptInline(safeSource.tunnelLabel),
       deviceId: promptInline(safeSource.deviceId),
       deviceNick: promptInline(safeSource.deviceNick),
-      appOrigin: promptInline(safeSource.appOrigin)
+      appOrigin: promptInline(safeSource.appOrigin),
+      localAgentOk: safeSource.localAgent?.ok === true,
+      localAgentSourceWorker: safeSource.localAgent?.sourceWorker === true,
+      localAgentExecutionPlane: promptInline(safeSource.localAgent?.executionPlane || "")
     },
     target: {
       id: targetId,
@@ -6350,8 +6366,9 @@ function sotyRuntimeHints() {
   return [
     "- Identity: \u041b\u043e\u0440\u0434.",
     "- Use memory as short reusable hints, not as rules.",
-    "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
-    "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
+    "- Source-device canonical: when a Soty source target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
+    "- Web-controller canonical: if the current client is controller-only/web-controller and no current source-device agent target is listed, the current phone/browser is not a computer-use plane. It can request tasks on connected devices, but do not run shell/files/desktop/wallpaper on the phone or invent `agent-source:<phone>`.",
+    "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. If the current client is web-controller only, require a named/selected connected device for device actions. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
     "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
@@ -6760,11 +6777,34 @@ function sanitizeAgentSource(value) {
     deviceId: clean(value.deviceId),
     deviceNick: clean(value.deviceNick),
     appOrigin: clean(value.appOrigin),
+    localAgent: sanitizeSourceLocalAgent(value.localAgent),
     sourceRelayId: safeRelayId(value.sourceRelayId),
     preferredTargetId: clean(value.preferredTargetId) || selectedTarget.id,
     preferredTargetLabel: clean(value.preferredTargetLabel) || selectedTarget.label,
     operatorTargets: operatorTargetList,
     deviceNetwork
+  };
+}
+
+function sanitizeSourceLocalAgent(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const clean = (field, max = 80) => String(field || "").trim().slice(0, max);
+  const readBoolean = (field) => field === true || field === "true" || field === "1";
+  return {
+    ok: readBoolean(value.ok),
+    version: clean(value.version, 40),
+    scope: clean(value.scope, 40),
+    platform: clean(value.platform, 40),
+    executionPlane: clean(value.executionPlane, 80),
+    interactiveTaskBridge: readBoolean(value.interactiveTaskBridge),
+    companion: readBoolean(value.companion),
+    sourceWorker: readBoolean(value.sourceWorker),
+    autoUpdate: readBoolean(value.autoUpdate),
+    system: readBoolean(value.system),
+    relay: readBoolean(value.relay),
+    codex: readBoolean(value.codex)
   };
 }
 

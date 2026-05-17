@@ -82,6 +82,7 @@ export interface LocalAgentRequestSource {
   readonly tunnelLabel?: string;
   readonly deviceId?: string;
   readonly deviceNick?: string;
+  readonly localAgent?: LocalAgentStatus;
   readonly sourceRelayId?: string;
   readonly appOrigin?: string;
   readonly preferredTargetId?: string;

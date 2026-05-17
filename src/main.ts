@@ -2660,6 +2660,9 @@ function agentDeviceNetworkContext(
     ? null
     : linkedOperatorTargetForTunnel(tunnelId, targets);
   const selectedTargetDeviceId = selectedTarget?.hostDeviceId || selectedTarget?.deviceIds?.[0] || "";
+  const sourceCapabilities = isAgentSourceCompanionReady(localAgent)
+    ? ["source-device-agent"]
+    : ["web-controller"];
   return {
     protocol: "soty-device-network.v1",
     controllerDeviceId: device?.id || "",
@@ -2678,7 +2681,8 @@ function agentDeviceNetworkContext(
       "room-file-transfer",
       "artifact-transfer",
       "desktop-actions",
-      "multi-device-context"
+      "multi-device-context",
+      ...sourceCapabilities
     ],
     targets: [...targets]
   };
@@ -4562,24 +4566,8 @@ function sendAgentDialogMessage(
   if (!tunnel || (!agentTunnel && options.explicitMention !== true) || !text.trim()) {
     return Promise.resolve(null);
   }
-  const targets = operatorTargets();
-  const deviceNetwork = agentDeviceNetworkContext(tunnelId, tunnel, targets);
-  const preferredTarget = agentTunnel
-    ? null
-    : linkedOperatorTargetForTunnel(tunnelId, targets);
   const taskText = options.explicitMention === true ? stripLordAgentInvocation(text) : text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
-  const source: LocalAgentRequestSource = {
-    tunnelId,
-    tunnelLabel: counterpartyLabel(tunnel),
-    deviceId: device?.id || "",
-    deviceNick: device?.nick || "",
-    appOrigin: window.location.origin,
-    preferredTargetId: preferredTarget?.id || "",
-    preferredTargetLabel: preferredTarget?.label || "",
-    operatorTargets: targets,
-    deviceNetwork
-  };
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const next = previous
     .catch(() => undefined)
@@ -4596,6 +4584,7 @@ function sendAgentDialogMessage(
         } else if (options.explicitMention === true) {
           await preparePeerAgentInvocation(tunnelId);
         }
+        const source = agentRequestSourceForTunnel(tunnelId, tunnel, agentTunnel);
         reply = await askLocalAgentReply(taskText, context, source, 2 * 60 * 60_000, (message) => {
           const streamed = normalizeChatMessage(cleanAgentReplyText(message));
           if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
@@ -4636,8 +4625,35 @@ function sendAgentDialogMessage(
   return next;
 }
 
+function agentRequestSourceForTunnel(tunnelId: string, tunnel: TunnelRecord, agentTunnel: boolean): LocalAgentRequestSource {
+  const targets = operatorTargets();
+  const deviceNetwork = agentDeviceNetworkContext(tunnelId, tunnel, targets);
+  const preferredTarget = agentTunnel
+    ? null
+    : linkedOperatorTargetForTunnel(tunnelId, targets);
+  return {
+    tunnelId,
+    tunnelLabel: counterpartyLabel(tunnel),
+    deviceId: device?.id || "",
+    deviceNick: device?.nick || "",
+    localAgent,
+    appOrigin: window.location.origin,
+    preferredTargetId: preferredTarget?.id || "",
+    preferredTargetLabel: preferredTarget?.label || "",
+    operatorTargets: targets,
+    deviceNetwork
+  };
+}
+
 async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecord): Promise<void> {
   if (!device || !isAgentTunnel(tunnel)) {
+    return;
+  }
+  localAgent = await ensureAgentSourceCompanion();
+  if (!isAgentSourceCompanionReady(localAgent)) {
+    renderTiles();
+    renderTerminal();
+    publishOperatorTargets();
     return;
   }
   if (!remoteEnabled.has(tunnelId)) {
@@ -4650,7 +4666,6 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   renderTiles();
   renderTerminal();
   publishOperatorTargets();
-  localAgent = await checkLocalAgent(900);
   await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500).catch(() => false);
   startAgentSourceControl(tunnelId);
   publishOperatorTargets();

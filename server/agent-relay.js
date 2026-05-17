@@ -654,7 +654,10 @@ function findRunnableAgentSource(relayId, deviceId) {
 }
 
 function isRunnableAgentSource(source, now = Date.now()) {
-  return Boolean(source && source.access === true && now - source.lastSeenAt < sourceConnectedMs);
+  return Boolean(source
+    && source.access === true
+    && now - source.lastSeenAt < sourceConnectedMs
+    && agentSourceHasRunnableWorker(source, now));
 }
 
 function agentSourceUnavailableText(diagnostic) {
@@ -692,6 +695,9 @@ function agentSourceDiagnosticReason({ relayId, deviceId, source, sourceDiagnost
   }
   if (sourceDiagnostic.lastSeenAgeMs >= sourceConnectedMs) {
     return "source-stale";
+  }
+  if (!agentSourceHasRunnableWorker(source)) {
+    return "worker-unavailable";
   }
   return "ok";
 }
@@ -791,7 +797,7 @@ function publicSourceWorker(worker, now = Date.now()) {
 function connectedAgentSources(relayId) {
   const now = Date.now();
   return [...agentSources.values()]
-    .filter((source) => source.relayId === relayId && source.access === true && now - source.lastSeenAt < sourceConnectedMs);
+    .filter((source) => source.relayId === relayId && isRunnableAgentSource(source, now));
 }
 
 function touchAgentSource(source) {
@@ -896,6 +902,18 @@ function publicSourceLocalAgent(value) {
 
 function sourceCapabilityBlocker(source, runAs) {
   return sourceWorkerRoute(source, runAs).blocker;
+}
+
+function agentSourceHasRunnableWorker(source, now = Date.now()) {
+  if (!source) {
+    return false;
+  }
+  const userRoute = sourceWorkerRoute(source, "user", now);
+  if (!userRoute.blocker) {
+    return true;
+  }
+  const systemRoute = sourceWorkerRoute(source, "system", now);
+  return !systemRoute.blocker;
 }
 
 function sourceWorkerRoute(source, runAs, now = Date.now()) {
@@ -1405,6 +1423,7 @@ function cleanAgentSource(value) {
     deviceId: cleanText(value.deviceId, maxSourceChars),
     deviceNick: cleanText(value.deviceNick, maxSourceChars),
     appOrigin: cleanText(value.appOrigin, maxSourceChars),
+    localAgent: localAgentInfoFrom(value) || {},
     sourceRelayId: normalizeRelayId(value.sourceRelayId),
     preferredTargetId: explicitPreferredId || selectedTarget.id,
     preferredTargetLabel: explicitPreferredLabel || selectedTarget.label,

@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.61");
+      assertEqual(health.body.version, "0.4.62");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -280,6 +280,55 @@ async function runScenarios({ relayUrl } = {}) {
         const systemPollForSystemJob = await relayRequest(base, "GET", `/api/agent/source/poll?${systemQuery}`);
         assertEqual(systemPollForSystemJob.body.jobs.length, 1);
         assertEqual(systemPollForSystemJob.body.jobs[0].runAs, "system");
+      } finally {
+        await closeServer(relayServer);
+      }
+    }],
+    ["web-only source grant is controller-only until a direct worker connects", async () => {
+      const app = express();
+      attachAgentRelay(app);
+      const relayServer = createServer(app);
+      await listen(relayServer, "127.0.0.1", 0);
+      const base = `http://127.0.0.1:${relayServer.address().port}`;
+      const relayId = "relay_phone_controller_0000000001";
+      const deviceId = "phone-web-only";
+      try {
+        const grant = await relayRequest(base, "POST", "/api/agent/source/grant", {
+          relayId,
+          deviceId,
+          deviceNick: "phone",
+          enabled: true,
+          clientProtocol: "soty-source-client.v2",
+          clientCapabilities: ["runas", "local-agent-health"],
+          localAgent: { ok: false, sourceWorker: false }
+        });
+        assertEqual(grant.status, 200);
+        const targets = await relayRequest(base, "GET", `/api/agent/source/targets?relayId=${relayId}`);
+        assertEqual(targets.status, 200);
+        assertEqual(targets.body.targets.length, 0);
+        const status = await relayRequest(base, "GET", `/api/agent/source/status?relayId=${relayId}&deviceId=${deviceId}`);
+        assertEqual(status.status, 200);
+        assertEqual(status.body.reason, "worker-unavailable");
+        const rejected = await relayRequest(base, "POST", "/api/agent/source/start", {
+          relayId,
+          deviceId,
+          type: "run",
+          command: "echo phone",
+          runAs: "user",
+          timeoutMs: 5000
+        });
+        assertEqual(rejected.status, 404);
+        assertEqual(rejected.body.diagnostic.reason, "worker-unavailable");
+        await relayRequest(base, "GET", `/api/agent/source/poll?${sourceWorkerQuery(relayId, deviceId, {
+          scope: "CurrentUser",
+          companion: true,
+          system: false,
+          executionPlane: "user-session-companion"
+        })}`);
+        const runnableTargets = await relayRequest(base, "GET", `/api/agent/source/targets?relayId=${relayId}`);
+        assertEqual(runnableTargets.status, 200);
+        assertEqual(runnableTargets.body.targets.length, 1);
+        assertEqual(runnableTargets.body.targets[0].id, `agent-source:${deviceId}`);
       } finally {
         await closeServer(relayServer);
       }
@@ -1095,6 +1144,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("sotyRuntimeHints"));
       assert(agent.includes("runAgentSourceWorkerLoop"));
       assert(agent.includes("direct-device-worker"));
+      assert(agent.includes("sourceHasExecutableLocalAgent"));
+      assert(agent.includes("Web-controller canonical"));
+      assert(relay.includes("worker-unavailable"));
+      assert(main.includes('"web-controller"'));
       assert(agent.includes("sourceWorker: canRunAgentSourceWorker()"));
   assert(main.includes("checkAgentSourceMachineAgent"));
   assert(main.includes("isAgentMachineLinkReady"));
@@ -1389,7 +1442,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.61");
+      assertEqual(manifest.version, "0.4.62");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1515,7 +1568,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.61"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.62"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1562,7 +1615,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.61"'));
+      assert(agentSource.includes('const agentVersion = "0.4.62"'));
       assert(agentSource.includes("startOperatorRunJsonStream"));
       assert(agentSource.includes("sendLongOperatorJson"));
       assert(agentSource.includes('"X-Accel-Buffering": "no"'));
@@ -1672,14 +1725,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.61";', 'const agentVersion = "0.4.60";');
-      assert(oldSource.includes('const agentVersion = "0.4.60"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.62";', 'const agentVersion = "0.4.61";');
+      assert(oldSource.includes('const agentVersion = "0.4.61"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.61",
+            version: "0.4.62",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
