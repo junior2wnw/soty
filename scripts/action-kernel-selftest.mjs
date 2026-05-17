@@ -1443,6 +1443,17 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("codex.active-guard-interrupted"));
       assert(agent.includes("shouldStop: () => activeTurn?.interruptedByUser === true"));
       assert(agent.includes('terminalReason: "user-followup"'));
+      assert(agent.includes('hardTimeout: "disabled"'));
+      assert(!agent.includes("agentReplyTimeoutMs"));
+      assert(!agent.includes("SOTY_CODEX_REPLY_TIMEOUT_MS"));
+      assert(!agent.includes('"codex.timeout"'));
+      assert(!agent.includes("timeout waiting for Codex CLI"));
+      assert(!agent.includes("Keep waiting until the outer timeout"));
+      assert(agent.includes("resolveCodexTaskFamily"));
+      assert(agent.includes("recentCodexSessionFamilyForTarget"));
+      assert(agent.includes("isLowContextCodexFollowup"));
+      assert(agent.includes("inferCodexSessionFamilyFromWorkspace"));
+      assert(agent.includes("taskFamily,"));
       assert(agent.includes("maybeWaitForWindowsReinstallTerminalAfterCodex"));
       assert(agent.includes("windows-reinstall-post-codex"));
       assert(agent.includes("postCodexGuard"));

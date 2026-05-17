@@ -55,10 +55,6 @@ let agentDeviceNick = safeSourceText(process.env.SOTY_AGENT_DEVICE_NICK || persi
 const maxCodexDialogMessages = 64;
 const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
-const agentReplyTimeoutMs = Math.max(
-  maxLongTaskTimeoutMs,
-  safeDurationMs(process.env.SOTY_CODEX_REPLY_TIMEOUT_MS, maxLongTaskTimeoutMs, maxLongTaskTimeoutMs)
-);
 const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIMEOUT_MS, 25_000, 120_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
@@ -4193,7 +4189,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const sourceTargets = await activeAgentSourceTargets(safeSource.sourceRelayId);
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
-  const taskFamily = classifyTaskFamily(text, target);
+  const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
   const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
   const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
@@ -4337,7 +4333,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   };
   let result;
   try {
-    result = await runCodexForSotyChat(codexBin, args, childEnv, agentReplyTimeoutMs, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
+    result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
     if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
       const freshState = {
         threadId: "",
@@ -4359,7 +4355,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       });
       delete persistedCodexSessions[sessionKey];
       await saveCodexSessions();
-      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, agentReplyTimeoutMs, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
+      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
       state.threadId = freshState.threadId;
       state.lastMessage = freshState.lastMessage;
       state.messages = freshState.messages;
@@ -4410,6 +4406,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     persistedCodexSessions[sessionKey] = {
       threadId: state.threadId,
       mode: codexSessionMode,
+      taskFamily,
       workspaceDir: jobDir,
       sourceDeviceId: safeSource.deviceId || "",
       tunnelId: safeSource.tunnelId || "",
@@ -5127,6 +5124,106 @@ function codexSessionKey(source, target = null, taskFamily = "generic") {
   return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 180);
 }
 
+function codexSessionKeyPrefix(source, target = null) {
+  const safe = sanitizeAgentSource(source);
+  const targetId = String(target?.id || safe.preferredTargetId || "").trim();
+  const key = [
+    safe.tunnelId || safe.deviceId || "default",
+    targetId,
+    "family:"
+  ].filter(Boolean).join("@");
+  return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 180);
+}
+
+function codexSessionFamilyFromKey(key, record = null) {
+  const stored = cleanActionToken(record?.taskFamily || "", "");
+  if (stored) {
+    return codexSessionFamilyBucket(stored);
+  }
+  const index = String(key || "").lastIndexOf("family:");
+  return index >= 0 ? codexSessionFamilyBucket(String(key).slice(index + "family:".length)) : "";
+}
+
+function inferCodexSessionFamilyFromWorkspace(record = null) {
+  const workspaceDir = safeCodexWorkspacePath(record?.workspaceDir);
+  if (!workspaceDir) {
+    return "";
+  }
+  const contextPath = join(workspaceDir, "SOTY_CONTEXT.md");
+  if (!existsSync(contextPath)) {
+    return "";
+  }
+  try {
+    const context = readFileSync(contextPath, "utf8").slice(-64_000);
+    const family = classifySourceCommand(context);
+    return family && family !== "generic" ? codexSessionFamilyBucket(family) : "";
+  } catch {
+    return "";
+  }
+}
+
+function isDialogCodexSessionFamily(family) {
+  return ["dialog", "plain-dialog", "source-scoped-dialog"].includes(codexSessionFamilyBucket(family));
+}
+
+function isLowContextCodexFollowup(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return false;
+  }
+  const lower = value.toLowerCase();
+  return /^(?:да|нет|ок|окей|подтверждаю|согласен|проверь|проверяй|продолж|дальше|готов|завис|слишком долго|не мига|yes|no|ok|confirm|continue|check)\b/iu.test(lower)
+    || /(?:флешк|usb|носител|статус|готов|завис|слишком долго|не мига|подтверж|финальн|фраз|что дальше|продолж)/iu.test(lower)
+    || /^erase internal disk\b/iu.test(lower);
+}
+
+function recentCodexSessionFamilyForTarget(source, target = null) {
+  const prefix = codexSessionKeyPrefix(source, target);
+  if (!prefix) {
+    return "";
+  }
+  const now = Date.now();
+  let best = null;
+  for (const [key, record] of Object.entries(persistedCodexSessions || {})) {
+    if (!String(key).startsWith(prefix) || !usableCodexSessionRecord(record)) {
+      continue;
+    }
+    let family = codexSessionFamilyFromKey(key, record);
+    if (!family || isDialogCodexSessionFamily(family) || isRoutineAgentTaskFamily(family)) {
+      const inferred = inferCodexSessionFamilyFromWorkspace(record);
+      if (inferred && !isDialogCodexSessionFamily(inferred) && !isRoutineAgentTaskFamily(inferred)) {
+        family = inferred;
+      }
+    }
+    if (!family || isDialogCodexSessionFamily(family) || isRoutineAgentTaskFamily(family)) {
+      continue;
+    }
+    const updatedAt = Date.parse(record?.updatedAt || "");
+    if (!Number.isFinite(updatedAt) || now - updatedAt > maxLongTaskTimeoutMs) {
+      continue;
+    }
+    if (!best || updatedAt > best.updatedAt) {
+      best = { family, updatedAt };
+    }
+  }
+  return best?.family || "";
+}
+
+function resolveCodexTaskFamily(text, source, target = null) {
+  const classified = classifyTaskFamily(text, target);
+  if (!target?.id) {
+    return classified;
+  }
+  const bucket = codexSessionFamilyBucket(classified);
+  if (!isDialogCodexSessionFamily(bucket) && !isRoutineAgentTaskFamily(bucket)) {
+    return classified;
+  }
+  if (!isDialogCodexSessionFamily(bucket) && !isLowContextCodexFollowup(text)) {
+    return classified;
+  }
+  return recentCodexSessionFamilyForTarget(source, target) || classified;
+}
+
 function codexActiveTargetTurnKey(source, target = null) {
   const safe = sanitizeAgentSource(source);
   const targetId = String(target?.id || safe.preferredTargetId || "").trim();
@@ -5272,12 +5369,12 @@ function quoteWindowsCommandArg(value) {
   return `"${text.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
 }
 
-function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, onMessage = null, onTerminal = null, signal = null) {
+function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = null, onTerminal = null, signal = null) {
   return new Promise((resolve, reject) => {
     traceStep(state?.trace, "codex.spawn", {
       file: basename(file || ""),
       cwd: jobDir || process.cwd(),
-      timeoutMs,
+      hardTimeout: "disabled",
       inputChars: String(input || "").length
     });
     const child = spawnCommand(file, args, {
@@ -5292,6 +5389,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
     let done = false;
     let forcedExitCode = null;
     let sawStartupActivity = false;
+    let startupTimer = null;
     const markStartupActivity = () => {
       if (sawStartupActivity) {
         return;
@@ -5304,7 +5402,6 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
         return;
       }
       done = true;
-      clearTimeout(timer);
       clearTimeout(startupTimer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
@@ -5338,26 +5435,11 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
     } else {
       signal?.addEventListener?.("abort", cancelCodexRun, { once: true });
     }
-    const timer = setTimeout(() => {
-      if (done) {
-        return;
-      }
-      killProcessTree(child);
-      void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
-      void traceWriteText(state?.trace, "stderr-tail.txt", stderr, 24_000);
-      traceStep(state?.trace, "codex.timeout", {
-        timeoutMs,
-        stdoutChars: stdout.length,
-        stderrChars: stderr.length
-      });
-      reject(new Error("timeout"));
-    }, Math.max(5000, timeoutMs || 120000));
-    const startupTimer = setTimeout(() => {
+    startupTimer = setTimeout(() => {
       if (done || sawStartupActivity) {
         return;
       }
       done = true;
-      clearTimeout(timer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       killProcessTree(child);
       traceStep(state?.trace, "codex.startup-timeout", {
@@ -5366,7 +5448,7 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
         stderrChars: stderr.length
       });
       reject(new Error("codex cold start timeout"));
-    }, Math.max(5000, Math.min(codexStartupTimeoutMs, timeoutMs || codexStartupTimeoutMs)));
+    }, Math.max(5000, codexStartupTimeoutMs));
     child.stdout.on("data", (chunk) => {
       markStartupActivity();
       const text = chunk.toString("utf8");
@@ -5390,7 +5472,6 @@ function runCodexForSotyChat(file, args, env, timeoutMs, input, state, jobDir, o
         return;
       }
       done = true;
-      clearTimeout(timer);
       clearTimeout(startupTimer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       traceStep(state?.trace, "codex.spawn-error", {
@@ -6095,10 +6176,10 @@ async function askCodexRelayFallback(text, context, source = {}, onMessage = nul
     }
     signal?.addEventListener?.("abort", cancelRelayFallback, { once: true });
     const eventStream = typeof onMessage === "function" || typeof onTerminal === "function"
-      ? watchCodexRelayFallbackEvents(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs, onMessage, onTerminal, () => stopEvents, signal)
+      ? watchCodexRelayFallbackEvents(relayBaseUrl, replyRelayId, created.id, onMessage, onTerminal, () => stopEvents, signal)
       : Promise.resolve();
     try {
-      const reply = await waitForCodexRelayFallbackReply(relayBaseUrl, replyRelayId, created.id, agentReplyTimeoutMs, signal);
+      const reply = await waitForCodexRelayFallbackReply(relayBaseUrl, replyRelayId, created.id, signal);
       stopEvents = true;
       void eventStream.catch(() => undefined);
       if (signal?.aborted) {
@@ -6132,10 +6213,9 @@ async function cancelCodexRelayFallbackJob(relayBaseUrl, relayId, id) {
   });
 }
 
-async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, timeoutMs, onMessage, onTerminal, stopped, signal = null) {
-  const deadline = Date.now() + Math.max(5000, timeoutMs || 120000);
+async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, onMessage, onTerminal, stopped, signal = null) {
   let after = 0;
-  while (!stopped() && !signal?.aborted && Date.now() < deadline) {
+  while (!stopped() && !signal?.aborted) {
     const url = new URL("/api/agent/relay/events", relayBaseUrl);
     url.searchParams.set("relayId", relayId);
     url.searchParams.set("id", id);
@@ -6178,12 +6258,11 @@ async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, timeoutM
   }
 }
 
-async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeoutMs, signal = null) {
+async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, signal = null) {
   if (!relayId || !id) {
     return null;
   }
-  const deadline = Date.now() + Math.max(5000, timeoutMs || 120000);
-  while (!signal?.aborted && Date.now() < deadline) {
+  while (!signal?.aborted) {
     const url = new URL("/api/agent/relay/reply", relayBaseUrl);
     url.searchParams.set("relayId", relayId);
     url.searchParams.set("id", id);
@@ -6204,7 +6283,7 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
         };
       }
     } catch {
-      // Keep waiting until the outer timeout; transient network switches are common on remote devices.
+      // Keep waiting; transient network switches are common on remote devices.
     }
   }
   return signal?.aborted ? { ok: false, text: "! cancelled", exitCode: 130 } : null;
@@ -6214,7 +6293,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   const safeSource = sanitizeAgentSource(source);
   const agentDialog = isAgentDialogSource(safeSource);
   const targetForPrompt = target || null;
-  const taskFamily = classifyTaskFamily(text, target);
+  const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
   const routineTask = isRoutineAgentTaskFamily(taskFamily);
   const sourceDeviceId = promptInline(bridgeSourceDeviceId(targetForPrompt, safeSource) || (targetForPrompt ? safeSource.deviceId : "") || "");
   const targetLabel = promptInline(targetForPrompt?.label || (agentDialog ? "" : safeSource.preferredTargetLabel) || "");
@@ -7084,7 +7163,7 @@ function shouldUseCodexRelayFallback(reply) {
   if (!codexRelayFallback || !reply || reply.ok) {
     return false;
   }
-  return /codex-cli:\s*not found|missing auth|api key|403 forbidden|unable to load site|transport rejected|cold start|local Codex did not start|timeout waiting for Codex CLI/iu.test(String(reply.text || ""));
+  return /codex-cli:\s*not found|missing auth|api key|403 forbidden|unable to load site|transport rejected|cold start|local Codex did not start/iu.test(String(reply.text || ""));
 }
 
 function agentFailureText(details) {
