@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.62";
+const agentVersion = "0.4.63";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5657,10 +5657,7 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   if (linked) {
     return linked;
   }
-  if (safe.deviceId) {
-    return sourceDeviceFallbackTarget(safe);
-  }
-  return null;
+  return sourceDeviceRuntimeTarget(safe, sourceTargets);
 }
 
 function matchingAgentSourceTarget(target, sourceTargets = []) {

@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.62");
+      assertEqual(health.body.version, "0.4.63");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -329,6 +329,84 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(runnableTargets.status, 200);
         assertEqual(runnableTargets.body.targets.length, 1);
         assertEqual(runnableTargets.body.targets[0].id, `agent-source:${deviceId}`);
+      } finally {
+        await closeServer(relayServer);
+      }
+    }],
+    ["web-only controller relay request keeps selected peer as target", async () => {
+      const app = express();
+      attachAgentRelay(app);
+      const relayServer = createServer(app);
+      await listen(relayServer, "127.0.0.1", 0);
+      const base = `http://127.0.0.1:${relayServer.address().port}`;
+      const clientRelayId = "relay_phone_peer_client_00000001";
+      try {
+        await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${clientRelayId}&codex=1&scope=ClientSelftest&deviceId=server&wait=0`);
+        await relayRequest(base, "POST", "/api/agent/source/grant", {
+          relayId: clientRelayId,
+          deviceId: "dev-phone",
+          deviceNick: "Телефон",
+          enabled: true,
+          clientProtocol: "soty-source-client.v2",
+          clientCapabilities: ["runas", "local-agent-health"],
+          localAgent: { ok: false, sourceWorker: false }
+        });
+        const peerTarget = {
+          id: "room-comp",
+          label: "комп",
+          deviceIds: ["dev-comp"],
+          hostDeviceId: "dev-comp",
+          access: true,
+          host: false,
+          selected: true,
+          lastActionAt: new Date().toISOString()
+        };
+        const created = await relayRequest(base, "POST", "/api/agent/relay/request", {
+          relayId: clientRelayId,
+          text: "сгенерируй фотку книги и поставь на рабочий стол",
+          context: "",
+          source: {
+            tunnelId: "room-comp",
+            tunnelLabel: "комп",
+            deviceId: "dev-phone",
+            deviceNick: "Телефон",
+            localAgent: { ok: false, sourceWorker: false },
+            preferredTargetId: "room-comp",
+            preferredTargetLabel: "комп",
+            operatorTargets: [peerTarget],
+            deviceNetwork: {
+              protocol: "soty-device-network.v1",
+              controllerDeviceId: "dev-phone",
+              controllerDeviceNick: "Телефон",
+              activeTunnelId: "room-comp",
+              activeTunnelLabel: "комп",
+              activeTunnelKind: "peer",
+              selectedTargetId: "room-comp",
+              selectedTargetLabel: "комп",
+              selectedTargetDeviceId: "dev-comp",
+              selectedTargetAccess: true,
+              selectedTargetLink: true,
+              capabilities: ["linked-device-actions", "multi-device-context", "web-controller"],
+              targets: [peerTarget]
+            }
+          }
+        });
+        assertEqual(created.status, 200);
+        const poll = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${clientRelayId}&codex=1&scope=ClientSelftest&deviceId=server&wait=0`);
+        const job = poll.body.jobs.find((item) => item.id === created.body.id);
+        assert(job);
+        assertEqual(job.source.preferredTargetId, "room-comp");
+        assertEqual(job.source.preferredTargetLabel, "комп");
+        assertEqual(job.source.deviceNetwork.selectedTargetId, "room-comp");
+        assert(job.source.deviceNetwork.capabilities.includes("web-controller"));
+        assert(!job.source.operatorTargets.some((target) => target.id === "agent-source:dev-phone"));
+        await relayRequest(base, "POST", "/api/agent/relay/reply", {
+          relayId: clientRelayId,
+          id: created.body.id,
+          ok: true,
+          text: "ok",
+          exitCode: 0
+        });
       } finally {
         await closeServer(relayServer);
       }
@@ -1442,7 +1520,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.62");
+      assertEqual(manifest.version, "0.4.63");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1568,7 +1646,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.62"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.63"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1615,7 +1693,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.62"'));
+      assert(agentSource.includes('const agentVersion = "0.4.63"'));
       assert(agentSource.includes("startOperatorRunJsonStream"));
       assert(agentSource.includes("sendLongOperatorJson"));
       assert(agentSource.includes('"X-Accel-Buffering": "no"'));
@@ -1684,6 +1762,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("!isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id)"));
       assert(ui.includes("access: true"));
       assert(agentSource.includes("matchingAgentSourceTarget"));
+      assert(agentSource.includes("return sourceDeviceRuntimeTarget(safe, sourceTargets);"));
+      assert(!agentSource.includes("return sourceDeviceFallbackTarget(safe);\n  }\n  return null;"));
       assert(agentSource.includes("agent-channel=true"));
       assert(agentSource.includes("link-only=true"));
       assert(agentSource.includes("accessTargets.find((target) => target.id === safe.preferredTargetId"));
@@ -1725,14 +1805,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.62";', 'const agentVersion = "0.4.61";');
-      assert(oldSource.includes('const agentVersion = "0.4.61"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.63";', 'const agentVersion = "0.4.62";');
+      assert(oldSource.includes('const agentVersion = "0.4.62"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.62",
+            version: "0.4.63",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
