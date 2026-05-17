@@ -69,8 +69,17 @@ interface OperatorExportPayload {
 
 interface RestoreResult {
   readonly count: number;
+  readonly scenarioCount: number;
   readonly texts: Map<string, string>;
 }
+
+type SavedScenario = {
+  readonly id: string;
+  readonly title: string;
+  readonly prompt: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
 
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
@@ -136,6 +145,9 @@ const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
+const scenariosKey = "soty:scenarios:v1";
+const maxSavedScenarios = 100;
+const maxScenarioPromptChars = 20_000;
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
 const chessAgentTimers = new Map<string, number>();
@@ -454,6 +466,7 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
     device = await createDevice(cleanNick(payload.device?.nick || "Soty"));
   }
 
+  const scenarioCount = restoreSavedScenariosFromPayload(payload);
   const restored = restoredTunnelsFromPayload(payload);
   if (restored.tunnels.length > 0) {
     saveTunnels(restored.tunnels);
@@ -472,6 +485,7 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   chessOpenId = "";
   return {
     count: restored.tunnels.length,
+    scenarioCount,
     texts: restored.texts
   };
 }
@@ -522,7 +536,10 @@ async function importSotyStateFile(file: File): Promise<void> {
     const restored = await restoreFromOperatorExportText(file.text());
     if (restored) {
       window.setTimeout(() => {
-        openTaskMenu(`IMPORTED ${restored.count}`);
+        const status = restored.scenarioCount > 0
+          ? `IMPORTED ${restored.count} DIALOGS / ${restored.scenarioCount} SCENARIOS`
+          : `IMPORTED ${restored.count}`;
+        openTaskMenu(status);
       }, 0);
       return;
     }
@@ -545,6 +562,20 @@ function downloadTextFile(fileName: string, blob: Blob): void {
 
 function openTaskMenu(status = ""): void {
   closeTaskMenu();
+  const savedScenarios = loadSavedScenarios();
+  const savedRows = savedScenarios.length > 0
+    ? `
+      <div class="task-menu-group scenario-list-group">
+        <h3>SCENARIOS</h3>
+        ${savedScenarios.map((scenario) => `
+          <div class="scenario-row">
+            <button class="task-menu-row scenario-run-action" type="button" data-scenario-id="${escapeHtml(scenario.id)}">${icon("send")}<span><b>${escapeHtml(scenario.title)}</b><small>${escapeHtml(scenarioUpdatedLabel(scenario))}</small></span></button>
+            <button class="scenario-delete-action icon-button" type="button" aria-label="delete scenario" data-scenario-id="${escapeHtml(scenario.id)}" data-tooltip="Delete">${icon("close")}</button>
+          </div>
+        `).join("")}
+      </div>
+    `
+    : "";
   const overlay = document.createElement("div");
   overlay.className = "task-menu-modal";
   overlay.innerHTML = `
@@ -564,8 +595,10 @@ function openTaskMenu(status = ""): void {
       </div>
       <div class="task-menu-group">
         <h3>AGENT</h3>
+        <button class="task-menu-row save-scenario-action" type="button">${icon("check")}<span><b>SAVE CURRENT</b><small>as scenario</small></span></button>
         <button class="task-menu-row new-scenario-action" type="button">${icon("person")}<span><b>NEW SCENARIO</b><small>draft with agent</small></span></button>
       </div>
+      ${savedRows}
       <output class="task-menu-status"${status ? "" : " hidden"}>${escapeHtml(status)}</output>
     </section>
   `;
@@ -583,9 +616,23 @@ function openTaskMenu(status = ""): void {
   overlay.querySelector<HTMLButtonElement>(".import-state-action")?.addEventListener("click", () => {
     app.querySelector<HTMLInputElement>(".soty-import-file")?.click();
   });
+  overlay.querySelector<HTMLButtonElement>(".save-scenario-action")?.addEventListener("click", () => {
+    saveCurrentScenario();
+  });
   overlay.querySelector<HTMLButtonElement>(".new-scenario-action")?.addEventListener("click", () => {
     closeTaskMenu();
     void startScenarioDraft();
+  });
+  overlay.querySelectorAll<HTMLButtonElement>(".scenario-run-action").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.scenarioId || "";
+      void runSavedScenario(id);
+    });
+  });
+  overlay.querySelectorAll<HTMLButtonElement>(".scenario-delete-action").forEach((button) => {
+    button.addEventListener("click", () => {
+      deleteSavedScenario(button.dataset.scenarioId || "");
+    });
   });
 }
 
@@ -619,6 +666,162 @@ async function startScenarioDraft(): Promise<void> {
   composer.focus();
   composer.setSelectionRange(composer.value.length, composer.value.length);
   rememberComposerDraft();
+}
+
+function saveCurrentScenario(): void {
+  const prompt = normalizeChatMessage(composer?.value || "").slice(0, maxScenarioPromptChars);
+  if (!prompt) {
+    setTaskMenuStatus("EMPTY DRAFT", true);
+    return;
+  }
+  const now = new Date().toISOString();
+  const title = scenarioTitleFromPrompt(prompt);
+  const scenarios = loadSavedScenarios();
+  const duplicate = scenarios.find((scenario) => scenario.prompt === prompt);
+  const next: SavedScenario = duplicate
+    ? { ...duplicate, title, updatedAt: now }
+    : {
+        id: createScenarioId(),
+        title,
+        prompt,
+        createdAt: now,
+        updatedAt: now
+      };
+  saveSavedScenarios([next, ...scenarios.filter((scenario) => scenario.id !== next.id)]);
+  openTaskMenu("SAVED SCENARIO");
+}
+
+async function runSavedScenario(id: string): Promise<void> {
+  const scenario = loadSavedScenarios().find((item) => item.id === id);
+  if (!scenario) {
+    setTaskMenuStatus("SCENARIO MISSING", true);
+    return;
+  }
+  closeTaskMenu();
+  await startAgentDialog();
+  if (!composer) {
+    return;
+  }
+  composer.value = scenario.prompt;
+  composer.focus();
+  composer.setSelectionRange(composer.value.length, composer.value.length);
+  rememberComposerDraft();
+}
+
+function deleteSavedScenario(id: string): void {
+  const scenarios = loadSavedScenarios();
+  const next = scenarios.filter((scenario) => scenario.id !== id);
+  if (next.length === scenarios.length) {
+    setTaskMenuStatus("SCENARIO MISSING", true);
+    return;
+  }
+  saveSavedScenarios(next);
+  openTaskMenu("DELETED");
+}
+
+function loadSavedScenarios(): SavedScenario[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(scenariosKey) || "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map(normalizeSavedScenario)
+      .filter((scenario): scenario is SavedScenario => Boolean(scenario))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, maxSavedScenarios);
+  } catch {
+    return [];
+  }
+}
+
+function saveSavedScenarios(items: readonly SavedScenario[]): void {
+  const normalized = items
+    .map(normalizeSavedScenario)
+    .filter((scenario): scenario is SavedScenario => Boolean(scenario))
+    .slice(0, maxSavedScenarios);
+  localStorage.setItem(scenariosKey, JSON.stringify(normalized));
+}
+
+function restoreSavedScenariosFromPayload(payload: OperatorExportPayload): number {
+  const raw = recordString(payload.localStorage, scenariosKey);
+  if (!raw) {
+    return 0;
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return 0;
+    }
+    const imported = parsed
+      .map(normalizeSavedScenario)
+      .filter((scenario): scenario is SavedScenario => Boolean(scenario));
+    if (imported.length === 0) {
+      return 0;
+    }
+    const merged = new Map<string, SavedScenario>();
+    for (const scenario of [...loadSavedScenarios(), ...imported]) {
+      const existing = merged.get(scenario.id);
+      if (!existing || scenario.updatedAt.localeCompare(existing.updatedAt) > 0) {
+        merged.set(scenario.id, scenario);
+      }
+    }
+    saveSavedScenarios(Array.from(merged.values()));
+    return imported.length;
+  } catch {
+    return 0;
+  }
+}
+
+function normalizeSavedScenario(raw: unknown): SavedScenario | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const prompt = normalizeChatMessage(recordString(raw, "prompt")).slice(0, maxScenarioPromptChars);
+  if (!prompt) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  const createdAt = recordString(raw, "createdAt") || now;
+  const updatedAt = recordString(raw, "updatedAt") || createdAt;
+  return {
+    id: normalizeScenarioId(recordString(raw, "id")) || createScenarioId(),
+    title: cleanScenarioTitle(recordString(raw, "title")) || scenarioTitleFromPrompt(prompt),
+    prompt,
+    createdAt,
+    updatedAt
+  };
+}
+
+function scenarioTitleFromPrompt(prompt: string): string {
+  const line = prompt
+    .split("\n")
+    .map((item) => item.trim())
+    .find((item) => item && !/^сценарий:?$/iu.test(item));
+  return cleanScenarioTitle((line || "SCENARIO").replace(/^цель:\s*/iu, ""));
+}
+
+function cleanScenarioTitle(value: string): string {
+  return cleanNick(value).slice(0, 54) || "SCENARIO";
+}
+
+function scenarioUpdatedLabel(scenario: SavedScenario): string {
+  const date = new Date(scenario.updatedAt);
+  if (Number.isNaN(date.getTime())) {
+    return "saved";
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function createScenarioId(): string {
+  const randomId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `scenario_${randomId.replace(/[^a-z0-9_-]/giu, "").slice(0, 80)}`;
+}
+
+function normalizeScenarioId(value: string): string {
+  return value.replace(/[^a-z0-9_-]/giu, "").slice(0, 96);
 }
 
 function restoredTunnelsFromPayload(payload: OperatorExportPayload): { readonly tunnels: TunnelRecord[]; readonly texts: Map<string, string> } {
@@ -5137,11 +5340,12 @@ function operatorDelay(char: string, speed: string): number {
 }
 
 function buildOperatorExport(options: { readonly target?: string; readonly tailChars?: number } = {}): string {
-  const target = cleanNick(options.target || "");
+  const rawTarget = typeof options.target === "string" ? options.target.trim() : "";
+  const target = rawTarget ? cleanNick(rawTarget) : "";
   const tailChars = Number.isSafeInteger(options.tailChars)
     ? Math.max(0, Math.min(200_000, Number(options.tailChars)))
     : 0;
-  const focused = Boolean(target);
+  const focused = Boolean(rawTarget);
   const local: Record<string, string> = {};
   if (!focused) {
     for (let index = 0; index < localStorage.length; index += 1) {

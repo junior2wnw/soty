@@ -1766,6 +1766,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("importSotyStateFile"));
       assert(ui.includes("showSaveFilePicker"));
       assert(ui.includes("NEW SCENARIO"));
+      assert(ui.includes("soty:scenarios:v1"));
+      assert(ui.includes("SAVE CURRENT"));
+      assert(ui.includes("runSavedScenario"));
+      assert(ui.includes("restoreSavedScenariosFromPayload"));
+      assert(ui.includes("const rawTarget = typeof options.target"));
+      assert(ui.includes("const focused = Boolean(rawTarget)"));
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));

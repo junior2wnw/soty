@@ -1197,6 +1197,29 @@ svg {
   white-space: nowrap;
 }
 
+.scenario-list-group {
+  max-height: min(34vh, 260px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.scenario-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 7px;
+}
+
+.scenario-row .task-menu-row {
+  min-height: 44px;
+}
+
+.scenario-delete-action {
+  width: 38px;
+  min-height: 44px;
+  color: var(--red);
+}
+
 .task-menu-status {
   min-height: 28px;
   display: grid;
