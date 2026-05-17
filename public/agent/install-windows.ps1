@@ -9,7 +9,6 @@
   [string]$DeviceId = "",
   [string]$DeviceNick = "",
   [switch]$SourceCompanion,
-  [string]$CodexProxyUrl = "",
   [switch]$InstallCodex
 )
 
@@ -39,7 +38,6 @@ $LogPath = Join-Path $AgentDir "install.log"
 $RunnerStdoutPath = Join-Path $AgentDir "start-agent.out.log"
 $RunnerStderrPath = Join-Path $AgentDir "start-agent.err.log"
 $RunnerStatusPath = Join-Path $AgentDir "start-agent.status.log"
-$ProxyEnvPath = Join-Path $AgentDir "proxy.env"
 $ManifestUrl = "$Base/manifest.json"
 $AgentUrl = "$Base/soty-agent.mjs"
 $RelayBaseUrl = "https://xn--n1afe0b.online"
@@ -478,90 +476,6 @@ try {
     throw ("Portable Node.js setup failed: " + $lastPortableError)
   }
 
-  function Test-CodexCli {
-    param([string]$Path)
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
-    if ($Path -notmatch '\.(cmd|exe|bat)$') { return $false }
-    try {
-      $version = & $Path --version 2>$null
-      return (($LASTEXITCODE -eq 0) -and ([string]$version -match 'codex'))
-    } catch {
-      return $false
-    }
-  }
-
-  function Resolve-Npm {
-    param([string]$NodePath)
-    $nodeDir = Split-Path -Parent $NodePath
-    foreach ($candidate in @(
-      (Join-Path $nodeDir "npm.cmd"),
-      (Join-Path $nodeDir "npm")
-    )) {
-      if (Test-Path -LiteralPath $candidate) { return $candidate }
-    }
-    $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-    if ($npm) { return $npm.Source }
-    $npm = Get-Command npm -ErrorAction SilentlyContinue
-    if ($npm -and ($npm.Source -match '\.(cmd|exe|bat)$')) { return $npm.Source }
-    throw "npm is required to install stock Codex CLI"
-  }
-
-  function Find-StockCodexCli {
-    param([string]$NodePath)
-    $nodeDir = Split-Path -Parent $NodePath
-    $candidates = @(
-      (Join-Path $nodeDir "codex.cmd"),
-      (Join-Path $nodeDir "codex.exe"),
-      (Join-Path $nodeDir "codex.bat")
-    )
-    if ($env:APPDATA) { $candidates += (Join-Path $env:APPDATA "npm\codex.cmd") }
-    $pathCodex = Get-Command codex.cmd -ErrorAction SilentlyContinue
-    if ($pathCodex) { $candidates += $pathCodex.Source }
-    $pathCodexExe = Get-Command codex.exe -ErrorAction SilentlyContinue
-    if ($pathCodexExe) { $candidates += $pathCodexExe.Source }
-    foreach ($candidate in $candidates) {
-      if (Test-CodexCli $candidate) { return $candidate }
-    }
-    return ""
-  }
-
-  function Install-StockCodexCli {
-    param([string]$NodePath)
-    try {
-      Remove-Item -LiteralPath (Join-Path $AgentDir "codex-cli") -Recurse -Force -ErrorAction SilentlyContinue
-      Remove-Item -LiteralPath (Join-Path $AgentDir "codex-home") -Recurse -Force -ErrorAction SilentlyContinue
-      $existing = Find-StockCodexCli $NodePath
-      if ($existing) {
-        Write-SotyLog "soty-codex-cli:available:$existing"
-        return $existing
-      }
-      $npm = Resolve-Npm $NodePath
-      $nodeDir = Split-Path -Parent $NodePath
-      $npmUserBin = if ($env:APPDATA) { Join-Path $env:APPDATA "npm" } else { "" }
-      $env:PATH = (@($nodeDir, $npmUserBin, $env:PATH) | Where-Object { $_ }) -join ";"
-      $codexInstallLog = Join-Path $AgentDir "codex-install.log"
-      $escapedNpm = $npm.Replace('"', '\"')
-      $escapedLog = $codexInstallLog.Replace('"', '\"')
-      $cmdLine = "`"$escapedNpm`" install -g `"@openai/codex@latest`" --no-audit --no-fund > `"$escapedLog`" 2>&1"
-      try {
-        Invoke-SotyProcess -FilePath $env:ComSpec -ArgumentList @("/d", "/s", "/c", $cmdLine) -TimeoutSec 420 -LogName "codex-install"
-      } catch {
-        Write-SotyLog ("soty-codex-cli:install-skipped:" + $_.Exception.Message)
-        return ""
-      }
-      $installed = Find-StockCodexCli $NodePath
-      if ($installed) {
-        Write-SotyLog "soty-codex-cli:installed:$installed"
-        return $installed
-      }
-      Write-SotyLog "soty-codex-cli:install-skipped:not-found"
-      return ""
-    } catch {
-      Write-SotyLog "soty-codex-cli:install-skipped:$($_.Exception.Message)"
-      return ""
-    }
-  }
-
   function Test-AgentHealth {
     try {
       $request = [System.Net.WebRequest]::Create("http://127.0.0.1:49424/health")
@@ -908,99 +822,6 @@ shell.Run "$escapedCommand", 0, False
     Write-SotyLog "soty-agent:config-seeded"
   }
 
-  function Normalize-CodexProxyUrl {
-    param([string]$Value)
-    $text = ([string]$Value).Trim()
-    if ([string]::IsNullOrWhiteSpace($text)) { return "" }
-    try {
-      $uri = [Uri]$text
-      $scheme = $uri.Scheme.ToLowerInvariant()
-      if (@("http", "https", "socks5", "socks5h") -contains $scheme) {
-        return $text
-      }
-    } catch {}
-    return ""
-  }
-
-  function Get-ProxyScheme {
-    param([string]$Value)
-    try {
-      return ([Uri]$Value).Scheme.ToLowerInvariant()
-    } catch {
-      return ""
-    }
-  }
-
-  function Resolve-ExistingCodexProxyUrl {
-    foreach ($candidate in @(
-      $CodexProxyUrl,
-      $env:SOTY_CODEX_PROXY_URL,
-      $env:SOTY_AGENT_PROXY_URL
-    )) {
-      $proxy = Normalize-CodexProxyUrl $candidate
-      if ($proxy) { return $proxy }
-    }
-
-    if (Test-Path -LiteralPath $ProxyEnvPath) {
-      try {
-        $line = Get-Content -LiteralPath $ProxyEnvPath -ErrorAction Stop |
-          Where-Object { $_ -match '^\s*SOTY_CODEX_PROXY_URL\s*=' } |
-          Select-Object -First 1
-        if ($line -match '^\s*SOTY_CODEX_PROXY_URL\s*=\s*(.+?)\s*$') {
-          $proxy = Normalize-CodexProxyUrl $Matches[1]
-          if ($proxy) { return $proxy }
-        }
-      } catch {
-        Write-SotyLog "soty-codex-proxy:preserve-skip:proxy-env"
-      }
-    }
-
-    if (Test-Path -LiteralPath $RunnerPath) {
-      try {
-        $text = Get-Content -LiteralPath $RunnerPath -Raw
-        foreach ($name in @("SOTY_CODEX_PROXY_URL", "SOTY_AGENT_PROXY_URL")) {
-          $match = [regex]::Match($text, "$name\s*=\s*`"([^`"]+)`"")
-          if ($match.Success) {
-            $proxy = Normalize-CodexProxyUrl $match.Groups[1].Value
-            if ($proxy) { return $proxy }
-          }
-        }
-      } catch {
-        Write-SotyLog "soty-codex-proxy:preserve-skip:runner"
-      }
-    }
-    return ""
-  }
-
-  function Protect-AgentSecretFile {
-    param([string]$Path)
-    try {
-      $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-      $grants = @("*S-1-5-18:(F)", "*S-1-5-32-544:(F)")
-      if ($Scope -ne "Machine" -and $currentSid) {
-        $grants += "*${currentSid}:(F)"
-      }
-      & icacls.exe $Path /inheritance:r /grant:r $grants | Out-Null
-    } catch {
-      Write-SotyLog "soty-codex-proxy:acl-skip"
-    }
-  }
-
-  function Write-CodexProxySecret {
-    param([string]$ProxyUrl)
-    $proxy = Normalize-CodexProxyUrl $ProxyUrl
-    if (-not $proxy) { return "" }
-    Set-Content -LiteralPath $ProxyEnvPath -Encoding UTF8 -Value "SOTY_CODEX_PROXY_URL=$proxy"
-    Protect-AgentSecretFile $ProxyEnvPath
-    $scheme = Get-ProxyScheme $proxy
-    if ($scheme) {
-      Write-SotyLog "soty-codex-proxy:configured:$scheme"
-    } else {
-      Write-SotyLog "soty-codex-proxy:configured"
-    }
-    return $proxy
-  }
-
   function Resolve-ExistingAgentRelayId {
     foreach ($path in @(
       (Join-Path $AgentDir "agent-config.json"),
@@ -1028,15 +849,9 @@ shell.Run "$escapedCommand", 0, False
   }
 
   $NodePath = Resolve-Node
-  $CodexPath = ""
-  if ($InstallCodex) {
-    $CodexPath = ([string](Install-StockCodexCli $NodePath | Select-Object -Last 1)).Trim()
-  } else {
-    Write-SotyLog "soty-codex-cli:install-skipped:default-light-agent"
-  }
+  Write-SotyLog "soty-codex-cli:disabled:server-relay-only"
   $NodeDir = Split-Path -Parent $NodePath
-  $CodexDir = if ($CodexPath) { Split-Path -Parent $CodexPath } else { "" }
-  $RunnerPathParts = @($NodeDir, $CodexDir) | Where-Object { $_ }
+  $RunnerPathParts = @($NodeDir)
   $SafeRelayId = Normalize-AgentRelayId $RelayId
   if (-not $SafeRelayId) {
     $SafeRelayId = Resolve-ExistingAgentRelayId
@@ -1075,28 +890,7 @@ $nickLine
   } else {
     ""
   }
-  $ResolvedCodexProxyUrl = Resolve-ExistingCodexProxyUrl
-  if ($ResolvedCodexProxyUrl) {
-    [void](Write-CodexProxySecret $ResolvedCodexProxyUrl)
-  }
-  $ProxyEnv = @"
-`$proxyEnvPath = Join-Path `$PSScriptRoot "proxy.env"
-if (Test-Path -LiteralPath `$proxyEnvPath) {
-  try {
-    `$proxyLine = Get-Content -LiteralPath `$proxyEnvPath -ErrorAction Stop | Where-Object { `$_ -match '^\s*SOTY_CODEX_PROXY_URL\s*=' } | Select-Object -First 1
-    if (`$proxyLine -match '^\s*SOTY_CODEX_PROXY_URL\s*=\s*(.+?)\s*$') {
-      `$proxyValue = `$Matches[1].Trim()
-      try {
-        `$proxyUri = [Uri]`$proxyValue
-        if (@("http", "https", "socks5", "socks5h") -contains `$proxyUri.Scheme.ToLowerInvariant()) {
-          `$env:SOTY_CODEX_PROXY_URL = `$proxyValue
-        }
-      } catch {}
-    }
-  } catch {}
-}
-"@
-  $CodexEnv = if ($RunnerPathParts.Count -gt 0) {
+  $RunnerPathEnv = if ($RunnerPathParts.Count -gt 0) {
     $RunnerPathPrefix = ($RunnerPathParts -join ";")
 @"
 `$env:PATH = "$RunnerPathPrefix;`$env:PATH"
@@ -1118,8 +912,7 @@ if (Test-Path -LiteralPath `$proxyEnvPath) {
 $RelayEnv
 $CompanionEnv
 $DeviceEnv
-$ProxyEnv
-$CodexEnv
+$RunnerPathEnv
 `$stdoutPath = Join-Path `$PSScriptRoot "start-agent.out.log"
 `$stderrPath = Join-Path `$PSScriptRoot "start-agent.err.log"
 `$statusPath = Join-Path `$PSScriptRoot "start-agent.status.log"

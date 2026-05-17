@@ -237,7 +237,7 @@ function buildRouteProfiles(windowsReinstall) {
           "use the exact newest generated_images artifact path when Codex did not expose a direct path",
           "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
           "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
-          "verify with source-device proof: file path, SHA-256/bytes, display or wallpaper state"
+          "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
         ],
         doNot: [
           "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
@@ -245,7 +245,7 @@ function buildRouteProfiles(windowsReinstall) {
           "do not replace the generated artifact with a stock/public image",
           "do not check desktop/display before native generation just to choose size"
         ],
-        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "display"],
+        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
         learning: {
           reuseKey: "soty-generated-asset-wallpaper-fast-lane",
           scriptUse: "image_gen/artifact/wallpaper/verify",
@@ -309,7 +309,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
         entryTool: "computer",
         kind: "managed-toolkit",
         phases: ["image_gen", "artifact", "wallpaper", "verify"],
-        proof: ["localPath", "targetPath", "artifactSha256", "wallpaperPath", "display"],
+        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
         routeProfile: "soty-generated-asset-wallpaper-fast-lane",
         promotion: "Native OpenAI image generation with Soty artifact transfer and source desktop wallpaper proof."
       },

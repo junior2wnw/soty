@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.58");
+      assertEqual(health.body.version, "0.4.59");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -383,8 +383,9 @@ async function runScenarios({ relayUrl } = {}) {
         const poll = await relayRequest(base, "GET", `/api/agent/relay/poll?relayId=${serverRelayId}&codex=1&scope=Server&deviceId=server&wait=0`);
         assertEqual(poll.status, 200);
         assertEqual(poll.body.jobs.length, 1);
-        assertEqual(poll.body.jobs[0].source.preferredTargetId, "room-way");
-        assertEqual(poll.body.jobs[0].source.preferredTargetLabel, "вай вай");
+        assertEqual(poll.body.jobs[0].source.preferredTargetId, "agent-source:dev-current");
+        assertEqual(poll.body.jobs[0].source.preferredTargetLabel, "plane-device");
+        assertEqual(poll.body.jobs[0].source.deviceNetwork.activeTunnelKind, "agent");
         assert(poll.body.jobs[0].source.operatorTargets.some((target) => target.id === "agent-source:dev-current"));
         const mentioned = await relayRequest(base, "POST", "/api/agent/relay/request", {
           relayId: clientRelayId,
@@ -587,7 +588,7 @@ async function runScenarios({ relayUrl } = {}) {
       expectStatus(response, "ok");
       assertEqual(response.body.route, "agent-source.run");
     }],
-    ["server linked pwa target proxies through controller source before device source fallback", async () => {
+    ["server linked pwa target does not proxy through controller source", async () => {
       const response = await post("/operator/run", {
         target: "room-a",
         sourceDeviceId: "dev-way",
@@ -596,13 +597,9 @@ async function runScenarios({ relayUrl } = {}) {
         command: "SELFTEST_OK controller proxy",
         timeoutMs: 5000
       });
-      assertEqual(response.status, 200);
-      assertEqual(response.body.ok, true);
-      const proxyScript = mock.lastCommandWith("FromBase64String");
-      assert(proxyScript.includes("127.0.0.1"));
-      const proxiedPayload = decodeProxyPayloadFromScript(proxyScript);
-      assertEqual(proxiedPayload.sourceDeviceId, "");
-      assertEqual(proxiedPayload.command, "SELFTEST_OK controller proxy");
+      assertEqual(response.status, 409);
+      assertEqual(response.body.ok, false);
+      assertEqual(response.body.text, "! bridge");
     }],
     ["server linked pwa target uses direct source before controller proxy when source is connected", async () => {
       const before = mock.count("SELFTEST_OK direct source before controller");
@@ -619,7 +616,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(response.body.text.includes("SELFTEST_OK output for SELFTEST_OK direct source before controller"));
       assertEqual(mock.count("SELFTEST_OK direct source before controller"), before + 1);
     }],
-    ["server linked pwa durable action proxies through controller source before device source fallback", async () => {
+    ["server linked pwa durable action does not proxy through controller source", async () => {
       const response = await post("/operator/action", {
         target: "room-a",
         sourceDeviceId: "dev-way",
@@ -630,16 +627,13 @@ async function runScenarios({ relayUrl } = {}) {
         timeoutMs: 5000
       });
       assertEqual(response.status, 200);
-      assertEqual(response.body.ok, true);
-      assertEqual(response.body.proxiedViaController, true);
-      const proxyScript = mock.lastCommandWith("/operator/action");
-      assert(proxyScript.includes("127.0.0.1"));
-      const proxiedPayload = decodeProxyPayloadFromScript(proxyScript);
-      assertEqual(proxiedPayload.sourceDeviceId, "dev-way");
-      assertEqual(proxiedPayload.command, "SELFTEST_OK controller action proxy");
-      assertEqual(proxiedPayload.script, undefined);
+      assertEqual(response.body.ok, false);
+      assertEqual(response.body.status, "failed");
+      assertEqual(response.body.route, "operator-bridge.run");
+      assertEqual(response.body.text, "! bridge");
+      assertEqual(response.body.proxiedViaController, undefined);
     }],
-    ["server linked pwa durable action chunks large proxy payload", async () => {
+    ["server linked pwa durable action rejects large controller proxy payload", async () => {
       const marker = "SELFTEST_OK large controller action proxy";
       const response = await post("/operator/action", {
         mode: "script",
@@ -652,13 +646,10 @@ async function runScenarios({ relayUrl } = {}) {
         timeoutMs: 5000
       });
       assertEqual(response.status, 200);
-      assertEqual(response.body.ok, true);
-      const proxyScript = mock.lastCommandWith("[string]::Concat");
-      assert(proxyScript.includes("[string]::Concat"));
-      assert(proxyScript.split(/\r?\n/u).every((line) => line.length < 10_000));
-      const proxiedPayload = decodeProxyPayloadFromScript(proxyScript);
-      assertEqual(proxiedPayload.sourceDeviceId, "dev-way");
-      assert(proxiedPayload.script.includes(marker));
+      assertEqual(response.body.ok, false);
+      assertEqual(response.body.status, "failed");
+      assertEqual(response.body.route, "operator-bridge.script");
+      assertEqual(response.body.text, "! bridge");
     }],
     ["linked pwa target with local operator bridge stays on bridge route", async () => {
       const bridge = await attachSelftestOperatorBridge([{
@@ -1395,7 +1386,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.58");
+      assertEqual(manifest.version, "0.4.59");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1472,12 +1463,12 @@ async function runScenarios({ relayUrl } = {}) {
         userWindowsInstallerExists = false;
       }
       assert(windowsInstall.includes("[switch]$InstallCodex"));
-      assert(windowsInstall.includes("[string]$CodexProxyUrl"));
       assert(windowsInstall.includes('[string]$Scope = "Machine"'));
-      assert(windowsInstall.includes("proxy.env"));
-      assert(windowsInstall.includes("SOTY_CODEX_PROXY_URL"));
-      assert(windowsInstall.includes("if ($InstallCodex)"));
-      assert(windowsInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(!windowsInstall.includes("[string]$CodexProxyUrl"));
+      assert(!windowsInstall.includes("proxy.env"));
+      assert(!windowsInstall.includes("SOTY_CODEX_PROXY_URL"));
+      assert(windowsInstall.includes("soty-codex-cli:disabled:server-relay-only"));
+      assert(!windowsInstall.includes("@openai/codex@latest"));
       assert(windowsInstall.includes('$env:SOTY_AGENT_AUTO_UPDATE = "1"'));
       assert(windowsInstall.includes("if (`$code -eq 75)"));
       assert(windowsInstall.includes("Write-AgentConfigSeed"));
@@ -1521,7 +1512,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.58"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.59"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1568,7 +1559,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.58"'));
+      assert(agentSource.includes('const agentVersion = "0.4.59"'));
       assert(agentSource.includes("startOperatorRunJsonStream"));
       assert(agentSource.includes("sendLongOperatorJson"));
       assert(agentSource.includes('"X-Accel-Buffering": "no"'));
@@ -1580,9 +1571,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("install-windows-machine-bootstrap.ps1?v="));
       assert(agentSource.includes("$revision = '"));
       assert(agentSource.includes("--controller-device"));
-      assert(agentSource.includes("maybeProxyOperatorHttpViaController"));
-      assert(agentSource.includes("operatorBridgeProxyScript"));
-      assert(agentSource.includes("soty-operator-bridge-proxy"));
+      assert(!agentSource.includes("maybeProxyOperatorHttpViaController"));
+      assert(!agentSource.includes("operatorBridgeProxyScript"));
+      assert(!agentSource.includes("soty-operator-bridge-proxy"));
       assert(agentSource.includes("sourceArtifactDownloadPowerShellScript"));
       assert(agentSource.includes("soty-relay-artifact"));
       assert(agentSource.includes("Cross-device file transfer"));
@@ -1655,12 +1646,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("versionCompare === 0 && manifest.sha256 === currentHash"));
       assert(httpApp.includes('app.use("/agent"'));
       assert(httpApp.includes("agent_asset_not_found"));
-      assert(unixInstall.includes("INSTALL_CODEX=\"0\""));
       assert(unixInstall.includes("--codex-proxy-url"));
-      assert(unixInstall.includes("proxy.env"));
-      assert(unixInstall.includes("SOTY_CODEX_PROXY_URL"));
-      assert(unixInstall.includes("--install-codex"));
-      assert(unixInstall.includes("soty-codex-cli:install-skipped:default-light-agent"));
+      assert(!unixInstall.includes("proxy.env"));
+      assert(!unixInstall.includes("SOTY_CODEX_PROXY_URL"));
+      assert(unixInstall.includes("--install-codex)"));
+      assert(unixInstall.includes("soty-codex-cli:disabled:server-relay-only"));
+      assert(!unixInstall.includes("@openai/codex@latest"));
       assert(!unixInstall.includes("universal-install-ops"));
       assert(!unixInstall.includes("ops-skill"));
       assert(!ui.includes("Первый ответ может занять"));
@@ -1671,14 +1662,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.58";', 'const agentVersion = "0.4.57";');
-      assert(oldSource.includes('const agentVersion = "0.4.57"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.59";', 'const agentVersion = "0.4.58";');
+      assert(oldSource.includes('const agentVersion = "0.4.58"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.58",
+            version: "0.4.59",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -1875,17 +1866,6 @@ async function runScenarios({ relayUrl } = {}) {
 
 function sourceRun(command) {
   return { target: "agent-source:dev1", command };
-}
-
-function decodeProxyPayloadFromScript(script) {
-  const inline = /FromBase64String\("([^"]+)"\)/u.exec(script)?.[1] || "";
-  if (inline) {
-    return JSON.parse(Buffer.from(inline, "base64").toString("utf8"));
-  }
-  const chunks = [...String(script || "").matchAll(/^\s*"([A-Za-z0-9+/=]*)"\s*$/gmu)]
-    .map((match) => match[1] || "");
-  assert(chunks.length > 0, "proxy payload base64 chunks missing");
-  return JSON.parse(Buffer.from(chunks.join(""), "base64").toString("utf8"));
 }
 
 async function attachSelftestOperatorBridge(targets, options = {}) {

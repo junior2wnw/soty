@@ -80,7 +80,6 @@ const app: HTMLDivElement = root;
 installTooltips();
 
 const agentDialogLabel = "Агент";
-const legacyAgentDialogLabel = "Codex";
 const agentDialogMinVersion = "0.3.16";
 const agentReleaseCheckTtlMs = 60_000;
 
@@ -1517,7 +1516,7 @@ function hasCounterparty(tunnel: TunnelRecord): boolean {
 
 function counterpartyLabel(tunnel: TunnelRecord): string {
   const label = rawCounterpartyLabel(tunnel);
-  if (tunnel.agent === true || label.toLowerCase() === legacyAgentDialogLabel.toLowerCase()) {
+  if (tunnel.agent === true) {
     return agentDialogLabel;
   }
   return label;
@@ -1634,7 +1633,7 @@ function findActiveAgentDialog(): TunnelRecord | null {
 }
 
 function isAgentTunnel(tunnel: TunnelRecord): boolean {
-  return tunnel.agent === true || rawCounterpartyLabel(tunnel).toLowerCase() === legacyAgentDialogLabel.toLowerCase();
+  return tunnel.agent === true;
 }
 
 function createFreshDialog(
@@ -1708,7 +1707,9 @@ function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
 
 function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
   return agent.ok
-    && (agent.relay === true || compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0);
+    && agent.relay === true
+    && agent.codex !== false
+    && compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0;
 }
 
 function compareVersion(left: string, right: string): number {

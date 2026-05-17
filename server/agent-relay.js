@@ -7,6 +7,8 @@ const maxReplyChars = 12_000;
 const maxSourceReplyChars = 1_000_000;
 const maxReplyMessages = 64;
 const maxSourceChars = 180;
+const maxOperatorTargets = 5000;
+const maxDeviceIdsPerTarget = 32;
 const maxTaskTimeoutMs = 24 * 60 * 60_000;
 const defaultSourceTimeoutMs = 10 * 60_000;
 const leaseMs = maxTaskTimeoutMs + 10 * 60_000;
@@ -1075,7 +1077,7 @@ function findMentionedAgentSource(targetRelayId, clientRelayId, text) {
 function agentSourceMatchesPrefix(source, prefix) {
   const nick = normalizeTargetText(source?.deviceNick);
   const deviceId = normalizeTargetText(source?.deviceId);
-  return (nick && (prefix === nick || nick.includes(prefix) || prefix.includes(nick)))
+  return (nick && prefix === nick)
     || (deviceId && prefix === deviceId)
     || (deviceId && prefix === `agent-source:${deviceId}`);
 }
@@ -1102,11 +1104,14 @@ function preferredTargetMentioned(text, targets) {
 }
 
 function targetTextMatches(value, needle) {
-  return Boolean(value && needle && (value === needle || needle.includes(value) || value.includes(needle)));
+  return Boolean(value && needle && value === needle);
 }
 
 function targetTextMentions(value, needle) {
-  return Boolean(value && needle && needle.length >= 2 && (value === needle || value.includes(needle)));
+  if (!value || !needle || needle.length < 2) {
+    return false;
+  }
+  return value === needle || ` ${value} `.includes(` ${needle} `);
 }
 
 function targetPrefix(text) {
@@ -1115,7 +1120,11 @@ function targetPrefix(text) {
 }
 
 function normalizeTargetText(value) {
-  return String(value || "").replace(/\s+/gu, " ").trim().toLowerCase();
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}:_.-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 function publicAgentSourceTarget(source) {
@@ -1381,7 +1390,10 @@ function cleanAgentSource(value) {
   if (!value || typeof value !== "object") {
     return {};
   }
-  const deviceNetwork = cleanDeviceNetwork(value.deviceNetwork);
+  let deviceNetwork = cleanDeviceNetwork(value.deviceNetwork);
+  if ((!value.deviceNetwork || typeof value.deviceNetwork !== "object") && sourceLooksLikeAgentDialog(value) && deviceNetwork.activeTunnelKind !== "agent") {
+    deviceNetwork = agentDialogDeviceNetwork(deviceNetwork);
+  }
   const selectedTarget = selectedDeviceNetworkTarget(deviceNetwork);
   const explicitPreferredAllowed = deviceNetwork.activeTunnelKind !== "agent";
   const explicitPreferredId = explicitPreferredAllowed ? cleanText(value.preferredTargetId, maxSourceChars) : "";
@@ -1396,9 +1408,26 @@ function cleanAgentSource(value) {
     sourceRelayId: normalizeRelayId(value.sourceRelayId),
     preferredTargetId: explicitPreferredId || selectedTarget.id,
     preferredTargetLabel: explicitPreferredLabel || selectedTarget.label,
-    localAgentDirect: value.localAgentDirect === true,
     operatorTargets,
     deviceNetwork
+  };
+}
+
+function sourceLooksLikeAgentDialog(value) {
+  const text = normalizeTargetText(`${value?.tunnelLabel || ""} ${value?.tunnelId || ""}`);
+  return /\bagent\b/u.test(text) || text.includes("агент");
+}
+
+function agentDialogDeviceNetwork(deviceNetwork) {
+  return {
+    ...deviceNetwork,
+    activeTunnelKind: "agent",
+    selectedTargetId: "",
+    selectedTargetLabel: "",
+    selectedTargetDeviceId: "",
+    selectedTargetAccess: false,
+    selectedTargetLink: false,
+    targets: cleanOperatorTargets(deviceNetwork.targets).map((target) => ({ ...target, selected: false }))
   };
 }
 
@@ -1474,7 +1503,7 @@ function mergeOperatorTargets(...groups) {
       merged.set(target.id, target);
     }
   }
-  return [...merged.values()].slice(0, 64);
+  return [...merged.values()].slice(0, maxOperatorTargets);
 }
 
 function cleanOperatorTargets(value) {
@@ -1486,7 +1515,7 @@ function cleanOperatorTargets(value) {
       id: cleanText(item?.id, maxSourceChars),
       label: cleanText(item?.label, maxSourceChars),
       deviceIds: Array.isArray(item?.deviceIds)
-        ? [...new Set(item.deviceIds.map((entry) => cleanText(entry, maxSourceChars)).filter(Boolean))].slice(0, 16)
+        ? [...new Set(item.deviceIds.map((entry) => cleanText(entry, maxSourceChars)).filter(Boolean))].slice(0, maxDeviceIdsPerTarget)
         : [],
       hostDeviceId: cleanText(item?.hostDeviceId, maxSourceChars),
       access: typeof item?.access === "boolean" ? item.access : undefined,
@@ -1496,7 +1525,7 @@ function cleanOperatorTargets(value) {
       lastActionAt: cleanText(item?.lastActionAt, 80)
     }))
     .filter((item) => item.id && item.label)
-    .slice(0, 32);
+    .slice(0, maxOperatorTargets);
 }
 
 function findReply(relayId, id) {

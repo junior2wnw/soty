@@ -86,7 +86,6 @@ export interface LocalAgentRequestSource {
   readonly appOrigin?: string;
   readonly preferredTargetId?: string;
   readonly preferredTargetLabel?: string;
-  readonly localAgentDirect?: boolean;
   readonly operatorTargets?: readonly LocalAgentOperatorTarget[];
   readonly deviceNetwork?: LocalAgentDeviceNetwork;
 }
@@ -151,41 +150,9 @@ export async function askLocalAgentReply(
   const relayId = readAgentRelayId() || ensureAgentRelayId();
   if (relayId) {
     const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, true, signal);
-    if (relay && !shouldRetryAgentRelayReply(relay)) {
+    if (relay) {
       return relay;
     }
-  }
-
-  const direct = await askLocalAgentReplyHttp(
-    text,
-    context,
-    { ...source, localAgentDirect: true },
-    timeoutMs,
-    signal
-  );
-  const directNeedsServerFallback = direct ? shouldUseServerAgentReplyFallback(direct) : false;
-  if (direct && !directNeedsServerFallback) {
-    for (const message of direct.messages ?? []) {
-      onMessage?.(message);
-    }
-    for (const message of direct.terminal ?? []) {
-      onTerminal?.(message);
-    }
-    return direct;
-  }
-
-  if (relayId) {
-    const relay = await askAgentRelayReply(text, context, source, timeoutMs, onMessage, onTerminal, directNeedsServerFallback, signal);
-    if (relay && !shouldRetryAgentRelayReply(relay)) {
-      return relay;
-    }
-    if (relay && !direct) {
-      return relay;
-    }
-  }
-
-  if (direct) {
-    return direct;
   }
 
   return {
@@ -193,17 +160,6 @@ export async function askLocalAgentReply(
     text: localAgentBlockedText,
     exitCode: 127
   };
-}
-
-function shouldRetryAgentRelayReply(reply: LocalAgentReply): boolean {
-  return !reply.ok && reply.text.trim().startsWith("! agent-relay:");
-}
-
-function shouldUseServerAgentReplyFallback(reply: LocalAgentReply): boolean {
-  if (reply.ok) {
-    return false;
-  }
-  return /! codex-cli:\s*(?:not found|missing auth|OpenAI\/ChatGPT transport rejected|local Codex did not start in time)/iu.test(reply.text);
 }
 
 export function hasAgentRelayId(): boolean {
@@ -398,52 +354,6 @@ function readLocalAgentStatus(value: unknown): LocalAgentStatus | null {
   };
 }
 
-async function askLocalAgentReplyHttp(
-  text: string,
-  context: string,
-  source: LocalAgentRequestSource,
-  timeoutMs: number,
-  signal?: AbortSignal
-): Promise<LocalAgentReply | null> {
-  if (signal?.aborted) {
-    return cancelledAgentReply();
-  }
-  const timeout = timeoutAbortSignal(timeoutMs, signal);
-  try {
-    const response = await fetch("http://127.0.0.1:49424/agent/reply", {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, context, source }),
-      signal: timeout.signal,
-      targetAddressSpace: "loopback"
-    } as RequestInit & { readonly targetAddressSpace: "loopback" });
-    const payload = await response.json() as {
-      readonly ok?: boolean;
-      readonly text?: string;
-      readonly messages?: readonly unknown[];
-      readonly terminal?: readonly unknown[];
-      readonly exitCode?: number;
-    };
-    const messages = cleanReplyMessages(payload.messages);
-    const terminal = cleanReplyMessages(payload.terminal);
-    return {
-      ok: Boolean(payload.ok && response.ok),
-      text: typeof payload.text === "string" ? payload.text : "",
-      ...(messages.length > 0 ? { messages } : {}),
-      ...(terminal.length > 0 ? { terminal } : {}),
-      ...(typeof payload.exitCode === "number" ? { exitCode: payload.exitCode } : {})
-    };
-  } catch {
-    if (signal?.aborted) {
-      return cancelledAgentReply();
-    }
-    return null;
-  } finally {
-    timeout.cleanup();
-  }
-}
-
 async function askAgentRelayReply(
   text: string,
   context: string,
@@ -523,7 +433,7 @@ async function askAgentRelayReply(
         return cancelledAgentReply();
       }
       clearPendingAgentRelayReply(createdId);
-      return reply || relayFailure("! agent-relay: local Codex bridge did not pick up the request", 124);
+      return reply || relayFailure("! agent-relay: server Codex executor did not pick up the request", 124);
     } finally {
       stopEvents = true;
       signal?.removeEventListener("abort", cancelRelay);

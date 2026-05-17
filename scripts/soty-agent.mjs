@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.58";
+const agentVersion = "0.4.59";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -42,6 +42,8 @@ const maxArtifactTransferBytes = 64 * 1024 * 1024;
 const maxAgentContextChars = 16_000;
 const maxAgentRuntimePromptChars = 48_000;
 const maxLearningMarkersPerTurn = 8;
+const maxOperatorTargets = 5000;
+const maxDeviceIdsPerTarget = 32;
 const maxImportChars = 2_000_000;
 const maxChunkBytes = 12_000;
 const maxFrameBytes = 2_500_000;
@@ -87,6 +89,7 @@ const sotyMcpLegacyTools = Object.freeze([
 const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexDisabled = process.env.SOTY_CODEX_DISABLED === "1";
+const localCodexDisabled = true;
 const agentTraceEnabled = process.env.SOTY_AGENT_TRACE !== "0";
 const agentTraceFullPrompt = process.env.SOTY_AGENT_TRACE_FULL_PROMPT !== "0";
 const agentTraceRetain = Math.max(10, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_RETAIN || "200", 10) || 200, 5000));
@@ -476,7 +479,7 @@ async function handleHttpRequest(request, response) {
     return;
   }
   if (url.pathname === "/operator/actions" && request.method === "GET") {
-    await handleOperatorHttpActions(url, response, headers);
+    await handleOperatorHttpActions(response, headers);
     return;
   }
   if (url.pathname === "/operator/action" && request.method === "POST") {
@@ -485,12 +488,12 @@ async function handleHttpRequest(request, response) {
   }
   const actionMatch = url.pathname.match(/^\/operator\/action\/([A-Za-z0-9_-]{8,96})$/u);
   if (actionMatch && request.method === "GET") {
-    await handleOperatorHttpActionStatus(actionMatch[1], url, response, headers);
+    await handleOperatorHttpActionStatus(actionMatch[1], response, headers);
     return;
   }
   const actionStopMatch = url.pathname.match(/^\/operator\/action\/([A-Za-z0-9_-]{8,96})\/stop$/u);
   if (actionStopMatch && request.method === "POST") {
-    await handleOperatorHttpActionStop(actionStopMatch[1], request, url, response, headers);
+    await handleOperatorHttpActionStop(actionStopMatch[1], request, response, headers);
     return;
   }
   if (url.pathname === "/operator/run" && request.method === "POST") {
@@ -767,19 +770,6 @@ async function handleOperatorHttpRun(request, response, headers) {
     await handleAgentSourceHttpRun(target, sourceDeviceId || deviceId, command, timeoutMs, response, headers, sourceRelayId, runAs);
     return;
   }
-  if (await maybeProxyOperatorHttpViaController({
-    kind: "run",
-    target,
-    sourceDeviceId,
-    sourceRelayId,
-    controllerDeviceId,
-    body: { target, sourceDeviceId, command, runAs, timeoutMs },
-    timeoutMs,
-    response,
-    headers
-  })) {
-    return;
-  }
   if (!operatorBridge?.open || !target || !command.trim()) {
     sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
     return;
@@ -830,19 +820,6 @@ async function handleOperatorHttpScript(request, response, headers) {
       return;
     }
     await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId, maxTextLength);
-    return;
-  }
-  if (await maybeProxyOperatorHttpViaController({
-    kind: "script",
-    target,
-    sourceDeviceId,
-    sourceRelayId,
-    controllerDeviceId,
-    body: { target, sourceDeviceId, script, name, shell, runAs, timeoutMs, maxTextLength },
-    timeoutMs,
-    response,
-    headers
-  })) {
     return;
   }
   if (!operatorBridge?.open || !target || !script.trim()) {
@@ -924,69 +901,28 @@ async function operatorSourceStatus({ target = "", sourceRelayId = "", sourceDev
   }
 }
 
-async function handleOperatorHttpActions(url, response, headers) {
-  const sourceRelayId = safeRelayId(url.searchParams.get("sourceRelayId") || "");
-  const controllerDeviceId = safeSourceText(url.searchParams.get("controllerDeviceId") || "");
-  if (!operatorBridge?.open && sourceRelayId && controllerDeviceId) {
-    const proxied = await proxyOperatorHttpViaController({
-      path: "/operator/actions",
-      method: "GET",
-      sourceRelayId,
-      controllerDeviceId,
-      timeoutMs: 20_000
-    });
-    sendJson(response, proxied.httpStatus, headers, proxied.payload);
-    return;
-  }
+async function handleOperatorHttpActions(response, headers) {
   const jobs = await listActionJobs();
   sendJson(response, 200, headers, { ok: true, jobs });
 }
 
-async function handleOperatorHttpActionStatus(jobId, url, response, headers) {
+async function handleOperatorHttpActionStatus(jobId, response, headers) {
   const job = await readActionJob(jobId);
   if (!job) {
-    const sourceRelayId = safeRelayId(url.searchParams.get("sourceRelayId") || "");
-    const controllerDeviceId = safeSourceText(url.searchParams.get("controllerDeviceId") || "");
-    if (!operatorBridge?.open && sourceRelayId && controllerDeviceId) {
-      const proxied = await proxyOperatorHttpViaController({
-        path: `/operator/action/${encodeURIComponent(jobId)}`,
-        method: "GET",
-        sourceRelayId,
-        controllerDeviceId,
-        timeoutMs: 20_000
-      });
-      sendJson(response, proxied.httpStatus, headers, proxied.payload);
-      return;
-    }
     sendJson(response, 404, headers, { ok: false, text: "! action-job", exitCode: 404 });
     return;
   }
   sendJson(response, 200, headers, { ok: true, ...job });
 }
 
-async function handleOperatorHttpActionStop(jobId, request, url, response, headers) {
-  let requestPayload = {};
+async function handleOperatorHttpActionStop(jobId, request, response, headers) {
   try {
-    requestPayload = await readJsonBody(request, 4096);
+    await readJsonBody(request, 4096);
   } catch {
-    requestPayload = {};
+    // Stop requests do not require a body; malformed JSON is ignored.
   }
-  const sourceRelayId = safeRelayId(requestPayload.sourceRelayId || url.searchParams.get("sourceRelayId") || "");
-  const controllerDeviceId = safeSourceText(requestPayload.controllerDeviceId || url.searchParams.get("controllerDeviceId") || "");
   const entry = await readActionJob(jobId);
   if (!entry?.job) {
-    if (!operatorBridge?.open && sourceRelayId && controllerDeviceId) {
-      const proxied = await proxyOperatorHttpViaController({
-        path: `/operator/action/${encodeURIComponent(jobId)}/stop`,
-        method: "POST",
-        body: {},
-        sourceRelayId,
-        controllerDeviceId,
-        timeoutMs: 20_000
-      });
-      sendJson(response, proxied.httpStatus, headers, proxied.payload);
-      return;
-    }
     sendJson(response, 404, headers, { ok: false, text: "! action-job", exitCode: 404 });
     return;
   }
@@ -1027,9 +963,6 @@ async function handleOperatorHttpAction(request, response, headers) {
       text: blocked,
       exitCode: 422
     });
-    return;
-  }
-  if (await maybeProxyOperatorHttpActionViaController(action, response, headers)) {
     return;
   }
   if (action.idempotencyKey) {
@@ -2239,233 +2172,7 @@ async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId
       sourceRelayId
     };
   }
-  if (options.allowFallbackSource !== false && !operatorBridge?.open && fallbackDeviceId) {
-    return {
-      target: `agent-source:${fallbackDeviceId}`,
-      sourceDeviceId: fallbackDeviceId,
-      sourceRelayId
-    };
-  }
   return { target, sourceDeviceId, sourceRelayId };
-}
-
-async function maybeProxyOperatorHttpViaController({
-  kind,
-  target,
-  sourceDeviceId,
-  sourceRelayId,
-  controllerDeviceId,
-  body,
-  timeoutMs,
-  response,
-  headers
-}) {
-  if (operatorBridge?.open || isAgentSourceTarget(target) || !target || !sourceRelayId || !controllerDeviceId) {
-    return false;
-  }
-  const hasWork = kind === "run"
-    ? String(body?.command || "").trim()
-    : String(body?.script || "").trim();
-  if (!hasWork) {
-    return false;
-  }
-  const controllerTarget = `agent-source:${controllerDeviceId}`;
-  const proxyBody = { ...body, sourceDeviceId: "" };
-  const proxyScript = operatorBridgeProxyScript(kind === "run" ? "/operator/run" : "/operator/script", proxyBody, timeoutMs);
-  const maxTextLength = safeOperatorTextLength(body?.maxTextLength, maxChatChars);
-  await handleAgentSourceHttpScript(
-    controllerTarget,
-    controllerDeviceId,
-    {
-      script: proxyScript,
-      name: `soty-operator-bridge-proxy-${kind}`,
-      shell: "powershell",
-      runAs: "user"
-    },
-    Math.max(timeoutMs, 30_000),
-    response,
-    headers,
-    sourceRelayId,
-    maxTextLength
-  );
-  return true;
-}
-
-async function maybeProxyOperatorHttpActionViaController(action, response, headers) {
-  if (operatorBridge?.open || isAgentSourceTarget(action.target) || !action.target || !action.sourceRelayId || !action.controllerDeviceId) {
-    return false;
-  }
-  const body = {
-    mode: action.mode,
-    target: action.target,
-    sourceDeviceId: action.sourceDeviceId,
-    ...(action.mode === "script" ? { script: action.script } : { command: action.command }),
-    name: action.name,
-    shell: action.shell,
-    runAs: action.runAs,
-    timeoutMs: action.timeoutMs,
-    family: action.family,
-    kind: action.actionType,
-    phase: action.phase,
-    toolkit: action.toolkit,
-    intent: action.intent,
-    risk: action.risk,
-    idempotencyKey: action.idempotencyKey,
-    improvement: action.improvement,
-    reuseKey: action.reuseKey,
-    pivotFrom: action.pivotFrom,
-    successCriteria: action.successCriteria,
-    scriptUse: action.scriptUse,
-    contextFingerprint: action.contextFingerprint,
-    detached: action.detached
-  };
-  const proxied = await proxyOperatorHttpViaController({
-    path: "/operator/action",
-    method: "POST",
-    body,
-    sourceRelayId: action.sourceRelayId,
-    controllerDeviceId: action.controllerDeviceId,
-    timeoutMs: action.timeoutMs
-  });
-  sendJson(response, proxied.httpStatus, headers, proxied.payload);
-  return true;
-}
-
-async function proxyOperatorHttpViaController({ path, method = "POST", body = undefined, sourceRelayId, controllerDeviceId, timeoutMs = 30_000 }) {
-  const controllerTarget = `agent-source:${controllerDeviceId}`;
-  const result = await postAgentSourceJob("/api/agent/source/script", {
-    deviceId: controllerDeviceId,
-    script: operatorBridgeProxyJsonScript({ path, method, body, timeoutMs }),
-    name: "soty-operator-bridge-proxy",
-    shell: "powershell",
-    runAs: "user",
-    timeoutMs: Math.max(timeoutMs, 30_000)
-  }, sourceRelayId, 1_000_000);
-  const payload = parseJsonObjectLoose(result.text) || {
-    ok: result.ok === true,
-    text: String(result.text || ""),
-    exitCode: Number.isSafeInteger(result.exitCode) ? result.exitCode : (result.ok ? 0 : 1)
-  };
-  return {
-    httpStatus: payload.ok === false ? 200 : 200,
-    payload: {
-      ...payload,
-      proxiedViaController: true,
-      controllerTarget
-    }
-  };
-}
-
-function operatorBridgeProxyJsonScript({ path, method = "POST", body = undefined, timeoutMs = 30_000 }) {
-  const safeMethod = String(method || "POST").toUpperCase() === "GET" ? "GET" : "POST";
-  const safePath = safeOperatorProxyPath(path);
-  const payload = Buffer.from(JSON.stringify(body === undefined ? {} : body), "utf8").toString("base64");
-  const timeoutSec = Math.max(5, Math.min(7200, Math.ceil(safeRunTimeoutMs(timeoutMs) / 1000)));
-  const payloadBlock = powershellBase64Variable("payload64", payload);
-  const bodyBlock = safeMethod === "GET"
-    ? ""
-    : `
-${payloadBlock}
-$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload64))
-$params.Body = $json
-`.trim();
-  return `
-$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$params = @{
-  Uri = "http://127.0.0.1:${port}${safePath}"
-  Method = "${safeMethod}"
-  Headers = @{ Origin = "https://xn--n1afe0b.online" }
-  TimeoutSec = ${timeoutSec}
-  UseBasicParsing = $true
-}
-if ("${safeMethod}" -ne "GET") {
-  $params.ContentType = "application/json; charset=utf-8"
-}
-${bodyBlock}
-$content = ""
-try {
-  $response = Invoke-WebRequest @params
-  $content = [string] $response.Content
-} catch {
-  try {
-    if ($_.Exception.Response) {
-      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-      $content = $reader.ReadToEnd()
-    }
-  } catch {}
-  if ([string]::IsNullOrWhiteSpace($content)) {
-    [pscustomobject]@{ ok = $false; text = ("! operator-bridge-proxy: " + $_.Exception.Message); exitCode = 1 } | ConvertTo-Json -Compress
-    exit 1
-  }
-}
-Write-Output $content
-try { $payload = $content | ConvertFrom-Json } catch { exit 1 }
-if ($payload.ok -eq $true) { exit 0 }
-if ($null -ne $payload.exitCode) { exit ([int] $payload.exitCode) }
-exit 1
-`.trim();
-}
-
-function safeOperatorProxyPath(path) {
-  const value = String(path || "");
-  if (value === "/operator/actions" || value === "/operator/action") {
-    return value;
-  }
-  if (/^\/operator\/action\/[A-Za-z0-9_-]{8,96}(?:\/stop)?$/u.test(value)) {
-    return value;
-  }
-  if (value === "/operator/run" || value === "/operator/script") {
-    return value;
-  }
-  return "/operator/actions";
-}
-
-function operatorBridgeProxyScript(path, body, timeoutMs) {
-  const payload = Buffer.from(JSON.stringify(body), "utf8").toString("base64");
-  const payloadBlock = powershellBase64Variable("payload64", payload);
-  const timeoutSec = Math.max(5, Math.min(7200, Math.ceil(safeRunTimeoutMs(timeoutMs) / 1000)));
-  const safePath = path === "/operator/run" ? "/operator/run" : "/operator/script";
-  return `
-$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-${payloadBlock}
-$json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload64))
-$content = ""
-try {
-  $response = Invoke-WebRequest -Uri "http://127.0.0.1:${port}${safePath}" -Method POST -Headers @{ Origin = "https://xn--n1afe0b.online" } -ContentType "application/json; charset=utf-8" -Body $json -TimeoutSec ${timeoutSec} -UseBasicParsing
-  $content = [string] $response.Content
-} catch {
-  try {
-    if ($_.Exception.Response) {
-      $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-      $content = $reader.ReadToEnd()
-    }
-  } catch {}
-  if ([string]::IsNullOrWhiteSpace($content)) {
-    Write-Output ("! operator-bridge-proxy: " + $_.Exception.Message)
-    exit 1
-  }
-}
-try {
-  $payload = $content | ConvertFrom-Json
-} catch {
-  Write-Output $content
-  exit 1
-}
-if ($null -ne $payload.text -and -not [string]::IsNullOrWhiteSpace([string] $payload.text)) {
-  Write-Output ([string] $payload.text).TrimEnd()
-}
-if ($payload.ok -eq $true) {
-  exit 0
-}
-if ($null -ne $payload.exitCode) {
-  exit ([int] $payload.exitCode)
-}
-exit 1
-`.trim();
 }
 
 function powershellBase64Variable(name, payload) {
@@ -2497,7 +2204,6 @@ function operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets) {
   }
   return sources.find((item) => cleanTargetNeedle(item.label) === needle)
     || sources.find((item) => item.id.toLowerCase() === needle)
-    || sources.find((item) => cleanTargetNeedle(item.label).includes(needle))
     || null;
 }
 
@@ -2519,7 +2225,6 @@ function operatorTargetByText(target) {
   }
   return operatorTargets.find((item) => item.id === target || item.id.toLowerCase() === needle)
     || operatorTargets.find((item) => cleanTargetNeedle(item.label) === needle)
-    || operatorTargets.find((item) => cleanTargetNeedle(item.label).includes(needle))
     || null;
 }
 
@@ -4067,7 +3772,7 @@ async function runAgentRelayLoop() {
   let retryMs = 1000;
   while (true) {
     try {
-      if (!hasCodexBinary()) {
+      if (!canRunCodexBrain() || !hasCodexBinary()) {
         await sleep(30_000);
         continue;
       }
@@ -4117,7 +3822,7 @@ function cancelActiveRelayJob(id) {
 }
 
 async function pollAgentRelay() {
-  if (!hasCodexBinary()) {
+  if (!canRunCodexBrain() || !hasCodexBinary()) {
     return [];
   }
   const url = new URL("/api/agent/relay/poll", agentRelayBaseUrl);
@@ -4212,14 +3917,16 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
   try {
     traceStep(trace, "agent.start", {
       codexDisabled,
+      localCodexDisabled,
+      codexBrain: canRunCodexBrain(),
       codexProbe: hasCodexBinary(),
       relayFallback: codexRelayFallback
     });
     const codexBin = hasCodexBinary() ? findCodexBinary() : "";
     if (!codexBin) {
-      traceStep(trace, "codex.missing", { codexDisabled, relayFallback: codexRelayFallback });
+      traceStep(trace, "codex.missing", { codexDisabled, localCodexDisabled, codexBrain: canRunCodexBrain(), relayFallback: codexRelayFallback });
       const relay = codexRelayFallback
-        ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { signal })
+        ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true, signal })
         : null;
       if (relay) {
         traceRouting(trace, { finalRoute: "codex.relay-fallback" });
@@ -5977,6 +5684,9 @@ function matchingAgentSourceTarget(target, sourceTargets = []) {
 
 function implicitOperatorTargetForRequest(source, text = "", sourceTargets = []) {
   const safe = sanitizeAgentSource(source);
+  if (safe.deviceNetwork?.activeTunnelKind === "agent") {
+    return null;
+  }
   if (classifySourceCommand(text) !== "windows-reinstall") {
     return null;
   }
@@ -6101,7 +5811,6 @@ function targetMentionedAtStart(text, targets) {
   const sorted = sanitizeTargets(targets);
   return sorted.find((target) => cleanTargetNeedle(target.label) === needle)
     || sorted.find((target) => target.id.toLowerCase() === needle)
-    || sorted.find((target) => cleanTargetNeedle(target.label).includes(needle))
     || null;
 }
 
@@ -6118,10 +5827,16 @@ function targetMentionedAnywhere(text, targets) {
 }
 
 function targetNeedleMentioned(body, needle) {
-  if (!needle || needle.length < 2) {
+  const bodyText = targetMentionText(body);
+  const needleText = targetMentionText(needle);
+  if (!needleText || needleText.length < 2) {
     return false;
   }
-  return body === needle || body.includes(needle);
+  return bodyText === needleText || ` ${bodyText} `.includes(` ${needleText} `);
+}
+
+function targetMentionText(value) {
+  return String(value || "").toLowerCase().replace(/[^\p{L}\p{N}:_.-]+/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 function cleanTargetNeedle(value) {
@@ -6972,7 +6687,10 @@ function sanitizeAgentSource(value) {
     return {};
   }
   const clean = (field) => String(field || "").trim().slice(0, maxSourceChars);
-  const deviceNetwork = sanitizeDeviceNetwork(value.deviceNetwork);
+  let deviceNetwork = sanitizeDeviceNetwork(value.deviceNetwork);
+  if ((!value.deviceNetwork || typeof value.deviceNetwork !== "object") && sourceLooksLikeAgentDialog(value) && deviceNetwork.activeTunnelKind !== "agent") {
+    deviceNetwork = agentDialogDeviceNetwork(deviceNetwork);
+  }
   const selectedTarget = selectedDeviceNetworkTarget(deviceNetwork);
   const operatorTargetList = mergeOperatorTargets(sanitizeTargets(value.operatorTargets), deviceNetwork.targets);
   return {
@@ -6984,9 +6702,26 @@ function sanitizeAgentSource(value) {
     sourceRelayId: safeRelayId(value.sourceRelayId),
     preferredTargetId: clean(value.preferredTargetId) || selectedTarget.id,
     preferredTargetLabel: clean(value.preferredTargetLabel) || selectedTarget.label,
-    localAgentDirect: value.localAgentDirect === true,
     operatorTargets: operatorTargetList,
     deviceNetwork
+  };
+}
+
+function sourceLooksLikeAgentDialog(value) {
+  const text = cleanTargetNeedle(`${value?.tunnelLabel || ""} ${value?.tunnelId || ""}`);
+  return /\bagent\b/u.test(text) || text.includes("агент");
+}
+
+function agentDialogDeviceNetwork(deviceNetwork) {
+  return {
+    ...deviceNetwork,
+    activeTunnelKind: "agent",
+    selectedTargetId: "",
+    selectedTargetLabel: "",
+    selectedTargetDeviceId: "",
+    selectedTargetAccess: false,
+    selectedTargetLink: false,
+    targets: sanitizeTargets(deviceNetwork.targets).map((target) => ({ ...target, selected: false }))
   };
 }
 
@@ -7068,7 +6803,7 @@ function mergeOperatorTargets(...groups) {
       merged.set(target.id, target);
     }
   }
-  return [...merged.values()].slice(0, 128);
+  return [...merged.values()].slice(0, maxOperatorTargets);
 }
 
 function sourceMatchedOperatorTargets(source, extraTargets = []) {
@@ -7092,11 +6827,7 @@ function sourceMatchedOperatorTargets(source, extraTargets = []) {
 
 function sourceAgentLinkTargets(source, extraTargets = []) {
   const matches = sourceMatchedOperatorTargets(source, extraTargets);
-  const synthetic = matches.filter((target) => isAgentSourceTarget(target.id));
-  if (synthetic.length > 0) {
-    return synthetic;
-  }
-  return matches.length === 1 ? matches : [];
+  return matches.filter((target) => isAgentSourceTarget(target.id));
 }
 
 function targetMatchesSourceDevice(target, sourceDeviceId) {
@@ -7200,15 +6931,25 @@ function mergedNoProxy(value) {
   return Array.from(parts).join(",");
 }
 
-function findCodexBinary() {
+function canRunCodexBrain() {
   if (codexDisabled) {
+    return false;
+  }
+  const scope = String(agentScope || "").toLowerCase();
+  return scope === "server"
+    || process.env.SOTY_CODEX_SERVER_EXECUTOR === "1"
+    || /^srv_codex_/u.test(agentRelayId);
+}
+
+function findCodexBinary() {
+  if (!canRunCodexBrain()) {
     return "";
   }
   return stockCodexPathCandidates().find((candidate) => candidate && existsSync(candidate)) || "";
 }
 
 function hasCodexBinary() {
-  if (codexDisabled) {
+  if (!canRunCodexBrain()) {
     cachedCodexProbeAt = Date.now();
     cachedCodexAvailable = false;
     return false;
@@ -10308,21 +10049,6 @@ function executableExists(candidate) {
   }
   return spawnSync("sh", ["-lc", "command -v " + candidate], { stdio: "ignore" }).status === 0;
 }
-function openDefaultBrowser(url) {
-  if (!/^https?:\\/\\//i.test(String(url || ""))) return false;
-  const command = process.platform === "win32"
-    ? { file: "cmd.exe", args: ["/d", "/s", "/c", "start", "", url] }
-    : process.platform === "darwin"
-      ? { file: "open", args: [url] }
-      : { file: "xdg-open", args: [url] };
-  try {
-    const child = spawn(command.file, command.args, { detached: true, stdio: "ignore", windowsHide: false });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
 async function ensureBrowser() {
   try {
     await fetchJson(base + "/json/version");
@@ -10454,11 +10180,6 @@ async function evalText(client, expression) {
   }
   throw new Error("unsupported browser action: " + action);
 })().catch((error) => {
-  const action = String(req.action || "").toLowerCase();
-  if ((action === "open" || action === "goto") && openDefaultBrowser(req.url)) {
-    console.log(JSON.stringify({ ok: true, action, url: req.url, mode: "default-browser-fallback" }));
-    return;
-  }
   console.error(error && error.stack ? error.stack : String(error));
   process.exit(1);
 });
@@ -10687,7 +10408,7 @@ function sanitizeTargets(value) {
           .filter((value) => typeof value === "string")
           .map((value) => value.slice(0, maxSourceChars))
           .filter(Boolean))]
-          .slice(0, 16)
+          .slice(0, maxDeviceIdsPerTarget)
         : [],
       hostDeviceId: typeof item?.hostDeviceId === "string" ? item.hostDeviceId.slice(0, maxSourceChars) : "",
       access: typeof item?.access === "boolean" ? item.access : undefined,
@@ -10697,7 +10418,7 @@ function sanitizeTargets(value) {
       lastActionAt: typeof item?.lastActionAt === "string" ? item.lastActionAt.slice(0, 80) : ""
     }))
     .filter((item) => item.id && item.label)
-    .slice(0, 128);
+    .slice(0, maxOperatorTargets);
 }
 
 function hasKnownOperatorTarget(target) {
@@ -10707,8 +10428,7 @@ function hasKnownOperatorTarget(target) {
   }
   return operatorTargets.some((item) => item.id === target
     || item.id.toLowerCase() === needle
-    || item.label.toLowerCase() === needle
-    || item.label.toLowerCase().includes(needle));
+    || item.label.toLowerCase() === needle);
 }
 
 function operatorSourceTargetScore(target, sourceDeviceId) {
@@ -12086,10 +11806,12 @@ function runtimeHealth() {
     deviceId: agentDeviceId,
     deviceNick: agentDeviceNick,
     sourceWorker: canRunAgentSourceWorker(),
+    codexBrain: canRunCodexBrain(),
+    localCodexDisabled,
     codex: hasCodexBinary(),
     codexBinary: Boolean(findCodexBinary()),
     codexAuth: hasCodexAuth(),
-    codexMode: codexFullLocalTools ? "stock-cli-full-local-tools" : "stock-cli-bridge",
+    codexMode: canRunCodexBrain() ? (codexFullLocalTools ? "server-stock-cli-full-local-tools" : "server-stock-cli-bridge") : "server-relay-only",
     codexSessionMode,
     codexRuntimeContext: "clean-codex+memory-plane+computer-use-plane",
     executionPlane: runtimeExecutionPlane(),
@@ -12217,7 +11939,7 @@ function automationToolkitStatus() {
         name: "generated-asset",
         entryTool: "computer",
         phases: ["image_gen", "artifact", "wallpaper", "verify"],
-        proof: ["localPath", "targetPath", "artifactSha256", "wallpaperPath", "display"],
+        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
         routeProfile: generatedAssetRouteProfileId
       },
       {

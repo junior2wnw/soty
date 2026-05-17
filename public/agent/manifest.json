@@ -1,9 +1,9 @@
 {
-  "version": "0.4.58",
+  "version": "0.4.59",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "a5f64028babc266c1468b4d5772b4f543351c625190a97776f077eae38842cc1",
+  "sha256": "d8b7a9aa5311618084d7d91e47a9b1bb19109140c6c466c2caa57f58c3c04cdd",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -184,7 +184,7 @@
           "use the exact newest generated_images artifact path when Codex did not expose a direct path",
           "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
           "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
-          "verify with source-device proof: file path, SHA-256/bytes, display or wallpaper state"
+          "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
         ],
         "doNot": [
           "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
@@ -198,6 +198,7 @@
           "artifactSha256",
           "bytes",
           "wallpaperPath",
+          "currentWallpaper",
           "display"
         ],
         "learning": {
@@ -379,7 +380,9 @@
           "localPath",
           "targetPath",
           "artifactSha256",
+          "bytes",
           "wallpaperPath",
+          "currentWallpaper",
           "display"
         ],
         "routeProfile": "soty-generated-asset-wallpaper-fast-lane",
@@ -527,7 +530,7 @@
             "use the exact newest generated_images artifact path when Codex did not expose a direct path",
             "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
             "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
-            "verify with source-device proof: file path, SHA-256/bytes, display or wallpaper state"
+            "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
           ],
           "doNot": [
             "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
@@ -541,6 +544,7 @@
             "artifactSha256",
             "bytes",
             "wallpaperPath",
+            "currentWallpaper",
             "display"
           ],
           "learning": {
