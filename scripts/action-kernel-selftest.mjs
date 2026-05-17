@@ -1363,7 +1363,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("managed-prepare-still-running"));
       assert(agent.includes("Ignore older failed prepare jobs while latestPrepare is running"));
       assert(agent.includes("Windows Reinstall Managed Prepare"));
-      assert(agent.includes("Do not use shell/grep/SOTY_ROUTES/local file crawling"));
+      assert(agent.includes("normal shell/file access stays available"));
       assert(agent.includes("If `latestPrepare.status` is `running-or-started`"));
       assert(agent.includes("compactReinstallStatusToolPayload"));
       assert(agent.includes("maxTextLength: 1_000_000"));
@@ -1376,11 +1376,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("If a tool returns running/still-running/nextTool"));
       assert(agent.includes("turnkey-monitoring"));
       assert(!agent.includes("write `продолжай`"));
-      assert(agent.includes("maybeRedirectManagedReinstallProbe"));
-      assert(agent.includes("managed-reinstall-toolkit-required"));
+      assert(!agent.includes("maybeRedirectManagedReinstallProbe"));
+      assert(!agent.includes("managed-reinstall-toolkit-required"));
       assert(agent.includes("waitMs"));
       assert(agent.includes("reusedExistingPrepare"));
       assert(agent.includes("isReinstallPrepareActive"));
+      assert(agent.includes("isReinstallReady"));
       assert(agent.includes("post-arm-rebooting"));
       assert(agent.includes("rememberPostArmReboot"));
       assert(agent.includes("agentResponseStyleProfiles"));
@@ -1414,7 +1415,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("mcpRecordComputerLearning"));
       assert(agent.includes("shouldRecordComputerLearning"));
       assert(agent.includes("Learning receipt saved as route guidance only"));
-      assert(agent.includes('maybeRedirectManagedReinstallProbe(\n      "soty_action"'));
+      assert(agent.includes("operation=terminal/action"));
+      assert(agent.includes('"terminal", "console"'));
       assert(agent.includes("activeCodexTargetTurns"));
       assert(agent.includes("codex.active-target-suppressed"));
       assert(agent.includes("codexActiveTargetTurnKey"));

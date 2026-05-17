@@ -6356,17 +6356,18 @@ function sotyRuntimeHints() {
     "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. If the current client is web-controller only, require a named/selected connected device for device actions. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
     "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
+    "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
     "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
-    "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages. Avoid local shell sleeps and avoid noisy user updates while the durable job is healthy.",
+    "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/repair/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For Windows reinstall problem reports, do not answer from memory alone. First call `computer` with operation=reinstall, capability=os-reinstall, action=repair or action=status, then use its structured proof/nextAction. If repair says nextAction=prepare and the user is asking to continue reinstall, call prepare; if it says nextAction=arm, ask only for the exact final confirmation phrase.",
-    "- For Windows reinstall status, do not search local files, grep route docs, or crawl ProgramData. Call `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
+    "- For Windows reinstall status, prefer `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful because it returns compact proof. Full shell/file access remains available for direct diagnostics and repair. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
     "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `lord`/`лорд`.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
@@ -6443,7 +6444,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "## Windows Reinstall Managed Prepare",
     "",
-    "Use this route for Windows reinstall/reset/clean install work on the selected or named Link device. The managed capability is the source of truth; do not rediscover it with shell, grep, local files, or ProgramData crawling.",
+    "Use this route for Windows reinstall/reset/clean install work on the selected or named Link device. The managed capability is the fastest structured route, while normal shell/file access stays available for direct diagnostics and repair.",
     "",
     "Prepare or continue preparation:",
     "",
@@ -6476,7 +6477,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Use this route whenever an install, repair, backup, download, browser automation, Windows reinstall prepare, or other user-facing task may outlive a short chat turn:",
     "",
-    "1. Start one durable job through `computer` operation=action/script/run or the route-profile capability. Use a stable `idempotencyKey` for retries.",
+    "1. Start one durable job through `computer` operation=action/terminal/script/run or the route-profile capability. Use a stable `idempotencyKey` for retries. Start multiple detached jobs when independent console lanes help the task.",
     "2. Wait through the tool itself whenever possible: `waitForCompletion:true` and a realistic `waitTimeoutMs`, up to `86400000` for all-day work.",
     "3. If you already have a `jobId`, poll with:",
     "",
@@ -6559,14 +6560,16 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "",
     "Computer-use plane:",
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
+    "- Full access model: managed capabilities are preferred routes, not walls. You may still use shell/script/file/terminal directly on the selected device when that is the right way to solve, inspect, or repair the task.",
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
     "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
+    "- Parallel terminal model: when one command may hang or a task needs multiple lanes, start separate durable terminal/action jobs with operation=terminal/action and detached=true; use job_status/job_stop/jobs to manage them instead of waiting for one console to become free.",
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
     "- For Windows reinstall/reset, the default attached-device route is `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\" }. Use status/repair/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- When the user reports that reinstall is stuck, stale, interrupted, previously failed, or asks what prevented it, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"repair\", timeoutMs: 45000 } before explaining. Treat repair as the safe doctor step: it may recover stale prepare markers and returns nextAction.",
-    "- For Windows reinstall status, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 }. Do not use shell/grep/SOTY_ROUTES/local file crawling to rediscover this route. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running; if it is `stale-orphaned`, call prepare again or cancel instead of asking the user to clean locks manually.",
+    "- For Windows reinstall status, prefer `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 } because it returns compact proof. Shell/file diagnostics are still allowed when they help solve the task. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running; if it is `stale-orphaned`, call prepare again or cancel instead of asking the user to clean locks manually.",
     "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for final confirmation.",
     "- For generated image or generated wallpaper tasks, use the native OpenAI image-generation tool first. Do not check desktop/display first just to choose a size; generation availability is the first gate and size can be adjusted after a generated artifact exists.",
     "- After native image generation, follow `SOTY_ROUTES.md`: find the real output under the Codex home generated_images directory if needed, then move bytes with `computer` operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>; never upload generated images to public temporary hosts or serve them with local HTTP.",
@@ -7239,11 +7242,11 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, generated-asset save/apply/verify, and managed reinstall. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, toolkit, or learn." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, toolkit, or learn." },
             capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             routeProfile: { type: "string", description: "Optional route profile id to reuse, for example soty-windows-reinstall-managed-fast-lane." },
@@ -7453,7 +7456,7 @@ function runMcpServer() {
             useExistingUsbInstallImage: { type: "boolean", description: "When true, prepare refuses to download Windows and requires a valid existing USB install image." },
             waitForCompletion: { type: "boolean", description: "Default true for prepare. Keep true unless the user explicitly asked to run in background." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, default up to 86400000 for prepare." },
-            waitMs: { type: "integer", description: "For status only: wait inside the toolkit before reading status again. Use instead of local shell sleep." },
+            waitMs: { type: "integer", description: "For status only: wait inside the toolkit before reading status again. Prefer this to occupying a terminal with sleep." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds. Use short timeouts for preflight/status/repair; prepare and arm are durable actions." }
           },
           required: ["action"],
@@ -7674,10 +7677,6 @@ function runMcpServer() {
       if (!command) {
         return mcpToolText("! command", true);
       }
-      const managedRedirect = await maybeRedirectManagedReinstallProbe("soty_run", command);
-      if (managedRedirect) {
-        return managedRedirect;
-      }
       if (isPowerShellWorkflowCommand(command)) {
         return mcpToolText("! soty-run-powershell-workflow: use soty_script with shell=\"powershell\" for PowerShell variables, pipelines, semicolons, or multi-step checks.", true, 64);
       }
@@ -7695,10 +7694,6 @@ function runMcpServer() {
       if (!script) {
         return mcpToolText("! script", true);
       }
-      const managedRedirect = await maybeRedirectManagedReinstallProbe("soty_script", `${args.name || ""}\n${script}`);
-      if (managedRedirect) {
-        return managedRedirect;
-      }
       const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
         sourceDeviceId: mcpSourceDeviceId,
@@ -7715,10 +7710,6 @@ function runMcpServer() {
       const path = String(args.path || "").trim();
       if (!action || !path) {
         return mcpToolText("! file", true);
-      }
-      const managedRedirect = await maybeRedirectManagedReinstallProbe("soty_file", path);
-      if (managedRedirect) {
-        return managedRedirect;
       }
       const result = await mcpPostOperator("/operator/script", {
         target: mcpTarget,
@@ -7958,8 +7949,8 @@ function runMcpServer() {
     if (operation === "open-url" || operation === "open_url" || capability === "url") {
       return "soty_open_url";
     }
-    if (["run", "script", "action", "execute", "shell", "long-job", "long_job"].includes(operation)
-      || /\b(?:shell|console|service|package|install|repair|diagnostic|probe|verify|long-job|long_job)\b/u.test(key)
+    if (["run", "script", "action", "execute", "shell", "terminal", "console", "long-job", "long_job"].includes(operation)
+      || /\b(?:shell|terminal|console|service|package|install|repair|diagnostic|probe|verify|long-job|long_job)\b/u.test(key)
       || args.command
       || args.script) {
       return "soty_action";
@@ -8401,13 +8392,6 @@ function runMcpServer() {
     if (mode === "script" && !script) {
       return mcpToolText("! script", true);
     }
-    const managedRedirect = await maybeRedirectManagedReinstallProbe(
-      "soty_action",
-      mode === "script" ? `${args.name || ""}\n${script}` : command
-    );
-    if (managedRedirect) {
-      return managedRedirect;
-    }
     const family = String(args.family || "");
     const toolkit = normalizeToolkitName(args.toolkit || toolkitForFamily(family || classifySourceCommand(mode === "script" ? script : command)));
     const phase = cleanActionToken(args.phase || args.kind || "execute", "execute");
@@ -8709,13 +8693,14 @@ function runMcpServer() {
           reusedExistingPrepare: true,
           reason: "managed-prepare-already-active-or-ready"
         };
-        const existingNeedsRecovery = isReinstallMediaStalled(existingStatus);
-        const terminal = existingNeedsRecovery ? null : evaluateReinstallPrepareTerminal(existingStatus, existingInitial, 0);
-        if (terminal) {
-          recordSotyReinstallRouteReceipt(action, terminal, toolStartedAt);
-          return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
+        if (isReinstallReady(existingStatus)) {
+          const terminal = evaluateReinstallPrepareTerminal(existingStatus, existingInitial, 0);
+          if (terminal) {
+            recordSotyReinstallRouteReceipt(action, terminal, toolStartedAt);
+            return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
+          }
         }
-        if (!existingNeedsRecovery && isReinstallPrepareActive(existingStatus)) {
+        if (isReinstallPrepareActive(existingStatus)) {
           if (shouldWait) {
             const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
             const waited = await waitForSotyReinstallPrepare({
@@ -8745,6 +8730,9 @@ function runMcpServer() {
           recordSotyReinstallRouteReceipt(action, runningPayload, toolStartedAt);
           return mcpToolJson(runningPayload);
         }
+        // Historical failed/stale prepare jobs are only history here: if no worker
+        // or media download is active and no ready proof exists, start a fresh
+        // managed prepare instead of blocking on yesterday's job record.
       }
     }
     const keyDate = new Date().toISOString().slice(0, 10).replace(/-/gu, "");
@@ -8809,7 +8797,7 @@ function runMcpServer() {
       const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
       const waited = await waitForSotyReinstallPrepare({
         request,
-        initial: payload,
+        initial: { ...payload, freshPrepareStarted: true },
         waitTimeoutMs: requestedWaitTimeoutMs,
         requestedWaitTimeoutMs
       });
@@ -9029,7 +9017,7 @@ function runMcpServer() {
         action: "prepare",
         status: "running",
         terminalReason: "still-running",
-        text: "Preparation is still running. Continue monitoring with computer operation=reinstall action=status; do not start another prepare and do not use generic script/file polling.",
+        text: "Preparation is still running. Continue monitoring with computer operation=reinstall action=status; direct shell/file diagnostics remain available if they help solve a concrete problem.",
         exitCode: 0,
         elapsedMs: Date.now() - started,
         waitCapped: requestedWaitTimeoutMs > waitTimeoutMs,
@@ -9044,7 +9032,7 @@ function runMcpServer() {
             timeoutMs: 45_000
           }
         },
-        agentGuidance: "This is a non-terminal progress result. Keep the chat alive by calling nextTool. Do not use local shell sleep or generic script/file probes.",
+        agentGuidance: "This is a non-terminal progress result. Keep the chat alive by calling nextTool. Prefer structured status for progress; use direct shell/file diagnostics only when they help solve a concrete blocker.",
         initial,
         lastStatus,
         lastProbe: lastPayload
@@ -9167,7 +9155,7 @@ function runMcpServer() {
       ...payload,
       liveStatus: liveStatus || mcpOperatorPayload(statusResult),
       liveStatusOk: Boolean(liveStatus),
-      agentGuidance: "For managed Windows reinstall progress use liveStatus or computer operation=reinstall action=status. Do not crawl C:\\ProgramData\\Soty\\WindowsReinstall with generic script, run, or file probes."
+      agentGuidance: "For managed Windows reinstall progress, prefer liveStatus or computer operation=reinstall action=status. Direct script/run/file diagnostics remain available when they help solve a concrete blocker."
     };
     return mcpToolJson(body, !result.ok || !liveStatus, result.exitCode || statusResult.exitCode);
   }
@@ -9211,52 +9199,6 @@ function runMcpServer() {
       rootAutounattend: backupProof.rootAutounattend === true,
       oemSetupComplete: backupProof.oemSetupComplete === true
     };
-  }
-
-  async function maybeRedirectManagedReinstallProbe(toolName, text) {
-    if (!looksLikeManagedReinstallProbe(text)) {
-      return null;
-    }
-    const statusResult = await readSotyReinstallStatus(managedReinstallStatusRequest());
-    const liveStatus = parseReinstallStatusResult(statusResult);
-    const compactStatus = liveStatus ? compactReinstallStatusToolPayload(liveStatus) : null;
-    const body = {
-      ...(compactStatus || {}),
-      ok: compactStatus ? compactStatus.ok !== false : Boolean(liveStatus),
-      redirected: true,
-      blockedTool: toolName,
-      reason: "managed-reinstall-toolkit-required",
-      text: liveStatus
-        ? "Managed reinstall status returned by computer reinstall status; generic filesystem/script polling was skipped."
-        : "Generic reinstall probing was skipped, but computer reinstall status did not return structured status.",
-      liveStatus: compactStatus?.statusSnapshot || liveStatus || mcpOperatorPayload(statusResult),
-      nextTool: compactStatus?.nextTool || {
-        name: "computer",
-        args: {
-          operation: "reinstall",
-          capability: "os-reinstall",
-          action: "status",
-          timeoutMs: 45_000
-        }
-      },
-      agentGuidance: compactStatus?.agentGuidance || "Continue only with computer reinstall status/prepare/arm for this reinstall flow; do not retry generic script/file/run probes for WindowsReinstall artifacts."
-    };
-    return mcpToolJson(body, !liveStatus || compactStatus?.ok === false, compactStatus?.exitCode || statusResult.exitCode);
-  }
-
-  function looksLikeManagedReinstallProbe(text) {
-    const lower = String(text || "").toLowerCase();
-    return lower.includes("programdata\\soty\\windowsreinstall")
-      || lower.includes("programdata/soty/windowsreinstall")
-      || lower.includes("soty\\windowsreinstall")
-      || lower.includes("soty/windowsreinstall")
-      || lower.includes("soty-managed-windows-reinstall")
-      || lower.includes("backup-proof.json")
-      || lower.includes("ready.json")
-      || lower.includes("autounattend.xml")
-      || lower.includes("setupcomplete.cmd")
-      || lower.includes(".esd.download")
-      || lower.includes("windows11_25h2_clientconsumer");
   }
 
   function parseReinstallStatusResult(result) {
@@ -9416,6 +9358,10 @@ function runMcpServer() {
     return body;
   }
 
+  function isReinstallReady(status) {
+    return status?.ready === true;
+  }
+
   function evaluateReinstallPrepareTerminal(status, initial, elapsedMs) {
     const readyBlockers = reinstallReadyBlockers(status);
     if (status?.ready === true && readyBlockers.length === 0) {
@@ -9466,7 +9412,7 @@ function runMcpServer() {
             timeoutMs: 45_000
           }
         },
-        agentGuidance: "Call nextTool yourself, then start prepare again if repair reports needsPrepare=true. Do not use generic shell/file deletion for WindowsReinstall media."
+        agentGuidance: "Call nextTool yourself, then start prepare again if repair reports needsPrepare=true. Prefer managed repair for stale media cleanup; use shell/file access only for direct diagnostics or a concrete repair need."
       };
     }
     if (isReinstallPrepareActive(status)) {
@@ -9502,6 +9448,9 @@ function runMcpServer() {
       };
     }
     if (latest && latestStatus && latestStatus !== "running-or-started" && latestStatus !== "running" && latestStatus !== "created") {
+      if (initial?.freshPrepareStarted === true && elapsedMs < reinstallPrepareOrphanGraceSeconds * 1000) {
+        return null;
+      }
       return {
         ok: false,
         action: "prepare",
