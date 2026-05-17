@@ -1439,6 +1439,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("activeCodexTargetTurns"));
       assert(agent.includes("codex.active-target-suppressed"));
       assert(agent.includes("codexActiveTargetTurnKey"));
+      assert(agent.includes("isInterruptibleActiveCodexGuard"));
+      assert(agent.includes("codex.active-guard-interrupted"));
+      assert(agent.includes("shouldStop: () => activeTurn?.interruptedByUser === true"));
+      assert(agent.includes('terminalReason: "user-followup"'));
       assert(agent.includes("maybeWaitForWindowsReinstallTerminalAfterCodex"));
       assert(agent.includes("windows-reinstall-post-codex"));
       assert(agent.includes("postCodexGuard"));

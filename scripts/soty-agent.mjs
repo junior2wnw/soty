@@ -4198,33 +4198,50 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
   const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
   if (activeTargetTurn && activeTargetTurn.done !== true) {
-    const suppressed = activeCodexTargetTurnReply(activeTargetTurn, taskFamily);
-    traceRouting(trace, {
-      finalRoute: "codex.active-target-suppressed",
-      taskFamily,
-      activeTaskFamily: activeTargetTurn.taskFamily || "",
-      targetId: target?.id || "",
-      activeAgeMs: Math.max(0, Date.now() - (activeTargetTurn.startedAt || Date.now()))
-    });
-    traceStep(trace, "codex.active-target-suppressed", {
-      taskFamily,
-      activeTaskFamily: activeTargetTurn.taskFamily || "",
-      targetId: target?.id || "",
-      jobDir: activeTargetTurn.jobDir || "",
-      lastMessage: Boolean(activeTargetTurn.lastMessage)
-    });
-    recordLearningReceipt({
-      kind: "agent-runtime",
-      family: taskFamily,
-      result: "partial",
-      route: "codex.active-target-suppressed",
-      taskSig: taskSignature(text),
-      proof: `activeTargetTurn=true; activeFamily=${cleanProofToken(activeTargetTurn.taskFamily || "")}; targetHash=${learningContext.targetHash || ""}`,
-      exitCode: 0,
-      durationMs: Date.now() - startedAt,
-      ...learningContext
-    });
-    return suppressed;
+    if (isInterruptibleActiveCodexGuard(activeTargetTurn)) {
+      activeTargetTurn.interruptedByUser = true;
+      activeTargetTurn.interruptedAt = Date.now();
+      activeTargetTurn.interruptTaskFamily = taskFamily;
+      activeTargetTurn.interruptText = String(text || "").slice(0, 2000);
+      if (activeCodexTargetTurns.get(activeTargetTurnKey) === activeTargetTurn) {
+        activeCodexTargetTurns.delete(activeTargetTurnKey);
+      }
+      traceStep(trace, "codex.active-guard-interrupted", {
+        guard: activeTargetTurn.guard || "",
+        activeTaskFamily: activeTargetTurn.taskFamily || "",
+        taskFamily,
+        targetId: target?.id || "",
+        activeAgeMs: Math.max(0, Date.now() - (activeTargetTurn.startedAt || Date.now()))
+      });
+    } else {
+      const suppressed = activeCodexTargetTurnReply(activeTargetTurn, taskFamily);
+      traceRouting(trace, {
+        finalRoute: "codex.active-target-suppressed",
+        taskFamily,
+        activeTaskFamily: activeTargetTurn.taskFamily || "",
+        targetId: target?.id || "",
+        activeAgeMs: Math.max(0, Date.now() - (activeTargetTurn.startedAt || Date.now()))
+      });
+      traceStep(trace, "codex.active-target-suppressed", {
+        taskFamily,
+        activeTaskFamily: activeTargetTurn.taskFamily || "",
+        targetId: target?.id || "",
+        jobDir: activeTargetTurn.jobDir || "",
+        lastMessage: Boolean(activeTargetTurn.lastMessage)
+      });
+      recordLearningReceipt({
+        kind: "agent-runtime",
+        family: taskFamily,
+        result: "partial",
+        route: "codex.active-target-suppressed",
+        taskSig: taskSignature(text),
+        proof: `activeTargetTurn=true; activeFamily=${cleanProofToken(activeTargetTurn.taskFamily || "")}; targetHash=${learningContext.targetHash || ""}`,
+        exitCode: 0,
+        durationMs: Date.now() - startedAt,
+        ...learningContext
+      });
+      return suppressed;
+    }
   }
   traceRouting(trace, {
     route: "codex.local",
@@ -4460,7 +4477,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
           finalText,
           onMessage: guardOnMessage,
           trace,
-          signal
+          signal,
+          shouldStop: () => activeTurn?.interruptedByUser === true
         });
       } finally {
         if (reactivateGuard) {
@@ -4577,7 +4595,7 @@ function isNonTerminalWindowsReinstallFinalText(text) {
     || /(?:не закрываю|не завершаю|держу|продолжаю|продолжу|мониторинг|опрос|подготовка.+ид[её]т|задач[ау].+держ|bytes=0|байт[ыа]?\s*(?:всё ещё|пока)?\s*0)/u.test(value);
 }
 
-async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, source, target, finalText = "", onMessage, trace = null, signal = null } = {}) {
+async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, source, target, finalText = "", onMessage, trace = null, signal = null, shouldStop = null } = {}) {
   if (cleanActionToken(taskFamily, "") !== "windows-reinstall" || !target?.id || signal?.aborted) {
     return null;
   }
@@ -4587,6 +4605,24 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
   }
   const finalClaimsNonTerminal = isNonTerminalWindowsReinstallFinalText(finalText);
   const started = Date.now();
+  const stopRequested = () => {
+    try {
+      return typeof shouldStop === "function" && shouldStop() === true;
+    } catch {
+      return false;
+    }
+  };
+  const handoffPayload = () => ({
+    ok: true,
+    action: "prepare",
+    status: "handoff",
+    terminalReason: "user-followup",
+    text: "",
+    exitCode: 0
+  });
+  if (stopRequested()) {
+    return handoffPayload();
+  }
   const request = managedReinstallGuardRequest();
   let statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
   let status = parseManagedReinstallStatusAfterCodex(statusResult);
@@ -4636,6 +4672,9 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
   let firstStatusUnavailableAt = 0;
   let lastUnavailableProgressAt = 0;
   while (Date.now() - started < maxLongTaskTimeoutMs) {
+    if (stopRequested()) {
+      return handoffPayload();
+    }
     if (signal?.aborted) {
       return {
         ok: false,
@@ -4647,6 +4686,9 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
       };
     }
     await sleep(Math.min(managedReinstallGuardPollDelayMs(status), 120_000));
+    if (stopRequested()) {
+      return handoffPayload();
+    }
     statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
     status = parseManagedReinstallStatusAfterCodex(statusResult);
     if (!status) {
@@ -5097,6 +5139,10 @@ function codexActiveTargetTurnKey(source, target = null) {
     targetId
   ].filter(Boolean).join("@");
   return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 220);
+}
+
+function isInterruptibleActiveCodexGuard(entry) {
+  return entry?.guard === "windows-reinstall-post-codex";
 }
 
 function activeCodexTargetTurnReply(entry, taskFamily = "") {
