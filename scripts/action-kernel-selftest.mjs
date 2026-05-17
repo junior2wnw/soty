@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import express from "express";
 import WebSocket from "ws";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 import { attachAgentRelay } from "../server/agent-relay.js";
+import { attachScenarios } from "../server/scenarios.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceAgentPath = join(root, "scripts", "soty-agent.mjs");
@@ -164,6 +165,89 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(list.status, 200);
       assert(Array.isArray(list.body.jobs));
       assertEqual(list.body.jobs.length, 0);
+    }],
+    ["shared scenarios persist, improve, link memory, and rank by usage", async () => {
+      const dataDir = await mkdtemp(join(tempRoot, "scenario-store-"));
+      const learningDir = join(dataDir, "learning");
+      await mkdir(learningDir, { recursive: true });
+      const receipt = {
+        schema: "soty.memory.receipt.v1",
+        id: "mem-selftest-scenario-1",
+        receivedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        kind: "agent-runtime",
+        result: "ok",
+        toolkit: "scenarios",
+        phase: "export-import",
+        family: "generic",
+        platform: "selftest",
+        route: "scenario/export-import",
+        taskSig: "task:1111111111111111",
+        proof: "reuseKey=scenario-export-import; scriptUse=manual-export-import; successCriteria=state-restored; context=scenario"
+      };
+      await writeFile(join(learningDir, "2026-05-18.jsonl"), `${JSON.stringify(receipt)}\n`, "utf8");
+      const app = express();
+      attachScenarios(app, { dataDir });
+      const scenarioServer = createServer(app);
+      await listen(scenarioServer, "127.0.0.1", 0);
+      const base = `http://127.0.0.1:${scenarioServer.address().port}`;
+      try {
+        const health = await relayRequest(base, "GET", "/api/scenarios/health");
+        assertEqual(health.status, 200);
+        assertEqual(health.body.ok, true);
+        assertEqual(health.body.schema, "soty.scenarios.v1");
+
+        const seeded = await relayRequest(base, "GET", "/api/scenarios?limit=12");
+        assertEqual(seeded.status, 200);
+        assert(seeded.body.scenarios.some((item) => item.id === "scn_soty_export_import_reinstall"));
+
+        const prompt = [
+          "Scenario:",
+          "Title: Soty one-file export before reinstall",
+          "Goal: Export Soty state to one JSON file before Windows reinstall and import it after reinstall.",
+          "When to use: before clean Windows reinstall or device migration.",
+          "Where to run: current Soty browser on the user's device.",
+          "Steps:",
+          "1. Open MORE -> SCENARIOS -> STATE -> EXPORT.",
+          "2. Save the JSON file to removable media.",
+          "3. After reinstall, open MORE -> SCENARIOS -> STATE -> IMPORT and select that JSON.",
+          "Done: dialogs, linked devices, and scenarios are restored from the single file."
+        ].join("\n");
+        const saved = await relayRequest(base, "POST", "/api/scenarios", {
+          scope: "shared",
+          title: "Soty one-file export before reinstall",
+          prompt,
+          deviceId: "selftest-device",
+          deviceNick: "selftest",
+          sourceTunnelId: "selftest-dialog",
+          sourceText: "User wanted scenario 1 for one-file export/import around reinstall."
+        });
+        assertEqual(saved.status, 200);
+        assertEqual(saved.body.ok, true);
+        assert(saved.body.scenario.id);
+        assert(saved.body.scenario.memoryRefs.length > 0);
+
+        const improved = await relayRequest(base, "POST", "/api/scenarios", {
+          scope: "shared",
+          title: "Soty one-file export before reinstall",
+          prompt: `${prompt}\nProof: include exported file name and import result in the final answer.`,
+          deviceId: "selftest-device",
+          sourceText: "Improved proof rule for the same scenario."
+        });
+        assertEqual(improved.status, 200);
+        assertEqual(improved.body.scenario.id, saved.body.scenario.id);
+        assertEqual(improved.body.created, false);
+
+        const used = await relayRequest(base, "POST", `/api/scenarios/${encodeURIComponent(saved.body.scenario.id)}/use`, {});
+        assertEqual(used.status, 200);
+        assertEqual(used.body.scenario.useCount, 1);
+        const queried = await relayRequest(base, "GET", "/api/agent/scenarios/search?q=reinstall%20export&limit=8");
+        assertEqual(queried.status, 200);
+        assert(queried.body.top.some((item) => item.id === saved.body.scenario.id && item.useCount >= 1));
+        assert(queried.body.scenarios.some((item) => item.id === saved.body.scenario.id));
+      } finally {
+        await closeServer(scenarioServer);
+      }
     }],
     ["installed agent leases source jobs directly", async () => {
       mock.resetDirectSource();
@@ -1661,6 +1745,7 @@ async function runScenarios({ relayUrl } = {}) {
       const reinstallPrepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const agentRelay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
+      const scenariosServer = await readFile(join(root, "server", "scenarios.js"), "utf8");
       let userWindowsInstallerExists = true;
       try {
         await readFile(join(root, "public", "agent", "install-windows.cmd"), "utf8");
@@ -1767,7 +1852,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("showSaveFilePicker"));
       assert(ui.includes("NEW SCENARIO"));
       assert(ui.includes("soty:scenarios:v1"));
+      assert(ui.includes("soty:scenario-scope:v1"));
       assert(ui.includes("SAVE CURRENT"));
+      assert(ui.includes("SAVE SCENARIO"));
+      assert(ui.includes("handleChatTripleTap"));
+      assert(ui.includes("pendingScenarioSave"));
+      assert(ui.includes("/api/scenarios"));
       assert(ui.includes("runSavedScenario"));
       assert(ui.includes("restoreSavedScenariosFromPayload"));
       assert(ui.includes("const rawTarget = typeof options.target"));
@@ -1783,6 +1873,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!reinstallPrepare.includes("restore-local=1"));
       assert(!reinstallPrepare.includes("sotyOperatorExportBackedUp"));
       assert(agentSource.includes('const agentVersion = "0.4.66"'));
+      assert(agentSource.includes("codexScenarioPrompt"));
+      assert(agentSource.includes("/api/agent/scenarios/search"));
+      assert(agentSource.includes("Scenario hints:"));
+      assert(httpApp.includes("attachScenarios"));
+      assert(scenariosServer.includes("scn_soty_export_import_reinstall"));
+      assert(scenariosServer.includes("appendScenarioMemoryReceipt"));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));

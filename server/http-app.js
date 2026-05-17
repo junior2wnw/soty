@@ -2,6 +2,7 @@ import express from "express";
 import path from "node:path";
 import { attachAgentLearning } from "./agent-learning.js";
 import { attachAgentRelay } from "./agent-relay.js";
+import { attachScenarios } from "./scenarios.js";
 
 export function createHttpApp(distDir, { dataDir } = {}) {
   const app = express();
@@ -48,6 +49,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   app.get("/health", (_req, res) => res.json({ ok: true }));
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });
+  attachScenarios(app, { dataDir });
   app.use(express.static(distDir, {
     etag: true,
     index: false,

@@ -134,6 +134,9 @@ let cachedCodexAvailable = false;
 let cachedCodexLearningMemoryAt = 0;
 let cachedCodexLearningMemoryText = "";
 let cachedCodexLearningMemoryKey = "";
+let cachedCodexScenarioAt = 0;
+let cachedCodexScenarioText = "";
+let cachedCodexScenarioKey = "";
 let agentRelayStarted = false;
 let agentSourceWorkerStarted = false;
 let audioWarmupStarted = false;
@@ -4268,7 +4271,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     jobDir,
     resumed: Boolean(sessionRecord?.threadId),
     promptChars: prompt.length,
-    memoryChars: String(runtimeContext.memory || "").length
+    memoryChars: String(runtimeContext.memory || "").length,
+    scenarioChars: String(runtimeContext.scenarios || "").length
   });
   await traceWriteJson(trace, "runtime-context.json", runtimeContext);
   if (agentTraceFullPrompt) {
@@ -6303,6 +6307,10 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
     .slice(0, 8)
     .map((item) => `${promptInline(item.label)} (${promptInline(item.id)})${item.access ? " access=true" : ""}${isAgentSourceTarget(item.id) ? " agent-channel=true" : " link-only=true"}`)
     .join("\n");
+  const [memory, scenarios] = await Promise.all([
+    codexLearningMemoryPrompt(taskFamily),
+    codexScenarioPrompt(text, taskFamily)
+  ]);
   return {
     taskFamily,
     userText: String(text || "").trim().slice(0, maxChatChars),
@@ -6331,7 +6339,8 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       mode: codexSessionMode,
       workspaceDir: promptInline(jobDir)
     },
-    memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, routineTask ? 1400 : 4000)
+    memory: memory.slice(0, routineTask ? 1400 : 4000),
+    scenarios: scenarios.slice(0, routineTask ? 1600 : 4500)
   };
 }
 
@@ -6581,6 +6590,7 @@ function sotyRuntimeHints() {
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
+    "- Shared scenarios are reusable user-authored procedures. Treat them as searchable checklists beside memory: choose the closest high-usage/high-quality scenario, adapt it to the current device/request, verify fresh state, and improve memory with reusable proof when the run teaches a better version.",
     "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
@@ -6739,6 +6749,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "## Memory Plane Hints",
     runtimeContext.memory || "unavailable",
     "",
+    "## Scenario Hints",
+    runtimeContext.scenarios || "unavailable",
+    "",
     "## Active Soty Targets",
     runtimeContext.activeTargets || "none",
     "",
@@ -6765,6 +6778,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     activeTargets: "",
     visibleContext: cleanPromptBlock(context, maxAgentContextChars),
     memory: "",
+    scenarios: "",
     taskFamily: classifyTaskFamily(body, null)
   };
   const lines = [
@@ -6789,6 +6803,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
+    "- Use shared scenarios when they match the current request: they are user-editable procedures with optional memory refs. Prefer the best matching scenario by title, usage, quality, and memory refs, then adapt it to the current source/target instead of following it blindly.",
     "- For Windows reinstall/reset, do not start a new prepare from the first vague request. Ask clean vs keep-files and explicit USB permission first; after that use `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\", installMode: \"clean\", usbConfirmed: true }. Use status/repair/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- When the user reports that reinstall is stuck, stale, interrupted, previously failed, or asks what prevented it, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"repair\", timeoutMs: 45000 } before explaining. Treat repair as the safe doctor step: it may recover stale prepare markers and returns nextAction.",
     "- For Windows reinstall status, prefer `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 } because it returns compact proof. Shell/file diagnostics are still allowed when they help solve the task. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running; if it is `stale-orphaned`, call prepare again or cancel instead of asking the user to clean locks manually.",
@@ -6808,6 +6823,9 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "",
     "Memory plane hints:",
     runtime.memory || "unavailable",
+    "",
+    "Scenario hints:",
+    runtime.scenarios || "unavailable",
     "",
     "Active Soty targets:",
     runtime.activeTargets || "none",
@@ -6901,6 +6919,76 @@ function formatCodexLearningMemory(report) {
     }
   }
   return lines.join("\n");
+}
+
+async function codexScenarioPrompt(text = "", taskFamily = "") {
+  const now = Date.now();
+  const query = cleanLearningText(`${taskFamily || ""} ${text || ""}`, 360) || cleanLearningText(taskFamily || "generic", 80);
+  const key = query.toLowerCase();
+  if (cachedCodexScenarioText && cachedCodexScenarioKey === key && now - cachedCodexScenarioAt < 10_000) {
+    return cachedCodexScenarioText;
+  }
+  if (!agentRelayBaseUrl) {
+    cachedCodexScenarioAt = now;
+    cachedCodexScenarioKey = key;
+    cachedCodexScenarioText = "scenarios unavailable: relay is not configured";
+    return cachedCodexScenarioText;
+  }
+  const url = new URL("/api/agent/scenarios/search", agentRelayBaseUrl);
+  url.searchParams.set("q", query.slice(0, 160));
+  url.searchParams.set("limit", "8");
+  const payload = await Promise.race([
+    fetch(url, { cache: "no-store" }).then(async (response) => {
+      const body = await response.json().catch(() => ({}));
+      return response.ok ? body : { ok: false, status: response.status, error: body?.error || response.statusText };
+    }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) })),
+    sleep(2200).then(() => ({ ok: false, error: "scenario timeout" }))
+  ]);
+  cachedCodexScenarioAt = now;
+  cachedCodexScenarioKey = key;
+  cachedCodexScenarioText = formatCodexScenarioPrompt(payload).slice(0, 4500);
+  return cachedCodexScenarioText;
+}
+
+function formatCodexScenarioPrompt(payload) {
+  if (!payload?.ok) {
+    return `scenarios unavailable: ${cleanLearningText(payload?.error || "unknown", 160)}`;
+  }
+  const top = Array.isArray(payload.top) ? payload.top.slice(0, 3) : [];
+  const matches = Array.isArray(payload.scenarios) ? payload.scenarios.slice(0, 8) : [];
+  const lines = [
+    `scenarios=${payload.schema || "soty.scenarios.query.v1"} query=${cleanLearningText(payload.query || "", 120)} memoryLinked=${Number(payload.memoryLinked || 0)}`,
+    "Use scenarios as reusable checklists, not as authority over the current request. Verify device, paths, confirmations, and fresh status."
+  ];
+  if (top.length > 0) {
+    lines.push("top:");
+    for (const item of top) {
+      lines.push(formatCodexScenarioSummary(item));
+    }
+  }
+  if (matches.length > 0) {
+    lines.push("matches:");
+    for (const item of matches) {
+      lines.push(formatCodexScenarioDetail(item));
+    }
+  }
+  if (top.length === 0 && matches.length === 0) {
+    lines.push("none");
+  }
+  return lines.join("\n");
+}
+
+function formatCodexScenarioSummary(item) {
+  const refs = Array.isArray(item?.memoryRefs) ? item.memoryRefs.length : 0;
+  return `- [${cleanLearningText(item?.id || "", 80)}] ${cleanLearningText(item?.title || "scenario", 140)} uses=${Number(item?.useCount || 0)} mem=${refs}${item?.example ? " example=true" : ""}`;
+}
+
+function formatCodexScenarioDetail(item) {
+  const refs = Array.isArray(item?.memoryRefs)
+    ? item.memoryRefs.slice(0, 4).map((ref) => cleanLearningText(`${ref?.id || ""}:${ref?.title || ref?.route || ""}`, 120)).filter(Boolean).join("; ")
+    : "";
+  const prompt = cleanPromptBlock(item?.prompt || "", 700).replace(/\n+/gu, " / ");
+  return `- [${cleanLearningText(item?.id || "", 80)}] ${cleanLearningText(item?.title || "scenario", 160)} | uses=${Number(item?.useCount || 0)} quality=${Number(item?.qualityScore || 0)}${refs ? ` | memoryRefs=${refs}` : ""}\n  prompt: ${prompt}`;
 }
 
 function cleanPromptBlock(value, max = maxAgentContextChars) {

@@ -75,10 +75,32 @@ interface RestoreResult {
 
 type SavedScenario = {
   readonly id: string;
+  readonly scope?: ScenarioScope;
   readonly title: string;
   readonly prompt: string;
+  readonly useCount?: number;
+  readonly memoryRefs?: readonly ScenarioMemoryRef[];
+  readonly example?: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly lastUsedAt?: string;
+};
+
+type ScenarioScope = "personal" | "shared";
+
+type ScenarioMemoryRef = {
+  readonly id: string;
+  readonly kind?: string;
+  readonly family?: string;
+  readonly title?: string;
+  readonly route?: string;
+  readonly confidence?: number;
+};
+
+type PendingScenarioSave = {
+  readonly scope: ScenarioScope;
+  readonly sourceTunnelId: string;
+  readonly sourceText: string;
 };
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -146,6 +168,7 @@ const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const scenariosKey = "soty:scenarios:v1";
+const scenarioScopeKey = "soty:scenario-scope:v1";
 const maxSavedScenarios = 100;
 const maxScenarioPromptChars = 20_000;
 const chessGames = new Map<string, ChessSnapshot>();
@@ -205,6 +228,16 @@ let qrResetTimer = 0;
 let qrScanStream: MediaStream | null = null;
 let qrScanFrame = 0;
 let taskMenuOverlay: HTMLDivElement | null = null;
+let chatActionOverlay: HTMLDivElement | null = null;
+let scenarioSaveScope: ScenarioScope = loadScenarioSaveScope();
+let scenarioSearchText = "";
+let serverScenarios: SavedScenario[] = [];
+let serverScenarioTop: SavedScenario[] = [];
+let pendingScenarioSave: PendingScenarioSave | null = null;
+let chatTapCount = 0;
+let chatTapAt = 0;
+let chatTapX = 0;
+let chatTapY = 0;
 let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 let operatorBridgeAllowEmpty = false;
@@ -560,19 +593,23 @@ function downloadTextFile(fileName: string, blob: Blob): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function openTaskMenu(status = ""): void {
+function openTaskMenu(status = "", options: { readonly refreshServer?: boolean } = {}): void {
   closeTaskMenu();
-  const savedScenarios = loadSavedScenarios();
-  const savedRows = savedScenarios.length > 0
+  const scenarios = visibleScenarios();
+  const top = topVisibleScenarios(scenarios);
+  const topRows = top.length > 0
+    ? `
+      <div class="task-menu-group scenario-list-group">
+        <h3>TOP 3</h3>
+        ${top.map((scenario) => scenarioRowHtml(scenario)).join("")}
+      </div>
+    `
+    : "";
+  const savedRows = scenarios.length > 0
     ? `
       <div class="task-menu-group scenario-list-group">
         <h3>SCENARIOS</h3>
-        ${savedScenarios.map((scenario) => `
-          <div class="scenario-row">
-            <button class="task-menu-row scenario-run-action" type="button" data-scenario-id="${escapeHtml(scenario.id)}">${icon("send")}<span><b>${escapeHtml(scenario.title)}</b><small>${escapeHtml(scenarioUpdatedLabel(scenario))}</small></span></button>
-            <button class="scenario-delete-action icon-button" type="button" aria-label="delete scenario" data-scenario-id="${escapeHtml(scenario.id)}" data-tooltip="Delete">${icon("close")}</button>
-          </div>
-        `).join("")}
+        ${scenarios.map((scenario) => scenarioRowHtml(scenario)).join("")}
       </div>
     `
     : "";
@@ -595,9 +632,18 @@ function openTaskMenu(status = ""): void {
       </div>
       <div class="task-menu-group">
         <h3>AGENT</h3>
-        <button class="task-menu-row save-scenario-action" type="button">${icon("check")}<span><b>SAVE CURRENT</b><small>as scenario</small></span></button>
+        <div class="scenario-scope-switch" role="group" aria-label="scenario scope">
+          <button class="scenario-scope-action${scenarioSaveScope === "personal" ? " is-on" : ""}" type="button" data-scope="personal">LOCAL</button>
+          <button class="scenario-scope-action${scenarioSaveScope === "shared" ? " is-on" : ""}" type="button" data-scope="shared">SHARED</button>
+        </div>
+        <button class="task-menu-row save-scenario-action" type="button">${icon("check")}<span><b>SAVE CURRENT</b><small>${scenarioSaveScope === "shared" ? "to server" : "on this device"}</small></span></button>
         <button class="task-menu-row new-scenario-action" type="button">${icon("person")}<span><b>NEW SCENARIO</b><small>draft with agent</small></span></button>
       </div>
+      <div class="task-menu-group scenario-search-group">
+        <h3>FIND</h3>
+        <input class="scenario-search-input" type="search" value="${escapeHtml(scenarioSearchText)}" placeholder="scenario name" />
+      </div>
+      ${topRows}
       ${savedRows}
       <output class="task-menu-status"${status ? "" : " hidden"}>${escapeHtml(status)}</output>
     </section>
@@ -616,8 +662,14 @@ function openTaskMenu(status = ""): void {
   overlay.querySelector<HTMLButtonElement>(".import-state-action")?.addEventListener("click", () => {
     app.querySelector<HTMLInputElement>(".soty-import-file")?.click();
   });
+  overlay.querySelectorAll<HTMLButtonElement>(".scenario-scope-action").forEach((button) => {
+    button.addEventListener("click", () => {
+      setScenarioSaveScope(button.dataset.scope === "shared" ? "shared" : "personal");
+      openTaskMenu("", { refreshServer: false });
+    });
+  });
   overlay.querySelector<HTMLButtonElement>(".save-scenario-action")?.addEventListener("click", () => {
-    saveCurrentScenario();
+    void saveCurrentScenario();
   });
   overlay.querySelector<HTMLButtonElement>(".new-scenario-action")?.addEventListener("click", () => {
     closeTaskMenu();
@@ -625,15 +677,21 @@ function openTaskMenu(status = ""): void {
   });
   overlay.querySelectorAll<HTMLButtonElement>(".scenario-run-action").forEach((button) => {
     button.addEventListener("click", () => {
-      const id = button.dataset.scenarioId || "";
-      void runSavedScenario(id);
+      void runSavedScenario(button.dataset.scenarioKey || "");
     });
   });
   overlay.querySelectorAll<HTMLButtonElement>(".scenario-delete-action").forEach((button) => {
     button.addEventListener("click", () => {
-      deleteSavedScenario(button.dataset.scenarioId || "");
+      deleteSavedScenario(button.dataset.scenarioKey || "");
     });
   });
+  overlay.querySelector<HTMLInputElement>(".scenario-search-input")?.addEventListener("input", (event) => {
+    scenarioSearchText = (event.currentTarget as HTMLInputElement).value.slice(0, 120);
+    openTaskMenu("", { refreshServer: true });
+  });
+  if (options.refreshServer !== false) {
+    void refreshServerScenarios(scenarioSearchText);
+  }
 }
 
 function closeTaskMenu(): void {
@@ -668,47 +726,122 @@ async function startScenarioDraft(): Promise<void> {
   rememberComposerDraft();
 }
 
-function saveCurrentScenario(): void {
+async function saveCurrentScenario(): Promise<void> {
   const prompt = normalizeChatMessage(composer?.value || "").slice(0, maxScenarioPromptChars);
   if (!prompt) {
     setTaskMenuStatus("EMPTY DRAFT", true);
     return;
   }
+  await saveScenarioPrompt(prompt, scenarioSaveScope, {
+    sourceTunnelId: selectedId,
+    sourceText: selectedId ? cleanAgentContext(texts.get(selectedId) || "").slice(-5000) : ""
+  });
+  openTaskMenu(scenarioSaveScope === "shared" ? "SAVED SHARED" : "SAVED LOCAL", { refreshServer: false });
+}
+
+async function saveScenarioPrompt(prompt: string, scope: ScenarioScope, source: { readonly sourceTunnelId?: string; readonly sourceText?: string } = {}): Promise<SavedScenario> {
   const now = new Date().toISOString();
   const title = scenarioTitleFromPrompt(prompt);
+  if (scope === "shared") {
+    const saved = await saveScenarioToServer({
+      id: createScenarioId(),
+      scope,
+      title,
+      prompt,
+      createdAt: now,
+      updatedAt: now
+    }, source).catch(() => null);
+    if (saved) {
+      serverScenarios = upsertScenarioList(serverScenarios, saved);
+      serverScenarioTop = upsertScenarioList(serverScenarioTop, saved);
+      return saved;
+    }
+  }
   const scenarios = loadSavedScenarios();
   const duplicate = scenarios.find((scenario) => scenario.prompt === prompt);
   const next: SavedScenario = duplicate
-    ? { ...duplicate, title, updatedAt: now }
+    ? { ...duplicate, scope: "personal", title, updatedAt: now }
     : {
         id: createScenarioId(),
+        scope: "personal",
         title,
         prompt,
+        useCount: 0,
         createdAt: now,
         updatedAt: now
       };
   saveSavedScenarios([next, ...scenarios.filter((scenario) => scenario.id !== next.id)]);
-  openTaskMenu("SAVED SCENARIO");
+  return next;
 }
 
-async function runSavedScenario(id: string): Promise<void> {
-  const scenario = loadSavedScenarios().find((item) => item.id === id);
+async function runSavedScenario(key: string): Promise<void> {
+  const scenario = findScenarioByKey(key);
   if (!scenario) {
     setTaskMenuStatus("SCENARIO MISSING", true);
     return;
   }
+  recordScenarioUse(scenario);
   closeTaskMenu();
   await startAgentDialog();
   if (!composer) {
     return;
   }
-  composer.value = scenario.prompt;
+  placeScenarioDraftInComposer(scenario.prompt, null);
+}
+
+function placeScenarioDraftInComposer(prompt: string, pending: PendingScenarioSave | null): void {
+  if (!composer) {
+    return;
+  }
+  setPendingScenarioSave(pending);
+  composer.value = prompt;
   composer.focus();
   composer.setSelectionRange(composer.value.length, composer.value.length);
   rememberComposerDraft();
 }
 
-function deleteSavedScenario(id: string): void {
+function setPendingScenarioSave(pending: PendingScenarioSave | null): void {
+  pendingScenarioSave = pending;
+  syncScenarioComposerMode();
+}
+
+function syncScenarioComposerMode(): void {
+  const active = Boolean(pendingScenarioSave);
+  app.querySelector<HTMLFormElement>(".composer-bar")?.classList.toggle("is-saving-scenario", active);
+  if (composer) {
+    composer.placeholder = active ? "Edit scenario and send to save" : "";
+  }
+}
+
+async function savePendingScenarioDraft(message: string): Promise<void> {
+  const pending = pendingScenarioSave;
+  if (!pending) {
+    return;
+  }
+  if (!message.trim()) {
+    setPendingScenarioSave(null);
+    return;
+  }
+  await saveScenarioPrompt(message, pending.scope, {
+    sourceTunnelId: pending.sourceTunnelId,
+    sourceText: pending.sourceText
+  });
+  const scope = pending.scope;
+  setPendingScenarioSave(null);
+  if (composer) {
+    composer.value = "";
+  }
+  localDrafts.delete(selectedId);
+  resizeComposer();
+  openTaskMenu(scope === "shared" ? "SAVED SHARED" : "SAVED LOCAL", { refreshServer: false });
+}
+
+function deleteSavedScenario(key: string): void {
+  const { scope, id } = splitScenarioKey(key);
+  if (scope === "shared") {
+    setTaskMenuStatus("SHARED SCENARIO", true);
+    return;
+  }
   const scenarios = loadSavedScenarios();
   const next = scenarios.filter((scenario) => scenario.id !== id);
   if (next.length === scenarios.length) {
@@ -786,11 +919,210 @@ function normalizeSavedScenario(raw: unknown): SavedScenario | null {
   const updatedAt = recordString(raw, "updatedAt") || createdAt;
   return {
     id: normalizeScenarioId(recordString(raw, "id")) || createScenarioId(),
+    scope: recordString(raw, "scope") === "shared" ? "shared" : "personal",
     title: cleanScenarioTitle(recordString(raw, "title")) || scenarioTitleFromPrompt(prompt),
     prompt,
+    useCount: recordNumber(raw, "useCount"),
+    memoryRefs: normalizeScenarioMemoryRefs(raw.memoryRefs),
+    example: raw.example === true,
     createdAt,
-    updatedAt
+    updatedAt,
+    lastUsedAt: recordString(raw, "lastUsedAt")
   };
+}
+
+function visibleScenarios(): SavedScenario[] {
+  const query = scenarioSearchText.toLowerCase().trim();
+  const merged = new Map<string, SavedScenario>();
+  for (const scenario of [...serverScenarioTop, ...serverScenarios, ...loadSavedScenarios()]) {
+    merged.set(scenarioKey(scenario), scenario);
+  }
+  return Array.from(merged.values())
+    .filter((scenario) => {
+      if (!query) {
+        return true;
+      }
+      return `${scenario.title}\n${scenario.prompt}`.toLowerCase().includes(query);
+    })
+    .sort((left, right) => scenarioSortScore(right) - scenarioSortScore(left) || right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 36);
+}
+
+function topVisibleScenarios(scenarios: readonly SavedScenario[]): SavedScenario[] {
+  return [...scenarios]
+    .sort((left, right) => (right.useCount || 0) - (left.useCount || 0) || scenarioSortScore(right) - scenarioSortScore(left))
+    .slice(0, 3);
+}
+
+function scenarioRowHtml(scenario: SavedScenario): string {
+  const key = scenarioKey(scenario);
+  const canDelete = scenario.scope !== "shared";
+  return `
+    <div class="scenario-row">
+      <button class="task-menu-row scenario-run-action" type="button" data-scenario-key="${escapeHtml(key)}">${icon("send")}<span><b>${escapeHtml(scenario.title)}</b><small>${escapeHtml(scenarioMeta(scenario))}</small></span></button>
+      ${canDelete ? `<button class="scenario-delete-action icon-button" type="button" aria-label="delete scenario" data-scenario-key="${escapeHtml(key)}" data-tooltip="Delete">${icon("close")}</button>` : `<span class="scenario-server-mark">${icon("shield")}</span>`}
+    </div>
+  `;
+}
+
+function scenarioMeta(scenario: SavedScenario): string {
+  const scope = scenario.scope === "shared" ? "SHARED" : "LOCAL";
+  const uses = scenario.useCount ? `${scenario.useCount} USES` : scenario.example ? "EXAMPLE" : scenarioUpdatedLabel(scenario);
+  const memory = scenario.memoryRefs?.length ? `MEM ${scenario.memoryRefs.length}` : "";
+  return [scope, uses, memory].filter(Boolean).join(" / ");
+}
+
+function scenarioSortScore(scenario: SavedScenario): number {
+  return (scenario.useCount || 0) * 100
+    + (scenario.memoryRefs?.length || 0) * 8
+    + (scenario.example ? 4 : 0)
+    + Math.min(40, scenario.prompt.length / 300);
+}
+
+function findScenarioByKey(key: string): SavedScenario | null {
+  const wanted = splitScenarioKey(key);
+  return [...serverScenarios, ...loadSavedScenarios()].find((scenario) => {
+    const current = splitScenarioKey(scenarioKey(scenario));
+    return current.scope === wanted.scope && current.id === wanted.id;
+  }) || null;
+}
+
+function splitScenarioKey(key: string): { readonly scope: ScenarioScope; readonly id: string } {
+  const [rawScope = "", ...rest] = key.split(":");
+  return {
+    scope: rawScope === "shared" ? "shared" : "personal",
+    id: normalizeScenarioId(rest.join(":") || rawScope)
+  };
+}
+
+function scenarioKey(scenario: SavedScenario): string {
+  return `${scenario.scope === "shared" ? "shared" : "personal"}:${scenario.id}`;
+}
+
+function recordScenarioUse(scenario: SavedScenario): void {
+  const now = new Date().toISOString();
+  if (scenario.scope === "shared") {
+    serverScenarios = upsertScenarioList(serverScenarios, { ...scenario, useCount: (scenario.useCount || 0) + 1, lastUsedAt: now, updatedAt: now });
+    void fetch(`/api/scenarios/${encodeURIComponent(scenario.id)}/use`, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: device?.id || "", deviceNick: device?.nick || "" })
+    }).catch(() => undefined);
+    return;
+  }
+  const next = loadSavedScenarios().map((item) => item.id === scenario.id
+    ? { ...item, useCount: (item.useCount || 0) + 1, lastUsedAt: now, updatedAt: now }
+    : item);
+  saveSavedScenarios(next);
+}
+
+async function refreshServerScenarios(query = ""): Promise<void> {
+  const payload = await fetchServerScenarios(query).catch(() => null);
+  if (!payload) {
+    return;
+  }
+  serverScenarios = payload.scenarios;
+  serverScenarioTop = payload.top;
+  if (taskMenuOverlay) {
+    openTaskMenu("", { refreshServer: false });
+  }
+}
+
+async function fetchServerScenarios(query = ""): Promise<{ readonly scenarios: SavedScenario[]; readonly top: SavedScenario[] }> {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set("q", query.trim());
+  }
+  params.set("limit", "36");
+  const response = await fetch(`/api/scenarios?${params.toString()}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("scenario fetch failed");
+  }
+  const payload: unknown = await response.json();
+  if (!isRecord(payload) || payload.ok !== true) {
+    throw new Error("scenario fetch rejected");
+  }
+  return {
+    scenarios: Array.isArray(payload.scenarios) ? payload.scenarios.map(normalizeServerScenario).filter((item): item is SavedScenario => Boolean(item)) : [],
+    top: Array.isArray(payload.top) ? payload.top.map(normalizeServerScenario).filter((item): item is SavedScenario => Boolean(item)) : []
+  };
+}
+
+async function saveScenarioToServer(scenario: SavedScenario, source: { readonly sourceTunnelId?: string; readonly sourceText?: string }): Promise<SavedScenario | null> {
+  const response = await fetch("/api/scenarios", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope: "shared",
+      title: scenario.title,
+      prompt: scenario.prompt,
+      deviceId: device?.id || "",
+      deviceNick: device?.nick || "",
+      sourceTunnelId: source.sourceTunnelId || "",
+      sourceText: source.sourceText || ""
+    })
+  });
+  const payload: unknown = await response.json();
+  if (!response.ok || !isRecord(payload) || payload.ok !== true || !isRecord(payload.scenario)) {
+    return null;
+  }
+  return normalizeServerScenario(payload.scenario);
+}
+
+function normalizeServerScenario(raw: unknown): SavedScenario | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  const prompt = normalizeChatMessage(recordString(raw, "prompt")).slice(0, maxScenarioPromptChars);
+  if (!prompt) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  return {
+    id: normalizeScenarioId(recordString(raw, "id")) || createScenarioId(),
+    scope: "shared",
+    title: cleanScenarioTitle(recordString(raw, "title")) || scenarioTitleFromPrompt(prompt),
+    prompt,
+    useCount: recordNumber(raw, "useCount"),
+    memoryRefs: normalizeScenarioMemoryRefs(raw.memoryRefs),
+    example: raw.example === true,
+    createdAt: recordString(raw, "createdAt") || now,
+    updatedAt: recordString(raw, "updatedAt") || now,
+    lastUsedAt: recordString(raw, "lastUsedAt")
+  };
+}
+
+function upsertScenarioList(items: readonly SavedScenario[], scenario: SavedScenario): SavedScenario[] {
+  return [scenario, ...items.filter((item) => scenarioKey(item) !== scenarioKey(scenario))]
+    .sort((left, right) => scenarioSortScore(right) - scenarioSortScore(left) || right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 48);
+}
+
+function normalizeScenarioMemoryRefs(raw: unknown): ScenarioMemoryRef[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const refs: ScenarioMemoryRef[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const id = normalizeScenarioId(recordString(item, "id"));
+    if (!id) {
+      continue;
+    }
+    refs.push({
+      id,
+      kind: recordString(item, "kind"),
+      family: recordString(item, "family"),
+      title: recordString(item, "title"),
+      route: recordString(item, "route"),
+      confidence: recordNumber(item, "confidence")
+    });
+  }
+  return refs.slice(0, 12);
 }
 
 function scenarioTitleFromPrompt(prompt: string): string {
@@ -802,7 +1134,7 @@ function scenarioTitleFromPrompt(prompt: string): string {
 }
 
 function cleanScenarioTitle(value: string): string {
-  return cleanNick(value).slice(0, 54) || "SCENARIO";
+  return cleanNick(value).replace(/^(?:название|title|цель|goal):\s*/iu, "").slice(0, 54) || "SCENARIO";
 }
 
 function scenarioUpdatedLabel(scenario: SavedScenario): string {
@@ -822,6 +1154,182 @@ function createScenarioId(): string {
 
 function normalizeScenarioId(value: string): string {
   return value.replace(/[^a-z0-9_-]/giu, "").slice(0, 96);
+}
+
+function loadScenarioSaveScope(): ScenarioScope {
+  return localStorage.getItem(scenarioScopeKey) === "shared" ? "shared" : "personal";
+}
+
+function setScenarioSaveScope(scope: ScenarioScope): void {
+  scenarioSaveScope = scope;
+  localStorage.setItem(scenarioScopeKey, scope);
+}
+
+function handleChatTripleTap(event: PointerEvent): void {
+  if (event.pointerType === "mouse" && event.button !== 0) {
+    return;
+  }
+  const now = Date.now();
+  const dx = Math.abs(event.clientX - chatTapX);
+  const dy = Math.abs(event.clientY - chatTapY);
+  if (now - chatTapAt > 700 || dx > 34 || dy > 34) {
+    chatTapCount = 0;
+  }
+  chatTapCount += 1;
+  chatTapAt = now;
+  chatTapX = event.clientX;
+  chatTapY = event.clientY;
+  if (chatTapCount >= 3) {
+    chatTapCount = 0;
+    openChatActionMenu(event.clientX, event.clientY);
+  }
+}
+
+function openChatActionMenu(x: number, y: number, status = ""): void {
+  closeChatActionMenu();
+  const overlay = document.createElement("div");
+  overlay.className = "chat-action-modal";
+  overlay.innerHTML = `
+    <section class="chat-action-sheet" role="dialog" aria-modal="true" aria-label="chat actions" style="--tap-x:${Math.round(x)}px;--tap-y:${Math.round(y)}px">
+      <header class="chat-action-head">
+        <b>CHAT</b>
+        <button class="chat-action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
+      </header>
+      <div class="scenario-scope-switch" role="group" aria-label="scenario scope">
+        <button class="scenario-scope-action${scenarioSaveScope === "personal" ? " is-on" : ""}" type="button" data-scope="personal">LOCAL</button>
+        <button class="scenario-scope-action${scenarioSaveScope === "shared" ? " is-on" : ""}" type="button" data-scope="shared">SHARED</button>
+      </div>
+      <button class="task-menu-row chat-save-scenario-action" type="button">${icon("check")}<span><b>SAVE SCENARIO</b><small>agent drafts from chat</small></span></button>
+      <output class="task-menu-status"${status ? "" : " hidden"}>${escapeHtml(status)}</output>
+    </section>
+  `;
+  document.body.append(overlay);
+  chatActionOverlay = overlay;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeChatActionMenu();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>(".chat-action-close")?.addEventListener("click", () => closeChatActionMenu());
+  overlay.querySelectorAll<HTMLButtonElement>(".scenario-scope-action").forEach((button) => {
+    button.addEventListener("click", () => {
+      setScenarioSaveScope(button.dataset.scope === "shared" ? "shared" : "personal");
+      openChatActionMenu(x, y);
+    });
+  });
+  overlay.querySelector<HTMLButtonElement>(".chat-save-scenario-action")?.addEventListener("click", () => {
+    void draftScenarioFromChat();
+  });
+}
+
+function closeChatActionMenu(): void {
+  chatActionOverlay?.remove();
+  chatActionOverlay = null;
+}
+
+function setChatActionStatus(text: string, bad = false): void {
+  const output = chatActionOverlay?.querySelector<HTMLOutputElement>(".task-menu-status");
+  if (!output) {
+    return;
+  }
+  output.hidden = false;
+  output.textContent = text;
+  output.classList.toggle("is-bad", bad);
+}
+
+async function draftScenarioFromChat(): Promise<void> {
+  const tunnelId = selectedId;
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  const sourceText = cleanAgentContext(texts.get(tunnelId) || "").slice(-12_000);
+  if (!tunnelId || !tunnel || !sourceText.trim()) {
+    setChatActionStatus("EMPTY CHAT", true);
+    return;
+  }
+  setChatActionStatus("AGENT DRAFTING");
+  const pending = {
+    scope: scenarioSaveScope,
+    sourceTunnelId: tunnelId,
+    sourceText
+  };
+  let draft = fallbackScenarioFromChat(sourceText);
+  const agent = localAgent.ok ? localAgent : await refreshLocalAgent().catch(() => ({ ok: false }));
+  const canAskAgent = agent.ok && (!("codex" in agent) || agent.codex !== false);
+  if (canAskAgent) {
+    const controller = new AbortController();
+    window.setTimeout(() => controller.abort(), 125_000);
+    setAgentThinking(tunnelId, true);
+    try {
+      const reply = await askLocalAgentReply(
+        scenarioDraftAgentPrompt(),
+        sourceText,
+        agentRequestSourceForTunnel(tunnelId, tunnel, isAgentTunnel(tunnel)),
+        120_000,
+        undefined,
+        undefined,
+        controller.signal
+      );
+      const candidate = normalizeScenarioDraftReply(reply.ok ? reply.text : "");
+      if (candidate) {
+        draft = candidate;
+      }
+    } catch {
+      // Fallback draft is intentionally good enough for editing.
+    } finally {
+      setAgentThinking(tunnelId, false);
+    }
+  }
+  closeChatActionMenu();
+  placeScenarioDraftInComposer(draft, pending);
+}
+
+function scenarioDraftAgentPrompt(): string {
+  return [
+    "Составь универсальный сценарий на основе видимого чата.",
+    "Не выполняй задачу, не используй инструменты, не отвечай пользователю как по задаче.",
+    "Верни только редактируемый сценарий в таком формате:",
+    "Сценарий:",
+    "Название: ...",
+    "Цель: ...",
+    "Когда использовать: ...",
+    "Где выполнять: ...",
+    "Что нужно: ...",
+    "Шаги:",
+    "1. ...",
+    "Что считать готовым: ...",
+    "Память: какие reusable факты из чата полезно учитывать."
+  ].join("\n");
+}
+
+function normalizeScenarioDraftReply(value: string): string {
+  const text = cleanAgentReplyText(value)
+    .replace(/^```[a-z]*\s*/iu, "")
+    .replace(/```$/u, "")
+    .trim();
+  return text.includes("Цель:") || text.includes("Goal:")
+    ? text.slice(0, maxScenarioPromptChars)
+    : "";
+}
+
+function fallbackScenarioFromChat(text: string): string {
+  const lines = cleanAgentContext(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const title = cleanScenarioTitle(lines.find((line) => line.length > 12) || "Сценарий из чата");
+  return [
+    "Сценарий:",
+    `Название: ${title}`,
+    `Цель: ${title}`,
+    "Когда использовать: когда в похожем чате повторяется такая же задача.",
+    "Где выполнять: на устройстве или в диалоге, который указан пользователем.",
+    "Что нужно: проверить текущий контекст, целевое устройство, файлы и подтверждения.",
+    "Шаги:",
+    "1. Прочитать текущий запрос и видимый контекст.",
+    "2. Найти подходящее устройство, файл или действие только из текущей задачи.",
+    "3. Выполнить действие через доступный агенту путь и проверить результат.",
+    "Что считать готовым: результат подтвержден проверкой, а пользователь получил короткий понятный итог.",
+    "Память: использовать сохраненные подсказки только как ориентир, не как замену свежей проверке."
+  ].join("\n").slice(0, maxScenarioPromptChars);
 }
 
 function restoredTunnelsFromPayload(payload: OperatorExportPayload): { readonly tunnels: TunnelRecord[]; readonly texts: Map<string, string> } {
@@ -1042,6 +1550,15 @@ function recordString(value: unknown, key: string): string {
   }
   const item = value[key];
   return typeof item === "string" ? item : "";
+}
+
+function recordNumber(value: unknown, key: string): number {
+  if (!isRecord(value)) {
+    return 0;
+  }
+  const item = value[key];
+  const num = typeof item === "number" ? item : Number(item || 0);
+  return Number.isFinite(num) ? Math.max(0, Math.round(num)) : 0;
 }
 
 function continueWithoutPending(): void {
@@ -1279,9 +1796,13 @@ function renderApp(): void {
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
+  syncScenarioComposerMode();
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
   }, { passive: true });
+  app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("pointerup", (event) => {
+    handleChatTripleTap(event);
+  });
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
   });
@@ -4733,6 +5254,10 @@ async function finalizeComposerDraft(): Promise<void> {
       composer.value = "";
       rememberComposerDraft();
     }
+    return;
+  }
+  if (pendingScenarioSave) {
+    await savePendingScenarioDraft(message);
     return;
   }
   const current = texts.get(tunnelId) ?? textarea.value;
