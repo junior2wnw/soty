@@ -12,6 +12,8 @@
     "start": "node server/index.js",
     "agent": "node scripts/soty-agent.mjs",
     "ctl": "node scripts/soty-agent.mjs ctl",
+    "codex:runtime:update": "node scripts/update-codex-runtime.mjs",
+    "codex:runtime:latest": "node scripts/update-codex-runtime.mjs --print-latest",
     "agent:release": "node scripts/build-agent-release.mjs",
     "agent:selftest": "node scripts/action-kernel-selftest.mjs",
     "agent:eval": "node scripts/soty-agent-eval.mjs",

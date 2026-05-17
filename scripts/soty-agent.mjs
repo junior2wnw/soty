@@ -7302,6 +7302,9 @@ function stockCodexPathCandidates() {
   const dirs = new Set((process.env.PATH || "")
     .split(process.platform === "win32" ? ";" : ":")
     .filter(Boolean));
+  for (const dir of stockCodexRuntimePathEntries()) {
+    dirs.add(dir);
+  }
   dirs.add(dirname(process.execPath || ""));
   if (process.platform === "win32" && process.env.APPDATA) {
     dirs.add(join(process.env.APPDATA, "npm"));
@@ -7339,7 +7342,15 @@ function prependPathEntries(currentPath, entries) {
 function agentToolPathEntries() {
   return process.platform === "win32"
     ? [agentDir]
-    : [agentDir, "/usr/local/bin"];
+    : [agentDir, ...stockCodexRuntimePathEntries(), "/usr/local/bin"];
+}
+
+function stockCodexRuntimePathEntries() {
+  if (process.platform === "win32") {
+    return [];
+  }
+  const runtimeDir = process.env.SOTY_CODEX_RUNTIME_DIR || "/codex-runtime";
+  return [join(runtimeDir, "bin")];
 }
 
 async function ensureCtlLauncher() {
