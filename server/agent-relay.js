@@ -1,9 +1,9 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
 
-const maxChatChars = 12_000;
+const maxChatChars = 64_000;
 const maxContextChars = 16_000;
-const maxReplyChars = 12_000;
+const maxReplyChars = 64_000;
 const maxSourceReplyChars = 1_000_000;
 const maxReplyMessages = 64;
 const maxSourceChars = 180;

@@ -113,6 +113,7 @@ installTooltips();
 const agentDialogLabel = "Агент";
 const agentDialogMinVersion = "0.3.16";
 const agentReleaseCheckTtlMs = 60_000;
+const agentDialogReplyTimeoutMs = 24 * 60 * 60_000;
 
 type AgentButtonMode = "download" | "update" | "link";
 
@@ -255,7 +256,6 @@ type OperatorRemoteRun = {
 };
 const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
 const operatorRemoteRunTimers = new Map<string, number>();
-const operatorStartingTunnels = new Set<string>();
 const localAgentRuns = new Map<string, WebSocket>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 type SotyFileStreamState = {
@@ -2653,7 +2653,8 @@ function renderDialogChrome(): void {
     id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
   }
   if (sendButton) {
-    const stopping = agentThinking.has(selectedId);
+    const draft = selectedId ? composer?.value || localDrafts.get(selectedId) || "" : "";
+    const stopping = agentThinking.has(selectedId) && !normalizeChatMessage(draft);
     sendButton.classList.toggle("is-stop", stopping);
     sendButton.setAttribute("aria-label", stopping ? "stop" : "send");
     sendButton.dataset.tooltip = stopping ? "Stop agent" : "Send message";
@@ -3410,20 +3411,6 @@ function closeOperatorBridge(): void {
   operatorBridgeAllowEmpty = false;
   operatorPending.clear();
   operatorRemoteRuns.clear();
-  operatorStartingTunnels.clear();
-}
-
-function operatorTargetBusy(tunnelId: string): boolean {
-  expireOperatorRemoteRunTimeouts();
-  if (operatorStartingTunnels.has(tunnelId)) {
-    return true;
-  }
-  for (const run of operatorRemoteRuns.values()) {
-    if (run.tunnelId === tunnelId) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function safeOperatorTimeoutMs(value: unknown): number {
@@ -3431,12 +3418,11 @@ function safeOperatorTimeoutMs(value: unknown): number {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     return 0;
   }
-  return Math.max(1000, Math.min(Math.trunc(timeoutMs), 2 * 60 * 60_000));
+  return Math.max(1000, Math.min(Math.trunc(timeoutMs), agentDialogReplyTimeoutMs));
 }
 
 function cancelAllOperatorRemoteRuns(reason: string): void {
   const runs = [...operatorRemoteRuns.entries()];
-  operatorStartingTunnels.clear();
   for (const [requestId, run] of runs) {
     cancelOperatorRemoteRun(requestId, run, reason);
   }
@@ -3616,15 +3602,8 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
-  if (operatorTargetBusy(tunnel.id)) {
-    appendTerminalLine(tunnel.id, "! busy");
-    sendOperatorOutput(requestId, "! busy", 409);
-    renderTerminal();
-    return;
-  }
   const bridgeEpoch = operatorBridgeEpoch;
   const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
-  operatorStartingTunnels.add(tunnel.id);
   const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
   if (!keepCurrentDialog) {
     selectedId = tunnel.id;
@@ -3664,8 +3643,6 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
     renderTerminal();
-  } finally {
-    operatorStartingTunnels.delete(tunnel.id);
   }
 }
 
@@ -3704,16 +3681,9 @@ async function runOperatorScript(message: {
     sendOperatorOutput(requestId, "! access", 409);
     return;
   }
-  if (operatorTargetBusy(tunnel.id)) {
-    appendTerminalLine(tunnel.id, "! busy");
-    sendOperatorOutput(requestId, "! busy", 409);
-    renderTerminal();
-    return;
-  }
   const name = cleanNick(message.name || "script") || "script";
   const bridgeEpoch = operatorBridgeEpoch;
   const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
-  operatorStartingTunnels.add(tunnel.id);
   const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
   if (!keepCurrentDialog) {
     selectedId = tunnel.id;
@@ -3759,8 +3729,6 @@ async function runOperatorScript(message: {
     sendOperatorOutput(requestId, "! tunnel", 500);
     setTerminalState(tunnel.id, "bad");
     renderTerminal();
-  } finally {
-    operatorStartingTunnels.delete(tunnel.id);
   }
 }
 
@@ -5214,6 +5182,7 @@ function rememberComposerDraft(): void {
   }
   scheduleLiveDraft(selectedId, draft);
   resizeComposer();
+  renderDialogChrome();
 }
 
 function scheduleLiveDraft(tunnelId: string, draft: string): void {
@@ -5242,13 +5211,13 @@ async function finalizeComposerDraft(): Promise<void> {
   if (!sync) {
     return;
   }
-  if (agentThinking.has(tunnelId)) {
+  const draft = composer.value || localDrafts.get(tunnelId) || "";
+  const message = normalizeChatMessage(draft);
+  if (agentThinking.has(tunnelId) && !message) {
     stopAgentDialogReply(tunnelId);
     return;
   }
   primeAgentDoneSound();
-  const draft = composer.value || localDrafts.get(tunnelId) || "";
-  const message = normalizeChatMessage(draft);
   if (!message) {
     if (draft) {
       composer.value = "";
@@ -5454,7 +5423,7 @@ function sendAgentDialogMessage(
           await preparePeerAgentInvocation(tunnelId);
         }
         const source = agentRequestSourceForTunnel(tunnelId, tunnel, agentTunnel);
-        reply = await askLocalAgentReply(taskText, context, source, 2 * 60 * 60_000, (message) => {
+        reply = await askLocalAgentReply(taskText, context, source, agentDialogReplyTimeoutMs, (message) => {
           const streamed = normalizeChatMessage(cleanAgentReplyText(message));
           if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
             return;

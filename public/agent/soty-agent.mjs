@@ -37,7 +37,7 @@ const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
   || (managed && process.env.SOTY_AGENT_AUTO_UPDATE !== "0");
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;
-const maxChatChars = 12_000;
+const maxChatChars = 64_000;
 const maxArtifactTransferBytes = 64 * 1024 * 1024;
 const maxAgentContextChars = 16_000;
 const maxAgentRuntimePromptChars = 48_000;
@@ -116,7 +116,6 @@ const operatorMessageWaiters = new Set();
 const agentOperatorReplyQueues = new Map();
 const recentAgentOperatorMessageKeys = new Map();
 const activeRelayJobs = new Map();
-const activeCodexTargetTurns = new Map();
 let learningSyncTimer = null;
 let learningSyncInFlight = null;
 let operatorBridge = null;
@@ -4194,54 +4193,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
-  const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
-  const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
-  if (activeTargetTurn && activeTargetTurn.done !== true) {
-    if (isInterruptibleActiveCodexGuard(activeTargetTurn)) {
-      activeTargetTurn.interruptedByUser = true;
-      activeTargetTurn.interruptedAt = Date.now();
-      activeTargetTurn.interruptTaskFamily = taskFamily;
-      activeTargetTurn.interruptText = String(text || "").slice(0, 2000);
-      if (activeCodexTargetTurns.get(activeTargetTurnKey) === activeTargetTurn) {
-        activeCodexTargetTurns.delete(activeTargetTurnKey);
-      }
-      traceStep(trace, "codex.active-guard-interrupted", {
-        guard: activeTargetTurn.guard || "",
-        activeTaskFamily: activeTargetTurn.taskFamily || "",
-        taskFamily,
-        targetId: target?.id || "",
-        activeAgeMs: Math.max(0, Date.now() - (activeTargetTurn.startedAt || Date.now()))
-      });
-    } else {
-      const suppressed = activeCodexTargetTurnReply(activeTargetTurn, taskFamily);
-      traceRouting(trace, {
-        finalRoute: "codex.active-target-suppressed",
-        taskFamily,
-        activeTaskFamily: activeTargetTurn.taskFamily || "",
-        targetId: target?.id || "",
-        activeAgeMs: Math.max(0, Date.now() - (activeTargetTurn.startedAt || Date.now()))
-      });
-      traceStep(trace, "codex.active-target-suppressed", {
-        taskFamily,
-        activeTaskFamily: activeTargetTurn.taskFamily || "",
-        targetId: target?.id || "",
-        jobDir: activeTargetTurn.jobDir || "",
-        lastMessage: Boolean(activeTargetTurn.lastMessage)
-      });
-      recordLearningReceipt({
-        kind: "agent-runtime",
-        family: taskFamily,
-        result: "partial",
-        route: "codex.active-target-suppressed",
-        taskSig: taskSignature(text),
-        proof: `activeTargetTurn=true; activeFamily=${cleanProofToken(activeTargetTurn.taskFamily || "")}; targetHash=${learningContext.targetHash || ""}`,
-        exitCode: 0,
-        durationMs: Date.now() - startedAt,
-        ...learningContext
-      });
-      return suppressed;
-    }
-  }
   traceRouting(trace, {
     route: "codex.local",
     taskFamily,
@@ -4278,30 +4229,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   if (agentTraceFullPrompt) {
     await traceWriteText(trace, "prompt.txt", prompt, maxAgentRuntimePromptChars + 2000);
   }
-  const activeTurn = activeTargetTurnKey
-    ? {
-      startedAt,
-      taskFamily,
-      targetId: target?.id || "",
-      targetLabel: target?.label || "",
-      jobDir,
-      outPath,
-      lastMessage: "",
-      lastMessageAt: 0,
-      done: false
-    }
-    : null;
-  if (activeTargetTurnKey && activeTurn) {
-    activeCodexTargetTurns.set(activeTargetTurnKey, activeTurn);
-  }
   const codexOnMessage = (message) => {
-    if (activeTurn) {
-      const clean = cleanAgentChatReply(message);
-      if (clean) {
-        activeTurn.lastMessage = clean;
-        activeTurn.lastMessageAt = Date.now();
-      }
-    }
     if (typeof onMessage === "function") {
       onMessage(message);
     }
@@ -4335,46 +4263,36 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     usage: emptyCodexUsage(),
     trace
   };
-  let result;
-  try {
-    result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
-    if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
-      const freshState = {
-        threadId: "",
-        lastMessage: "",
-        messages: [],
-        terminal: [],
-        terminalKeys: new Set(),
-        learningMarkers: [],
-        usage: emptyCodexUsage(),
-        trace
-      };
-      const freshArgs = codexSotySessionArgs({
-        jobDir,
-        target,
-        source: safeSource,
-        outPath,
-        threadId: "",
-        taskFamily
-      });
-      delete persistedCodexSessions[sessionKey];
-      await saveCodexSessions();
-      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
-      state.threadId = freshState.threadId;
-      state.lastMessage = freshState.lastMessage;
-      state.messages = freshState.messages;
-      state.terminal = freshState.terminal;
-      state.terminalKeys = freshState.terminalKeys;
-      state.learningMarkers = freshState.learningMarkers;
-      state.usage = freshState.usage;
-    }
-  } finally {
-    if (activeTurn) {
-      activeTurn.done = true;
-    }
-    if (activeTargetTurnKey && activeCodexTargetTurns.get(activeTargetTurnKey) === activeTurn) {
-      activeCodexTargetTurns.delete(activeTargetTurnKey);
-    }
+  let result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
+  if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
+    const freshState = {
+      threadId: "",
+      lastMessage: "",
+      messages: [],
+      terminal: [],
+      terminalKeys: new Set(),
+      learningMarkers: [],
+      usage: emptyCodexUsage(),
+      trace
+    };
+    const freshArgs = codexSotySessionArgs({
+      jobDir,
+      target,
+      source: safeSource,
+      outPath,
+      threadId: "",
+      taskFamily
+    });
+    delete persistedCodexSessions[sessionKey];
+    await saveCodexSessions();
+    result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
+    state.threadId = freshState.threadId;
+    state.lastMessage = freshState.lastMessage;
+    state.messages = freshState.messages;
+    state.terminal = freshState.terminal;
+    state.terminalKeys = freshState.terminalKeys;
+    state.learningMarkers = freshState.learningMarkers;
+    state.usage = freshState.usage;
   }
   const lastFileRaw = existsSync(outPath) ? await readFile(outPath, "utf8") : "";
   await traceWriteText(trace, "last-message.txt", lastFileRaw, maxChatChars + 2000);
@@ -4450,61 +4368,14 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         exitCode: 125
       };
     }
-    let postCodexGuardPayload = null;
-    if (taskFamily === "windows-reinstall" && target?.id) {
-      const guardOnMessage = (message) => {
-        if (activeTurn) {
-          const clean = cleanAgentChatReply(message);
-          if (clean) {
-            activeTurn.lastMessage = clean;
-            activeTurn.lastMessageAt = Date.now();
-          }
-        }
-        if (typeof onMessage === "function") {
-          onMessage(message);
-        }
-      };
-      const reactivateGuard = Boolean(activeTargetTurnKey && activeTurn);
-      if (reactivateGuard) {
-        activeTurn.done = false;
-        activeTurn.guard = "windows-reinstall-post-codex";
-        activeCodexTargetTurns.set(activeTargetTurnKey, activeTurn);
-      }
-      try {
-        postCodexGuardPayload = await maybeWaitForWindowsReinstallTerminalAfterCodex({
-          taskFamily,
-          source: safeSource,
-          target,
-          finalText,
-          onMessage: guardOnMessage,
-          trace,
-          signal,
-          shouldStop: () => activeTurn?.interruptedByUser === true
-        });
-      } finally {
-        if (reactivateGuard) {
-          activeTurn.done = true;
-          if (activeCodexTargetTurns.get(activeTargetTurnKey) === activeTurn) {
-            activeCodexTargetTurns.delete(activeTargetTurnKey);
-          }
-        }
-      }
-      if (postCodexGuardPayload?.text) {
-        finalText = cleanAgentChatReply(postCodexGuardPayload.text);
-        messages = compactCodexMessages([...messages, finalText]);
-      }
-    }
-    const codexTurnResult = postCodexGuardPayload?.ok === false ? "blocked" : "ok";
-    const codexTurnExitCode = postCodexGuardPayload?.ok === false
-      ? (Number.isSafeInteger(postCodexGuardPayload.exitCode) ? postCodexGuardPayload.exitCode : 1)
-      : 0;
+    const codexTurnExitCode = 0;
     recordLearningReceipt({
       kind: "codex-turn",
       family: taskFamily,
-      result: codexTurnResult,
+      result: "ok",
       route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
       taskSig: taskSignature(text),
-      proof: `exitCode=${codexTurnExitCode}; messages=${messages.length}; final=nonempty; postCodexGuard=${postCodexGuardPayload ? cleanProofToken(postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "none"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
+      proof: `exitCode=${codexTurnExitCode}; messages=${messages.length}; final=nonempty; ${codexUsageProof(state.usage, prompt, finalText)}`,
       exitCode: codexTurnExitCode,
       durationMs: Date.now() - startedAt,
       ...learningContext
@@ -4522,11 +4393,10 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     traceStep(trace, "codex.ok", {
       messages: messages.length,
       terminal: state.terminal.length,
-      postCodexGuard: postCodexGuardPayload ? (postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "",
       usage: state.usage
     });
     return {
-      ok: postCodexGuardPayload?.ok === false ? false : true,
+      ok: true,
       text: finalText.slice(0, maxChatChars),
       ...(messages.length > 0 ? { messages } : {}),
       ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
@@ -4567,426 +4437,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
     exitCode: result.exitCode || 1
   };
-}
-
-function parseJsonObjectLoose(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return null;
-  }
-  try {
-    return JSON.parse(text);
-  } catch {}
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      return JSON.parse(text.slice(start, end + 1));
-    } catch {}
-  }
-  return null;
-}
-
-function isNonTerminalWindowsReinstallFinalText(text) {
-  const value = String(text || "").toLowerCase();
-  if (!value) {
-    return false;
-  }
-  return /\b(?:running|active|media\.active|still running|nexttool)\b/u.test(value)
-    || /(?:не закрываю|не завершаю|держу|продолжаю|продолжу|мониторинг|опрос|подготовка.+ид[её]т|задач[ау].+держ|bytes=0|байт[ыа]?\s*(?:всё ещё|пока)?\s*0)/u.test(value);
-}
-
-async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, source, target, finalText = "", onMessage, trace = null, signal = null, shouldStop = null } = {}) {
-  if (cleanActionToken(taskFamily, "") !== "windows-reinstall" || !target?.id || signal?.aborted) {
-    return null;
-  }
-  const lowerFinalText = String(finalText || "").toLowerCase();
-  if (lowerFinalText.includes("rebooting") || lowerFinalText.includes("post-arm") || lowerFinalText.includes("перезагруз")) {
-    return null;
-  }
-  const finalClaimsNonTerminal = isNonTerminalWindowsReinstallFinalText(finalText);
-  const started = Date.now();
-  const stopRequested = () => {
-    try {
-      return typeof shouldStop === "function" && shouldStop() === true;
-    } catch {
-      return false;
-    }
-  };
-  const handoffPayload = () => ({
-    ok: true,
-    action: "prepare",
-    status: "handoff",
-    terminalReason: "user-followup",
-    text: "",
-    exitCode: 0
-  });
-  if (stopRequested()) {
-    return handoffPayload();
-  }
-  const request = managedReinstallGuardRequest();
-  let statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
-  let status = parseManagedReinstallStatusAfterCodex(statusResult);
-  traceStep(trace, "windows-reinstall.post-codex-guard.probe", {
-    statusOk: Boolean(status),
-    resultOk: Boolean(statusResult?.ok),
-    exitCode: statusResult?.exitCode || 0,
-    finalText: Boolean(finalText),
-    finalClaimsNonTerminal,
-    textPreview: String(statusResult?.text || statusResult?.payload?.text || "").slice(0, 500)
-  });
-  if (!status) {
-    if (!finalClaimsNonTerminal) {
-      return null;
-    }
-    await postCodexGuardProgress(onMessage, "Codex finished its chat turn while Windows reinstall was still described as active. I am keeping the task open and rechecking structured status.");
-  } else {
-    const immediate = evaluateManagedReinstallTerminalAfterCodex(status, 0);
-    if (immediate) {
-      traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
-        terminalReason: immediate.terminalReason || "",
-        status: immediate.status || "",
-        blocker: immediate.blocker || ""
-      });
-      return {
-        ...immediate,
-        text: formatManagedReinstallTerminalAfterCodex(immediate, status)
-      };
-    }
-    if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
-      if (!finalClaimsNonTerminal) {
-        return null;
-      }
-      return {
-        ok: false,
-        action: "prepare",
-        status: "blocked",
-        blocker: "prepare-not-active-after-nonterminal-final",
-        text: "Codex finished with a non-terminal reinstall message, but the selected PC no longer reports an active prepare job or ready proof.",
-        exitCode: 1,
-        statusSnapshot: status
-      };
-    }
-  }
-  await postCodexGuardProgress(onMessage, "Codex finished its chat turn, but Windows reinstall preparation is still active. Keeping the task open until it reaches ready state or a blocker.");
-  let lastProgressAt = Date.now();
-  let firstStatusUnavailableAt = 0;
-  let lastUnavailableProgressAt = 0;
-  while (Date.now() - started < maxLongTaskTimeoutMs) {
-    if (stopRequested()) {
-      return handoffPayload();
-    }
-    if (signal?.aborted) {
-      return {
-        ok: false,
-        action: "prepare",
-        status: "cancelled",
-        text: "! cancelled",
-        exitCode: 130,
-        statusSnapshot: status
-      };
-    }
-    await sleep(Math.min(managedReinstallGuardPollDelayMs(status), 120_000));
-    if (stopRequested()) {
-      return handoffPayload();
-    }
-    statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
-    status = parseManagedReinstallStatusAfterCodex(statusResult);
-    if (!status) {
-      traceStep(trace, "windows-reinstall.post-codex-guard.status-unavailable", {
-        resultOk: Boolean(statusResult?.ok),
-        exitCode: statusResult?.exitCode || 0
-      });
-      if (!firstStatusUnavailableAt) {
-        firstStatusUnavailableAt = Date.now();
-      }
-      const unavailableMs = Date.now() - firstStatusUnavailableAt;
-      if (unavailableMs < turnkeyStatusRecoveryWindowMs) {
-        if (Date.now() - lastUnavailableProgressAt > 15 * 60_000) {
-          lastUnavailableProgressAt = Date.now();
-          await postCodexGuardProgress(onMessage, "Waiting for the selected PC to return Soty status. I am not dropping the task.");
-        }
-        continue;
-      }
-      return {
-        ok: false,
-        action: "prepare",
-        status: "blocked",
-        blocker: "source-status-unavailable",
-        text: "Cannot continue monitoring because the selected PC did not return Soty status during the recovery window.",
-        exitCode: statusResult?.exitCode || 127,
-        unavailableMs,
-        lastProbe: statusResult?.payload || statusResult || null
-      };
-    }
-    firstStatusUnavailableAt = 0;
-    const terminal = evaluateManagedReinstallTerminalAfterCodex(status, Date.now() - started);
-    if (terminal) {
-      traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
-        terminalReason: terminal.terminalReason || "",
-        status: terminal.status || "",
-        blocker: terminal.blocker || "",
-        elapsedMs: Date.now() - started
-      });
-      return {
-        ...terminal,
-        text: formatManagedReinstallTerminalAfterCodex(terminal, status)
-      };
-    }
-    if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
-      return {
-        ok: false,
-        action: "prepare",
-        status: "blocked",
-        blocker: "prepare-stopped-without-ready",
-        text: "Windows reinstall preparation stopped without ready proof.",
-        exitCode: 1,
-        statusSnapshot: status
-      };
-    }
-    if (Date.now() - lastProgressAt > managedReinstallGuardProgressIntervalMs(status)) {
-      lastProgressAt = Date.now();
-      await postCodexGuardProgress(onMessage, formatManagedReinstallProgressAfterCodex(status));
-    }
-  }
-  return {
-    ok: false,
-    action: "prepare",
-    status: "blocked",
-    blocker: "turnkey-wait-timeout",
-    text: "Windows reinstall preparation did not reach ready state or a blocker before the long runtime guard limit.",
-    exitCode: 124,
-    statusSnapshot: status
-  };
-}
-
-function managedReinstallGuardRequest() {
-  return {
-    action: "status",
-    usbDriveLetter: "D",
-    confirmationPhrase: "",
-    useExistingUsbInstallImage: false,
-    manifestUrl: updateManifestUrl,
-    panelSiteUrl: originFromUrl(updateManifestUrl) || agentRelayBaseUrl || "https://xn--n1afe0b.online",
-    workspaceRoot: "C:\\ProgramData\\Soty\\WindowsReinstall"
-  };
-}
-
-async function readManagedReinstallStatusAfterCodex(source, target, request, signal = null) {
-  if (signal?.aborted) {
-    return { ok: false, payload: { ok: false, text: "! cancelled" }, exitCode: 130 };
-  }
-  try {
-    const safeSource = sanitizeAgentSource(source);
-    const response = await fetch(`http://127.0.0.1:${port}/operator/script`, {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        Origin: "https://xn--n1afe0b.online"
-      },
-      body: JSON.stringify({
-        target: target?.id || "",
-        sourceDeviceId: bridgeSourceDeviceId(target, safeSource),
-        ...(safeSource.sourceRelayId ? { sourceRelayId: safeSource.sourceRelayId } : {}),
-        script: sourceManagedWindowsReinstallScript({ ...request, action: "status" }),
-        shell: "powershell",
-        name: "soty-reinstall-status-post-codex",
-        runAs: "system",
-        timeoutMs: 45_000
-      }),
-      signal: signal || undefined
-    });
-    const payload = await response.json().catch(() => ({}));
-    return {
-      ok: Boolean(response.ok && payload?.ok),
-      text: String(payload?.text || ""),
-      payload,
-      exitCode: Number.isSafeInteger(payload?.exitCode) ? payload.exitCode : (response.ok ? 0 : response.status)
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      payload: { ok: false, text: error instanceof Error ? error.message : String(error) },
-      exitCode: 1
-    };
-  }
-}
-
-function parseManagedReinstallStatusAfterCodex(result) {
-  const candidates = [
-    result?.text,
-    result?.payload?.text,
-    result?.payload?.statusSnapshot,
-    result?.payload?.liveStatus,
-    result?.payload?.result?.output?.tail,
-    result?.payload?.output?.tail
-  ];
-  for (const candidate of candidates) {
-    const parsed = typeof candidate === "string" ? parseJsonObjectLoose(candidate) : candidate;
-    if (parsed && typeof parsed === "object") {
-      if (parsed.action === "status") {
-        return parsed;
-      }
-      if (parsed.statusSnapshot?.action === "status") {
-        return parsed.statusSnapshot;
-      }
-      if (parsed.liveStatus?.action === "status") {
-        return parsed.liveStatus;
-      }
-    }
-  }
-  return null;
-}
-
-function evaluateManagedReinstallTerminalAfterCodex(status, elapsedMs) {
-  const readyBlockers = managedReinstallReadyBlockersAfterCodex(status);
-  if (status?.ready === true && readyBlockers.length === 0) {
-    return {
-      ok: true,
-      action: "prepare",
-      status: "needs-confirmation",
-      terminalReason: "user-confirmation-required",
-      exitCode: 0,
-      elapsedMs,
-      confirmationPhrase: String(status.confirmationPhrase || ""),
-      statusSnapshot: status
-    };
-  }
-  if (status?.ready === true && readyBlockers.length > 0) {
-    return {
-      ok: false,
-      action: "prepare",
-      status: "blocked",
-      blocker: "ready-proof-incomplete",
-      blockers: readyBlockers,
-      exitCode: 1,
-      elapsedMs,
-      statusSnapshot: status
-    };
-  }
-  if (isManagedReinstallPrepareActiveAfterCodex(status)) {
-    return null;
-  }
-  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
-  const latestStatus = String(latest?.status || "").toLowerCase();
-  if (latest && latestStatus && !["running-or-started", "running", "created"].includes(latestStatus)) {
-    return {
-      ok: false,
-      action: "prepare",
-      status: "blocked",
-      blocker: "prepare-job-finished-without-ready",
-      latestPrepare: latest,
-      exitCode: Number.isSafeInteger(latest.exitCode) ? latest.exitCode : 1,
-      elapsedMs,
-      statusSnapshot: status
-    };
-  }
-  const media = status?.media && typeof status.media === "object" ? status.media : null;
-  const mediaComplete = Boolean(status?.installImage || media?.complete === true);
-  const missingFinalMarkers = readyBlockers.includes("autounattend") || readyBlockers.includes("setupcomplete") || readyBlockers.includes("backup-proof");
-  if (mediaComplete && missingFinalMarkers) {
-    return {
-      ok: false,
-      action: "prepare",
-      status: "blocked",
-      blocker: "prepare-stopped-before-final-markers",
-      blockers: readyBlockers,
-      exitCode: 1,
-      elapsedMs,
-      statusSnapshot: status
-    };
-  }
-  return null;
-}
-
-function isManagedReinstallPrepareActiveAfterCodex(status) {
-  const media = status?.media && typeof status.media === "object" ? status.media : null;
-  const mediaActive = media?.downloading === true && (
-    media?.active === true
-    || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < 900)
-  );
-  if (mediaActive) {
-    return true;
-  }
-  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
-  const latestStatus = String(latest?.status || "").toLowerCase();
-  if (!["running-or-started", "running", "created"].includes(latestStatus)) {
-    return false;
-  }
-  const activeProcessCount = Number(latest?.activeProcessCount);
-  const updatedAgeSeconds = Number(latest?.updatedAgeSeconds);
-  if (Number.isFinite(activeProcessCount) && activeProcessCount <= 0 && Number.isFinite(updatedAgeSeconds) && updatedAgeSeconds >= 900) {
-    return false;
-  }
-  return true;
-}
-
-function managedReinstallReadyBlockersAfterCodex(status) {
-  const blockers = [];
-  const managedUserName = String(status?.managedUserName || "");
-  if (managedUserName !== "Соты") {
-    blockers.push("managed-user-name");
-  }
-  if (String(status?.managedUserPasswordMode || "") !== "blank-no-password") {
-    blockers.push("managed-user-password-mode");
-  }
-  if (status?.backupProofOk !== true) {
-    blockers.push("backup-proof");
-  }
-  if (!String(status?.installImage || "")) {
-    blockers.push("install-image");
-  }
-  if (status?.rootAutounattend !== true) {
-    blockers.push("autounattend");
-  }
-  if (status?.oemSetupComplete !== true) {
-    blockers.push("setupcomplete");
-  }
-  return blockers;
-}
-
-function managedReinstallGuardPollDelayMs(status) {
-  return status?.media?.downloading === true ? 120_000 : 60_000;
-}
-
-function managedReinstallGuardProgressIntervalMs(status) {
-  return status?.media?.downloading === true ? 30 * 60_000 : 20 * 60_000;
-}
-
-function formatManagedReinstallProgressAfterCodex(status) {
-  const media = status?.media && typeof status.media === "object" ? status.media : null;
-  if (media?.downloading === true) {
-    const gb = Number.isFinite(Number(media.gb)) ? `, downloaded about ${media.gb} GB` : "";
-    return `Windows reinstall preparation is still downloading the install image${gb}. I am keeping the task open and will stop only on ready state or a blocker.`;
-  }
-  const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
-  if (latest?.stdoutTail && /backup|driver|robocopy|export/iu.test(String(latest.stdoutTail))) {
-    return "Windows reinstall preparation is still working on backup, drivers, or install files. I am keeping the task open.";
-  }
-  return "Windows reinstall preparation is still active. I am keeping the task open until ready state or a blocker.";
-}
-
-function formatManagedReinstallTerminalAfterCodex(terminal, status) {
-  if (terminal?.status === "needs-confirmation") {
-    const phrase = String(terminal.confirmationPhrase || status?.confirmationPhrase || "").trim();
-    return phrase
-      ? `Preparation is complete. Exact final reinstall confirmation is still required before starting the final Windows reinstall step: ${phrase}`
-      : "Preparation is complete. Exact final reinstall confirmation is still required before starting the final Windows reinstall step.";
-  }
-  const blocker = String(terminal?.blocker || "blocked");
-  const blockers = Array.isArray(terminal?.blockers) && terminal.blockers.length > 0
-    ? ` (${terminal.blockers.join(", ")})`
-    : "";
-  return `Windows reinstall preparation reached a blocker: ${blocker}${blockers}.`;
-}
-
-async function postCodexGuardProgress(onMessage, text) {
-  const clean = String(text || "").trim().slice(0, 1000);
-  if (!clean || typeof onMessage !== "function") {
-    return;
-  }
-  await Promise.resolve(onMessage(clean)).catch(() => undefined);
 }
 
 function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", taskFamily = "generic" }) {
@@ -5226,38 +4676,6 @@ function resolveCodexTaskFamily(text, source, target = null) {
     return classified;
   }
   return recentCodexSessionFamilyForTarget(source, target) || classified;
-}
-
-function codexActiveTargetTurnKey(source, target = null) {
-  const safe = sanitizeAgentSource(source);
-  const targetId = String(target?.id || safe.preferredTargetId || "").trim();
-  if (!targetId) {
-    return "";
-  }
-  const key = [
-    safe.sourceRelayId || agentRelayId || safe.tunnelId || "relay",
-    safe.deviceId || "",
-    targetId
-  ].filter(Boolean).join("@");
-  return key.replace(/[^A-Za-z0-9_.:-]/gu, "_").slice(0, 220);
-}
-
-function isInterruptibleActiveCodexGuard(entry) {
-  return entry?.guard === "windows-reinstall-post-codex";
-}
-
-function activeCodexTargetTurnReply(entry, taskFamily = "") {
-  const ageSeconds = Math.max(0, Math.round((Date.now() - (entry?.startedAt || Date.now())) / 1000));
-  const ageText = ageSeconds >= 90
-    ? `${Math.round(ageSeconds / 60)} min`
-    : `${ageSeconds}s`;
-  const last = cleanAgentChatReply(entry?.lastMessage || "");
-  const suffix = last ? `\n\nПоследний статус:\n${last.slice(0, 1600)}` : "";
-  return {
-    ok: true,
-    text: `На этом ПК уже выполняется предыдущая задача (${entry?.taskFamily || taskFamily || "agent"}, ${ageText}). Второй запуск не начинаю, чтобы не мешать текущему процессу.${suffix}`.slice(0, maxChatChars),
-    exitCode: 0
-  };
 }
 
 function codexSessionFamilyBucket(taskFamily) {

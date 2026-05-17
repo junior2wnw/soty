@@ -95,8 +95,10 @@ const relayStorageKey = "soty:agent:relay-id";
 const pendingRelayRepliesStorageKey = "soty:agent:pending-relay-replies:v1";
 const relayParamNames = ["agent", "agentRelay", "agentRelayId"];
 const maxCodexDialogMessages = 64;
+const maxAgentReplyChars = 64_000;
+const agentRelayReplyTimeoutMs = 24 * 60 * 60_000;
 const localAgentBlockedText = "! agent-relay: agent bridge is not connected";
-const pendingRelayReplyTtlMs = 2 * 60 * 60_000 + 30 * 60_000;
+const pendingRelayReplyTtlMs = agentRelayReplyTimeoutMs + 30 * 60_000;
 
 export function adoptAgentRelayFromUrl(): boolean {
   const url = new URL(window.location.href);
@@ -140,7 +142,7 @@ export async function askLocalAgentReply(
   text: string,
   context: string,
   source: LocalAgentRequestSource = {},
-  timeoutMs = 2 * 60 * 60_000,
+  timeoutMs = agentRelayReplyTimeoutMs,
   onMessage?: LocalAgentMessageHandler,
   onTerminal?: LocalAgentMessageHandler,
   signal?: AbortSignal
@@ -678,7 +680,7 @@ function rememberPendingAgentRelayReply(reply: LocalAgentPendingRelayReply): voi
 }
 
 function recordPendingAgentRelayEvent(id: string, after: number, type: string, text: string): void {
-  const cleanText = String(text || "").replace(/\r\n?/gu, "\n").trim().slice(0, 12_000);
+  const cleanText = String(text || "").replace(/\r\n?/gu, "\n").trim().slice(0, maxAgentReplyChars);
   if (!cleanText) {
     updatePendingAgentRelayReply(id, { after });
     return;
@@ -752,11 +754,11 @@ function sanitizePendingAgentRelayReply(value: unknown): LocalAgentPendingRelayR
     return null;
   }
   const createdAt = Number.isFinite(record.createdAt) ? Number(record.createdAt) : Date.now();
-  const timeoutAt = Number.isFinite(record.timeoutAt) ? Number(record.timeoutAt) : createdAt + 2 * 60 * 60_000;
+  const timeoutAt = Number.isFinite(record.timeoutAt) ? Number(record.timeoutAt) : createdAt + agentRelayReplyTimeoutMs;
   const cleanMessages = (items: readonly unknown[] | undefined) => Array.isArray(items)
     ? items
       .filter((item): item is string => typeof item === "string")
-      .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, 12_000))
+      .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, maxAgentReplyChars))
       .filter(Boolean)
       .slice(-maxCodexDialogMessages)
     : [];
@@ -784,7 +786,7 @@ function cleanReplyMessages(value: readonly unknown[] | undefined): string[] {
   }
   return value
     .filter((item): item is string => typeof item === "string")
-    .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, 12_000))
+    .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, maxAgentReplyChars))
     .filter(Boolean)
     .slice(0, maxCodexDialogMessages);
 }
