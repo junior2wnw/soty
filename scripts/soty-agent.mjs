@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.60";
+const agentVersion = "0.4.61";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -10533,6 +10533,7 @@ function agentSourceDeviceId(target) {
 async function windowsInteractiveTaskSpec(execSpec, jobDir, timeoutMs) {
   const runnerPath = join(jobDir, "interactive-runner.ps1");
   const bridgePath = join(jobDir, "interactive-bridge.ps1");
+  const launcherPath = join(jobDir, "interactive-launcher.vbs");
   const payload = Buffer.from(JSON.stringify({
     file: String(execSpec.file || ""),
     args: Array.isArray(execSpec.args) ? execSpec.args.map((item) => String(item)) : [],
@@ -10566,11 +10567,18 @@ try {
   Set-Content -LiteralPath ([string]$payload.donePath) -Encoding ASCII -Value '1'
 }
 `.trim();
+  const launcher = `
+Set shell = CreateObject("WScript.Shell")
+command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & Chr(34) & ${vbsQuote(runnerPath)} & Chr(34)
+exitCode = shell.Run(command, 0, True)
+WScript.Quit exitCode
+`.trim();
   const bridge = `
 $ErrorActionPreference = 'Stop'
 $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
 $root = ${psQuote(jobDir)}
 $runner = ${psQuote(runnerPath)}
+$launcher = ${psQuote(launcherPath)}
 $taskName = 'SotyInteractive-' + [Guid]::NewGuid().ToString('N')
 function Get-ActiveUserName {
   $explorers = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue | Sort-Object SessionId, CreationDate -Descending)
@@ -10608,7 +10616,9 @@ if ([string]::IsNullOrWhiteSpace($user)) {
   exit 127
 }
 try {
-  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $runner + '"')
+  $wscript = Join-Path $env:SystemRoot 'System32\\wscript.exe'
+  if (-not (Test-Path -LiteralPath $wscript)) { $wscript = 'wscript.exe' }
+  $action = New-ScheduledTaskAction -Execute $wscript -Argument ('//B //Nologo "' + $launcher + '"')
   $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5)
   $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
@@ -10639,6 +10649,7 @@ try {
 `.trim();
   await writeFile(runnerPath, `\uFEFF${runner}`, "utf8");
   await writeFile(bridgePath, `\uFEFF${bridge}`, "utf8");
+  await writeFile(launcherPath, `\uFEFF${launcher}`, "utf16le");
   return {
     file: "powershell.exe",
     args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", bridgePath]
@@ -11754,6 +11765,10 @@ function shQuote(value) {
 
 function psQuote(value) {
   return `'${String(value).replace(/'/gu, "''")}'`;
+}
+
+function vbsQuote(value) {
+  return `"${String(value).replace(/"/gu, '""')}"`;
 }
 
 function psEncoded(value) {
