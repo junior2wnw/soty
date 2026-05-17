@@ -4573,10 +4573,8 @@ function isNonTerminalWindowsReinstallFinalText(text) {
   if (!value) {
     return false;
   }
-  if (/\b(?:running|active|media\.active|still running|nexttool)\b/u.test(value)) {
-    return true;
-  }
-  return /(?:не закрываю|не завершаю|держу|продолжаю|продолжу|мониторинг|опрос|подготовка.+ид[её]т|задач[ау].+держ|bytes=0|байт[ыа]?\s*(?:всё ещё|пока)?\s*0)/u.test(value);
+  return /\b(?:running|active|media\.active|still running|nexttool)\b/u.test(value)
+    || /(?:не закрываю|не завершаю|держу|продолжаю|продолжу|мониторинг|опрос|подготовка.+ид[её]т|задач[ау].+держ|bytes=0|байт[ыа]?\s*(?:всё ещё|пока)?\s*0)/u.test(value);
 }
 
 async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, source, target, finalText = "", onMessage, trace = null, signal = null } = {}) {
@@ -4883,7 +4881,8 @@ function isManagedReinstallPrepareActiveAfterCodex(status) {
 
 function managedReinstallReadyBlockersAfterCodex(status) {
   const blockers = [];
-  if (String(status?.managedUserName || "") !== "РЎРѕС‚С‹") {
+  const managedUserName = String(status?.managedUserName || "");
+  if (managedUserName !== "Соты") {
     blockers.push("managed-user-name");
   }
   if (String(status?.managedUserPasswordMode || "") !== "blank-no-password") {
@@ -6377,6 +6376,7 @@ function windowsReinstallRouteProfile() {
       "prove selected source device and machine/system worker",
       "recover stale prepare state before starting managed prepare",
       "run repair/status when the user reports a broken or interrupted reinstall workflow",
+      "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
       "start managed prepare once with stable idempotency",
       "download Windows media with the single-stream resumable route on the selected PC",
       "prove backup, install media, unattended account, Autounattend, postinstall",
@@ -6460,7 +6460,7 @@ function sotyRuntimeHints() {
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
-    "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/repair/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
+    "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: first establish the user's mode (`clean` vs `keep-files`) and explicit permission to use the detected USB, then call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/repair/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For Windows reinstall problem reports, do not answer from memory alone. First call `computer` with operation=reinstall, capability=os-reinstall, action=repair or action=status, then use its structured proof/nextAction. If repair says nextAction=prepare and the user is asking to continue reinstall, call prepare; if it says nextAction=arm, ask only for the exact final confirmation phrase.",
     "- For Windows reinstall status, prefer `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful because it returns compact proof. Full shell/file access remains available for direct diagnostics and repair. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
@@ -6541,10 +6541,12 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Use this route for Windows reinstall/reset/clean install work on the selected or named Link device. The managed capability is the fastest structured route, while normal shell/file access stays available for direct diagnostics and repair.",
     "",
+    "Do not start a new prepare from a vague reinstall request. First ask the user to choose `clean reinstall` or `keep personal files`, and ask permission to use the detected USB drive. Start prepare only after the user has explicitly confirmed clean reinstall and USB use, then pass `installMode:\"clean\"` and `usbConfirmed:true`.",
+    "",
     "Prepare or continue preparation:",
     "",
     "```json",
-    "{\"operation\":\"reinstall\",\"capability\":\"os-reinstall\",\"action\":\"prepare\",\"waitForCompletion\":true,\"waitTimeoutMs\":86400000,\"timeoutMs\":120000}",
+    "{\"operation\":\"reinstall\",\"capability\":\"os-reinstall\",\"action\":\"prepare\",\"installMode\":\"clean\",\"usbConfirmed\":true,\"waitForCompletion\":true,\"waitTimeoutMs\":86400000,\"timeoutMs\":120000}",
     "```",
     "",
     "Read current status:",
@@ -6662,7 +6664,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
-    "- For Windows reinstall/reset, the default attached-device route is `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\" }. Use status/repair/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
+    "- For Windows reinstall/reset, do not start a new prepare from the first vague request. Ask clean vs keep-files and explicit USB permission first; after that use `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\", installMode: \"clean\", usbConfirmed: true }. Use status/repair/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- When the user reports that reinstall is stuck, stale, interrupted, previously failed, or asks what prevented it, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"repair\", timeoutMs: 45000 } before explaining. Treat repair as the safe doctor step: it may recover stale prepare markers and returns nextAction.",
     "- For Windows reinstall status, prefer `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 } because it returns compact proof. Shell/file diagnostics are still allowed when they help solve the task. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running; if it is `stale-orphaned`, call prepare again or cancel instead of asking the user to clean locks manually.",
     "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for final confirmation.",
@@ -7344,6 +7346,11 @@ function runMcpServer() {
             operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, toolkit, or learn." },
             capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
+            installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
+            reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
+            usbConfirmed: { type: "boolean", description: "Windows reinstall prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
+            usbUseConfirmed: { type: "boolean", description: "Alias for usbConfirmed." },
+            usbConsent: { type: "boolean", description: "Alias for usbConfirmed." },
             routeProfile: { type: "string", description: "Optional route profile id to reuse, for example soty-windows-reinstall-managed-fast-lane." },
             command: { type: "string", description: "Command for shell/action work." },
             script: { type: "string", description: "Script body for script/action work." },
@@ -7417,6 +7424,11 @@ function runMcpServer() {
             usbDriveLetter: { type: "string", description: "Windows reinstall USB drive letter." },
             confirmationPhrase: { type: "string", description: "Exact final reinstall confirmation phrase for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "Windows reinstall prepare: require existing valid USB install image." },
+            installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall." },
+            reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
+            usbConfirmed: { type: "boolean", description: "Windows reinstall prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
+            usbUseConfirmed: { type: "boolean", description: "Alias for usbConfirmed." },
+            usbConsent: { type: "boolean", description: "Alias for usbConfirmed." },
             improvement: { type: "string", description: "Optional sanitized reusable improvement note when this run proves a safe toolkit improvement." },
             reuseKey: { type: "string", description: "Stable reusable route/script key when this action should help unrelated future tasks reuse the same method." },
             pivotFrom: { type: "string", description: "Optional previous task vector when the user changed direction and this action continues with existing proof/artifacts." },
@@ -7549,6 +7561,11 @@ function runMcpServer() {
             usbDriveLetter: { type: "string", description: "Removable install USB drive letter, for example D. Defaults to D." },
             confirmationPhrase: { type: "string", description: "Exact final reinstall confirmation phrase. Required only for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "When true, prepare refuses to download Windows and requires a valid existing USB install image." },
+            installMode: { type: "string", description: "Prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall." },
+            reinstallMode: { type: "string", description: "Alias for installMode." },
+            usbConfirmed: { type: "boolean", description: "Prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
+            usbUseConfirmed: { type: "boolean", description: "Alias for usbConfirmed." },
+            usbConsent: { type: "boolean", description: "Alias for usbConfirmed." },
             waitForCompletion: { type: "boolean", description: "Default true for prepare. Keep true unless the user explicitly asked to run in background." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, default up to 86400000 for prepare." },
             waitMs: { type: "integer", description: "For status only: wait inside the toolkit before reading status again. Prefer this to occupying a terminal with sleep." },
@@ -8685,6 +8702,55 @@ function runMcpServer() {
     return mcpToolJson(payload, true, payload.exitCode);
   }
 
+  function normalizeWindowsReinstallInstallMode(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) {
+      return "";
+    }
+    if (/^(?:clean|wipe|erase|fresh|full|format|чистая|чисто|стереть|стирание|полная)$/iu.test(text) || /чист|стир|clean|wipe|erase|fresh|format/iu.test(text)) {
+      return "clean";
+    }
+    if (/keep|preserve|save|repair|сохран|остав/iu.test(text)) {
+      return "keep-files";
+    }
+    return "";
+  }
+
+  function trueArg(value) {
+    if (value === true) {
+      return true;
+    }
+    const text = String(value || "").trim().toLowerCase();
+    return ["1", "true", "yes", "y", "да", "ok", "ок", "confirm", "confirmed"].includes(text);
+  }
+
+  function reinstallPrepareConsentPayload({ installMode, usbDriveLetter, existingStatus }) {
+    const compact = existingStatus ? compactReinstallStatus(existingStatus) : null;
+    const usb = existingStatus?.usb && typeof existingStatus.usb === "object" ? existingStatus.usb : null;
+    return {
+      ok: false,
+      action: "prepare",
+      status: "needs-user-input",
+      blocker: installMode === "keep-files" ? "keep-files-mode-needs-user-choice" : "prepare-consent-required",
+      exitCode: 2,
+      usb: usb ? {
+        driveLetter: cleanActionText(usb.driveLetter || usbDriveLetter || "", 8),
+        root: cleanActionText(usb.root || "", 40),
+        label: cleanActionText(usb.label || usb.volumeLabel || "", 80),
+        freeGB: Number.isFinite(Number(usb.freeGB)) ? Number(usb.freeGB) : null,
+        accepted: usb.accepted === true,
+        removable: usb.removable === true,
+        hasSotyReinstall: usb.hasSotyReinstall === true,
+        hasInstallImage: usb.hasInstallImage === true,
+        ambiguous: usb.ambiguous === true
+      } : null,
+      statusSnapshot: compact,
+      required: ["installMode=clean", "usbConfirmed=true"],
+      text: "Before preparing Windows reinstall, ask the user to choose clean reinstall or keep personal files, and ask explicit permission to use the detected USB drive. Do not start a new prepare yet.",
+      agentGuidance: "Ask one concise question: clean reinstall or keep personal files, and whether the detected USB can be used for the installer. If the user chooses clean and confirms USB use, call prepare again with installMode='clean' and usbConfirmed=true. For keep-files, do not run clean prepare; explain that this managed route is for clean reinstall and use the appropriate repair/reset path only after user confirms."
+    };
+  }
+
   async function callSotyReinstallTool(args) {
     const action = String(args.action || "").trim().toLowerCase();
     if (!["preflight", "prepare", "status", "repair", "cancel", "arm"].includes(action)) {
@@ -8692,6 +8758,8 @@ function runMcpServer() {
     }
     const toolStartedAt = Date.now();
     const usbDriveLetter = normalizeUsbDriveLetter(args.usbDriveLetter || "D");
+    const installMode = normalizeWindowsReinstallInstallMode(args.installMode || args.reinstallMode || "");
+    const usbConfirmed = trueArg(args.usbConfirmed) || trueArg(args.usbUseConfirmed) || trueArg(args.usbConsent);
     const request = {
       action,
       usbDriveLetter,
@@ -8820,6 +8888,11 @@ function runMcpServer() {
         // Historical failed/stale prepare jobs are only history here: if no worker
         // or media download is active and no ready proof exists, start a fresh
         // managed prepare instead of blocking on yesterday's job record.
+      }
+      if (installMode !== "clean" || !usbConfirmed) {
+        const consentPayload = reinstallPrepareConsentPayload({ installMode, usbDriveLetter, existingStatus });
+        recordSotyReinstallRouteReceipt(action, consentPayload, toolStartedAt);
+        return mcpToolJson(consentPayload, true, consentPayload.exitCode);
       }
     }
     const keyDate = new Date().toISOString().slice(0, 10).replace(/-/gu, "");

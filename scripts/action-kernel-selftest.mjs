@@ -1409,6 +1409,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Route profiles are memory-derived accelerators"));
       assert(agent.includes("soty-windows-reinstall-managed-fast-lane"));
       assert(agent.includes('operation: \\"reinstall\\", capability: \\"os-reinstall\\", action: \\"prepare\\"'));
+      assert(agent.includes("ask clean vs keep-files and require explicit USB-use consent before a new prepare"));
+      assert(agent.includes("Ask clean vs keep-files and explicit USB permission first"));
+      assert(agent.includes("normalizeWindowsReinstallInstallMode"));
+      assert(agent.includes("prepare-consent-required"));
+      assert(agent.includes('required: ["installMode=clean", "usbConfirmed=true"]'));
+      assert(agent.includes('installMode: \\"clean\\", usbConfirmed: true'));
+      assert(agent.includes('usbConfirmed: { type: "boolean"'));
+      assert(agent.includes('managedUserName !== "Соты"'));
+      assert(!agent.includes('managedUserName || "") !== "РЎРѕС‚С‹"'));
       assert(agent.includes('["preflight", "prepare", "status", "repair", "cancel", "arm"]'));
       assert(agent.includes('action: \\"repair\\", timeoutMs: 45000'));
       assert(agent.includes("do not answer reinstall failure reports from memory without fresh repair/status proof"));

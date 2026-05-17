@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "06e972656e223b0ca713c233b590877a9204522021b1099285b70982b043af48",
+  "sha256": "e10dd9c4dcd5e0ae23bb93926ef9bdc40620ad1d03b1d8470fe2dd412c553e68",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -116,6 +116,7 @@
           "prove selected source device and machine/system worker",
           "recover stale prepare state before starting managed prepare",
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
+          "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
           "start managed prepare once with stable idempotency",
           "download Windows media with the single-stream resumable route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
@@ -474,6 +475,7 @@
             "prove selected source device and machine/system worker",
             "recover stale prepare state before starting managed prepare",
             "run repair/status when the user reports a broken or interrupted reinstall workflow",
+            "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
             "start managed prepare once with stable idempotency",
             "download Windows media with the single-stream resumable route on the selected PC",
             "prove backup, install media, unattended account, Autounattend, postinstall",
