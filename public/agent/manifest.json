@@ -1,9 +1,9 @@
 {
-  "version": "0.4.64",
+  "version": "0.4.65",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "b4b1577a5a3c15fee963409aed2da72c67683f6890408183ac62f40d4fad00e4",
+  "sha256": "8b844281b7a40bbcba2fc9194f3236f20b3228ddbe05dff962b83368cba15c55",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -108,10 +108,12 @@
           "preflight",
           "prepare",
           "status",
+          "cancel",
           "arm"
         ],
         "route": [
           "prove selected source device and machine/system worker",
+          "recover stale prepare state before starting managed prepare",
           "start managed prepare once with stable idempotency",
           "download Windows media with resumable HTTP range route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
@@ -122,7 +124,8 @@
           "do not ask the user to manually download ISO when the source computer is attached",
           "do not open Microsoft download pages as the normal route",
           "do not replace the managed downloader with ad-hoc browser automation",
-          "do not start a second prepare while one is active"
+          "do not start a second prepare while one is active",
+          "do not treat stale orphaned prepare jobs as active blockers"
         ],
         "proof": [
           "machineWorker",
@@ -132,13 +135,14 @@
           "installMedia",
           "autounattend",
           "setupcomplete",
+          "cancelProof",
           "postArmReturnPath"
         ],
         "scripts": [
           {
             "name": "managed",
-            "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
-            "bytes": 28566
+            "sha256": "183045c2da39a53b77858759f77db8f581927a7e3b73734ea7d31294e0c08356",
+            "bytes": 31848
           },
           {
             "name": "prepare",
@@ -158,7 +162,7 @@
         ],
         "learning": {
           "reuseKey": "soty-windows-reinstall-managed-fast-lane",
-          "scriptUse": "prepare/status/arm",
+          "scriptUse": "prepare/status/cancel/arm",
           "successCriteria": "backupProof+installMedia+unattend+postinstall",
           "contextFingerprint": "windows-machine-worker",
           "receipt": "append-only sanitized route proof"
@@ -217,8 +221,8 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
-        "bytes": 28566
+        "sha256": "183045c2da39a53b77858759f77db8f581927a7e3b73734ea7d31294e0c08356",
+        "bytes": 31848
       },
       {
         "name": "prepare",
@@ -396,14 +400,15 @@
           "preflight",
           "prepare",
           "status",
+          "cancel",
           "arm"
         ],
         "scriptSet": "windowsReinstall",
         "scripts": [
           {
             "name": "managed",
-            "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
-            "bytes": 28566
+            "sha256": "183045c2da39a53b77858759f77db8f581927a7e3b73734ea7d31294e0c08356",
+            "bytes": 31848
           },
           {
             "name": "prepare",
@@ -426,6 +431,7 @@
           "installMedia",
           "unattend",
           "postinstall",
+          "cancelProof",
           "rebooting"
         ],
         "routeProfile": "soty-windows-reinstall-managed-fast-lane"
@@ -454,10 +460,12 @@
             "preflight",
             "prepare",
             "status",
+            "cancel",
             "arm"
           ],
           "route": [
             "prove selected source device and machine/system worker",
+            "recover stale prepare state before starting managed prepare",
             "start managed prepare once with stable idempotency",
             "download Windows media with resumable HTTP range route on the selected PC",
             "prove backup, install media, unattended account, Autounattend, postinstall",
@@ -468,7 +476,8 @@
             "do not ask the user to manually download ISO when the source computer is attached",
             "do not open Microsoft download pages as the normal route",
             "do not replace the managed downloader with ad-hoc browser automation",
-            "do not start a second prepare while one is active"
+            "do not start a second prepare while one is active",
+            "do not treat stale orphaned prepare jobs as active blockers"
           ],
           "proof": [
             "machineWorker",
@@ -478,13 +487,14 @@
             "installMedia",
             "autounattend",
             "setupcomplete",
+            "cancelProof",
             "postArmReturnPath"
           ],
           "scripts": [
             {
               "name": "managed",
-              "sha256": "f8807690ff56f1633a44f30cc56524f107ccce23ac99fdb58f0911c290d33c0e",
-              "bytes": 28566
+              "sha256": "183045c2da39a53b77858759f77db8f581927a7e3b73734ea7d31294e0c08356",
+              "bytes": 31848
             },
             {
               "name": "prepare",
@@ -504,7 +514,7 @@
           ],
           "learning": {
             "reuseKey": "soty-windows-reinstall-managed-fast-lane",
-            "scriptUse": "prepare/status/arm",
+            "scriptUse": "prepare/status/cancel/arm",
             "successCriteria": "backupProof+installMedia+unattend+postinstall",
             "contextFingerprint": "windows-machine-worker",
             "receipt": "append-only sanitized route proof"

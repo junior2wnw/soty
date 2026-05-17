@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("preflight", "prepare", "status", "arm")]
+  [ValidateSet("preflight", "prepare", "status", "arm", "cancel")]
   [string] $Action = "status",
   [string] $UsbDriveLetter = "D",
   [string] $ConfirmationPhrase = "",
@@ -11,6 +11,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$script:PrepareOrphanGraceSeconds = 120
+$script:MediaResumeGraceSeconds = 900
 try {
   [Console]::InputEncoding = [System.Text.Encoding]::UTF8
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -262,7 +264,7 @@ function Get-PrepareJobs([string] $Root) {
         $updatedAgeSeconds = [math]::Round(($nowUtc - $updatedUtc).TotalSeconds, 0)
         $activeForJob = @($prepareProcesses | Where-Object { Test-PrepareProcessMatchesJob $_ $jobId $jobPath $Root })
         $status = if ($result) { [string] $result.status } else { "running-or-started" }
-        if (-not $result -and @($activeForJob).Count -eq 0 -and $updatedAgeSeconds -ge 900) {
+        if (-not $result -and @($activeForJob).Count -eq 0 -and $updatedAgeSeconds -ge $script:PrepareOrphanGraceSeconds) {
           $status = "stale-orphaned"
         }
         $items.Add([pscustomobject]@{
@@ -373,7 +375,7 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
     return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null }
   }
   $age = if ($null -ne $largest.updatedAgeSeconds) { [double] $largest.updatedAgeSeconds } else { $null }
-  $active = [bool]($largest.downloading -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $age -and $age -lt 900)))
+  $active = [bool]($largest.downloading -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
   return [pscustomobject]@{
     found = $true
     path = [string] $largest.path
@@ -466,6 +468,102 @@ function Get-ManagedScript([string] $Name, [string] $Root) {
   return [pscustomobject]@{ path = $path; url = $scriptUri.AbsoluteUri; sha256 = $actual; bytes = (Get-Item -LiteralPath $path).Length; cached = $false }
 }
 
+function Test-PrepareJobActiveStatus($Job) {
+  if (-not $Job) { return $false }
+  $status = ([string] $Job.status).ToLowerInvariant()
+  if (@("running-or-started", "running", "created") -notcontains $status) { return $false }
+  $activeCount = 0
+  try { $activeCount = [int] $Job.activeProcessCount } catch {}
+  if ($activeCount -gt 0) { return $true }
+  $age = $null
+  try { $age = [double] $Job.updatedAgeSeconds } catch {}
+  return ($null -ne $age -and $age -lt $script:PrepareOrphanGraceSeconds)
+}
+
+function Test-ManagedPrepareActiveStatus($Status) {
+  if (-not $Status) { return $false }
+  if ($Status.media -and $Status.media.downloading -and $Status.media.active) { return $true }
+  $topLevelActive = 0
+  try { $topLevelActive = [int] $Status.activePrepareProcessCount } catch {}
+  if ($topLevelActive -gt 0) { return $true }
+  foreach ($job in @($Status.prepareJobs)) {
+    if (Test-PrepareJobActiveStatus $job) { return $true }
+  }
+  return $false
+}
+
+function Complete-StalePrepareJobs($Status) {
+  if (-not $Status) { return 0 }
+  $count = 0
+  foreach ($job in @($Status.prepareJobs)) {
+    if (-not $job) { continue }
+    $status = ([string] $job.status).ToLowerInvariant()
+    $active = Test-PrepareJobActiveStatus $job
+    $age = $null
+    try { $age = [double] $job.updatedAgeSeconds } catch {}
+    $stale = ($status -eq "stale-orphaned") -or (
+      @("running-or-started", "running", "created") -contains $status -and
+      -not $active -and
+      $null -ne $age -and
+      $age -ge $script:PrepareOrphanGraceSeconds
+    )
+    if (-not $stale) { continue }
+    $jobPath = [string] $job.path
+    if ([string]::IsNullOrWhiteSpace($jobPath) -or -not (Test-Path -LiteralPath $jobPath)) { continue }
+    $resultPath = Join-Path $jobPath "result.json"
+    if (Test-Path -LiteralPath $resultPath) { continue }
+    $now = (Get-Date).ToString("o")
+    $result = [ordered]@{
+      ok = $false
+      status = "stale-orphaned"
+      exitCode = 124
+      stale = $true
+      reason = "no-active-prepare-process"
+      jobId = [string] $job.id
+      jobRoot = $jobPath
+      startedAt = [string] $job.updated
+      finishedAt = $now
+      stdoutPath = Join-Path $jobPath "stdout.txt"
+      stderrPath = Join-Path $jobPath "stderr.txt"
+    }
+    try {
+      $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+      $count += 1
+    } catch {}
+  }
+  return $count
+}
+
+function Invoke-ManagedCancel([string] $Root, [string] $Letter) {
+  $before = Get-ReinstallStatus $Root $Letter
+  $processes = @(Get-PrepareProcesses $Root)
+  $stopped = 0
+  foreach ($process in @($processes | Sort-Object ProcessId -Unique)) {
+    $pidValue = 0
+    try { $pidValue = [int] $process.ProcessId } catch {}
+    if ($pidValue -le 0) { continue }
+    try {
+      & taskkill.exe /PID $pidValue /T /F 2>$null | Out-Null
+      $stopped += 1
+    } catch {
+      try { Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue; $stopped += 1 } catch {}
+    }
+  }
+  Start-Sleep -Seconds 2
+  $after = Get-ReinstallStatus $Root $Letter
+  $recovered = Complete-StalePrepareJobs $after
+  if ($recovered -gt 0) { $after = Get-ReinstallStatus $Root $Letter }
+  Emit ([pscustomobject]@{
+    ok = $true
+    action = "cancel"
+    status = "cancelled"
+    stoppedProcessCount = $stopped
+    stalePrepareJobsRecovered = $recovered
+    before = $before
+    after = $after
+  }) 0
+}
+
 function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
   $currentStatus = Get-ReinstallStatus $Root $Letter
   $resolvedLetter = Normalize-UsbLetter ([string] $currentStatus.usb.driveLetter)
@@ -481,15 +579,12 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
   if ($currentStatus.ready -and $currentStatus.backupProofOk) {
     Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyReady = $true; status = $currentStatus }) 0
   }
-  if ($currentStatus.latestPrepare -and [string] $currentStatus.latestPrepare.status -eq "running-or-started") {
-    $updated = $null
-    try { $updated = [DateTime]::Parse([string] $currentStatus.latestPrepare.updated).ToUniversalTime() } catch {}
-    if ($updated -and (((Get-Date).ToUniversalTime() - $updated).TotalMinutes -lt 180)) {
-      Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyRunning = $true; status = $currentStatus }) 0
-    }
+  $recovered = Complete-StalePrepareJobs $currentStatus
+  if ($recovered -gt 0) {
+    $currentStatus = Get-ReinstallStatus $Root $Letter
   }
-  if ($currentStatus.media -and $currentStatus.media.downloading -and $currentStatus.media.active) {
-    Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyRunning = $true; status = $currentStatus }) 0
+  if (Test-ManagedPrepareActiveStatus $currentStatus) {
+    Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyRunning = $true; stalePrepareJobsRecovered = $recovered; status = $currentStatus }) 0
   }
   $script = Get-ManagedScript "prepare" $Root
   $managedUserName = Get-SotyUserName
@@ -587,6 +682,9 @@ try {
   }
   if ($Action -eq "prepare") {
     Invoke-ManagedPrepare $WorkspaceRoot $letter
+  }
+  if ($Action -eq "cancel") {
+    Invoke-ManagedCancel $WorkspaceRoot $letter
   }
   if ($Action -eq "arm") {
     Invoke-ManagedArm $WorkspaceRoot $letter

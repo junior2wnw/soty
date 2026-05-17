@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.64";
+const agentVersion = "0.4.65";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6250,6 +6250,8 @@ function runtimeTargetScore(target, preferredId) {
 
 const windowsReinstallRouteProfileId = "soty-windows-reinstall-managed-fast-lane";
 const generatedAssetRouteProfileId = "soty-generated-asset-wallpaper-fast-lane";
+const reinstallPrepareOrphanGraceSeconds = 120;
+const reinstallMediaResumeGraceSeconds = 900;
 
 function routeProfilesStatus() {
   return {
@@ -6275,9 +6277,10 @@ function windowsReinstallRouteProfile() {
     defaultOperation: "reinstall",
     defaultAction: "prepare",
     context: "windows-machine-worker",
-    phases: ["preflight", "prepare", "status", "arm"],
+    phases: ["preflight", "prepare", "status", "cancel", "arm"],
     route: [
       "prove selected source device and machine/system worker",
+      "recover stale prepare state before starting managed prepare",
       "start managed prepare once with stable idempotency",
       "download Windows media with resumable HTTP range route on the selected PC",
       "prove backup, install media, unattended account, Autounattend, postinstall",
@@ -6288,9 +6291,10 @@ function windowsReinstallRouteProfile() {
       "do not ask the user to manually download ISO when the source computer is attached",
       "do not open Microsoft download pages as the normal route",
       "do not replace the managed downloader with ad-hoc browser automation",
-      "do not start a second prepare while one is active"
+      "do not start a second prepare while one is active",
+      "do not treat stale orphaned prepare jobs as active blockers"
     ],
-    proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "postArmReturnPath"],
+    proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "cancelProof", "postArmReturnPath"],
     learning: windowsReinstallRouteLearning()
   };
 }
@@ -6299,7 +6303,7 @@ function windowsReinstallRouteLearning(action = "") {
   const phase = cleanActionToken(action || "route", "route");
   return {
     reuseKey: windowsReinstallRouteProfileId,
-    scriptUse: phase === "route" ? "prepare/status/arm" : phase,
+    scriptUse: phase === "route" ? "prepare/status/cancel/arm" : phase,
     successCriteria: "backupProof+installMedia+unattend+postinstall",
     contextFingerprint: "windows-machine-worker",
     receipt: "append-only sanitized route proof"
@@ -6358,7 +6362,7 @@ function sotyRuntimeHints() {
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages. Avoid local shell sleeps and avoid noisy user updates while the durable job is healthy.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
-    "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
+    "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For Windows reinstall status, do not search local files, grep route docs, or crawl ProgramData. Call `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
     "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `lord`/`лорд`.",
@@ -6550,7 +6554,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
     "- For Windows reinstall/reset, the default attached-device route is `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\" }. Use status/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
-    "- For Windows reinstall status, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 }. Do not use shell/grep/SOTY_ROUTES/local file crawling to rediscover this route. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running and ignore older failed prepare jobs.",
+    "- For Windows reinstall status, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 }. Do not use shell/grep/SOTY_ROUTES/local file crawling to rediscover this route. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running; if it is `stale-orphaned`, call prepare again or cancel instead of asking the user to clean locks manually.",
     "- Do not tell the user you need browser, file, desktop, hash, long-task, or reinstall functions when the computer-use plane is attached. Use the capability, report the concrete source-device blocker, or ask for final confirmation.",
     "- For generated image or generated wallpaper tasks, use the native OpenAI image-generation tool first. Do not check desktop/display first just to choose a size; generation availability is the first gate and size can be adjusted after a generated artifact exists.",
     "- After native image generation, follow `SOTY_ROUTES.md`: find the real output under the Codex home generated_images directory if needed, then move bytes with `computer` operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>; never upload generated images to public temporary hosts or serve them with local HTTP.",
@@ -7299,7 +7303,7 @@ function runMcpServer() {
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
             timeoutMs: { type: "integer", description: "Per-action timeout in milliseconds, 1000-86400000." },
             jobId: { type: "string", description: "Job id for status/stop." },
-            action: { type: "string", description: "Windows reinstall action when toolkit=windows-reinstall: preflight, prepare, status, or arm." },
+            action: { type: "string", description: "Windows reinstall action when toolkit=windows-reinstall: preflight, prepare, status, cancel, or arm." },
             usbDriveLetter: { type: "string", description: "Windows reinstall USB drive letter." },
             confirmationPhrase: { type: "string", description: "Exact final reinstall confirmation phrase for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "Windows reinstall prepare: require existing valid USB install image." },
@@ -7427,11 +7431,11 @@ function runMcpServer() {
       },
       {
         name: "soty_reinstall",
-        description: "Managed Soty Windows reinstall toolkit for preflight, prepare, status, and arm. This is the first-class route for attached Windows computers: it downloads/verifies Windows media itself on the selected PC, prepares backup/unattended/postinstall proof, and learns sanitized route outcomes. Do not ask the user to manually download an ISO while this capability is available.",
+        description: "Managed Soty Windows reinstall toolkit for preflight, prepare, status, cancel, and arm. This is the first-class route for attached Windows computers: it downloads/verifies Windows media itself on the selected PC, prepares backup/unattended/postinstall proof, can cancel active prepare workers atomically, and learns sanitized route outcomes. Do not ask the user to manually download an ISO while this capability is available.",
         inputSchema: {
           type: "object",
           properties: {
-            action: { type: "string", description: "One of: preflight, prepare, status, arm." },
+            action: { type: "string", description: "One of: preflight, prepare, status, cancel, arm." },
             usbDriveLetter: { type: "string", description: "Removable install USB drive letter, for example D. Defaults to D." },
             confirmationPhrase: { type: "string", description: "Exact final reinstall confirmation phrase. Required only for arm." },
             useExistingUsbInstallImage: { type: "boolean", description: "When true, prepare refuses to download Windows and requires a valid existing USB install image." },
@@ -7922,7 +7926,7 @@ function runMcpServer() {
       next.action = operation === "screen" ? "display" : operation;
     }
     if (alias === "soty_reinstall" && !next.action) {
-      next.action = ["preflight", "prepare", "status", "arm"].includes(operation)
+      next.action = ["preflight", "prepare", "status", "cancel", "arm"].includes(operation)
         ? operation
         : (next.phase || (operation === "reinstall" ? "prepare" : "status"));
     }
@@ -8280,7 +8284,7 @@ function runMcpServer() {
       const result = await mcpRequestOperator("POST", `/operator/action/${encodeURIComponent(jobId)}/stop`, {});
       return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
     }
-    const reinstallAction = cleanActionToken(args.action || (toolkit === "windows-reinstall" && ["preflight", "prepare", "status", "arm"].includes(phase) ? phase : ""), "");
+    const reinstallAction = cleanActionToken(args.action || (toolkit === "windows-reinstall" && ["preflight", "prepare", "status", "cancel", "arm"].includes(phase) ? phase : ""), "");
     if (operation === "reinstall" || toolkit === "windows-reinstall" || reinstallAction) {
       if (!mcpTarget || !mcpSourceDeviceId) {
         return mcpSourceUnavailableResult();
@@ -8523,7 +8527,7 @@ function runMcpServer() {
 
   async function callSotyReinstallTool(args) {
     const action = String(args.action || "").trim().toLowerCase();
-    if (!["preflight", "prepare", "status", "arm"].includes(action)) {
+    if (!["preflight", "prepare", "status", "cancel", "arm"].includes(action)) {
       return mcpToolText("! reinstall-action", true, 2);
     }
     const toolStartedAt = Date.now();
@@ -8547,7 +8551,7 @@ function runMcpServer() {
       }, toolStartedAt);
       return mcpToolText("! confirmation-phrase", true, 2);
     }
-    if (action === "preflight" || action === "status") {
+    if (action === "preflight" || action === "status" || action === "cancel") {
       if (action === "status" && mcpPostArmReboot && Date.now() - mcpPostArmReboot.createdAt < 90 * 60_000) {
         const rebootingPayload = {
           ok: true,
@@ -8751,6 +8755,9 @@ function runMcpServer() {
   function reinstallLearningResult(body, status, exitCode) {
     if (body?.ok === true && (status === "rebooting" || status === "needs-confirmation" || status === "ready" || status === "completed")) {
       return "ok";
+    }
+    if (body?.ok === true && status === "cancelled") {
+      return "cancelled";
     }
     if (body?.ok === true && status === "running") {
       return "partial";
@@ -9287,6 +9294,33 @@ function runMcpServer() {
     }
     const latest = status?.latestPrepare && typeof status.latestPrepare === "object" ? status.latestPrepare : null;
     const latestStatus = String(latest?.status || "").toLowerCase();
+    if (latest && latestStatus === "stale-orphaned") {
+      if (initial?.reusedExistingPrepare === true) {
+        return null;
+      }
+      return {
+        ok: false,
+        action: "prepare",
+        status: "blocked",
+        blocker: "prepare-job-stale-orphaned",
+        text: "Preparation worker disappeared before producing ready proof. A new prepare can be started safely; stale jobs are not active blockers.",
+        exitCode: Number.isSafeInteger(latest.exitCode) ? latest.exitCode : 124,
+        elapsedMs,
+        latestPrepare: latest,
+        initial,
+        statusSnapshot: status,
+        nextTool: {
+          name: "computer",
+          args: {
+            operation: "reinstall",
+            capability: "os-reinstall",
+            action: "prepare",
+            waitForCompletion: true
+          }
+        },
+        agentGuidance: "The previous prepare is stale, not running. Start computer reinstall prepare again instead of asking the user to clean locks manually."
+      };
+    }
     if (latest && latestStatus && latestStatus !== "running-or-started" && latestStatus !== "running" && latestStatus !== "created") {
       return {
         ok: false,
@@ -9325,7 +9359,7 @@ function runMcpServer() {
     const media = status?.media && typeof status.media === "object" ? status.media : null;
     const mediaActive = media?.downloading === true && (
       media?.active === true
-      || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < 900)
+      || (Number.isFinite(Number(media?.updatedAgeSeconds)) && Number(media.updatedAgeSeconds) < reinstallMediaResumeGraceSeconds)
     );
     if (mediaActive) {
       return true;
@@ -9340,7 +9374,7 @@ function runMcpServer() {
     }
     const activeProcessCount = Number(latest?.activeProcessCount);
     const updatedAgeSeconds = Number(latest?.updatedAgeSeconds);
-    if (Number.isFinite(activeProcessCount) && activeProcessCount <= 0 && Number.isFinite(updatedAgeSeconds) && updatedAgeSeconds >= 900) {
+    if (Number.isFinite(activeProcessCount) && activeProcessCount <= 0 && Number.isFinite(updatedAgeSeconds) && updatedAgeSeconds >= reinstallPrepareOrphanGraceSeconds) {
       return false;
     }
     return true;
@@ -12040,8 +12074,8 @@ function automationToolkitStatus() {
       {
         name: "windows-reinstall",
         entryTool: "computer",
-        phases: ["preflight", "prepare", "status", "arm"],
-        proof: ["backupProof", "installMedia", "unattend", "postinstall", "rebooting"],
+        phases: ["preflight", "prepare", "status", "cancel", "arm"],
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "cancelProof", "rebooting"],
         routeProfile: windowsReinstallRouteProfileId
       }
     ],
