@@ -1409,6 +1409,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("A new prepare can be started safely; stale jobs are not active blockers."));
       assert(agent.includes("Do not ask the user to manually download an ISO"));
       assert(agent.includes("recordSotyReinstallRouteReceipt"));
+      assert(agent.includes("isReinstallMediaStalled"));
+      assert(agent.includes("stale-media-download"));
+      assert(agent.includes("mcpRecordComputerLearning"));
+      assert(agent.includes("shouldRecordComputerLearning"));
+      assert(agent.includes("Learning receipt saved as route guidance only"));
+      assert(agent.includes('maybeRedirectManagedReinstallProbe(\n      "soty_action"'));
       assert(agent.includes("activeCodexTargetTurns"));
       assert(agent.includes("codex.active-target-suppressed"));
       assert(agent.includes("codexActiveTargetTurnKey"));
@@ -1483,6 +1489,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(managed.includes("Complete-StalePrepareJobs"));
       assert(managed.includes("Test-ManagedPrepareActiveStatus"));
       assert(managed.includes("Invoke-ManagedCancel"));
+      assert(managed.includes("Remove-StaleMediaArtifacts"));
+      assert(managed.includes("Repair-StaleMediaState"));
+      assert(managed.includes("staleMediaRecovered"));
+      assert(managed.includes("cancel-blocked"));
+      assert(managed.includes("Remove-Item -LiteralPath $_.FullName -Recurse -Force"));
       assert(!managed.includes("TotalMinutes -lt 180"));
       assert(!managed.includes('$cmd -match "soty-prepare-windows-reinstall|prepare-windows-reinstall" -and -not [string]::IsNullOrWhiteSpace($rootLower)'));
       assert(managed.includes("stale-orphaned"));

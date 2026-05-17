@@ -7243,7 +7243,7 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, or toolkit." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, toolkit, or learn." },
             capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             routeProfile: { type: "string", description: "Optional route profile id to reuse, for example soty-windows-reinstall-managed-fast-lane." },
@@ -7814,6 +7814,9 @@ function runMcpServer() {
   async function callSotyComputerTool(args) {
     const operation = cleanActionToken(args.operation || args.action || (args.jobId ? "job_status" : ""), "");
     const capability = cleanActionToken(args.capability || args.toolkit || args.family || "", "");
+    if (shouldRecordComputerLearning(args, operation)) {
+      return mcpRecordComputerLearning(args, operation, capability);
+    }
     if (!operation || ["discover", "describe", "capabilities", "tools", "plane"].includes(operation)) {
       return mcpToolJson({
         ok: true,
@@ -7850,6 +7853,73 @@ function runMcpServer() {
     return await callSotyMcpTool({
       name: alias,
       arguments: computerToolArguments(alias, args, operation, capability)
+    });
+  }
+
+  function shouldRecordComputerLearning(args, operation) {
+    const improvement = String(args?.improvement || args?.improvementNote || "").trim();
+    const op = String(operation || "").toLowerCase();
+    if (["learn", "remember", "memory", "record", "record-improvement", "record_improvement"].includes(op)) {
+      return true;
+    }
+    return Boolean(improvement)
+      && ["status", "health", "source", "source-status", "source_status"].includes(op)
+      && !args?.jobId
+      && !args?.command
+      && !args?.script;
+  }
+
+  function mcpRecordComputerLearning(args, operation, capability) {
+    const improvement = cleanActionText(args?.improvement || args?.improvementNote || args?.intent || args?.text || "", 240);
+    if (!improvement) {
+      return mcpToolJson({
+        ok: false,
+        operation: "learn",
+        error: "improvement-required",
+        agentGuidance: "To record reusable route learning, pass a sanitized improvement note plus family/toolkit/reuseKey/successCriteria when known."
+      }, true, 2);
+    }
+    const toolkit = normalizeToolkitName(args?.toolkit || capability || "computer-use-plane");
+    const family = cleanActionText(args?.family || args?.taskFamily || toolkit || "generic", 80);
+    const phase = cleanActionToken(args?.phase || args?.kind || operation || "learn", "learn");
+    const reuseKey = cleanActionText(args?.reuseKey || args?.routeKey || "", 120);
+    const successCriteria = cleanActionText(args?.successCriteria || "", 220);
+    const scriptUse = cleanActionText(args?.scriptUse || "", 180);
+    const contextFingerprint = cleanActionText(args?.contextFingerprint || "", 120);
+    const route = cleanActionText(args?.route || `computer.learn.${phase}`, 120);
+    const proof = [
+      `improvement=${improvement}`,
+      reuseKey ? `reuseKey=${cleanProofToken(reuseKey)}` : "",
+      successCriteria ? "successCriteria=set" : "",
+      scriptUse ? `scriptUse=${cleanProofToken(scriptUse)}` : "",
+      contextFingerprint ? `context=${cleanProofToken(contextFingerprint)}` : ""
+    ].filter(Boolean).join("; ");
+    recordLearningReceipt({
+      kind: "route-improvement",
+      toolkit,
+      phase,
+      family,
+      result: "partial",
+      route,
+      commandSig: commandSignature(`${family}:${phase}:${reuseKey || improvement}`, family),
+      taskSig: taskSignature(`${toolkit}:${family}:${phase}:${reuseKey || improvement}`),
+      proof,
+      exitCode: 0,
+      durationMs: 0,
+      ...learningContextForTurn()
+    });
+    return mcpToolJson({
+      ok: true,
+      operation: "learn",
+      learningRecorded: true,
+      result: "partial",
+      toolkit,
+      family,
+      phase,
+      route,
+      reuseKey,
+      successCriteria: Boolean(successCriteria),
+      agentGuidance: "Learning receipt saved as route guidance only. It is not a proof of task completion; still verify future work through the relevant capability/toolkit."
     });
   }
 
@@ -8331,6 +8401,13 @@ function runMcpServer() {
     if (mode === "script" && !script) {
       return mcpToolText("! script", true);
     }
+    const managedRedirect = await maybeRedirectManagedReinstallProbe(
+      "soty_action",
+      mode === "script" ? `${args.name || ""}\n${script}` : command
+    );
+    if (managedRedirect) {
+      return managedRedirect;
+    }
     const family = String(args.family || "");
     const toolkit = normalizeToolkitName(args.toolkit || toolkitForFamily(family || classifySourceCommand(mode === "script" ? script : command)));
     const phase = cleanActionToken(args.phase || args.kind || "execute", "execute");
@@ -8632,12 +8709,13 @@ function runMcpServer() {
           reusedExistingPrepare: true,
           reason: "managed-prepare-already-active-or-ready"
         };
-        const terminal = evaluateReinstallPrepareTerminal(existingStatus, existingInitial, 0);
+        const existingNeedsRecovery = isReinstallMediaStalled(existingStatus);
+        const terminal = existingNeedsRecovery ? null : evaluateReinstallPrepareTerminal(existingStatus, existingInitial, 0);
         if (terminal) {
           recordSotyReinstallRouteReceipt(action, terminal, toolStartedAt);
           return mcpToolJson(terminal, terminal.ok === false, terminal.exitCode);
         }
-        if (isReinstallPrepareActive(existingStatus)) {
+        if (!existingNeedsRecovery && isReinstallPrepareActive(existingStatus)) {
           if (shouldWait) {
             const requestedWaitTimeoutMs = mcpSafeTimeout(args.waitTimeoutMs, maxLongTaskTimeoutMs);
             const waited = await waitForSotyReinstallPrepare({
@@ -9141,16 +9219,18 @@ function runMcpServer() {
     }
     const statusResult = await readSotyReinstallStatus(managedReinstallStatusRequest());
     const liveStatus = parseReinstallStatusResult(statusResult);
+    const compactStatus = liveStatus ? compactReinstallStatusToolPayload(liveStatus) : null;
     const body = {
-      ok: Boolean(liveStatus),
+      ...(compactStatus || {}),
+      ok: compactStatus ? compactStatus.ok !== false : Boolean(liveStatus),
       redirected: true,
       blockedTool: toolName,
       reason: "managed-reinstall-toolkit-required",
       text: liveStatus
         ? "Managed reinstall status returned by computer reinstall status; generic filesystem/script polling was skipped."
         : "Generic reinstall probing was skipped, but computer reinstall status did not return structured status.",
-      liveStatus: liveStatus || mcpOperatorPayload(statusResult),
-      nextTool: {
+      liveStatus: compactStatus?.statusSnapshot || liveStatus || mcpOperatorPayload(statusResult),
+      nextTool: compactStatus?.nextTool || {
         name: "computer",
         args: {
           operation: "reinstall",
@@ -9159,9 +9239,9 @@ function runMcpServer() {
           timeoutMs: 45_000
         }
       },
-      agentGuidance: "Continue only with computer reinstall status/prepare/arm for this reinstall flow; do not retry generic script/file/run probes for WindowsReinstall artifacts."
+      agentGuidance: compactStatus?.agentGuidance || "Continue only with computer reinstall status/prepare/arm for this reinstall flow; do not retry generic script/file/run probes for WindowsReinstall artifacts."
     };
-    return mcpToolJson(body, !liveStatus, statusResult.exitCode);
+    return mcpToolJson(body, !liveStatus || compactStatus?.ok === false, compactStatus?.exitCode || statusResult.exitCode);
   }
 
   function looksLikeManagedReinstallProbe(text) {
@@ -9209,6 +9289,7 @@ function runMcpServer() {
         downloading: media.downloading === true,
         complete: media.complete === true,
         active: media.active === true,
+        stalled: media.stalled === true || isReinstallMediaStalled(status),
         activeProcessCount: Number.isFinite(Number(media.activeProcessCount)) ? Number(media.activeProcessCount) : 0,
         updatedAgeSeconds: Number.isFinite(Number(media.updatedAgeSeconds)) ? Number(media.updatedAgeSeconds) : null
       } : null,
@@ -9287,6 +9368,10 @@ function runMcpServer() {
       action: "repair",
       status: cleanActionText(payload?.status || "", 80) || (payload?.ok === false ? "blocked" : "repair-complete"),
       stalePrepareJobsRecovered: Number.isFinite(Number(payload?.stalePrepareJobsRecovered)) ? Number(payload.stalePrepareJobsRecovered) : 0,
+      staleMediaRecovered: payload?.staleMediaRecovered === true,
+      stoppedProcessCount: Number.isFinite(Number(payload?.stoppedProcessCount)) ? Number(payload.stoppedProcessCount) : 0,
+      removedMediaArtifactCount: Number.isFinite(Number(payload?.removedMediaArtifactCount)) ? Number(payload.removedMediaArtifactCount) : 0,
+      failedMediaArtifactCount: Number.isFinite(Number(payload?.failedMediaArtifactCount)) ? Number(payload.failedMediaArtifactCount) : 0,
       activePrepare: payload?.activePrepare === true,
       ready: payload?.ready === true,
       needsPrepare: payload?.needsPrepare === true,
@@ -9361,6 +9446,29 @@ function runMcpServer() {
         statusSnapshot: status
       };
     }
+    if (isReinstallMediaStalled(status)) {
+      return {
+        ok: false,
+        action: "prepare",
+        status: "blocked",
+        blocker: "stale-media-download",
+        text: "The Windows media download is stale and no longer counts as active progress. Run managed repair/cancel before starting a new prepare.",
+        exitCode: 124,
+        elapsedMs,
+        initial,
+        statusSnapshot: status,
+        nextTool: {
+          name: "computer",
+          args: {
+            operation: "reinstall",
+            capability: "os-reinstall",
+            action: "repair",
+            timeoutMs: 45_000
+          }
+        },
+        agentGuidance: "Call nextTool yourself, then start prepare again if repair reports needsPrepare=true. Do not use generic shell/file deletion for WindowsReinstall media."
+      };
+    }
     if (isReinstallPrepareActive(status)) {
       return null;
     }
@@ -9428,6 +9536,9 @@ function runMcpServer() {
   }
 
   function isReinstallPrepareActive(status) {
+    if (isReinstallMediaStalled(status)) {
+      return false;
+    }
     const media = status?.media && typeof status.media === "object" ? status.media : null;
     const mediaActive = media?.downloading === true && (
       media?.active === true
@@ -9450,6 +9561,18 @@ function runMcpServer() {
       return false;
     }
     return true;
+  }
+
+  function isReinstallMediaStalled(status) {
+    const media = status?.media && typeof status.media === "object" ? status.media : null;
+    if (!media || media.downloading !== true || media.complete === true) {
+      return false;
+    }
+    if (media.stalled === true) {
+      return true;
+    }
+    const updatedAgeSeconds = Number(media.updatedAgeSeconds);
+    return Number.isFinite(updatedAgeSeconds) && updatedAgeSeconds >= reinstallMediaResumeGraceSeconds;
   }
 
   function hasActiveReinstallPrepareJob(status) {

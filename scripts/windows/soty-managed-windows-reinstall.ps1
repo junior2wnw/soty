@@ -205,6 +205,22 @@ function Get-PrepareProcesses([string] $Root) {
   }
 }
 
+function Stop-PrepareProcesses([array] $Processes) {
+  $stopped = 0
+  foreach ($process in @($Processes | Sort-Object ProcessId -Unique)) {
+    $pidValue = 0
+    try { $pidValue = [int] $process.ProcessId } catch {}
+    if ($pidValue -le 0) { continue }
+    try {
+      & taskkill.exe /PID $pidValue /T /F 2>$null | Out-Null
+      $stopped += 1
+    } catch {
+      try { Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue; $stopped += 1 } catch {}
+    }
+  }
+  return $stopped
+}
+
 function Test-PrepareProcessMatchesJob($Process, [string] $JobId, [string] $JobPath, [string] $Root) {
   $cmd = ([string] $Process.CommandLine).ToLowerInvariant()
   if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
@@ -372,10 +388,11 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
   }
   $largest = @($items | Sort-Object bytes -Descending | Select-Object -First 1)
   if (-not $largest) {
-    return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null }
+    return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; stalled = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null }
   }
   $age = if ($null -ne $largest.updatedAgeSeconds) { [double] $largest.updatedAgeSeconds } else { $null }
-  $active = [bool]($largest.downloading -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
+  $stalled = [bool]($largest.downloading -and $null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
+  $active = [bool]($largest.downloading -and -not $stalled -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
   return [pscustomobject]@{
     found = $true
     path = [string] $largest.path
@@ -385,9 +402,88 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
     downloading = [bool] $largest.downloading
     complete = [bool] $largest.complete
     active = $active
+    stalled = $stalled
     activeProcessCount = @($downloadProcesses).Count
     updated = [string] $largest.updated
     updatedAgeSeconds = $age
+  }
+}
+
+function Test-MediaStale($Media) {
+  if (-not $Media -or $Media.downloading -ne $true) { return $false }
+  $age = $null
+  try { $age = [double] $Media.updatedAgeSeconds } catch {}
+  return ($null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
+}
+
+function Get-MediaCleanupRoots([string] $Root, [string] $Letter) {
+  $roots = @((Join-Path $Root "media"))
+  $normalized = Normalize-UsbLetter $Letter
+  if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+    $usbRoot = $normalized + ":\"
+    $roots += @(
+      (Join-Path $usbRoot "sources"),
+      (Join-Path (Join-Path $usbRoot "Soty-Reinstall") "sources")
+    )
+  }
+  return @($roots | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+}
+
+function Remove-StaleMediaArtifacts([string] $Root, [string] $Letter, [bool] $Force = $false) {
+  $removed = 0
+  $failed = 0
+  $paths = New-Object System.Collections.Generic.List[string]
+  foreach ($root in @(Get-MediaCleanupRoots $Root $Letter)) {
+    if (-not (Test-Path -LiteralPath $root)) { continue }
+    Get-ChildItem -LiteralPath $root -File -Filter "*.download" -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        $age = [math]::Round(((Get-Date).ToUniversalTime() - $_.LastWriteTimeUtc).TotalSeconds, 0)
+        if ($Force -or $age -ge $script:MediaResumeGraceSeconds) {
+          try {
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop
+            $removed += 1
+            $paths.Add($_.FullName)
+          } catch {
+            $failed += 1
+          }
+        }
+      }
+    Get-ChildItem -LiteralPath $root -Directory -Filter "*.download.parts" -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        $age = [math]::Round(((Get-Date).ToUniversalTime() - $_.LastWriteTimeUtc).TotalSeconds, 0)
+        if ($Force -or $age -ge $script:MediaResumeGraceSeconds) {
+          try {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+            $removed += 1
+            $paths.Add($_.FullName)
+          } catch {
+            $failed += 1
+          }
+        }
+      }
+  }
+  return [pscustomobject]@{
+    removed = $removed
+    failed = $failed
+    paths = @($paths)
+  }
+}
+
+function Repair-StaleMediaState([string] $Root, [string] $Letter, $Status, [bool] $Force = $false) {
+  $media = if ($Status) { $Status.media } else { $null }
+  $shouldClean = $Force -or (Test-MediaStale $media)
+  if (-not $shouldClean) {
+    return [pscustomobject]@{ attempted = $false; stoppedProcessCount = 0; removedMediaArtifactCount = 0; failedMediaArtifactCount = 0 }
+  }
+  $stopped = Stop-PrepareProcesses @(Get-PrepareProcesses $Root)
+  Start-Sleep -Seconds 1
+  $cleanup = Remove-StaleMediaArtifacts $Root $Letter $Force
+  return [pscustomobject]@{
+    attempted = $true
+    stoppedProcessCount = $stopped
+    removedMediaArtifactCount = [int] $cleanup.removed
+    failedMediaArtifactCount = [int] $cleanup.failed
+    removedMediaArtifactPaths = @($cleanup.paths)
   }
 }
 
@@ -482,6 +578,7 @@ function Test-PrepareJobActiveStatus($Job) {
 
 function Test-ManagedPrepareActiveStatus($Status) {
   if (-not $Status) { return $false }
+  if (Test-MediaStale $Status.media) { return $false }
   if ($Status.media -and $Status.media.downloading -and $Status.media.active) { return $true }
   $topLevelActive = 0
   try { $topLevelActive = [int] $Status.activePrepareProcessCount } catch {}
@@ -589,6 +686,7 @@ function Get-ManagedRepairSummary($Status) {
         complete = ($media.complete -eq $true)
         downloading = ($media.downloading -eq $true)
         active = ($media.active -eq $true)
+        stalled = ($media.stalled -eq $true)
         gb = $(try { [double] $media.gb } catch { 0 })
         updatedAgeSeconds = $(try { [double] $media.updatedAgeSeconds } catch { $null })
       }
@@ -602,8 +700,14 @@ function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
   if (-not [string]::IsNullOrWhiteSpace($resolvedLetter)) {
     $Letter = $resolvedLetter
   }
+  $mediaRecovery = Repair-StaleMediaState $Root $Letter $before $false
   $recovered = Complete-StalePrepareJobs $before
-  $after = if ($recovered -gt 0) { Get-ReinstallStatus $Root $Letter } else { $before }
+  $after = if ($recovered -gt 0 -or $mediaRecovery.attempted) { Get-ReinstallStatus $Root $Letter } else { $before }
+  if ($mediaRecovery.attempted) {
+    $extraRecovered = Complete-StalePrepareJobs $after
+    $recovered += $extraRecovered
+    if ($extraRecovered -gt 0) { $after = Get-ReinstallStatus $Root $Letter }
+  }
   $blockers = @(Get-ManagedRepairBlockers $after)
   $readyOk = ($after.ready -eq $true -and $after.backupProofOk -eq $true)
   $active = Test-ManagedPrepareActiveStatus $after
@@ -614,7 +718,7 @@ function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
     "running"
   } elseif ($blockers.Count -gt 0) {
     "blocked"
-  } elseif ($recovered -gt 0) {
+  } elseif ($recovered -gt 0 -or $mediaRecovery.attempted) {
     "repair-complete"
   } else {
     "idle"
@@ -633,6 +737,10 @@ function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
     action = "repair"
     status = $repairStatus
     stalePrepareJobsRecovered = $recovered
+    staleMediaRecovered = ($mediaRecovery.attempted -eq $true)
+    stoppedProcessCount = [int] $mediaRecovery.stoppedProcessCount
+    removedMediaArtifactCount = [int] $mediaRecovery.removedMediaArtifactCount
+    failedMediaArtifactCount = [int] $mediaRecovery.failedMediaArtifactCount
     activePrepare = $active
     ready = $readyOk
     needsPrepare = $needsPrepare
@@ -644,8 +752,8 @@ function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
       "Managed reinstall is ready; final confirmation is required before arm."
     } elseif ($active) {
       "Managed reinstall prepare is active; continue with status polling."
-    } elseif ($recovered -gt 0) {
-      "Recovered stale prepare state. A new prepare can be started safely."
+    } elseif ($recovered -gt 0 -or $mediaRecovery.attempted) {
+      "Recovered stale prepare/media state. A new prepare can be started safely."
     } else {
       "No active prepare is running. Start prepare to continue."
     }
@@ -656,32 +764,25 @@ function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
 
 function Invoke-ManagedCancel([string] $Root, [string] $Letter) {
   $before = Get-ReinstallStatus $Root $Letter
-  $processes = @(Get-PrepareProcesses $Root)
-  $stopped = 0
-  foreach ($process in @($processes | Sort-Object ProcessId -Unique)) {
-    $pidValue = 0
-    try { $pidValue = [int] $process.ProcessId } catch {}
-    if ($pidValue -le 0) { continue }
-    try {
-      & taskkill.exe /PID $pidValue /T /F 2>$null | Out-Null
-      $stopped += 1
-    } catch {
-      try { Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue; $stopped += 1 } catch {}
-    }
-  }
+  $stopped = Stop-PrepareProcesses @(Get-PrepareProcesses $Root)
   Start-Sleep -Seconds 2
+  $mediaRecovery = Repair-StaleMediaState $Root $Letter (Get-ReinstallStatus $Root $Letter) $true
   $after = Get-ReinstallStatus $Root $Letter
   $recovered = Complete-StalePrepareJobs $after
   if ($recovered -gt 0) { $after = Get-ReinstallStatus $Root $Letter }
+  $activeAfter = Test-ManagedPrepareActiveStatus $after
   Emit ([pscustomobject]@{
-    ok = $true
+    ok = (-not $activeAfter)
     action = "cancel"
-    status = "cancelled"
+    status = if ($activeAfter) { "cancel-blocked" } else { "cancelled" }
+    blocker = if ($activeAfter) { "prepare-still-active-after-cancel" } else { "" }
     stoppedProcessCount = $stopped
+    removedMediaArtifactCount = [int] $mediaRecovery.removedMediaArtifactCount
+    failedMediaArtifactCount = [int] $mediaRecovery.failedMediaArtifactCount
     stalePrepareJobsRecovered = $recovered
     before = $before
     after = $after
-  }) 0
+  }) $(if ($activeAfter) { 1 } else { 0 })
 }
 
 function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
@@ -703,8 +804,15 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
   if ($recovered -gt 0) {
     $currentStatus = Get-ReinstallStatus $Root $Letter
   }
+  $mediaRecovery = Repair-StaleMediaState $Root $Letter $currentStatus $false
+  if ($mediaRecovery.attempted) {
+    $currentStatus = Get-ReinstallStatus $Root $Letter
+    $extraRecovered = Complete-StalePrepareJobs $currentStatus
+    $recovered += $extraRecovered
+    if ($extraRecovered -gt 0) { $currentStatus = Get-ReinstallStatus $Root $Letter }
+  }
   if (Test-ManagedPrepareActiveStatus $currentStatus) {
-    Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyRunning = $true; stalePrepareJobsRecovered = $recovered; status = $currentStatus }) 0
+    Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyRunning = $true; stalePrepareJobsRecovered = $recovered; staleMediaRecovered = ($mediaRecovery.attempted -eq $true); status = $currentStatus }) 0
   }
   $script = Get-ManagedScript "prepare" $Root
   $managedUserName = Get-SotyUserName
@@ -731,6 +839,8 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
     action = "prepare"
     script = $script
     launched = $launched
+    stalePrepareJobsRecovered = $recovered
+    staleMediaRecovered = ($mediaRecovery.attempted -eq $true)
     text = if ($launched) { "" } else { $text }
     status = Get-ReinstallStatus $Root $Letter
   }) $code
