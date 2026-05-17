@@ -564,6 +564,13 @@ svg {
   color: var(--cyan);
 }
 
+.head-more-button {
+  display: none;
+  width: 42px;
+  height: 40px;
+  color: var(--amber);
+}
+
 .editor {
   position: relative;
   min-height: 0;
@@ -1029,7 +1036,8 @@ svg {
   line-height: 1.25;
 }
 
-.file-input {
+.file-input,
+.soty-import-file {
   display: none;
 }
 
@@ -1062,6 +1070,149 @@ svg {
 .side-action span {
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
   font-size: 10px;
+}
+
+.action-block > .more-action {
+  width: 100%;
+  height: 42px;
+  grid-template-columns: 22px auto;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.task-menu-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: grid;
+  place-items: center;
+  padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  background: rgba(6, 8, 11, 0.78);
+  backdrop-filter: blur(5px);
+}
+
+.task-menu-sheet {
+  width: min(390px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 2px solid var(--edge);
+  background: #0b1015;
+  color: var(--ink);
+  box-shadow:
+    inset 0 0 0 1px rgba(232, 247, 239, 0.08),
+    0 22px 60px rgba(0, 0, 0, 0.44);
+}
+
+.task-menu-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 10px;
+}
+
+.task-menu-mark {
+  width: 38px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: var(--amber);
+  color: #110c04;
+}
+
+.task-menu-head b,
+.task-menu-head small,
+.task-menu-group h3,
+.task-menu-row small,
+.task-menu-status {
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+.task-menu-head b {
+  display: block;
+  font-size: 16px;
+}
+
+.task-menu-head small,
+.task-menu-group h3,
+.task-menu-row small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.task-menu-close {
+  width: 38px;
+  height: 34px;
+}
+
+.task-menu-group {
+  display: grid;
+  gap: 7px;
+  padding-top: 9px;
+  border-top: 1px solid #31414c;
+}
+
+.task-menu-group h3 {
+  margin: 0;
+}
+
+.task-menu-row {
+  min-width: 0;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid #3d515f;
+  background: #101720;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  box-shadow:
+    inset 1px 1px 0 rgba(255, 255, 255, 0.08),
+    inset -1px -1px 0 rgba(0, 0, 0, 0.62);
+}
+
+.task-menu-row svg {
+  width: 20px;
+  height: 20px;
+  color: var(--green);
+}
+
+.task-menu-row span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.task-menu-row b,
+.task-menu-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-menu-status {
+  min-height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--green);
+  color: var(--green);
+  font-size: 11px;
+}
+
+.task-menu-status[hidden] {
+  display: none;
+}
+
+.task-menu-status.is-bad {
+  border-color: var(--red);
+  color: var(--red);
 }
 
 .side-action.is-on,
@@ -1803,6 +1954,14 @@ svg {
     grid-template-columns: minmax(176px, 32vw) minmax(0, 1fr);
   }
 
+  .dialog-head {
+    grid-template-columns: 44px minmax(0, 1fr) 42px 42px auto;
+  }
+
+  .head-more-button {
+    display: grid;
+  }
+
   .side-panel {
     display: none;
   }
@@ -1861,7 +2020,7 @@ svg {
   }
 
   .dialog-head {
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    grid-template-columns: 40px minmax(0, 1fr) 40px 40px;
   }
 
   .dialog-avatar {

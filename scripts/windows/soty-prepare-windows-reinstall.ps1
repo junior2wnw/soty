@@ -844,23 +844,6 @@ function Copy-TreeIfExists([string] $Source, [string] $Destination, [int] $Timeo
   return $true
 }
 
-function Save-SotyOperatorExport([string] $Path) {
-  try {
-    New-Directory (Split-Path -Parent $Path)
-    $response = Invoke-RestMethod -Uri "http://127.0.0.1:49424/operator/export" -Method Get -Headers @{ Origin = "https://xn--n1afe0b.online" } -TimeoutSec 70
-    if (-not $response.ok -or [string]::IsNullOrWhiteSpace([string] $response.text)) {
-      Log "WARN Soty operator export was unavailable. Continuing with browser-state backup only."
-      return $false
-    }
-    [System.IO.File]::WriteAllText($Path, [string] $response.text, (New-Object System.Text.UTF8Encoding($false)))
-    Log ("Captured Soty operator export: " + $Path)
-    return $true
-  } catch {
-    Log ("WARN Soty operator export failed: " + $_.Exception.Message)
-    return $false
-  }
-}
-
 function Count-Files([string] $Path, [string] $Filter = "*", [switch] $Recurse) {
   if (-not (Test-Path -LiteralPath $Path)) { return 0 }
   $params = @{
@@ -897,7 +880,6 @@ function Write-SetupFallbackArtifacts([string] $UsbRoot, [string] $UsbSources, [
 }
 
 function Get-ReinstallBackupProof {
-  $sotyBrowserArtifactCount = Count-Files -Path $sotyStateRoot -Filter "*" -Recurse
   $folderNames = if ($null -ne $personalFolderNames -and @($personalFolderNames).Count -gt 0) { @($personalFolderNames) } else { @("Desktop") }
   $personalFolderCounts = [ordered]@{}
   $personalFileTotalCount = 0
@@ -913,8 +895,7 @@ function Get-ReinstallBackupProof {
     backupRootExists = (Test-Path -LiteralPath $script:backupRoot)
     wifiProfileCount = Count-Files -Path $wifiRoot -Filter "*.xml"
     driverInfCount = Count-Files -Path $driverRoot -Filter "*.inf" -Recurse
-    sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
-    sotyBrowserArtifactCount = $sotyBrowserArtifactCount
+    sotyAppStateMode = "manual-export-import"
     sotyAgentBackupMode = "download-current-machine-installer"
     sotyAgentInstallerWillDownload = $true
     personalFolderCounts = $personalFolderCounts
@@ -1246,48 +1227,15 @@ foreach (`$folderName in `$personalFolders) {
   if ([string]::IsNullOrWhiteSpace(`$folderDest)) { `$folderDest = Join-Path `$env:USERPROFILE `$folderName }
   CopyDir `$folderBackup `$folderDest
 }
-`$desktopDest = [Environment]::GetFolderPath("Desktop")
-if ([string]::IsNullOrWhiteSpace(`$desktopDest)) { `$desktopDest = Join-Path `$env:USERPROFILE "Desktop" }
-`$edgeDefault = Join-Path `$env:USERPROFILE "AppData\Local\Microsoft\Edge\User Data\Default"
-`$sourceState = Join-Path `$backupRoot "soty-state\$SourceProfileName"
-CopyDir (Join-Path `$sourceState "Edge-IndexedDB") (Join-Path `$edgeDefault "IndexedDB")
-CopyDir (Join-Path `$sourceState "Edge-LocalStorage") (Join-Path `$edgeDefault "Local Storage")
-CopyDir (Join-Path `$sourceState "Edge-ServiceWorker") (Join-Path `$edgeDefault "Service Worker")
-CopyDir (Join-Path `$sourceState "Edge-Sessions") (Join-Path `$edgeDefault "Sessions")
-`$operatorExport = Join-Path `$sourceState "operator-export.json"
-`$restoreUrl = "$panel/?pwa=1"
-if (Test-Path -LiteralPath `$operatorExport) {
-  `$restoreUrl = "$panel/?pwa=1&restore-local=1"
-  try {
-    Copy-Item -LiteralPath `$operatorExport -Destination (Join-Path `$desktopDest "soty-restore.json") -Force
-    Log "operator export copied to desktop"
-  } catch { Log ("operator export desktop copy warning: " + `$_.Exception.Message) }
-}
-try { Start-Process "msedge.exe" -ArgumentList "--app=`$restoreUrl" } catch { Start-Process `$restoreUrl }
-if (Test-Path -LiteralPath `$operatorExport) {
-  for (`$i = 1; `$i -le 45; `$i += 1) {
-    try {
-      `$text = [System.IO.File]::ReadAllText(`$operatorExport)
-      `$body = @{ text = `$text } | ConvertTo-Json -Compress
-      `$result = Invoke-RestMethod -Uri "http://127.0.0.1:49424/operator/import" -Method Post -Headers @{ Origin = "https://xn--n1afe0b.online" } -ContentType "application/json" -Body `$body -TimeoutSec 8
-      if (`$result.ok) {
-        Log ("operator import completed: " + `$result.text)
-        break
-      }
-      Log ("operator import waiting: " + `$result.text)
-    } catch {
-      if (`$i -eq 45) { Log ("WARN operator import failed: " + `$_.Exception.Message) }
-    }
-    Start-Sleep -Seconds 2
-  }
-}
+try { Start-Process "msedge.exe" -ArgumentList "--app=$panel/?pwa=1" } catch { Start-Process "$panel/?pwa=1" }
+Log "Soty app state auto-import is disabled; use MORE -> IMPORT with the manual export file after reinstall."
 try { Unregister-ScheduledTask -TaskName "Soty-FirstLogon-Restore" -Confirm:`$false } catch {}
 Log "first logon restore finished"
 '@ | Set-Content -LiteralPath `$firstLogon -Encoding UTF8
 `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + `$firstLogon + '"')
 `$trigger = New-ScheduledTaskTrigger -AtLogOn -User '$ManagedUserName'
 `$principal = New-ScheduledTaskPrincipal -UserId '$ManagedUserName' -LogonType Interactive -RunLevel Highest
-Register-ScheduledTask -TaskName 'Soty-FirstLogon-Restore' -Action `$action -Trigger `$trigger -Principal `$principal -Description 'Restore Soty PWA state on first managed logon' -Force | Out-Null
+Register-ScheduledTask -TaskName 'Soty-FirstLogon-Restore' -Action `$action -Trigger `$trigger -Principal `$principal -Description 'Finish Soty setup on first managed logon' -Force | Out-Null
 Log 'postinstall finished'
 "@
   [System.IO.File]::WriteAllText($Path, $post, (New-Object System.Text.UTF8Encoding($true)))
@@ -1537,40 +1485,30 @@ try {
   $sourceProfile = Join-Path "C:\Users" $sourceProfileName
   $wifiRoot = Join-Path $script:backupRoot "wifi-profiles"
   $driverRoot = Join-Path $script:backupRoot "drivers"
-  $sotyStateRoot = Join-Path (Join-Path $script:backupRoot "soty-state") $sourceProfileName
   $personalFilesRoot = Join-Path (Join-Path $script:backupRoot "personal-files") $sourceProfileName
   $personalFolderNames = @("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music")
   $desktopBackupRoot = Join-Path $personalFilesRoot "Desktop"
-  $operatorExportPath = Join-Path $sotyStateRoot "operator-export.json"
   $personalFilesBackedUp = $false
-  $sotyOperatorExportBackedUp = $false
   $backupScope = @(
     "wifi-profiles",
     "exported-drivers",
-    "soty-operator-export",
-    "soty-browser-return-state",
+    "soty-state-manual-export-import",
     "soty-machine-agent-download-current-installer",
     "personal-folders-Desktop-Documents-Downloads-Pictures-Videos-Music"
   )
   New-Directory $wifiRoot
   New-Directory $driverRoot
-  New-Directory $sotyStateRoot
   New-Directory $personalFilesRoot
-  Log "Backup scope: Wi-Fi profiles, exported drivers, Soty operator export, Soty browser return state, fresh Soty machine-agent download during restore, and personal folders: Desktop, Documents, Downloads, Pictures, Videos, Music."
+  Log "Backup scope: Wi-Fi profiles, exported drivers, fresh Soty machine-agent download during restore, and personal folders: Desktop, Documents, Downloads, Pictures, Videos, Music."
+  Log "Soty app state auto-backup/auto-import is disabled for reinstall. Use the app MORE -> EXPORT before reinstall and MORE -> IMPORT after reinstall."
   try { & netsh.exe wlan export profile key=clear folder="$wifiRoot" | Out-File -LiteralPath (Join-Path $JobRoot "netsh-wifi-export.txt") -Encoding UTF8 } catch { Log ("WARN wifi export failed: " + $_.Exception.Message) }
   try { Invoke-LoggedCliWithTimeout dism.exe @("/online", "/export-driver", "/destination:$driverRoot") "dism-export-drivers.txt" 900 300 } catch { Log ("WARN driver export failed: " + $_.Exception.Message) }
-  if (Save-SotyOperatorExport $operatorExportPath) { $sotyOperatorExportBackedUp = $true }
   if (Test-Path -LiteralPath $sourceProfile) {
     foreach ($folderName in $personalFolderNames) {
       $folderSource = Join-Path $sourceProfile $folderName
       $folderDestination = Join-Path $personalFilesRoot $folderName
       if (Copy-TreeIfExists $folderSource $folderDestination 600) { $personalFilesBackedUp = $true }
     }
-    $edgeDefault = Join-Path $sourceProfile "AppData\Local\Microsoft\Edge\User Data\Default"
-    Copy-TreeIfExists (Join-Path $edgeDefault "IndexedDB") (Join-Path $sotyStateRoot "Edge-IndexedDB") 90 | Out-Null
-    Copy-TreeIfExists (Join-Path $edgeDefault "Local Storage") (Join-Path $sotyStateRoot "Edge-LocalStorage") 90 | Out-Null
-    Copy-TreeIfExists (Join-Path $edgeDefault "Service Worker") (Join-Path $sotyStateRoot "Edge-ServiceWorker") 90 | Out-Null
-    Copy-TreeIfExists (Join-Path $edgeDefault "Sessions") (Join-Path $sotyStateRoot "Edge-Sessions") 90 | Out-Null
   }
   # The machine worker is reinstalled by postinstall. Copying its live ops/jobs
   # tree can hold locks or copy an active job forever, so keep it out of the
@@ -1663,7 +1601,7 @@ try {
     backupScope = $backupScope
     personalFolderNames = $personalFolderNames
     personalFilesBackedUp = $personalFilesBackedUp
-    sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
+    sotyAppStateMode = "manual-export-import"
     sourceProfileName = $sourceProfileName
     createdAt = (Get-Date).ToString("o")
   }
@@ -1690,7 +1628,7 @@ try {
     installImageSourceRoot = $script:installMediaSources
     preferredEditionHint = $preferredEditionHint
     personalFilesBackedUp = $personalFilesBackedUp
-    sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
+    sotyAppStateMode = "manual-export-import"
     internalBootRoot = $script:internalBootRoot
     confirmationPhrase = $script:confirmationPhrase
     managedUserPasswordMode = $managedUserPasswordMode

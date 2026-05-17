@@ -151,8 +151,8 @@
           },
           {
             "name": "prepare",
-            "sha256": "d599a2f2e3f9a18ad18af6a34522b9b07dfa244b0be302a56f3282828df1d319",
-            "bytes": 78133
+            "sha256": "52b44976490deadf9ffab2fe0061d5959abcee03d121e9919390e91e110bc6ef",
+            "bytes": 74606
           },
           {
             "name": "arm",
@@ -232,8 +232,8 @@
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "d599a2f2e3f9a18ad18af6a34522b9b07dfa244b0be302a56f3282828df1d319",
-        "bytes": 78133
+        "sha256": "52b44976490deadf9ffab2fe0061d5959abcee03d121e9919390e91e110bc6ef",
+        "bytes": 74606
       },
       {
         "name": "arm",
@@ -418,8 +418,8 @@
           },
           {
             "name": "prepare",
-            "sha256": "d599a2f2e3f9a18ad18af6a34522b9b07dfa244b0be302a56f3282828df1d319",
-            "bytes": 78133
+            "sha256": "52b44976490deadf9ffab2fe0061d5959abcee03d121e9919390e91e110bc6ef",
+            "bytes": 74606
           },
           {
             "name": "arm",
@@ -510,8 +510,8 @@
             },
             {
               "name": "prepare",
-              "sha256": "d599a2f2e3f9a18ad18af6a34522b9b07dfa244b0be302a56f3282828df1d319",
-              "bytes": 78133
+              "sha256": "52b44976490deadf9ffab2fe0061d5959abcee03d121e9919390e91e110bc6ef",
+              "bytes": 74606
             },
             {
               "name": "arm",

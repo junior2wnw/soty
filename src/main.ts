@@ -90,6 +90,23 @@ type AgentRelease = {
   readonly sha256?: string;
 };
 
+type FileSavePicker = {
+  readonly createWritable: () => Promise<{
+    readonly write: (data: Blob) => Promise<void>;
+    readonly close: () => Promise<void>;
+  }>;
+};
+
+type FileSavePickerWindow = Window & {
+  readonly showSaveFilePicker?: (options: {
+    readonly suggestedName?: string;
+    readonly types?: readonly {
+      readonly description: string;
+      readonly accept: Record<string, readonly string[]>;
+    }[];
+  }) => Promise<FileSavePicker>;
+};
+
 let device: DeviceRecord | null = null;
 let tunnels: TunnelRecord[] = [];
 let selectedId = "";
@@ -175,6 +192,7 @@ let qrResetClicks = 0;
 let qrResetTimer = 0;
 let qrScanStream: MediaStream | null = null;
 let qrScanFrame = 0;
+let taskMenuOverlay: HTMLDivElement | null = null;
 let operatorSocket: WebSocket | null = null;
 let operatorReconnectTimer = 0;
 let operatorBridgeAllowEmpty = false;
@@ -353,9 +371,9 @@ function renderNick(): void {
       <form class="nick-form">
         <span>${icon("person")}</span>
         <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
-        <button class="restore-button" type="button" aria-label="restore" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
+        <button class="restore-button" type="button" aria-label="restore" data-tooltip="Import Soty export">${icon("upload")}</button>
         <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
-        <input class="restore-file" type="file" accept="application/json,.json" />
+        <input class="restore-file" type="file" accept="application/json,.json,.soty.json" />
       </form>
     </section>
   `;
@@ -462,9 +480,145 @@ function parseOperatorExportPayload(text: string): OperatorExportPayload {
   const cleanText = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const parsed: unknown = JSON.parse(cleanText);
   if (!isRecord(parsed) || parsed.schema !== "soty.operator-export.v1") {
-    throw new Error("Unsupported Soty backup file");
+    throw new Error("Unsupported Soty export file");
   }
   return parsed as OperatorExportPayload;
+}
+
+async function exportSotyStateFile(): Promise<void> {
+  const text = buildOperatorExport();
+  const fileName = `soty-export-${new Date().toISOString().slice(0, 19).replace(/[-:T]/gu, "")}.json`;
+  const blob = new Blob([text], { type: "application/json;charset=utf-8" });
+  try {
+    const picker = (window as FileSavePickerWindow).showSaveFilePicker;
+    if (picker) {
+      const handle = await picker({
+        suggestedName: fileName,
+        types: [
+          {
+            description: "Soty export",
+            accept: { "application/json": [".json"] }
+          }
+        ]
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      setTaskMenuStatus("EXPORTED");
+      return;
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return;
+    }
+    console.warn("[soty] save picker export failed", error);
+  }
+  downloadTextFile(fileName, blob);
+  setTaskMenuStatus("DOWNLOADED");
+}
+
+async function importSotyStateFile(file: File): Promise<void> {
+  try {
+    const restored = await restoreFromOperatorExportText(file.text());
+    if (restored) {
+      window.setTimeout(() => {
+        openTaskMenu(`IMPORTED ${restored.count}`);
+      }, 0);
+      return;
+    }
+  } catch (error) {
+    console.warn("[soty] state import failed", error);
+  }
+  setTaskMenuStatus("IMPORT FAILED", true);
+}
+
+function downloadTextFile(fileName: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function openTaskMenu(status = ""): void {
+  closeTaskMenu();
+  const overlay = document.createElement("div");
+  overlay.className = "task-menu-modal";
+  overlay.innerHTML = `
+    <section class="task-menu-sheet" role="dialog" aria-modal="true" aria-label="secondary actions">
+      <header class="task-menu-head">
+        <span class="task-menu-mark">${icon("menu")}</span>
+        <span>
+          <b>SCENARIOS</b>
+          <small>SECONDARY</small>
+        </span>
+        <button class="task-menu-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
+      </header>
+      <div class="task-menu-group">
+        <h3>STATE</h3>
+        <button class="task-menu-row export-state-action" type="button">${icon("download")}<span><b>EXPORT</b><small>one json file</small></span></button>
+        <button class="task-menu-row import-state-action" type="button">${icon("upload")}<span><b>IMPORT</b><small>from json file</small></span></button>
+      </div>
+      <div class="task-menu-group">
+        <h3>AGENT</h3>
+        <button class="task-menu-row new-scenario-action" type="button">${icon("person")}<span><b>NEW SCENARIO</b><small>draft with agent</small></span></button>
+      </div>
+      <output class="task-menu-status"${status ? "" : " hidden"}>${escapeHtml(status)}</output>
+    </section>
+  `;
+  document.body.append(overlay);
+  taskMenuOverlay = overlay;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeTaskMenu();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>(".task-menu-close")?.addEventListener("click", () => closeTaskMenu());
+  overlay.querySelector<HTMLButtonElement>(".export-state-action")?.addEventListener("click", () => {
+    void exportSotyStateFile();
+  });
+  overlay.querySelector<HTMLButtonElement>(".import-state-action")?.addEventListener("click", () => {
+    app.querySelector<HTMLInputElement>(".soty-import-file")?.click();
+  });
+  overlay.querySelector<HTMLButtonElement>(".new-scenario-action")?.addEventListener("click", () => {
+    closeTaskMenu();
+    void startScenarioDraft();
+  });
+}
+
+function closeTaskMenu(): void {
+  taskMenuOverlay?.remove();
+  taskMenuOverlay = null;
+}
+
+function setTaskMenuStatus(text: string, bad = false): void {
+  const output = taskMenuOverlay?.querySelector<HTMLOutputElement>(".task-menu-status");
+  if (!output) {
+    return;
+  }
+  output.hidden = false;
+  output.textContent = text;
+  output.classList.toggle("is-bad", bad);
+}
+
+async function startScenarioDraft(): Promise<void> {
+  await startAgentDialog();
+  if (!composer) {
+    return;
+  }
+  composer.value = [
+    "Сценарий:",
+    "Цель: ",
+    "Где выполнять: ",
+    "Какие файлы/устройства нужны: ",
+    "Что считать готовым: "
+  ].join("\n");
+  composer.focus();
+  composer.setSelectionRange(composer.value.length, composer.value.length);
+  rememberComposerDraft();
 }
 
 function restoredTunnelsFromPayload(payload: OperatorExportPayload): { readonly tunnels: TunnelRecord[]; readonly texts: Map<string, string> } {
@@ -837,6 +991,7 @@ function renderApp(): void {
             <small class="dialog-state">OFFLINE</small>
           </span>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
+          <button class="head-more-button retro-icon-button" type="button" aria-label="more" data-tooltip="Secondary actions">${icon("menu")}</button>
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
@@ -887,6 +1042,7 @@ function renderApp(): void {
           <div class="chess-promotion" hidden></div>
         </div>
         <input class="file-input" type="file" multiple />
+        <input class="soty-import-file" type="file" accept="application/json,.json,.soty.json" />
       </section>
       </main>
       <aside class="side-panel">
@@ -908,6 +1064,7 @@ function renderApp(): void {
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
             <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
           </div>
+          <button class="side-action more-action" type="button" aria-label="more" data-tooltip="Secondary actions">${icon("menu")}<span>MORE</span></button>
         </section>
       </aside>
     </section>
@@ -930,6 +1087,9 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
+  });
+  app.querySelector<HTMLButtonElement>(".head-more-button")?.addEventListener("click", () => {
+    openTaskMenu();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -994,6 +1154,17 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".chess-action")?.addEventListener("click", () => {
     void openChessForSelected();
+  });
+  app.querySelector<HTMLButtonElement>(".more-action")?.addEventListener("click", () => {
+    openTaskMenu();
+  });
+  app.querySelector<HTMLInputElement>(".soty-import-file")?.addEventListener("change", (event) => {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0] || null;
+    input.value = "";
+    if (file) {
+      void importSotyStateFile(file);
+    }
   });
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
     void (async () => {
