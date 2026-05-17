@@ -706,6 +706,14 @@ async function runScenarios({ relayUrl } = {}) {
       const response = await action({ mode: "run", target: "agent-source:dev1", command: "SELFTEST_OK run mode", script: "" });
       expectStatus(response, "ok");
     }],
+    ["powershell workflow run is promoted to script", async () => {
+      const marker = "SELFTEST_OK ps-workflow";
+      const response = await action(sourceRun(`powershell -NoProfile -Command "Write-Output '${marker}'; Get-PSDrive | Select-Object @{Name='FreeGB';Expression={$_.Free}}"`));
+      expectStatus(response, "ok");
+      const seen = mock.lastCommandWith(marker);
+      assert(seen.includes("$_.Free"));
+      assert(!seen.toLowerCase().includes("powershell -noprofile -command"));
+    }],
     ["linked pwa target without local operator bridge uses source device route", async () => {
       const response = await action({
         target: "room-a",
@@ -1412,6 +1420,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("recordSotyReinstallRouteReceipt"));
       assert(agent.includes("isReinstallMediaStalled"));
       assert(agent.includes("stale-media-download"));
+      assert(agent.includes("isNonTerminalWindowsReinstallFinalText"));
+      assert(agent.includes("extractPowerShellCommandBody"));
       assert(agent.includes("mcpRecordComputerLearning"));
       assert(agent.includes("shouldRecordComputerLearning"));
       assert(agent.includes("Learning receipt saved as route guidance only"));
@@ -1518,6 +1528,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes('"--range"'));
       assert(prepare.includes('"65536"'));
       assert(prepare.includes('"-C", "-"'));
+      assert(prepare.includes("SOTY_WINDOWS_PARALLEL_NO_PROGRESS_SECONDS"));
+      assert(prepare.includes("falling back to single-stream download"));
       assert(prepare.includes("Windows image download did not complete within the retry window"));
       const sotyUserCodepoints = "0x0421, 0x043E, 0x0442, 0x044B";
       assert(prepare.includes(sotyUserCodepoints));

@@ -1008,15 +1008,16 @@ function normalizeOperatorActionPayload(payload) {
     return { ok: false, text: "! request" };
   }
   const requestedMode = payload.mode === "script" ? "script" : payload.mode === "run" ? "run" : "";
-  const mode = requestedMode || (typeof payload.script === "string" && payload.script.trim() ? "script" : "run");
+  let mode = requestedMode || (typeof payload.script === "string" && payload.script.trim() ? "script" : "run");
   const target = cleanActionText(payload.target, 160);
   const sourceDeviceId = safeSourceText(payload.sourceDeviceId || "");
   const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
   const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
   const runAs = safeRunAs(payload.runAs || "");
-  const command = mode === "run" ? String(payload.command || "").slice(0, maxCommandChars) : "";
-  const script = mode === "script" ? String(payload.script || "").slice(0, maxScriptChars) : "";
+  let command = mode === "run" ? String(payload.command || "").slice(0, maxCommandChars) : "";
+  let script = mode === "script" ? String(payload.script || "").slice(0, maxScriptChars) : "";
+  let shell = cleanActionText(payload.shell, 40);
   if (!target) {
     return { ok: false, text: "! target" };
   }
@@ -1025,6 +1026,15 @@ function normalizeOperatorActionPayload(payload) {
   }
   if (mode === "script" && !script.trim()) {
     return { ok: false, text: "! script" };
+  }
+  if (mode === "run" && isPowerShellWorkflowCommand(command)) {
+    const extracted = extractPowerShellCommandBody(command);
+    if (extracted) {
+      mode = "script";
+      script = extracted.slice(0, maxScriptChars);
+      command = "";
+      shell ||= "powershell";
+    }
   }
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
@@ -1057,7 +1067,7 @@ function normalizeOperatorActionPayload(payload) {
     command,
     script,
     name: cleanActionText(payload.name || (mode === "script" ? "action-script" : "action-run"), 120),
-    shell: cleanActionText(payload.shell, 40),
+    shell,
     runAs,
     risk,
     detached: payload.detached === true || payload.wait === false || shouldForceDetachedAction({ family, actionType, risk }),
@@ -1072,6 +1082,33 @@ function normalizeOperatorActionPayload(payload) {
     scriptUse,
     contextFingerprint
   };
+}
+
+function isPowerShellWorkflowCommand(command) {
+  const value = String(command || "");
+  if (!/\b(?:powershell|pwsh)(?:\.exe)?\b/iu.test(value)) {
+    return false;
+  }
+  return /[$;|`]|[\r\n]|\b(?:Get|Set|New|Remove|Start|Stop|Invoke|Convert|Where|ForEach)-[A-Za-z]/u.test(value);
+}
+
+function extractPowerShellCommandBody(command) {
+  const value = String(command || "").trim();
+  if (!/\b(?:powershell|pwsh)(?:\.exe)?\b/iu.test(value)) {
+    return "";
+  }
+  const commandMatch = value.match(/\s-(?:Command|c)\s+([\s\S]+)$/iu);
+  if (!commandMatch) {
+    return "";
+  }
+  let body = commandMatch[1].trim();
+  if (!body) {
+    return "";
+  }
+  if ((body.startsWith('"') && body.endsWith('"')) || (body.startsWith("'") && body.endsWith("'"))) {
+    body = body.slice(1, -1);
+  }
+  return body.trim();
 }
 
 async function createActionJob(action) {
@@ -4531,6 +4568,17 @@ function parseJsonObjectLoose(value) {
   return null;
 }
 
+function isNonTerminalWindowsReinstallFinalText(text) {
+  const value = String(text || "").toLowerCase();
+  if (!value) {
+    return false;
+  }
+  if (/\b(?:running|active|media\.active|still running|nexttool)\b/u.test(value)) {
+    return true;
+  }
+  return /(?:не закрываю|не завершаю|держу|продолжаю|продолжу|мониторинг|опрос|подготовка.+ид[её]т|задач[ау].+держ|bytes=0|байт[ыа]?\s*(?:всё ещё|пока)?\s*0)/u.test(value);
+}
+
 async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, source, target, finalText = "", onMessage, trace = null, signal = null } = {}) {
   if (cleanActionToken(taskFamily, "") !== "windows-reinstall" || !target?.id || signal?.aborted) {
     return null;
@@ -4539,6 +4587,7 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
   if (lowerFinalText.includes("rebooting") || lowerFinalText.includes("post-arm") || lowerFinalText.includes("перезагруз")) {
     return null;
   }
+  const finalClaimsNonTerminal = isNonTerminalWindowsReinstallFinalText(finalText);
   const started = Date.now();
   const request = managedReinstallGuardRequest();
   let statusResult = await readManagedReinstallStatusAfterCodex(source, target, request, signal);
@@ -4547,25 +4596,42 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
     statusOk: Boolean(status),
     resultOk: Boolean(statusResult?.ok),
     exitCode: statusResult?.exitCode || 0,
-    finalText: Boolean(finalText)
+    finalText: Boolean(finalText),
+    finalClaimsNonTerminal,
+    textPreview: String(statusResult?.text || statusResult?.payload?.text || "").slice(0, 500)
   });
   if (!status) {
-    return null;
-  }
-  const immediate = evaluateManagedReinstallTerminalAfterCodex(status, 0);
-  if (immediate) {
-    traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
-      terminalReason: immediate.terminalReason || "",
-      status: immediate.status || "",
-      blocker: immediate.blocker || ""
-    });
-    return {
-      ...immediate,
-      text: formatManagedReinstallTerminalAfterCodex(immediate, status)
-    };
-  }
-  if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
-    return null;
+    if (!finalClaimsNonTerminal) {
+      return null;
+    }
+    await postCodexGuardProgress(onMessage, "Codex finished its chat turn while Windows reinstall was still described as active. I am keeping the task open and rechecking structured status.");
+  } else {
+    const immediate = evaluateManagedReinstallTerminalAfterCodex(status, 0);
+    if (immediate) {
+      traceStep(trace, "windows-reinstall.post-codex-guard.terminal", {
+        terminalReason: immediate.terminalReason || "",
+        status: immediate.status || "",
+        blocker: immediate.blocker || ""
+      });
+      return {
+        ...immediate,
+        text: formatManagedReinstallTerminalAfterCodex(immediate, status)
+      };
+    }
+    if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
+      if (!finalClaimsNonTerminal) {
+        return null;
+      }
+      return {
+        ok: false,
+        action: "prepare",
+        status: "blocked",
+        blocker: "prepare-not-active-after-nonterminal-final",
+        text: "Codex finished with a non-terminal reinstall message, but the selected PC no longer reports an active prepare job or ready proof.",
+        exitCode: 1,
+        statusSnapshot: status
+      };
+    }
   }
   await postCodexGuardProgress(onMessage, "Codex finished its chat turn, but Windows reinstall preparation is still active. Keeping the task open until it reaches ready state or a blocker.");
   let lastProgressAt = Date.now();
@@ -4627,7 +4693,15 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
       };
     }
     if (!isManagedReinstallPrepareActiveAfterCodex(status)) {
-      return null;
+      return {
+        ok: false,
+        action: "prepare",
+        status: "blocked",
+        blocker: "prepare-stopped-without-ready",
+        text: "Windows reinstall preparation stopped without ready proof.",
+        exitCode: 1,
+        statusSnapshot: status
+      };
     }
     if (Date.now() - lastProgressAt > managedReinstallGuardProgressIntervalMs(status)) {
       lastProgressAt = Date.now();
@@ -4699,8 +4773,29 @@ async function readManagedReinstallStatusAfterCodex(source, target, request, sig
 }
 
 function parseManagedReinstallStatusAfterCodex(result) {
-  const parsed = parseJsonObjectLoose(result?.text || result?.payload?.text || "");
-  return parsed && parsed.action === "status" ? parsed : null;
+  const candidates = [
+    result?.text,
+    result?.payload?.text,
+    result?.payload?.statusSnapshot,
+    result?.payload?.liveStatus,
+    result?.payload?.result?.output?.tail,
+    result?.payload?.output?.tail
+  ];
+  for (const candidate of candidates) {
+    const parsed = typeof candidate === "string" ? parseJsonObjectLoose(candidate) : candidate;
+    if (parsed && typeof parsed === "object") {
+      if (parsed.action === "status") {
+        return parsed;
+      }
+      if (parsed.statusSnapshot?.action === "status") {
+        return parsed.statusSnapshot;
+      }
+      if (parsed.liveStatus?.action === "status") {
+        return parsed.liveStatus;
+      }
+    }
+  }
+  return null;
 }
 
 function evaluateManagedReinstallTerminalAfterCodex(status, elapsedMs) {
@@ -7574,14 +7669,6 @@ function runMcpServer() {
       return tools;
     }
     return tools.filter((tool) => sotyMcpPublicTools.includes(tool.name));
-  }
-
-  function isPowerShellWorkflowCommand(command) {
-    const value = String(command || "");
-    if (!/\b(?:powershell|pwsh)(?:\.exe)?\b/iu.test(value)) {
-      return false;
-    }
-    return /[$;|`]|[\r\n]|\b(?:Get|Set|New|Remove|Start|Stop|Invoke|Convert|Where|ForEach)-[A-Za-z]/u.test(value);
   }
 
   function canonicalSotyMcpToolName(value) {

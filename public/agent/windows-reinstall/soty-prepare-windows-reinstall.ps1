@@ -553,6 +553,13 @@ function Invoke-ParallelRangeDownloadAttempt([string] $Uri, [string] $TempPath, 
   foreach ($segment in $segments) { $pending.Enqueue($segment) }
   $running = New-Object System.Collections.ArrayList
   $lastProgressLog = Get-Date
+  $lastObservedBytes = (Get-FileLengthSafe $TempPath) + (Get-DownloadPartBytes $partDir)
+  $lastObservedAt = Get-Date
+  $parallelNoProgressSeconds = 240
+  try {
+    $envParallelNoProgress = [int] $env:SOTY_WINDOWS_PARALLEL_NO_PROGRESS_SECONDS
+    if ($envParallelNoProgress -ge 60) { $parallelNoProgressSeconds = [math]::Min(1800, $envParallelNoProgress) }
+  } catch {}
   while ($pending.Count -gt 0 -or $running.Count -gt 0) {
     while ($running.Count -lt $parallel -and $pending.Count -gt 0) {
       $segment = $pending.Dequeue()
@@ -614,6 +621,21 @@ function Invoke-ParallelRangeDownloadAttempt([string] $Uri, [string] $TempPath, 
     if (((Get-Date) - $lastProgressLog).TotalSeconds -ge 30) {
       $downloaded = (Get-FileLengthSafe $TempPath) + (Get-DownloadPartBytes $partDir)
       Log ("Parallel download progress: " + [math]::Round($downloaded / 1GB, 3) + " / " + [math]::Round(([int64]$info.length) / 1GB, 3) + " GB.")
+      if ($downloaded -gt $lastObservedBytes) {
+        $lastObservedBytes = [int64] $downloaded
+        $lastObservedAt = Get-Date
+      } elseif (((Get-Date) - $lastObservedAt).TotalSeconds -ge $parallelNoProgressSeconds) {
+        Log ("WARN parallel range download made no byte progress for " + $parallelNoProgressSeconds + " seconds; stopping range workers and falling back to single-stream download.")
+        foreach ($item in @($running)) {
+          try {
+            if ($item.process -and -not $item.process.HasExited) {
+              Stop-Process -Id $item.process.Id -Force -ErrorAction SilentlyContinue
+            }
+          } catch {}
+        }
+        Remove-Item -LiteralPath $partDir -Recurse -Force -ErrorAction SilentlyContinue
+        return $false
+      }
       $lastProgressLog = Get-Date
     }
     if ($pending.Count -gt 0 -or $running.Count -gt 0) { Start-Sleep -Seconds 2 }
