@@ -654,6 +654,13 @@ function Invoke-ParallelRangeDownloadAttempt([string] $Uri, [string] $TempPath, 
   return $true
 }
 
+function Test-ParallelWindowsImageDownloadEnabled {
+  $raw = [string] $env:SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+  $value = $raw.Trim().ToLowerInvariant()
+  return @("1", "true", "yes", "on", "parallel", "range") -contains $value
+}
+
 function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string] $ExpectedSha256, [string] $LogPrefix, [int] $MaxTotalSeconds = 172800) {
   $expected = $ExpectedSha256.ToLowerInvariant()
   $tmp = $Destination + ".download"
@@ -708,6 +715,13 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     if ($envNoGrowth -ge 1) { $maxNoGrowthAttempts = [math]::Min(20, $envNoGrowth) }
   } catch {}
   $lastBytes = Get-FileLengthSafe $tmp
+  $parallelDownloadEnabled = Test-ParallelWindowsImageDownloadEnabled
+  if ($parallelDownloadEnabled) {
+    Log "Parallel Windows image download is enabled by SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD."
+  } else {
+    Remove-Item -LiteralPath $parts -Recurse -Force -ErrorAction SilentlyContinue
+    Log "Using single-stream resumable Windows image download."
+  }
   while (((Get-Date) - $started).TotalSeconds -lt $MaxTotalSeconds) {
     $attempt += 1
     $before = Get-FileLengthSafe $tmp
@@ -716,10 +730,11 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     $attemptCompleted = $false
     try {
       $usedParallel = $false
-      if ($curl) {
+      if ($curl -and $parallelDownloadEnabled) {
         $usedParallel = Invoke-ParallelRangeDownloadAttempt -Uri $Uri -TempPath $tmp -LogPrefix ($LogPrefix + "-attempt-" + $attempt)
       }
       if (-not $usedParallel -and $curl) {
+        Remove-Item -LiteralPath $parts -Recurse -Force -ErrorAction SilentlyContinue
         $curlArgs = @(
           "-L",
           "--fail",

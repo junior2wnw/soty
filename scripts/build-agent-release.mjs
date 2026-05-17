@@ -203,7 +203,7 @@ function buildRouteProfiles(windowsReinstall) {
           "recover stale prepare state before starting managed prepare",
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "start managed prepare once with stable idempotency",
-          "download Windows media with resumable HTTP range route on the selected PC",
+          "download Windows media with the single-stream resumable route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
           "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"

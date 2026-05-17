@@ -1521,6 +1521,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(tailTextBody.includes("Get-Content -LiteralPath $Path -Tail 80"));
       assert(prepare.includes("Invoke-ResumableDownload"));
       assert(prepare.includes("Invoke-ParallelRangeDownloadAttempt"));
+      assert(prepare.includes("Test-ParallelWindowsImageDownloadEnabled"));
       assert(prepare.includes("Get-HttpRangeProbeInfo"));
       assert(prepare.includes("continuing with guarded streaming download and SHA256 verification"));
       assert(prepare.includes("curl.exe --silent --show-error -I -L"));
@@ -1528,6 +1529,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes('"--range"'));
       assert(prepare.includes('"65536"'));
       assert(prepare.includes('"-C", "-"'));
+      assert(prepare.includes("Using single-stream resumable Windows image download"));
+      assert(prepare.includes("$curl -and $parallelDownloadEnabled"));
+      assert(prepare.includes("SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD"));
       assert(prepare.includes("SOTY_WINDOWS_PARALLEL_NO_PROGRESS_SECONDS"));
       assert(prepare.includes("falling back to single-stream download"));
       assert(prepare.includes("Windows image download did not complete within the retry window"));
