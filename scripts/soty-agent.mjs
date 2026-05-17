@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.59";
+const agentVersion = "0.4.60";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -5638,9 +5638,13 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   }
   const preferred = preferredOperatorTarget(safe);
   const preferredSource = preferred ? matchingAgentSourceTarget(preferred, sourceTargets) : null;
-  const mentionedTarget = targetMentionedInRequest(text, runtimeActiveTargets(safe, preferredSource || preferred, sourceTargets));
+  const allTargets = allRuntimeActiveTargets(safe, preferredSource || preferred, sourceTargets);
+  const mentionedTarget = targetMentionedInRequest(text, allTargets);
   if (mentionedTarget) {
     return matchingAgentSourceTarget(mentionedTarget, sourceTargets) || mentionedTarget;
+  }
+  if (isAgentDialogSource(safe)) {
+    return sourceDeviceRuntimeTarget(safe, sourceTargets);
   }
   if (preferred && (safe.deviceNetwork?.activeTunnelKind !== "agent" || isAgentSourceTarget(preferred.id))) {
     return preferredSource || preferred;
@@ -5712,6 +5716,23 @@ function sourceDeviceFallbackTarget(source) {
     access: true,
     host: true
   };
+}
+
+function isAgentDialogSource(source) {
+  return sanitizeAgentSource(source).deviceNetwork?.activeTunnelKind === "agent";
+}
+
+function sourceDeviceRuntimeTarget(source, sourceTargets = []) {
+  const safe = sanitizeAgentSource(source);
+  if (!safe.deviceId) {
+    return null;
+  }
+  const sourceId = `agent-source:${safe.deviceId}`;
+  const candidates = mergeOperatorTargets(sanitizeTargets(sourceTargets), sanitizeTargets(safe.operatorTargets));
+  return candidates.find((target) => target.id === sourceId)
+    || candidates.find((target) => isAgentSourceTarget(target.id) && agentSourceDeviceId(target.id) === safe.deviceId)
+    || candidates.find((target) => isAgentSourceTarget(target.id) && targetMatchesSourceDevice(target, safe.deviceId))
+    || sourceDeviceFallbackTarget(safe);
 }
 
 async function activeAgentSourceTargets(relayId = "", deviceId = "") {
@@ -6059,13 +6080,15 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
 
 async function buildAgentRuntimeContext({ text, context = "", source = {}, target = null, sourceTargets = [], sessionRecord = null, jobDir = "" }) {
   const safeSource = sanitizeAgentSource(source);
+  const agentDialog = isAgentDialogSource(safeSource);
+  const targetForPrompt = target || null;
   const taskFamily = classifyTaskFamily(text, target);
   const routineTask = isRoutineAgentTaskFamily(taskFamily);
-  const sourceDeviceId = promptInline(bridgeSourceDeviceId(target, safeSource) || safeSource.deviceId || "");
-  const targetLabel = promptInline(target?.label || safeSource.preferredTargetLabel || "");
-  const targetId = promptInline(target?.id || safeSource.preferredTargetId || "");
-  const deviceNetwork = runtimeDeviceNetwork(safeSource, target, sourceTargets);
-  const activeTargets = runtimeActiveTargets(safeSource, target, sourceTargets)
+  const sourceDeviceId = promptInline(bridgeSourceDeviceId(targetForPrompt, safeSource) || (targetForPrompt ? safeSource.deviceId : "") || "");
+  const targetLabel = promptInline(targetForPrompt?.label || (agentDialog ? "" : safeSource.preferredTargetLabel) || "");
+  const targetId = promptInline(targetForPrompt?.id || (agentDialog ? "" : safeSource.preferredTargetId) || "");
+  const deviceNetwork = runtimeDeviceNetwork(safeSource, target, sourceTargets, text);
+  const activeTargets = runtimeActiveTargets(safeSource, target, sourceTargets, text)
     .slice(0, 8)
     .map((item) => `${promptInline(item.label)} (${promptInline(item.id)})${item.access ? " access=true" : ""}${isAgentSourceTarget(item.id) ? " agent-channel=true" : " link-only=true"}`)
     .join("\n");
@@ -6098,11 +6121,13 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   };
 }
 
-function runtimeDeviceNetwork(source, target = null, sourceTargets = []) {
+function runtimeDeviceNetwork(source, target = null, sourceTargets = [], text = "") {
   const safe = sanitizeAgentSource(source);
+  const agentDialog = isAgentDialogSource(safe);
   const network = sanitizeDeviceNetwork(safe.deviceNetwork);
   const selectedNetworkTarget = selectedDeviceNetworkTarget(network);
-  const activeTargets = runtimeActiveTargets(safe, target, sourceTargets)
+  const selectedTarget = target || null;
+  const activeTargets = runtimeActiveTargets(safe, target, sourceTargets, text)
     .slice(0, 16)
     .map((item) => ({
       id: promptInline(item.id),
@@ -6124,11 +6149,11 @@ function runtimeDeviceNetwork(source, target = null, sourceTargets = []) {
       kind: network.activeTunnelKind === "agent" ? "agent" : "peer"
     },
     selectedTarget: {
-      id: promptInline(target?.id || selectedNetworkTarget.id || safe.preferredTargetId),
-      label: promptInline(target?.label || selectedNetworkTarget.label || safe.preferredTargetLabel),
-      sourceDeviceId: promptInline(bridgeSourceDeviceId(target, safe) || selectedNetworkTarget.sourceDeviceId || ""),
-      access: Boolean(target?.access === true || network.selectedTargetAccess === true),
-      link: Boolean(network.selectedTargetLink || target)
+      id: promptInline(selectedTarget?.id || (agentDialog ? "" : selectedNetworkTarget.id || safe.preferredTargetId)),
+      label: promptInline(selectedTarget?.label || (agentDialog ? "" : selectedNetworkTarget.label || safe.preferredTargetLabel)),
+      sourceDeviceId: promptInline(bridgeSourceDeviceId(selectedTarget, safe) || (agentDialog ? "" : selectedNetworkTarget.sourceDeviceId) || ""),
+      access: Boolean(selectedTarget?.access === true || (!agentDialog && network.selectedTargetAccess === true)),
+      link: Boolean((!agentDialog && network.selectedTargetLink) || (selectedTarget && !isAgentSourceTarget(selectedTarget.id)))
     },
     capabilities: sanitizeStringList(network.capabilities, 32, 80),
     targets: activeTargets
@@ -6156,7 +6181,16 @@ function formatRuntimeDeviceNetwork(network) {
   return lines.join("\n") || "none";
 }
 
-function runtimeActiveTargets(source, target = null, sourceTargets = []) {
+function runtimeActiveTargets(source, target = null, sourceTargets = [], text = "") {
+  const safe = sanitizeAgentSource(source);
+  const allTargets = allRuntimeActiveTargets(safe, target, sourceTargets);
+  if (!isAgentDialogSource(safe)) {
+    return allTargets;
+  }
+  return agentDialogVisibleTargets(safe, target, sourceTargets, allTargets, text);
+}
+
+function allRuntimeActiveTargets(source, target = null, sourceTargets = []) {
   const safe = sanitizeAgentSource(source);
   const preferredId = String(target?.id || safe.preferredTargetId || "");
   const merged = new Map();
@@ -6174,8 +6208,34 @@ function runtimeActiveTargets(source, target = null, sourceTargets = []) {
   for (const item of sanitizeTargets(target ? [target] : [])) {
     add(item);
   }
+  if (isAgentDialogSource(safe)) {
+    add(sourceDeviceRuntimeTarget(safe, sourceTargets));
+  }
   return [...merged.values()]
     .filter((item) => item.access === true)
+    .sort((left, right) => runtimeTargetScore(right, preferredId) - runtimeTargetScore(left, preferredId));
+}
+
+function agentDialogVisibleTargets(source, target = null, sourceTargets = [], allTargets = [], text = "") {
+  const safe = sanitizeAgentSource(source);
+  const visible = new Map();
+  const add = (item) => {
+    if (item?.id && item.access === true) {
+      visible.set(item.id, item);
+    }
+  };
+  const addWithSourceChannel = (item) => {
+    add(item);
+    add(matchingAgentSourceTarget(item, sourceTargets));
+  };
+  const mentionedTarget = targetMentionedInRequest(text, allTargets);
+  if (mentionedTarget) {
+    addWithSourceChannel(mentionedTarget);
+  } else {
+    add(sourceDeviceRuntimeTarget(safe, sourceTargets));
+  }
+  const preferredId = mentionedTarget?.id || target?.id || sourceDeviceRuntimeTarget(safe, sourceTargets)?.id || "";
+  return [...visible.values()]
     .sort((left, right) => runtimeTargetScore(right, preferredId) - runtimeTargetScore(left, preferredId));
 }
 
@@ -6291,8 +6351,9 @@ function sotyRuntimeHints() {
     "- Identity: \u041b\u043e\u0440\u0434.",
     "- Use memory as short reusable hints, not as rules.",
     "- Source-device canonical: when a Soty target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
-    "- Linked-device canonical: if the connected device network lists a Link target with access=true, that target is a first-class computer for you. Use the same `computer` capabilities through the controller device; do not fall back to the controller computer unless the request names the controller or the Link target is unavailable.",
-    "- Linked-device UX: for simple shell/file/browser/desktop checks on a Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
+    "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
+    "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
+    "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
@@ -6304,7 +6365,7 @@ function sotyRuntimeHints() {
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For Windows reinstall status, do not search local files, grep route docs, or crawl ProgramData. Call `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
-    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Do not choose a Link device merely because it is the only available Link target; use a Link device only when the user names it in the Agent chat or when the request came from that device chat via `lord`/`лорд`.",
+    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `lord`/`лорд`.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Soty is the data plane for files and artifacts. For source-device -> controller computer Downloads, use `computer` operation=file action=download: it streams exact bytes through the encrypted Soty room and asks the controller browser to save the file to its Downloads. For source-device -> room file rail only, use action=publish. For server/Codex artifact -> source-device, use `computer` operation=artifact. Never use 0x0.st, file.io, temp.sh, bashupload, ad-hoc local HTTP servers, pasted base64, or public upload services while Soty file/artifact operations are available.",
@@ -6518,9 +6579,9 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     runtime.deviceNetworkText || "none",
     "",
     "Device targeting rule:",
-    "- Link means capability forwarding: when device B gave Link access to controller A, every computer/file/artifact/desktop/browser/action/reinstall function available to A's agent plane must be used for B through A when B is the selected or named target.",
-    "- If the active chat has a selected_target with access=true, treat that device as the default action target. In the Agent chat, choose a named Link target from the device network; if there is exactly one Link target, it may be the default for device tasks.",
-    "- Never confuse controller and target: controller is the route, selected/named Link target is the computer where user-visible work happens. Report a target blocker only after trying the attached `computer` capability for that target.",
+    "- Link means capability forwarding only when device B is the selected device-chat target or is explicitly named in the current Agent-chat request. A plain Agent chat defaults to the current/source computer, never to an unnamed Link target.",
+    "- In Agent chat, hidden Link targets are unavailable: do not infer or choose them from access=true, a single-device list, previous task memory, or selected_target fields. The runtime target list is the allowed set for this turn.",
+    "- Never confuse controller and target: controller is the route, selected/named target is the computer where user-visible work happens. Report a target blocker only after trying the attached `computer` capability for the allowed target.",
     "- Do not narrate recoverable transport retries, command timeouts, status polling, or fallback routing when the target action ultimately succeeds. Users should see the outcome, not the plumbing.",
     "- For tasks involving several linked devices, keep controller and target names explicit and operate through the same device network context.",
     "",
