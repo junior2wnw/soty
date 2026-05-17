@@ -1595,7 +1595,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("operatorBlockNick"));
       assert(ui.includes("speakerForLine(line, state.className, label, operatorBlockNick)"));
       assert(ui.includes("if (isAgentChromeLineClass(state.className))"));
-      assert(ui.includes('bubble.className !== "is-agent-thinking"'));
+      assert(ui.includes("const hasAgentThinking = agentThinking.has(selectedId)"));
+      assert(ui.includes("!text.trim() && drafts.length === 0 && !hasAgentThinking"));
+      assert(ui.includes('bubble.className === "is-agent-thinking" || bubble.live'));
       assert(!ui.includes("hideAgentChrome"));
       assert(agentFeature.includes("pendingRelayRepliesStorageKey"));
       assert(agentFeature.includes("loadPendingAgentRelayReplies"));

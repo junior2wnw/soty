@@ -5251,8 +5251,9 @@ function renderTextPaint(): void {
   const active = activeActivities.get(selectedId);
   const activeLine = active ? lineFromIndex(text, active.index) : -1;
   const drafts = liveDraftsForSelected();
+  const hasAgentThinking = agentThinking.has(selectedId);
   textPaint.style.transform = "";
-  if (!text.trim() && drafts.length === 0) {
+  if (!text.trim() && drafts.length === 0 && !hasAgentThinking) {
     textPaint.innerHTML = `
       <div class="chat-empty">
         <span>READY</span>
@@ -5321,7 +5322,7 @@ function renderTextPaint(): void {
       live
     });
   }
-  if (agentThinking.has(selectedId)) {
+  if (hasAgentThinking) {
     bubbles.push({
       key: "agent-thinking",
       side: "remote",
@@ -5353,9 +5354,8 @@ function renderTextPaint(): void {
       }
     });
   }
-  // Busy state belongs to the composer chrome, not to chat history.
   const visibleBubbles = bubbles.filter((bubble) =>
-    bubble.className !== "is-agent-thinking" && (bubble.live || bubble.lines.some((line) => line.trim()))
+    bubble.className === "is-agent-thinking" || bubble.live || bubble.lines.some((line) => line.trim())
   );
   textPaint.innerHTML = visibleBubbles.map((bubble) => {
     const body = bubble.className === "is-agent-thinking"
