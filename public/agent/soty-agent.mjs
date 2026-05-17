@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.63";
+const agentVersion = "0.4.64";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1859,10 +1859,21 @@ function traceValue(value, maxString = 4000, depth = 0) {
 function redactTraceString(value, max = 4000) {
   return String(value || "")
     .replace(/\r\n?/gu, "\n")
+    .replace(/\b((?:https?|socks5h?|socks5):\/\/)([^:@\s/]+):([^@\s/]+)@/giu, "$1<redacted>@")
+    .replace(/\b(SOTY_CODEX_PROXY_URL|SOTY_AGENT_PROXY_URL|HTTPS?_PROXY|ALL_PROXY|https?_proxy|all_proxy)\s*[:=]\s*['"]?[^'"\s]+/gu, "$1=<redacted>")
     .replace(/(api[_-]?key|authorization|bearer|token|secret|password|passwd|cap_sid)\s*[:=]\s*['"]?[^'"\s]+/giu, "$1=<redacted>")
     .replace(/\b(?:sk|sess|cap|pat|ghp|github_pat)_[A-Za-z0-9_-]{16,}\b/gu, "<redacted-token>")
     .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "<redacted-long-token>")
     .slice(0, Math.max(0, max));
+}
+
+function stripAgentInternalTerminal(result) {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+  const { terminal, ...safe } = result;
+  void terminal;
+  return safe;
 }
 
 async function readActionJob(jobId) {
@@ -3587,8 +3598,6 @@ async function replyToAgentOperatorMessage(item) {
     }
     streamedMessages.push(clean);
     sendAgentOperatorChat(item.target, clean);
-  }, (message) => {
-    sendAgentOperatorTerminal(item.target, message);
   });
   const delivered = new Set(streamedMessages);
   const messages = Array.isArray(result.messages)
@@ -3620,20 +3629,6 @@ function sendAgentOperatorChat(target, text) {
     text: body,
     speed: "instant",
     persona: "sysadmin"
-  });
-  return true;
-}
-
-function sendAgentOperatorTerminal(target, text) {
-  const body = cleanTerminalTranscript(text);
-  if (!operatorBridge?.open || !target || !body) {
-    return false;
-  }
-  sendRaw(operatorBridge, {
-    type: "operator.terminal",
-    id: `agent_terminal_${randomUUID()}`,
-    target,
-    text: body
   });
   return true;
 }
@@ -3688,19 +3683,10 @@ async function handleAgentReply(request, response, headers) {
     }
   };
   response.on?.("close", cancelOnClientClose);
-  const terminal = [];
   try {
-    const result = await askCodexForAgentReply(text, context, source, null, (message) => {
-      const clean = cleanTerminalTranscript(message);
-      if (clean && terminal[terminal.length - 1] !== clean) {
-        terminal.push(clean);
-      }
-    }, { signal: abortController.signal });
+    const result = await askCodexForAgentReply(text, context, source, null, null, { signal: abortController.signal });
     if (!response.writableEnded && !response.destroyed) {
-      sendJson(response, result.ok ? 200 : 502, headers, {
-        ...result,
-        ...(terminal.length > 0 ? { terminal } : {})
-      });
+      sendJson(response, result.ok ? 200 : 502, headers, stripAgentInternalTerminal(result));
     }
   } finally {
     response.off?.("close", cancelOnClientClose);
@@ -3861,7 +3847,7 @@ async function handleAgentRelayJob(job, signal = null) {
     String(job.context || "").slice(-maxAgentContextChars),
     sanitizeAgentSource(job.source),
     (message) => postAgentRelayEvent(job.id, message),
-    (message) => postAgentRelayEvent(job.id, message, "agent_terminal"),
+    null,
     { signal }
   );
   await postAgentRelayReply(job.id, result);
@@ -3878,9 +3864,6 @@ async function postAgentRelayReply(id, result) {
       text: String(result.text || "").slice(0, maxChatChars),
       ...(Array.isArray(result.messages) && result.messages.length > 0
         ? { messages: result.messages.map((item) => String(item || "").slice(0, maxChatChars)).filter(Boolean).slice(-maxCodexDialogMessages) }
-        : {}),
-      ...(Array.isArray(result.terminal) && result.terminal.length > 0
-        ? { terminal: result.terminal.map((item) => String(item || "").slice(0, maxChatChars)).filter(Boolean).slice(-maxCodexDialogMessages) }
         : {}),
       ...(result.traceId ? { traceId: String(result.traceId).slice(0, 120) } : {}),
       ...(typeof result.exitCode === "number" ? { exitCode: result.exitCode } : {})
@@ -5901,7 +5884,7 @@ function cleanAgentChatReply(value) {
 }
 
 function cleanTerminalTranscript(value) {
-  return String(value || "")
+  return redactTraceString(value, maxChatChars)
     .replace(/\r\n?/gu, "\n")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
     .replace(/\n{5,}/gu, "\n\n\n\n")
@@ -6077,7 +6060,6 @@ async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, timeout
           ok: Boolean(payload.reply.ok),
           text: cleanAgentChatReply(payload.reply.text || "").slice(0, maxChatChars),
           ...(messages.length > 0 ? { messages } : {}),
-          ...(Array.isArray(payload.reply.terminal) ? { terminal: compactTerminalMessages(payload.reply.terminal) } : {}),
           ...(Number.isSafeInteger(payload.reply.exitCode) ? { exitCode: payload.reply.exitCode } : {})
         };
       }

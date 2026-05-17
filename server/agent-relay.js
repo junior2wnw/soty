@@ -1736,10 +1736,19 @@ function cleanReplyTerminal(value) {
   }
   const terminal = value
     .filter((item) => typeof item === "string")
-    .map((item) => item.replace(/\r\n?/gu, "\n").trim().slice(0, maxReplyChars))
+    .map((item) => redactTerminalText(item).replace(/\r\n?/gu, "\n").trim().slice(0, maxReplyChars))
     .filter(Boolean)
     .slice(0, maxReplyMessages);
   return terminal.length > 0 ? { terminal } : {};
+}
+
+function redactTerminalText(value) {
+  return String(value || "")
+    .replace(/\b((?:https?|socks5h?|socks5):\/\/)([^:@\s/]+):([^@\s/]+)@/giu, "$1<redacted>@")
+    .replace(/\b(SOTY_CODEX_PROXY_URL|SOTY_AGENT_PROXY_URL|HTTPS?_PROXY|ALL_PROXY|https?_proxy|all_proxy)\s*[:=]\s*['"]?[^'"\s]+/gu, "$1=<redacted>")
+    .replace(/(api[_-]?key|authorization|bearer|token|secret|password|passwd|cap_sid)\s*[:=]\s*['"]?[^'"\s]+/giu, "$1=<redacted>")
+    .replace(/\b(?:sk|sess|cap|pat|ghp|github_pat)_[A-Za-z0-9_-]{16,}\b/gu, "<redacted-token>")
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "<redacted-long-token>");
 }
 
 function safeTimeout(value) {

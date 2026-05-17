@@ -2476,7 +2476,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
       void runOperatorAgentNew(message);
     }
     if (message.type === "operator.terminal") {
-      runOperatorTerminal(message);
+      return;
     }
     if (message.type === "operator.access") {
       runOperatorAccess(message);
@@ -3013,12 +3013,6 @@ function formatAgentReplyForOperator(reply: LocalAgentReply | null | void): stri
   if (text && !parts.includes(text) && (!compactMessages || !compactText.includes(compactMessages))) {
     pushUnique(text);
   }
-  for (const message of reply.terminal ?? []) {
-    const terminal = cleanTerminalTranscript(message);
-    if (terminal) {
-      pushUnique(terminal);
-    }
-  }
   const body = parts.join("\n\n").trim();
   if (body) {
     return `${body}\n`;
@@ -3061,19 +3055,6 @@ async function runOperatorAgentNew(message: { readonly id?: string }): Promise<v
     await ensureOperatorBridge(true).catch(() => undefined);
     publishOperatorTargets();
   })();
-}
-
-function runOperatorTerminal(message: {
-  readonly id?: string;
-  readonly target?: string;
-  readonly text?: string;
-}): void {
-  const tunnel = findAgentOperatorTarget(message.target || "");
-  const text = typeof message.text === "string" ? message.text : "";
-  if (!tunnel || !text.trim()) {
-    return;
-  }
-  appendAgentTerminalTranscript(tunnel.id, text);
 }
 
 function formatOperatorChat(text: string, persona: string): string {
@@ -4526,9 +4507,6 @@ async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Pro
   const streamedMessages = pending.messages
     .map((message) => normalizeChatMessage(cleanAgentReplyText(message)))
     .filter(Boolean);
-  const streamedTerminal = pending.terminal
-    .map((message) => cleanTerminalTranscript(message))
-    .filter(Boolean);
   try {
     const reply = await resumeAgentRelayReply(pending, (message) => {
       const streamed = normalizeChatMessage(cleanAgentReplyText(message));
@@ -4537,16 +4515,9 @@ async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Pro
       }
       streamedMessages.push(streamed);
       appendAgentChatMessage(tunnelId, streamed);
-    }, (message) => {
-      const streamed = cleanTerminalTranscript(message);
-      if (!streamed || streamedTerminal[streamedTerminal.length - 1] === streamed) {
-        return;
-      }
-      streamedTerminal.push(streamed);
-      appendAgentTerminalTranscript(tunnelId, streamed);
-    }, controller.signal);
+    }, undefined, controller.signal);
     if (!controller.signal.aborted) {
-      finishAgentDialogReply(tunnelId, reply, streamedMessages, streamedTerminal);
+      finishAgentDialogReply(tunnelId, reply, streamedMessages);
     }
   } finally {
     if (agentReplyControllers.get(tunnelId) === controller) {
@@ -4577,7 +4548,6 @@ function sendAgentDialogMessage(
       setAgentThinking(tunnelId, true);
       let reply: LocalAgentReply;
       const streamedMessages: string[] = [];
-      const streamedTerminal: string[] = [];
       try {
         if (agentTunnel) {
           await prepareAgentSourceForDialog(tunnelId, tunnel);
@@ -4592,14 +4562,7 @@ function sendAgentDialogMessage(
           }
           streamedMessages.push(streamed);
           appendAgentChatMessage(tunnelId, streamed);
-        }, (message) => {
-          const streamed = cleanTerminalTranscript(message);
-          if (!streamed || streamedTerminal[streamedTerminal.length - 1] === streamed) {
-            return;
-          }
-          streamedTerminal.push(streamed);
-          appendAgentTerminalTranscript(tunnelId, streamed);
-        }, controller.signal);
+        }, undefined, controller.signal);
       } finally {
         if (agentReplyControllers.get(tunnelId) === controller) {
           agentReplyControllers.delete(tunnelId);
@@ -4613,7 +4576,7 @@ function sendAgentDialogMessage(
           exitCode: 130
         };
       }
-      finishAgentDialogReply(tunnelId, reply, streamedMessages, streamedTerminal);
+      finishAgentDialogReply(tunnelId, reply, streamedMessages);
       return reply;
     });
   agentReplyQueues.set(tunnelId, next);
@@ -4690,8 +4653,7 @@ async function preparePeerAgentInvocation(tunnelId: string): Promise<void> {
 function finishAgentDialogReply(
   tunnelId: string,
   reply: LocalAgentReply,
-  streamedMessages: readonly string[],
-  streamedTerminal: readonly string[]
+  streamedMessages: readonly string[]
 ): void {
   let finalReply = reply;
   let body = normalizeChatMessage(cleanAgentReplyText(reply.text));
@@ -4706,13 +4668,6 @@ function finishAgentDialogReply(
       ...(remainingMessages.length > 0 ? { messages: remainingMessages } : { messages: [] })
     };
     body = "";
-  }
-  const deliveredTerminal = new Set(streamedTerminal);
-  for (const message of reply.terminal ?? []) {
-    const terminal = cleanTerminalTranscript(message);
-    if (terminal && !deliveredTerminal.has(terminal)) {
-      appendAgentTerminalTranscript(tunnelId, terminal);
-    }
   }
   if (shouldOfferAgentInstall(reply)) {
     markAgentDownloadNeeded();
@@ -4785,21 +4740,6 @@ function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
   return true;
 }
 
-function appendAgentTerminalTranscript(tunnelId: string, rawText: string): boolean {
-  const text = cleanTerminalTranscript(rawText);
-  if (!text) {
-    return false;
-  }
-  terminalOpenId = tunnelId;
-  if (!terminalState.has(tunnelId)) {
-    setTerminalState(tunnelId, "run");
-  }
-  appendTerminalLine(tunnelId, text);
-  renderTerminal();
-  renderTiles();
-  return true;
-}
-
 function setAgentThinking(tunnelId: string, active: boolean): void {
   if (active) {
     agentThinking.add(tunnelId);
@@ -4814,12 +4754,21 @@ function setAgentThinking(tunnelId: string, active: boolean): void {
 }
 
 function cleanTerminalTranscript(value: string): string {
-  return value
+  return redactVisibleTerminalSecrets(value)
     .replace(/\r\n?/gu, "\n")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
     .replace(/\n{5,}/gu, "\n\n\n\n")
     .trim()
     .slice(0, 12_000);
+}
+
+function redactVisibleTerminalSecrets(value: string): string {
+  return String(value || "")
+    .replace(/\b((?:https?|socks5h?|socks5):\/\/)([^:@\s/]+):([^@\s/]+)@/giu, "$1<redacted>@")
+    .replace(/\b(SOTY_CODEX_PROXY_URL|SOTY_AGENT_PROXY_URL|HTTPS?_PROXY|ALL_PROXY|https?_proxy|all_proxy)\s*[:=]\s*['"]?[^'"\s]+/gu, "$1=<redacted>")
+    .replace(/(api[_-]?key|authorization|bearer|token|secret|password|passwd|cap_sid)\s*[:=]\s*['"]?[^'"\s]+/giu, "$1=<redacted>")
+    .replace(/\b(?:sk|sess|cap|pat|ghp|github_pat)_[A-Za-z0-9_-]{16,}\b/gu, "<redacted-token>")
+    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "<redacted-long-token>");
 }
 
 function cleanAgentReplyText(value: string): string {
