@@ -80,6 +80,7 @@ type SavedScenario = {
   readonly prompt: string;
   readonly useCount?: number;
   readonly memoryRefs?: readonly ScenarioMemoryRef[];
+  readonly agentPlan?: ScenarioAgentPlan;
   readonly example?: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -97,10 +98,13 @@ type ScenarioMemoryRef = {
   readonly confidence?: number;
 };
 
+type ScenarioAgentPlan = Record<string, unknown>;
+
 type PendingScenarioSave = {
   readonly scope: ScenarioScope;
   readonly sourceTunnelId: string;
   readonly sourceText: string;
+  readonly agentPlan?: ScenarioAgentPlan;
 };
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -739,15 +743,17 @@ async function saveCurrentScenario(): Promise<void> {
   openTaskMenu(scenarioSaveScope === "shared" ? "SAVED SHARED" : "SAVED LOCAL", { refreshServer: false });
 }
 
-async function saveScenarioPrompt(prompt: string, scope: ScenarioScope, source: { readonly sourceTunnelId?: string; readonly sourceText?: string } = {}): Promise<SavedScenario> {
+async function saveScenarioPrompt(prompt: string, scope: ScenarioScope, source: { readonly sourceTunnelId?: string; readonly sourceText?: string } = {}, agentPlan?: ScenarioAgentPlan): Promise<SavedScenario> {
   const now = new Date().toISOString();
   const title = scenarioTitleFromPrompt(prompt);
+  const plan = normalizeScenarioAgentPlan(agentPlan, prompt);
   if (scope === "shared") {
     const saved = await saveScenarioToServer({
       id: createScenarioId(),
       scope,
       title,
       prompt,
+      agentPlan: plan,
       createdAt: now,
       updatedAt: now
     }, source).catch(() => null);
@@ -760,12 +766,13 @@ async function saveScenarioPrompt(prompt: string, scope: ScenarioScope, source: 
   const scenarios = loadSavedScenarios();
   const duplicate = scenarios.find((scenario) => scenario.prompt === prompt);
   const next: SavedScenario = duplicate
-    ? { ...duplicate, scope: "personal", title, updatedAt: now }
+    ? { ...duplicate, scope: "personal", title, agentPlan: plan, updatedAt: now }
     : {
         id: createScenarioId(),
         scope: "personal",
         title,
         prompt,
+        agentPlan: plan,
         useCount: 0,
         createdAt: now,
         updatedAt: now
@@ -825,7 +832,7 @@ async function savePendingScenarioDraft(message: string): Promise<void> {
   await saveScenarioPrompt(message, pending.scope, {
     sourceTunnelId: pending.sourceTunnelId,
     sourceText: pending.sourceText
-  });
+  }, pending.agentPlan);
   const scope = pending.scope;
   setPendingScenarioSave(null);
   if (composer) {
@@ -922,6 +929,7 @@ function normalizeSavedScenario(raw: unknown): SavedScenario | null {
     scope: recordString(raw, "scope") === "shared" ? "shared" : "personal",
     title: cleanScenarioTitle(recordString(raw, "title")) || scenarioTitleFromPrompt(prompt),
     prompt,
+    agentPlan: normalizeScenarioAgentPlan(raw.agentPlan, prompt),
     useCount: recordNumber(raw, "useCount"),
     memoryRefs: normalizeScenarioMemoryRefs(raw.memoryRefs),
     example: raw.example === true,
@@ -968,8 +976,7 @@ function scenarioRowHtml(scenario: SavedScenario): string {
 function scenarioMeta(scenario: SavedScenario): string {
   const scope = scenario.scope === "shared" ? "SHARED" : "LOCAL";
   const uses = scenario.useCount ? `${scenario.useCount} USES` : scenario.example ? "EXAMPLE" : scenarioUpdatedLabel(scenario);
-  const memory = scenario.memoryRefs?.length ? `MEM ${scenario.memoryRefs.length}` : "";
-  return [scope, uses, memory].filter(Boolean).join(" / ");
+  return [scope, uses].filter(Boolean).join(" / ");
 }
 
 function scenarioSortScore(scenario: SavedScenario): number {
@@ -1058,6 +1065,7 @@ async function saveScenarioToServer(scenario: SavedScenario, source: { readonly 
       scope: "shared",
       title: scenario.title,
       prompt: scenario.prompt,
+      agentPlan: scenario.agentPlan || normalizeScenarioAgentPlan(undefined, scenario.prompt),
       deviceId: device?.id || "",
       deviceNick: device?.nick || "",
       sourceTunnelId: source.sourceTunnelId || "",
@@ -1085,6 +1093,7 @@ function normalizeServerScenario(raw: unknown): SavedScenario | null {
     scope: "shared",
     title: cleanScenarioTitle(recordString(raw, "title")) || scenarioTitleFromPrompt(prompt),
     prompt,
+    agentPlan: normalizeScenarioAgentPlan(raw.agentPlan, prompt),
     useCount: recordNumber(raw, "useCount"),
     memoryRefs: normalizeScenarioMemoryRefs(raw.memoryRefs),
     example: raw.example === true,
@@ -1251,7 +1260,7 @@ async function draftScenarioFromChat(): Promise<void> {
     sourceTunnelId: tunnelId,
     sourceText
   };
-  let draft = fallbackScenarioFromChat(sourceText);
+  let draft = scenarioDraftFromPrompt(fallbackScenarioFromChat(sourceText), fallbackScenarioAgentPlan(sourceText));
   const agent = localAgent.ok ? localAgent : await refreshLocalAgent().catch(() => ({ ok: false }));
   const canAskAgent = agent.ok && (!("codex" in agent) || agent.codex !== false);
   if (canAskAgent) {
@@ -1269,7 +1278,7 @@ async function draftScenarioFromChat(): Promise<void> {
         controller.signal
       );
       const candidate = normalizeScenarioDraftReply(reply.ok ? reply.text : "");
-      if (candidate) {
+      if (candidate?.prompt) {
         draft = candidate;
       }
     } catch {
@@ -1279,35 +1288,75 @@ async function draftScenarioFromChat(): Promise<void> {
     }
   }
   closeChatActionMenu();
-  placeScenarioDraftInComposer(draft, pending);
+  placeScenarioDraftInComposer(draft.prompt, draft.agentPlan ? { ...pending, agentPlan: draft.agentPlan } : pending);
 }
 
 function scenarioDraftAgentPrompt(): string {
   return [
-    "Составь универсальный сценарий на основе видимого чата.",
-    "Не выполняй задачу, не используй инструменты, не отвечай пользователю как по задаче.",
-    "Верни только редактируемый сценарий в таком формате:",
-    "Сценарий:",
-    "Название: ...",
-    "Цель: ...",
-    "Когда использовать: ...",
-    "Где выполнять: ...",
-    "Что нужно: ...",
-    "Шаги:",
-    "1. ...",
-    "Что считать готовым: ...",
-    "Память: какие reusable факты из чата полезно учитывать."
+    "Create a universal reusable scenario from the visible chat.",
+    "Do not perform the task and do not answer the user as if doing the task.",
+    "Return STRICT JSON only, no markdown:",
+    "{",
+    '  "visiblePrompt": "editable text the user will see in the composer",',
+    '  "agentPlan": {',
+    '    "schema": "soty.scenario.plan.v1",',
+    '    "intent": "portable goal",',
+    '    "triggers": ["short semantic triggers"],',
+    '    "selection": {"mode":"agent-adaptive","autoUseWhen":"when it clearly saves work and fresh proof is still checked","explorationRate":0.12},',
+    '    "branches": [{"id":"normal","when":"...","steps":["..."],"verify":["..."]}],',
+    '    "successChecks": ["fresh proof checks"],',
+    '    "avoid": ["things not to repeat blindly"],',
+    '    "memoryPolicy": {"updateOn":["save","use","success","failure","route-change"],"sourceOfTruth":"append-only memory pointers plus current proof"}',
+    "  }",
+    "}",
+    "visiblePrompt must be human-editable and must not contain memory links, JSON, internal file paths, or implementation commentary.",
+    "agentPlan is private machine JSON for future agent use: include branches, triggers, success checks, avoid rules, and improvement policy."
   ].join("\n");
 }
 
-function normalizeScenarioDraftReply(value: string): string {
+function normalizeScenarioDraftReply(value: string): { readonly prompt: string; readonly agentPlan?: ScenarioAgentPlan } | null {
   const text = cleanAgentReplyText(value)
     .replace(/^```[a-z]*\s*/iu, "")
     .replace(/```$/u, "")
     .trim();
+  const parsed = parseScenarioDraftJson(text);
+  if (parsed) {
+    return parsed;
+  }
   return text.includes("Цель:") || text.includes("Goal:")
-    ? text.slice(0, maxScenarioPromptChars)
-    : "";
+    ? scenarioDraftFromPrompt(text.slice(0, maxScenarioPromptChars), fallbackScenarioAgentPlan(text))
+    : null;
+}
+
+function parseScenarioDraftJson(value: string): { readonly prompt: string; readonly agentPlan?: ScenarioAgentPlan } | null {
+  const text = value.trim();
+  const jsonText = text.startsWith("{")
+    ? text
+    : text.slice(Math.max(0, text.indexOf("{")), text.lastIndexOf("}") + 1);
+  if (!jsonText.trim()) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(jsonText);
+    if (!isRecord(parsed)) {
+      return null;
+    }
+    const prompt = normalizeChatMessage(recordString(parsed, "visiblePrompt") || recordString(parsed, "prompt")).slice(0, maxScenarioPromptChars);
+    if (!prompt) {
+      return null;
+    }
+    return scenarioDraftFromPrompt(prompt, normalizeScenarioAgentPlan(parsed.agentPlan, prompt));
+  } catch {
+    return null;
+  }
+}
+
+function scenarioDraftFromPrompt(prompt: string, agentPlan?: ScenarioAgentPlan): { readonly prompt: string; readonly agentPlan?: ScenarioAgentPlan } {
+  const cleanPrompt = normalizeChatMessage(prompt).slice(0, maxScenarioPromptChars);
+  return {
+    prompt: cleanPrompt,
+    agentPlan: normalizeScenarioAgentPlan(agentPlan, cleanPrompt)
+  };
 }
 
 function fallbackScenarioFromChat(text: string): string {
@@ -1330,6 +1379,138 @@ function fallbackScenarioFromChat(text: string): string {
     "Что считать готовым: результат подтвержден проверкой, а пользователь получил короткий понятный итог.",
     "Память: использовать сохраненные подсказки только как ориентир, не как замену свежей проверке."
   ].join("\n").slice(0, maxScenarioPromptChars);
+}
+
+function fallbackScenarioAgentPlan(text: string): ScenarioAgentPlan {
+  const prompt = fallbackScenarioFromChat(text);
+  const title = scenarioTitleFromPrompt(prompt);
+  const triggers = Array.from(new Set(cleanAgentContext(`${title}\n${text}`)
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((item) => item.length > 3)
+    .slice(0, 16)));
+  return normalizeScenarioAgentPlan({
+    schema: "soty.scenario.plan.v1",
+    intent: title,
+    triggers,
+    selection: {
+      mode: "agent-adaptive",
+      autoUseWhen: "strong match and current proof is still checked",
+      explorationRate: 0.12
+    },
+    branches: [
+      {
+        id: "normal",
+        when: "context is sufficient",
+        steps: [
+          "read the current request and visible context",
+          "select the current/named target from the request",
+          "execute through the best available route",
+          "verify concrete success proof"
+        ],
+        verify: ["fresh state proof", "source-scoped result"]
+      },
+      {
+        id: "blocked",
+        when: "device, file, permission, or proof is missing",
+        steps: ["ask only for the missing precondition", "do not invent or switch targets"],
+        verify: ["blocker is concrete"]
+      }
+    ],
+    successChecks: ["fresh proof confirms the result"],
+    avoid: ["do not expose memory pointers to the user", "do not follow stale memory without fresh proof"],
+    memoryPolicy: {
+      updateOn: ["save", "use", "success", "failure", "route-change"],
+      sourceOfTruth: "append-only memory pointers plus current proof"
+    }
+  }, prompt);
+}
+
+function normalizeScenarioAgentPlan(raw: unknown, prompt = ""): ScenarioAgentPlan {
+  const record = isRecord(raw) ? raw : {};
+  const promptLines = normalizeChatMessage(prompt).split(/\n/u).map((line) => line.trim()).filter(Boolean);
+  const numberedSteps = promptLines
+    .filter((line) => /^\d+[\.)]\s+/u.test(line))
+    .map((line) => line.replace(/^\d+[\.)]\s*/u, ""))
+    .slice(0, 12);
+  const promptTriggers = Array.from(new Set(cleanAgentContext(prompt)
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((item) => item.length > 3)
+    .slice(0, 20)));
+  const title = cleanScenarioTitle(recordString(record, "title") || scenarioTitleFromPrompt(prompt));
+  const selection = isRecord(record.selection) ? record.selection : {};
+  const successChecks = normalizeStringList(record.successChecks, 16, 180);
+  const avoid = normalizeStringList(record.avoid, 16, 180);
+  return {
+    schema: "soty.scenario.plan.v1",
+    title,
+    intent: recordString(record, "intent") || title,
+    triggers: normalizeStringList(record.triggers, 20, 80).length
+      ? normalizeStringList(record.triggers, 20, 80)
+      : promptTriggers,
+    selection: {
+      mode: recordString(selection, "mode") || "agent-adaptive",
+      autoUseWhen: recordString(selection, "autoUseWhen") || "strong semantic match plus fresh proof",
+      explorationRate: recordFraction(selection, "explorationRate", 0.12)
+    },
+    branches: normalizeScenarioBranches(record.branches, numberedSteps.length ? numberedSteps : promptLines.slice(0, 8)),
+    successChecks: successChecks.length ? successChecks : scenarioPromptSuccessChecks(prompt),
+    avoid: avoid.length ? avoid : ["do not expose memory pointers to the user", "do not follow stale memory without fresh proof"],
+    memoryPolicy: isRecord(record.memoryPolicy) ? record.memoryPolicy : {
+      updateOn: ["save", "use", "success", "failure", "route-change"],
+      sourceOfTruth: "append-only memory pointers plus current proof"
+    }
+  };
+}
+
+function normalizeScenarioBranches(raw: unknown, fallbackSteps: readonly string[] = []): unknown[] {
+  const items = Array.isArray(raw) ? raw : [];
+  const branches = items.map((item, index) => {
+    const record = isRecord(item) ? item : {};
+    const steps = normalizeStringList(record.steps, 14, 220);
+    if (steps.length === 0) {
+      return null;
+    }
+    return {
+      id: normalizeScenarioId(recordString(record, "id")) || `branch_${index + 1}`,
+      when: recordString(record, "when"),
+      steps,
+      verify: normalizeStringList(record.verify, 8, 180)
+    };
+  }).filter(Boolean).slice(0, 8);
+  return branches.length > 0 ? branches : [{
+    id: "normal",
+    when: "scenario matches",
+    steps: fallbackSteps.length ? fallbackSteps.slice(0, 12) : ["adapt scenario to current context", "verify fresh proof"],
+    verify: ["fresh proof"]
+  }];
+}
+
+function scenarioPromptSuccessChecks(prompt: string): string[] {
+  const checks = normalizeChatMessage(prompt)
+    .split(/\n/u)
+    .map((line) => line.trim())
+    .filter((line) => /готов|success|verify|proof|провер|считать/iu.test(line))
+    .map((line) => line.replace(/^[^:]{0,40}:\s*/u, ""))
+    .slice(0, 8);
+  return checks.length ? checks : ["fresh proof confirms the result"];
+}
+
+function normalizeStringList(raw: unknown, maxItems: number, maxChars: number): string[] {
+  return (Array.isArray(raw) ? raw : [])
+    .map((item) => String(item || "").replace(/\s+/gu, " ").trim().slice(0, maxChars))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function recordFraction(value: unknown, key: string, fallback: number): number {
+  if (!isRecord(value)) {
+    return fallback;
+  }
+  const item = value[key];
+  const num = typeof item === "number" ? item : Number(item || fallback);
+  return Number.isFinite(num) ? Math.max(0, Math.min(1, num)) : fallback;
 }
 
 function restoredTunnelsFromPayload(payload: OperatorExportPayload): { readonly tunnels: TunnelRecord[]; readonly texts: Map<string, string> } {

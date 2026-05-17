@@ -225,7 +225,8 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(saved.status, 200);
         assertEqual(saved.body.ok, true);
         assert(saved.body.scenario.id);
-        assert(saved.body.scenario.memoryRefs.length > 0);
+        assertEqual(saved.body.scenario.memoryRefs.length, 0);
+        assert(!saved.body.scenario.agentPlan);
 
         const improved = await relayRequest(base, "POST", "/api/scenarios", {
           scope: "shared",
@@ -244,7 +245,12 @@ async function runScenarios({ relayUrl } = {}) {
         const queried = await relayRequest(base, "GET", "/api/agent/scenarios/search?q=reinstall%20export&limit=8");
         assertEqual(queried.status, 200);
         assert(queried.body.top.some((item) => item.id === saved.body.scenario.id && item.useCount >= 1));
-        assert(queried.body.scenarios.some((item) => item.id === saved.body.scenario.id));
+        const agentScenario = queried.body.scenarios.find((item) => item.id === saved.body.scenario.id);
+        assert(agentScenario);
+        assert(agentScenario.memoryRefs.length > 0);
+        assert(agentScenario.memoryRefs.some((ref) => ref.source?.file && ref.source?.line >= 1));
+        assertEqual(agentScenario.agentPlan.schema, "soty.scenario.plan.v1");
+        assert(Array.isArray(agentScenario.agentPlan.branches) && agentScenario.agentPlan.branches.length > 0);
       } finally {
         await closeServer(scenarioServer);
       }

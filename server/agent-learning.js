@@ -113,24 +113,40 @@ async function learningFiles(dir) {
 
 export async function readRecentLearningReceipts(dataDir, limit = 50) {
   const learningDir = process.env.SOTY_LEARNING_DIR || path.join(dataDir || process.cwd(), "learning");
-  return await readRecentLearningReceiptsFromDir(learningDir, limit);
+  return (await readRecentLearningReceiptRecordsFromDir(learningDir, limit)).map((item) => item.text);
 }
 
 async function readRecentLearningReceiptsFromDir(learningDir, limit = 50) {
+  return (await readRecentLearningReceiptRecordsFromDir(learningDir, limit)).map((item) => item.text);
+}
+
+export async function readRecentLearningReceiptRecords(dataDir, limit = 50) {
+  const learningDir = process.env.SOTY_LEARNING_DIR || path.join(dataDir || process.cwd(), "learning");
+  return await readRecentLearningReceiptRecordsFromDir(learningDir, limit);
+}
+
+async function readRecentLearningReceiptRecordsFromDir(learningDir, limit = 50) {
   const files = (await learningFiles(learningDir))
     .map((item) => item.name)
     .sort()
     .slice(-defaultMemoryScanFiles);
-  const lines = [];
+  const records = [];
   for (const file of files) {
     const text = await readFile(path.join(learningDir, file), "utf8").catch(() => "");
-    for (const line of text.split(/\r?\n/u)) {
+    const lines = text.split(/\r?\n/u);
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] || "";
       if (line.trim()) {
-        lines.push(line);
+        records.push({
+          file: path.join("learning", file),
+          line: index + 1,
+          text: line,
+          receipt: parseReceiptLine(line)
+        });
       }
     }
   }
-  return lines.slice(-Math.max(1, Math.min(2000, limit)));
+  return records.slice(-Math.max(1, Math.min(2000, limit)));
 }
 
 export function buildTeacherReport(receipts, { limit = 800, family = "", platform = "", taskSig = "" } = {}) {

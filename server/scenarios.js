@@ -2,13 +2,14 @@ import express from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { buildMemoryQuery, buildTeacherReport, readRecentLearningReceipts } from "./agent-learning.js";
+import { buildMemoryQuery, buildTeacherReport, readRecentLearningReceiptRecords } from "./agent-learning.js";
 
 const jsonParser = express.json({ limit: "256kb", type: "application/json" });
 const maxPromptChars = 20_000;
 const maxTitleChars = 80;
 const maxScenarios = 500;
 const maxReturnedScenarios = 48;
+const maxAgentPlanChars = 24_000;
 
 export function attachScenarios(app, { dataDir } = {}) {
   const baseDir = process.env.SOTY_SCENARIOS_DIR || path.join(dataDir || process.cwd(), "scenarios");
@@ -27,15 +28,16 @@ export function attachScenarios(app, { dataDir } = {}) {
   app.get(["/api/scenarios", "/api/agent/scenarios/search"], async (req, res) => {
     const q = cleanText(req.query?.q, 160);
     const limit = safeLimit(req.query?.limit, 24);
+    const agentView = req.path.startsWith("/api/agent/");
     const state = await loadScenarioState(baseDir);
-    const scenarios = selectScenarios(state.scenarios, q, limit);
+    const scenarios = selectScenarios(state.scenarios, q, limit, { agentView });
     res.json({
       ok: true,
       schema: "soty.scenarios.query.v1",
       query: q,
-      top: topScenarioList(state.scenarios, 3),
+      top: topScenarioList(state.scenarios, 3, { agentView }),
       scenarios,
-      memoryLinked: scenarios.filter((item) => item.memoryRefs.length > 0).length
+      memoryLinked: agentView ? scenarios.filter((item) => item.memoryRefs.length > 0).length : 0
     });
   });
 
@@ -69,7 +71,7 @@ export function attachScenarios(app, { dataDir } = {}) {
       res.status(404).json({ ok: false, error: "missing" });
       return;
     }
-    const result = await markScenarioUsed(baseDir, id);
+    const result = await markScenarioUsed(baseDir, id, { dataDir });
     if (!result) {
       res.status(404).json({ ok: false, error: "missing" });
       return;
@@ -130,18 +132,26 @@ async function upsertSharedScenario(baseDir, input) {
     createdAt: now,
     useCount: 0,
     version: 0,
-    memoryRefs: []
+    memoryRefs: [],
+    agentPlan: deriveScenarioAgentPlan(input)
   };
   const improved = shouldImproveScenario(base, input);
+  const prompt = improved ? input.prompt : base.prompt;
+  const title = improved ? input.title : base.title;
+  const agentPlan = improveScenarioAgentPlan(
+    mergeScenarioAgentPlan(base.agentPlan, input.agentPlan, { title, prompt }),
+    { title, prompt, memoryRefs: mergeMemoryRefs(base.memoryRefs, input.memoryRefs), event: existing ? "improve" : "create" }
+  );
   const next = {
     ...base,
-    title: improved ? input.title : base.title,
-    prompt: improved ? input.prompt : base.prompt,
+    title,
+    prompt,
     updatedAt: now,
     version: Number(base.version || 0) + 1,
     aliases: Array.from(new Set([...(base.aliases || []), input.title].filter(Boolean))).slice(0, 12),
     memoryRefs: mergeMemoryRefs(base.memoryRefs, input.memoryRefs),
-    qualityScore: scenarioQuality(improved ? input.prompt : base.prompt),
+    agentPlan,
+    qualityScore: scenarioQuality(prompt, agentPlan),
     source: {
       deviceHash: hashShort(input.deviceId || input.deviceNick || "unknown"),
       deviceNick: cleanText(input.deviceNick, 40)
@@ -155,17 +165,27 @@ async function upsertSharedScenario(baseDir, input) {
   return { scenario: next, created: !existing, improved };
 }
 
-async function markScenarioUsed(baseDir, id) {
+async function markScenarioUsed(baseDir, id, { dataDir } = {}) {
   const state = await loadScenarioState(baseDir);
   const now = new Date().toISOString();
+  const current = state.scenarios.find((item) => item.id === id) || null;
+  const freshMemoryRefs = current ? await scenarioMemoryRefs(dataDir, current).catch(() => []) : [];
   let updated = null;
   const scenarios = state.scenarios.map((item) => {
     if (item.id !== id) {
       return item;
     }
+    const memoryRefs = mergeMemoryRefs(item.memoryRefs, freshMemoryRefs);
     updated = {
       ...item,
       useCount: Number(item.useCount || 0) + 1,
+      memoryRefs,
+      agentPlan: improveScenarioAgentPlan(item.agentPlan, {
+        title: item.title,
+        prompt: item.prompt,
+        memoryRefs,
+        event: "use"
+      }),
       lastUsedAt: now,
       updatedAt: now
     };
@@ -192,8 +212,8 @@ async function appendScenarioEvent(baseDir, event, scenario) {
 }
 
 async function scenarioMemoryRefs(dataDir, input) {
-  const lines = await readRecentLearningReceipts(dataDir, 900).catch(() => []);
-  const receipts = lines.map(parseJsonLine).filter(Boolean);
+  const records = await readRecentLearningReceiptRecords(dataDir, 900).catch(() => []);
+  const receipts = records.map((item) => item.receipt || parseJsonLine(item.text)).filter(Boolean);
   const report = buildTeacherReport(receipts, {
     limit: 900,
     family: "",
@@ -204,14 +224,18 @@ async function scenarioMemoryRefs(dataDir, input) {
     taskSig: cleanText(`${input.title} ${input.prompt}`, 160),
     limit: 8
   });
-  return (query.items || []).slice(0, 6).map((item) => ({
-    id: `mem_${hashShort(`${item.kind}|${item.family}|${item.title}|${item.route}|${item.guidance}`)}`,
-    kind: cleanText(item.kind, 40),
-    family: cleanText(item.family, 80),
-    title: cleanText(item.title, 140),
-    route: cleanText(item.route, 120),
-    confidence: clamp01(item.confidence || 0)
-  }));
+  return (query.items || []).slice(0, 6).map((item, index) => {
+    const source = memoryPointerForItem(records, item, index);
+    return {
+      id: `mem_${hashShort(`${item.kind}|${item.family}|${item.title}|${item.route}|${item.guidance}|${source.file}|${source.line}`)}`,
+      kind: cleanText(item.kind, 40),
+      family: cleanText(item.family, 80),
+      title: cleanText(item.title, 140),
+      route: cleanText(item.route, 120),
+      confidence: clamp01(item.confidence || 0),
+      source
+    };
+  });
 }
 
 async function appendScenarioMemoryReceipt(dataDir, scenario, action) {
@@ -240,25 +264,25 @@ async function appendScenarioMemoryReceipt(dataDir, scenario, action) {
   await appendFile(path.join(learningDir, `${now.toISOString().slice(0, 10)}.jsonl`), `${JSON.stringify(receipt)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-function selectScenarios(scenarios, q, limit) {
+function selectScenarios(scenarios, q, limit, { agentView = false } = {}) {
   const query = normalizeSearch(q);
   const ranked = scenarios
     .map((scenario) => ({ scenario, score: scenarioMatchScore(scenario, query) }))
     .filter((item) => !query || item.score > 0)
     .sort((left, right) => right.score - left.score || scenarioRank(right.scenario) - scenarioRank(left.scenario))
     .slice(0, Math.max(1, Math.min(maxReturnedScenarios, limit)));
-  return ranked.map((item) => publicScenario(item.scenario));
+  return ranked.map((item) => publicScenario(item.scenario, { agentView, score: item.score }));
 }
 
-function topScenarioList(scenarios, limit) {
+function topScenarioList(scenarios, limit, { agentView = false } = {}) {
   return scenarios
     .slice()
     .sort((left, right) => Number(right.useCount || 0) - Number(left.useCount || 0) || scenarioRank(right) - scenarioRank(left))
     .slice(0, limit)
-    .map(publicScenario);
+    .map((scenario) => publicScenario(scenario, { agentView, score: scenarioRank(scenario) }));
 }
 
-function publicScenario(scenario) {
+function publicScenario(scenario, { agentView = false, score = 0 } = {}) {
   return {
     id: scenario.id,
     scope: "shared",
@@ -266,8 +290,9 @@ function publicScenario(scenario) {
     prompt: scenario.prompt,
     useCount: Number(scenario.useCount || 0),
     version: Number(scenario.version || 1),
-    qualityScore: Number(scenario.qualityScore || scenarioQuality(scenario.prompt)),
-    memoryRefs: mergeMemoryRefs(scenario.memoryRefs, []),
+    qualityScore: Number(scenario.qualityScore || scenarioQuality(scenario.prompt, scenario.agentPlan)),
+    memoryRefs: agentView ? mergeMemoryRefs(scenario.memoryRefs, []) : [],
+    ...(agentView ? { agentPlan: cleanAgentPlan(scenario.agentPlan, scenario), score: Number(score || 0) } : {}),
     createdAt: scenario.createdAt,
     updatedAt: scenario.updatedAt,
     lastUsedAt: scenario.lastUsedAt || "",
@@ -287,7 +312,8 @@ function cleanScenarioInput(value) {
     deviceNick: cleanText(value?.deviceNick, 80),
     sourceTunnelId: cleanText(value?.sourceTunnelId, 120),
     sourceText: cleanText(value?.sourceText, 2000),
-    memoryRefs: cleanMemoryRefs(value?.memoryRefs)
+    memoryRefs: cleanMemoryRefs(value?.memoryRefs),
+    agentPlan: cleanAgentPlan(value?.agentPlan, { title, prompt })
   };
 }
 
@@ -311,7 +337,8 @@ function cleanStoredScenario(value) {
     version: safeCount(value?.version) || 1,
     aliases: Array.isArray(value?.aliases) ? value.aliases.map((item) => cleanScenarioTitle(item)).filter(Boolean).slice(0, 12) : [],
     memoryRefs: cleanMemoryRefs(value?.memoryRefs),
-    qualityScore: Number(value?.qualityScore || scenarioQuality(prompt)),
+    agentPlan: cleanAgentPlan(value?.agentPlan, { title, prompt }),
+    qualityScore: Number(value?.qualityScore || scenarioQuality(prompt, value?.agentPlan)),
     example: value?.example === true,
     deleted: value?.deleted === true
   };
@@ -363,15 +390,16 @@ function bestSimilarScenario(scenarios, input) {
 }
 
 function shouldImproveScenario(existing, input) {
-  const current = scenarioQuality(existing.prompt);
-  const next = scenarioQuality(input.prompt);
+  const current = scenarioQuality(existing.prompt, existing.agentPlan);
+  const next = scenarioQuality(input.prompt, input.agentPlan);
   return next >= current || input.prompt.length > String(existing.prompt || "").length + 120;
 }
 
 function scenarioRank(scenario) {
   return Number(scenario.useCount || 0) * 8
-    + Number(scenario.qualityScore || scenarioQuality(scenario.prompt))
+    + Number(scenario.qualityScore || scenarioQuality(scenario.prompt, scenario.agentPlan))
     + Number(scenario.memoryRefs?.length || 0) * 4
+    + Number(scenario.agentPlan?.branches?.length || 0) * 3
     + (scenario.example ? 2 : 0);
 }
 
@@ -384,7 +412,7 @@ function scenarioMatchScore(scenario, query) {
   return overlap * 1000 + (haystack.includes(query) ? 500 : 0) + scenarioRank(scenario);
 }
 
-function scenarioQuality(prompt) {
+function scenarioQuality(prompt, agentPlan = null) {
   const text = String(prompt || "");
   let score = Math.min(40, Math.round(text.length / 260));
   for (const marker of ["Цель:", "Когда использовать:", "Где выполнять:", "Шаги:", "Что считать готовым:"]) {
@@ -392,6 +420,8 @@ function scenarioQuality(prompt) {
       score += 8;
     }
   }
+  const plan = cleanAgentPlan(agentPlan, { prompt });
+  score += Math.min(18, plan.triggers.length * 3 + plan.branches.length * 4 + plan.successChecks.length * 2);
   return score;
 }
 
@@ -418,9 +448,226 @@ function cleanMemoryRefs(value) {
       family: cleanText(item?.family, 80),
       title: cleanText(item?.title, 140),
       route: cleanText(item?.route, 120),
-      confidence: clamp01(item?.confidence)
+      confidence: clamp01(item?.confidence),
+      source: cleanMemoryPointer(item?.source)
     };
   }).filter(Boolean).slice(0, 12);
+}
+
+function memoryPointerForItem(records, item, index = 0) {
+  const family = cleanText(item?.family, 80);
+  const route = cleanText(item?.route, 120);
+  const kind = cleanText(item?.kind, 40);
+  const candidates = records.slice().reverse();
+  const found = candidates.find((record) => {
+    const receipt = record.receipt || {};
+    const receiptFamily = cleanText(receipt.family, 80);
+    const receiptRoute = cleanText(receipt.route, 120);
+    const receiptKind = cleanText(receipt.kind || receipt.toolkit, 40);
+    return (!family || receiptFamily === family)
+      && (!route || receiptRoute === route)
+      && (!kind || receiptKind === kind || cleanText(receipt.toolkit, 40) === kind);
+  }) || candidates[index] || candidates[0] || null;
+  return cleanMemoryPointer({
+    backend: "append-only-jsonl",
+    file: found?.file || "",
+    line: found?.line || 0,
+    receiptId: found?.receipt?.id || "",
+    receivedAt: found?.receipt?.receivedAt || found?.receipt?.createdAt || ""
+  });
+}
+
+function cleanMemoryPointer(value) {
+  const record = value && typeof value === "object" ? value : {};
+  return {
+    backend: "append-only-jsonl",
+    file: cleanMemoryFile(record.file),
+    line: safeCount(record.line),
+    receiptId: cleanText(record.receiptId || record.id, 120),
+    receivedAt: cleanIso(record.receivedAt || record.createdAt)
+  };
+}
+
+function cleanMemoryFile(value) {
+  return String(value || "")
+    .replace(/\\/gu, "/")
+    .split("/")
+    .filter((part) => /^[A-Za-z0-9_.-]+$/u.test(part))
+    .slice(-3)
+    .join("/")
+    .slice(0, 180);
+}
+
+function deriveScenarioAgentPlan(input) {
+  const title = cleanScenarioTitle(input?.title || titleFromPrompt(input?.prompt));
+  const prompt = cleanScenarioPrompt(input?.prompt);
+  const lines = prompt.split(/\n/u).map((line) => line.trim()).filter(Boolean);
+  const steps = lines
+    .filter((line) => /^\d+[\.)]\s+/u.test(line))
+    .map((line) => line.replace(/^\d+[\.)]\s*/u, ""))
+    .slice(0, 12);
+  const triggerText = normalizeSearch(`${title} ${prompt}`)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((item) => item.length > 3)
+    .slice(0, 12);
+  return cleanAgentPlan({
+    schema: "soty.scenario.plan.v1",
+    title,
+    intent: title,
+    triggers: Array.from(new Set(triggerText)),
+    selection: {
+      mode: "agent-adaptive",
+      autoUseWhen: "current request strongly matches triggers or the scenario has better proof than broad rediscovery",
+      explorationRate: 0.12
+    },
+    branches: [
+      {
+        id: "normal",
+        when: "all required context is available",
+        steps: steps.length ? steps : lines.slice(0, 8),
+        verify: ["fresh target/context proof", "task-specific success proof"]
+      },
+      {
+        id: "blocked",
+        when: "required device/file/permission/proof is missing",
+        steps: ["ask only for the missing precondition", "avoid substituting another target or stale memory"],
+        verify: ["blocker is concrete and source-scoped"]
+      }
+    ],
+    successChecks: extractSuccessChecks(prompt),
+    avoid: ["do not follow stale memory without fresh proof", "do not expose internal memory pointers to the user"],
+    memoryPolicy: {
+      updateOn: ["save", "use", "success", "failure", "route-change"],
+      sourceOfTruth: "append-only memory pointers plus current proof"
+    }
+  }, { title, prompt });
+}
+
+function cleanAgentPlan(value, fallback = {}) {
+  const source = value && typeof value === "object" ? value : derivePlanSeed(fallback);
+  const title = cleanScenarioTitle(source.title || fallback.title || titleFromPrompt(fallback.prompt || ""));
+  const intent = cleanText(source.intent || fallback.intent || title, 240);
+  const triggers = cleanStringArray(source.triggers, 20, 80);
+  const branches = cleanBranches(source.branches);
+  const successChecks = cleanStringArray(source.successChecks || source.success || source.verify, 16, 180);
+  const avoid = cleanStringArray(source.avoid || source.doNot, 16, 180);
+  const memoryPointers = cleanMemoryRefs(source.memoryPointers || source.memoryRefs);
+  const selection = source.selection && typeof source.selection === "object" ? source.selection : {};
+  const plan = {
+    schema: "soty.scenario.plan.v1",
+    title,
+    intent,
+    triggers,
+    selection: {
+      mode: cleanText(selection.mode || "agent-adaptive", 60),
+      autoUseWhen: cleanText(selection.autoUseWhen || "strong semantic match plus current proof path", 240),
+      explorationRate: clamp01(selection.explorationRate ?? 0.12)
+    },
+    branches,
+    successChecks,
+    avoid,
+    memoryPointers,
+    memoryPolicy: {
+      updateOn: cleanStringArray(source.memoryPolicy?.updateOn, 12, 60).length
+        ? cleanStringArray(source.memoryPolicy.updateOn, 12, 60)
+        : ["save", "use", "success", "failure", "route-change"],
+      sourceOfTruth: cleanText(source.memoryPolicy?.sourceOfTruth || "append-only memory pointers plus current proof", 160)
+    }
+  };
+  return JSON.stringify(plan).length > maxAgentPlanChars
+    ? { ...plan, branches: plan.branches.slice(0, 4), memoryPointers: plan.memoryPointers.slice(0, 6) }
+    : plan;
+}
+
+function derivePlanSeed(fallback = {}) {
+  return deriveScenarioAgentPlan({
+    title: fallback.title || titleFromPrompt(fallback.prompt || ""),
+    prompt: fallback.prompt || fallback.sourceText || ""
+  });
+}
+
+function mergeScenarioAgentPlan(basePlan, inputPlan, fallback = {}) {
+  const base = cleanAgentPlan(basePlan, fallback);
+  const input = cleanAgentPlan(inputPlan, fallback);
+  return cleanAgentPlan({
+    ...base,
+    ...input,
+    triggers: Array.from(new Set([...base.triggers, ...input.triggers])).slice(0, 20),
+    branches: mergeBranches(base.branches, input.branches),
+    successChecks: Array.from(new Set([...base.successChecks, ...input.successChecks])).slice(0, 16),
+    avoid: Array.from(new Set([...base.avoid, ...input.avoid])).slice(0, 16),
+    memoryPointers: mergeMemoryRefs(base.memoryPointers, input.memoryPointers)
+  }, fallback);
+}
+
+function improveScenarioAgentPlan(plan, { title = "", prompt = "", memoryRefs = [], event = "use" } = {}) {
+  const clean = mergeScenarioAgentPlan(plan, {
+    title,
+    prompt,
+    memoryPointers: memoryRefs,
+    memoryPolicy: {
+      updateOn: ["save", "use", "success", "failure", "route-change"],
+      sourceOfTruth: "append-only memory pointers plus current proof"
+    }
+  }, { title, prompt });
+  return {
+    ...clean,
+    lastImprovedAt: new Date().toISOString(),
+    lastImprovement: cleanText(event, 40),
+    memoryPointers: mergeMemoryRefs(clean.memoryPointers, memoryRefs)
+  };
+}
+
+function cleanBranches(value) {
+  const branches = Array.isArray(value) ? value : [];
+  const cleaned = branches.map((item, index) => {
+    const record = item && typeof item === "object" ? item : { steps: [String(item || "")] };
+    const id = cleanScenarioId(record.id || `branch_${index + 1}`) || `branch_${index + 1}`;
+    const steps = cleanStringArray(record.steps || record.actions, 14, 220);
+    return {
+      id,
+      when: cleanText(record.when || record.condition || "", 220),
+      steps,
+      verify: cleanStringArray(record.verify || record.proof, 8, 180)
+    };
+  }).filter((item) => item.steps.length > 0).slice(0, 8);
+  return cleaned.length > 0 ? cleaned : [{
+    id: "normal",
+    when: "scenario matches current request",
+    steps: ["adapt the visible scenario to current context", "verify fresh state before final answer"],
+    verify: ["fresh proof"]
+  }];
+}
+
+function mergeBranches(left, right) {
+  const map = new Map();
+  for (const branch of [...cleanBranches(left), ...cleanBranches(right)]) {
+    const existing = map.get(branch.id);
+    map.set(branch.id, existing ? {
+      ...existing,
+      when: branch.when || existing.when,
+      steps: Array.from(new Set([...existing.steps, ...branch.steps])).slice(0, 14),
+      verify: Array.from(new Set([...existing.verify, ...branch.verify])).slice(0, 8)
+    } : branch);
+  }
+  return Array.from(map.values()).slice(0, 8);
+}
+
+function cleanStringArray(value, maxItems, maxChars) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => cleanText(item, maxChars))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function extractSuccessChecks(prompt) {
+  const checks = [];
+  for (const line of String(prompt || "").split(/\n/u)) {
+    if (/готов|success|verify|proof|провер|считать/iu.test(line)) {
+      checks.push(line.replace(/^[^:]{0,40}:\s*/u, ""));
+    }
+  }
+  return checks.slice(0, 8);
 }
 
 function titleFromPrompt(prompt) {

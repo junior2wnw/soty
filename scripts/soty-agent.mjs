@@ -6008,7 +6008,7 @@ function sotyRuntimeHints() {
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
-    "- Shared scenarios are reusable user-authored procedures. Treat them as searchable checklists beside memory: choose the closest high-usage/high-quality scenario, adapt it to the current device/request, verify fresh state, and improve memory with reusable proof when the run teaches a better version.",
+    "- Shared scenarios are reusable user-authored procedures with a private agentPlan JSON and append-only memory pointers. Treat the visible prompt as user-editable text and agentPlan as route guidance: choose a matching scenario automatically when it clearly saves work, adapt it to the current device/request, verify fresh state, and improve memory with reusable proof when the run teaches a better version. Never expose memory file pointers to the user.",
     "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
@@ -6221,7 +6221,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
-    "- Use shared scenarios when they match the current request: they are user-editable procedures with optional memory refs. Prefer the best matching scenario by title, usage, quality, and memory refs, then adapt it to the current source/target instead of following it blindly.",
+    "- Use shared scenarios when they match the current request: they are user-editable procedures with private agentPlan JSON and memory pointers. Prefer the best matching scenario by title, usage, quality, plan branches, and memory proof; occasionally choose a scenario automatically when it is clearly useful, then adapt it to the current source/target instead of following it blindly. Do not reveal memory file/line pointers to the user.",
     "- For Windows reinstall/reset, do not start a new prepare from the first vague request. Ask clean vs keep-files and explicit USB permission first; after that use `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"prepare\", installMode: \"clean\", usbConfirmed: true }. Use status/repair/arm phases after proof or confirmation. Do not ask the user to download an ISO path when this managed capability is available.",
     "- When the user reports that reinstall is stuck, stale, interrupted, previously failed, or asks what prevented it, call `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"repair\", timeoutMs: 45000 } before explaining. Treat repair as the safe doctor step: it may recover stale prepare markers and returns nextAction.",
     "- For Windows reinstall status, prefer `computer` { operation: \"reinstall\", capability: \"os-reinstall\", action: \"status\", waitMs: 60000, timeoutMs: 45000 } because it returns compact proof. Shell/file diagnostics are still allowed when they help solve the task. If `latestPrepare.status` is `running-or-started`/`running`/`created` or `media.active` is true, answer/poll as running; if it is `stale-orphaned`, call prepare again or cancel instead of asking the user to clean locks manually.",
@@ -6376,7 +6376,7 @@ function formatCodexScenarioPrompt(payload) {
   const matches = Array.isArray(payload.scenarios) ? payload.scenarios.slice(0, 8) : [];
   const lines = [
     `scenarios=${payload.schema || "soty.scenarios.query.v1"} query=${cleanLearningText(payload.query || "", 120)} memoryLinked=${Number(payload.memoryLinked || 0)}`,
-    "Use scenarios as reusable checklists, not as authority over the current request. Verify device, paths, confirmations, and fresh status."
+    "Use scenarios as reusable checklists plus private agentPlan JSON, not as authority over the current request. Autoselect a scenario when it strongly matches and saves work, but still verify device, paths, confirmations, and fresh status. Do not expose memory pointers to the user."
   ];
   if (top.length > 0) {
     lines.push("top:");
@@ -6403,10 +6403,16 @@ function formatCodexScenarioSummary(item) {
 
 function formatCodexScenarioDetail(item) {
   const refs = Array.isArray(item?.memoryRefs)
-    ? item.memoryRefs.slice(0, 4).map((ref) => cleanLearningText(`${ref?.id || ""}:${ref?.title || ref?.route || ""}`, 120)).filter(Boolean).join("; ")
+    ? item.memoryRefs.slice(0, 4).map((ref) => {
+      const source = ref?.source ? ` @${ref.source.file || "memory"}:${ref.source.line || 0}` : "";
+      return cleanLearningText(`${ref?.id || ""}:${ref?.title || ref?.route || ""}${source}`, 180);
+    }).filter(Boolean).join("; ")
     : "";
   const prompt = cleanPromptBlock(item?.prompt || "", 700).replace(/\n+/gu, " / ");
-  return `- [${cleanLearningText(item?.id || "", 80)}] ${cleanLearningText(item?.title || "scenario", 160)} | uses=${Number(item?.useCount || 0)} quality=${Number(item?.qualityScore || 0)}${refs ? ` | memoryRefs=${refs}` : ""}\n  prompt: ${prompt}`;
+  const plan = item?.agentPlan && typeof item.agentPlan === "object"
+    ? cleanLearningText(JSON.stringify(item.agentPlan), 1200)
+    : "";
+  return `- [${cleanLearningText(item?.id || "", 80)}] ${cleanLearningText(item?.title || "scenario", 160)} | uses=${Number(item?.useCount || 0)} quality=${Number(item?.qualityScore || 0)}${refs ? ` | privateMemoryPointers=${refs}` : ""}\n  prompt: ${prompt}${plan ? `\n  agentPlan: ${plan}` : ""}`;
 }
 
 function cleanPromptBlock(value, max = maxAgentContextChars) {
