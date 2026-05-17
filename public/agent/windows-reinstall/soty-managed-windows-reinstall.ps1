@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("preflight", "prepare", "status", "arm", "cancel")]
+  [ValidateSet("preflight", "prepare", "status", "repair", "arm", "cancel")]
   [string] $Action = "status",
   [string] $UsbDriveLetter = "D",
   [string] $ConfirmationPhrase = "",
@@ -534,6 +534,126 @@ function Complete-StalePrepareJobs($Status) {
   return $count
 }
 
+function Get-ManagedRepairBlockers($Status) {
+  $blockers = New-Object System.Collections.Generic.List[string]
+  if (-not $Status) {
+    $blockers.Add("status-unavailable")
+    return @($blockers)
+  }
+  $usb = $Status.usb
+  if (-not $usb -or $usb.found -ne $true) {
+    if ($usb -and $usb.ambiguous) { $blockers.Add("usb-ambiguous") } else { $blockers.Add("usb-not-found") }
+    return @($blockers)
+  }
+  if ($usb.accepted -ne $true) {
+    $blockers.Add("usb-not-accepted")
+  }
+  try {
+    if ([double] $usb.freeGB -lt 12 -and $usb.hasSotyReinstall -ne $true -and $usb.hasInstallImage -ne $true) {
+      $blockers.Add("usb-free-space-low")
+    }
+  } catch {}
+  return @($blockers)
+}
+
+function Get-ManagedRepairSummary($Status) {
+  if (-not $Status) { return $null }
+  $latest = if ($Status.latestPrepare -and $Status.latestPrepare -is [object]) { $Status.latestPrepare } else { $null }
+  $media = if ($Status.media -and $Status.media -is [object]) { $Status.media } else { $null }
+  return [pscustomobject]@{
+    computerName = [string] $Status.computerName
+    usb = $Status.usb
+    ready = ($Status.ready -eq $true)
+    backupProofOk = ($Status.backupProofOk -eq $true)
+    installImage = [string] $Status.installImage
+    rootAutounattend = ($Status.rootAutounattend -eq $true)
+    oemSetupComplete = ($Status.oemSetupComplete -eq $true)
+    managedUserName = [string] $Status.managedUserName
+    managedUserPasswordMode = [string] $Status.managedUserPasswordMode
+    confirmationPhrase = [string] $Status.confirmationPhrase
+    activePrepareProcessCount = $(try { [int] $Status.activePrepareProcessCount } catch { 0 })
+    latestPrepare = if ($latest) {
+      [pscustomobject]@{
+        id = [string] $latest.id
+        status = [string] $latest.status
+        ok = ($latest.ok -eq $true)
+        exitCode = $(try { [int] $latest.exitCode } catch { $null })
+        activeProcessCount = $(try { [int] $latest.activeProcessCount } catch { 0 })
+        updatedAgeSeconds = $(try { [double] $latest.updatedAgeSeconds } catch { $null })
+      }
+    } else { $null }
+    media = if ($media) {
+      [pscustomobject]@{
+        found = ($media.found -eq $true)
+        ready = ($media.ready -eq $true)
+        complete = ($media.complete -eq $true)
+        downloading = ($media.downloading -eq $true)
+        active = ($media.active -eq $true)
+        gb = $(try { [double] $media.gb } catch { 0 })
+        updatedAgeSeconds = $(try { [double] $media.updatedAgeSeconds } catch { $null })
+      }
+    } else { $null }
+  }
+}
+
+function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
+  $before = Get-ReinstallStatus $Root $Letter
+  $resolvedLetter = Normalize-UsbLetter ([string] $before.usb.driveLetter)
+  if (-not [string]::IsNullOrWhiteSpace($resolvedLetter)) {
+    $Letter = $resolvedLetter
+  }
+  $recovered = Complete-StalePrepareJobs $before
+  $after = if ($recovered -gt 0) { Get-ReinstallStatus $Root $Letter } else { $before }
+  $blockers = @(Get-ManagedRepairBlockers $after)
+  $readyOk = ($after.ready -eq $true -and $after.backupProofOk -eq $true)
+  $active = Test-ManagedPrepareActiveStatus $after
+  $needsPrepare = (-not $readyOk -and -not $active -and $blockers.Count -eq 0)
+  $repairStatus = if ($readyOk) {
+    "ready"
+  } elseif ($active) {
+    "running"
+  } elseif ($blockers.Count -gt 0) {
+    "blocked"
+  } elseif ($recovered -gt 0) {
+    "repair-complete"
+  } else {
+    "idle"
+  }
+  $nextAction = if ($readyOk) {
+    "arm"
+  } elseif ($active) {
+    "status"
+  } elseif ($blockers.Count -gt 0) {
+    "fix-blocker"
+  } else {
+    "prepare"
+  }
+  Emit ([pscustomobject]@{
+    ok = ($blockers.Count -eq 0)
+    action = "repair"
+    status = $repairStatus
+    stalePrepareJobsRecovered = $recovered
+    activePrepare = $active
+    ready = $readyOk
+    needsPrepare = $needsPrepare
+    blockers = @($blockers)
+    nextAction = $nextAction
+    text = if ($blockers.Count -gt 0) {
+      "Managed reinstall repair found a blocker before it can continue."
+    } elseif ($readyOk) {
+      "Managed reinstall is ready; final confirmation is required before arm."
+    } elseif ($active) {
+      "Managed reinstall prepare is active; continue with status polling."
+    } elseif ($recovered -gt 0) {
+      "Recovered stale prepare state. A new prepare can be started safely."
+    } else {
+      "No active prepare is running. Start prepare to continue."
+    }
+    before = Get-ManagedRepairSummary $before
+    after = Get-ManagedRepairSummary $after
+  }) $(if ($blockers.Count -eq 0) { 0 } else { 1 })
+}
+
 function Invoke-ManagedCancel([string] $Root, [string] $Letter) {
   $before = Get-ReinstallStatus $Root $Letter
   $processes = @(Get-PrepareProcesses $Root)
@@ -682,6 +802,9 @@ try {
   }
   if ($Action -eq "prepare") {
     Invoke-ManagedPrepare $WorkspaceRoot $letter
+  }
+  if ($Action -eq "repair") {
+    Invoke-ManagedRepair $WorkspaceRoot $letter
   }
   if ($Action -eq "cancel") {
     Invoke-ManagedCancel $WorkspaceRoot $letter

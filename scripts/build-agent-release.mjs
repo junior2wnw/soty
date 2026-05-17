@@ -197,10 +197,11 @@ function buildRouteProfiles(windowsReinstall) {
         defaultOperation: "reinstall",
         defaultAction: "prepare",
         context: "windows-machine-worker",
-        phases: ["preflight", "prepare", "status", "cancel", "arm"],
+        phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
         route: [
           "prove selected source device and machine/system worker",
           "recover stale prepare state before starting managed prepare",
+          "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "start managed prepare once with stable idempotency",
           "download Windows media with resumable HTTP range route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
@@ -212,13 +213,14 @@ function buildRouteProfiles(windowsReinstall) {
           "do not open Microsoft download pages as the normal route",
           "do not replace the managed downloader with ad-hoc browser automation",
           "do not start a second prepare while one is active",
-          "do not treat stale orphaned prepare jobs as active blockers"
+          "do not treat stale orphaned prepare jobs as active blockers",
+          "do not answer reinstall failure reports from memory without fresh repair/status proof"
         ],
-        proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "cancelProof", "postArmReturnPath"],
+        proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "repairProof", "cancelProof", "postArmReturnPath"],
         scripts: scriptProof,
         learning: {
           reuseKey: "soty-windows-reinstall-managed-fast-lane",
-          scriptUse: "prepare/status/cancel/arm",
+          scriptUse: "prepare/status/repair/cancel/arm",
           successCriteria: "backupProof+installMedia+unattend+postinstall",
           contextFingerprint: "windows-machine-worker",
           receipt: "append-only sanitized route proof"
@@ -319,14 +321,14 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
         name: "windows-reinstall",
         entryTool: "computer",
         kind: "managed-toolkit",
-        phases: ["preflight", "prepare", "status", "cancel", "arm"],
+        phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
         scriptSet: "windowsReinstall",
         scripts: windowsReinstall.scripts.map((script) => ({
           name: script.name,
           sha256: script.sha256,
           bytes: script.bytes
         })),
-        proof: ["backupProof", "installMedia", "unattend", "postinstall", "cancelProof", "rebooting"],
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "repairProof", "cancelProof", "rebooting"],
         routeProfile: "soty-windows-reinstall-managed-fast-lane"
       }
     ],

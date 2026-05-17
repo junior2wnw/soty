@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.65");
+      assertEqual(health.body.version, "0.4.66");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1400,7 +1400,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Route profiles are memory-derived accelerators"));
       assert(agent.includes("soty-windows-reinstall-managed-fast-lane"));
       assert(agent.includes('operation: \\"reinstall\\", capability: \\"os-reinstall\\", action: \\"prepare\\"'));
-      assert(agent.includes('["preflight", "prepare", "status", "cancel", "arm"]'));
+      assert(agent.includes('["preflight", "prepare", "status", "repair", "cancel", "arm"]'));
+      assert(agent.includes('action: \\"repair\\", timeoutMs: 45000'));
+      assert(agent.includes("do not answer reinstall failure reports from memory without fresh repair/status proof"));
+      assert(agent.includes("compactReinstallRepairToolPayload"));
       assert(agent.includes("prepare-job-stale-orphaned"));
       assert(agent.includes("reinstallPrepareOrphanGraceSeconds"));
       assert(agent.includes("A new prepare can be started safely; stale jobs are not active blockers."));
@@ -1473,7 +1476,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(managed.includes("partBytes"));
       assert(managed.includes("Get-PrepareProcesses"));
       assert(managed.includes("activePrepareProcessCount"));
-      assert(managed.includes('[ValidateSet("preflight", "prepare", "status", "arm", "cancel")]'));
+      assert(managed.includes('[ValidateSet("preflight", "prepare", "status", "repair", "arm", "cancel")]'));
+      assert(managed.includes("Invoke-ManagedRepair"));
+      assert(managed.includes("nextAction"));
       assert(managed.includes("$script:PrepareOrphanGraceSeconds = 120"));
       assert(managed.includes("Complete-StalePrepareJobs"));
       assert(managed.includes("Test-ManagedPrepareActiveStatus"));
@@ -1530,7 +1535,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.65");
+      assertEqual(manifest.version, "0.4.66");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1581,6 +1586,8 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(reinstallToolkit.entryTool, "computer");
       assertEqual(reinstallToolkit.routeProfile, "soty-windows-reinstall-managed-fast-lane");
       assert(reinstallToolkit.scripts.some((script) => script.name === "managed"));
+      assert(reinstallToolkit.phases.includes("repair"));
+      assert(reinstallToolkit.proof.includes("repairProof"));
       const durableKernel = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "durable-action");
       assert(durableKernel);
       assertEqual(durableKernel.entryTool, "jobs");
@@ -1656,7 +1663,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.65"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.66"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1703,7 +1710,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.65"'));
+      assert(agentSource.includes('const agentVersion = "0.4.66"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -1822,14 +1829,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.65";', 'const agentVersion = "0.4.64";');
-      assert(oldSource.includes('const agentVersion = "0.4.64"'));
+      const oldSource = nextSource.replace('const agentVersion = "0.4.66";', 'const agentVersion = "0.4.65";');
+      assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.65",
+            version: "0.4.66",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
