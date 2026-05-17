@@ -23,6 +23,7 @@ const npmRegistry = "https://registry.npmjs.org/@openai/codex/latest";
 const args = new Set(process.argv.slice(2));
 const versionArg = valueAfter("--version") || valueAfter("-v") || "";
 const targetDir = resolve(valueAfter("--target") || process.env.SOTY_CODEX_RUNTIME_DIR || "/codex-runtime");
+const recreateContainer = valueAfter("--recreate-container") || "";
 const printLatest = args.has("--print-latest");
 
 const latest = await latestCodexVersion();
@@ -79,6 +80,9 @@ try {
   console.log(`${check.stdout.trim()} installed at ${targetDir}`);
   console.log(`asset=${asset.name}`);
   console.log(`binarySha256=${manifest.binarySha256}`);
+  if (recreateContainer) {
+    recreateDockerContainer(recreateContainer);
+  }
 } finally {
   rmSync(workDir, { recursive: true, force: true });
 }
@@ -220,4 +224,81 @@ function installStage(stageDir, targetDir) {
 
 function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function recreateDockerContainer(name) {
+  const inspect = spawnSync("docker", ["inspect", name], { encoding: "utf8" });
+  if (inspect.status !== 0) {
+    throw new Error(`docker inspect ${name} failed: ${(inspect.stderr || inspect.stdout || "").trim()}`);
+  }
+  const [container] = JSON.parse(inspect.stdout);
+  const config = container.Config || {};
+  const host = container.HostConfig || {};
+  const envPath = join(tmpdir(), `${name}-env-${process.pid}.env`);
+  writeFileSync(envPath, `${(config.Env || []).map((item) => String(item).replace(/\n/gu, "")).join("\n")}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+
+  const runArgs = ["run", "-d", "--name", name];
+  const restart = host.RestartPolicy?.Name || "";
+  if (restart && restart !== "no") {
+    runArgs.push("--restart", restart);
+  }
+  if (host.NetworkMode) {
+    runArgs.push("--network", host.NetworkMode);
+  }
+  for (const [containerPort, mappings] of Object.entries(host.PortBindings || {})) {
+    for (const mapping of mappings || []) {
+      if (!mapping?.HostPort) {
+        continue;
+      }
+      const published = mapping.HostIp
+        ? `${mapping.HostIp}:${mapping.HostPort}:${containerPort}`
+        : `${mapping.HostPort}:${containerPort}`;
+      runArgs.push("-p", published);
+    }
+  }
+  for (const bind of host.Binds || []) {
+    runArgs.push("-v", bind);
+  }
+  runArgs.push("--env-file", envPath);
+  if (config.WorkingDir) {
+    runArgs.push("-w", config.WorkingDir);
+  }
+  if (config.User) {
+    runArgs.push("-u", config.User);
+  }
+  runArgs.push(config.Image);
+  runArgs.push(...(config.Cmd || []));
+
+  const backupName = `${name}-replaced-${process.pid}`;
+  let backupExists = false;
+  try {
+    run("docker", ["stop", name]);
+    run("docker", ["rename", name, backupName]);
+    backupExists = true;
+    const created = spawnSync("docker", runArgs, { encoding: "utf8", stdio: "pipe" });
+    if (created.status !== 0) {
+      throw new Error(`docker run failed: ${(created.stderr || created.stdout || "").trim()}`);
+    }
+    console.log(`${name} recreated ${created.stdout.trim().slice(0, 12)}`);
+    run("docker", ["rm", backupName]);
+    backupExists = false;
+    const version = spawnSync("docker", ["exec", name, "sh", "-c", "command -v codex && codex --version"], {
+      encoding: "utf8",
+      stdio: "pipe"
+    });
+    if (version.status !== 0) {
+      throw new Error(`docker exec ${name} codex check failed: ${(version.stderr || version.stdout || "").trim()}`);
+    }
+    console.log(version.stdout.trim());
+  } finally {
+    if (backupExists) {
+      spawnSync("docker", ["rm", "-f", name], { stdio: "ignore" });
+      spawnSync("docker", ["rename", backupName, name], { stdio: "ignore" });
+      spawnSync("docker", ["start", name], { stdio: "ignore" });
+    }
+    rmSync(envPath, { force: true });
+  }
 }
