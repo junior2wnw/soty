@@ -21,14 +21,26 @@ const maxMessagesPerWindow = 600;
 const maxBytesPerWindow = 70_000_000;
 const maxStoredFiles = 3000;
 const maxStoredFileBytes = 512_000_000;
+const joinRequestTtlMs = 10 * 60_000;
+const joinDecisionTtlMs = 60_000;
+const maxPendingJoinRequests = 16;
+const maxQueuedHandshakeBytes = 128_000;
 
 export function attachRealtime(wss, store) {
-  wss.on("connection", async (ws, _request, roomId) => {
-    const room = await store.load(roomId);
+  wss.on("connection", (ws, _request, roomId) => {
+    let room = null;
+    const queuedMessages = [];
+    let queuedBytes = 0;
     const peer = {
       id: "",
       nick: "",
       joinRequestId: "",
+      joinRequest: null,
+      joinCreatedAt: 0,
+      disconnectedAt: 0,
+      accept: null,
+      acceptedAt: 0,
+      deniedAt: 0,
       rateStartedAt: Date.now(),
       messageCount: 0,
       byteCount: 0,
@@ -38,14 +50,32 @@ export function attachRealtime(wss, store) {
     ws.on("pong", () => {
       ws.isAlive = true;
     });
-    ws.on("message", (raw) => {
+    const receiveMessage = (raw) => {
+      if (!room) {
+        const bytes = Buffer.byteLength(raw);
+        if (queuedMessages.length >= 32 || queuedBytes + bytes > maxQueuedHandshakeBytes) {
+          ws.close(1013, "room loading");
+          return;
+        }
+        queuedBytes += bytes;
+        queuedMessages.push(raw);
+        return;
+      }
       void handleMessage(room, peer, ws, store, raw).catch(() => {
         ws.close(1011, "message error");
       });
-    });
+    };
+    ws.on("message", receiveMessage);
     ws.on("close", () => {
+      if (!room) {
+        return;
+      }
       if (peer.joinRequestId) {
-        room.waiting.delete(peer.joinRequestId);
+        const waiting = room.waiting.get(peer.joinRequestId);
+        if (waiting === peer) {
+          peer.ws = null;
+          peer.disconnectedAt = Date.now();
+        }
       }
       if (peer.id && room.peers.get(peer.id) === peer) {
         room.peers.delete(peer.id);
@@ -54,6 +84,17 @@ export function attachRealtime(wss, store) {
           peers: [...room.peers.values()].map(publicPeer)
         });
       }
+    });
+    void store.load(roomId).then((loaded) => {
+      room = loaded;
+      if (ws.readyState >= 2) {
+        return;
+      }
+      for (const raw of queuedMessages.splice(0)) {
+        receiveMessage(raw);
+      }
+    }).catch(() => {
+      ws.close(1011, "room error");
     });
   });
 
@@ -82,6 +123,7 @@ async function handleMessage(room, peer, ws, store, raw) {
   } catch {
     return;
   }
+  pruneWaiting(room);
 
   if (message.type === "ping") {
     ws.send(JSON.stringify({ type: "pong" }));
@@ -188,23 +230,36 @@ async function handleMessage(room, peer, ws, store, raw) {
   }
   if (message.type === "join.accept" && isShortText(message.requestId, 120) && isJoinAccept(message.accept)) {
     const waiting = room.waiting.get(message.requestId);
-    if (waiting?.ws.readyState === 1) {
+    if (waiting?.ws?.readyState === 1) {
       waiting.ws.send(JSON.stringify({
         type: "join.accepted",
         requestId: message.requestId,
         accept: message.accept
       }));
+      room.waiting.delete(message.requestId);
+      return;
     }
-    room.waiting.delete(message.requestId);
+    if (waiting) {
+      waiting.accept = message.accept;
+      waiting.acceptedAt = Date.now();
+      waiting.deniedAt = 0;
+      return;
+    }
     return;
   }
   if (message.type === "join.deny" && isShortText(message.requestId, 120)) {
     const waiting = room.waiting.get(message.requestId);
-    if (waiting?.ws.readyState === 1) {
+    if (waiting?.ws?.readyState === 1) {
       waiting.ws.send(JSON.stringify({ type: "join.denied", requestId: message.requestId }));
       waiting.ws.close(1000, "denied");
+      room.waiting.delete(message.requestId);
+      return;
     }
-    room.waiting.delete(message.requestId);
+    if (waiting) {
+      waiting.accept = null;
+      waiting.deniedAt = Date.now();
+      return;
+    }
     return;
   }
   if (message.type === "close") {
@@ -212,6 +267,7 @@ async function handleMessage(room, peer, ws, store, raw) {
     room.state.snapshot = null;
     room.state.updates = [];
     room.state.files = [];
+    room.waiting.clear();
     await store.save(room);
     broadcast(room, "", { type: "closed", closed: room.state.closed });
   }
@@ -231,16 +287,38 @@ async function handleHello(room, peer, ws, store, message) {
   }
   if (isJoinRequest(message.joinRequest)) {
     peer.joinRequestId = message.joinRequest.requestId;
+    const existing = room.waiting.get(peer.joinRequestId);
+    if (!existing && pendingJoinRequests(room, "").length >= maxPendingJoinRequests) {
+      ws.close(1013, "too many join requests");
+      return;
+    }
+    peer.joinRequest = {
+      requestId: peer.joinRequestId,
+      deviceId: peer.id,
+      nick: peer.nick,
+      publicJwk: message.joinRequest.publicJwk
+    };
+    peer.joinCreatedAt = existing?.joinCreatedAt || Date.now();
+    if (existing?.accept) {
+      ws.send(JSON.stringify({
+        type: "join.accepted",
+        requestId: peer.joinRequestId,
+        accept: existing.accept
+      }));
+      room.waiting.delete(peer.joinRequestId);
+      return;
+    }
+    if (existing?.deniedAt) {
+      ws.send(JSON.stringify({ type: "join.denied", requestId: peer.joinRequestId }));
+      ws.close(1000, "denied");
+      room.waiting.delete(peer.joinRequestId);
+      return;
+    }
     room.waiting.set(peer.joinRequestId, peer);
     ws.send(JSON.stringify({ type: "join.waiting", requestId: peer.joinRequestId }));
     broadcast(room, peer.id, {
       type: "join.request",
-      request: {
-        requestId: peer.joinRequestId,
-        deviceId: peer.id,
-        nick: peer.nick,
-        publicJwk: message.joinRequest.publicJwk
-      }
+      request: peer.joinRequest
     });
     return;
   }
@@ -257,17 +335,19 @@ async function handleHello(room, peer, ws, store, message) {
     return;
   }
   room.peers.set(peer.id, peer);
+  const peers = [...room.peers.values()].map(publicPeer);
   ws.send(JSON.stringify({
     type: "hello",
     roomId: room.id,
     snapshot: room.state.snapshot,
     updates: room.state.updates,
     files: room.state.files,
-    peers: [...room.peers.values()].map(publicPeer)
+    peers,
+    joinRequests: pendingJoinRequests(room, peer.id)
   }));
   broadcast(room, peer.id, {
     type: "presence",
-    peers: [...room.peers.values()].map(publicPeer)
+    peers
   });
 }
 
@@ -337,8 +417,35 @@ function broadcast(room, exceptDeviceId, message) {
 
 function sendTo(room, deviceId, message) {
   const peer = room.peers.get(deviceId);
-  if (peer?.ws.readyState === 1) {
+  if (peer?.ws?.readyState === 1) {
     peer.ws.send(JSON.stringify(message));
+  }
+}
+
+function pendingJoinRequests(room, ownerDeviceId) {
+  const requests = [];
+  for (const waiting of room.waiting.values()) {
+    if (waiting.joinRequest && !waiting.accept && !waiting.deniedAt && waiting.joinRequest.deviceId !== ownerDeviceId) {
+      requests.push(waiting.joinRequest);
+    }
+  }
+  return requests.slice(0, maxPendingJoinRequests);
+}
+
+function pruneWaiting(room) {
+  const now = Date.now();
+  for (const [requestId, waiting] of room.waiting) {
+    const decisionAt = waiting.acceptedAt || waiting.deniedAt || 0;
+    const startedAt = waiting.joinCreatedAt || waiting.disconnectedAt || waiting.rateStartedAt || now;
+    const ttl = decisionAt ? joinDecisionTtlMs : joinRequestTtlMs;
+    const since = decisionAt || startedAt;
+    if (now - since <= ttl) {
+      continue;
+    }
+    if (!decisionAt && waiting.ws?.readyState === 1) {
+      waiting.ws.close(1000, "join expired");
+    }
+    room.waiting.delete(requestId);
   }
 }
 

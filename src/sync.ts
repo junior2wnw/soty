@@ -320,7 +320,7 @@ interface FileTransfer {
 }
 
 type ServerMessage =
-  | { readonly type: "hello"; readonly snapshot: EncryptedUpdate | null; readonly updates: readonly EncryptedUpdate[]; readonly files?: readonly EncryptedFile[]; readonly peers: readonly PeerInfo[] }
+  | { readonly type: "hello"; readonly snapshot: EncryptedUpdate | null; readonly updates: readonly EncryptedUpdate[]; readonly files?: readonly EncryptedFile[]; readonly peers: readonly PeerInfo[]; readonly joinRequests?: readonly JoinRequest[] }
   | { readonly type: "ack"; readonly id: string }
   | { readonly type: "pong" }
   | { readonly type: "update"; readonly update: EncryptedUpdate }
@@ -404,6 +404,7 @@ export class TunnelSync {
   private reconnectDelay = minReconnectDelayMs;
   private snapshotTimer = 0;
   private heartbeatTimer = 0;
+  private pingWatchdogTimer = 0;
   private lastSeenAt = 0;
   private needsSnapshot = false;
   private readonly auth: Promise<string>;
@@ -428,6 +429,9 @@ export class TunnelSync {
       this.recoverConnection(true);
       return;
     }
+    this.queueSnapshotNow();
+  };
+  private readonly pageHideSnapshot = () => {
     this.queueSnapshotNow();
   };
   private readonly offlineState = () => {
@@ -459,7 +463,9 @@ export class TunnelSync {
     window.addEventListener("offline", this.offlineState);
     window.addEventListener("focus", this.wakeReconnect);
     window.addEventListener("pageshow", this.wakeReconnect);
+    window.addEventListener("pagehide", this.pageHideSnapshot);
     document.addEventListener("visibilitychange", this.visibleReconnect);
+    document.addEventListener("freeze", this.pageHideSnapshot);
     this.networkConnection?.addEventListener("change", this.wakeReconnect);
     this.heartbeatTimer = window.setInterval(() => this.checkConnection(), heartbeatIntervalMs);
     this.connect();
@@ -786,12 +792,15 @@ export class TunnelSync {
     this.destroyed = true;
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.snapshotTimer);
+    window.clearTimeout(this.pingWatchdogTimer);
     window.clearInterval(this.heartbeatTimer);
     window.removeEventListener("online", this.wakeReconnect);
     window.removeEventListener("offline", this.offlineState);
     window.removeEventListener("focus", this.wakeReconnect);
     window.removeEventListener("pageshow", this.wakeReconnect);
+    window.removeEventListener("pagehide", this.pageHideSnapshot);
     document.removeEventListener("visibilitychange", this.visibleReconnect);
+    document.removeEventListener("freeze", this.pageHideSnapshot);
     this.networkConnection?.removeEventListener("change", this.wakeReconnect);
     const ws = this.ws;
     this.ws = null;
@@ -849,6 +858,7 @@ export class TunnelSync {
         return;
       }
       this.ready = false;
+      window.clearTimeout(this.pingWatchdogTimer);
       this.callbacks.onState("closed");
       if (!this.destroyed) {
         const delay = this.reconnectDelay + Math.round(Math.random() * reconnectJitterMs);
@@ -868,6 +878,7 @@ export class TunnelSync {
 
   private async handleMessage(message: ServerMessage): Promise<void> {
     this.lastSeenAt = Date.now();
+    window.clearTimeout(this.pingWatchdogTimer);
     if (message.type === "closed") {
       this.callbacks.onClosed();
       this.destroy();
@@ -911,6 +922,11 @@ export class TunnelSync {
       const peers = message.peers.filter((peer) => peer.id !== this.device.id);
       this.callbacks.onPeers(peers);
       this.syncP2pPeers(peers);
+      for (const request of message.joinRequests ?? []) {
+        if (request.deviceId !== this.device.id) {
+          this.callbacks.onJoinRequest(request);
+        }
+      }
       this.ready = true;
       this.reconnectDelay = minReconnectDelayMs;
       this.callbacks.onState("open");
@@ -1262,11 +1278,7 @@ export class TunnelSync {
   private queueOutbound(item: OutboundUpdate): void {
     void this.sendDirectUpdate(item);
     if (!this.ready || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      if (item.kind === "update") {
-        this.offlineQueue.push(item);
-      } else {
-        this.needsSnapshot = true;
-      }
+      this.queueOfflineUpdate(item);
       return;
     }
     this.sendQueue = this.sendQueue
@@ -1277,11 +1289,7 @@ export class TunnelSync {
   private async sendUpdate(item: OutboundUpdate): Promise<void> {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      if (item.kind === "update") {
-        this.offlineQueue.push(item);
-      } else {
-        this.needsSnapshot = true;
-      }
+      this.queueOfflineUpdate(item);
       return;
     }
     const encrypted = await encryptForTunnel(this.tunnel, item.update);
@@ -1305,6 +1313,18 @@ export class TunnelSync {
       if (this.localUpdates % 64 === 0) {
         this.queueUpdate(Y.encodeStateAsUpdate(this.doc), "snapshot");
       }
+    }
+  }
+
+  private queueOfflineUpdate(item: OutboundUpdate): void {
+    if (item.kind !== "update") {
+      this.needsSnapshot = true;
+      return;
+    }
+    this.offlineQueue.push(item);
+    if (this.offlineQueue.length > 256) {
+      this.offlineQueue.splice(0);
+      this.needsSnapshot = true;
     }
   }
 
@@ -1861,7 +1881,12 @@ export class TunnelSync {
       this.closeAndReconnect(ws);
       return;
     }
-    if (forcePing || Date.now() - this.lastSeenAt > staleConnectionMs) {
+    const staleFor = Date.now() - this.lastSeenAt;
+    if (staleFor > staleConnectionMs) {
+      this.closeAndReconnect(ws);
+      return;
+    }
+    if (forcePing || staleFor > heartbeatIntervalMs) {
       this.safePing(ws);
     }
   }
@@ -1890,6 +1915,7 @@ export class TunnelSync {
       return;
     }
     this.ready = false;
+    window.clearTimeout(this.pingWatchdogTimer);
     this.ws = null;
     this.callbacks.onState("connecting");
     try {
@@ -1902,7 +1928,14 @@ export class TunnelSync {
 
   private safePing(ws: WebSocket): void {
     try {
+      const sentAt = Date.now();
       ws.send(JSON.stringify({ type: "ping" }));
+      window.clearTimeout(this.pingWatchdogTimer);
+      this.pingWatchdogTimer = window.setTimeout(() => {
+        if (!this.destroyed && this.ws === ws && ws.readyState === WebSocket.OPEN && this.lastSeenAt <= sentAt) {
+          this.closeAndReconnect(ws);
+        }
+      }, 4500);
     } catch {
       this.closeAndReconnect(ws);
     }

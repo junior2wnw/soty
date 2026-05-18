@@ -115,7 +115,7 @@ export function isP2pCandidate(value) {
 export function isJoinRequest(value) {
   return value
     && isShortText(value.requestId, 120)
-    && isPlainObject(value.publicJwk);
+    && isJoinPublicJwk(value.publicJwk);
 }
 
 export function isJoinAccept(value) {
@@ -123,11 +123,44 @@ export function isJoinAccept(value) {
     && isShortText(value.roomKeyCiphertext, 512)
     && isShortText(value.nonce, 64)
     && isShortText(value.hostNick, 80)
-    && isPlainObject(value.hostPublicJwk);
+    && isJoinPublicJwk(value.hostPublicJwk);
 }
 
 export function isPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isJoinPublicJwk(value) {
+  if (!isPlainObject(value) || !isShortText(value.kty, 32)) {
+    return false;
+  }
+  const entries = Object.entries(value);
+  if (entries.length > 16) {
+    return false;
+  }
+  let jsonLength = 2;
+  for (const [key, item] of entries) {
+    if (!isShortText(key, 64)) {
+      return false;
+    }
+    if (typeof item === "string") {
+      if (item.length > 1024) {
+        return false;
+      }
+      jsonLength += key.length + item.length + 6;
+      continue;
+    }
+    if (typeof item === "number" || typeof item === "boolean" || item === null) {
+      jsonLength += key.length + String(item).length + 4;
+      continue;
+    }
+    if (Array.isArray(item) && item.length <= 8 && item.every((entry) => typeof entry === "string" && entry.length <= 64)) {
+      jsonLength += key.length + item.reduce((sum, entry) => sum + entry.length + 3, 4);
+      continue;
+    }
+    return false;
+  }
+  return jsonLength <= 4096;
 }
 
 function optionalShortText(value, max) {

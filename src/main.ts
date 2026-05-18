@@ -119,6 +119,7 @@ const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
 const peerDevices = new Map<string, readonly PeerInfo[]>();
+const syncStates = new Map<string, "open" | "closed" | "connecting">();
 const files = new Map<string, ReceivedFile[]>();
 const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
 const localDrafts = new Map<string, string>();
@@ -300,7 +301,12 @@ const lastTypingNoticeAt = new Map<string, number>();
 const joinPrompts = new Set<string>();
 let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
+let joinHeartbeatTimer = 0;
+let joinLastSeenAt = 0;
 let joinCompleted = false;
+let joinWakeCleanup: (() => void) | null = null;
+const joinHeartbeatIntervalMs = 8000;
+const joinStaleMs = 22_000;
 let qrOverlay: HTMLDivElement | null = null;
 let actionOverlay: HTMLDivElement | null = null;
 let actionSearchText = "";
@@ -1010,7 +1016,8 @@ function renderJoinWaiting(invite: JoinInvite): void {
     return;
   }
   joinSocket?.close();
-  window.clearTimeout(joinReconnectTimer);
+  clearJoinSocketTimers();
+  clearJoinWakeListeners();
   joinCompleted = false;
   const nick = cleanNick(invite.fromNick);
   app.innerHTML = `
@@ -1026,10 +1033,23 @@ function renderJoinWaiting(invite: JoinInvite): void {
   `;
   app.querySelector(".deny-button")?.addEventListener("click", () => {
     joinCompleted = true;
+    clearJoinSocketTimers();
+    clearJoinWakeListeners();
     joinSocket?.close();
     continueWithoutPending();
   });
   void startJoinRequest(invite);
+}
+
+function clearJoinSocketTimers(): void {
+  window.clearTimeout(joinReconnectTimer);
+  window.clearInterval(joinHeartbeatTimer);
+  joinHeartbeatTimer = 0;
+}
+
+function clearJoinWakeListeners(): void {
+  joinWakeCleanup?.();
+  joinWakeCleanup = null;
 }
 
 async function startJoinRequest(invite: JoinInvite): Promise<void> {
@@ -1039,14 +1059,55 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
   const requestId = `join_${crypto.randomUUID()}`;
   const pair = await createJoinKeyPair();
   const publicJwk = await publicJoinJwk(pair);
-  const connect = () => {
+  if (!device || joinCompleted) {
+    return;
+  }
+  let reconnectDelay = 1000;
+  const finish = () => {
+    joinCompleted = true;
+    clearJoinSocketTimers();
+    clearJoinWakeListeners();
+  };
+  const pulseJoinSocket = () => {
+    const ws = joinSocket;
+    if (!ws || ws.readyState >= WebSocket.CLOSING) {
+      connect();
+      return;
+    }
+    if (ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    if (Date.now() - joinLastSeenAt > joinStaleMs) {
+      ws.close();
+      return;
+    }
+    try {
+      ws.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      ws.close();
+    }
+  };
+  function wakeJoinSocket(): void {
+    if (joinCompleted || document.visibilityState === "hidden") {
+      return;
+    }
+    pulseJoinSocket();
+  }
+  function connect(): void {
     if (!device || joinCompleted) {
       return;
     }
+    if (joinSocket && joinSocket.readyState < WebSocket.CLOSING) {
+      return;
+    }
+    window.clearTimeout(joinReconnectTimer);
+    window.clearInterval(joinHeartbeatTimer);
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${invite.roomId}`);
     joinSocket = ws;
     ws.onopen = () => {
+      joinLastSeenAt = Date.now();
+      reconnectDelay = 1000;
       ws.send(JSON.stringify({
         type: "hello",
         deviceId: device?.id,
@@ -1056,6 +1117,7 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
           publicJwk
         }
       }));
+      joinHeartbeatTimer = window.setInterval(pulseJoinSocket, joinHeartbeatIntervalMs);
     };
     ws.onmessage = (event) => {
       void (async () => {
@@ -1073,23 +1135,33 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
         } catch {
           return;
         }
+        joinLastSeenAt = Date.now();
+        if (message.type === "pong" || message.type === "join.waiting") {
+          return;
+        }
         if (message.requestId && message.requestId !== requestId) {
           return;
         }
         if (message.type === "join.accepted" && message.accept) {
-          joinCompleted = true;
-          const roomKey = await decryptAcceptedJoin(pair.privateKey, message.accept);
-          const tunnel = tunnelFromAcceptedJoin(invite, roomKey);
-          tunnels = upsertTunnel(tunnel);
-          selectedId = tunnel.id;
-          saveSelectedTunnelId(selectedId);
-          clearPendingJoin();
-          window.history.replaceState({}, "", "/?pwa=1");
-          ws.close();
-          renderApp();
+          finish();
+          try {
+            const roomKey = await decryptAcceptedJoin(pair.privateKey, message.accept);
+            const tunnel = tunnelFromAcceptedJoin(invite, roomKey);
+            tunnels = upsertTunnel(tunnel);
+            selectedId = tunnel.id;
+            saveSelectedTunnelId(selectedId);
+            clearPendingJoin();
+            window.history.replaceState({}, "", "/?pwa=1");
+            ws.close();
+            renderApp();
+            applySelectedText(true);
+          } catch {
+            ws.close();
+            continueWithoutPending();
+          }
         }
         if (message.type === "join.denied" || message.type === "closed") {
-          joinCompleted = true;
+          finish();
           ws.close();
           continueWithoutPending();
         }
@@ -1099,10 +1171,26 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
       ws.close();
     };
     ws.onclose = () => {
-      if (!joinCompleted) {
-        joinReconnectTimer = window.setTimeout(connect, 1200);
+      if (joinSocket === ws) {
+        window.clearInterval(joinHeartbeatTimer);
+        joinHeartbeatTimer = 0;
+      }
+      if (!joinCompleted && joinSocket === ws) {
+        const delay = reconnectDelay + Math.round(Math.random() * 700);
+        reconnectDelay = Math.min(10_000, Math.round(reconnectDelay * 1.5));
+        joinReconnectTimer = window.setTimeout(connect, delay);
       }
     };
+  }
+  window.addEventListener("online", wakeJoinSocket);
+  window.addEventListener("focus", wakeJoinSocket);
+  window.addEventListener("pageshow", wakeJoinSocket);
+  document.addEventListener("visibilitychange", wakeJoinSocket);
+  joinWakeCleanup = () => {
+    window.removeEventListener("online", wakeJoinSocket);
+    window.removeEventListener("focus", wakeJoinSocket);
+    window.removeEventListener("pageshow", wakeJoinSocket);
+    document.removeEventListener("visibilitychange", wakeJoinSocket);
   };
   connect();
 }
@@ -2063,7 +2151,9 @@ function renderDialogChrome(): void {
       : mode === "update"
         ? "AGENT UPDATE"
         : remoteAccess.has(selectedId) ? "REMOTE READY" : remoteEnabled.has(selectedId) ? "HOST LINK" : "LIVE TEXT";
-    state.textContent = remote;
+    const syncState = selectedId ? syncStates.get(selectedId) : "";
+    const syncSuffix = syncState === "connecting" ? " / SYNCING" : syncState === "closed" ? " / OFFLINE" : "";
+    state.textContent = `${remote}${syncSuffix}`;
   }
   if (id) {
     id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
@@ -2225,6 +2315,7 @@ function ensureSync(tunnel: TunnelRecord): void {
       syncs.get(tunnel.id)?.destroy();
       syncs.delete(tunnel.id);
       peerDevices.delete(tunnel.id);
+      syncStates.delete(tunnel.id);
       writerLines.delete(tunnel.id);
       activeActivities.delete(tunnel.id);
       activeActivityTicks.delete(tunnel.id);
@@ -2233,8 +2324,12 @@ function ensureSync(tunnel: TunnelRecord): void {
       renderApp();
     },
     onState: (state) => {
+      syncStates.set(tunnel.id, state);
       if (state === "open") {
         announceRemoteGrant(tunnel.id);
+      }
+      if (tunnel.id === selectedId) {
+        renderDialogChrome();
       }
     }
   }));
@@ -2299,19 +2394,19 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
     overlay.remove();
   };
   overlay.querySelector(".accept-button")?.addEventListener("click", () => {
-    const shouldFocus = shouldAutoSelectTunnel(tunnel.id);
-    setTunnelCounterparty(tunnel.id, nick);
-    if (shouldFocus) {
+    void (async () => {
+      setTunnelCounterparty(tunnel.id, nick);
       selectTunnel(tunnel.id);
-    } else {
-      tunnels = markTunnel(tunnel.id, true);
-    }
-    syncs.get(tunnel.id)?.acceptJoin(request, device?.nick || ".");
-    renderTiles();
-    if (shouldFocus) {
-      applySelectedText();
-    }
-    remove();
+      clearTunnelNotices(tunnel.id);
+      try {
+        await syncs.get(tunnel.id)?.acceptJoin(request, device?.nick || ".");
+      } finally {
+        closeQrOverlay();
+        remove();
+        renderApp();
+        applySelectedText(true);
+      }
+    })();
   });
   overlay.querySelector(".deny-button")?.addEventListener("click", () => {
     syncs.get(tunnel.id)?.denyJoin(request);
@@ -2324,6 +2419,7 @@ function closeTunnel(id: string): void {
   const sync = syncs.get(id);
   sync?.closeForEveryone();
   syncs.delete(id);
+  syncStates.delete(id);
   remoteEnabled = setRemoteEnabled(id, false);
   remoteAccess = setRemoteAccess(id, "", false);
   if (terminalOpenId === id) {
@@ -2365,6 +2461,7 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     const sync = syncs.get(tunnel.id);
     sync?.closeForEveryone();
     syncs.delete(tunnel.id);
+    syncStates.delete(tunnel.id);
     writerLines.delete(tunnel.id);
     activeActivities.delete(tunnel.id);
     activeActivityTicks.delete(tunnel.id);

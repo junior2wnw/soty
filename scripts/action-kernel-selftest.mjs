@@ -1659,6 +1659,8 @@ async function runScenarios({ relayUrl } = {}) {
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const agentRelay = (await readFile(join(root, "server", "agent-relay.js"), "utf8")).replace(/\r\n/gu, "\n");
+      const realtime = (await readFile(join(root, "server", "realtime.js"), "utf8")).replace(/\r\n/gu, "\n");
+      const validators = (await readFile(join(root, "server", "validators.js"), "utf8")).replace(/\r\n/gu, "\n");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
       let userWindowsInstallerExists = true;
       try {
@@ -1744,6 +1746,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("agentButtonWatchHiddenMs"));
       assert(ui.includes('window.addEventListener("online"'));
       assert(ui.includes('document.visibilityState === "hidden"'));
+      assert(ui.includes("joinHeartbeatIntervalMs"));
+      assert(ui.includes("clearJoinWakeListeners"));
+      assert(ui.includes("syncStates"));
+      assert(ui.includes("closeQrOverlay();"));
       assert(ui.includes("sendFileChunkFromBytes"));
       assert(ui.includes("processLocalAgentDataPlaneOutput"));
       assert(ui.includes("SOTY_FILE_CHUNK"));
@@ -1779,6 +1785,18 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("redactVisibleTerminalSecrets"));
       assert(!ui.includes("appendAgentTerminalTranscript"));
       assert(agentRelay.includes("redactTerminalText"));
+      assert(syncSource.includes("joinRequests?: readonly JoinRequest[]"));
+      assert(syncSource.includes("pingWatchdogTimer"));
+      assert(syncSource.includes("queueOfflineUpdate"));
+      assert(syncSource.includes('window.addEventListener("pagehide"'));
+      assert(realtime.includes("joinRequestTtlMs"));
+      assert(realtime.includes("queuedMessages"));
+      assert(realtime.includes("maxQueuedHandshakeBytes"));
+      assert(realtime.includes("maxPendingJoinRequests"));
+      assert(realtime.includes("pendingJoinRequests"));
+      assert(realtime.includes("waiting.accept = message.accept"));
+      assert(validators.includes("function isJoinPublicJwk"));
+      assert(validators.includes("jsonLength <= 4096"));
       assert(agentSource.includes("startOperatorRunJsonStream"));
       assert(agentSource.includes("sendLongOperatorJson"));
       assert(agentSource.includes('"X-Accel-Buffering": "no"'));
