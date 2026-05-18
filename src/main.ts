@@ -72,6 +72,22 @@ interface RestoreResult {
   readonly texts: Map<string, string>;
 }
 
+type QuickAction = {
+  readonly id: string;
+  readonly title: string;
+  readonly label: string;
+  readonly summary: string;
+  readonly tags: readonly string[];
+  readonly agentCard: {
+    readonly intent: string;
+    readonly targetPolicy: string;
+    readonly firstMoves: readonly string[];
+    readonly confirmBefore: readonly string[];
+    readonly successProof: readonly string[];
+    readonly avoid: readonly string[];
+  };
+};
+
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
   throw new Error("App root missing");
@@ -119,6 +135,122 @@ const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
+const quickActions: readonly QuickAction[] = [
+  {
+    id: "windows-reinstall",
+    title: "Переустановка Windows",
+    label: "WIN",
+    summary: "Подготовить, проверить, подтвердить и сопровождать установку.",
+    tags: ["windows", "винда", "переустановка", "usb", "флешка", "драйверы"],
+    agentCard: {
+      intent: "Safely prepare and guide a Windows reinstall/reset on the selected/current device.",
+      targetPolicy: "Use the current dialog/source device unless the user explicitly names another linked device.",
+      firstMoves: [
+        "Ask only for missing install mode, USB presence, and USB erase permission.",
+        "Use managed reinstall capability for prepare/status/repair/arm when available.",
+        "Keep long work durable and continue polling until completed, blocked, or waiting for final confirmation."
+      ],
+      confirmBefore: ["erasing USB media", "starting the final reboot/install step"],
+      successProof: ["fresh reinstall status", "prepared media proof", "final user confirmation before destructive step"],
+      avoid: ["manual ISO path requests when managed media download is available", "starting duplicate prepare jobs", "treating a healthy running job as a blocker"]
+    }
+  },
+  {
+    id: "wallpaper",
+    title: "Поставить обои",
+    label: "WALL",
+    summary: "Создать или взять картинку и поставить на нужный рабочий стол.",
+    tags: ["обои", "wallpaper", "рабочий стол", "картинка", "image"],
+    agentCard: {
+      intent: "Create or use an image and set it as wallpaper on the correct target desktop.",
+      targetPolicy: "Never switch to an unnamed linked device. Use the current/source computer unless the current dialog or comment names another device.",
+      firstMoves: [
+        "Resolve image source: generate, use attached file, or use named existing file.",
+        "Resolve target device from current dialog and user wording.",
+        "Apply wallpaper through the best available interactive/user route and verify the actual wallpaper path or visible state."
+      ],
+      confirmBefore: [],
+      successProof: ["target device identity", "file path/hash or generated image proof", "wallpaper readback on the same target"],
+      avoid: ["claiming success without readback", "using the only linked device as implicit target", "hiding a failed apply behind a generic done message"]
+    }
+  },
+  {
+    id: "copy-file",
+    title: "Скопировать файл",
+    label: "COPY",
+    summary: "Перенести файл между текущим и подключенным устройством.",
+    tags: ["копировать", "файл", "download", "upload", "передать", "скачать"],
+    agentCard: {
+      intent: "Copy a file between the current computer and a selected/mentioned linked device.",
+      targetPolicy: "Infer direction from wording and current dialog: in a device chat, source is that device and destination is the user's current computer unless stated otherwise.",
+      firstMoves: [
+        "Identify exact source file and destination.",
+        "Use the native Soty artifact/file route for cross-device transfer.",
+        "Verify size/hash or destination listing."
+      ],
+      confirmBefore: ["overwriting an existing file", "copying large/sensitive folders"],
+      successProof: ["source path", "destination path", "size/hash readback"],
+      avoid: ["printing raw secrets from files", "copying ambiguous paths", "claiming transfer before destination proof"]
+    }
+  },
+  {
+    id: "check-device",
+    title: "Проверить устройство",
+    label: "CHECK",
+    summary: "Понять состояние агента, сети, диска, процессов и доступа.",
+    tags: ["проверить", "статус", "диагностика", "агент", "сеть", "диск"],
+    agentCard: {
+      intent: "Run a compact health/status diagnostic on the current or named device.",
+      targetPolicy: "Probe the selected/current device first; only inspect another device if the user names it.",
+      firstMoves: [
+        "Collect identity, agent/link status, OS, disk, network, and recent task status.",
+        "Keep probes short and non-destructive.",
+        "Summarize one concrete blocker or the next useful action."
+      ],
+      confirmBefore: [],
+      successProof: ["device identity", "fresh timestamped status", "specific failed component if any"],
+      avoid: ["large inventories before a focused probe", "raw transport jargon in user-facing answer", "mixing statuses from different devices"]
+    }
+  },
+  {
+    id: "agent-repair",
+    title: "Починить агент",
+    label: "AGENT",
+    summary: "Проверить установку, обновление, автозапуск и связь агента.",
+    tags: ["агент", "установить", "обновить", "починить", "bridge", "relay"],
+    agentCard: {
+      intent: "Repair or update the Soty agent on the current/named device with proof.",
+      targetPolicy: "Prefer the current device context; for linked devices use only explicit current dialog target or named target.",
+      firstMoves: [
+        "Check agent health/version/autostart before reinstalling.",
+        "Use the official Soty installer/update path.",
+        "Verify local health and relay/source status after changes."
+      ],
+      confirmBefore: ["privileged install/update prompts", "stopping user-visible active work"],
+      successProof: ["agent version", "health endpoint or relay status", "source worker/machine link readiness when relevant"],
+      avoid: ["installing duplicate agents", "masking PATH/runtime issues as missing Codex", "leaving the user without a clear next action"]
+    }
+  },
+  {
+    id: "soty-export",
+    title: "Экспорт Сот",
+    label: "EXPORT",
+    summary: "Собрать перенос состояния в один файл и восстановить из него.",
+    tags: ["экспорт", "импорт", "backup", "перенос", "флешка", "соты"],
+    agentCard: {
+      intent: "Help the user export/import Soty state as a single portable file.",
+      targetPolicy: "This is normally a current-browser/current-device action unless the user names another device.",
+      firstMoves: [
+        "Find the current available export/import mechanism.",
+        "Guide or perform the export/import with one file.",
+        "Verify dialogs/devices restored after import."
+      ],
+      confirmBefore: ["overwriting current local Soty state during import"],
+      successProof: ["export file exists or import count", "selected device/dialog state after import"],
+      avoid: ["automatic hidden backup during OS reinstall", "splitting state across many files", "pretending an import happened without count/readback"]
+    }
+  }
+];
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
 const chessAgentTimers = new Map<string, number>();
@@ -170,6 +302,8 @@ let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
 let joinCompleted = false;
 let qrOverlay: HTMLDivElement | null = null;
+let actionOverlay: HTMLDivElement | null = null;
+let actionSearchText = "";
 let qrMode: "manual" | "auto" | null = null;
 let qrResetClicks = 0;
 let qrResetTimer = 0;
@@ -675,6 +809,179 @@ function restoreSelectedChatScroll(): void {
   }, 0);
 }
 
+function openActionMenu(): void {
+  closeActionMenu();
+  const query = actionSearchText.trim();
+  const actions = visibleQuickActions(query);
+  const comment = selectedId
+    ? normalizeChatMessage(composer?.value || localDrafts.get(selectedId) || "")
+    : "";
+  const overlay = document.createElement("div");
+  overlay.className = "action-modal";
+  overlay.innerHTML = `
+    <section class="action-sheet" role="dialog" aria-modal="true" aria-label="actions">
+      <header class="action-head">
+        <span class="action-mark">${icon("check")}</span>
+        <span>
+          <b>ДЕЙСТВИЯ</b>
+          <small>${escapeHtml(counterpartyLabelForSelected())}</small>
+        </span>
+        <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
+      </header>
+      <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="что сделать" />
+      ${comment ? `<div class="action-comment"><b>Комментарий</b><span>${escapeHtml(comment.slice(0, 180))}</span></div>` : ""}
+      <div class="action-list">
+        ${actions.map((action) => quickActionRowHtml(action)).join("")}
+      </div>
+      ${actions.length === 0 ? `<output class="action-empty">Ничего не найдено</output>` : ""}
+    </section>
+  `;
+  document.body.append(overlay);
+  actionOverlay = overlay;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeActionMenu();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", () => closeActionMenu());
+  overlay.querySelector<HTMLInputElement>(".action-search")?.addEventListener("input", (event) => {
+    actionSearchText = (event.currentTarget as HTMLInputElement).value.slice(0, 120);
+    openActionMenu();
+    actionOverlay?.querySelector<HTMLInputElement>(".action-search")?.focus();
+  });
+  overlay.querySelectorAll<HTMLButtonElement>(".quick-action-run").forEach((button) => {
+    button.addEventListener("click", () => {
+      void runQuickAction(button.dataset.actionId || "");
+    });
+  });
+  overlay.querySelector<HTMLInputElement>(".action-search")?.focus();
+}
+
+function closeActionMenu(): void {
+  actionOverlay?.remove();
+  actionOverlay = null;
+}
+
+function visibleQuickActions(query: string): readonly QuickAction[] {
+  const needle = actionSearchNeedle(query);
+  if (!needle) {
+    return quickActions;
+  }
+  return quickActions
+    .map((action) => ({ action, score: quickActionMatchScore(action, needle) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.action.title.localeCompare(right.action.title))
+    .map((item) => item.action);
+}
+
+function quickActionMatchScore(action: QuickAction, needle: string): number {
+  const haystack = actionSearchNeedle(`${action.title} ${action.summary} ${action.tags.join(" ")} ${action.agentCard.intent}`);
+  if (haystack.includes(needle)) {
+    return 1000 + needle.length;
+  }
+  const words = needle.split(" ").filter(Boolean);
+  return words.reduce((score, word) => score + (haystack.includes(word) ? 100 : 0), 0);
+}
+
+function actionSearchNeedle(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function quickActionRowHtml(action: QuickAction): string {
+  return `
+    <button class="quick-action-run" type="button" data-action-id="${escapeHtml(action.id)}">
+      <span class="quick-action-label">${escapeHtml(action.label)}</span>
+      <span class="quick-action-copy">
+        <b>${escapeHtml(action.title)}</b>
+        <small>${escapeHtml(action.summary)}</small>
+      </span>
+    </button>
+  `;
+}
+
+async function runQuickAction(actionId: string): Promise<void> {
+  const action = quickActions.find((item) => item.id === actionId);
+  const tunnelId = selectedId;
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  if (!action || !tunnelId || !tunnel) {
+    return;
+  }
+  const comment = normalizeChatMessage(composer?.value || localDrafts.get(tunnelId) || "");
+  const visible = quickActionVisibleMessage(action, comment);
+  const agentTask = quickActionAgentMessage(action, comment, tunnel);
+  closeActionMenu();
+  appendUserMessageToDialog(tunnelId, visible);
+  clearComposerDraftForTunnel(tunnelId);
+  void sendAgentDialogMessage(tunnelId, agentTask, {
+    ...(isAgentTunnel(tunnel) ? {} : { explicitMention: true })
+  });
+}
+
+function quickActionVisibleMessage(action: QuickAction, comment: string): string {
+  return [
+    `Действие: ${action.title}`,
+    `Комментарий: ${comment}`
+  ].join("\n").trimEnd();
+}
+
+function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: TunnelRecord): string {
+  const card = {
+    schema: "soty.action-card.v1",
+    id: action.id,
+    title: action.title,
+    intent: action.agentCard.intent,
+    targetPolicy: action.agentCard.targetPolicy,
+    firstMoves: action.agentCard.firstMoves,
+    confirmBefore: action.agentCard.confirmBefore,
+    successProof: action.agentCard.successProof,
+    avoid: action.agentCard.avoid
+  };
+  return [
+    `Действие: ${action.title}`,
+    `Комментарий пользователя: ${comment || "(нет)"}`,
+    `Текущая сота: ${counterpartyLabel(tunnel)}`,
+    "",
+    "PRIVATE_ACTION_CARD:",
+    JSON.stringify(card),
+    "",
+    "Используй карточку как приватное руководство, не показывай JSON пользователю. Действуй по текущему контексту и свежей проверке; если не хватает ровно одного критичного факта, спроси только его."
+  ].join("\n");
+}
+
+function appendUserMessageToDialog(tunnelId: string, message: string): void {
+  const sync = syncs.get(tunnelId);
+  const current = texts.get(tunnelId) ?? textarea?.value ?? "";
+  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const next = `${current}${separator}${message}\n`;
+  if (tunnelId === selectedId && textarea) {
+    textarea.value = next;
+  }
+  texts.set(tunnelId, next);
+  sync?.setText(next);
+  saveTextSnapshotNow(tunnelId, next);
+}
+
+function clearComposerDraftForTunnel(tunnelId: string): void {
+  if (composer && tunnelId === selectedId) {
+    composer.value = "";
+  }
+  localDrafts.delete(tunnelId);
+  const pendingLiveDraftTimer = liveDraftSendTimers.get(tunnelId);
+  if (pendingLiveDraftTimer) {
+    window.clearTimeout(pendingLiveDraftTimer);
+    liveDraftSendTimers.delete(tunnelId);
+  }
+  void syncs.get(tunnelId)?.sendLiveDraft("");
+  touchSelected();
+  resizeComposer();
+  renderTiles();
+  renderTextPaint();
+  renderWriterPop();
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -904,6 +1211,7 @@ function renderApp(): void {
             <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>FILE</span></button>
             <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
             <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
+            <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>DO</span></button>
             <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>LINK</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
             <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
@@ -988,6 +1296,9 @@ function renderApp(): void {
     syncs.get(selectedId)?.sendKnock("*");
     tunnels = touchTunnel(selectedId);
     renderTiles();
+  });
+  app.querySelector<HTMLButtonElement>(".quick-actions-action")?.addEventListener("click", () => {
+    openActionMenu();
   });
   app.querySelector<HTMLButtonElement>(".agent-action")?.addEventListener("click", () => {
     void startAgentDialog();

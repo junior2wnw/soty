@@ -1653,12 +1653,12 @@ async function runScenarios({ relayUrl } = {}) {
       const windowsMachineInstall = await readFile(join(root, "public", "agent", "install-windows-machine.cmd"), "utf8");
       const windowsMachineBootstrap = await readFile(join(root, "public", "agent", "install-windows-machine-bootstrap.ps1"), "utf8");
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
-      const ui = await readFile(join(root, "src", "main.ts"), "utf8");
+      const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
-      const agentRelay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
+      const agentRelay = (await readFile(join(root, "server", "agent-relay.js"), "utf8")).replace(/\r\n/gu, "\n");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
       let userWindowsInstallerExists = true;
       try {
@@ -1760,6 +1760,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("agent-sheet"));
       assert(!ui.includes("machine-button"));
       assert(!ui.includes("canInstallMachineAgent"));
+      assert(ui.includes("quickActions"));
+      assert(ui.includes("soty.action-card.v1"));
+      assert(ui.includes("quick-actions-action"));
+      assert(ui.includes("Комментарий пользователя"));
+      assert(ui.includes("PRIVATE_ACTION_CARD"));
+      assert(ui.includes("appendUserMessageToDialog"));
+      assert(!ui.includes("soty:scenarios"));
+      assert(!ui.includes("scenarioInvocationPrompt"));
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
