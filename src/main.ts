@@ -1581,7 +1581,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
     requestAgentDownload(device);
     return;
   }
-  if (!isAgentSourceCompanionReady(companion)) {
+  if (!isAgentSourceCompanionReady(companion, device.id)) {
     markAgentDownloadNeeded();
     requestAgentDownload(device);
     return;
@@ -1605,24 +1605,25 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   startAgentSourceControl(agentTunnelId);
 }
 
-function isAgentSourceCompanionReady(agent: LocalAgentStatus): boolean {
+function isAgentSourceCompanionReady(agent: LocalAgentStatus, expectedDeviceId = ""): boolean {
   return agent.ok === true
     && agent.relay === true
     && agent.sourceWorker === true
+    && (!expectedDeviceId || agent.deviceId === expectedDeviceId)
     && agent.autoUpdate !== false
     && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
 }
 
 async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
   let agent = await refreshLocalCompanion();
-  if (device && !isAgentSourceCompanionReady(agent)) {
+  if (device && !isAgentSourceCompanionReady(agent, device.id)) {
     const sourceAgent = await checkAgentSourceWorker(device.id, 1200);
-    if (isAgentSourceCompanionReady(sourceAgent)) {
+    if (isAgentSourceCompanionReady(sourceAgent, device.id)) {
       localAgent = sourceAgent;
       return sourceAgent;
     }
   }
-  if (!device || isAgentSourceCompanionReady(agent)) {
+  if (!device || isAgentSourceCompanionReady(agent, device.id)) {
     return agent;
   }
   if (agent.ok) {
@@ -1631,9 +1632,9 @@ async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
     do {
       await wait(350);
       const sourceAgent = await checkAgentSourceWorker(device.id, 1200);
-      agent = isAgentSourceCompanionReady(sourceAgent) ? sourceAgent : await checkLocalAgent(1200);
+      agent = isAgentSourceCompanionReady(sourceAgent, device.id) ? sourceAgent : await checkLocalAgent(1200);
       localAgent = agent;
-      if (isAgentSourceCompanionReady(agent)) {
+      if (isAgentSourceCompanionReady(agent, device.id)) {
         return agent;
       }
     } while (Date.now() < deadline);
@@ -1776,10 +1777,17 @@ async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> 
   }
   const probe = (async () => {
     await refreshAgentRelease(force);
-    const directAgent = await checkLocalCompanionAgent(1200);
-    const relayedMachineAgent = device?.id
+    let directAgent = await checkLocalCompanionAgent(1200);
+    let relayedMachineAgent = device?.id
       ? await checkAgentSourceMachineAgent(device.id, 1200)
       : { ok: false };
+    if (device?.id && directAgent.ok && !isAgentMachineLinkReady(directAgent, device.id)) {
+      const bound = await bindLocalAgentRelay(device, 1800).catch(() => false);
+      if (bound) {
+        directAgent = await checkLocalCompanionAgent(1200);
+        relayedMachineAgent = await checkAgentSourceMachineAgent(device.id, 1800);
+      }
+    }
     localAgent = directAgent;
     agentButtonAgent = chooseAgentButtonStatus(directAgent, relayedMachineAgent);
     renderDialogChrome();
@@ -1796,7 +1804,7 @@ async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> 
 }
 
 function chooseAgentButtonStatus(directAgent: LocalAgentStatus, relayedMachineAgent: LocalAgentStatus): LocalAgentStatus {
-  if (isAgentMachineLinkReady(relayedMachineAgent)) {
+  if (isAgentMachineLinkReady(relayedMachineAgent, device?.id || "")) {
     return relayedMachineAgent;
   }
   return directAgent;
@@ -1812,17 +1820,18 @@ function agentButtonMode(agent: LocalAgentStatus = agentButtonAgent): AgentButto
   if (agentRelease?.version && compareVersion(agent.version || "0.0.0", agentRelease.version) < 0) {
     return "update";
   }
-  if (!isAgentMachineLinkReady(agent)) {
+  if (!isAgentMachineLinkReady(agent, device?.id || "")) {
     return "download";
   }
   return "link";
 }
 
-function isAgentMachineLinkReady(agent: LocalAgentStatus): boolean {
+function isAgentMachineLinkReady(agent: LocalAgentStatus, expectedDeviceId = ""): boolean {
   return agent.ok === true
     && agent.sourceWorker === true
     && agent.system === true
     && agent.scope === "Machine"
+    && (!expectedDeviceId || agent.deviceId === expectedDeviceId)
     && agent.autoUpdate !== false
     && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
 }
@@ -3074,7 +3083,7 @@ function agentDeviceNetworkContext(
     ? null
     : linkedOperatorTargetForTunnel(tunnelId, targets);
   const selectedTargetDeviceId = selectedTarget?.hostDeviceId || selectedTarget?.deviceIds?.[0] || "";
-  const sourceCapabilities = isAgentSourceCompanionReady(localAgent)
+  const sourceCapabilities = isAgentSourceCompanionReady(localAgent, device?.id || "")
     ? ["source-device-agent"]
     : ["web-controller"];
   return {
@@ -4275,7 +4284,7 @@ async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
   }
   agentSourceGrantRefreshAt = now + agentSourceGrantRefreshMs;
   localAgent = await ensureAgentSourceCompanion();
-  if (!isAgentSourceCompanionReady(localAgent)) {
+  if (!isAgentSourceCompanionReady(localAgent, device.id)) {
     agentSourceGrantRefreshAt = now + 5000;
     return;
   }
@@ -5027,7 +5036,7 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
     return;
   }
   localAgent = await ensureAgentSourceCompanion();
-  if (!isAgentSourceCompanionReady(localAgent)) {
+  if (!isAgentSourceCompanionReady(localAgent, device.id)) {
     renderTiles();
     renderTerminal();
     publishOperatorTargets();

@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.73");
+      assertEqual(health.body.version, "0.4.74");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -132,11 +132,12 @@ async function runScenarios({ relayUrl } = {}) {
         }), { "Content-Type": "application/json" });
         assertEqual(bind.status, 200);
         assertEqual(bind.body.ok, true);
-        assertEqual(bind.body.rebound, false);
-        assertEqual(bind.body.currentDeviceId, "dev-managed");
+        assertEqual(bind.body.rebound, true);
+        assertEqual(bind.body.previousDeviceId, "dev-managed");
+        assertEqual(bind.body.deviceId, "dev-empty-profile");
         const health = await requestPort(managedPort, "GET", "/health");
-        assertEqual(health.body.deviceId, "dev-managed");
-        assertEqual(health.body.deviceNick, "managed-source");
+        assertEqual(health.body.deviceId, "dev-empty-profile");
+        assertEqual(health.body.deviceNick, "empty-profile");
       } finally {
         child.kill();
         await onceExit(child).catch(() => undefined);
@@ -1218,6 +1219,7 @@ async function runScenarios({ relayUrl } = {}) {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const relay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
+      const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
@@ -1492,6 +1494,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(relay.includes("directWorkerSeenAt"));
       assert(relay.includes("isDirectWorkerHeartbeat || !agentSourceDirectWorkerFresh(source)"));
       assert(relay.includes("installed Soty Agent must refresh before direct device control is available"));
+      assert(agent.includes('function allowAgentDeviceRebind()'));
+      assert(agent.includes('process.env.SOTY_AGENT_ALLOW_REBIND !== "0"'));
+      assert(agent.includes("previousDeviceId"));
+      assert(agentFeature.includes("payload.deviceId === expectedDeviceId"));
+      assert(main.includes("isAgentSourceCompanionReady(agent, device.id)"));
+      assert(main.includes("isAgentMachineLinkReady(agent, device?.id || \"\")"));
       assert(!main.includes("localAgent.sourceWorker !== true"));
       assert(!main.includes("function runAgentSourceJob"));
       assert(!main.includes("pollAgentSourceCommands"));
@@ -1596,7 +1604,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.73");
+      assertEqual(manifest.version, "0.4.74");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1736,7 +1744,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.73"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.74"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1800,7 +1808,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.73"'));
+      assert(agentSource.includes('const agentVersion = "0.4.74"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -1931,14 +1939,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.73";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.74";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.73",
+            version: "0.4.74",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

@@ -189,6 +189,7 @@ export async function bindLocalAgentRelay(device?: { readonly id?: string; reado
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const expectedDeviceId = typeof device?.id === "string" ? device.id : "";
     const response = await fetch("http://127.0.0.1:49424/agent/relay", {
       method: "POST",
       cache: "no-store",
@@ -202,7 +203,18 @@ export async function bindLocalAgentRelay(device?: { readonly id?: string; reado
       signal: controller.signal,
       targetAddressSpace: "loopback"
     } as RequestInit & { readonly targetAddressSpace: "loopback" });
-    return response.ok;
+    const payload = await response.json().catch(() => ({})) as {
+      readonly ok?: boolean;
+      readonly deviceId?: string;
+      readonly currentDeviceId?: string;
+    };
+    if (!response.ok || payload.ok === false) {
+      return false;
+    }
+    if (!expectedDeviceId) {
+      return true;
+    }
+    return payload.deviceId === expectedDeviceId || payload.currentDeviceId === expectedDeviceId;
   } catch {
     return false;
   } finally {
@@ -257,6 +269,7 @@ export async function checkAgentSourceWorker(deviceId: string, timeoutMs = 1500)
     }
     const payload = await response.json() as {
       readonly targets?: readonly {
+        readonly label?: string;
         readonly hostDeviceId?: string;
         readonly deviceIds?: readonly string[];
         readonly localAgent?: unknown;
@@ -268,7 +281,7 @@ export async function checkAgentSourceWorker(deviceId: string, timeoutMs = 1500)
     };
     const target = (payload.targets || []).find((item) => item.hostDeviceId === deviceId || item.deviceIds?.includes(deviceId));
     const worker = readLocalAgentStatus(target?.workers?.user?.localAgent) || readLocalAgentStatus(target?.localAgent);
-    return worker ? { ...worker, relay: true } : { ok: false };
+    return worker ? { ...worker, relay: true, deviceId, deviceNick: target?.label || "" } : { ok: false };
   } catch {
     return { ok: false };
   } finally {
@@ -293,6 +306,7 @@ export async function checkAgentSourceMachineAgent(deviceId: string, timeoutMs =
     }
     const payload = await response.json() as {
       readonly targets?: readonly {
+        readonly label?: string;
         readonly hostDeviceId?: string;
         readonly deviceIds?: readonly string[];
         readonly localAgent?: unknown;
@@ -306,7 +320,7 @@ export async function checkAgentSourceMachineAgent(deviceId: string, timeoutMs =
     const systemWorker = readLocalAgentStatus(target?.workers?.system?.localAgent);
     const targetAgent = readLocalAgentStatus(target?.localAgent);
     const machine = systemWorker || (targetAgent?.system === true ? targetAgent : null);
-    return machine ? { ...machine, relay: true } : { ok: false };
+    return machine ? { ...machine, relay: true, deviceId, deviceNick: target?.label || "" } : { ok: false };
   } catch {
     return { ok: false };
   } finally {

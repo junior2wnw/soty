@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.73";
+const agentVersion = "0.4.74";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3742,11 +3742,13 @@ async function handleAgentRelayBind(request, response, headers) {
     sendJson(response, 400, headers, { ok: false });
     return;
   }
-  if (agentDeviceId && deviceId && agentDeviceId !== deviceId && !allowAgentDeviceRebind()) {
+  const previousDeviceId = agentDeviceId;
+  const rebindingDevice = Boolean(previousDeviceId && deviceId && previousDeviceId !== deviceId);
+  if (rebindingDevice && !allowAgentDeviceRebind()) {
     sendJson(response, 200, headers, {
       ok: true,
       rebound: false,
-      currentDeviceId: agentDeviceId,
+      currentDeviceId: previousDeviceId,
       ignoredDeviceId: deviceId,
       ...runtimeHealth()
     });
@@ -3764,12 +3766,14 @@ async function handleAgentRelayBind(request, response, headers) {
   startAgentRelay();
   sendJson(response, 200, headers, {
     ok: true,
+    rebound: rebindingDevice,
+    ...(rebindingDevice ? { previousDeviceId } : {}),
     ...runtimeHealth()
   });
 }
 
 function allowAgentDeviceRebind() {
-  return process.env.SOTY_AGENT_ALLOW_REBIND === "1" || !managed || String(agentScope || "").toLowerCase() === "dev";
+  return process.env.SOTY_AGENT_ALLOW_REBIND !== "0";
 }
 
 function startAgentRelay() {
