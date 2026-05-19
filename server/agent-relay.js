@@ -865,7 +865,9 @@ function localAgentInfoFrom(value) {
     interactiveTaskBridge: readBoolean(read("interactiveTaskBridge")),
     autoUpdate: readBoolean(read("autoUpdate")),
     system: readBoolean(read("system")),
-    sourceWorker: readBoolean(read("sourceWorker"))
+    sourceWorker: readBoolean(read("sourceWorker")),
+    deviceId: cleanText(read("deviceId"), 180),
+    deviceNick: cleanText(read("deviceNick"), 180)
   };
 }
 
@@ -896,7 +898,9 @@ function publicSourceLocalAgent(value) {
     interactiveTaskBridge: value?.interactiveTaskBridge === true,
     autoUpdate: value?.autoUpdate === true,
     system: value?.system === true,
-    sourceWorker: value?.sourceWorker === true
+    sourceWorker: value?.sourceWorker === true,
+    deviceId: cleanText(value?.deviceId, 180),
+    deviceNick: cleanText(value?.deviceNick, 180)
   };
 }
 

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.74";
+const agentVersion = "0.4.75";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -139,6 +139,11 @@ let agentSourceWorkerStarted = false;
 let audioWarmupStarted = false;
 let updateCheckRunning = false;
 let deferredUpdateTimer = null;
+let updateNudgeAt = 0;
+let updateLastCheckAt = 0;
+let updateLastResult = "";
+let updateLastVersion = "";
+let updateLastError = "";
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
@@ -448,6 +453,9 @@ async function handleHttpRequest(request, response) {
       ok: true,
       ...runtimeHealth()
     });
+    if (url.searchParams.get("update") === "1") {
+      nudgeUpdateCheck();
+    }
     return;
   }
   if (url.pathname === "/operator/targets" && request.method === "GET") {
@@ -12424,6 +12432,7 @@ function runtimeHealth() {
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),
     trace: agentTraceStatus(),
+    update: agentUpdateStatus(),
     memory: memoryPlaneStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
     computerUsePlane: runtimeComputerUsePlaneStatus(),
@@ -12439,6 +12448,17 @@ function runtimeHealth() {
       system: isUnixRoot(),
       maintenance: agentScope === "Machine" && isUnixRoot()
     })
+  };
+}
+
+function agentUpdateStatus() {
+  return {
+    autoUpdate: agentAutoUpdate,
+    manifestUrl: updateManifestUrl,
+    lastCheckAt: updateLastCheckAt ? new Date(updateLastCheckAt).toISOString() : "",
+    lastResult: updateLastResult,
+    latestVersion: updateLastVersion,
+    lastError: updateLastError
   };
 }
 
@@ -12740,7 +12760,7 @@ function scheduleUpdate() {
   if (!managed || !updateManifestUrl || !agentAutoUpdate) {
     return;
   }
-  const firstDelay = 8000 + Math.floor(Math.random() * 5000);
+  const firstDelay = 3000 + Math.floor(Math.random() * 4000);
   setTimeout(() => {
     void checkForUpdate();
     let fastChecks = 0;
@@ -12755,6 +12775,19 @@ function scheduleUpdate() {
   }, firstDelay);
 }
 
+function nudgeUpdateCheck() {
+  if (!managed || !updateManifestUrl || !agentAutoUpdate) {
+    return;
+  }
+  const now = Date.now();
+  if (now - updateNudgeAt < 45_000) {
+    return;
+  }
+  updateNudgeAt = now;
+  const timer = setTimeout(() => void checkForUpdate(), 25);
+  timer.unref?.();
+}
+
 async function checkForUpdate() {
   if (!agentAutoUpdate) {
     return;
@@ -12763,30 +12796,40 @@ async function checkForUpdate() {
     return;
   }
   updateCheckRunning = true;
+  updateLastCheckAt = Date.now();
+  updateLastResult = "checking";
+  updateLastError = "";
   try {
     const { response, json: manifest } = await fetchJsonWithTimeout(updateManifestUrl, { cache: "no-store" }, updateFetchTimeoutMs);
     if (!response.ok) {
+      updateLastResult = `manifest-http-${response.status}`;
       return;
     }
     if (!isSafeManifest(manifest)) {
+      updateLastResult = "manifest-invalid";
       return;
     }
+    updateLastVersion = manifest.version;
     const scriptPath = fileURLToPath(import.meta.url);
     const currentHash = sha256(await readFile(scriptPath));
     const versionCompare = compareVersion(manifest.version, agentVersion);
     if (versionCompare < 0 || (versionCompare === 0 && manifest.sha256 === currentHash)) {
+      updateLastResult = "current";
       return;
     }
     if (shouldDeferAgentUpdate()) {
+      updateLastResult = "deferred-busy";
       scheduleDeferredUpdateCheck();
       return;
     }
     const nextUrl = new URL(manifest.agentUrl, updateManifestUrl);
     const { response: nextResponse, bytes } = await fetchBytesWithTimeout(nextUrl, { cache: "no-store" }, updateFetchTimeoutMs);
     if (!nextResponse.ok) {
+      updateLastResult = `agent-http-${nextResponse.status}`;
       return;
     }
     if (sha256(bytes) !== manifest.sha256) {
+      updateLastResult = "sha256-mismatch";
       return;
     }
     await mkdir(dirname(scriptPath), { recursive: true });
@@ -12794,10 +12837,13 @@ async function checkForUpdate() {
     await writeFile(tempPath, bytes, { mode: 0o755 });
     await copyFile(tempPath, scriptPath);
     await rm(tempPath, { force: true });
+    updateLastResult = `updating-${manifest.version}`;
     notifyOperatorUpdating(manifest.version);
     await sleep(250);
     process.exit(75);
-  } catch {
+  } catch (error) {
+    updateLastResult = "error";
+    updateLastError = error?.message ? String(error.message).slice(0, 300) : String(error || "").slice(0, 300);
     // Updates are best-effort; the running agent must keep the tunnel useful.
   } finally {
     updateCheckRunning = false;

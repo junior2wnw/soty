@@ -360,6 +360,14 @@ let agentSourcePollTimer = 0;
 let agentSourcePolling = false;
 let agentSourcePollEpoch = 0;
 let agentSourcePollController: AbortController | null = null;
+let serviceWorkerReloading = false;
+let serviceWorkerUpdateTimer = 0;
+let appBundleReloading = false;
+let appBundleWatchTimer = 0;
+const serviceWorkerUpdateMs = 60_000;
+const appBundleWatchVisibleMs = 45_000;
+const appBundleWatchHiddenMs = 90_000;
+const appBundlePath = currentAppBundlePath();
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -381,16 +389,16 @@ document.addEventListener("visibilitychange", () => {
     tunnels = markTunnel(selectedId, false);
     renderTiles();
     startAgentButtonWatcher(true);
+    startAppBundleWatcher(true);
   }
 });
 
 window.addEventListener("online", () => {
   startAgentButtonWatcher(true);
+  startAppBundleWatcher(true);
 });
 
 void boot();
-
-let serviceWorkerReloading = false;
 
 async function boot(): Promise<void> {
   adoptAgentRelayFromUrl();
@@ -407,6 +415,7 @@ async function boot(): Promise<void> {
   }
 
   await registerServiceWorker();
+  startAppBundleWatcher(true);
 
   const capturedJoin = captureJoinInviteFromLocation();
   if (capturedJoin) {
@@ -475,9 +484,100 @@ async function registerServiceWorker(): Promise<void> {
     });
 
     void registration.update();
+    scheduleServiceWorkerUpdate(registration);
   } catch (error) {
     console.warn("[soty] Service worker registration failed", error);
   }
+}
+
+function scheduleServiceWorkerUpdate(registration: ServiceWorkerRegistration): void {
+  window.clearTimeout(serviceWorkerUpdateTimer);
+  if (serviceWorkerReloading) {
+    return;
+  }
+  serviceWorkerUpdateTimer = window.setTimeout(() => {
+    void registration.update().catch(() => undefined).finally(() => {
+      scheduleServiceWorkerUpdate(registration);
+    });
+  }, serviceWorkerUpdateMs);
+}
+
+function currentAppBundlePath(): string {
+  try {
+    return new URL(import.meta.url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+function startAppBundleWatcher(force = false): void {
+  if (!appBundlePath.startsWith("/assets/") || appBundleReloading) {
+    return;
+  }
+  window.clearTimeout(appBundleWatchTimer);
+  appBundleWatchTimer = window.setTimeout(
+    () => void runAppBundleWatcher(),
+    force ? 3000 : nextAppBundleWatchDelay()
+  );
+}
+
+function nextAppBundleWatchDelay(): number {
+  return document.visibilityState === "hidden" ? appBundleWatchHiddenMs : appBundleWatchVisibleMs;
+}
+
+async function runAppBundleWatcher(): Promise<void> {
+  if (!appBundlePath.startsWith("/assets/") || appBundleReloading) {
+    return;
+  }
+  try {
+    const latestPath = await fetchLatestAppBundlePath();
+    if (latestPath && latestPath !== appBundlePath) {
+      appBundleReloading = true;
+      window.location.reload();
+      return;
+    }
+  } catch {
+    // Best-effort stale-tab recovery; normal chat flow should not depend on it.
+  }
+  startAppBundleWatcher();
+}
+
+async function fetchLatestAppBundlePath(): Promise<string> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 3000);
+  try {
+    const response = await fetch(`/?soty-app-check=${Date.now()}`, {
+      cache: "no-store",
+      headers: { Accept: "text/html" },
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return "";
+    }
+    const html = await response.text();
+    return mainModulePathFromHtml(html);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function mainModulePathFromHtml(html: string): string {
+  const tags = html.match(/<script\b[^>]*>/giu) || [];
+  for (const tag of tags) {
+    if (!/\btype\s*=\s*["']module["']/iu.test(tag)) {
+      continue;
+    }
+    const src = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/iu)?.[1] || "";
+    if (!src) {
+      continue;
+    }
+    try {
+      return new URL(src, window.location.href).pathname;
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 function shouldResetLocalState(): boolean {
