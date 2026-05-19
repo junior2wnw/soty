@@ -274,7 +274,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
       route: "computer-use-plane-with-memory-hints",
       fallbackKernel: "jobs",
       routeProfiles: "soty.route-profiles.v1",
-      chat: "lord-sysadmin",
+      chat: "agent-sysadmin",
       responseStyle: buildResponseStylePolicy(),
       openAiToolPlane,
       diagnostics: {
@@ -340,8 +340,8 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
 function buildResponseStylePolicy() {
   return {
     schema: "soty.response-style.v1",
-    id: "lord-sysadmin",
-    displayName: "Лорд",
+    id: "agent-sysadmin",
+    displayName: "Агент",
     base: "agent",
     tone: "brief-sysadmin",
     maxUserFacingLines: 0,

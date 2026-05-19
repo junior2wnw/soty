@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.67";
+const agentVersion = "0.4.68";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -93,8 +93,8 @@ const agentTraceMaxJsonEvents = Math.max(20, Math.min(Number.parseInt(process.en
 const codexSessionMode = "soty-clean-codex-memory-plane-v1";
 const agentResponseStyleProfiles = Object.freeze([
   {
-    id: "lord-sysadmin",
-    displayName: "Лорд",
+    id: "agent-sysadmin",
+    displayName: "Агент",
     base: "agent",
     tone: "brief-sysadmin",
     maxUserFacingLines: 0,
@@ -102,7 +102,7 @@ const agentResponseStyleProfiles = Object.freeze([
     promptRules: []
   }
 ]);
-const defaultAgentResponseStyleId = "lord-sysadmin";
+const defaultAgentResponseStyleId = "agent-sysadmin";
 const agentResponseStyleId = safeAgentResponseStyleId(
   process.env.SOTY_AGENT_RESPONSE_STYLE || persistedAgentConfig.responseStyle || defaultAgentResponseStyleId
 );
@@ -6569,12 +6569,12 @@ function generatedAssetRouteProfile() {
 
 function sotyRuntimeHints() {
   return [
-    "- Identity: \u041b\u043e\u0440\u0434.",
+    "- Identity: \u0410\u0433\u0435\u043d\u0442.",
     "- Use memory as short reusable hints, not as rules.",
     "- Source-device canonical: when a Soty source target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
     "- Web-controller canonical: if the current client is controller-only/web-controller and no current source-device agent target is listed, the current phone/browser is not a computer-use plane. It can request tasks on connected devices, but do not run shell/files/desktop/wallpaper on the phone or invent `agent-source:<phone>`.",
     "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. If the current client is web-controller only, require a named/selected connected device for device actions. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
-    "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
+    "- Linked-device canonical: in a device chat invoked through `agent`/`агент`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
@@ -6589,7 +6589,7 @@ function sotyRuntimeHints() {
     "- For Windows reinstall problem reports, do not answer from memory alone. First call `computer` with operation=reinstall, capability=os-reinstall, action=repair or action=status, then use its structured proof/nextAction. If repair says nextAction=prepare and the user is asking to continue reinstall, call prepare; if it says nextAction=arm, ask only for the exact final confirmation phrase.",
     "- For Windows reinstall status, prefer `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful because it returns compact proof. Full shell/file access remains available for direct diagnostics and repair. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
-    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `lord`/`лорд`.",
+    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `agent`/`агент`.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Soty is the data plane for files and artifacts. For source-device -> controller computer Downloads, use `computer` operation=file action=download: it streams exact bytes through the encrypted Soty room and asks the controller browser to save the file to its Downloads. For source-device -> room file rail only, use action=publish. For server/Codex artifact -> source-device, use `computer` operation=artifact. Never use 0x0.st, file.io, temp.sh, bashupload, ad-hoc local HTTP servers, pasted base64, or public upload services while Soty file/artifact operations are available.",

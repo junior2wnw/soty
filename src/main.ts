@@ -3338,7 +3338,7 @@ async function runOperatorChat(message: {
   operatorChatQueues.set(tunnel.id, next);
   try {
     await next;
-    if (!isAgentTunnel(tunnel) && containsLordAgentInvocation(text)) {
+    if (!isAgentTunnel(tunnel) && containsAgentInvocation(text)) {
       void sendAgentDialogMessage(tunnel.id, text, { explicitMention: true });
     }
     sendOperatorOutput(requestId, "sent\n", 0);
@@ -4791,7 +4791,7 @@ async function finalizeComposerDraft(): Promise<void> {
   if (tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
     void sendAgentDialogMessage(tunnelId, message);
-  } else if (tunnel && containsLordAgentInvocation(message)) {
+  } else if (tunnel && containsAgentInvocation(message)) {
     void sendAgentDialogMessage(tunnelId, message, { explicitMention: true });
   }
   localDrafts.delete(tunnelId);
@@ -4803,13 +4803,13 @@ async function finalizeComposerDraft(): Promise<void> {
   renderWriterPop();
 }
 
-function containsLordAgentInvocation(text: string): boolean {
-  return /(^|[^\p{L}\p{N}_])(?:\u043b\u043e\u0440\u0434|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+function containsAgentInvocation(text: string): boolean {
+  return /(^|[^\p{L}\p{N}_])(?:\u0430\u0433\u0435\u043d\u0442|agent)(?=$|[^\p{L}\p{N}_])/iu.test(text);
 }
 
-function stripLordAgentInvocation(text: string): string {
+function stripAgentInvocation(text: string): string {
   const body = normalizeChatMessage(text);
-  const stripped = body.replace(/^\s*(?:\u043b\u043e\u0440\u0434|lord)\s*[,.:;!?-]*\s*/iu, "").trim();
+  const stripped = body.replace(/^\s*(?:\u0430\u0433\u0435\u043d\u0442|agent)\s*[,.:;!?-]*\s*/iu, "").trim();
   return stripped || body;
 }
 
@@ -4951,7 +4951,7 @@ function sendAgentDialogMessage(
   if (!tunnel || (!agentTunnel && options.explicitMention !== true) || !text.trim()) {
     return Promise.resolve(null);
   }
-  const taskText = options.explicitMention === true ? stripLordAgentInvocation(text) : text;
+  const taskText = options.explicitMention === true ? stripAgentInvocation(text) : text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const next = previous

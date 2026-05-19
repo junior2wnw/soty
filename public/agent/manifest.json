@@ -1,9 +1,9 @@
 {
-  "version": "0.4.67",
+  "version": "0.4.68",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "3e2c39830f17f997e1851f8e3c4aab4c56d4d1f1ea0f8de98ad8eb4f9ae60f1f",
+  "sha256": "829cc93d21dc3094eda8bc4e9b842cafe9572cc60987c9e83f1d3b6ff6df3138",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -146,8 +146,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "6d7450ab65000672a31c101cde43f33d2fa0583eadb3bc3cd3b5106f4d10a501",
-            "bytes": 41453
+            "sha256": "a6f9144e6b3dc60cdb5a83d21b5f7a566f219c24d808ce4824e4dfa90c308fe0",
+            "bytes": 42470
           },
           {
             "name": "prepare",
@@ -226,8 +226,8 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "6d7450ab65000672a31c101cde43f33d2fa0583eadb3bc3cd3b5106f4d10a501",
-        "bytes": 41453
+        "sha256": "a6f9144e6b3dc60cdb5a83d21b5f7a566f219c24d808ce4824e4dfa90c308fe0",
+        "bytes": 42470
       },
       {
         "name": "prepare",
@@ -258,11 +258,11 @@
       "route": "computer-use-plane-with-memory-hints",
       "fallbackKernel": "jobs",
       "routeProfiles": "soty.route-profiles.v1",
-      "chat": "lord-sysadmin",
+      "chat": "agent-sysadmin",
       "responseStyle": {
         "schema": "soty.response-style.v1",
-        "id": "lord-sysadmin",
-        "displayName": "Лорд",
+        "id": "agent-sysadmin",
+        "displayName": "Агент",
         "base": "agent",
         "tone": "brief-sysadmin",
         "maxUserFacingLines": 0,
@@ -413,8 +413,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "6d7450ab65000672a31c101cde43f33d2fa0583eadb3bc3cd3b5106f4d10a501",
-            "bytes": 41453
+            "sha256": "a6f9144e6b3dc60cdb5a83d21b5f7a566f219c24d808ce4824e4dfa90c308fe0",
+            "bytes": 42470
           },
           {
             "name": "prepare",
@@ -505,8 +505,8 @@
           "scripts": [
             {
               "name": "managed",
-              "sha256": "6d7450ab65000672a31c101cde43f33d2fa0583eadb3bc3cd3b5106f4d10a501",
-              "bytes": 41453
+              "sha256": "a6f9144e6b3dc60cdb5a83d21b5f7a566f219c24d808ce4824e4dfa90c308fe0",
+              "bytes": 42470
             },
             {
               "name": "prepare",

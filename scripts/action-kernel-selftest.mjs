@@ -44,12 +44,12 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.67");
+      assertEqual(health.body.version, "0.4.68");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
-      assertEqual(health.body.responseStyle.id, "lord-sysadmin");
-      assertEqual(health.body.responseStyle.displayName, "Лорд");
+      assertEqual(health.body.responseStyle.id, "agent-sysadmin");
+      assertEqual(health.body.responseStyle.displayName, "Агент");
       assertEqual(health.body.memory.schema, "soty.memory-plane.v1");
       assertEqual(health.body.memory.controller, "soty.memctl.v1");
       assertEqual(health.body.computerUsePlane.schema, "soty.computer-use-plane.v1");
@@ -77,7 +77,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.automationToolkits.available.includes("turnkey-monitoring"));
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
       assertEqual(health.body.automationToolkits.defaultKernel, "jobs");
-      assertEqual(health.body.automationToolkits.responseStyle.id, "lord-sysadmin");
+      assertEqual(health.body.automationToolkits.responseStyle.id, "agent-sysadmin");
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
     }],
     ["managed agent allows trusted web origins for local health", async () => {
@@ -153,7 +153,7 @@ async function runScenarios({ relayUrl } = {}) {
       const toolkits = await get("/operator/toolkits");
       assertEqual(toolkits.status, 200);
       assertEqual(toolkits.body.schema, "soty.automation-toolkits.v2");
-      assertEqual(toolkits.body.responseStyle.displayName, "Лорд");
+      assertEqual(toolkits.body.responseStyle.displayName, "Агент");
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "computer-use-plane"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "capability-gateway"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "durable-action"));
@@ -1393,8 +1393,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("post-arm-rebooting"));
       assert(agent.includes("rememberPostArmReboot"));
       assert(agent.includes("agentResponseStyleProfiles"));
-      assert(agent.includes("lord-sysadmin"));
-      assert(agent.includes("Лорд"));
+      assert(agent.includes("agent-sysadmin"));
+      assert(agent.includes("Агент"));
       assert(agent.includes("response_style_rule_${index + 1}"));
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
       assert(!agent.includes("isActionableTargetOperatorMessage"));
@@ -1471,9 +1471,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("isLikelyAgentStatusQuote"));
       assert(!main.includes("sendOperatorUserMessage"));
       assert(!main.includes('type: "operator.message"'));
-      assert(main.includes("containsLordAgentInvocation"));
-      assert(main.includes("(?:\\u043b\\u043e\\u0440\\u0434|lord)"));
-      assert(main.includes("stripLordAgentInvocation"));
+      assert(main.includes("containsAgentInvocation"));
+      assert(main.includes("(?:\\u0430\\u0433\\u0435\\u043d\\u0442|agent)"));
+      assert(main.includes("stripAgentInvocation"));
       assert(main.includes("explicitMention: true"));
       assert(agent.includes("learningContextForTurn"));
       assert(agent.includes("targetHash"));
@@ -1513,6 +1513,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(syncSource.includes("lines: []"));
       assert(syncSource.includes('state: "off"'));
       assert(managed.includes("Get-MediaStatus"));
+      assert(managed.includes("Test-MediaDownloadProcess"));
+      assert(!managed.includes('CommandLine -match "WindowsReinstall|Windows11_|\\.download|dl\\.delivery|Soty Windows reinstall image"'));
       assert(managed.includes("updatedAgeSeconds"));
       assert(managed.includes('*.download.parts'));
       assert(managed.includes("partBytes"));
@@ -1527,6 +1529,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(managed.includes("Invoke-ManagedCancel"));
       assert(managed.includes("Remove-StaleMediaArtifacts"));
       assert(managed.includes("Repair-StaleMediaState"));
+      assert(managed.includes("Test-UsbFreeSpaceRequired"));
+      assert(managed.includes("$Status.backupProofOk -eq $true"));
       assert(managed.includes("staleMediaRecovered"));
       assert(managed.includes("cancel-blocked"));
       assert(managed.includes("Remove-Item -LiteralPath $_.FullName -Recurse -Force"));
@@ -1588,7 +1592,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.67");
+      assertEqual(manifest.version, "0.4.68");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1623,10 +1627,10 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "jobs");
       assertEqual(manifest.automationToolkits.policy.routeProfiles, "soty.route-profiles.v1");
-      assertEqual(manifest.automationToolkits.policy.chat, "lord-sysadmin");
+      assertEqual(manifest.automationToolkits.policy.chat, "agent-sysadmin");
       assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
       assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
-      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Лорд");
+      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Агент");
       assertEqual(manifest.automationToolkits.policy.responseStyle.phraseBank.length, 0);
       const computerUsePlane = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
       assert(computerUsePlane);
@@ -1726,7 +1730,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.67"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.68"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1788,7 +1792,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.67"'));
+      assert(agentSource.includes('const agentVersion = "0.4.68"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -1856,7 +1860,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("selectedAgentDirectedTarget"));
       assert(!ui.includes("agentDirectedTargets"));
       assert(ui.includes("preparePeerAgentInvocation"));
-      assert(ui.includes("stripLordAgentInvocation"));
+      assert(ui.includes("stripAgentInvocation"));
       assert(ui.includes("operatorTargets: targets"));
       assert(!ui.includes("defaultAgentDialogTarget"));
       assert(ui.includes("const selectedTarget = tunnel && isAgentTunnel(tunnel)\n    ? null"));
@@ -1919,14 +1923,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.67";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.68";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.67",
+            version: "0.4.68",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

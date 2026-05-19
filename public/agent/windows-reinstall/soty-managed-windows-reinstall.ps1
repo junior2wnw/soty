@@ -316,15 +316,26 @@ function Get-InstallImageCandidate([string[]] $SourceRoots) {
   return ""
 }
 
+function Test-MediaDownloadProcess($Process) {
+  $name = [string] $Process.Name
+  $cmd = [string] $Process.CommandLine
+  if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($cmd)) { return $false }
+  if ($cmd -match "soty-managed-windows-reinstall\.ps1") { return $false }
+  if ($name -match "^(curl|bitsadmin)\.exe$") {
+    return ($cmd -match "Windows11_|\.download(?:\.parts)?|dl\.delivery|Soty Windows reinstall image|install\.(wim|esd|swm)")
+  }
+  if ($name -match "^(powershell|pwsh)\.exe$") {
+    return ($cmd -match "Invoke-WebRequest|System\.Net\.HttpWebRequest|Soty Windows reinstall media downloader|Windows image download|\.download(?:\.parts)?")
+  }
+  return $false
+}
+
 function Get-MediaStatus([string] $Root, [string] $Letter) {
   $usbRoot = if ([string]::IsNullOrWhiteSpace($Letter)) { "" } else { $Letter + ":\" }
   $downloadProcesses = @()
   try {
     $downloadProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-      Where-Object {
-        ([string]$_.Name -match "^(curl|powershell|pwsh|bitsadmin)\.exe$") -and
-        ([string]$_.CommandLine -match "WindowsReinstall|Windows11_|\.download|dl\.delivery|Soty Windows reinstall image")
-      } |
+      Where-Object { Test-MediaDownloadProcess $_ } |
       Select-Object -First 8 ProcessId, Name, CommandLine)
   } catch { $downloadProcesses = @() }
   $roots = @((Join-Path $Root "media"))
@@ -646,11 +657,29 @@ function Get-ManagedRepairBlockers($Status) {
     $blockers.Add("usb-not-accepted")
   }
   try {
-    if ([double] $usb.freeGB -lt 12 -and $usb.hasSotyReinstall -ne $true -and $usb.hasInstallImage -ne $true) {
+    if ([double] $usb.freeGB -lt 12 -and (Test-UsbFreeSpaceRequired $usb $Status)) {
       $blockers.Add("usb-free-space-low")
     }
   } catch {}
   return @($blockers)
+}
+
+function Test-UsbFreeSpaceRequired($Usb, $Status) {
+  if (-not $Usb) { return $true }
+  $readyMedia = $false
+  try {
+    $readyMedia = (
+      $Status -and
+      $Status.ready -eq $true -and
+      $Status.backupProofOk -eq $true -and
+      -not [string]::IsNullOrWhiteSpace([string] $Status.installImage) -and
+      $Status.rootAutounattend -eq $true -and
+      $Status.oemSetupComplete -eq $true
+    )
+  } catch {
+    $readyMedia = $false
+  }
+  return (-not $readyMedia)
 }
 
 function Get-ManagedRepairSummary($Status) {
@@ -896,7 +925,7 @@ try {
       if ($usb.ambiguous) { $blockers.Add("usb-ambiguous") } else { $blockers.Add("usb-not-found") }
     }
     elseif ($usb.accepted -ne $true) { $blockers.Add("usb-not-removable") }
-    elseif ($usb.freeGB -lt 12) { $blockers.Add("usb-free-space-low") }
+    elseif ($usb.freeGB -lt 12 -and (Test-UsbFreeSpaceRequired $usb $status)) { $blockers.Add("usb-free-space-low") }
     Emit ([pscustomobject]@{
       ok = ($blockers.Count -eq 0)
       action = "preflight"
