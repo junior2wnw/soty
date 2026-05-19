@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.66");
+      assertEqual(health.body.version, "0.4.67");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1588,7 +1588,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.66");
+      assertEqual(manifest.version, "0.4.67");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1679,6 +1679,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsInstall.includes("if (`$code -eq 75)"));
       assert(windowsInstall.includes("Write-AgentConfigSeed"));
       assert(windowsInstall.includes("agent-config.json"));
+      assert(windowsInstall.includes("function New-AgentRelayId"));
+      assert(windowsInstall.includes("function New-AgentDeviceId"));
+      assert(windowsInstall.includes("soty-agent:relay-generated"));
+      assert(windowsInstall.includes("soty-agent:device-generated"));
+      assert(windowsInstall.includes("function Get-AgentAppUrl"));
       assert(windowsInstall.includes("function Invoke-SotyDownload"));
       assert(windowsInstall.includes("function Invoke-SotyProcess"));
       assert(windowsInstall.includes("function ConvertTo-SotyProcessArguments"));
@@ -1712,13 +1717,16 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!userWindowsInstallerExists);
       assert(windowsMachineBootstrap.includes("''-Scope'', ''Machine''"));
       assert(windowsMachineBootstrap.includes("''-LaunchAppAtLogon''"));
-      assert(windowsMachineInstall.includes("install-windows-machine-bootstrap.ps1?v=%INSTALLER_REVISION%"));
+      assert(windowsMachineBootstrap.includes("IsNullOrWhiteSpace($relay"));
+      assert(windowsMachineInstall.includes("install-windows-machine-bootstrap.ps1"));
+      assert(windowsMachineInstall.includes("EscapeDataString($env:SOTY_AGENT_INSTALLER_REVISION)"));
+      assert(!windowsMachineInstall.includes("-RelayId '%"));
       assert(windowsMachineInstall.includes("-TimeoutSec 45 -ErrorAction Stop"));
       assert(windowsMachineInstall.includes("bootstrap.log"));
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.66"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.67"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1731,7 +1739,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentFeature.includes('"/agent/install-windows-machine.cmd"'));
       assert(agentFeature.includes("install-soty-agent-machine-${revision}.cmd"));
       assert(agentFeature.includes("sanitizeInstallerRevision"));
-      assert(agentFeature.includes("install-windows-machine-bootstrap.ps1${installerQuery}"));
+      assert(agentFeature.includes("SOTY_AGENT_INSTALLER_REVISION"));
+      assert(agentFeature.includes("IsNullOrWhiteSpace($env:SOTY_AGENT_RELAY_ID)"));
       assert(agentFeature.includes("bootstrap-elevated.log"));
       assert(agentFeature.includes("--- install.log tail ---"));
       assert(agentFeature.includes("node-probe.err.log"));
@@ -1755,6 +1764,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("SOTY_FILE_CHUNK"));
       assert(!ui.includes("renderInstall"));
       assert(!ui.includes("install-button"));
+      assert(ui.includes("let mode = agentButtonMode();"));
+      assert(ui.includes("void refreshAgentButtonState(true);"));
       assert(ui.includes('downloadAgentInstallerForDevice('));
       assert(ui.includes('"machine",'));
       assert(ui.includes('remoteButton.innerHTML = needsAgent'));
@@ -1777,7 +1788,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.66"'));
+      assert(agentSource.includes('const agentVersion = "0.4.67"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -1908,14 +1919,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.66";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.67";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.66",
+            version: "0.4.67",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

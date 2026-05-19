@@ -15,42 +15,49 @@ let panX = 0;
 let panY = 0;
 let movedDuringPointer = false;
 const panCleanups = new WeakMap<HTMLElement, () => void>();
+const hexStepX = 62;
+const hexStepY = 72;
+
+type HexMetrics = {
+  readonly stepX: number;
+  readonly stepY: number;
+};
 
 export function renderHexField(
   root: HTMLElement,
   items: readonly HexItem[],
   actions: HexFieldActions
 ): void {
-  const rect = root.getBoundingClientRect();
-  const fieldRadius = Math.max(
-    5,
-    Math.ceil(Math.max(rect.width / 110, rect.height / 92)) + 2,
-    Math.ceil(Math.sqrt(Math.max(items.length, 1))) + 4
-  );
-  const positions = gridPositions(fieldRadius);
-  const itemByIndex = new Map(items.map((item, index) => [index, item]));
   root.innerHTML = `<div class="hex-map"></div>`;
   const map = root.querySelector<HTMLDivElement>(".hex-map");
   if (!map) {
     return;
   }
   map.style.transform = `translate(${panX}px, ${panY}px)`;
-  map.innerHTML = positions.map(([q, r], index) => {
+  const rect = root.getBoundingClientRect();
+  const fieldRadius = Math.max(
+    5,
+    Math.ceil(Math.max(rect.width / 110, rect.height / 92)) + 2,
+    Math.ceil(Math.sqrt(Math.max(items.length, 1))) + 4
+  );
+  const metrics = hexMetrics(root);
+  const positions = gridPositions(fieldRadius);
+  const itemByIndex = new Map(items.map((item, index) => [index, item]));
+  map.innerHTML = positions.map((position, index) => {
+    const { left, top } = positionPoint(position, metrics);
     const item = itemByIndex.get(index);
-    const left = q * 62;
-    const top = (r + q / 2) * 72;
-    if (item) {
-      return `
-        <button class="retro-hex hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"
-          style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="${escapeHtml(item.label)}" data-tooltip="Открыть ${escapeHtml(item.label)}">
-          <span class="hex-core"><span>${escapeHtml(initials(item.label))}</span></span>
-          <b>${escapeHtml(item.label)}</b>
-          <em></em>
-          ${item.unread ? "<i></i>" : ""}
-        </button>
-      `;
+    if (!item) {
+      return `<div class="retro-hex hex hex-cell" style="--x:${left}px;--y:${top}px"></div>`;
     }
-    return `<div class="retro-hex hex hex-cell" style="--x:${left}px;--y:${top}px"><em></em></div>`;
+    return `
+      <button class="retro-hex hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"
+        style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="${escapeHtml(item.label)}" data-tooltip="Открыть ${escapeHtml(item.label)}">
+        <span class="hex-core"><span>${escapeHtml(initials(item.label))}</span></span>
+        <b>${escapeHtml(item.label)}</b>
+        <em></em>
+        ${item.unread ? "<i></i>" : ""}
+      </button>
+    `;
   }).join("");
 
   installPan(root, map);
@@ -163,6 +170,26 @@ function ringPositions(radius: number): [number, number][] {
     }
   }
   return result;
+}
+
+function hexMetrics(root: HTMLElement): HexMetrics {
+  const style = getComputedStyle(root);
+  return {
+    stepX: readCssPixel(style, "--hex-step-x", hexStepX),
+    stepY: readCssPixel(style, "--hex-step-y", hexStepY)
+  };
+}
+
+function readCssPixel(style: CSSStyleDeclaration, property: string, fallback: number): number {
+  const parsed = Number.parseFloat(style.getPropertyValue(property));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function positionPoint([q, r]: [number, number], metrics: HexMetrics): { readonly left: number; readonly top: number } {
+  return {
+    left: q * metrics.stepX,
+    top: (r + q / 2) * metrics.stepY
+  };
 }
 
 function initials(value: string): string {

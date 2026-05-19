@@ -311,6 +311,12 @@ svg {
 }
 
 .hex-field {
+  --hex-step-x: 62px;
+  --hex-step-y: 72px;
+  --hex-w: 78px;
+  --hex-h: 68px;
+  --hex-half-w: 39px;
+  --hex-half-h: 34px;
   grid-column: 1 / -1;
   grid-row: 2;
   position: relative;
@@ -388,25 +394,25 @@ svg {
   height: 2400px;
   transform: translate(-50%, -50%);
   background:
-    linear-gradient(30deg, rgba(103, 232, 249, 0.10) 12%, transparent 12.5%, transparent 87%, rgba(103, 232, 249, 0.10) 87.5%),
-    linear-gradient(150deg, rgba(255, 203, 98, 0.08) 12%, transparent 12.5%, transparent 87%, rgba(255, 203, 98, 0.08) 87.5%),
+    linear-gradient(180deg, rgba(15, 25, 31, 0.72), rgba(7, 10, 14, 0.92)),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035), transparent 34%, rgba(255, 203, 98, 0.025) 68%, transparent),
     #0c1117;
-  background-size: 76px 44px;
-  opacity: 0.9;
+  background-size: 100% 100%, 420px 100%, auto;
+  opacity: 0.72;
 }
 
 .hex {
   position: absolute;
-  left: calc(var(--x) - 46px);
-  top: calc(var(--y) - 41px);
-  width: 92px;
-  height: 82px;
+  left: calc(var(--x) - var(--hex-half-w));
+  top: calc(var(--y) - var(--hex-half-h));
+  width: var(--hex-w);
+  height: var(--hex-h);
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   justify-items: center;
   align-items: center;
   gap: 2px;
-  padding: 10px 8px 9px;
+  padding: 8px 7px 7px;
   border: 0;
   background: transparent;
   color: var(--ink);
@@ -422,43 +428,62 @@ svg {
 
 .hex::before {
   inset: 0;
-  background: var(--color, #3d515f);
+  background: color-mix(in srgb, var(--color, #3d515f) 74%, #071015);
 }
 
 .hex::after {
   inset: 3px;
-  background: #0a0f14;
-  box-shadow: inset 0 0 18px rgba(103, 232, 249, 0.08);
+  background: linear-gradient(180deg, #111922, #080d12);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+    inset 0 0 15px rgba(103, 232, 249, 0.07);
 }
 
 .hex em {
   inset: 8px;
   z-index: 1;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
-  opacity: 0.72;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0));
+  opacity: 0.36;
 }
 
 .hex-cell {
   pointer-events: none;
-  opacity: 0.23;
+  opacity: 0.34;
+}
+
+.hex-cell::before {
+  background: rgba(61, 81, 95, 0.38);
+}
+
+.hex-cell::after {
+  inset: 2px;
+  background: rgba(9, 15, 20, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(103, 232, 249, 0.035);
 }
 
 .hex.filled {
+  z-index: 2;
   cursor: pointer;
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.34));
   transition: transform 150ms ease, filter 150ms ease;
 }
 
 .hex.filled:hover {
-  filter: brightness(1.18);
+  transform: translateY(-2px);
+  filter: brightness(1.12) drop-shadow(0 13px 22px rgba(0, 0, 0, 0.38));
 }
 
 .hex.active {
-  transform: scale(1.08);
+  z-index: 3;
+  transform: translateY(-2px) scale(1.06);
 }
 
 .hex.active::after {
-  inset: 6px;
-  background: #101922;
+  inset: 4px;
+  background: linear-gradient(180deg, #14202a, #091017);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color) 52%, #ffffff),
+    inset 0 0 16px rgba(109, 255, 143, 0.08);
 }
 
 .hex-core,
@@ -469,15 +494,16 @@ svg {
 }
 
 .hex-core {
-  width: 38px;
-  height: 34px;
+  width: 32px;
+  height: 28px;
   display: grid;
   place-items: center;
   clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   background: var(--color);
   color: #061015;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 900;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .hex.filled b {
@@ -488,7 +514,7 @@ svg {
   white-space: nowrap;
   color: var(--cream);
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   text-align: center;
 }
@@ -2022,6 +2048,29 @@ svg {
   .qr-open {
     width: 42px;
     height: 38px;
+  }
+
+  .hex-field {
+    --hex-step-x: 48px;
+    --hex-step-y: 44px;
+    --hex-w: 58px;
+    --hex-h: 50px;
+    --hex-half-w: 29px;
+    --hex-half-h: 25px;
+  }
+
+  .hex {
+    padding: 6px 5px 5px;
+  }
+
+  .hex-core {
+    width: 25px;
+    height: 22px;
+    font-size: 9px;
+  }
+
+  .hex.filled b {
+    font-size: 9px;
   }
 
   .dialog-shell {

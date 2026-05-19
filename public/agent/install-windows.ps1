@@ -717,16 +717,26 @@ shell.Run "$escapedCommand", 0, False
     return "startup"
   }
 
+  function Get-AgentAppUrl {
+    $url = [string]$AppUrl
+    if ([string]::IsNullOrWhiteSpace($SafeRelayId)) {
+      return $url
+    }
+    $separator = if ($url.Contains("?")) { "&" } else { "?" }
+    return ($url + $separator + "agent=" + [uri]::EscapeDataString($SafeRelayId))
+  }
+
   function Enable-AppLaunchAtLogon {
     if (-not $LaunchAppAtLogon) { return }
+    $launchUrl = Get-AgentAppUrl
     $edge = Join-Path ${env:ProgramFiles(x86)} "Microsoft\Edge\Application\msedge.exe"
     if (-not (Test-Path -LiteralPath $edge)) {
       $edge = Join-Path $env:ProgramFiles "Microsoft\Edge\Application\msedge.exe"
     }
     $command = if (Test-Path -LiteralPath $edge) {
-      "`"$edge`" --app=`"$AppUrl`""
+      "`"$edge`" --app=`"$launchUrl`""
     } else {
-      "cmd.exe /c start `"`" `"$AppUrl`""
+      "cmd.exe /c start `"`" `"$launchUrl`""
     }
     $runKey = if ($Scope -eq "Machine") {
       "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -783,6 +793,16 @@ shell.Run "$escapedCommand", 0, False
       return $text
     }
     return ""
+  }
+
+  function New-AgentRelayId {
+    $bytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    return ([Convert]::ToBase64String($bytes).TrimEnd("=") -replace "\+", "-" -replace "/", "_")
+  }
+
+  function New-AgentDeviceId {
+    return ("dev_" + ([guid]::NewGuid().ToString("N")))
   }
 
   function Escape-PowerShellDoubleQuoted {
@@ -848,6 +868,32 @@ shell.Run "$escapedCommand", 0, False
     return ""
   }
 
+  function Resolve-ExistingAgentDeviceId {
+    foreach ($path in @(
+      (Join-Path $AgentDir "agent-config.json"),
+      (Join-Path $AgentDir "start-agent.ps1")
+    )) {
+      if (-not (Test-Path -LiteralPath $path)) { continue }
+      try {
+        if ($path -like "*.json") {
+          $config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+          $candidate = Normalize-AgentDeviceId ([string]$config.deviceId)
+          if ($candidate) { return $candidate }
+        } else {
+          $text = Get-Content -LiteralPath $path -Raw
+          $match = [regex]::Match($text, 'SOTY_AGENT_DEVICE_ID\s*=\s*"([^"]+)"')
+          if ($match.Success) {
+            $candidate = Normalize-AgentDeviceId $match.Groups[1].Value
+            if ($candidate) { return $candidate }
+          }
+        }
+      } catch {
+        Write-SotyLog "soty-agent:device-preserve-skip:$path"
+      }
+    }
+    return ""
+  }
+
   $NodePath = Resolve-Node
   Write-SotyLog "soty-codex-cli:disabled:server-relay-only"
   $NodeDir = Split-Path -Parent $NodePath
@@ -856,8 +902,22 @@ shell.Run "$escapedCommand", 0, False
   if (-not $SafeRelayId) {
     $SafeRelayId = Resolve-ExistingAgentRelayId
   }
+  if (-not $SafeRelayId) {
+    $SafeRelayId = New-AgentRelayId
+    Write-SotyLog "soty-agent:relay-generated"
+  }
   $SafeDeviceId = Normalize-AgentDeviceId $DeviceId
+  if (-not $SafeDeviceId) {
+    $SafeDeviceId = Resolve-ExistingAgentDeviceId
+  }
+  if (-not $SafeDeviceId) {
+    $SafeDeviceId = New-AgentDeviceId
+    Write-SotyLog "soty-agent:device-generated"
+  }
   $SafeDeviceNick = ([string]$DeviceNick).Trim()
+  if (-not $SafeDeviceNick) {
+    $SafeDeviceNick = ([string]$env:COMPUTERNAME).Trim()
+  }
   if ($SafeDeviceNick.Length -gt 80) {
     $SafeDeviceNick = $SafeDeviceNick.Substring(0, 80)
   }

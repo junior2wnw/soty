@@ -1399,7 +1399,13 @@ function renderApp(): void {
       if (!selectedId) {
         return;
       }
-      const mode = await refreshAgentButtonState(true);
+      let mode = agentButtonMode();
+      if (mode !== "link") {
+        requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
+        void refreshAgentButtonState(true);
+        return;
+      }
+      mode = await refreshAgentButtonState(true);
       if (mode !== "link") {
         requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
         return;
