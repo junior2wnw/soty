@@ -868,6 +868,54 @@ function Copy-TreeIfExists([string] $Source, [string] $Destination, [int] $Timeo
   return $true
 }
 
+function Copy-LargeFileToUsb([string] $Source, [string] $Destination, [int] $TimeoutSec = 3600) {
+  if (-not (Test-Path -LiteralPath $Source)) { throw "Source file not found: $Source" }
+  $sourceItem = Get-Item -LiteralPath $Source -ErrorAction Stop
+  $sourceDir = Split-Path -Parent $sourceItem.FullName
+  $fileName = Split-Path -Leaf $sourceItem.FullName
+  $destinationDir = Split-Path -Parent $Destination
+  New-Directory $destinationDir
+
+  $logName = "robocopy-file-" + ($fileName -replace '[^A-Za-z0-9_.-]', '_') + ".txt"
+  $log = Join-Path $JobRoot $logName
+  $err = $log + ".err"
+  Remove-Item -LiteralPath $log, $err -Force -ErrorAction SilentlyContinue
+
+  $args = @(
+    (Quote-Arg $sourceDir),
+    (Quote-Arg $destinationDir),
+    (Quote-Arg $fileName),
+    "/J",
+    "/R:1",
+    "/W:1",
+    "/NP",
+    "/NFL",
+    "/NDL"
+  ) -join " "
+  Log ("Copying large file with robocopy: " + $Source + " -> " + $Destination)
+  $process = Start-Process -FilePath "robocopy.exe" -ArgumentList $args -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
+  if (-not $process.WaitForExit($TimeoutSec * 1000)) {
+    try { $process.Kill() } catch {}
+    throw "robocopy timed out while copying $Source to $Destination. See $log"
+  }
+  try { $process.Refresh() } catch {}
+  if (Test-Path -LiteralPath $err) {
+    Add-Content -LiteralPath $log -Value (Get-Content -LiteralPath $err -Raw) -Encoding UTF8
+  }
+  $robocopyExitCode = if ($null -eq $process.ExitCode) { 16 } else { [int] $process.ExitCode }
+  if ($robocopyExitCode -ge 8) {
+    throw "robocopy failed while copying $Source to $Destination with exit code $robocopyExitCode. See $log"
+  }
+  if (-not (Test-Path -LiteralPath $Destination)) {
+    throw "robocopy reported success but destination file is missing: $Destination"
+  }
+  $destinationItem = Get-Item -LiteralPath $Destination -ErrorAction Stop
+  if ([int64]$destinationItem.Length -ne [int64]$sourceItem.Length) {
+    throw "robocopy destination size mismatch for ${Destination}: got $($destinationItem.Length), expected $($sourceItem.Length)"
+  }
+  Log ("Copied large file successfully: " + [math]::Round(([double] $destinationItem.Length / 1GB), 3) + " GB.")
+}
+
 function Save-SotyOperatorExport([string] $Path) {
   try {
     New-Directory (Split-Path -Parent $Path)
@@ -1692,6 +1740,7 @@ try {
 
   $sourceProfileName = Get-LoggedOnUserLeaf
   $sourceProfile = Join-Path "C:\Users" $sourceProfileName
+  $sourceProfileIsManagedUser = [string]::Equals($sourceProfileName, $ManagedUserName, [StringComparison]::OrdinalIgnoreCase)
   $wifiRoot = Join-Path $script:backupRoot "wifi-profiles"
   $driverRoot = Join-Path $script:backupRoot "drivers"
   $sotyStateRoot = Join-Path (Join-Path $script:backupRoot "soty-state") $sourceProfileName
@@ -1717,7 +1766,9 @@ try {
   try { & netsh.exe wlan export profile key=clear folder="$wifiRoot" | Out-File -LiteralPath (Join-Path $JobRoot "netsh-wifi-export.txt") -Encoding UTF8 } catch { Log ("WARN wifi export failed: " + $_.Exception.Message) }
   try { Invoke-LoggedCliWithTimeout dism.exe @("/online", "/export-driver", "/destination:$driverRoot") "dism-export-drivers.txt" 900 300 } catch { Log ("WARN driver export failed: " + $_.Exception.Message) }
   if (Save-SotyOperatorExport $operatorExportPath) { $sotyOperatorExportBackedUp = $true }
-  if (Test-Path -LiteralPath $sourceProfile) {
+  if ($sourceProfileIsManagedUser) {
+    Log ("Source profile is the managed reinstall user ($ManagedUserName); skipping optional personal/browser profile copy.")
+  } elseif (Test-Path -LiteralPath $sourceProfile) {
     foreach ($folderName in $personalFolderNames) {
       $folderSource = Join-Path $sourceProfile $folderName
       $folderDestination = Join-Path $personalFilesRoot $folderName
@@ -1776,7 +1827,7 @@ try {
     Get-ChildItem -LiteralPath $script:installMediaSources -Filter "install*.swm" -File -ErrorAction SilentlyContinue | Remove-Item -Force
     if ([string]$usbVolume.FileSystem -eq "NTFS") {
       Log "Copying one-index install.wim onto NTFS USB."
-      Copy-Item -LiteralPath $installWim -Destination (Join-Path $script:installMediaSources "install.wim") -Force
+      Copy-LargeFileToUsb -Source $installWim -Destination (Join-Path $script:installMediaSources "install.wim") -TimeoutSec 3600
     } else {
       Log "Splitting install image onto USB."
       Invoke-LoggedCli dism.exe @("/Split-Image", "/ImageFile:$installWim", "/SWMFile:$(Join-Path $script:installMediaSources 'install.swm')", "/FileSize:3800", "/CheckIntegrity") "dism-split-install.txt"
