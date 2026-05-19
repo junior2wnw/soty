@@ -1670,6 +1670,7 @@ async function runScenarios({ relayUrl } = {}) {
       const windowsMachineBootstrap = await readFile(join(root, "public", "agent", "install-windows-machine-bootstrap.ps1"), "utf8");
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
+      const styles = (await readFile(join(root, "src", "style.css"), "utf8")).replace(/\r\n/gu, "\n");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
@@ -1778,6 +1779,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("startAppBundleWatcher"));
       assert(ui.includes("mainModulePathFromHtml"));
       assert(ui.includes("scheduleServiceWorkerUpdate"));
+      assert(styles.includes("[hidden]"));
+      assert(styles.includes("display: none !important"));
       assert(ui.includes('window.addEventListener("online"'));
       assert(ui.includes('document.visibilityState === "hidden"'));
       assert(ui.includes("joinHeartbeatIntervalMs"));
