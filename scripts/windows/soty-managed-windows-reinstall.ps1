@@ -930,9 +930,9 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
     "-ManagedUserName", $managedUserName,
     "-PanelSiteUrl", $panel,
     "-WindowsEditionPolicy", $WindowsEditionPolicy,
-    "-WindowsEditionHint", $WindowsEditionHint,
     "-NoTemporaryManagedPassword"
   )
+  if (-not [string]::IsNullOrWhiteSpace($WindowsEditionHint)) { $psArgs += @("-WindowsEditionHint", $WindowsEditionHint) }
   if ($UseExistingUsbInstallImage) { $psArgs += "-UseExistingUsbInstallImage" }
   if (-not [string]::IsNullOrWhiteSpace($ConfirmationPhrase)) { $psArgs += @("-ConfirmationPhrase", $ConfirmationPhrase) }
   $output = & powershell.exe @psArgs 2>&1

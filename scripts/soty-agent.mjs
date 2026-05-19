@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.69";
+const agentVersion = "0.4.70";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -10365,9 +10365,9 @@ try {
     '-UsbDriveLetter', ([string]$req.usbDriveLetter),
     '-ManifestUrl', ([string]$req.manifestUrl),
     '-PanelSiteUrl', ([string]$req.panelSiteUrl),
-    '-WindowsEditionPolicy', ([string]$req.windowsEditionPolicy),
-    '-WindowsEditionHint', ([string]$req.windowsEditionHint)
+    '-WindowsEditionPolicy', ([string]$req.windowsEditionPolicy)
   )
+  if (-not [string]::IsNullOrWhiteSpace([string]$req.windowsEditionHint)) { $psArgs += @('-WindowsEditionHint', [string]$req.windowsEditionHint) }
   if ([bool]$req.useExistingUsbInstallImage) { $psArgs += '-UseExistingUsbInstallImage' }
   if (-not [string]::IsNullOrWhiteSpace([string]$req.confirmationPhrase)) { $psArgs += @('-ConfirmationPhrase', [string]$req.confirmationPhrase) }
   $output = & powershell.exe @psArgs 2>&1

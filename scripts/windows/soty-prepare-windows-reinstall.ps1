@@ -168,11 +168,12 @@ if (-not $Detached) {
     (Quote-Arg $WindowsImageSha256),
     "-WindowsEditionPolicy",
     (Quote-Arg $WindowsEditionPolicy),
-    "-WindowsEditionHint",
-    (Quote-Arg $WindowsEditionHint),
     "-ConfirmationPhrase",
     (Quote-Arg $ConfirmationPhrase)
   )
+  if (-not [string]::IsNullOrWhiteSpace($WindowsEditionHint)) {
+    $argParts += @("-WindowsEditionHint", (Quote-Arg $WindowsEditionHint))
+  }
   if ($UseExistingUsbInstallImage) {
     $argParts += "-UseExistingUsbInstallImage"
   }
