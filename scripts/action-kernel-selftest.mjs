@@ -1229,6 +1229,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes("[int] $IdleTimeoutSec = 0"));
       assert(prepare.includes('"dism-export-drivers.txt" 900 300'));
       assert(managed.includes('@("running-or-started", "running", "created")'));
+      assert(managed.includes("IncludeToolChildrenWithoutCommandLine"));
+      assert(managed.includes("Test-PrepareChildProcessName"));
+      assert(managed.includes("Test-PrepareJobMediaActive"));
+      assert(managed.includes("AllowCommandLineUnavailableDownloadChild"));
       assert(agent.includes("sotyRuntimeHints"));
       assert(agent.includes("runAgentSourceWorkerLoop"));
       assert(agent.includes("direct-device-worker"));

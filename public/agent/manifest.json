@@ -146,8 +146,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-            "bytes": 46829
+            "sha256": "d38e0eaa85f9663a6b73e29680b2ebea24a23a02717cc56cd3c4a9f6ca4d5f75",
+            "bytes": 51141
           },
           {
             "name": "prepare",
@@ -226,8 +226,8 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-        "bytes": 46829
+        "sha256": "d38e0eaa85f9663a6b73e29680b2ebea24a23a02717cc56cd3c4a9f6ca4d5f75",
+        "bytes": 51141
       },
       {
         "name": "prepare",
@@ -413,8 +413,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-            "bytes": 46829
+            "sha256": "d38e0eaa85f9663a6b73e29680b2ebea24a23a02717cc56cd3c4a9f6ca4d5f75",
+            "bytes": 51141
           },
           {
             "name": "prepare",
@@ -505,8 +505,8 @@
           "scripts": [
             {
               "name": "managed",
-              "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-              "bytes": 46829
+              "sha256": "d38e0eaa85f9663a6b73e29680b2ebea24a23a02717cc56cd3c4a9f6ca4d5f75",
+              "bytes": 51141
             },
             {
               "name": "prepare",
