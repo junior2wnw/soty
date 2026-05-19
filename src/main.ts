@@ -1246,11 +1246,12 @@ function renderApp(): void {
             <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
             <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
           </form>
-        <div class="terminal-panel" data-tooltip="Окно удаленных команд" data-tooltip-side="top">
+        <div class="terminal-panel mini-app-panel" data-mini-app="commands" data-tooltip="Окно удаленных команд" data-tooltip-side="top">
           <div class="terminal-head">
             <span class="terminal-led"></span>
             <span class="terminal-peer"></span>
-            <span class="terminal-glyph">$</span>
+            <span class="terminal-title">COMMANDS</span>
+            <span class="terminal-status">READY</span>
             <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
             <button class="terminal-close" type="button" aria-label="close" data-tooltip="Закрыть удаленные команды">${icon("close")}</button>
           </div>
@@ -1300,7 +1301,7 @@ function renderApp(): void {
             <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
             <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
             <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>DO</span></button>
-            <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>LINK</span></button>
+            <button class="side-action remote-action" type="button" hidden aria-label="download" data-tooltip="Скачать Soty Agent">${icon("download")}<span>DOWNLOAD</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
             <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
           </div>
@@ -1399,23 +1400,9 @@ function renderApp(): void {
       if (!selectedId) {
         return;
       }
-      let mode = agentButtonMode();
+      const mode = await refreshAgentButtonState(true);
       if (mode !== "link") {
         requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
-        void refreshAgentButtonState(true);
-        return;
-      }
-      mode = await refreshAgentButtonState(true);
-      if (mode !== "link") {
-        requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
-        return;
-      }
-      if (isAgentTunnelId(selectedId)) {
-        void toggleAgentRemoteGrant(selectedId);
-      } else if (remoteAccess.has(selectedId) && !remoteEnabled.has(selectedId)) {
-        openRemoteCommands(selectedId);
-      } else {
-        void toggleRemoteGrant(selectedId);
       }
     })();
   });
@@ -1590,7 +1577,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (!granted) {
     await typeOperatorChat(
       agentTunnelId,
-      formatOperatorChat("LINK не смог подключить командный канал агента. Проверь интернет и попробуй нажать LINK ещё раз.", "sysadmin"),
+      formatOperatorChat("Агент не смог подключить командный канал. Проверь интернет: чат сам повторит подключение.", "sysadmin"),
       "fast"
     );
     return;
@@ -1599,7 +1586,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   agentSourceGrantRefreshAt = Date.now() + agentSourceGrantRefreshMs;
   terminalOpenId = agentTunnelId;
   setTerminalState(agentTunnelId, "idle");
-  appendTerminalLine(agentTunnelId, "+ agent link");
+  appendTerminalLine(agentTunnelId, "+ agent console");
   renderTerminal();
   renderTiles();
   startAgentSourceControl(agentTunnelId);
@@ -1964,7 +1951,7 @@ function moveAgentLinkToFreshDialog(previousId: string, freshId: string): void {
   terminalLogs.delete(freshId);
   terminalState.delete(previousId);
   setTerminalState(freshId, "idle");
-  appendTerminalLine(freshId, "+ agent link");
+  appendTerminalLine(freshId, "+ agent console");
   void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   startAgentSourceControl(freshId);
 }
@@ -2035,6 +2022,7 @@ async function startAgentDialog(): Promise<void> {
     composer?.focus();
     return;
   }
+  void prepareAgentSourceForDialog(tunnel.id, tunnel);
   await ensureOperatorBridge();
   publishOperatorTargets();
   composer?.focus();
@@ -2151,6 +2139,7 @@ function renderDialogChrome(): void {
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
+  const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
   if (shell) {
     shell.style.setProperty("--peer-color", color);
   }
@@ -2161,17 +2150,24 @@ function renderDialogChrome(): void {
     name.textContent = label;
   }
   if (state) {
-    const remote = mode === "download"
-      ? "AGENT SETUP"
-      : mode === "update"
-        ? "AGENT UPDATE"
-        : remoteAccess.has(selectedId) ? "REMOTE READY" : remoteEnabled.has(selectedId) ? "HOST LINK" : "LIVE TEXT";
+    let remote = "LIVE TEXT";
+    if (mode === "download") {
+      remote = "AGENT SETUP";
+    } else if (mode === "update") {
+      remote = "AGENT UPDATE";
+    } else if (agentTunnel) {
+      remote = remoteEnabled.has(selectedId) ? "AGENT READY" : "AGENT";
+    } else if (remoteAccess.has(selectedId)) {
+      remote = "REMOTE READY";
+    } else if (remoteEnabled.has(selectedId)) {
+      remote = "HOST READY";
+    }
     const syncState = selectedId ? syncStates.get(selectedId) : "";
     const syncSuffix = syncState === "connecting" ? " / SYNCING" : syncState === "closed" ? " / OFFLINE" : "";
     state.textContent = `${remote}${syncSuffix}`;
   }
   if (id) {
-    id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
+    id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT";
   }
   if (sendButton) {
     const stopping = agentThinking.has(selectedId);
@@ -2182,20 +2178,15 @@ function renderDialogChrome(): void {
   }
   if (remoteButton) {
     const needsAgent = mode !== "link";
-    remoteButton.classList.toggle("is-on", !needsAgent && remoteEnabled.has(selectedId));
-    remoteButton.classList.toggle("has-access", !needsAgent && remoteAccess.has(selectedId));
+    remoteButton.hidden = !needsAgent;
+    remoteButton.classList.toggle("is-on", false);
+    remoteButton.classList.toggle("has-access", false);
     remoteButton.classList.toggle("needs-agent", needsAgent);
-    remoteButton.setAttribute("aria-label", needsAgent ? "download" : "remote");
-    remoteButton.innerHTML = needsAgent
-      ? `${icon("download")}<span>${mode === "update" ? "UPDATE" : "DOWNLOAD"}</span>`
-      : `${icon("remote")}<span>LINK</span>`;
-    remoteButton.dataset.tooltip = needsAgent
-      ? (mode === "update" ? "Download current Soty Agent" : "Download Soty Agent")
-      : remoteEnabled.has(selectedId)
-        ? "Turn off remote link"
-        : remoteAccess.has(selectedId)
-          ? "Open remote commands"
-          : "Enable remote link";
+    if (needsAgent) {
+      remoteButton.setAttribute("aria-label", mode === "update" ? "update" : "download");
+      remoteButton.innerHTML = `${icon("download")}<span>${mode === "update" ? "UPDATE" : "DOWNLOAD"}</span>`;
+      remoteButton.dataset.tooltip = mode === "update" ? "Download current Soty Agent" : "Download Soty Agent";
+    }
   }
 }
 
@@ -3613,6 +3604,8 @@ function renderTerminal(): void {
   const editor = app.querySelector<HTMLElement>(".editor");
   const form = app.querySelector<HTMLFormElement>(".terminal-form");
   const peer = app.querySelector<HTMLSpanElement>(".terminal-peer");
+  const title = app.querySelector<HTMLSpanElement>(".terminal-title");
+  const status = app.querySelector<HTMLSpanElement>(".terminal-status");
   const collapseButton = app.querySelector<HTMLButtonElement>(".terminal-collapse");
   if (!panel || !output || !editor || !form || !peer) {
     return;
@@ -3632,6 +3625,12 @@ function renderTerminal(): void {
   form.hidden = !controller;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   peer.textContent = tunnel ? initials(counterpartyLabel(tunnel)) : ".";
+  if (title) {
+    title.textContent = tunnel && isAgentTunnel(tunnel) ? "AGENT CONSOLE" : "REMOTE CONSOLE";
+  }
+  if (status) {
+    status.textContent = controller ? "CONTROL" : host ? "HOST" : state.toUpperCase();
+  }
   if (collapseButton) {
     collapseButton.innerHTML = icon(terminalCollapsed ? "expand" : "collapse");
     collapseButton.setAttribute("aria-label", terminalCollapsed ? "expand" : "collapse");

@@ -1784,11 +1784,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("SOTY_FILE_CHUNK"));
       assert(!ui.includes("renderInstall"));
       assert(!ui.includes("install-button"));
-      assert(ui.includes("let mode = agentButtonMode();"));
-      assert(ui.includes("void refreshAgentButtonState(true);"));
+      assert(ui.includes("const mode = await refreshAgentButtonState(true);"));
       assert(ui.includes('downloadAgentInstallerForDevice('));
       assert(ui.includes('"machine",'));
-      assert(ui.includes('remoteButton.innerHTML = needsAgent'));
+      assert(ui.includes("remoteButton.hidden = !needsAgent"));
+      assert(ui.includes("void prepareAgentSourceForDialog(tunnel.id, tunnel);"));
+      assert(ui.includes("AGENT CONSOLE"));
+      assert(ui.includes("+ agent console"));
+      assert(!ui.includes("<span>LINK</span>"));
+      assert(!ui.includes("попробуй нажать LINK"));
       assert(ui.includes('mode === "update" ? "UPDATE" : "DOWNLOAD"'));
       assert(ui.includes('remoteButton.classList.toggle("needs-agent", needsAgent)'));
       assert(!ui.includes('downloadAgentInstallerForDevice("user"'));
