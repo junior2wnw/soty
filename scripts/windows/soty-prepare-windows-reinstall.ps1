@@ -1121,6 +1121,29 @@ function Get-InstallImageCandidate([string[]] $SourceRoots) {
   return $null
 }
 
+function Get-UsbInstallImageReclaimableGB([string] $UsbRoot) {
+  if ([string]::IsNullOrWhiteSpace($UsbRoot) -or -not (Test-Path -LiteralPath $UsbRoot)) { return 0.0 }
+  $roots = @(
+    (Join-Path $UsbRoot "sources"),
+    (Join-Path (Join-Path $UsbRoot "Soty-Reinstall") "sources")
+  )
+  $bytes = [int64]0
+  foreach ($root in $roots) {
+    if (-not (Test-Path -LiteralPath $root)) { continue }
+    foreach ($name in @("install.wim", "install.esd", "install.swm")) {
+      $path = Join-Path $root $name
+      if (Test-Path -LiteralPath $path) {
+        try { $bytes += [int64] (Get-Item -LiteralPath $path -ErrorAction Stop).Length } catch {}
+      }
+    }
+    try {
+      Get-ChildItem -LiteralPath $root -Filter "install*.swm" -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $bytes += [int64] $_.Length }
+    } catch {}
+  }
+  return [math]::Round(([double] $bytes / 1GB), 2)
+}
+
 function Get-InstallImageSelection([string] $Path) {
   if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return $null }
   if ([IO.Path]::GetExtension($Path).Equals(".swm", [StringComparison]::OrdinalIgnoreCase)) { return $null }
@@ -1613,10 +1636,16 @@ try {
       usb = $usbSelection
     }
   }
-  if ($usbSelection.freeGB -lt 12) {
+  $earlyUsbRoot = [string] $usbSelection.root
+  $earlyUsbReinstall = Join-Path (Join-Path $earlyUsbRoot "Soty-Reinstall") "reinstall"
+  New-Directory $earlyUsbReinstall
+  Clear-ReinstallArmMarkers $earlyUsbReinstall
+  $usbInstallImageReclaimableGB = Get-UsbInstallImageReclaimableGB $earlyUsbRoot
+  if (([double] $usbSelection.freeGB + [double] $usbInstallImageReclaimableGB) -lt 12) {
     Finish "blocked" 2 @{
       blockers = @("usb-free-space-low")
       usb = $usbSelection
+      reclaimableInstallImageGB = $usbInstallImageReclaimableGB
     }
   }
 
