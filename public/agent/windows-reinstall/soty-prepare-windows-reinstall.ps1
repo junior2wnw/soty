@@ -6,6 +6,9 @@ param(
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
   [string] $WindowsImageUrl = "http://dl.delivery.mp.microsoft.com/filestreamingservice/files/071fc359-1d92-46c0-ad88-c7801d2f69be/26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENTCONSUMER_RET_x64FRE_ru-ru.esd",
   [string] $WindowsImageSha256 = "cb2fbc4af7979cf7e5f740f03289d6eacb19dd75a4858d66bc6a50aa26c37005",
+  [ValidateSet("auto", "current", "home", "pro", "iot-ltsc", "enterprise-ltsc")]
+  [string] $WindowsEditionPolicy = "auto",
+  [string] $WindowsEditionHint = "",
   [string] $ConfirmationPhrase = "",
   [switch] $UseExistingUsbInstallImage,
   [switch] $AllowTemporaryManagedPassword,
@@ -163,6 +166,10 @@ if (-not $Detached) {
     (Quote-Arg $WindowsImageUrl),
     "-WindowsImageSha256",
     (Quote-Arg $WindowsImageSha256),
+    "-WindowsEditionPolicy",
+    (Quote-Arg $WindowsEditionPolicy),
+    "-WindowsEditionHint",
+    (Quote-Arg $WindowsEditionHint),
     "-ConfirmationPhrase",
     (Quote-Arg $ConfirmationPhrase)
   )
@@ -227,6 +234,22 @@ function Finish([string] $Status, [int] $ExitCode, [hashtable] $Extra = @{}) {
   foreach ($key in $Extra.Keys) { $result[$key] = $Extra[$key] }
   Set-Content -LiteralPath $resultPath -Value ($result | ConvertTo-Json -Depth 12) -Encoding UTF8
   if ($ExitCode -ne 0) { exit $ExitCode }
+}
+
+function Clear-ReinstallArmMarkers([string] $UsbReinstallRoot) {
+  foreach ($path in @(
+    "C:\Soty-Reinstall-Target.marker",
+    (Join-Path $UsbReinstallRoot "armed.flag"),
+    (Join-Path $UsbReinstallRoot "armed.started")
+  )) {
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) { continue }
+    try {
+      Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+      Log ("Cleared stale arm marker: " + $path)
+    } catch {
+      throw ("Could not clear stale arm marker " + $path + ": " + $_.Exception.Message)
+    }
+  }
 }
 
 function Invoke-LoggedCli([string] $FilePath, [string[]] $ArgumentList, [string] $LogName) {
@@ -947,15 +970,100 @@ function Test-WindowsInstallImage([string] $ImageName, [string] $ImageDescriptio
 }
 
 function Get-WindowsEditionKind([string] $Text) {
+  if ($Text -match '(?i)iot|ltsc|long.term|enterprise\s+ltsc') { return "iot-ltsc" }
+  if ($Text -match '(?i)enterprise') { return "enterprise" }
   if ($Text -match '(?i)professional|windows\s+11\s+pro|windows\s+10\s+pro|pro\b|профессион') { return "pro" }
   if ($Text -match '(?i)home|core|домаш') { return "home" }
   return ""
 }
 
+function Test-WindowsEditionKindCompatible([string] $Actual, [string] $Expected) {
+  if ([string]::IsNullOrWhiteSpace($Expected)) { return $true }
+  if ([string]::IsNullOrWhiteSpace($Actual)) { return $false }
+  if ($Actual -eq $Expected) { return $true }
+  if ($Expected -eq "iot-ltsc" -and $Actual -eq "enterprise-ltsc") { return $true }
+  if ($Expected -eq "enterprise-ltsc" -and $Actual -eq "iot-ltsc") { return $true }
+  return $false
+}
+
 function Test-WindowsEditionMatch([string] $ImageText, [string] $PreferredEditionHint) {
   $preferred = Get-WindowsEditionKind $PreferredEditionHint
   if ([string]::IsNullOrWhiteSpace($preferred)) { return $true }
-  return ((Get-WindowsEditionKind $ImageText) -eq $preferred)
+  return (Test-WindowsEditionKindCompatible -Actual (Get-WindowsEditionKind $ImageText) -Expected $preferred)
+}
+
+function ConvertTo-WindowsImageSelection($Image) {
+  if (-not $Image) { return $null }
+  $text = ((([string]$Image.ImageName), ([string]$Image.ImageDescription)) -join " ")
+  return [pscustomobject]@{
+    imageIndex = [int] $Image.ImageIndex
+    imageName = [string] $Image.ImageName
+    imageDescription = [string] $Image.ImageDescription
+    imageSizeGB = [math]::Round(([double] $Image.ImageSize / 1GB), 2)
+    editionKind = Get-WindowsEditionKind $text
+  }
+}
+
+function Get-EditionPolicySelection([string] $Policy, [string] $ExplicitHint, [string] $CurrentEditionHint) {
+  $normalized = ([string] $Policy).Trim().ToLowerInvariant()
+  if ([string]::IsNullOrWhiteSpace($normalized)) { $normalized = "auto" }
+  if (-not [string]::IsNullOrWhiteSpace($ExplicitHint)) {
+    return [pscustomobject]@{
+      policy = $normalized
+      hint = $ExplicitHint
+      desiredKind = Get-WindowsEditionKind $ExplicitHint
+      reason = "explicit-hint"
+    }
+  }
+  if ($normalized -eq "current") {
+    return [pscustomobject]@{
+      policy = $normalized
+      hint = $CurrentEditionHint
+      desiredKind = Get-WindowsEditionKind $CurrentEditionHint
+      reason = "current-os"
+    }
+  }
+  if ($normalized -eq "home") {
+    return [pscustomobject]@{ policy = $normalized; hint = "Windows 11 Home"; desiredKind = "home"; reason = "policy-home" }
+  }
+  if ($normalized -eq "pro") {
+    return [pscustomobject]@{ policy = $normalized; hint = "Windows 11 Pro"; desiredKind = "pro"; reason = "policy-pro" }
+  }
+  if ($normalized -eq "iot-ltsc") {
+    return [pscustomobject]@{ policy = $normalized; hint = "Windows 11 IoT Enterprise LTSC"; desiredKind = "iot-ltsc"; reason = "policy-iot-ltsc" }
+  }
+  if ($normalized -eq "enterprise-ltsc") {
+    return [pscustomobject]@{ policy = $normalized; hint = "Windows 11 Enterprise LTSC"; desiredKind = "iot-ltsc"; reason = "policy-enterprise-ltsc" }
+  }
+
+  $ramGb = 0.0
+  $logicalProcessors = 0
+  try {
+    $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    $ramGb = [math]::Round(([double] $computer.TotalPhysicalMemory / 1GB), 2)
+  } catch {}
+  try {
+    $logicalProcessors = [int] ((Get-CimInstance Win32_Processor -ErrorAction Stop | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum)
+  } catch {}
+  $weak = (($ramGb -gt 0 -and $ramGb -lt 8) -or ($logicalProcessors -gt 0 -and $logicalProcessors -le 4))
+  if ($weak) {
+    return [pscustomobject]@{
+      policy = "auto"
+      hint = "Windows 11 IoT Enterprise LTSC"
+      desiredKind = "iot-ltsc"
+      reason = "auto-weak-hardware"
+      ramGB = $ramGb
+      logicalProcessors = $logicalProcessors
+    }
+  }
+  return [pscustomobject]@{
+    policy = "auto"
+    hint = "Windows 11 Pro"
+    desiredKind = "pro"
+    reason = "auto-standard-hardware"
+    ramGB = $ramGb
+    logicalProcessors = $logicalProcessors
+  }
 }
 
 function Select-WindowsInstallImage($Images, [string] $PreferredEditionHint = "") {
@@ -969,9 +1077,14 @@ function Select-WindowsInstallImage($Images, [string] $PreferredEditionHint = ""
     Test-WindowsEditionMatch -ImageText ((([string]$_.ImageName), ([string]$_.ImageDescription)) -join " ") -PreferredEditionHint $PreferredEditionHint
   } | Select-Object -First 1
   if ($editionMatched) { return $editionMatched }
+  $desired = Get-WindowsEditionKind $PreferredEditionHint
+  if (-not [string]::IsNullOrWhiteSpace($desired)) {
+    $available = @($installImages | ForEach-Object { [string]$_.ImageName }) -join "; "
+    throw ("Desired Windows edition '" + $PreferredEditionHint + "' was not found in the image source. Available images: " + $available)
+  }
   $preferred = $installImages | Where-Object {
-    (([string]$_.ImageName) -match '(?i)home|core|домашн') -or
-    (([string]$_.ImageDescription) -match '(?i)home|core|домашн')
+    (([string]$_.ImageName) -match '(?i)professional|windows\s+11\s+pro|windows\s+10\s+pro|pro\b|профессион') -or
+    (([string]$_.ImageDescription) -match '(?i)professional|windows\s+11\s+pro|windows\s+10\s+pro|pro\b|профессион')
   } | Select-Object -First 1
   if ($preferred) { return $preferred }
   return ($installImages | Select-Object -First 1)
@@ -1004,6 +1117,16 @@ function Get-InstallImageCandidate([string[]] $SourceRoots) {
       }
     }
   }
+  return $null
+}
+
+function Get-InstallImageSelection([string] $Path) {
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) { return $null }
+  if ([IO.Path]::GetExtension($Path).Equals(".swm", [StringComparison]::OrdinalIgnoreCase)) { return $null }
+  try {
+    $image = @(Get-WindowsImage -ImagePath $Path -ErrorAction Stop | Select-Object -First 1)
+    if ($image) { return (ConvertTo-WindowsImageSelection $image) }
+  } catch {}
   return $null
 }
 
@@ -1523,15 +1646,19 @@ try {
 
   Log ("caseId=" + $script:caseId)
   Log ("usbRoot=" + $script:usbRoot)
+  Clear-ReinstallArmMarkers $usbReinstall
 
-  $preferredEditionHint = ""
+  $currentEditionHint = ""
   try {
     $currentOs = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-    $preferredEditionHint = (([string]$currentOs.Caption), ([string]$currentOs.OperatingSystemSKU)) -join " "
-    Log ("Preferred Windows edition from current OS: " + $preferredEditionHint)
+    $currentEditionHint = (([string]$currentOs.Caption), ([string]$currentOs.OperatingSystemSKU)) -join " "
+    Log ("Current Windows edition: " + $currentEditionHint)
   } catch {
     Log ("WARN could not read current Windows edition: " + $_.Exception.Message)
   }
+  $editionPolicy = Get-EditionPolicySelection -Policy $WindowsEditionPolicy -ExplicitHint $WindowsEditionHint -CurrentEditionHint $currentEditionHint
+  $preferredEditionHint = [string] $editionPolicy.hint
+  Log ("Preferred Windows edition policy: " + [string]$editionPolicy.policy + "; desired=" + $preferredEditionHint + "; reason=" + [string]$editionPolicy.reason)
 
   $sourceProfileName = Get-LoggedOnUserLeaf
   $sourceProfile = Join-Path "C:\Users" $sourceProfileName
@@ -1576,9 +1703,11 @@ try {
   # tree can hold locks or copy an active job forever, so keep it out of the
   # reinstall backup.
 
+  $selectedWindowsImage = $null
   $existingUsbImage = Get-InstallImageCandidate @($usbMediaSources, $usbSources)
   if ($existingUsbImage -and (Test-ExistingInstallImage -Path $existingUsbImage.Path -SourceRoot $existingUsbImage.SourceRoot -PreferredEditionHint $preferredEditionHint)) {
     $script:installMediaSources = $existingUsbImage.SourceRoot
+    $selectedWindowsImage = Get-InstallImageSelection -Path $existingUsbImage.Path
     Log ("Using existing USB install image: " + $existingUsbImage.Path)
   } elseif ($UseExistingUsbInstallImage) {
     throw "UseExistingUsbInstallImage was set, but no valid install.swm/esd/wim exists under $usbMediaSources or $usbSources."
@@ -1604,8 +1733,12 @@ try {
       Log "Exporting Windows edition from ESD."
       $images = @(Get-WindowsImage -ImagePath $esdPath -ErrorAction Stop)
       $image = Select-WindowsInstallImage -Images $images -PreferredEditionHint $preferredEditionHint
+      $selectedWindowsImage = ConvertTo-WindowsImageSelection $image
       Log ("Selected image index " + [int]$image.ImageIndex + ": " + [string]$image.ImageName)
       Invoke-LoggedCli dism.exe @("/Export-Image", "/SourceImageFile:$esdPath", "/SourceIndex:$([int]$image.ImageIndex)", "/DestinationImageFile:$installWim", "/Compress:max", "/CheckIntegrity") "dism-export-installwim.txt"
+    }
+    if (-not $selectedWindowsImage) {
+      $selectedWindowsImage = Get-InstallImageSelection -Path $installWim
     }
     Remove-Item -LiteralPath (Join-Path $script:installMediaSources "install.swm") -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $script:installMediaSources "install.wim") -Force -ErrorAction SilentlyContinue
@@ -1688,7 +1821,10 @@ try {
     backupScope = $backupScope
     personalFolderNames = $personalFolderNames
     installImageSourceRoot = $script:installMediaSources
+    currentEditionHint = $currentEditionHint
+    windowsEditionPolicy = $editionPolicy
     preferredEditionHint = $preferredEditionHint
+    selectedWindowsImage = $selectedWindowsImage
     personalFilesBackedUp = $personalFilesBackedUp
     sotyOperatorExportBackedUp = $sotyOperatorExportBackedUp
     internalBootRoot = $script:internalBootRoot

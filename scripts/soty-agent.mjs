@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.68";
+const agentVersion = "0.4.69";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7487,6 +7487,8 @@ function runMcpServer() {
             usbConfirmed: { type: "boolean", description: "Windows reinstall prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
             usbUseConfirmed: { type: "boolean", description: "Alias for usbConfirmed." },
             usbConsent: { type: "boolean", description: "Alias for usbConfirmed." },
+            windowsEditionPolicy: { type: "string", description: "Windows reinstall edition policy: auto, current, home, pro, iot-ltsc, or enterprise-ltsc. Auto uses Pro for standard hardware and LTSC for weak hardware when the source image contains it." },
+            windowsEditionHint: { type: "string", description: "Optional explicit Windows edition hint, for example Windows 11 Pro or Windows 11 IoT Enterprise LTSC." },
             routeProfile: { type: "string", description: "Optional route profile id to reuse, for example soty-windows-reinstall-managed-fast-lane." },
             command: { type: "string", description: "Command for shell/action work." },
             script: { type: "string", description: "Script body for script/action work." },
@@ -7565,6 +7567,8 @@ function runMcpServer() {
             usbConfirmed: { type: "boolean", description: "Windows reinstall prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
             usbUseConfirmed: { type: "boolean", description: "Alias for usbConfirmed." },
             usbConsent: { type: "boolean", description: "Alias for usbConfirmed." },
+            windowsEditionPolicy: { type: "string", description: "Windows reinstall edition policy: auto, current, home, pro, iot-ltsc, or enterprise-ltsc." },
+            windowsEditionHint: { type: "string", description: "Optional explicit Windows edition hint, for example Windows 11 Pro or Windows 11 IoT Enterprise LTSC." },
             improvement: { type: "string", description: "Optional sanitized reusable improvement note when this run proves a safe toolkit improvement." },
             reuseKey: { type: "string", description: "Stable reusable route/script key when this action should help unrelated future tasks reuse the same method." },
             pivotFrom: { type: "string", description: "Optional previous task vector when the user changed direction and this action continues with existing proof/artifacts." },
@@ -8896,6 +8900,7 @@ function runMcpServer() {
     const usbDriveLetter = normalizeUsbDriveLetter(args.usbDriveLetter || "D");
     const installMode = normalizeWindowsReinstallInstallMode(args.installMode || args.reinstallMode || "");
     const usbConfirmed = trueArg(args.usbConfirmed) || trueArg(args.usbUseConfirmed) || trueArg(args.usbConsent);
+    const windowsEditionPolicy = cleanActionToken(args.windowsEditionPolicy || args.editionPolicy || "", "auto") || "auto";
     const request = {
       action,
       usbDriveLetter,
@@ -8903,6 +8908,8 @@ function runMcpServer() {
       useExistingUsbInstallImage: args.useExistingUsbInstallImage === true,
       manifestUrl: updateManifestUrl,
       panelSiteUrl: originFromUrl(updateManifestUrl) || agentRelayBaseUrl || "https://xn--n1afe0b.online",
+      windowsEditionPolicy: ["auto", "current", "home", "pro", "iot-ltsc", "enterprise-ltsc"].includes(windowsEditionPolicy) ? windowsEditionPolicy : "auto",
+      windowsEditionHint: String(args.windowsEditionHint || args.editionHint || "").trim().slice(0, 160),
       workspaceRoot: "C:\\ProgramData\\Soty\\WindowsReinstall"
     };
     if (action === "arm" && !request.confirmationPhrase) {
@@ -9512,6 +9519,23 @@ function runMcpServer() {
       ready: status?.ready === true,
       confirmationPhrase: cleanActionText(status?.confirmationPhrase || "", 300),
       backupProofOk: status?.backupProofOk === true,
+      readyEditionOk: status?.readyEditionOk === true,
+      preferredEditionHint: cleanActionText(status?.preferredEditionHint || "", 160),
+      windowsEditionPolicy: status?.windowsEditionPolicy && typeof status.windowsEditionPolicy === "object" ? {
+        policy: cleanActionText(status.windowsEditionPolicy.policy || "", 40),
+        hint: cleanActionText(status.windowsEditionPolicy.hint || "", 160),
+        desiredKind: cleanActionText(status.windowsEditionPolicy.desiredKind || "", 40),
+        reason: cleanActionText(status.windowsEditionPolicy.reason || "", 80)
+      } : null,
+      selectedWindowsImage: status?.selectedWindowsImage && typeof status.selectedWindowsImage === "object" ? {
+        imageIndex: Number.isSafeInteger(status.selectedWindowsImage.imageIndex) ? status.selectedWindowsImage.imageIndex : null,
+        imageName: cleanActionText(status.selectedWindowsImage.imageName || "", 160),
+        editionKind: cleanActionText(status.selectedWindowsImage.editionKind || "", 40)
+      } : null,
+      armed: status?.armed === true,
+      staleArmFlag: status?.staleArmFlag === true,
+      armCaseId: cleanActionText(status?.armCaseId || "", 80),
+      armedAt: cleanActionText(status?.armedAt || "", 80),
       installImage: cleanActionText(status?.installImage || "", 260),
       rootAutounattend: status?.rootAutounattend === true,
       oemSetupComplete: status?.oemSetupComplete === true,
@@ -9655,7 +9679,7 @@ function runMcpServer() {
   }
 
   function isReinstallReady(status) {
-    return status?.ready === true;
+    return status?.ready === true && status?.readyEditionOk === true;
   }
 
   function evaluateReinstallPrepareTerminal(status, initial, elapsedMs) {
@@ -9839,6 +9863,9 @@ function runMcpServer() {
     }
     if (status?.backupProofOk !== true) {
       blockers.push("backup-proof");
+    }
+    if (status?.readyEditionOk !== true) {
+      blockers.push("windows-edition");
     }
     if (!String(status?.installImage || "")) {
       blockers.push("install-image");
@@ -10278,6 +10305,8 @@ function sourceManagedWindowsReinstallBootstrap(args) {
     useExistingUsbInstallImage: args.useExistingUsbInstallImage === true,
     manifestUrl: String(args.manifestUrl || updateManifestUrl).slice(0, 4000),
     panelSiteUrl: String(args.panelSiteUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online").slice(0, 4000),
+    windowsEditionPolicy: String(args.windowsEditionPolicy || "auto").slice(0, 40),
+    windowsEditionHint: String(args.windowsEditionHint || "").slice(0, 160),
     workspaceRoot: String(args.workspaceRoot || "C:\\ProgramData\\Soty\\WindowsReinstall").slice(0, 1000)
   }), "utf8").toString("base64");
   return `
@@ -10335,7 +10364,9 @@ try {
     '-WorkspaceRoot', $workspaceRoot,
     '-UsbDriveLetter', ([string]$req.usbDriveLetter),
     '-ManifestUrl', ([string]$req.manifestUrl),
-    '-PanelSiteUrl', ([string]$req.panelSiteUrl)
+    '-PanelSiteUrl', ([string]$req.panelSiteUrl),
+    '-WindowsEditionPolicy', ([string]$req.windowsEditionPolicy),
+    '-WindowsEditionHint', ([string]$req.windowsEditionHint)
   )
   if ([bool]$req.useExistingUsbInstallImage) { $psArgs += '-UseExistingUsbInstallImage' }
   if (-not [string]::IsNullOrWhiteSpace([string]$req.confirmationPhrase)) { $psArgs += @('-ConfirmationPhrase', [string]$req.confirmationPhrase) }

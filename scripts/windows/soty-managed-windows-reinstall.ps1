@@ -6,6 +6,9 @@ param(
   [switch] $UseExistingUsbInstallImage,
   [string] $ManifestUrl = "https://xn--n1afe0b.online/agent/manifest.json",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
+  [ValidateSet("auto", "current", "home", "pro", "iot-ltsc", "enterprise-ltsc")]
+  [string] $WindowsEditionPolicy = "auto",
+  [string] $WindowsEditionHint = "",
   [string] $WorkspaceRoot = "C:\ProgramData\Soty\WindowsReinstall"
 )
 
@@ -316,6 +319,54 @@ function Get-InstallImageCandidate([string[]] $SourceRoots) {
   return ""
 }
 
+function Get-WindowsEditionKind([string] $Text) {
+  if ($Text -match '(?i)iot|ltsc|long.term|enterprise\s+ltsc') { return "iot-ltsc" }
+  if ($Text -match '(?i)enterprise') { return "enterprise" }
+  if ($Text -match '(?i)professional|windows\s+11\s+pro|windows\s+10\s+pro|pro\b|профессион') { return "pro" }
+  if ($Text -match '(?i)home|core|домаш') { return "home" }
+  return ""
+}
+
+function Test-WindowsEditionKindCompatible([string] $Actual, [string] $Expected) {
+  if ([string]::IsNullOrWhiteSpace($Expected)) { return $true }
+  if ([string]::IsNullOrWhiteSpace($Actual)) { return $false }
+  if ($Actual -eq $Expected) { return $true }
+  if ($Expected -eq "iot-ltsc" -and $Actual -eq "enterprise-ltsc") { return $true }
+  if ($Expected -eq "enterprise-ltsc" -and $Actual -eq "iot-ltsc") { return $true }
+  return $false
+}
+
+function Get-ReadyDesiredEditionKind($Ready) {
+  if (-not $Ready) { return "" }
+  try {
+    if ($Ready.windowsEditionPolicy -and -not [string]::IsNullOrWhiteSpace([string] $Ready.windowsEditionPolicy.desiredKind)) {
+      return [string] $Ready.windowsEditionPolicy.desiredKind
+    }
+  } catch {}
+  return ""
+}
+
+function Get-ReadySelectedEditionKind($Ready) {
+  if (-not $Ready) { return "" }
+  try {
+    if ($Ready.selectedWindowsImage -and -not [string]::IsNullOrWhiteSpace([string] $Ready.selectedWindowsImage.editionKind)) {
+      return [string] $Ready.selectedWindowsImage.editionKind
+    }
+    if ($Ready.selectedWindowsImage) {
+      return Get-WindowsEditionKind ((([string] $Ready.selectedWindowsImage.imageName), ([string] $Ready.selectedWindowsImage.imageDescription)) -join " ")
+    }
+  } catch {}
+  return ""
+}
+
+function Test-ReadyEditionValid($Ready) {
+  if (-not $Ready) { return $false }
+  $desired = Get-ReadyDesiredEditionKind $Ready
+  if ([string]::IsNullOrWhiteSpace($desired)) { return $false }
+  $selected = Get-ReadySelectedEditionKind $Ready
+  return (Test-WindowsEditionKindCompatible -Actual $selected -Expected $desired)
+}
+
 function Test-MediaDownloadProcess($Process) {
   $name = [string] $Process.Name
   $cmd = [string] $Process.CommandLine
@@ -508,6 +559,11 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
   $ready = Read-JsonFile $readyPath
   if (-not $ready -and -not [string]::IsNullOrWhiteSpace($usbReadyPath)) { $ready = Read-JsonFile $usbReadyPath }
   $backupProof = if ($ready) { $ready.backupProof } else { $null }
+  $armFlagPath = if ([string]::IsNullOrWhiteSpace($usbReinstall)) { "" } else { Join-Path $usbReinstall "armed.flag" }
+  $targetMarkerPath = "C:\Soty-Reinstall-Target.marker"
+  $armFlag = if (-not [string]::IsNullOrWhiteSpace($armFlagPath)) { Read-JsonFile $armFlagPath } else { $null }
+  $targetMarker = Read-JsonFile $targetMarkerPath
+  $readyEditionOk = Test-ReadyEditionValid $ready
   $sourceRoots = @()
   if (-not [string]::IsNullOrWhiteSpace($usbRoot)) {
     $sourceRoots += @((Join-Path $usbRoot "sources"), (Join-Path (Join-Path $usbRoot "Soty-Reinstall") "sources"))
@@ -531,6 +587,17 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
     managedUserPasswordMode = if ($ready) { [string] $ready.managedUserPasswordMode } else { "" }
     backupRoot = if ($ready) { [string] $ready.backupRoot } else { "" }
     backupProofOk = if ($backupProof) { [bool] $backupProof.ok } else { $false }
+    currentEditionHint = if ($ready) { [string] $ready.currentEditionHint } else { "" }
+    preferredEditionHint = if ($ready) { [string] $ready.preferredEditionHint } else { "" }
+    windowsEditionPolicy = if ($ready) { $ready.windowsEditionPolicy } else { $null }
+    selectedWindowsImage = if ($ready) { $ready.selectedWindowsImage } else { $null }
+    readyEditionOk = $readyEditionOk
+    armed = [bool]($armFlag -and $targetMarker)
+    staleArmFlag = [bool]($armFlag -and -not $targetMarker)
+    armFlagPath = if (-not [string]::IsNullOrWhiteSpace($armFlagPath) -and (Test-Path -LiteralPath $armFlagPath)) { $armFlagPath } else { "" }
+    targetMarkerPath = if (Test-Path -LiteralPath $targetMarkerPath) { $targetMarkerPath } else { "" }
+    armCaseId = if ($armFlag) { [string] $armFlag.caseId } else { "" }
+    armedAt = if ($armFlag) { [string] $armFlag.armedAt } else { "" }
     personalFileTotalCount = if ($backupProof -and $null -ne $backupProof.personalFileTotalCount) { [int] $backupProof.personalFileTotalCount } else { $null }
     desktopFileCount = if ($backupProof -and $null -ne $backupProof.desktopFileCount) { [int] $backupProof.desktopFileCount } else { $null }
     media = Get-MediaStatus $Root $effectiveLetter
@@ -691,6 +758,14 @@ function Get-ManagedRepairSummary($Status) {
     usb = $Status.usb
     ready = ($Status.ready -eq $true)
     backupProofOk = ($Status.backupProofOk -eq $true)
+    readyEditionOk = ($Status.readyEditionOk -eq $true)
+    windowsEditionPolicy = $Status.windowsEditionPolicy
+    selectedWindowsImage = $Status.selectedWindowsImage
+    preferredEditionHint = [string] $Status.preferredEditionHint
+    armed = ($Status.armed -eq $true)
+    staleArmFlag = ($Status.staleArmFlag -eq $true)
+    armCaseId = [string] $Status.armCaseId
+    armedAt = [string] $Status.armedAt
     installImage = [string] $Status.installImage
     rootAutounattend = ($Status.rootAutounattend -eq $true)
     oemSetupComplete = ($Status.oemSetupComplete -eq $true)
@@ -738,7 +813,7 @@ function Invoke-ManagedRepair([string] $Root, [string] $Letter) {
     if ($extraRecovered -gt 0) { $after = Get-ReinstallStatus $Root $Letter }
   }
   $blockers = @(Get-ManagedRepairBlockers $after)
-  $readyOk = ($after.ready -eq $true -and $after.backupProofOk -eq $true)
+  $readyOk = ($after.ready -eq $true -and $after.backupProofOk -eq $true -and $after.readyEditionOk -eq $true)
   $active = Test-ManagedPrepareActiveStatus $after
   $needsPrepare = (-not $readyOk -and -not $active -and $blockers.Count -eq 0)
   $repairStatus = if ($readyOk) {
@@ -826,7 +901,7 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
     }) 1
   }
   $Letter = $resolvedLetter
-  if ($currentStatus.ready -and $currentStatus.backupProofOk) {
+  if ($currentStatus.ready -and $currentStatus.backupProofOk -and $currentStatus.readyEditionOk) {
     Emit ([pscustomobject]@{ ok = $true; action = "prepare"; alreadyReady = $true; status = $currentStatus }) 0
   }
   $recovered = Complete-StalePrepareJobs $currentStatus
@@ -854,6 +929,8 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
     "-UsbDriveLetter", $Letter,
     "-ManagedUserName", $managedUserName,
     "-PanelSiteUrl", $panel,
+    "-WindowsEditionPolicy", $WindowsEditionPolicy,
+    "-WindowsEditionHint", $WindowsEditionHint,
     "-NoTemporaryManagedPassword"
   )
   if ($UseExistingUsbInstallImage) { $psArgs += "-UseExistingUsbInstallImage" }
@@ -882,6 +959,7 @@ function Invoke-ManagedArm([string] $Root, [string] $Letter) {
   $Letter = $resolvedLetter
   $managedUserName = Get-SotyUserName
   if (-not $status.ready) { throw "managed reinstall is not ready" }
+  if ($status.readyEditionOk -ne $true) { throw "prepared Windows edition does not match the reinstall edition policy" }
   if ([string] $status.managedUserName -ne $managedUserName) { throw ("managed user must be " + $managedUserName + ", got " + [string] $status.managedUserName) }
   if ([string] $status.managedUserPasswordMode -ne "blank-no-password") { throw ("managed account must be passwordless, got " + [string] $status.managedUserPasswordMode) }
   if ($status.backupProofOk -ne $true) { throw "backup proof is incomplete" }
@@ -921,6 +999,9 @@ try {
     $status = Get-ReinstallStatus $WorkspaceRoot $letter
     $blockers = New-Object System.Collections.Generic.List[string]
     if (-not $isAdmin) { $blockers.Add("not-elevated") }
+    if ($status.ready -eq $true -and $status.backupProofOk -eq $true -and $status.readyEditionOk -ne $true) {
+      $blockers.Add("ready-edition-mismatch")
+    }
     if ($usb.found -ne $true) {
       if ($usb.ambiguous) { $blockers.Add("usb-ambiguous") } else { $blockers.Add("usb-not-found") }
     }
