@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.80";
+const agentVersion = "0.4.81";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -469,6 +469,10 @@ async function handleHttpRequest(request, response) {
     }
     return;
   }
+  if (url.pathname === "/window/control" && request.method === "POST") {
+    await handleWindowControlHttp(request, response, headers);
+    return;
+  }
   if (url.pathname === "/operator/targets" && request.method === "GET") {
     sendJson(response, 200, headers, {
       ok: true,
@@ -753,6 +757,136 @@ function promoteBestOperatorStandby() {
   }
   if (best) {
     promoteOperatorBridge(best.ws, best.state);
+  }
+}
+
+async function handleWindowControlHttp(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 4096);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const action = String(payload?.action || "").trim().toLowerCase();
+  if (action !== "minimize") {
+    sendJson(response, 400, headers, { ok: false, text: "! action", exitCode: 400 });
+    return;
+  }
+  const result = runLocalWindowControl({
+    action,
+    titlePattern: String(payload.titlePattern || "").slice(0, 300),
+    screenX: Number.isFinite(Number(payload.screenX)) ? Number(payload.screenX) : null,
+    screenY: Number.isFinite(Number(payload.screenY)) ? Number(payload.screenY) : null,
+    outerWidth: Number.isFinite(Number(payload.outerWidth)) ? Number(payload.outerWidth) : null,
+    outerHeight: Number.isFinite(Number(payload.outerHeight)) ? Number(payload.outerHeight) : null
+  });
+  sendJson(response, result.ok ? 200 : 409, headers, result);
+}
+
+function runLocalWindowControl(payload) {
+  if (process.platform !== "win32") {
+    return { ok: false, action: payload.action, text: "! unsupported-platform", exitCode: 409 };
+  }
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+  const script = `
+$ErrorActionPreference = 'Stop'
+function Emit($Value) { $Value | ConvertTo-Json -Depth 6 -Compress }
+$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPayload}')) | ConvertFrom-Json
+$pattern = [string]$payload.titlePattern
+if ([string]::IsNullOrWhiteSpace($pattern)) { $pattern = 'соты\\.online|soty\\.online|xn--n1afe0b\\.online' }
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class SotyWindowControl {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+}
+"@
+function To-NullableDouble($Value) {
+  if ($null -eq $Value) { return $null }
+  try {
+    $number = [double]$Value
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $null }
+    return $number
+  } catch {
+    return $null
+  }
+}
+function Window-Rect([IntPtr]$Handle) {
+  $rect = New-Object SotyWindowControl+RECT
+  [SotyWindowControl]::GetWindowRect($Handle, [ref]$rect) | Out-Null
+  [pscustomobject]@{
+    left = [int]$rect.Left
+    top = [int]$rect.Top
+    width = [int]($rect.Right - $rect.Left)
+    height = [int]($rect.Bottom - $rect.Top)
+  }
+}
+$expectedX = To-NullableDouble $payload.screenX
+$expectedY = To-NullableDouble $payload.screenY
+$expectedWidth = To-NullableDouble $payload.outerWidth
+$expectedHeight = To-NullableDouble $payload.outerHeight
+$regex = [regex]::new($pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+$matches = @(Get-Process chrome, msedge -ErrorAction SilentlyContinue | Where-Object {
+  $_.MainWindowHandle -ne [IntPtr]::Zero -and $_.MainWindowTitle -and $regex.IsMatch([string]$_.MainWindowTitle)
+} | ForEach-Object {
+  $handle = [IntPtr]$_.MainWindowHandle
+  $rect = Window-Rect $handle
+  $score = 0.0
+  if ($null -ne $expectedX) { $score += [Math]::Abs($rect.left - $expectedX) }
+  if ($null -ne $expectedY) { $score += [Math]::Abs($rect.top - $expectedY) }
+  if ($null -ne $expectedWidth -and $rect.width -gt 0) { $score += [Math]::Abs($rect.width - $expectedWidth) / 4 }
+  if ($null -ne $expectedHeight -and $rect.height -gt 0) { $score += [Math]::Abs($rect.height - $expectedHeight) / 4 }
+  [pscustomobject]@{
+    pid = [int]$_.Id
+    process = [string]$_.ProcessName
+    title = [string]$_.MainWindowTitle
+    hwnd = ("0x{0:X}" -f $_.MainWindowHandle.ToInt64())
+    hwndInt = [int64]$_.MainWindowHandle.ToInt64()
+    score = [double]$score
+    rect = $rect
+  }
+})
+if ($matches.Count -eq 0) {
+  Emit ([pscustomobject]@{ ok = $false; action = 'minimize'; text = '! window'; count = 0; exitCode = 404 })
+  exit 0
+}
+$target = $matches | Sort-Object score, pid | Select-Object -First 1
+[SotyWindowControl]::ShowWindow([IntPtr]$target.hwndInt, 6) | Out-Null
+Emit ([pscustomobject]@{ ok = $true; action = 'minimize'; count = 1; pid = $target.pid; hwnd = $target.hwnd; title = $target.title; score = $target.score; rect = $target.rect })
+`;
+  try {
+    const output = execFileSync("powershell.exe", [
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64")
+    ], { encoding: "utf8", timeout: 5000, windowsHide: true });
+    const parsed = JSON.parse(String(output || "{}"));
+    return {
+      ok: parsed?.ok === true,
+      ...parsed,
+      exitCode: parsed?.ok === true ? 0 : Number(parsed?.exitCode || 409)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      action: payload.action,
+      text: `! window-control: ${error instanceof Error ? error.message : String(error)}`,
+      exitCode: 127
+    };
   }
 }
 

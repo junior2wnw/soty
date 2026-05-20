@@ -77,6 +77,15 @@ export interface LocalAgentDeviceNetwork {
   readonly targets: readonly LocalAgentOperatorTarget[];
 }
 
+export interface LocalWindowControlRequest {
+  readonly action: "minimize";
+  readonly titlePattern?: string;
+  readonly screenX?: number;
+  readonly screenY?: number;
+  readonly outerWidth?: number;
+  readonly outerHeight?: number;
+}
+
 export interface LocalAgentRequestSource {
   readonly tunnelId?: string;
   readonly tunnelLabel?: string;
@@ -134,6 +143,27 @@ export async function checkLocalAgent(timeoutMs = 850): Promise<LocalAgentStatus
 
 export async function checkLocalCompanionAgent(timeoutMs = 850): Promise<LocalAgentStatus> {
   return await checkLocalAgentHttp(timeoutMs);
+}
+
+export async function requestLocalWindowControl(request: LocalWindowControlRequest, timeoutMs = 900): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("http://127.0.0.1:49424/window/control", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal: controller.signal,
+      targetAddressSpace: "loopback"
+    } as RequestInit & { readonly targetAddressSpace: "loopback" });
+    const payload = await response.json().catch(() => ({})) as { readonly ok?: boolean };
+    return response.ok && payload.ok === true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function askLocalAgentReply(

@@ -12,7 +12,7 @@ import { icon } from "./icons";
 import type { IconName } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, requestLocalWindowControl, resumeAgentRelayReply } from "./features/agent";
 import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -2609,13 +2609,28 @@ function pwaTitlebarMarkup(): string {
 
 function bindPwaTitlebar(): void {
   app.querySelector<HTMLButtonElement>(".pwa-window-minimize")?.addEventListener("click", () => {
-    window.blur();
-    document.body.classList.add("pwa-window-minimize-pulse");
-    window.setTimeout(() => document.body.classList.remove("pwa-window-minimize-pulse"), 180);
+    void minimizePwaWindow();
   });
   app.querySelector<HTMLButtonElement>(".pwa-window-close")?.addEventListener("click", () => {
     window.close();
   });
+}
+
+async function minimizePwaWindow(): Promise<void> {
+  const minimized = await requestLocalWindowControl({
+    action: "minimize",
+    titlePattern: "соты\\.online|soty\\.online|xn--n1afe0b\\.online",
+    screenX: Math.round(window.screenX),
+    screenY: Math.round(window.screenY),
+    outerWidth: Math.round(window.outerWidth),
+    outerHeight: Math.round(window.outerHeight)
+  });
+  if (minimized) {
+    return;
+  }
+  window.blur();
+  document.body.classList.add("pwa-window-minimize-pulse");
+  window.setTimeout(() => document.body.classList.remove("pwa-window-minimize-pulse"), 180);
 }
 
 function renderTiles(): void {
