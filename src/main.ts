@@ -2372,6 +2372,9 @@ function renderApp(): void {
             <b class="dialog-name">.</b>
             <small class="dialog-state">OFFLINE</small>
           </span>
+          <span class="dialog-live" aria-live="polite">
+            <span class="writer-pop"></span>
+          </span>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <span class="dialog-id">0000</span>
         </header>
@@ -2439,12 +2442,6 @@ function renderApp(): void {
         <input class="file-input" type="file" multiple />
       </section>
       </main>
-      <aside class="side-panel">
-        <section class="side-block live-block">
-          <h2>LIVE</h2>
-          <div class="writer-pop"></div>
-        </section>
-      </aside>
     </section>
   `;
 
@@ -3063,45 +3060,176 @@ function counterpartyLabel(tunnel: TunnelRecord): string {
 function ensurePermanentAgentDialog(): void {
   const current = loadTunnels();
   const now = new Date().toISOString();
+  const agentTunnels = current.filter((tunnel) => isAgentTunnel(tunnel));
   let changed = false;
-  let found = false;
-  const next = current.map((tunnel) => {
-    if (!isAgentTunnel(tunnel)) {
-      return tunnel;
-    }
-    found = true;
-    if (!tunnel.archived && tunnel.label === agentDialogLabel && tunnel.counterparty === true) {
-      return tunnel;
-    }
-    changed = true;
-    return {
-      ...tunnel,
-      label: agentDialogLabel,
-      counterparty: true,
-      archived: false,
-      updatedAt: now
-    };
-  });
-  if (!found) {
-    changed = true;
-    next.unshift({
+  if (agentTunnels.length === 0) {
+    const agent = {
       ...createTunnel(agentDialogLabel, true),
       agent: true,
       color: colorFor(`agent:${device?.id || now}`),
       score: -1
-    });
-  }
-  if (!changed) {
-    tunnels = current;
+    };
+    const next = [agent, ...current];
+    saveTunnels(next);
+    tunnels = next;
+    if (!selectedId || !next.some((tunnel) => tunnel.id === selectedId)) {
+      selectedId = agent.id;
+      saveSelectedTunnelId(agent.id);
+    }
     return;
   }
-  saveTunnels(next);
-  tunnels = next;
-  if (!selectedId || !next.some((tunnel) => tunnel.id === selectedId)) {
-    selectedId = next[0]?.id || "";
+  const canonical = chooseCanonicalAgentDialog(agentTunnels);
+  const duplicateAgentIds = agentTunnels
+    .filter((tunnel) => tunnel.id !== canonical.id)
+    .map((tunnel) => tunnel.id);
+  const enabledAgentIds = agentTunnels.filter((tunnel) => remoteEnabled.has(tunnel.id)).map((tunnel) => tunnel.id);
+  if (enabledAgentIds.some((id) => id !== canonical.id)) {
+    remoteEnabled = setRemoteEnabled(canonical.id, true);
+    for (const id of enabledAgentIds) {
+      if (id !== canonical.id) {
+        remoteEnabled = setRemoteEnabled(id, false);
+      }
+    }
+  }
+  const next = current.map((tunnel) => {
+    if (!isAgentTunnel(tunnel)) {
+      return tunnel;
+    }
+    const keepVisible = tunnel.id === canonical.id;
+    if (!keepVisible) {
+      changed = true;
+      return null;
+    }
+    const normalized = {
+      ...tunnel,
+      agent: true,
+      label: agentDialogLabel,
+      counterparty: true,
+      archived: false,
+      unread: tunnel.unread,
+      color: tunnel.color || colorFor(`agent:${device?.id || tunnel.id}`),
+      updatedAt: tunnel.updatedAt || now,
+      lastActionAt: tunnel.lastActionAt || tunnel.updatedAt || now
+    };
+    if (
+      normalized.agent === tunnel.agent
+      && normalized.label === tunnel.label
+      && normalized.counterparty === tunnel.counterparty
+      && normalized.archived === tunnel.archived
+      && normalized.unread === tunnel.unread
+      && normalized.color === tunnel.color
+      && normalized.updatedAt === tunnel.updatedAt
+      && normalized.lastActionAt === tunnel.lastActionAt
+    ) {
+      return tunnel;
+    }
+    changed = true;
+    return normalized;
+  }).filter((tunnel): tunnel is TunnelRecord => tunnel !== null);
+  if (!changed) {
+    tunnels = current;
+  } else {
+    saveTunnels(next);
+    tunnels = next;
+    forgetDuplicateAgentDialogs(duplicateAgentIds);
+  }
+  if (!selectedId || !next.some((tunnel) => tunnel.id === selectedId && !tunnel.archived)) {
+    selectedId = canonical.id;
     if (selectedId) {
       saveSelectedTunnelId(selectedId);
     }
+  }
+}
+
+function chooseCanonicalAgentDialog(agentTunnels: readonly TunnelRecord[]): TunnelRecord {
+  const selected = agentTunnels.find((tunnel) => tunnel.id === selectedId);
+  return mostRecentTunnel(agentTunnels.filter((tunnel) => remoteEnabled.has(tunnel.id)))
+    || selected
+    || mostRecentTunnel(agentTunnels.filter((tunnel) => !tunnel.archived))
+    || mostRecentTunnel(agentTunnels)
+    || agentTunnels[0]!;
+}
+
+function mostRecentTunnel(items: readonly TunnelRecord[]): TunnelRecord | null {
+  return [...items].sort((a, b) => {
+    const score = (b.score ?? 0) - (a.score ?? 0);
+    if (score !== 0) {
+      return score;
+    }
+    return tunnelTime(b) - tunnelTime(a);
+  })[0] ?? null;
+}
+
+function tunnelTime(tunnel: TunnelRecord): number {
+  return Date.parse(tunnel.lastActionAt || tunnel.updatedAt || tunnel.createdAt) || 0;
+}
+
+function forgetDuplicateAgentDialogs(ids: readonly string[]): void {
+  if (ids.length === 0) {
+    return;
+  }
+  for (const id of ids) {
+    syncs.get(id)?.destroy();
+    syncs.delete(id);
+    syncStates.delete(id);
+    peerDevices.delete(id);
+    remoteEnabled = setRemoteEnabled(id, false);
+    remoteAccess = setRemoteAccess(id, "", false);
+    if (terminalOpenId === id) {
+      terminalOpenId = "";
+    }
+    if (chessOpenId === id) {
+      chessOpenId = "";
+    }
+    const chessTimer = chessAgentTimers.get(id);
+    if (chessTimer) {
+      window.clearTimeout(chessTimer);
+      chessAgentTimers.delete(id);
+    }
+    terminalLogs.delete(id);
+    terminalState.delete(id);
+    chessGames.delete(id);
+    chessFlipped.delete(id);
+    forgetChessSnapshot(id);
+    writerLines.delete(id);
+    activeActivities.delete(id);
+    activeActivityTicks.delete(id);
+    clearLiveDraftState(id);
+    clearPendingAgentRelayRepliesForTunnel(id);
+    agentThinking.delete(id);
+    localDrafts.delete(id);
+    pendingAttachments.delete(id);
+    files.delete(id);
+    fileNotices.delete(id);
+    texts.delete(id);
+  }
+  removeTextSnapshots(ids);
+}
+
+function removeTextSnapshots(ids: readonly string[]): void {
+  const remove = new Set(ids);
+  if (remove.size === 0) {
+    return;
+  }
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(textSnapshotsKey) || "{}");
+    if (!isRecord(parsed)) {
+      return;
+    }
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [id, record] of Object.entries(parsed)) {
+      if (remove.has(id)) {
+        changed = true;
+        continue;
+      }
+      next[id] = record;
+    }
+    if (changed) {
+      localStorage.setItem(textSnapshotsKey, JSON.stringify(next));
+    }
+  } catch {
+    // Snapshot cleanup is best-effort; the canonical agent dialog is already selected.
   }
 }
 
@@ -3111,14 +3239,14 @@ function startFreshDialog(): void {
     clearCurrentDialog(active.id);
     return;
   }
-  const fresh = active && isAgentTunnel(active)
-    ? createFreshDialog(agentDialogLabel, { agent: true })
-    : createFreshDialog();
-  if (!fresh) {
+  if (active && isAgentTunnel(active)) {
+    clearCurrentDialog(active.id);
+    renderApp();
     return;
   }
-  if (active && isAgentTunnel(active)) {
-    moveAgentLinkToFreshDialog(active.id, fresh.id);
+  const fresh = createFreshDialog();
+  if (!fresh) {
+    return;
   }
   renderApp();
 }
@@ -4796,21 +4924,29 @@ async function runOperatorAgentNew(message: { readonly id?: string }): Promise<v
   if (previous) {
     selectedId = previous.id;
     saveSelectedTunnelId(previous.id);
+    const current = normalizeAgentDialog(previous.id) || previous;
+    clearCurrentDialog(current.id);
+    renderApp();
+    publishOperatorTargets();
+    sendOperatorOutput(requestId, `agent ${current.id}\n`, 0);
+    ensureAgentDialogBridgeReady();
+    return;
   }
   const fresh = createFreshDialog(agentDialogLabel, {
     agent: true,
-    archiveCurrent: Boolean(previous)
+    archiveCurrent: false
   });
   if (!fresh) {
     sendOperatorOutput(requestId, "! agent-new\n", 500);
     return;
   }
-  if (previous) {
-    moveAgentLinkToFreshDialog(previous.id, fresh.id);
-  }
   renderApp();
   publishOperatorTargets();
   sendOperatorOutput(requestId, `agent ${fresh.id}\n`, 0);
+  ensureAgentDialogBridgeReady();
+}
+
+function ensureAgentDialogBridgeReady(): void {
   void (async () => {
     const agent = await refreshLocalAgent().catch(() => null);
     if (agent?.ok && !agent.relay) {

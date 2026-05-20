@@ -2079,8 +2079,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("defaultAgentDialogTarget"));
       assert(ui.includes("const selectedTarget = tunnel && isAgentTunnel(tunnel)\n    ? null"));
       assert(ui.includes("const preferredTarget = agentTunnel\n    ? null"));
-      assert(ui.includes("createFreshDialog(agentDialogLabel, { agent: true })"));
-      assert(ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
+      assert(ui.includes("chooseCanonicalAgentDialog"));
+      assert(ui.includes("forgetDuplicateAgentDialogs"));
+      assert(ui.includes("return null;"));
+      assert(ui.includes("enabledAgentIds.some((id) => id !== canonical.id)"));
+      assert(ui.includes("clearCurrentDialog(active.id);\n    renderApp();\n    return;"));
+      assert(ui.includes("ensureAgentDialogBridgeReady"));
+      assert(!ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
+      assert(!ui.includes("<aside class=\"side-panel\">"));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));
