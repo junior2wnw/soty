@@ -6622,6 +6622,8 @@ function sotyRuntimeHints() {
     "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
+    "- Installed agent runtime: TrustLink Kernel `docs/agent-runtime.md` is the reusable contract. Treat the user agent as a capability runtime with console, filesystem, process, service, package, browser, desktop, app, api, job, artifact, os, transaction, and device adapters.",
+    "- Transaction/app work: for deals, orders, payments, publishing, or any external side-effect, use prepare/preview before submit, require explicit confirmation for critical actions, return structured proof, and keep credentials/secrets in the user-approved local app or platform store rather than in prompts.",
     "- Mini-app kernel: mini apps are frontend surfaces; TrustLink Kernel owns the reusable app-surface contract, and Soty owns the application adapter. Use node_modules/trustlink-kernel/docs/app-surfaces.md plus docs/soty-mini-apps.md.",
     "- Mini-app remote connection: same-origin apps use /mini-apps; remote domains require exact HTTPS origin allowlisting; no-domain/device-local apps use TrustLink app-surface modes (trusted HTTPS/tunnel/kernel-proxy), not arbitrary insecure LAN iframes.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
@@ -6759,6 +6761,18 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "6. Stop only on completed, failed, blocked-needs-user, waiting-confirmation, or a source-device outage that survived the recovery window.",
     "",
     "Record reusable proof/improvement when this route teaches a better deterministic script or check.",
+    "",
+    "## Installed Agent Runtime",
+    "",
+    "Use this route whenever the user asks to make the installed agent more universal, connect to local programs, automate browser/app flows, enter deals/orders/payments, or build reusable remote operations.",
+    "",
+    "Principle: the installed agent is a local capability runtime. TrustLink Kernel owns the reusable runtime contract (`node_modules/trustlink-kernel/docs/agent-runtime.md`); Soty owns the adapter and user-facing orchestration.",
+    "",
+    "Capability families: console, filesystem, process, service, package, browser, desktop, screen, keyboard, mouse, clipboard, network, app, api, job, artifact, audio, os, transaction, and device. Prefer a first-class adapter or durable job over ad-hoc shell when the action is repeated, long, state-changing, or touches a specific program.",
+    "",
+    "Transaction rule: use `transaction.prepare`/`transaction.preview` before `transaction.submit`. Submit/cancel/payment/order/destructive OS actions are critical risk and need explicit confirmation plus proof. Keep credentials, exchange sessions, browser profiles, API keys, and secrets in the local approved app/platform store, not in prompts or logs.",
+    "",
+    "Adapter rule: connect new programs through small capability adapters (`app.connect`, `app.read`, `app.write`, `app.submit`, `api.post`, `transaction.submit`) with structured proof and idempotency, then promote proven repeated flows into manifest-pinned toolkits/tests.",
     "",
     "## Mini App Surface Route",
     "",
@@ -7542,12 +7556,12 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
@@ -12465,6 +12479,40 @@ function openAiToolPlaneStatus() {
   };
 }
 
+function agentRuntimeStatus() {
+  return {
+    schema: "trustlink.agent-runtime.v1",
+    runtimeId: "soty-agent",
+    entrypoint: "computer",
+    jobModel: "durable-jobs",
+    proofModel: "structured-proof",
+    adapterModel: "capability-adapters",
+    terminalStates: ["completed", "failed", "blocked", "waiting-confirmation", "running"],
+    capabilities: [
+      { family: "console", actions: ["run", "script", "terminal"], risk: "medium", proof: ["status", "result"] },
+      { family: "filesystem", actions: ["read", "write", "copy", "move", "delete"], risk: "high", proof: ["status", "result"] },
+      { family: "process", actions: ["list", "start", "stop"], risk: "medium", proof: ["status", "result"] },
+      { family: "service", actions: ["status", "start", "stop", "restart"], risk: "high", proof: ["status", "result"] },
+      { family: "package", actions: ["list", "install", "remove", "upgrade"], risk: "high", proof: ["status", "result"] },
+      { family: "browser", actions: ["open", "inspect", "click", "type", "download", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "desktop", actions: ["screenshot", "focus", "click", "type"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "screen", actions: ["capture"], risk: "low", proof: ["status", "result"] },
+      { family: "keyboard", actions: ["send"], risk: "high", proof: ["status", "result"] },
+      { family: "mouse", actions: ["move", "click"], risk: "high", proof: ["status", "result"] },
+      { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
+      { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
+      { family: "app", actions: ["discover", "launch", "focus", "connect", "read", "write", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
+      { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },
+      { family: "artifact", actions: ["push", "pull", "verify"], risk: "medium", proof: ["status", "result"] },
+      { family: "audio", actions: ["status", "set"], risk: "medium", proof: ["status", "result"] },
+      { family: "os", actions: ["status", "repair", "reinstall", "reset"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] },
+      { family: "transaction", actions: ["prepare", "preview", "submit", "cancel"], risk: "critical", requiresConfirmation: true, proof: ["preparedActionId", "visiblePreview", "confirmation", "result"] },
+      { family: "device", actions: ["status", "reboot", "poweroff"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] }
+    ]
+  };
+}
+
 function runtimeHealth() {
   return {
     managed,
@@ -12495,6 +12543,7 @@ function runtimeHealth() {
     update: agentUpdateStatus(),
     memory: memoryPlaneStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
+    agentRuntime: agentRuntimeStatus(),
     computerUsePlane: runtimeComputerUsePlaneStatus(),
     automationToolkits: automationToolkitStatus(),
     ...(process.platform === "win32" ? {
@@ -12549,6 +12598,7 @@ function runtimeComputerUsePlaneStatus() {
     openAiBuiltInTools: [...openAiBuiltInTools],
     executionPlane: runtimeExecutionPlane(),
     sourceWorker: canRunAgentSourceWorker(),
+    agentRuntimeSchema: agentRuntimeStatus().schema,
     routeProfiles: routeProfilesStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
     selfImprovement: "real-run+sanitized-receipts+route-profile+capability-promotion",
@@ -12569,6 +12619,9 @@ function runtimeComputerUsePlaneStatus() {
       "mouse",
       "wallpaper",
       "audio",
+      "app",
+      "api",
+      "transaction",
       "generated-asset-save-apply-verify",
       "managed-windows-reinstall"
     ]
@@ -12586,6 +12639,7 @@ function automationToolkitStatus() {
     legacyFrontDoor: "soty_computer",
     openAiToolPlane: openAiToolPlaneStatus(),
     defaultKernel: "jobs",
+    agentRuntime: agentRuntimeStatus(),
     terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"],
     computerUsePlane: {
       schema: "soty.computer-use-plane.v1",
@@ -12598,8 +12652,16 @@ function automationToolkitStatus() {
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       routeProfileSchema: "soty.route-profiles.v1"
     },
-    available: ["computer-use-plane", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
+    available: ["computer-use-plane", "agent-runtime", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
     toolkits: [
+      {
+        name: "agent-runtime",
+        entryTool: "computer",
+        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "learn"],
+        proof: ["capability", "risk", "confirmation", "jobId", "result", "proof"],
+        schema: agentRuntimeStatus().schema,
+        capabilities: agentRuntimeStatus().capabilities.map((capability) => capability.family)
+      },
       {
         name: "computer-use-plane",
         entryTool: "computer",

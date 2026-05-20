@@ -55,6 +55,11 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.computerUsePlane.schema, "soty.computer-use-plane.v1");
       assertEqual(health.body.computerUsePlane.entryTool, "computer");
       assertEqual(health.body.computerUsePlane.legacyEntrypoint, "soty_computer");
+      assertEqual(health.body.agentRuntime.schema, "trustlink.agent-runtime.v1");
+      assertEqual(health.body.agentRuntime.entrypoint, "computer");
+      assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "app"));
+      assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "api"));
+      assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "transaction" && capability.requiresConfirmation === true));
       assert(health.body.openAiToolPlane.builtInTools.includes("image_generation"));
       assert(health.body.openAiToolPlane.mcp.publicTools.includes("computer"));
       assert(!health.body.openAiToolPlane.mcp.publicTools.includes("image_gen"));
@@ -65,6 +70,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
       assert(health.body.computerUsePlane.capabilities.includes("wallpaper"));
+      assert(health.body.computerUsePlane.capabilities.includes("app"));
+      assert(health.body.computerUsePlane.capabilities.includes("api"));
+      assert(health.body.computerUsePlane.capabilities.includes("transaction"));
       assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
       assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
@@ -72,6 +80,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.legacyFrontDoor, "soty_computer");
       assertEqual(health.body.automationToolkits.computerUsePlane.entryTool, "computer");
       assert(health.body.automationToolkits.available.includes("computer-use-plane"));
+      assert(health.body.automationToolkits.available.includes("agent-runtime"));
       assert(health.body.automationToolkits.available.includes("capability-gateway"));
       assert(health.body.automationToolkits.available.includes("durable-action"));
       assert(health.body.automationToolkits.available.includes("turnkey-monitoring"));
@@ -79,6 +88,24 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.defaultKernel, "jobs");
       assertEqual(health.body.automationToolkits.responseStyle.id, "agent-sysadmin");
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
+    }],
+    ["installed agent runtime contract is kernel-backed", async () => {
+      const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const releaseBuilder = await readFile(join(root, "scripts", "build-agent-release.mjs"), "utf8");
+      const docs = await readFile(join(root, "docs", "soty-agent-runtime.md"), "utf8");
+      const kernelDoc = await readFile(join(root, "node_modules", "trustlink-kernel", "docs", "agent-runtime.md"), "utf8");
+      const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
+      assert(docs.includes("trustlink-kernel/docs/agent-runtime.md"));
+      assert(kernelDoc.includes("Agent runtime is the installed local capability host"));
+      assert(releaseBuilder.includes("buildAgentRuntimeManifest"));
+      assert(releaseBuilder.includes("defaultAgentRuntimeCapabilities"));
+      assert(agentSource.includes("Installed agent runtime"));
+      assert(agentSource.includes("transaction.prepare"));
+      assert(agentSource.includes("transaction.submit"));
+      assert(agentSource.includes("node_modules/trustlink-kernel/docs/agent-runtime.md"));
+      assertEqual(manifest.agentRuntime.schema, "trustlink.agent-runtime.v1");
+      assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "transaction" && capability.requiresConfirmation === true));
+      assert(manifest.computerUsePlane.capabilities.includes("transaction"));
     }],
     ["mini app remote kernel docs are agent-visible", async () => {
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");

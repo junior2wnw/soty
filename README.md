@@ -32,7 +32,7 @@ handoff, and user-facing behavior live here.
 The technology core lives in the public `trustlink-kernel` repository
 (`junior2wnw/4-2-rf`). Protocol, crypto, room secrets, byte envelopes,
 permission/session logic, discovery, recovery, path ranking, audit,
-app-surface connection contracts, and other generic reliability primitives
+app-surface and installed-agent runtime contracts, and other generic reliability primitives
 belong there. Soty should depend on that kernel
 instead of turning those primitives into a separate legal or technology surface.
 
@@ -45,6 +45,7 @@ instead of turning those primitives into a separate legal or technology surface.
 - `src/features/*` contains optional tunnel features.
 - `src/core/*` contains tiny shared helpers.
 - `public/mini-apps/manifest.json` is the future mini app registry; see `docs/soty-mini-apps.md`; the reusable app-surface contract lives in `trustlink-kernel/docs/app-surfaces.md`.
+- `docs/soty-agent-runtime.md` documents the Soty adapter for the reusable `trustlink-kernel/docs/agent-runtime.md` contract.
 - `server/*` is the relay: HTTP shell, room store, validators, and WebSocket routing.
 - `public/*` is the PWA manifest, service worker, and icon.
 - `trustlink-kernel` is the separate SDK for room secrets, compact join codes, byte encoding, app-surface routing, and web crypto primitives.

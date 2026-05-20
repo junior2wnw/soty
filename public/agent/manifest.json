@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "bcb3e067ef033e99ead3445d5f8b0d7491de9be988a6aa538fabaaf881df5c9c",
+  "sha256": "b44468acb6835ba229c8a130ffc7ff3dc80036b5102a4f89ecb1f5de3dc723db",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -66,6 +66,7 @@
     ],
     "model": "discover+invoke+durable-jobs+artifacts+source-proof",
     "imagePipeline": "openai.image_generation+computer.artifact-save-apply-verify",
+    "agentRuntimeSchema": "trustlink.agent-runtime.v1",
     "routeProfileSchema": "soty.route-profiles.v1",
     "capabilities": [
       "discover",
@@ -84,9 +85,309 @@
       "mouse",
       "wallpaper",
       "audio",
+      "app",
+      "api",
+      "transaction",
       "generated-asset-save-apply-verify",
       "managed-windows-reinstall"
     ]
+  },
+  "agentRuntime": {
+    "schema": "trustlink.agent-runtime.v1",
+    "runtimeId": "soty-agent",
+    "entrypoint": "computer",
+    "capabilities": [
+      {
+        "family": "console",
+        "actions": [
+          "run",
+          "script",
+          "terminal"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "filesystem",
+        "actions": [
+          "read",
+          "write",
+          "copy",
+          "move",
+          "delete"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "process",
+        "actions": [
+          "list",
+          "start",
+          "stop"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "service",
+        "actions": [
+          "status",
+          "start",
+          "stop",
+          "restart"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "package",
+        "actions": [
+          "list",
+          "install",
+          "remove",
+          "upgrade"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "browser",
+        "actions": [
+          "open",
+          "inspect",
+          "click",
+          "type",
+          "download",
+          "submit"
+        ],
+        "risk": "high",
+        "proof": [
+          "target",
+          "stateBefore",
+          "stateAfter",
+          "result"
+        ]
+      },
+      {
+        "family": "desktop",
+        "actions": [
+          "screenshot",
+          "focus",
+          "click",
+          "type"
+        ],
+        "risk": "high",
+        "proof": [
+          "target",
+          "stateBefore",
+          "stateAfter",
+          "result"
+        ]
+      },
+      {
+        "family": "screen",
+        "actions": [
+          "capture"
+        ],
+        "risk": "low",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "keyboard",
+        "actions": [
+          "send"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "mouse",
+        "actions": [
+          "move",
+          "click"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "clipboard",
+        "actions": [
+          "read",
+          "write"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "network",
+        "actions": [
+          "status",
+          "probe"
+        ],
+        "risk": "low",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "app",
+        "actions": [
+          "discover",
+          "launch",
+          "focus",
+          "connect",
+          "read",
+          "write",
+          "submit"
+        ],
+        "risk": "high",
+        "proof": [
+          "target",
+          "stateBefore",
+          "stateAfter",
+          "result"
+        ]
+      },
+      {
+        "family": "api",
+        "actions": [
+          "get",
+          "post",
+          "put",
+          "delete",
+          "submit"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "job",
+        "actions": [
+          "start",
+          "status",
+          "stop"
+        ],
+        "risk": "medium",
+        "proof": [
+          "jobId",
+          "status",
+          "resultPath"
+        ]
+      },
+      {
+        "family": "artifact",
+        "actions": [
+          "push",
+          "pull",
+          "verify"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "audio",
+        "actions": [
+          "status",
+          "set"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "os",
+        "actions": [
+          "status",
+          "repair",
+          "reinstall",
+          "reset"
+        ],
+        "risk": "critical",
+        "requiresConfirmation": true,
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "transaction",
+        "actions": [
+          "prepare",
+          "preview",
+          "submit",
+          "cancel"
+        ],
+        "risk": "critical",
+        "requiresConfirmation": true,
+        "proof": [
+          "preparedActionId",
+          "visiblePreview",
+          "confirmation",
+          "result"
+        ]
+      },
+      {
+        "family": "device",
+        "actions": [
+          "status",
+          "reboot",
+          "poweroff"
+        ],
+        "risk": "critical",
+        "requiresConfirmation": true,
+        "proof": [
+          "status",
+          "result"
+        ]
+      }
+    ],
+    "terminalStates": [
+      "completed",
+      "failed",
+      "blocked",
+      "waiting-confirmation",
+      "running"
+    ],
+    "jobModel": "durable-jobs",
+    "proofModel": "structured-proof",
+    "adapterModel": "capability-adapters"
   },
   "routeProfiles": {
     "schema": "soty.route-profiles.v1",
@@ -261,6 +562,7 @@
       "route": "computer-use-plane-with-memory-hints",
       "fallbackKernel": "jobs",
       "routeProfiles": "soty.route-profiles.v1",
+      "agentRuntime": "trustlink.agent-runtime.v1",
       "chat": "agent-sysadmin",
       "responseStyle": {
         "schema": "soty.response-style.v1",
@@ -313,6 +615,51 @@
       ]
     },
     "toolkits": [
+      {
+        "name": "agent-runtime",
+        "entryTool": "computer",
+        "kind": "runtime-contract",
+        "phases": [
+          "discover",
+          "invoke",
+          "prepare",
+          "confirm",
+          "status",
+          "stop",
+          "learn"
+        ],
+        "proof": [
+          "capability",
+          "risk",
+          "confirmation",
+          "jobId",
+          "result",
+          "proof"
+        ],
+        "schema": "trustlink.agent-runtime.v1",
+        "capabilities": [
+          "console",
+          "filesystem",
+          "process",
+          "service",
+          "package",
+          "browser",
+          "desktop",
+          "screen",
+          "keyboard",
+          "mouse",
+          "clipboard",
+          "network",
+          "app",
+          "api",
+          "job",
+          "artifact",
+          "audio",
+          "os",
+          "transaction",
+          "device"
+        ]
+      },
       {
         "name": "computer-use-plane",
         "entryTool": "computer",

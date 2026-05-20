@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildAgentRuntimeManifest, defaultAgentRuntimeCapabilities } from "trustlink-kernel";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourcePath = join(root, "scripts", "soty-agent.mjs");
@@ -52,7 +53,8 @@ await updateWindowsMachineInstallerRevision(version);
 await removeRetiredOpsSkillArtifacts();
 const windowsReinstall = await publishWindowsReinstallScripts();
 const routeProfiles = buildRouteProfiles(windowsReinstall);
-const automationToolkits = buildAutomationToolkits(windowsReinstall, routeProfiles);
+const agentRuntime = buildSotyAgentRuntime();
+const automationToolkits = buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime);
 const openAiToolPlane = buildOpenAiToolPlane();
 
 const manifest = {
@@ -83,6 +85,7 @@ const manifest = {
     openAiBuiltInTools: openAiToolPlane.builtInTools,
     model: "discover+invoke+durable-jobs+artifacts+source-proof",
     imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
+    agentRuntimeSchema: agentRuntime.schema,
     routeProfileSchema: "soty.route-profiles.v1",
     capabilities: [
       "discover",
@@ -101,10 +104,14 @@ const manifest = {
       "mouse",
       "wallpaper",
       "audio",
+      "app",
+      "api",
+      "transaction",
       "generated-asset-save-apply-verify",
       "managed-windows-reinstall"
     ]
   },
+  agentRuntime,
   routeProfiles,
   windowsReinstall,
   automationToolkits
@@ -114,6 +121,7 @@ await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 process.stdout.write(`agent:${version}:${manifest.sha256}\n`);
 process.stdout.write(`memory-plane:${manifest.memoryPlane.schema}\n`);
 process.stdout.write(`computer-use-plane:${manifest.computerUsePlane.schema}\n`);
+process.stdout.write(`agent-runtime:${manifest.agentRuntime.schema}\n`);
 process.stdout.write(`windows-reinstall:${windowsReinstall.scripts.map((script) => `${script.name}:${script.sha256}`).join(",")}\n`);
 
 async function removeRetiredOpsSkillArtifacts() {
@@ -271,7 +279,15 @@ function buildRouteProfiles(windowsReinstall) {
   };
 }
 
-function buildAutomationToolkits(windowsReinstall, routeProfiles) {
+function buildSotyAgentRuntime() {
+  return buildAgentRuntimeManifest({
+    runtimeId: "soty-agent",
+    entrypoint: "computer",
+    capabilities: defaultAgentRuntimeCapabilities()
+  });
+}
+
+function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) {
   const openAiToolPlane = buildOpenAiToolPlane();
   return {
     schema: "soty.automation-toolkits.v2",
@@ -282,6 +298,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
       route: "computer-use-plane-with-memory-hints",
       fallbackKernel: "jobs",
       routeProfiles: "soty.route-profiles.v1",
+      agentRuntime: agentRuntime.schema,
       chat: "agent-sysadmin",
       responseStyle: buildResponseStylePolicy(),
       openAiToolPlane,
@@ -292,6 +309,15 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles) {
       terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"]
     },
     toolkits: [
+      {
+        name: "agent-runtime",
+        entryTool: "computer",
+        kind: "runtime-contract",
+        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "learn"],
+        proof: ["capability", "risk", "confirmation", "jobId", "result", "proof"],
+        schema: agentRuntime.schema,
+        capabilities: agentRuntime.capabilities.map((capability) => capability.family)
+      },
       {
         name: "computer-use-plane",
         entryTool: "computer",
