@@ -4,8 +4,13 @@ Mini apps are small frontend bundles rendered inside the selected Soty chat. The
 
 Public/user-installed mini apps are currently gated off in the app shell. The
 only enabled mini app today is the built-in remote commands panel in the
-`Агент` account. Keep the manifest contract small so enabling user apps later is
+Agent account. Keep the manifest contract small so enabling user apps later is
 one flag plus manifest entries, not another UI rewrite.
+
+Remote connection technology lives in TrustLink Kernel
+`docs/app-surfaces.md` (`junior2wnw/4-2-rf`). Soty is only the application
+adapter: it owns the manifest, account gating, CSP env wiring, and the visible
+chat panel.
 
 ## Register An App
 
@@ -30,7 +35,14 @@ one flag plus manifest entries, not another UI rewrite.
 }
 ```
 
-Same-origin apps work by default. During development, loopback URLs such as `http://localhost:5174/` are accepted by the client and the server CSP allows localhost frames. For other trusted origins, set `SOTY_MINI_APP_FRAME_SRC`.
+Same-origin apps work by default. Soty resolves mini-app URLs through
+`trustlink-kernel` app-surface helpers. During development, loopback URLs such
+as `http://localhost:5174/` are accepted by the client and the server CSP allows
+localhost frames. For other trusted HTTPS origins, set `SOTY_MINI_APP_FRAME_SRC`.
+
+Do not give a mini app direct relay secrets or raw device authority. A mini app
+is a frontend; Soty owns identity, trust, selected chat/device context, agent
+invocation, terminal routing, file/artifact transfer, and proof.
 
 ## Bridge
 
@@ -78,3 +90,12 @@ Supported app-to-shell messages:
 - `close`: closes the mini app panel.
 
 The contract intentionally stays tiny: apps own their frontend, Soty owns chat context, agent invocation, remote command routing, and room/device state.
+
+## Agent Notes
+
+When the Soty Agent or Codex integrates a mini app, read
+`node_modules/trustlink-kernel/docs/app-surfaces.md` first, then this adapter
+doc. Keep new app UI thin, register only the needed capabilities, add the origin
+to CSP only when it is trusted, and keep remote-device access behind the Soty
+kernel bridge. If a repeated integration teaches a better route, update
+TrustLink Kernel first and then this Soty adapter.

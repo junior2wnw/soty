@@ -6622,6 +6622,8 @@ function sotyRuntimeHints() {
     "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
+    "- Mini-app kernel: mini apps are frontend surfaces; TrustLink Kernel owns the reusable app-surface contract, and Soty owns the application adapter. Use node_modules/trustlink-kernel/docs/app-surfaces.md plus docs/soty-mini-apps.md.",
+    "- Mini-app remote connection: same-origin apps use /mini-apps; remote domains require exact HTTPS origin allowlisting; no-domain/device-local apps use TrustLink app-surface modes (trusted HTTPS/tunnel/kernel-proxy), not arbitrary insecure LAN iframes.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
@@ -6756,7 +6758,22 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "5. Send progress rarely, only when it changes what the user needs to know. Otherwise sleep and poll.",
     "6. Stop only on completed, failed, blocked-needs-user, waiting-confirmation, or a source-device outage that survived the recovery window.",
     "",
-    "Record reusable proof/improvement when this route teaches a better deterministic script or check."
+    "Record reusable proof/improvement when this route teaches a better deterministic script or check.",
+    "",
+    "## Mini App Surface Route",
+    "",
+    "Use this route whenever the user asks to add, connect, debug, or generalize a Soty mini app, including apps hosted by domain, apps hosted on another server without a domain, or apps that must operate through a selected device/agent.",
+    "",
+    "Principle: mini apps are frontend surfaces. TrustLink Kernel owns the reusable app-surface contract; Soty owns the adapter, selected chat/device context, agent invocation, terminal routing, file/artifact transfer, long jobs, and proof. Do not give mini apps relay secrets, raw device tokens, or direct authority over another user's computer.",
+    "",
+    "Hosting modes:",
+    "1. Same-origin: build the static app under `public/mini-apps/<app-id>/`, register a relative URL in `public/mini-apps/manifest.json`, and use `frame-src 'self'`.",
+    "2. Remote HTTPS origin: register an absolute HTTPS URL, add the exact origin to `SOTY_MINI_APP_FRAME_SRC`, and require the nonce-bound `postMessage` bridge.",
+    "3. No-domain/device-local: use trusted HTTPS by IP/host, a tunnel that provides HTTPS, or a TrustLink/Soty kernel proxy backed by the selected agent. Do not iframe arbitrary insecure LAN HTTP from the production PWA. Loopback HTTP is only for local development or explicit controller-local helpers.",
+    "",
+    "Bridge rule: apps request small capability-gated actions (`agent.invoke`, `terminal.run`, file/artifact/job capabilities as they are added); the kernel executes through the selected chat/device context and returns proof/status.",
+    "",
+    "Repository source of truth: `node_modules/trustlink-kernel/docs/app-surfaces.md` for reusable technology and `docs/soty-mini-apps.md` for the Soty adapter. If an integration proves a better universal route, update TrustLink Kernel first, then the Soty adapter docs and selftests."
   ].join("\n");
   const agents = [
     "# Soty Runtime",
@@ -6769,7 +6786,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_ROUTES.md contains exact high-signal tool routes, including Windows reinstall status/prepare and generated-image artifact transfer."
+    "- SOTY_ROUTES.md contains exact high-signal tool routes, including Windows reinstall status/prepare, generated-image artifact transfer, and the mini-app app-surface route."
   ].join("\n");
   const context = [
     "# Soty Runtime Packet",

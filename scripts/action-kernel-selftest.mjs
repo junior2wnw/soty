@@ -80,6 +80,27 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.responseStyle.id, "agent-sysadmin");
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
     }],
+    ["mini app remote kernel docs are agent-visible", async () => {
+      const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const main = await readFile(join(root, "src", "main.ts"), "utf8");
+      const miniAppsDoc = await readFile(join(root, "docs", "soty-mini-apps.md"), "utf8");
+      const kernelDoc = await readFile(join(root, "node_modules", "trustlink-kernel", "docs", "app-surfaces.md"), "utf8");
+      assert(miniAppsDoc.includes("TrustLink Kernel"));
+      assert(miniAppsDoc.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
+      assert(main.includes('from "trustlink-kernel"'));
+      assert(main.includes("resolveAppSurfaceUrl"));
+      assert(main.includes("appSurfaceAllowedOrigin"));
+      assert(kernelDoc.includes("App surfaces are small frontend applications"));
+      assert(kernelDoc.includes("same-origin"));
+      assert(kernelDoc.includes("remote-origin"));
+      assert(kernelDoc.includes("device-local"));
+      assert(kernelDoc.includes("kernel-proxy"));
+      assert(kernelDoc.includes("resolveAppSurfaceUrl"));
+      assert(agentSource.includes("Mini-app kernel"));
+      assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
+      assert(agentSource.includes("TrustLink Kernel first"));
+      assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
+    }],
     ["managed agent allows trusted web origins for local health", async () => {
       const managedPort = await freePort();
       const managedDir = await mkdtemp(join(tmpdir(), "soty-managed-origin-selftest-"));

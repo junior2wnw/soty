@@ -1,5 +1,10 @@
 import QRCode from "qrcode";
 import jsQR from "jsqr";
+import {
+  appSurfaceAllowedOrigin,
+  normalizeAppSurfaceId,
+  resolveAppSurfaceUrl
+} from "trustlink-kernel";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import type { IconName } from "./icons";
@@ -1120,7 +1125,7 @@ function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
   if (!isRecord(value)) {
     return null;
   }
-  const id = recordString(value, "id").toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").slice(0, 80);
+  const id = normalizeAppSurfaceId(recordString(value, "id"));
   const title = cleanNick(recordString(value, "title") || id).slice(0, 80);
   const summary = cleanNick(recordString(value, "summary")).slice(0, 160);
   const iconName = recordString(value, "icon");
@@ -1149,17 +1154,14 @@ function isIconName(value: string): value is IconName {
 }
 
 function safeMiniAppUrl(value: string): string {
-  if (!value) {
-    return "";
-  }
   try {
-    const url = new URL(value, window.location.origin);
-    const loopback = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-    const trustedHttps = url.protocol === "https:";
-    if (url.origin !== window.location.origin && !loopback && !trustedHttps) {
-      return "";
-    }
-    return url.href;
+    const resolved = resolveAppSurfaceUrl(value, {
+      baseUrl: window.location.origin,
+      allowLoopbackHttp: true,
+      allowTrustedHttps: true,
+      kernelIntentSchemes: ["soty:"]
+    });
+    return resolved.requiresKernelProxy ? "" : resolved.url;
   } catch {
     return "";
   }
@@ -1331,11 +1333,9 @@ function handleMiniAppMessage(event: MessageEvent): void {
 }
 
 function isAllowedMiniAppOrigin(origin: string, appUrl: string): boolean {
-  try {
-    return origin === new URL(appUrl, window.location.href).origin;
-  } catch {
-    return false;
-  }
+  return appSurfaceAllowedOrigin(origin, appUrl, window.location.href, {
+    kernelIntentSchemes: ["soty:"]
+  });
 }
 
 function publishMiniAppContext(): void {
