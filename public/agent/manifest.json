@@ -1,9 +1,9 @@
 {
-  "version": "0.4.78",
+  "version": "0.4.79",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "e095f817e25ad03d0e1fd97bf55b974d0bf2238ece6df0a25b366ec72093cd87",
+  "sha256": "ab28755bbc9ffbff765e41c6a2e55547f76c3d12cafabc1c8920aad88d177983",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -566,6 +566,7 @@
           "prove the target is the interactive user desktop",
           "find only Soty PWA windows by title/process",
           "remove the native Windows caption from matching HWNDs",
+          "hide Chrome app shortcut client titlebars by shifting only the matched Soty window above the working area",
           "install a per-user watcher only after explicit user intent",
           "return status with matched windows and caption/frameless state"
         ],
@@ -573,6 +574,7 @@
           "do not run against all browser windows",
           "do not treat web manifest window-controls-overlay as guaranteed",
           "do not run as SYSTEM for interactive window styling",
+          "do not crop unrelated windows or pages outside the Soty title match",
           "do not install a persistent watcher for unrelated apps"
         ],
         "proof": [
@@ -581,14 +583,15 @@
           "hwnd",
           "caption",
           "frameless",
+          "clientTitlebarHidden",
           "taskName",
           "persistence"
         ],
         "scripts": [
           {
             "name": "windows",
-            "sha256": "5f6f372bad9d1c3a7ad681c072fa71aea27d705eed2be7b98f38b965628f18c2",
-            "bytes": 9495
+            "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
+            "bytes": 14172
           }
         ],
         "learning": {
@@ -637,8 +640,8 @@
         "name": "windows",
         "platform": "windows",
         "url": "/agent/native-window-chrome/soty-pwa-window-chrome.ps1",
-        "sha256": "5f6f372bad9d1c3a7ad681c072fa71aea27d705eed2be7b98f38b965628f18c2",
-        "bytes": 9495
+        "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
+        "bytes": 14172
       }
     ]
   },
@@ -923,8 +926,8 @@
           {
             "name": "windows",
             "platform": "windows",
-            "sha256": "5f6f372bad9d1c3a7ad681c072fa71aea27d705eed2be7b98f38b965628f18c2",
-            "bytes": 9495
+            "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
+            "bytes": 14172
           }
         ],
         "proof": [
@@ -933,6 +936,7 @@
           "hwnd",
           "caption",
           "frameless",
+          "clientTitlebarHidden",
           "taskName",
           "persistence"
         ],
@@ -1092,6 +1096,7 @@
             "prove the target is the interactive user desktop",
             "find only Soty PWA windows by title/process",
             "remove the native Windows caption from matching HWNDs",
+            "hide Chrome app shortcut client titlebars by shifting only the matched Soty window above the working area",
             "install a per-user watcher only after explicit user intent",
             "return status with matched windows and caption/frameless state"
           ],
@@ -1099,6 +1104,7 @@
             "do not run against all browser windows",
             "do not treat web manifest window-controls-overlay as guaranteed",
             "do not run as SYSTEM for interactive window styling",
+            "do not crop unrelated windows or pages outside the Soty title match",
             "do not install a persistent watcher for unrelated apps"
           ],
           "proof": [
@@ -1107,14 +1113,15 @@
             "hwnd",
             "caption",
             "frameless",
+            "clientTitlebarHidden",
             "taskName",
             "persistence"
           ],
           "scripts": [
             {
               "name": "windows",
-              "sha256": "5f6f372bad9d1c3a7ad681c072fa71aea27d705eed2be7b98f38b965628f18c2",
-              "bytes": 9495
+              "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
+              "bytes": 14172
             }
           ],
           "learning": {

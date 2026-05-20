@@ -119,6 +119,11 @@
 - На Windows helper должен работать точечно: искать только окно Сот, убирать
   `WS_CAPTION` у его HWND, возвращать proof `pid/hwnd/caption/frameless` и
   уметь ставить per-user watcher для следующих запусков.
+- У Chrome `chrome_proxy`/старых ярлыков PWA верхняя полоса может быть
+  нарисована самим Chrome внутри client area. В этом случае одного
+  `WS_CAPTION` мало: helper должен дополнительно уметь прятать только
+  matched Soty window выше рабочей области на высоту client titlebar и
+  возвращать proof `clientTitlebar.hidden=true`.
 - Persist route на Windows: сначала пробовать per-user Scheduled Task, а если
   текущий пользовательский контекст получает `Access denied`, сохранять watcher
   через `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Это локальная

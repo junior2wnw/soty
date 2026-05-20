@@ -2,6 +2,7 @@ param(
   [ValidateSet("status", "apply", "restore", "watch", "install", "uninstall")]
   [string] $Action = "status",
   [string] $TitlePattern = "\u0441\u043e\u0442\u044b\.online|soty\.online|xn--n1afe0b\.online",
+  [int] $ClientTitlebarHeight = 32,
   [int] $IntervalMs = 1500,
   [int] $DurationSeconds = 0
 )
@@ -21,6 +22,9 @@ $SWP_NOSIZE = 0x0001
 $SWP_NOMOVE = 0x0002
 $SWP_NOZORDER = 0x0004
 $SWP_FRAMECHANGED = 0x0020
+$SWP_SHOWWINDOW = 0x0040
+$SW_RESTORE = 9
+$SW_MAXIMIZE = 3
 
 function Emit($Value) {
   $Value | ConvertTo-Json -Depth 7 -Compress
@@ -35,7 +39,7 @@ function Quote-CommandLineArg([string] $Value) {
 }
 
 function New-WatcherArgument([string] $Path = $HelperPath) {
-  "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $(Quote-CommandLineArg $Path) -Action watch -TitlePattern $(Quote-CommandLineArg $TitlePattern) -IntervalMs $IntervalMs"
+  "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $(Quote-CommandLineArg $Path) -Action watch -TitlePattern $(Quote-CommandLineArg $TitlePattern) -ClientTitlebarHeight $ClientTitlebarHeight -IntervalMs $IntervalMs"
 }
 
 function New-WatcherRunCommand([string] $Path = $HelperPath) {
@@ -78,6 +82,14 @@ using System;
 using System.Runtime.InteropServices;
 
 public static class SotyWindowChrome {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
+
   [DllImport("user32.dll", EntryPoint="GetWindowLong", SetLastError=true)]
   private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
 
@@ -93,6 +105,12 @@ public static class SotyWindowChrome {
   [DllImport("user32.dll", SetLastError=true)]
   public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, UInt32 uFlags);
 
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+  [DllImport("user32.dll", SetLastError=true)]
+  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
   public static IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex) {
     return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, nIndex) : GetWindowLong32(hWnd, nIndex);
   }
@@ -102,6 +120,10 @@ public static class SotyWindowChrome {
   }
 }
 "@
+}
+
+function Ensure-Forms {
+  Add-Type -AssemblyName System.Windows.Forms
 }
 
 function Get-TargetWindows {
@@ -130,7 +152,118 @@ function Set-WindowStyle([IntPtr] $Handle, [int64] $Style) {
   ) | Out-Null
 }
 
-function Convert-WindowRecord($Process, [int64] $Style, [bool] $Changed) {
+function Get-WindowRectRecord([IntPtr] $Handle) {
+  Ensure-Win32
+  $rect = New-Object SotyWindowChrome+RECT
+  [SotyWindowChrome]::GetWindowRect($Handle, [ref] $rect) | Out-Null
+  [pscustomobject]@{
+    left = [int] $rect.Left
+    top = [int] $rect.Top
+    right = [int] $rect.Right
+    bottom = [int] $rect.Bottom
+    width = [int] ($rect.Right - $rect.Left)
+    height = [int] ($rect.Bottom - $rect.Top)
+  }
+}
+
+function Get-ScreenRecord([IntPtr] $Handle) {
+  Ensure-Forms
+  $screen = [System.Windows.Forms.Screen]::FromHandle($Handle)
+  $bounds = $screen.Bounds
+  $work = $screen.WorkingArea
+  [pscustomobject]@{
+    deviceName = [string] $screen.DeviceName
+    boundsLeft = [int] $bounds.Left
+    boundsTop = [int] $bounds.Top
+    boundsWidth = [int] $bounds.Width
+    boundsHeight = [int] $bounds.Height
+    workingLeft = [int] $work.Left
+    workingTop = [int] $work.Top
+    workingWidth = [int] $work.Width
+    workingHeight = [int] $work.Height
+  }
+}
+
+function Test-ClientTitlebarHidden($Rect, $Screen, [int] $Height) {
+  if ($Height -le 0) {
+    return $true
+  }
+  $threshold = [Math]::Max(8, $Height - 4)
+  [bool] ($Rect.top -le ($Screen.workingTop - $threshold))
+}
+
+function Apply-ClientTitlebarShift([IntPtr] $Handle) {
+  $height = [Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight))
+  $screen = Get-ScreenRecord $Handle
+  $before = Get-WindowRectRecord $Handle
+  if ($height -le 0 -or (Test-ClientTitlebarHidden $before $screen $height)) {
+    return [pscustomobject]@{
+      enabled = [bool] ($height -gt 0)
+      height = [int] $height
+      hidden = [bool] (Test-ClientTitlebarHidden $before $screen $height)
+      changed = $false
+      rect = $before
+      screen = $screen
+    }
+  }
+  [SotyWindowChrome]::ShowWindow($Handle, $SW_RESTORE) | Out-Null
+  Start-Sleep -Milliseconds 80
+  [SotyWindowChrome]::SetWindowPos(
+    $Handle,
+    [IntPtr]::Zero,
+    [int] $screen.workingLeft,
+    [int] ($screen.workingTop - $height),
+    [int] $screen.workingWidth,
+    [int] ($screen.workingHeight + $height),
+    [uint32] ($SWP_NOZORDER -bor $SWP_SHOWWINDOW)
+  ) | Out-Null
+  Start-Sleep -Milliseconds 80
+  $after = Get-WindowRectRecord $Handle
+  [pscustomobject]@{
+    enabled = $true
+    height = [int] $height
+    hidden = [bool] (Test-ClientTitlebarHidden $after $screen $height)
+    changed = $true
+    rect = $after
+    screen = $screen
+  }
+}
+
+function Restore-ClientTitlebarShift([IntPtr] $Handle) {
+  $height = [Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight))
+  $screen = Get-ScreenRecord $Handle
+  $before = Get-WindowRectRecord $Handle
+  $wasHidden = Test-ClientTitlebarHidden $before $screen $height
+  if ($height -gt 0 -and $wasHidden) {
+    [SotyWindowChrome]::ShowWindow($Handle, $SW_MAXIMIZE) | Out-Null
+    Start-Sleep -Milliseconds 120
+  }
+  $after = Get-WindowRectRecord $Handle
+  [pscustomobject]@{
+    enabled = [bool] ($height -gt 0)
+    height = [int] $height
+    hidden = [bool] (Test-ClientTitlebarHidden $after $screen $height)
+    changed = [bool] ($height -gt 0 -and $wasHidden)
+    rect = $after
+    screen = $screen
+  }
+}
+
+function Convert-WindowRecord($Process, [int64] $Style, [bool] $Changed, $ClientTitlebar = $null) {
+  $handle = [IntPtr] $Process.MainWindowHandle
+  if (-not $ClientTitlebar) {
+    $rect = Get-WindowRectRecord $handle
+    $screen = Get-ScreenRecord $handle
+    $height = [Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight))
+    $ClientTitlebar = [pscustomobject]@{
+      enabled = [bool] ($height -gt 0)
+      height = [int] $height
+      hidden = [bool] (Test-ClientTitlebarHidden $rect $screen $height)
+      changed = $false
+      rect = $rect
+      screen = $screen
+    }
+  }
   [pscustomobject]@{
     process = $Process.ProcessName
     pid = [int] $Process.Id
@@ -138,6 +271,7 @@ function Convert-WindowRecord($Process, [int64] $Style, [bool] $Changed) {
     title = [string] $Process.MainWindowTitle
     caption = [bool] (($Style -band $WS_CAPTION) -ne 0)
     frameless = [bool] (($Style -band $WS_CAPTION) -eq 0)
+    clientTitlebar = $ClientTitlebar
     changed = $Changed
   }
 }
@@ -157,13 +291,19 @@ function Apply-WindowChrome([bool] $Restore = $false) {
       Set-WindowStyle $handle $next
       Start-Sleep -Milliseconds 80
     }
+    $clientTitlebar = if ($Restore) {
+      Restore-ClientTitlebarShift $handle
+    } else {
+      Apply-ClientTitlebarShift $handle
+    }
     $finalStyle = Get-WindowStyle $handle
-    $results += Convert-WindowRecord $process $finalStyle $changed
+    $results += Convert-WindowRecord $process $finalStyle ([bool] ($changed -or $clientTitlebar.changed)) $clientTitlebar
   }
   [pscustomobject]@{
     ok = $true
     action = if ($Restore) { "restore" } else { "apply" }
     titlePattern = $TitlePattern
+    clientTitlebarHeight = [int] ([Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight)))
     count = [int] $results.Count
     windows = @($results)
   }
@@ -178,6 +318,7 @@ function Get-Status {
     ok = $true
     action = "status"
     titlePattern = $TitlePattern
+    clientTitlebarHeight = [int] ([Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight)))
     installed = [bool] (@(Get-WatcherPersistence).Count -gt 0)
     persistence = @(Get-WatcherPersistence)
     runCommand = Get-RunWatcherCommand
@@ -215,6 +356,7 @@ function Install-Watcher {
     action = "install"
     taskName = $TaskName
     persistence = $persistence
+    clientTitlebarHeight = [int] ([Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight)))
     scheduledTaskError = $scheduledTaskError
     runCommand = Get-RunWatcherCommand
     helperPath = $HelperPath

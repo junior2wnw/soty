@@ -335,6 +335,7 @@ function buildRouteProfiles(windowsReinstall, nativeWindowChrome) {
           "prove the target is the interactive user desktop",
           "find only Soty PWA windows by title/process",
           "remove the native Windows caption from matching HWNDs",
+          "hide Chrome app shortcut client titlebars by shifting only the matched Soty window above the working area",
           "install a per-user watcher only after explicit user intent",
           "return status with matched windows and caption/frameless state"
         ],
@@ -342,9 +343,10 @@ function buildRouteProfiles(windowsReinstall, nativeWindowChrome) {
           "do not run against all browser windows",
           "do not treat web manifest window-controls-overlay as guaranteed",
           "do not run as SYSTEM for interactive window styling",
+          "do not crop unrelated windows or pages outside the Soty title match",
           "do not install a persistent watcher for unrelated apps"
         ],
-        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
         scripts: windowChromeScriptProof,
         learning: {
           reuseKey: "soty-native-window-chrome-fast-lane",
@@ -465,7 +467,7 @@ function buildAutomationToolkits(windowsReinstall, nativeWindowChrome, routeProf
           sha256: script.sha256,
           bytes: script.bytes
         })),
-        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
         routeProfile: "soty-native-window-chrome-fast-lane"
       }
     ],

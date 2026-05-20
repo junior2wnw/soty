@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.78";
+const agentVersion = "0.4.79";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6779,6 +6779,7 @@ function nativeWindowChromeRouteProfile() {
       "prove the target is the interactive user desktop",
       "find only Soty PWA windows by title/process",
       "remove the native Windows caption from matching HWNDs",
+      "hide Chrome app shortcut client titlebars by shifting only the matched Soty window above the working area",
       "install a per-user watcher only after explicit user intent",
       "return status with matched windows and caption/frameless state"
     ],
@@ -6786,9 +6787,10 @@ function nativeWindowChromeRouteProfile() {
       "do not run against all browser windows",
       "do not treat web manifest window-controls-overlay as guaranteed",
       "do not run as SYSTEM for interactive window styling",
+      "do not crop unrelated windows or pages outside the Soty title match",
       "do not install a persistent watcher for unrelated apps"
     ],
-    proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+    proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
     learning: {
       reuseKey: nativeWindowChromeRouteProfileId,
       scriptUse: "status/apply/install/restore/uninstall",
@@ -11148,6 +11150,7 @@ function sourceDesktopScript(args) {
     fit: String(args.fit || "fill").slice(0, 40),
     mode: String(args.mode || args.phase || args.chromeAction || "").slice(0, 40),
     persist: args.persist === true || args.install === true,
+    clientTitlebarHeight: Number.isSafeInteger(args.clientTitlebarHeight) ? args.clientTitlebarHeight : 32,
     intervalMs: Number.isSafeInteger(args.intervalMs) ? args.intervalMs : 1500,
     durationSeconds: Number.isSafeInteger(args.durationSeconds) ? args.durationSeconds : 0,
     manifestUrl: String(args.manifestUrl || updateManifestUrl).slice(0, 4000)
@@ -11172,6 +11175,7 @@ function Invoke-NativeWindowChrome {
     [string] $Mode,
     [string] $TitlePattern,
     [bool] $Persist,
+    [int] $ClientTitlebarHeight,
     [int] $IntervalMs,
     [int] $DurationSeconds,
     [string] $ManifestUrl
@@ -11231,6 +11235,8 @@ function Invoke-NativeWindowChrome {
     $Mode,
     '-TitlePattern',
     $TitlePattern,
+    '-ClientTitlebarHeight',
+    ([string][Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight))),
     '-IntervalMs',
     ([string][Math]::Max(500, $IntervalMs)),
     '-DurationSeconds',
@@ -11247,16 +11253,16 @@ function Invoke-NativeWindowChrome {
 }
 switch ($action) {
   'window-chrome' {
-    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -ClientTitlebarHeight ([int]$req.clientTitlebarHeight) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
   }
   'window_chrome' {
-    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -ClientTitlebarHeight ([int]$req.clientTitlebarHeight) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
   }
   'frameless' {
-    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -ClientTitlebarHeight ([int]$req.clientTitlebarHeight) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
   }
   'frameless-pwa' {
-    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -ClientTitlebarHeight ([int]$req.clientTitlebarHeight) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
   }
   'display' {
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
@@ -13164,7 +13170,7 @@ function automationToolkitStatus() {
         name: "native-window-chrome",
         entryTool: "computer",
         phases: ["status", "apply", "install", "restore", "uninstall"],
-        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
         routeProfile: nativeWindowChromeRouteProfileId
       }
     ],
