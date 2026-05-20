@@ -1569,6 +1569,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes('"--range"'));
       assert(prepare.includes('"65536"'));
       assert(prepare.includes('"-C", "-"'));
+      assert(prepare.includes("Parallel Windows image download is enabled by default"));
+      assert(prepare.includes('SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD=0'));
       assert(prepare.includes("Using single-stream resumable Windows image download"));
       assert(prepare.includes("$curl -and $parallelDownloadEnabled"));
       assert(prepare.includes("SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD"));
@@ -1623,6 +1625,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.routeProfiles.profiles[0].id, "soty-windows-reinstall-managed-fast-lane");
       assertEqual(manifest.routeProfiles.profiles[0].defaultAction, "prepare");
       assert(manifest.routeProfiles.profiles[0].doNot.some((item) => item.includes("manually download ISO")));
+      assert(manifest.routeProfiles.profiles[0].route.some((item) => item.includes("guarded parallel/resumable route")));
       const generatedAssetProfile = manifest.routeProfiles.profiles.find((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane");
       assert(generatedAssetProfile);
       assertEqual(generatedAssetProfile.defaultAction, "wallpaper");

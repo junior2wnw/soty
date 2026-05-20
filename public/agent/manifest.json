@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "4ac367f7760a64cfff8344043e4fb9bdb9f20f1015724a84a653859f5b6bc899",
+  "sha256": "b16b6690dc1fe7050229398ea39e324ea256eaaf722ef49b48e3e4e1c79b71cb",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -118,7 +118,7 @@
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
           "start managed prepare once with stable idempotency",
-          "download Windows media with the single-stream resumable route on the selected PC",
+          "download Windows media with the guarded parallel/resumable route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
           "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"
@@ -151,8 +151,8 @@
           },
           {
             "name": "prepare",
-            "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-            "bytes": 89686
+            "sha256": "591d56b812c36cea1fb1a4b0c5c5cab496baa2c372a41750252604b86ed06612",
+            "bytes": 90041
           },
           {
             "name": "arm",
@@ -232,8 +232,8 @@
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-        "bytes": 89686
+        "sha256": "591d56b812c36cea1fb1a4b0c5c5cab496baa2c372a41750252604b86ed06612",
+        "bytes": 90041
       },
       {
         "name": "arm",
@@ -418,8 +418,8 @@
           },
           {
             "name": "prepare",
-            "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-            "bytes": 89686
+            "sha256": "591d56b812c36cea1fb1a4b0c5c5cab496baa2c372a41750252604b86ed06612",
+            "bytes": 90041
           },
           {
             "name": "arm",
@@ -477,7 +477,7 @@
             "run repair/status when the user reports a broken or interrupted reinstall workflow",
             "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
             "start managed prepare once with stable idempotency",
-            "download Windows media with the single-stream resumable route on the selected PC",
+            "download Windows media with the guarded parallel/resumable route on the selected PC",
             "prove backup, install media, unattended account, Autounattend, postinstall",
             "ask final reinstall confirmation only after proof is complete",
             "arm reinstall and stop probing while reboot return path is expected"
@@ -510,8 +510,8 @@
             },
             {
               "name": "prepare",
-              "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-              "bytes": 89686
+              "sha256": "591d56b812c36cea1fb1a4b0c5c5cab496baa2c372a41750252604b86ed06612",
+              "bytes": 90041
             },
             {
               "name": "arm",

@@ -680,9 +680,10 @@ function Invoke-ParallelRangeDownloadAttempt([string] $Uri, [string] $TempPath, 
 
 function Test-ParallelWindowsImageDownloadEnabled {
   $raw = [string] $env:SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD
-  if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $true }
   $value = $raw.Trim().ToLowerInvariant()
-  return @("1", "true", "yes", "on", "parallel", "range") -contains $value
+  if (@("0", "false", "no", "off", "single", "stream", "serial") -contains $value) { return $false }
+  return @("1", "true", "yes", "on", "auto", "default", "parallel", "range") -contains $value
 }
 
 function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string] $ExpectedSha256, [string] $LogPrefix, [int] $MaxTotalSeconds = 172800) {
@@ -741,7 +742,11 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
   $lastBytes = Get-FileLengthSafe $tmp
   $parallelDownloadEnabled = Test-ParallelWindowsImageDownloadEnabled
   if ($parallelDownloadEnabled) {
-    Log "Parallel Windows image download is enabled by SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD."
+    if ([string]::IsNullOrWhiteSpace([string] $env:SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD)) {
+      Log "Parallel Windows image download is enabled by default; set SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD=0 to force single-stream."
+    } else {
+      Log "Parallel Windows image download is enabled by SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD."
+    }
   } else {
     Remove-Item -LiteralPath $parts -Recurse -Force -ErrorAction SilentlyContinue
     Log "Using single-stream resumable Windows image download."

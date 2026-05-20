@@ -6515,7 +6515,7 @@ function windowsReinstallRouteProfile() {
       "run repair/status when the user reports a broken or interrupted reinstall workflow",
       "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
       "start managed prepare once with stable idempotency",
-      "download Windows media with the single-stream resumable route on the selected PC",
+      "download Windows media with the guarded parallel/resumable route on the selected PC",
       "prove backup, install media, unattended account, Autounattend, postinstall",
       "ask final reinstall confirmation only after proof is complete",
       "arm reinstall and stop probing while reboot return path is expected"
