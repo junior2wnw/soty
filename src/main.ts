@@ -316,6 +316,25 @@ const quickActions: readonly QuickAction[] = [
     }
   },
   {
+    id: "native-window-chrome",
+    title: "Окно без хедера",
+    label: "HDR",
+    summary: "Спрятать системную полосу PWA, закрепить watcher и проверить, что окно не уходит под Пуск.",
+    tags: ["окно", "хедер", "titlebar", "pwa", "chrome", "frameless", "свернуть", "двигать", "resize"],
+    agentCard: {
+      intent: "Enable and verify the frameless Soty PWA window on the selected/current device.",
+      targetPolicy: "Prefer the current/source device. Use another linked device only when the current dialog or user wording names it.",
+      firstMoves: [
+        "Run the native-window-chrome computer operation in install/apply mode with ClientTitlebarHeight=32.",
+        "Verify caption=false, frameless=true, clientTitlebar.hidden=true, and watcher persistence.",
+        "Check that the visible window stays inside the working area and can still be resized from the side edges."
+      ],
+      confirmBefore: [],
+      successProof: ["caption=false", "frameless=true", "clientTitlebar.hidden=true", "clientTitlebar.bottomInsideWorkingArea=true", "persistence includes scheduled-task or hkcu-run"],
+      avoid: ["changing unrelated Chrome windows", "leaving duplicate watcher processes", "claiming success without fresh status JSON"]
+    }
+  },
+  {
     id: "soty-export",
     title: "Экспорт Сот",
     label: "EXPORT",
@@ -2085,6 +2104,15 @@ function quickActionRowHtml(action: QuickAction): string {
   `;
 }
 
+function agentActionButtonHtml(action: QuickAction): string {
+  return `
+    <button class="agent-action-button" type="button" data-action-id="${escapeHtml(action.id)}" data-tooltip="${escapeHtml(action.title)}">
+      <span>${escapeHtml(action.label)}</span>
+      <b>${escapeHtml(action.title)}</b>
+    </button>
+  `;
+}
+
 async function runQuickAction(actionId: string): Promise<void> {
   const action = quickActions.find((item) => item.id === actionId);
   const tunnelId = selectedId;
@@ -2388,6 +2416,7 @@ function renderApp(): void {
   }
 
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
+  const localDeviceNick = cleanNick(device.nick) || "SOTY";
   app.innerHTML = `
     ${pwaTitlebarMarkup()}
     <section class="shell retro-shell">
@@ -2395,7 +2424,7 @@ function renderApp(): void {
         <div class="retro-brand">
           <span class="retro-brand-mark">S</span>
           <span>
-            <b>SOTY</b>
+            <b>${escapeHtml(localDeviceNick)}</b>
             <small>LIVE TUNNELS</small>
           </span>
         </div>
@@ -2435,6 +2464,13 @@ function renderApp(): void {
             <span class="terminal-title">COMMANDS</span>
             <span class="terminal-status">READY</span>
             <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
+          </div>
+          <div class="agent-action-strip" hidden>
+            <div class="agent-action-strip-head">
+              <span>Действия</span>
+              <small>агент выполнит в текущей соте</small>
+            </div>
+            <div class="agent-action-grid"></div>
           </div>
           <div class="terminal-output"></div>
           <form class="terminal-form">
@@ -2557,18 +2593,26 @@ function renderApp(): void {
 }
 
 function pwaTitlebarMarkup(): string {
+  const title = cleanNick(device?.nick || "") || "SOTY";
+  const mark = initials(title).slice(0, 2).toUpperCase();
   return `
     <div class="pwa-titlebar" aria-label="Soty window controls">
       <div class="pwa-titlebar-drag">
-        <span class="pwa-titlebar-mark">S</span>
-        <b>соты.online</b>
+        <span class="pwa-titlebar-mark">${escapeHtml(mark)}</span>
+        <b>${escapeHtml(title)}</b>
       </div>
+      <button class="pwa-window-minimize retro-icon-button" type="button" aria-label="minimize window" data-tooltip="Свернуть окно">${icon("collapse")}</button>
       <button class="pwa-window-close retro-icon-button" type="button" aria-label="close window" data-tooltip="Закрыть окно">${icon("close")}</button>
     </div>
   `;
 }
 
 function bindPwaTitlebar(): void {
+  app.querySelector<HTMLButtonElement>(".pwa-window-minimize")?.addEventListener("click", () => {
+    window.blur();
+    document.body.classList.add("pwa-window-minimize-pulse");
+    window.setTimeout(() => document.body.classList.remove("pwa-window-minimize-pulse"), 180);
+  });
   app.querySelector<HTMLButtonElement>(".pwa-window-close")?.addEventListener("click", () => {
     window.close();
   });
@@ -5239,6 +5283,8 @@ function renderTerminal(): void {
   const title = app.querySelector<HTMLSpanElement>(".terminal-title");
   const status = app.querySelector<HTMLSpanElement>(".terminal-status");
   const collapseButton = app.querySelector<HTMLButtonElement>(".terminal-collapse");
+  const actionStrip = app.querySelector<HTMLDivElement>(".agent-action-strip");
+  const actionGrid = app.querySelector<HTMLDivElement>(".agent-action-grid");
   if (!panel || !output || !editor || !form || !peer) {
     return;
   }
@@ -5254,6 +5300,21 @@ function renderTerminal(): void {
   editor.classList.toggle("terminal-controller", controller);
   editor.classList.toggle("terminal-host", host && !controller);
   panel.classList.toggle("is-collapsed", active && terminalCollapsed);
+  const showAgentActions = active && agentCommandsMiniApp && !terminalCollapsed;
+  panel.classList.toggle("has-agent-actions", showAgentActions);
+  if (actionStrip) {
+    actionStrip.hidden = !showAgentActions;
+  }
+  if (actionGrid) {
+    actionGrid.innerHTML = showAgentActions
+      ? quickActions.map((action) => agentActionButtonHtml(action)).join("")
+      : "";
+    actionGrid.querySelectorAll<HTMLButtonElement>(".agent-action-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        void runQuickAction(button.dataset.actionId || "");
+      });
+    });
+  }
   panel.dataset.state = state;
   form.hidden = !controller;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);

@@ -1,9 +1,9 @@
 {
-  "version": "0.4.79",
+  "version": "0.4.80",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "ab28755bbc9ffbff765e41c6a2e55547f76c3d12cafabc1c8920aad88d177983",
+  "sha256": "613fda7e23ee04ef2d6e3314852dcc6d6c8c508193df647da21dfe13caf67f69",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -584,14 +584,15 @@
           "caption",
           "frameless",
           "clientTitlebarHidden",
+          "clientTitlebarBottomInsideWorkingArea",
           "taskName",
           "persistence"
         ],
         "scripts": [
           {
             "name": "windows",
-            "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
-            "bytes": 14172
+            "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
+            "bytes": 15410
           }
         ],
         "learning": {
@@ -640,8 +641,8 @@
         "name": "windows",
         "platform": "windows",
         "url": "/agent/native-window-chrome/soty-pwa-window-chrome.ps1",
-        "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
-        "bytes": 14172
+        "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
+        "bytes": 15410
       }
     ]
   },
@@ -926,8 +927,8 @@
           {
             "name": "windows",
             "platform": "windows",
-            "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
-            "bytes": 14172
+            "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
+            "bytes": 15410
           }
         ],
         "proof": [
@@ -937,6 +938,7 @@
           "caption",
           "frameless",
           "clientTitlebarHidden",
+          "clientTitlebarBottomInsideWorkingArea",
           "taskName",
           "persistence"
         ],
@@ -1114,14 +1116,15 @@
             "caption",
             "frameless",
             "clientTitlebarHidden",
+            "clientTitlebarBottomInsideWorkingArea",
             "taskName",
             "persistence"
           ],
           "scripts": [
             {
               "name": "windows",
-              "sha256": "316c5ccec5a3bbffb75220148acf992e1438059f2dd503f70222214a7bd2bd6e",
-              "bytes": 14172
+              "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
+              "bytes": 15410
             }
           ],
           "learning": {

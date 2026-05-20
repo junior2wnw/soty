@@ -13,15 +13,23 @@ export interface HexFieldActions {
 
 let panX = 0;
 let panY = 0;
+let zoom = 1;
 let movedDuringPointer = false;
 let cancelActiveHexPress: (() => void) | null = null;
 const panCleanups = new WeakMap<HTMLElement, () => void>();
 const hexStepX = 62;
 const hexStepY = 72;
+const minZoom = 0.62;
+const maxZoom = 1.7;
 
 type HexMetrics = {
   readonly stepX: number;
   readonly stepY: number;
+};
+
+type Point = {
+  readonly x: number;
+  readonly y: number;
 };
 
 export function renderHexField(
@@ -34,7 +42,7 @@ export function renderHexField(
   if (!map) {
     return;
   }
-  map.style.transform = `translate(${panX}px, ${panY}px)`;
+  applyHexTransform(map);
   const rect = root.getBoundingClientRect();
   const fieldRadius = Math.max(
     5,
@@ -78,6 +86,8 @@ export function renderHexField(
       movedDuringPointer = false;
       pressX = event.clientX;
       pressY = event.clientY;
+      window.addEventListener("pointerup", finishPress, { once: true });
+      window.addEventListener("pointercancel", finishPress, { once: true });
       const cancelPress = () => {
         window.clearTimeout(timer);
         held = false;
@@ -124,16 +134,49 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   let startY = 0;
   let baseX = 0;
   let baseY = 0;
+  let pinchDistance = 0;
+  let pinchZoom = zoom;
+  const pointers = new Map<number, Point>();
   const down = (event: PointerEvent) => {
-    dragging = true;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     movedDuringPointer = false;
-    startX = event.clientX;
-    startY = event.clientY;
-    baseX = panX;
-    baseY = panY;
+    if (pointers.size >= 2) {
+      const pair = firstTwoPoints(pointers);
+      pinchDistance = distance(pair[0], pair[1]);
+      pinchZoom = zoom;
+      dragging = false;
+      if (cancelActiveHexPress) {
+        cancelActiveHexPress();
+        cancelActiveHexPress = null;
+      }
+    } else {
+      dragging = true;
+      startX = event.clientX;
+      startY = event.clientY;
+      baseX = panX;
+      baseY = panY;
+    }
     root.setPointerCapture(event.pointerId);
   };
   const move = (event: PointerEvent) => {
+    if (!pointers.has(event.pointerId)) {
+      return;
+    }
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.size >= 2) {
+      const pair = firstTwoPoints(pointers);
+      const nextDistance = distance(pair[0], pair[1]);
+      if (pinchDistance > 0 && nextDistance > 0) {
+        movedDuringPointer = true;
+        if (cancelActiveHexPress) {
+          cancelActiveHexPress();
+          cancelActiveHexPress = null;
+        }
+        zoomAt(root, map, midpoint(pair[0], pair[1]), pinchZoom * (nextDistance / pinchDistance));
+      }
+      event.preventDefault();
+      return;
+    }
     if (!dragging) {
       return;
     }
@@ -149,26 +192,89 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
     }
     panX = baseX + dx;
     panY = baseY + dy;
-    map.style.transform = `translate(${panX}px, ${panY}px)`;
+    applyHexTransform(map);
   };
   const up = (event: PointerEvent) => {
-    dragging = false;
+    pointers.delete(event.pointerId);
+    if (pointers.size === 1) {
+      const remaining = pointers.values().next().value;
+      if (remaining) {
+        dragging = true;
+        startX = remaining.x;
+        startY = remaining.y;
+        baseX = panX;
+        baseY = panY;
+      }
+    } else {
+      dragging = false;
+    }
     try {
       root.releasePointerCapture(event.pointerId);
     } catch {
       // The capture may already be released by the browser.
     }
   };
+  const wheel = (event: WheelEvent) => {
+    event.preventDefault();
+    if (event.ctrlKey || event.shiftKey) {
+      const factor = Math.exp(-event.deltaY * 0.0018);
+      zoomAt(root, map, { x: event.clientX, y: event.clientY }, zoom * factor);
+      return;
+    }
+    panX -= event.deltaX;
+    panY -= event.deltaY;
+    movedDuringPointer = true;
+    applyHexTransform(map);
+  };
   root.addEventListener("pointerdown", down);
   root.addEventListener("pointermove", move);
   root.addEventListener("pointerup", up);
   root.addEventListener("pointercancel", up);
+  root.addEventListener("wheel", wheel, { passive: false });
   panCleanups.set(root, () => {
     root.removeEventListener("pointerdown", down);
     root.removeEventListener("pointermove", move);
     root.removeEventListener("pointerup", up);
     root.removeEventListener("pointercancel", up);
+    root.removeEventListener("wheel", wheel);
   });
+}
+
+function applyHexTransform(map: HTMLElement): void {
+  map.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+}
+
+function zoomAt(root: HTMLElement, map: HTMLElement, clientPoint: Point, nextZoom: number): void {
+  const rect = root.getBoundingClientRect();
+  const localX = clientPoint.x - rect.left - rect.width / 2;
+  const localY = clientPoint.y - rect.top - rect.height / 2;
+  const clamped = clamp(nextZoom, minZoom, maxZoom);
+  const worldX = (localX - panX) / zoom;
+  const worldY = (localY - panY) / zoom;
+  zoom = clamped;
+  panX = localX - worldX * zoom;
+  panY = localY - worldY * zoom;
+  applyHexTransform(map);
+}
+
+function firstTwoPoints(points: Map<number, Point>): [Point, Point] {
+  const values = [...points.values()];
+  return [values[0] || { x: 0, y: 0 }, values[1] || { x: 0, y: 0 }];
+}
+
+function midpoint(left: Point, right: Point): Point {
+  return {
+    x: (left.x + right.x) / 2,
+    y: (left.y + right.y) / 2
+  };
+}
+
+function distance(left: Point, right: Point): number {
+  return Math.hypot(left.x - right.x, left.y - right.y);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function gridPositions(radius: number): [number, number][] {

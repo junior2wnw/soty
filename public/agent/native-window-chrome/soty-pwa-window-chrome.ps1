@@ -192,17 +192,42 @@ function Test-ClientTitlebarHidden($Rect, $Screen, [int] $Height) {
   [bool] ($Rect.top -le ($Screen.workingTop - $threshold))
 }
 
+function Test-WindowBottomInsideWorkingArea($Rect, $Screen) {
+  $workingBottom = [int] ($Screen.workingTop + $Screen.workingHeight)
+  [bool] ($Rect.bottom -le ($workingBottom + 1))
+}
+
 function Apply-ClientTitlebarShift([IntPtr] $Handle) {
   $height = [Math]::Max(0, [Math]::Min(96, $ClientTitlebarHeight))
   $screen = Get-ScreenRecord $Handle
   $before = Get-WindowRectRecord $Handle
-  if ($height -le 0 -or (Test-ClientTitlebarHidden $before $screen $height)) {
+  $hiddenBefore = Test-ClientTitlebarHidden $before $screen $height
+  if ($height -le 0 -or $hiddenBefore) {
+    $changed = $false
+    $rect = $before
+    if ($height -gt 0 -and $hiddenBefore -and -not (Test-WindowBottomInsideWorkingArea $before $screen)) {
+      $workingBottom = [int] ($screen.workingTop + $screen.workingHeight)
+      $nextHeight = [Math]::Max(160, $workingBottom - [int] $before.top)
+      [SotyWindowChrome]::SetWindowPos(
+        $Handle,
+        [IntPtr]::Zero,
+        [int] $before.left,
+        [int] $before.top,
+        [int] $before.width,
+        [int] $nextHeight,
+        [uint32] ($SWP_NOZORDER -bor $SWP_SHOWWINDOW)
+      ) | Out-Null
+      Start-Sleep -Milliseconds 80
+      $rect = Get-WindowRectRecord $Handle
+      $changed = $true
+    }
     return [pscustomobject]@{
       enabled = [bool] ($height -gt 0)
       height = [int] $height
-      hidden = [bool] (Test-ClientTitlebarHidden $before $screen $height)
-      changed = $false
-      rect = $before
+      hidden = [bool] (Test-ClientTitlebarHidden $rect $screen $height)
+      bottomInsideWorkingArea = [bool] (Test-WindowBottomInsideWorkingArea $rect $screen)
+      changed = $changed
+      rect = $rect
       screen = $screen
     }
   }
@@ -223,6 +248,7 @@ function Apply-ClientTitlebarShift([IntPtr] $Handle) {
     enabled = $true
     height = [int] $height
     hidden = [bool] (Test-ClientTitlebarHidden $after $screen $height)
+    bottomInsideWorkingArea = [bool] (Test-WindowBottomInsideWorkingArea $after $screen)
     changed = $true
     rect = $after
     screen = $screen
@@ -243,6 +269,7 @@ function Restore-ClientTitlebarShift([IntPtr] $Handle) {
     enabled = [bool] ($height -gt 0)
     height = [int] $height
     hidden = [bool] (Test-ClientTitlebarHidden $after $screen $height)
+    bottomInsideWorkingArea = [bool] (Test-WindowBottomInsideWorkingArea $after $screen)
     changed = [bool] ($height -gt 0 -and $wasHidden)
     rect = $after
     screen = $screen
@@ -259,6 +286,7 @@ function Convert-WindowRecord($Process, [int64] $Style, [bool] $Changed, $Client
       enabled = [bool] ($height -gt 0)
       height = [int] $height
       hidden = [bool] (Test-ClientTitlebarHidden $rect $screen $height)
+      bottomInsideWorkingArea = [bool] (Test-WindowBottomInsideWorkingArea $rect $screen)
       changed = $false
       rect = $rect
       screen = $screen

@@ -346,7 +346,7 @@ function buildRouteProfiles(windowsReinstall, nativeWindowChrome) {
           "do not crop unrelated windows or pages outside the Soty title match",
           "do not install a persistent watcher for unrelated apps"
         ],
-        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "clientTitlebarBottomInsideWorkingArea", "taskName", "persistence"],
         scripts: windowChromeScriptProof,
         learning: {
           reuseKey: "soty-native-window-chrome-fast-lane",
@@ -467,7 +467,7 @@ function buildAutomationToolkits(windowsReinstall, nativeWindowChrome, routeProf
           sha256: script.sha256,
           bytes: script.bytes
         })),
-        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "clientTitlebarBottomInsideWorkingArea", "taskName", "persistence"],
         routeProfile: "soty-native-window-chrome-fast-lane"
       }
     ],

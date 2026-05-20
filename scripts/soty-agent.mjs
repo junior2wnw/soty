@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.79";
+const agentVersion = "0.4.80";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6790,7 +6790,7 @@ function nativeWindowChromeRouteProfile() {
       "do not crop unrelated windows or pages outside the Soty title match",
       "do not install a persistent watcher for unrelated apps"
     ],
-    proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
+    proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "clientTitlebarBottomInsideWorkingArea", "taskName", "persistence"],
     learning: {
       reuseKey: nativeWindowChromeRouteProfileId,
       scriptUse: "status/apply/install/restore/uninstall",
@@ -13170,7 +13170,7 @@ function automationToolkitStatus() {
         name: "native-window-chrome",
         entryTool: "computer",
         phases: ["status", "apply", "install", "restore", "uninstall"],
-        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "taskName", "persistence"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "clientTitlebarHidden", "clientTitlebarBottomInsideWorkingArea", "taskName", "persistence"],
         routeProfile: nativeWindowChromeRouteProfileId
       }
     ],
