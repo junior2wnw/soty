@@ -97,6 +97,8 @@ const manifest = {
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "mini-app",
+      "surface",
       "browser",
       "desktop",
       "screen",
@@ -326,6 +328,14 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
         promotion: "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
+      },
+      {
+        name: "surface",
+        entryTool: "computer",
+        kind: "app-surface",
+        phases: ["build", "serve", "install", "open", "update", "remove"],
+        proof: ["appId", "origin", "scope", "result"],
+        promotion: "Agent-generated frontend helpers installed through the app-surface contract."
       },
       {
         name: "capability-gateway",

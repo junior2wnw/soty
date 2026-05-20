@@ -104,7 +104,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("transaction.submit"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/agent-runtime.md"));
       assertEqual(manifest.agentRuntime.schema, "trustlink.agent-runtime.v1");
+      assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "surface"));
       assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "transaction" && capability.requiresConfirmation === true));
+      assert(manifest.computerUsePlane.capabilities.includes("surface"));
       assert(manifest.computerUsePlane.capabilities.includes("transaction"));
     }],
     ["mini app remote kernel docs are agent-visible", async () => {
@@ -117,16 +119,55 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes('from "trustlink-kernel"'));
       assert(main.includes("resolveAppSurfaceUrl"));
       assert(main.includes("appSurfaceAllowedOrigin"));
+      assert(main.includes("normalizeAppSurfaceInstallRequest"));
+      assert(main.includes("miniAppsRegistryKey"));
+      assert(main.includes("runOperatorMiniAppInstall"));
       assert(kernelDoc.includes("App surfaces are small frontend applications"));
+      assert(kernelDoc.includes("normalizeAppSurfaceInstallRequest"));
       assert(kernelDoc.includes("same-origin"));
       assert(kernelDoc.includes("remote-origin"));
       assert(kernelDoc.includes("device-local"));
       assert(kernelDoc.includes("kernel-proxy"));
       assert(kernelDoc.includes("resolveAppSurfaceUrl"));
       assert(agentSource.includes("Mini-app kernel"));
+      assert(agentSource.includes("/operator/mini-app"));
+      assert(agentSource.includes("operation=mini_app"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
       assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
+    }],
+    ["operator mini app connector is capability gated", async () => {
+      const blocked = await post("/operator/mini-app", {
+        appId: "demo-tool",
+        title: "Demo Tool",
+        url: "/mini-apps/demo-tool/index.html",
+        capabilities: ["chat.append"]
+      });
+      assertEqual(blocked.status, 409);
+
+      const bridge = await attachSelftestOperatorBridge([], { capabilities: ["mini-app-install"] });
+      try {
+        const result = await post("/operator/mini-app", {
+          appId: "demo-tool",
+          title: "Demo Tool",
+          url: "/mini-apps/demo-tool/index.html",
+          scope: "account",
+          capabilities: ["chat.append"],
+          open: true
+        });
+        assertEqual(result.status, 200);
+        assertEqual(result.body.ok, true);
+        assert(bridge.calls.some((message) =>
+          message.type === "operator.mini-app-install"
+          && message.appId === "demo-tool"
+          && message.url === "/mini-apps/demo-tool/index.html"
+          && message.scope === "account"
+          && message.open === true
+          && message.capabilities.includes("chat.append")
+        ));
+      } finally {
+        bridge.close();
+      }
     }],
     ["managed agent allows trusted web origins for local health", async () => {
       const managedPort = await freePort();
@@ -2266,7 +2307,7 @@ async function attachSelftestOperatorBridge(targets, options = {}) {
         type: "operator.attach",
         visible: true,
         protocol: "selftest",
-        capabilities: ["run", "script"]
+        capabilities: options.capabilities ?? ["run", "script"]
       }));
     });
     ws.on("message", (chunk) => {
@@ -2295,6 +2336,18 @@ async function attachSelftestOperatorBridge(targets, options = {}) {
           type: "operator.output",
           id: message.id,
           text: `SELFTEST_OK bridge output for ${message.command || message.name || "script"}`,
+          exitCode: 0
+        }));
+      }
+      if (message.type === "operator.mini-app-install") {
+        calls.push(message);
+        if (options.respond === false) {
+          return;
+        }
+        ws.send(JSON.stringify({
+          type: "operator.output",
+          id: message.id,
+          text: `mini-app ${message.appId} opened\n`,
           exitCode: 0
         }));
       }

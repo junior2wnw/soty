@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "b44468acb6835ba229c8a130ffc7ff3dc80036b5102a4f89ecb1f5de3dc723db",
+  "sha256": "1eea44d660454458e521c640585368f4c162a81e62aa5515f17a1c3541bcc2ca",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -78,6 +78,8 @@
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "mini-app",
+      "surface",
       "browser",
       "desktop",
       "screen",
@@ -255,6 +257,24 @@
         "risk": "low",
         "proof": [
           "status",
+          "result"
+        ]
+      },
+      {
+        "family": "surface",
+        "actions": [
+          "build",
+          "serve",
+          "install",
+          "open",
+          "update",
+          "remove"
+        ],
+        "risk": "high",
+        "proof": [
+          "appId",
+          "origin",
+          "scope",
           "result"
         ]
       },
@@ -650,6 +670,7 @@
           "mouse",
           "clipboard",
           "network",
+          "surface",
           "app",
           "api",
           "job",
@@ -687,6 +708,26 @@
           "soty-windows-reinstall-managed-fast-lane",
           "soty-generated-asset-wallpaper-fast-lane"
         ]
+      },
+      {
+        "name": "surface",
+        "entryTool": "computer",
+        "kind": "app-surface",
+        "phases": [
+          "build",
+          "serve",
+          "install",
+          "open",
+          "update",
+          "remove"
+        ],
+        "proof": [
+          "appId",
+          "origin",
+          "scope",
+          "result"
+        ],
+        "promotion": "Agent-generated frontend helpers installed through the app-surface contract."
       },
       {
         "name": "capability-gateway",

@@ -20,8 +20,12 @@ Soty publishes the TrustLink runtime families through `/health`,
 
 - console, filesystem, process, service, package
 - browser, desktop, screen, keyboard, mouse, clipboard
-- network, app, api, job, artifact, audio
+- network, surface, app, api, job, artifact, audio
 - os, transaction, device
+
+Mini app work enters through `surface.*` plus the app-surface install request:
+build/serve the frontend, then register/open it with `computer`
+operation `mini_app` or `surface`.
 
 Program-specific work should enter through `app.*`, `api.*`, or
 `transaction.*` and then use the existing lower-level browser/desktop/console

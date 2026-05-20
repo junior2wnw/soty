@@ -86,6 +86,7 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_script",
   "soty_file",
   "soty_artifact",
+  "soty_mini_app",
   "soty_browser",
   "soty_desktop",
   "soty_open_url",
@@ -528,6 +529,10 @@ async function handleHttpRequest(request, response) {
   }
   if (url.pathname === "/operator/agent-new" && request.method === "POST") {
     await handleOperatorHttpAgentNew(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/mini-app" && request.method === "POST") {
+    await handleOperatorHttpMiniApp(request, response, headers);
     return;
   }
   if (url.pathname === "/operator/messages" && request.method === "GET") {
@@ -3346,6 +3351,91 @@ async function handleOperatorHttpAgentNew(request, response, headers) {
     type: "operator.agent-new",
     id
   });
+}
+
+async function handleOperatorHttpMiniApp(request, response, headers) {
+  if (!operatorBridge?.open || !operatorBridgeCapabilities.includes("mini-app-install")) {
+    sendJson(response, 409, headers, { ok: false, text: "! mini-app-bridge", exitCode: 409 });
+    return;
+  }
+  let payload;
+  try {
+    payload = await readJsonBody(request, 96_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const app = sanitizeMiniAppInstallPayload(payload);
+  if (!app.url || !app.title || !app.appId) {
+    sendJson(response, 400, headers, { ok: false, text: "! mini-app", exitCode: 400 });
+    return;
+  }
+  const timeoutMs = safeRunTimeoutMs(payload.timeoutMs || 60_000);
+  const id = registerOperatorRun(response, headers, timeoutMs);
+  sendRaw(operatorBridge, {
+    type: "operator.mini-app-install",
+    id,
+    target: safeSourceText(payload.target || ""),
+    appId: app.appId,
+    title: app.title,
+    url: app.url,
+    summary: app.summary,
+    icon: app.icon,
+    height: app.height,
+    scope: app.scope,
+    targetDeviceId: app.targetDeviceId,
+    revision: app.revision,
+    open: payload.open !== false,
+    capabilities: app.capabilities
+  });
+}
+
+function sanitizeMiniAppInstallPayload(payload) {
+  const rawApp = payload && typeof payload.app === "object" && !Array.isArray(payload.app) ? payload.app : payload;
+  const appId = cleanActionToken(rawApp?.id || rawApp?.appId || payload?.appId || "", "");
+  const title = cleanActionText(rawApp?.title || payload?.title || appId, 80);
+  const url = safeMiniAppUrlText(rawApp?.url || payload?.url || "");
+  const summary = cleanActionText(rawApp?.summary || payload?.summary || "", 180);
+  const icon = cleanActionToken(rawApp?.icon || payload?.icon || "remote", "remote");
+  const height = cleanActionText(rawApp?.height || payload?.height || "", 60);
+  const scope = ["account", "chat", "device"].includes(String(rawApp?.scope || payload?.scope || "").toLowerCase())
+    ? String(rawApp?.scope || payload?.scope).toLowerCase()
+    : "account";
+  const targetDeviceId = safeSourceText(rawApp?.targetDeviceId || payload?.targetDeviceId || "");
+  const revision = cleanActionText(rawApp?.revision || payload?.revision || "", 80);
+  const capabilities = Array.isArray(rawApp?.capabilities || payload?.capabilities)
+    ? (rawApp?.capabilities || payload?.capabilities)
+      .filter((item) => typeof item === "string")
+      .map((item) => item.trim().toLowerCase())
+      .filter((item, index, values) => item && values.indexOf(item) === index && /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/u.test(item))
+      .slice(0, 24)
+    : [];
+  return {
+    appId,
+    title,
+    url,
+    summary,
+    icon,
+    height,
+    scope,
+    targetDeviceId,
+    revision,
+    capabilities
+  };
+}
+
+function safeMiniAppUrlText(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 2048) {
+    return "";
+  }
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
+    return raw;
+  }
+  if (/^https:\/\//iu.test(raw) || /^http:\/\/(?:localhost|127\.|0\.0\.0\.0|\[::1\])/iu.test(raw) || /^soty:/iu.test(raw)) {
+    return raw;
+  }
+  return "";
 }
 
 function handleOperatorHttpMessages(url, response, headers) {
@@ -6622,10 +6712,11 @@ function sotyRuntimeHints() {
     "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
-    "- Installed agent runtime: TrustLink Kernel `docs/agent-runtime.md` is the reusable contract. Treat the user agent as a capability runtime with console, filesystem, process, service, package, browser, desktop, app, api, job, artifact, os, transaction, and device adapters.",
+    "- Installed agent runtime: TrustLink Kernel `docs/agent-runtime.md` is the reusable contract. Treat the user agent as a capability runtime with console, filesystem, process, service, package, browser, desktop, surface, app, api, job, artifact, os, transaction, and device adapters.",
     "- Transaction/app work: for deals, orders, payments, publishing, or any external side-effect, use prepare/preview before submit, require explicit confirmation for critical actions, return structured proof, and keep credentials/secrets in the user-approved local app or platform store rather than in prompts.",
     "- Mini-app kernel: mini apps are frontend surfaces; TrustLink Kernel owns the reusable app-surface contract, and Soty owns the application adapter. Use node_modules/trustlink-kernel/docs/app-surfaces.md plus docs/soty-mini-apps.md.",
     "- Mini-app remote connection: same-origin apps use /mini-apps; remote domains require exact HTTPS origin allowlisting; no-domain/device-local apps use TrustLink app-surface modes (trusted HTTPS/tunnel/kernel-proxy), not arbitrary insecure LAN iframes.",
+    "- Mini-app install/open connector: after building or deploying a small frontend, register it with `computer` operation=mini_app/surface or `sotyctl mini-app`. Use account scope by default, chat scope for the current dialog only, and device scope only when the selected device is proven. Ask for only the bridge capabilities the app needs.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
@@ -6768,7 +6859,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Principle: the installed agent is a local capability runtime. TrustLink Kernel owns the reusable runtime contract (`node_modules/trustlink-kernel/docs/agent-runtime.md`); Soty owns the adapter and user-facing orchestration.",
     "",
-    "Capability families: console, filesystem, process, service, package, browser, desktop, screen, keyboard, mouse, clipboard, network, app, api, job, artifact, audio, os, transaction, and device. Prefer a first-class adapter or durable job over ad-hoc shell when the action is repeated, long, state-changing, or touches a specific program.",
+    "Capability families: console, filesystem, process, service, package, browser, desktop, screen, keyboard, mouse, clipboard, network, surface, app, api, job, artifact, audio, os, transaction, and device. Prefer a first-class adapter or durable job over ad-hoc shell when the action is repeated, long, state-changing, or touches a specific program.",
     "",
     "Transaction rule: use `transaction.prepare`/`transaction.preview` before `transaction.submit`. Submit/cancel/payment/order/destructive OS actions are critical risk and need explicit confirmation plus proof. Keep credentials, exchange sessions, browser profiles, API keys, and secrets in the local approved app/platform store, not in prompts or logs.",
     "",
@@ -6786,6 +6877,8 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "3. No-domain/device-local: use trusted HTTPS by IP/host, a tunnel that provides HTTPS, or a TrustLink/Soty kernel proxy backed by the selected agent. Do not iframe arbitrary insecure LAN HTTP from the production PWA. Loopback HTTP is only for local development or explicit controller-local helpers.",
     "",
     "Bridge rule: apps request small capability-gated actions (`agent.invoke`, `terminal.run`, file/artifact/job capabilities as they are added); the kernel executes through the selected chat/device context and returns proof/status.",
+    "",
+    "Install/open rule: after the frontend is available at a safe URL, call `computer` with `{ \"operation\": \"mini_app\", \"appId\": \"...\", \"title\": \"...\", \"url\": \"...\", \"scope\": \"account\", \"capabilities\": [\"chat.append\"] }`. Use `scope=chat` only for the current dialog and `scope=device` only for a proven selected device. The app will appear in the APPS launcher and opens immediately unless `open=false`.",
     "",
     "Repository source of truth: `node_modules/trustlink-kernel/docs/app-surfaces.md` for reusable technology and `docs/soty-mini-apps.md` for the Soty adapter. If an integration proves a better universal route, update TrustLink Kernel first, then the Soty adapter docs and selftests."
   ].join("\n");
@@ -7556,12 +7649,12 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, mini_app/surface install-open, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, mini_app, surface, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, surface, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
@@ -7584,6 +7677,10 @@ function runMcpServer() {
             maxBytes: { type: "integer", description: "Maximum bytes for file publish/download. Default and hard cap are 512000000." },
             pattern: { type: "string", description: "Search text or regular expression." },
             url: { type: "string", description: "URL for browser/open_url work." },
+            appId: { type: "string", description: "Mini app id for operation=mini_app/surface." },
+            scope: { type: "string", description: "Mini app scope: account, chat, or device. Default account." },
+            capabilities: { type: "array", items: { type: "string" }, description: "Mini app bridge capabilities, for example chat.append, agent.invoke, terminal.run." },
+            open: { type: "boolean", description: "For mini_app/surface: open immediately after registration. Default true." },
             text: { type: "string", description: "Text for browser/desktop typing or click-by-text." },
             selector: { type: "string", description: "CSS selector for browser helper actions." },
             title: { type: "string", description: "Window title substring for desktop focus." },
@@ -7850,6 +7947,29 @@ function runMcpServer() {
         }
       },
       {
+        name: "soty_mini_app",
+        description: "Register and optionally open a generated mini app in the current Soty account/chat. Prefer the public `computer` tool with operation=mini_app or operation=surface.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            appId: { type: "string", description: "Stable mini app id." },
+            title: { type: "string", description: "Visible mini app title." },
+            url: { type: "string", description: "Same-origin, trusted HTTPS, loopback, or shell intent URL." },
+            summary: { type: "string", description: "Short launcher summary." },
+            icon: { type: "string", description: "Soty icon name. Default remote." },
+            height: { type: "string", description: "CSS height clamp for the frame." },
+            scope: { type: "string", description: "account, chat, or device. Default account." },
+            targetDeviceId: { type: "string", description: "Optional selected device id for device scope." },
+            revision: { type: "string", description: "Optional app revision." },
+            capabilities: { type: "array", items: { type: "string" }, description: "Bridge grants such as chat.append, agent.invoke, terminal.run." },
+            open: { type: "boolean", description: "Open after registration. Default true." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+          },
+          required: ["appId", "title", "url"],
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_browser",
         description: "Seamless browser automation on the current Soty Agent LINK source device. Uses installed Edge/Chrome through a local DevTools session when possible; no separate user confirmation is shown beyond the active LINK. Use for opening pages, reading title/text, JavaScript eval, click-by-text, typing into selectors, and saving screenshots.",
         inputSchema: {
@@ -7916,6 +8036,9 @@ function runMcpServer() {
       computer: "soty_computer",
       artifact: "soty_artifact",
       artifacts: "soty_artifact",
+      mini_app: "soty_mini_app",
+      miniapp: "soty_mini_app",
+      surface: "soty_mini_app",
       os_reinstall: "soty_reinstall",
       reinstall: "soty_reinstall",
       jobs: "soty_action_list",
@@ -7987,6 +8110,9 @@ function runMcpServer() {
       }
       const result = await mcpRequestOperator("POST", `/operator/action/${encodeURIComponent(jobId)}/stop`, {});
       return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    if (name === "soty_mini_app") {
+      return await callSotyMiniAppTool(args);
     }
     if (!mcpTarget || !mcpSourceDeviceId) {
       return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
@@ -8268,6 +8394,9 @@ function runMcpServer() {
     if (operation === "artifact" || capability === "artifact" || args.localPath || args.targetPath) {
       return "soty_artifact";
     }
+    if (["mini-app", "mini_app", "miniapp", "surface"].includes(operation) || capability === "surface" || capability === "mini-app") {
+      return "soty_mini_app";
+    }
     if (operation === "image" || operation === "generate-image" || capability === "image" || args.prompt) {
       return "native_openai_image_required";
     }
@@ -8375,6 +8504,8 @@ function runMcpServer() {
         "filesystem",
         "soty-room-file-download",
         "artifact",
+        "mini-app",
+        "surface",
         "browser",
         "desktop",
         "screen",
@@ -8391,6 +8522,33 @@ function runMcpServer() {
 
   function mcpSourceUnavailableResult() {
     return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
+  }
+
+  async function callSotyMiniAppTool(args) {
+    const appId = cleanActionToken(args.appId || args.id || "", "");
+    const title = cleanActionText(args.title || appId, 80);
+    const url = String(args.url || "").trim();
+    if (!appId || !title || !url) {
+      return mcpToolText("! mini-app", true, 2);
+    }
+    const result = await mcpPostOperator("/operator/mini-app", {
+      target: String(args.target || mcpTarget || ""),
+      appId,
+      title,
+      url,
+      summary: String(args.summary || ""),
+      icon: String(args.icon || "remote"),
+      height: String(args.height || ""),
+      scope: String(args.scope || "account"),
+      targetDeviceId: String(args.targetDeviceId || ""),
+      revision: String(args.revision || ""),
+      capabilities: Array.isArray(args.capabilities)
+        ? args.capabilities
+        : String(args.capabilities || "").split(/[,\s]+/u).filter(Boolean),
+      open: args.open !== false,
+      timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+    });
+    return mcpToolOperatorResult(result);
   }
 
   async function callSotyArtifactTool(args) {
@@ -11850,6 +12008,46 @@ async function runControlCli(args) {
     }
     process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
   }
+  if (command === "mini-app" || command === "miniapp" || command === "surface") {
+    const parsed = parseMiniAppCtlOptions(args.slice(1));
+    const appArgs = parsed.args;
+    const appId = appArgs[0] || "";
+    const title = appArgs[1] || appId;
+    const url = appArgs[2] || "";
+    const capabilities = (parsed.options.capabilities || parsed.options.caps || appArgs[3] || "")
+      .split(/[,\s]+/u)
+      .filter(Boolean);
+    if (!appId || !url) {
+      process.stderr.write("sotyctl mini-app [--scope=account|chat|device] [--open=false] <app-id> <title> <url> [capabilities]\n");
+      process.exit(2);
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/operator/mini-app`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        appId,
+        title,
+        url,
+        summary: parsed.options.summary || "",
+        icon: parsed.options.icon || "remote",
+        height: parsed.options.height || "",
+        scope: parsed.options.scope || "account",
+        targetDeviceId: parsed.options.targetDeviceId || "",
+        revision: parsed.options.revision || "",
+        capabilities,
+        open: parsed.options.open !== "false",
+        ...(parsed.timeoutMs ? { timeoutMs: parsed.timeoutMs } : {})
+      })
+    });
+    const payload = await response.json();
+    if (payload.text) {
+      process.stdout.write(payload.text);
+      if (!payload.text.endsWith("\n")) {
+        process.stdout.write("\n");
+      }
+    }
+    process.exit(typeof payload.exitCode === "number" ? payload.exitCode : (response.ok ? 0 : 1));
+  }
   if (command === "read" || command === "inbox" || command === "messages") {
     const target = args[1] || "";
     const url = new URL(`http://127.0.0.1:${port}/operator/messages`);
@@ -11966,7 +12164,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
+  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | mini-app [--scope=account|chat|device] <app-id> <title> <url> [capabilities] | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
   process.exit(2);
 }
 
@@ -12250,6 +12448,36 @@ function parseCtlOptions(args) {
   return { timeoutMs, sourceDeviceId, args: rest };
 }
 
+function parseMiniAppCtlOptions(args) {
+  const rest = [];
+  const options = {};
+  let timeoutMs = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const item = args[index] || "";
+    if (item.startsWith("--timeout=")) {
+      timeoutMs = safeCtlTimeout(item.slice("--timeout=".length));
+      continue;
+    }
+    if (item === "--timeout" && index + 1 < args.length) {
+      timeoutMs = safeCtlTimeout(args[index + 1]);
+      index += 1;
+      continue;
+    }
+    const eq = item.match(/^--([A-Za-z0-9_.:-]+)=(.*)$/u);
+    if (eq) {
+      options[eq[1]] = eq[2];
+      continue;
+    }
+    if (/^--[A-Za-z0-9_.:-]+$/u.test(item) && index + 1 < args.length) {
+      options[item.slice(2)] = args[index + 1] || "";
+      index += 1;
+      continue;
+    }
+    rest.push(item);
+  }
+  return { timeoutMs, options, args: rest };
+}
+
 function parseCtlTimeout(args) {
   return parseCtlOptions(args);
 }
@@ -12501,6 +12729,7 @@ function agentRuntimeStatus() {
       { family: "mouse", actions: ["move", "click"], risk: "high", proof: ["status", "result"] },
       { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
       { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
+      { family: "surface", actions: ["build", "serve", "install", "open", "update", "remove"], risk: "high", proof: ["appId", "origin", "scope", "result"] },
       { family: "app", actions: ["discover", "launch", "focus", "connect", "read", "write", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
       { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
       { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },
@@ -12612,6 +12841,8 @@ function runtimeComputerUsePlaneStatus() {
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "mini-app",
+      "surface",
       "browser",
       "desktop",
       "screen",
@@ -12652,7 +12883,7 @@ function automationToolkitStatus() {
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       routeProfileSchema: "soty.route-profiles.v1"
     },
-    available: ["computer-use-plane", "agent-runtime", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
+    available: ["computer-use-plane", "agent-runtime", "surface", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
     toolkits: [
       {
         name: "agent-runtime",
