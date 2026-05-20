@@ -760,6 +760,7 @@ function shouldResetLocalState(): boolean {
 
 function renderNick(): void {
   app.innerHTML = `
+    ${pwaTitlebarMarkup()}
     <section class="nick-screen">
       <form class="nick-form">
         <span>${icon("person")}</span>
@@ -770,6 +771,7 @@ function renderNick(): void {
       </form>
     </section>
   `;
+  bindPwaTitlebar();
   const form = app.querySelector<HTMLFormElement>("form");
   const input = app.querySelector<HTMLInputElement>("input");
   const restoreButton = app.querySelector<HTMLButtonElement>(".restore-button");
@@ -2353,6 +2355,7 @@ function renderApp(): void {
 
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
+    ${pwaTitlebarMarkup()}
     <section class="shell retro-shell">
       <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}">
         <div class="retro-brand">
@@ -2450,6 +2453,7 @@ function renderApp(): void {
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
+  bindPwaTitlebar();
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
   }, { passive: true });
@@ -2516,6 +2520,24 @@ function renderApp(): void {
   renderMiniAppPanel();
   void ensureOperatorBridge(true);
   resumeAgentSourceControl();
+}
+
+function pwaTitlebarMarkup(): string {
+  return `
+    <div class="pwa-titlebar" aria-label="Soty window controls">
+      <div class="pwa-titlebar-drag">
+        <span class="pwa-titlebar-mark">S</span>
+        <b>соты.online</b>
+      </div>
+      <button class="pwa-window-close retro-icon-button" type="button" aria-label="close window" data-tooltip="Закрыть окно">${icon("close")}</button>
+    </div>
+  `;
+}
+
+function bindPwaTitlebar(): void {
+  app.querySelector<HTMLButtonElement>(".pwa-window-close")?.addEventListener("click", () => {
+    window.close();
+  });
 }
 
 function renderTiles(): void {

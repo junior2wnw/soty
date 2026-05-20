@@ -1852,6 +1852,7 @@ async function runScenarios({ relayUrl } = {}) {
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const styles = (await readFile(join(root, "src", "style.css"), "utf8")).replace(/\r\n/gu, "\n");
+      const webManifest = JSON.parse(await readFile(join(root, "public", "manifest.webmanifest"), "utf8"));
       const serviceWorker = await readFile(join(root, "public", "sw.js"), "utf8");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
@@ -2093,7 +2094,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(styles.includes(".chat-scroll,\n.chat-scroll *"));
       assert(styles.includes(".terminal-collapse {\n  position: absolute;"));
       assert(styles.includes(".mini-frame-collapse {\n  position: absolute;"));
-      assert(serviceWorker.includes('const cacheName = "soty-online-v20"'));
+      assert(webManifest.display_override?.includes("window-controls-overlay"));
+      assert(ui.includes("pwaTitlebarMarkup"));
+      assert(ui.includes("pwa-window-close"));
+      assert(styles.includes("@media (display-mode: window-controls-overlay)"));
+      assert(styles.includes("env(titlebar-area-width"));
+      assert(styles.includes("-webkit-app-region: drag"));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v21"'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));
