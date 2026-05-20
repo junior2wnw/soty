@@ -155,6 +155,7 @@ const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const miniAppsManifestUrl = "/mini-apps/manifest.json";
 const miniAppProtocol = "soty.mini-app.v1";
 const miniAppContextProtocol = "soty.mini-app.context.v1";
+const userMiniAppsEnabled = false;
 let miniApps: MiniAppDefinition[] = [];
 let miniAppsProbe: Promise<readonly MiniAppDefinition[]> | null = null;
 let miniAppsLoadedAt = 0;
@@ -433,7 +434,9 @@ void boot();
 async function boot(): Promise<void> {
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
-  void refreshMiniApps(true);
+  if (userMiniAppsEnabled) {
+    void refreshMiniApps(true);
+  }
 
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
@@ -1074,6 +1077,10 @@ function closeActionMenu(): void {
 }
 
 async function refreshMiniApps(force = false): Promise<readonly MiniAppDefinition[]> {
+  if (!userMiniAppsEnabled) {
+    miniApps = [];
+    return miniApps;
+  }
   const now = Date.now();
   if (!force && miniAppsLoadedAt && now - miniAppsLoadedAt < 60_000) {
     return miniApps;
@@ -1159,6 +1166,9 @@ function safeMiniAppUrl(value: string): string {
 }
 
 async function openMiniAppLauncher(): Promise<void> {
+  if (!userMiniAppsEnabled) {
+    return;
+  }
   closeMiniAppLauncher();
   const apps = await refreshMiniApps(true);
   const overlay = document.createElement("div");
@@ -1864,7 +1874,7 @@ function renderApp(): void {
             <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
             <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
             <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>DO</span></button>
-            <button class="side-action apps-action" type="button" aria-label="mini apps" data-tooltip="Mini apps">${icon("remote")}<span>APPS</span></button>
+            <button class="side-action apps-action" type="button" hidden aria-label="mini apps" data-tooltip="Mini apps">${icon("remote")}<span>APPS</span></button>
             <button class="side-action remote-action" type="button" hidden aria-label="download" data-tooltip="Скачать Soty Agent">${icon("download")}<span>DOWNLOAD</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
             <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
@@ -2767,6 +2777,7 @@ function renderDialogChrome(): void {
     }
   }
   if (appsButton) {
+    appsButton.hidden = !userMiniAppsEnabled;
     appsButton.classList.toggle("is-on", Boolean(miniAppSession));
   }
   publishMiniAppContext();
@@ -4196,7 +4207,8 @@ function renderTerminal(): void {
   const chessActive = Boolean(activeChessTunnelId());
   const controller = Boolean(tunnelId && remoteAccess.has(tunnelId));
   const host = Boolean(tunnelId && remoteEnabled.has(tunnelId));
-  const active = !chessActive && (controller || host);
+  const agentCommandsMiniApp = Boolean(tunnelId && isAgentTunnelId(tunnelId));
+  const active = !chessActive && (controller || host || agentCommandsMiniApp);
   const state = tunnelId ? terminalState.get(tunnelId) ?? "idle" : "idle";
   editor.classList.toggle("terminal-active", active);
   editor.classList.toggle("terminal-collapsed", active && terminalCollapsed);
@@ -4230,6 +4242,10 @@ function renderTerminal(): void {
 function activeTerminalTunnelId(): string {
   if (terminalOpenId && (remoteAccess.has(terminalOpenId) || remoteEnabled.has(terminalOpenId) || terminalLogs.has(terminalOpenId))) {
     return terminalOpenId;
+  }
+  if (selectedId && isAgentTunnelId(selectedId)) {
+    terminalOpenId = selectedId;
+    return selectedId;
   }
   if (selectedId && (remoteAccess.has(selectedId) || isAgentLinkedTunnel(selectedId))) {
     terminalOpenId = selectedId;

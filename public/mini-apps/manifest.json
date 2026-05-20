@@ -1,14 +1,4 @@
 {
   "schema": "soty.mini-apps.v1",
-  "apps": [
-    {
-      "id": "starter",
-      "title": "Starter",
-      "summary": "Bridge smoke test and project starter surface.",
-      "icon": "remote",
-      "url": "/mini-apps/starter/index.html",
-      "height": "clamp(250px, 44vh, 520px)",
-      "capabilities": ["chat.append", "agent.invoke", "terminal.run"]
-    }
-  ]
+  "apps": []
 }

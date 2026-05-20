@@ -2,6 +2,11 @@
 
 Mini apps are small frontend bundles rendered inside the selected Soty chat. They are registered by a manifest, so a project can be updated or replaced without editing the chat shell.
 
+Public/user-installed mini apps are currently gated off in the app shell. The
+only enabled mini app today is the built-in remote commands panel in the
+`Агент` account. Keep the manifest contract small so enabling user apps later is
+one flag plus manifest entries, not another UI rewrite.
+
 ## Register An App
 
 1. Build the frontend project to a static folder.
