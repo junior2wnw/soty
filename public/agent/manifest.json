@@ -1,9 +1,9 @@
 {
-  "version": "0.4.81",
+  "version": "0.4.82",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "a4b8a8e113807c223b81a6b44fc2bd7560adde530adef4a1dee991d0faf8a750",
+  "sha256": "2af6872285d90a6eb1bd24d0f5a8c6cb219de408544c9874290758b6a99c0439",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -89,8 +89,6 @@
       "mouse",
       "wallpaper",
       "audio",
-      "native-window-chrome",
-      "frameless-pwa-window",
       "app",
       "api",
       "transaction",
@@ -545,63 +543,6 @@
           "contextFingerprint": "codex-generated-image+source-user-desktop",
           "receipt": "append-only sanitized route proof"
         }
-      },
-      {
-        "id": "soty-native-window-chrome-fast-lane",
-        "family": "native-window-chrome",
-        "title": "Native frameless Soty PWA window chrome",
-        "entryTool": "computer",
-        "capability": "frameless-pwa-window",
-        "defaultOperation": "window-chrome",
-        "defaultAction": "install",
-        "context": "interactive-user-desktop",
-        "phases": [
-          "status",
-          "apply",
-          "install",
-          "restore",
-          "uninstall"
-        ],
-        "route": [
-          "prove the target is the interactive user desktop",
-          "find only Soty PWA windows by title/process",
-          "remove the native Windows caption from matching HWNDs",
-          "hide Chrome app shortcut client titlebars by shifting only the matched Soty window above the working area",
-          "install a per-user watcher only after explicit user intent",
-          "return status with matched windows and caption/frameless state"
-        ],
-        "doNot": [
-          "do not run against all browser windows",
-          "do not treat web manifest window-controls-overlay as guaranteed",
-          "do not run as SYSTEM for interactive window styling",
-          "do not crop unrelated windows or pages outside the Soty title match",
-          "do not install a persistent watcher for unrelated apps"
-        ],
-        "proof": [
-          "matchedWindowTitle",
-          "pid",
-          "hwnd",
-          "caption",
-          "frameless",
-          "clientTitlebarHidden",
-          "clientTitlebarBottomInsideWorkingArea",
-          "taskName",
-          "persistence"
-        ],
-        "scripts": [
-          {
-            "name": "windows",
-            "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
-            "bytes": 15410
-          }
-        ],
-        "learning": {
-          "reuseKey": "soty-native-window-chrome-fast-lane",
-          "scriptUse": "status/apply/install/restore/uninstall",
-          "successCriteria": "matching Soty PWA HWND has caption=false and watcher installed when requested",
-          "contextFingerprint": "interactive-user-desktop",
-          "receipt": "append-only sanitized route proof"
-        }
       }
     ]
   },
@@ -631,18 +572,6 @@
         "url": "/agent/windows-reinstall/soty-make-fast-usb.ps1",
         "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
         "bytes": 14537
-      }
-    ]
-  },
-  "nativeWindowChrome": {
-    "scriptsBaseUrl": "/agent/native-window-chrome/",
-    "scripts": [
-      {
-        "name": "windows",
-        "platform": "windows",
-        "url": "/agent/native-window-chrome/soty-pwa-window-chrome.ps1",
-        "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
-        "bytes": 15410
       }
     ]
   },
@@ -779,8 +708,7 @@
         "promotion": "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         "routeProfiles": [
           "soty-windows-reinstall-managed-fast-lane",
-          "soty-generated-asset-wallpaper-fast-lane",
-          "soty-native-window-chrome-fast-lane"
+          "soty-generated-asset-wallpaper-fast-lane"
         ]
       },
       {
@@ -910,39 +838,6 @@
           "rebooting"
         ],
         "routeProfile": "soty-windows-reinstall-managed-fast-lane"
-      },
-      {
-        "name": "native-window-chrome",
-        "entryTool": "computer",
-        "kind": "managed-toolkit",
-        "phases": [
-          "status",
-          "apply",
-          "install",
-          "restore",
-          "uninstall"
-        ],
-        "scriptSet": "nativeWindowChrome",
-        "scripts": [
-          {
-            "name": "windows",
-            "platform": "windows",
-            "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
-            "bytes": 15410
-          }
-        ],
-        "proof": [
-          "matchedWindowTitle",
-          "pid",
-          "hwnd",
-          "caption",
-          "frameless",
-          "clientTitlebarHidden",
-          "clientTitlebarBottomInsideWorkingArea",
-          "taskName",
-          "persistence"
-        ],
-        "routeProfile": "soty-native-window-chrome-fast-lane"
       }
     ],
     "routeProfiles": {
@@ -1075,63 +970,6 @@
             "scriptUse": "image_gen/artifact/wallpaper/verify",
             "successCriteria": "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
             "contextFingerprint": "codex-generated-image+source-user-desktop",
-            "receipt": "append-only sanitized route proof"
-          }
-        },
-        {
-          "id": "soty-native-window-chrome-fast-lane",
-          "family": "native-window-chrome",
-          "title": "Native frameless Soty PWA window chrome",
-          "entryTool": "computer",
-          "capability": "frameless-pwa-window",
-          "defaultOperation": "window-chrome",
-          "defaultAction": "install",
-          "context": "interactive-user-desktop",
-          "phases": [
-            "status",
-            "apply",
-            "install",
-            "restore",
-            "uninstall"
-          ],
-          "route": [
-            "prove the target is the interactive user desktop",
-            "find only Soty PWA windows by title/process",
-            "remove the native Windows caption from matching HWNDs",
-            "hide Chrome app shortcut client titlebars by shifting only the matched Soty window above the working area",
-            "install a per-user watcher only after explicit user intent",
-            "return status with matched windows and caption/frameless state"
-          ],
-          "doNot": [
-            "do not run against all browser windows",
-            "do not treat web manifest window-controls-overlay as guaranteed",
-            "do not run as SYSTEM for interactive window styling",
-            "do not crop unrelated windows or pages outside the Soty title match",
-            "do not install a persistent watcher for unrelated apps"
-          ],
-          "proof": [
-            "matchedWindowTitle",
-            "pid",
-            "hwnd",
-            "caption",
-            "frameless",
-            "clientTitlebarHidden",
-            "clientTitlebarBottomInsideWorkingArea",
-            "taskName",
-            "persistence"
-          ],
-          "scripts": [
-            {
-              "name": "windows",
-              "sha256": "d2c5fda315adca28e0892616e690234821eec3cf1cd966b37ee33f729d653c47",
-              "bytes": 15410
-            }
-          ],
-          "learning": {
-            "reuseKey": "soty-native-window-chrome-fast-lane",
-            "scriptUse": "status/apply/install/restore/uninstall",
-            "successCriteria": "matching Soty PWA HWND has caption=false and watcher installed when requested",
-            "contextFingerprint": "interactive-user-desktop",
             "receipt": "append-only sanitized route proof"
           }
         }

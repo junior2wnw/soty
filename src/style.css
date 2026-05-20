@@ -24,7 +24,6 @@
   --ring-focus: 0 0 0 2px rgba(103, 232, 249, 0.22), 0 0 0 4px rgba(109, 255, 143, 0.09);
   --motion-fast: 120ms cubic-bezier(.2, .8, .2, 1);
   --motion-mid: 180ms cubic-bezier(.2, .8, .2, 1);
-  --pwa-titlebar-height: 0px;
 }
 
 * {
@@ -133,95 +132,6 @@ svg {
   box-shadow:
     inset 0 1px 0 rgba(232, 247, 239, 0.055),
     var(--shadow-lift);
-}
-
-.pwa-titlebar {
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 80;
-  width: 100vw;
-  height: var(--pwa-titlebar-height);
-  display: none;
-  grid-template-columns: minmax(0, 1fr) 30px 30px;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px 4px max(8px, env(safe-area-inset-left));
-  color: var(--ink);
-  background:
-    linear-gradient(180deg, rgba(232, 247, 239, 0.04), transparent),
-    rgba(7, 10, 14, 0.86);
-  border-bottom: 1px solid rgba(103, 232, 249, 0.10);
-  backdrop-filter: blur(12px);
-}
-
-.pwa-titlebar-drag {
-  min-width: 0;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  font-size: 11px;
-  letter-spacing: 0;
-  color: var(--muted);
-  app-region: drag;
-  -webkit-app-region: drag;
-}
-
-.pwa-titlebar-drag b {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
-  font-size: 11px;
-}
-
-.pwa-titlebar-mark {
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
-  background: var(--green);
-  color: #071009;
-  font-weight: 900;
-}
-
-.pwa-window-minimize,
-.pwa-window-close {
-  width: 30px;
-  height: 24px;
-  background: rgba(23, 32, 42, 0.72);
-  app-region: no-drag;
-  -webkit-app-region: no-drag;
-}
-
-.pwa-window-minimize {
-  color: var(--amber);
-}
-
-.pwa-window-close {
-  color: var(--red);
-}
-
-.pwa-window-minimize:hover {
-  background: rgba(255, 203, 98, 0.12);
-}
-
-.pwa-window-close:hover {
-  background: rgba(255, 107, 107, 0.12);
-}
-
-.pwa-window-minimize svg,
-.pwa-window-close svg {
-  width: 18px;
-  height: 18px;
-}
-
-body.pwa-window-minimize-pulse #app {
-  filter: brightness(0.82);
 }
 
 .icon-button,
@@ -361,53 +271,6 @@ body.pwa-window-minimize-pulse #app {
     linear-gradient(rgba(109, 255, 143, 0.020) 1px, transparent 1px),
     transparent;
   background-size: 32px 32px;
-}
-
-@media (display-mode: window-controls-overlay) {
-  :root {
-    --pwa-titlebar-height: max(32px, env(titlebar-area-height, 32px));
-  }
-
-  .pwa-titlebar {
-    left: env(titlebar-area-x, 0);
-    top: env(titlebar-area-y, 0);
-    width: env(titlebar-area-width, 100vw);
-    display: grid;
-  }
-
-  .nick-screen,
-  .pair-screen {
-    padding-top: calc(24px + var(--pwa-titlebar-height));
-  }
-
-  .shell {
-    height: 100svh;
-    padding-top: calc(var(--pwa-titlebar-height) + max(10px, env(safe-area-inset-top)));
-  }
-}
-
-@media (display-mode: standalone) {
-  :root {
-    --pwa-titlebar-height: 32px;
-  }
-
-  .pwa-titlebar,
-  body.native-window-chrome .pwa-titlebar {
-    display: grid;
-  }
-
-  .nick-screen,
-  .pair-screen,
-  body.native-window-chrome .nick-screen,
-  body.native-window-chrome .pair-screen {
-    padding-top: calc(24px + var(--pwa-titlebar-height));
-  }
-
-  .shell,
-  body.native-window-chrome .shell {
-    height: 100svh;
-    padding-top: calc(var(--pwa-titlebar-height) + max(10px, env(safe-area-inset-top)));
-  }
 }
 
 .hive-panel,

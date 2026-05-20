@@ -12,7 +12,7 @@ import { icon } from "./icons";
 import type { IconName } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, requestLocalWindowControl, resumeAgentRelayReply } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
 import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -86,6 +86,7 @@ type QuickAction = {
   readonly label: string;
   readonly summary: string;
   readonly tags: readonly string[];
+  readonly hidden?: boolean;
   readonly agentCard: {
     readonly intent: string;
     readonly targetPolicy: string;
@@ -317,6 +318,7 @@ const quickActions: readonly QuickAction[] = [
   },
   {
     id: "native-window-chrome",
+    hidden: true,
     title: "Окно без хедера",
     label: "HDR",
     summary: "Спрятать системную полосу PWA, закрепить watcher и проверить, что окно не уходит под Пуск.",
@@ -472,7 +474,6 @@ const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
-const nativeWindowChromeKey = "soty:native-window-chrome:v1";
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -485,8 +486,6 @@ window.addEventListener("message", (event) => {
 window.addEventListener("storage", (event) => {
   if (event.key === miniAppsRegistryKey) {
     handleMiniAppRegistryChange();
-  } else if (event.key === nativeWindowChromeKey) {
-    applyNativeWindowChromePreference();
   }
 });
 
@@ -519,8 +518,6 @@ void boot();
 
 async function boot(): Promise<void> {
   adoptAgentRelayFromUrl();
-  captureNativeWindowChromePreference();
-  applyNativeWindowChromePreference();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
 
@@ -609,35 +606,6 @@ async function registerServiceWorker(): Promise<void> {
   } catch (error) {
     console.warn("[soty] Service worker registration failed", error);
   }
-}
-
-function captureNativeWindowChromePreference(): void {
-  const url = new URL(window.location.href);
-  const value = url.searchParams.get("native-window-chrome") || "";
-  if (!value) {
-    return;
-  }
-  try {
-    if (value === "1" || value === "true" || value === "on") {
-      localStorage.setItem(nativeWindowChromeKey, "1");
-    } else if (value === "0" || value === "false" || value === "off") {
-      localStorage.removeItem(nativeWindowChromeKey);
-    }
-  } catch {
-    // Non-critical: the window can still use the native browser chrome.
-  }
-  url.searchParams.delete("native-window-chrome");
-  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-}
-
-function applyNativeWindowChromePreference(): void {
-  let enabled = false;
-  try {
-    enabled = localStorage.getItem(nativeWindowChromeKey) === "1";
-  } catch {
-    enabled = false;
-  }
-  document.body.classList.toggle("native-window-chrome", enabled);
 }
 
 function scheduleServiceWorkerUpdate(registration: ServiceWorkerRegistration): void {
@@ -813,7 +781,6 @@ function shouldResetLocalState(): boolean {
 
 function renderNick(): void {
   app.innerHTML = `
-    ${pwaTitlebarMarkup()}
     <section class="nick-screen">
       <form class="nick-form">
         <span>${icon("person")}</span>
@@ -824,7 +791,6 @@ function renderNick(): void {
       </form>
     </section>
   `;
-  bindPwaTitlebar();
   const form = app.querySelector<HTMLFormElement>("form");
   const input = app.querySelector<HTMLInputElement>("input");
   const restoreButton = app.querySelector<HTMLButtonElement>(".restore-button");
@@ -2065,11 +2031,12 @@ function postMiniAppEvent(type: string, detail: Record<string, unknown>): void {
 }
 
 function visibleQuickActions(query: string): readonly QuickAction[] {
+  const available = quickActions.filter((action) => !action.hidden);
   const needle = actionSearchNeedle(query);
   if (!needle) {
-    return quickActions;
+    return available;
   }
-  return quickActions
+  return available
     .map((action) => ({ action, score: quickActionMatchScore(action, needle) }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score || left.action.title.localeCompare(right.action.title))
@@ -2117,7 +2084,7 @@ async function runQuickAction(actionId: string): Promise<void> {
   const action = quickActions.find((item) => item.id === actionId);
   const tunnelId = selectedId;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  if (!action || !tunnelId || !tunnel) {
+  if (!action || action.hidden || !tunnelId || !tunnel) {
     return;
   }
   const comment = normalizeChatMessage(composer?.value || localDrafts.get(tunnelId) || "");
@@ -2418,7 +2385,6 @@ function renderApp(): void {
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   const localDeviceNick = cleanNick(device.nick) || "SOTY";
   app.innerHTML = `
-    ${pwaTitlebarMarkup()}
     <section class="shell retro-shell">
       <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}">
         <div class="retro-brand">
@@ -2523,7 +2489,6 @@ function renderApp(): void {
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
-  bindPwaTitlebar();
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
   }, { passive: true });
@@ -2590,47 +2555,6 @@ function renderApp(): void {
   renderMiniAppPanel();
   void ensureOperatorBridge(true);
   resumeAgentSourceControl();
-}
-
-function pwaTitlebarMarkup(): string {
-  const title = cleanNick(device?.nick || "") || "SOTY";
-  const mark = initials(title).slice(0, 2).toUpperCase();
-  return `
-    <div class="pwa-titlebar" aria-label="Soty window controls">
-      <div class="pwa-titlebar-drag">
-        <span class="pwa-titlebar-mark">${escapeHtml(mark)}</span>
-        <b>${escapeHtml(title)}</b>
-      </div>
-      <button class="pwa-window-minimize retro-icon-button" type="button" aria-label="minimize window" data-tooltip="Свернуть окно">${icon("collapse")}</button>
-      <button class="pwa-window-close retro-icon-button" type="button" aria-label="close window" data-tooltip="Закрыть окно">${icon("close")}</button>
-    </div>
-  `;
-}
-
-function bindPwaTitlebar(): void {
-  app.querySelector<HTMLButtonElement>(".pwa-window-minimize")?.addEventListener("click", () => {
-    void minimizePwaWindow();
-  });
-  app.querySelector<HTMLButtonElement>(".pwa-window-close")?.addEventListener("click", () => {
-    window.close();
-  });
-}
-
-async function minimizePwaWindow(): Promise<void> {
-  const minimized = await requestLocalWindowControl({
-    action: "minimize",
-    titlePattern: "соты\\.online|soty\\.online|xn--n1afe0b\\.online",
-    screenX: Math.round(window.screenX),
-    screenY: Math.round(window.screenY),
-    outerWidth: Math.round(window.outerWidth),
-    outerHeight: Math.round(window.outerHeight)
-  });
-  if (minimized) {
-    return;
-  }
-  window.blur();
-  document.body.classList.add("pwa-window-minimize-pulse");
-  window.setTimeout(() => document.body.classList.remove("pwa-window-minimize-pulse"), 180);
 }
 
 function renderTiles(): void {
@@ -5322,7 +5246,7 @@ function renderTerminal(): void {
   }
   if (actionGrid) {
     actionGrid.innerHTML = showAgentActions
-      ? quickActions.map((action) => agentActionButtonHtml(action)).join("")
+      ? visibleQuickActions("").map((action) => agentActionButtonHtml(action)).join("")
       : "";
     actionGrid.querySelectorAll<HTMLButtonElement>(".agent-action-button").forEach((button) => {
       button.addEventListener("click", () => {
