@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.75";
+const agentVersion = "0.4.76";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3360,13 +3360,13 @@ async function handleOperatorHttpMiniApp(request, response, headers) {
   }
   let payload;
   try {
-    payload = await readJsonBody(request, 96_000);
+    payload = await readJsonBody(request, 360_000);
   } catch {
     sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
     return;
   }
   const app = sanitizeMiniAppInstallPayload(payload);
-  if (!app.url || !app.title || !app.appId) {
+  if ((!app.url && !app.inlineHtml) || !app.title || !app.appId) {
     sendJson(response, 400, headers, { ok: false, text: "! mini-app", exitCode: 400 });
     return;
   }
@@ -3379,6 +3379,7 @@ async function handleOperatorHttpMiniApp(request, response, headers) {
     appId: app.appId,
     title: app.title,
     url: app.url,
+    inlineHtml: app.inlineHtml,
     summary: app.summary,
     icon: app.icon,
     height: app.height,
@@ -3394,13 +3395,14 @@ function sanitizeMiniAppInstallPayload(payload) {
   const rawApp = payload && typeof payload.app === "object" && !Array.isArray(payload.app) ? payload.app : payload;
   const appId = cleanActionToken(rawApp?.id || rawApp?.appId || payload?.appId || "", "");
   const title = cleanActionText(rawApp?.title || payload?.title || appId, 80);
-  const url = safeMiniAppUrlText(rawApp?.url || payload?.url || "");
+  const inlineHtml = safeInlineMiniAppHtml(rawApp?.inlineHtml || rawApp?.html || payload?.inlineHtml || payload?.html || "");
+  const url = inlineHtml ? "about:srcdoc" : safeMiniAppUrlText(rawApp?.url || payload?.url || "");
   const summary = cleanActionText(rawApp?.summary || payload?.summary || "", 180);
   const icon = cleanActionToken(rawApp?.icon || payload?.icon || "remote", "remote");
   const height = cleanActionText(rawApp?.height || payload?.height || "", 60);
   const scope = ["account", "chat", "device"].includes(String(rawApp?.scope || payload?.scope || "").toLowerCase())
     ? String(rawApp?.scope || payload?.scope).toLowerCase()
-    : "account";
+    : "chat";
   const targetDeviceId = safeSourceText(rawApp?.targetDeviceId || payload?.targetDeviceId || "");
   const revision = cleanActionText(rawApp?.revision || payload?.revision || "", 80);
   const capabilities = Array.isArray(rawApp?.capabilities || payload?.capabilities)
@@ -3414,6 +3416,7 @@ function sanitizeMiniAppInstallPayload(payload) {
     appId,
     title,
     url,
+    inlineHtml,
     summary,
     icon,
     height,
@@ -3429,6 +3432,9 @@ function safeMiniAppUrlText(value) {
   if (!raw || raw.length > 2048) {
     return "";
   }
+  if (raw === "about:srcdoc") {
+    return raw;
+  }
   if (raw.startsWith("/") && !raw.startsWith("//")) {
     return raw;
   }
@@ -3436,6 +3442,16 @@ function safeMiniAppUrlText(value) {
     return raw;
   }
   return "";
+}
+
+function safeInlineMiniAppHtml(value) {
+  const raw = String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .trim();
+  if (!raw || raw.length > 300_000) {
+    return "";
+  }
+  return raw;
 }
 
 function handleOperatorHttpMessages(url, response, headers) {
@@ -6715,8 +6731,8 @@ function sotyRuntimeHints() {
     "- Installed agent runtime: TrustLink Kernel `docs/agent-runtime.md` is the reusable contract. Treat the user agent as a capability runtime with console, filesystem, process, service, package, browser, desktop, surface, app, api, job, artifact, os, transaction, and device adapters.",
     "- Transaction/app work: for deals, orders, payments, publishing, or any external side-effect, use prepare/preview before submit, require explicit confirmation for critical actions, return structured proof, and keep credentials/secrets in the user-approved local app or platform store rather than in prompts.",
     "- Mini-app kernel: mini apps are frontend surfaces; TrustLink Kernel owns the reusable app-surface contract, and Soty owns the application adapter. Use node_modules/trustlink-kernel/docs/app-surfaces.md plus docs/soty-mini-apps.md.",
-    "- Mini-app remote connection: same-origin apps use /mini-apps; remote domains require exact HTTPS origin allowlisting; no-domain/device-local apps use TrustLink app-surface modes (trusted HTTPS/tunnel/kernel-proxy), not arbitrary insecure LAN iframes.",
-    "- Mini-app install/open connector: after building or deploying a small frontend, register it with `computer` operation=mini_app/surface or `sotyctl mini-app`. Use account scope by default, chat scope for the current dialog only, and device scope only when the selected device is proven. Ask for only the bridge capabilities the app needs.",
+    "- Mini-app remote connection: generated APPKA helpers use inlineHtml in a sandboxed chat-scoped app surface; same-origin apps use /mini-apps; remote domains require exact HTTPS origin allowlisting; no-domain/device-local apps use TrustLink app-surface modes (inline/trusted HTTPS/tunnel/kernel-proxy), not arbitrary insecure LAN iframes.",
+    "- Mini-app install/open connector: when the user says `АППКА`/`appka` or asks to make a small app for this chat, produce one self-contained HTML document and register it with `computer` operation=appka or mini_app, inlineHtml, scope=chat. Use account scope only when the user wants the app across all local chats, and device scope only when the selected device is proven. Ask for only the bridge capabilities the app needs.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
@@ -6872,13 +6888,16 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "Principle: mini apps are frontend surfaces. TrustLink Kernel owns the reusable app-surface contract; Soty owns the adapter, selected chat/device context, agent invocation, terminal routing, file/artifact transfer, long jobs, and proof. Do not give mini apps relay secrets, raw device tokens, or direct authority over another user's computer.",
     "",
     "Hosting modes:",
-    "1. Same-origin: build the static app under `public/mini-apps/<app-id>/`, register a relative URL in `public/mini-apps/manifest.json`, and use `frame-src 'self'`.",
-    "2. Remote HTTPS origin: register an absolute HTTPS URL, add the exact origin to `SOTY_MINI_APP_FRAME_SRC`, and require the nonce-bound `postMessage` bridge.",
-    "3. No-domain/device-local: use trusted HTTPS by IP/host, a tunnel that provides HTTPS, or a TrustLink/Soty kernel proxy backed by the selected agent. Do not iframe arbitrary insecure LAN HTTP from the production PWA. Loopback HTTP is only for local development or explicit controller-local helpers.",
+    "1. Inline APPKA: for a small generated tool, create one self-contained HTML document, no external CDN by default, and register it with inlineHtml. Soty stores it in the encrypted room state and renders it in a sandboxed srcdoc frame, so the same chat shows it from another device without a domain/server.",
+    "2. Same-origin: build the static app under `public/mini-apps/<app-id>/`, register a relative URL in `public/mini-apps/manifest.json`, and use `frame-src 'self'`.",
+    "3. Remote HTTPS origin: register an absolute HTTPS URL, add the exact origin to `SOTY_MINI_APP_FRAME_SRC`, and require the nonce-bound `postMessage` bridge.",
+    "4. No-domain/device-local beyond inline: use trusted HTTPS by IP/host, a tunnel that provides HTTPS, or a TrustLink/Soty kernel proxy backed by the selected agent. Do not iframe arbitrary insecure LAN HTTP from the production PWA. Loopback HTTP is only for local development or explicit controller-local helpers.",
     "",
     "Bridge rule: apps request small capability-gated actions (`agent.invoke`, `terminal.run`, file/artifact/job capabilities as they are added); the kernel executes through the selected chat/device context and returns proof/status.",
     "",
-    "Install/open rule: after the frontend is available at a safe URL, call `computer` with `{ \"operation\": \"mini_app\", \"appId\": \"...\", \"title\": \"...\", \"url\": \"...\", \"scope\": \"account\", \"capabilities\": [\"chat.append\"] }`. Use `scope=chat` only for the current dialog and `scope=device` only for a proven selected device. The app will appear in the APPS launcher and opens immediately unless `open=false`.",
+    "APPKA install/open rule: for generated inline helpers, call `computer` with `{ \"operation\": \"appka\", \"appId\": \"...\", \"title\": \"...\", \"inlineHtml\": \"<!doctype html>...\", \"scope\": \"chat\", \"capabilities\": [\"chat.append\"] }`. The inline app is synced in the selected Soty room and opens immediately unless `open=false`.",
+    "",
+    "URL install/open rule: after the frontend is available at a safe URL, call `computer` with `{ \"operation\": \"mini_app\", \"appId\": \"...\", \"title\": \"...\", \"url\": \"...\", \"scope\": \"chat\", \"capabilities\": [\"chat.append\"] }`. Use `scope=account` only for local account-wide tools and `scope=device` only for a proven selected device. The app will appear in the APPS launcher and opens immediately unless `open=false`.",
     "",
     "Repository source of truth: `node_modules/trustlink-kernel/docs/app-surfaces.md` for reusable technology and `docs/soty-mini-apps.md` for the Soty adapter. If an integration proves a better universal route, update TrustLink Kernel first, then the Soty adapter docs and selftests."
   ].join("\n");
@@ -7653,7 +7672,7 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, mini_app, surface, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, mini_app, surface, appka, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
             capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, surface, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
@@ -7678,7 +7697,9 @@ function runMcpServer() {
             pattern: { type: "string", description: "Search text or regular expression." },
             url: { type: "string", description: "URL for browser/open_url work." },
             appId: { type: "string", description: "Mini app id for operation=mini_app/surface." },
-            scope: { type: "string", description: "Mini app scope: account, chat, or device. Default account." },
+            inlineHtml: { type: "string", description: "Self-contained inline HTML for operation=appka/mini_app when no domain/server is needed." },
+            html: { type: "string", description: "Alias for inlineHtml." },
+            scope: { type: "string", description: "Mini app scope: account, chat, or device. Default chat for appka/mini_app." },
             capabilities: { type: "array", items: { type: "string" }, description: "Mini app bridge capabilities, for example chat.append, agent.invoke, terminal.run." },
             open: { type: "boolean", description: "For mini_app/surface: open immediately after registration. Default true." },
             text: { type: "string", description: "Text for browser/desktop typing or click-by-text." },
@@ -7948,24 +7969,26 @@ function runMcpServer() {
       },
       {
         name: "soty_mini_app",
-        description: "Register and optionally open a generated mini app in the current Soty account/chat. Prefer the public `computer` tool with operation=mini_app or operation=surface.",
+        description: "Register and optionally open a generated mini app in the current Soty chat/account. For user requests like `сделай аппку`, prefer a self-contained inlineHtml bundle with scope=chat through the public `computer` tool operation=appka/mini_app.",
         inputSchema: {
           type: "object",
           properties: {
             appId: { type: "string", description: "Stable mini app id." },
             title: { type: "string", description: "Visible mini app title." },
-            url: { type: "string", description: "Same-origin, trusted HTTPS, loopback, or shell intent URL." },
+            url: { type: "string", description: "Same-origin, trusted HTTPS, loopback, or shell intent URL. Not required when inlineHtml/html is provided." },
+            inlineHtml: { type: "string", description: "Self-contained inline HTML bundle for no-domain APPKA installs." },
+            html: { type: "string", description: "Alias for inlineHtml." },
             summary: { type: "string", description: "Short launcher summary." },
             icon: { type: "string", description: "Soty icon name. Default remote." },
             height: { type: "string", description: "CSS height clamp for the frame." },
-            scope: { type: "string", description: "account, chat, or device. Default account." },
+            scope: { type: "string", description: "account, chat, or device. Default chat." },
             targetDeviceId: { type: "string", description: "Optional selected device id for device scope." },
             revision: { type: "string", description: "Optional app revision." },
             capabilities: { type: "array", items: { type: "string" }, description: "Bridge grants such as chat.append, agent.invoke, terminal.run." },
             open: { type: "boolean", description: "Open after registration. Default true." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
           },
-          required: ["appId", "title", "url"],
+          required: ["appId", "title"],
           additionalProperties: false
         }
       },
@@ -8038,6 +8061,8 @@ function runMcpServer() {
       artifacts: "soty_artifact",
       mini_app: "soty_mini_app",
       miniapp: "soty_mini_app",
+      appka: "soty_mini_app",
+      аппка: "soty_mini_app",
       surface: "soty_mini_app",
       os_reinstall: "soty_reinstall",
       reinstall: "soty_reinstall",
@@ -8394,7 +8419,7 @@ function runMcpServer() {
     if (operation === "artifact" || capability === "artifact" || args.localPath || args.targetPath) {
       return "soty_artifact";
     }
-    if (["mini-app", "mini_app", "miniapp", "surface"].includes(operation) || capability === "surface" || capability === "mini-app") {
+    if (["mini-app", "mini_app", "miniapp", "surface", "appka", "аппка"].includes(operation) || ["surface", "mini-app", "appka", "аппка"].includes(capability)) {
       return "soty_mini_app";
     }
     if (operation === "image" || operation === "generate-image" || capability === "image" || args.prompt) {
@@ -8504,6 +8529,8 @@ function runMcpServer() {
         "filesystem",
         "soty-room-file-download",
         "artifact",
+        "appka",
+        "inline-mini-app",
         "mini-app",
         "surface",
         "browser",
@@ -8527,8 +8554,9 @@ function runMcpServer() {
   async function callSotyMiniAppTool(args) {
     const appId = cleanActionToken(args.appId || args.id || "", "");
     const title = cleanActionText(args.title || appId, 80);
-    const url = String(args.url || "").trim();
-    if (!appId || !title || !url) {
+    const inlineHtml = safeInlineMiniAppHtml(args.inlineHtml || args.html || "");
+    const url = inlineHtml ? "about:srcdoc" : String(args.url || "").trim();
+    if (!appId || !title || (!url && !inlineHtml)) {
       return mcpToolText("! mini-app", true, 2);
     }
     const result = await mcpPostOperator("/operator/mini-app", {
@@ -8536,10 +8564,11 @@ function runMcpServer() {
       appId,
       title,
       url,
+      inlineHtml,
       summary: String(args.summary || ""),
       icon: String(args.icon || "remote"),
       height: String(args.height || ""),
-      scope: String(args.scope || "account"),
+      scope: String(args.scope || "chat"),
       targetDeviceId: String(args.targetDeviceId || ""),
       revision: String(args.revision || ""),
       capabilities: Array.isArray(args.capabilities)
@@ -12013,12 +12042,20 @@ async function runControlCli(args) {
     const appArgs = parsed.args;
     const appId = appArgs[0] || "";
     const title = appArgs[1] || appId;
-    const url = appArgs[2] || "";
-    const capabilities = (parsed.options.capabilities || parsed.options.caps || appArgs[3] || "")
+    let inlineHtml = safeInlineMiniAppHtml(parsed.options.inlineHtml || parsed.options.html || "");
+    if (!inlineHtml && parsed.options.htmlFile) {
+      try {
+        inlineHtml = safeInlineMiniAppHtml(await readFile(resolve(String(parsed.options.htmlFile)), "utf8"));
+      } catch {
+        inlineHtml = "";
+      }
+    }
+    const url = inlineHtml ? "about:srcdoc" : (appArgs[2] || "");
+    const capabilities = (parsed.options.capabilities || parsed.options.caps || (inlineHtml ? appArgs[2] : appArgs[3]) || "")
       .split(/[,\s]+/u)
       .filter(Boolean);
-    if (!appId || !url) {
-      process.stderr.write("sotyctl mini-app [--scope=account|chat|device] [--open=false] <app-id> <title> <url> [capabilities]\n");
+    if (!appId || (!url && !inlineHtml)) {
+      process.stderr.write("sotyctl mini-app [--scope=account|chat|device] [--open=false] [--html-file=file.html] <app-id> <title> [url] [capabilities]\n");
       process.exit(2);
     }
     const response = await fetch(`http://127.0.0.1:${port}/operator/mini-app`, {
@@ -12028,10 +12065,11 @@ async function runControlCli(args) {
         appId,
         title,
         url,
+        inlineHtml,
         summary: parsed.options.summary || "",
         icon: parsed.options.icon || "remote",
         height: parsed.options.height || "",
-        scope: parsed.options.scope || "account",
+        scope: parsed.options.scope || "chat",
         targetDeviceId: parsed.options.targetDeviceId || "",
         revision: parsed.options.revision || "",
         capabilities,
@@ -12164,7 +12202,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | mini-app [--scope=account|chat|device] <app-id> <title> <url> [capabilities] | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
+  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | mini-app [--scope=account|chat|device] [--html-file=file.html] <app-id> <title> [url] [capabilities] | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
   process.exit(2);
 }
 
@@ -12841,6 +12879,8 @@ function runtimeComputerUsePlaneStatus() {
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "appka",
+      "inline-mini-app",
       "mini-app",
       "surface",
       "browser",

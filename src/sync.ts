@@ -25,6 +25,7 @@ export interface SyncCallbacks {
   readonly onLiveDraft: (draft: LiveDraft) => void;
   readonly onFile: (file: ReceivedFile) => void;
   readonly onFileDeleted: (fileId: string) => void;
+  readonly onMiniApps: (apps: readonly SyncedMiniApp[]) => void;
   readonly onKnock: (knock: NoticeKnock) => void;
   readonly onRemoteRequest: (request: RemoteRequest) => void;
   readonly onRemoteGrant: (grant: RemoteGrant) => void;
@@ -156,6 +157,22 @@ export interface RemoteOutput {
 export interface TerminalSnapshot {
   readonly lines: readonly string[];
   readonly state: "idle" | "run" | "ok" | "bad" | "off";
+}
+
+export interface SyncedMiniApp {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+  readonly inlineHtml?: string;
+  readonly summary: string;
+  readonly icon: string;
+  readonly height?: string;
+  readonly capabilities: readonly string[];
+  readonly scope: "chat" | "device";
+  readonly targetDeviceId?: string;
+  readonly revision?: string;
+  readonly installedAt: string;
+  readonly updatedAt: string;
 }
 
 export type SyncedChessState = Readonly<Record<string, unknown>>;
@@ -396,6 +413,7 @@ export class TunnelSync {
   private readonly doc = new Y.Doc();
   private readonly text = this.doc.getText("body");
   private readonly chessMeta = this.doc.getMap<string>("chessMeta");
+  private readonly miniAppsMeta = this.doc.getMap<string>("miniApps");
   private ws: WebSocket | null = null;
   private destroyed = false;
   private ready = false;
@@ -458,6 +476,9 @@ export class TunnelSync {
     });
     this.chessMeta.observe(() => {
       this.callbacks.onChess(this.chessSnapshot());
+    });
+    this.miniAppsMeta.observe(() => {
+      this.callbacks.onMiniApps(this.miniAppsSnapshot());
     });
     window.addEventListener("online", this.wakeReconnect);
     window.addEventListener("offline", this.offlineState);
@@ -535,6 +556,36 @@ export class TunnelSync {
       // Ignore corrupt chess state; the room can create a fresh game.
     }
     return null;
+  }
+
+  setMiniApp(app: SyncedMiniApp): void {
+    const clean = sanitizeSyncedMiniApp(app);
+    if (!clean) {
+      return;
+    }
+    this.miniAppsMeta.set(syncedMiniAppKey(clean), JSON.stringify(clean));
+  }
+
+  removeMiniApp(id: string, scope: SyncedMiniApp["scope"] = "chat", targetDeviceId = ""): void {
+    const cleanId = cleanMiniAppToken(id, 80);
+    if (!cleanId) {
+      return;
+    }
+    this.miniAppsMeta.delete(`${scope}:${scope === "device" ? cleanMiniAppToken(targetDeviceId, 180) : ""}:${cleanId}`);
+  }
+
+  miniAppsSnapshot(): readonly SyncedMiniApp[] {
+    return Array.from(this.miniAppsMeta.values())
+      .map((raw) => {
+        try {
+          return sanitizeSyncedMiniApp(JSON.parse(raw) as unknown);
+        } catch {
+          return null;
+        }
+      })
+      .filter((item): item is SyncedMiniApp => Boolean(item))
+      .sort((left, right) => String(right.updatedAt || right.installedAt).localeCompare(String(left.updatedAt || left.installedAt)))
+      .slice(0, 80);
   }
 
   async sendLiveDraft(text: string): Promise<void> {
@@ -1955,6 +2006,96 @@ function cleanFileName(value: string): string {
 
 function cleanFileId(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
+}
+
+function syncedMiniAppKey(app: SyncedMiniApp): string {
+  return `${app.scope}:${app.scope === "device" ? app.targetDeviceId || "" : ""}:${app.id}`;
+}
+
+function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const id = cleanMiniAppToken(recordString(record, "id"), 80);
+  const title = cleanMiniAppText(recordString(record, "title") || id, 80);
+  const inlineHtml = cleanInlineMiniAppHtml(recordString(record, "inlineHtml") || recordString(record, "html"));
+  const url = inlineHtml
+    ? "about:srcdoc"
+    : cleanMiniAppUrl(recordString(record, "url"));
+  if (!id || !title || !url) {
+    return null;
+  }
+  const scope = recordString(record, "scope").trim().toLowerCase() === "device" ? "device" : "chat";
+  const targetDeviceId = cleanMiniAppToken(recordString(record, "targetDeviceId"), 180);
+  if (scope === "device" && !targetDeviceId) {
+    return null;
+  }
+  const installedAt = cleanMiniAppDate(recordString(record, "installedAt")) || new Date().toISOString();
+  const updatedAt = cleanMiniAppDate(recordString(record, "updatedAt")) || installedAt;
+  const capabilities = Array.isArray(record.capabilities)
+    ? record.capabilities
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim().toLowerCase())
+      .filter((item, index, values) => /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/u.test(item) && values.indexOf(item) === index)
+      .slice(0, 24)
+    : [];
+  return {
+    id,
+    title,
+    url,
+    ...(inlineHtml ? { inlineHtml } : {}),
+    summary: cleanMiniAppText(recordString(record, "summary") || id, 180),
+    icon: cleanMiniAppToken(recordString(record, "icon"), 40) || "remote",
+    ...(cleanMiniAppText(recordString(record, "height"), 60) ? { height: cleanMiniAppText(recordString(record, "height"), 60) } : {}),
+    capabilities,
+    scope,
+    ...(scope === "device" ? { targetDeviceId } : {}),
+    ...(cleanMiniAppText(recordString(record, "revision"), 80) ? { revision: cleanMiniAppText(recordString(record, "revision"), 80) } : {}),
+    installedAt,
+    updatedAt
+  };
+}
+
+function recordString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === "string" ? value : "";
+}
+
+function cleanMiniAppToken(value: string, maxLength: number): string {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_.:-]/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-|-$/gu, "")
+    .slice(0, maxLength);
+}
+
+function cleanMiniAppText(value: string, maxLength: number): string {
+  return String(value || "")
+    .replace(/[\u0000-\u001F\u007F]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function cleanMiniAppUrl(value: string): string {
+  const raw = String(value || "").trim();
+  if (raw === "about:srcdoc") {
+    return raw;
+  }
+  return raw.slice(0, 2048);
+}
+
+function cleanInlineMiniAppHtml(value: string): string {
+  const raw = String(value || "").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "").trim();
+  return raw.length <= 300_000 ? raw : "";
+}
+
+function cleanMiniAppDate(value: string): string {
+  const raw = String(value || "").slice(0, 40);
+  const time = Date.parse(raw);
+  return Number.isFinite(time) ? new Date(time).toISOString() : "";
 }
 
 function wait(ms: number): Promise<void> {

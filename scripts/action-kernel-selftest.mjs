@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.75");
+      assertEqual(health.body.version, "0.4.76");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -73,6 +73,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.capabilities.includes("app"));
       assert(health.body.computerUsePlane.capabilities.includes("api"));
       assert(health.body.computerUsePlane.capabilities.includes("transaction"));
+      assert(health.body.computerUsePlane.capabilities.includes("appka"));
+      assert(health.body.computerUsePlane.capabilities.includes("inline-mini-app"));
       assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
       assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
@@ -107,6 +109,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "surface"));
       assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "transaction" && capability.requiresConfirmation === true));
       assert(manifest.computerUsePlane.capabilities.includes("surface"));
+      assert(manifest.computerUsePlane.capabilities.includes("appka"));
+      assert(manifest.computerUsePlane.capabilities.includes("inline-mini-app"));
       assert(manifest.computerUsePlane.capabilities.includes("transaction"));
     }],
     ["mini app remote kernel docs are agent-visible", async () => {
@@ -121,8 +125,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes("appSurfaceAllowedOrigin"));
       assert(main.includes("normalizeAppSurfaceInstallRequest"));
       assert(main.includes("miniAppsRegistryKey"));
+      assert(main.includes("roomMiniApps"));
+      assert(main.includes("miniAppInlineHtmlWithContext"));
       assert(main.includes("runOperatorMiniAppInstall"));
       assert(kernelDoc.includes("App surfaces are small frontend applications"));
+      assert(kernelDoc.includes("inline"));
       assert(kernelDoc.includes("normalizeAppSurfaceInstallRequest"));
       assert(kernelDoc.includes("same-origin"));
       assert(kernelDoc.includes("remote-origin"));
@@ -132,6 +139,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("Mini-app kernel"));
       assert(agentSource.includes("/operator/mini-app"));
       assert(agentSource.includes("operation=mini_app"));
+      assert(agentSource.includes("operation=appka"));
+      assert(agentSource.includes("inlineHtml"));
+      assert(agentSource.includes("АППКА"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
       assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
@@ -164,6 +174,21 @@ async function runScenarios({ relayUrl } = {}) {
           && message.scope === "account"
           && message.open === true
           && message.capabilities.includes("chat.append")
+        ));
+        const inline = await post("/operator/mini-app", {
+          appId: "inline-tool",
+          title: "Inline Tool",
+          inlineHtml: "<!doctype html><button>ok</button>",
+          capabilities: ["chat.append"],
+          open: true
+        });
+        assertEqual(inline.status, 200);
+        assert(bridge.calls.some((message) =>
+          message.type === "operator.mini-app-install"
+          && message.appId === "inline-tool"
+          && message.url === "about:srcdoc"
+          && message.inlineHtml.includes("<button>ok</button>")
+          && message.scope === "chat"
         ));
       } finally {
         bridge.close();
@@ -1739,7 +1764,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.75");
+      assertEqual(manifest.version, "0.4.76");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1881,7 +1906,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.75"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.76"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1956,7 +1981,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.75"'));
+      assert(agentSource.includes('const agentVersion = "0.4.76"'));
       assert(agentSource.includes("nudgeUpdateCheck()"));
       assert(agentSource.includes("update: agentUpdateStatus()"));
       assert(agentSource.includes('url.searchParams.get("update") === "1"'));
@@ -2090,14 +2115,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.75";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.76";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.75",
+            version: "0.4.76",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

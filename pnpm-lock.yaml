@@ -21,8 +21,8 @@ importers:
         specifier: ^1.5.4
         version: 1.5.4
       trustlink-kernel:
-        specifier: git+https://github.com/junior2wnw/4-2-rf.git#d07a4f8c49953c7e67e116d993f5998228825062
-        version: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/d07a4f8c49953c7e67e116d993f5998228825062
+        specifier: git+https://github.com/junior2wnw/4-2-rf.git#7530872fc43fa30b6b22f70e1a10a32b00515a69
+        version: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/7530872fc43fa30b6b22f70e1a10a32b00515a69
       ws:
         specifier: ^8.18.0
         version: 8.20.0
@@ -759,8 +759,8 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
-  trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/d07a4f8c49953c7e67e116d993f5998228825062:
-    resolution: {tarball: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/d07a4f8c49953c7e67e116d993f5998228825062}
+  trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/7530872fc43fa30b6b22f70e1a10a32b00515a69:
+    resolution: {tarball: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/7530872fc43fa30b6b22f70e1a10a32b00515a69}
     version: 0.1.0
     engines: {node: '>=22.12.0', pnpm: '>=9.0.0'}
     hasBin: true
@@ -1494,7 +1494,7 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
-  trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/d07a4f8c49953c7e67e116d993f5998228825062: {}
+  trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/7530872fc43fa30b6b22f70e1a10a32b00515a69: {}
 
   type-is@1.6.18:
     dependencies:

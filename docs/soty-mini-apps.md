@@ -12,42 +12,49 @@ chat panel.
 
 ## Agent Install/Open
 
-The agent path is:
+The default APPKA path for "сделай аппку" requests is:
 
-1. Build or deploy the frontend.
-2. Make it available at a same-origin URL, trusted HTTPS URL, loopback helper,
-   or future Soty/kernel proxy URL.
-3. Register it through the computer plane:
+1. Build one self-contained HTML document. Avoid external CDNs unless the user
+   explicitly wants a hosted app.
+2. Register it through the computer plane with `inlineHtml` and `scope=chat`.
+3. Verify that the app appears in the selected chat's APPS launcher and opens.
 
 ```json
 {
-  "operation": "mini_app",
-  "appId": "my-tool",
-  "title": "My Tool",
+  "operation": "appka",
+  "appId": "my-appka",
+  "title": "My APPKA",
   "summary": "Short label shown in Soty.",
   "icon": "remote",
-  "url": "/mini-apps/my-tool/index.html",
-  "scope": "account",
+  "inlineHtml": "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>...</body></html>",
+  "scope": "chat",
   "open": true,
   "capabilities": ["chat.append", "agent.invoke", "terminal.run"]
 }
 ```
 
-Equivalent local CLI:
+For a hosted app, build or deploy the frontend, make it available at a
+same-origin URL, trusted HTTPS URL, loopback helper, or future Soty/kernel proxy
+URL, then register it with `operation=mini_app` and `url`.
+
+Equivalent local CLI for an inline app:
 
 ```powershell
-node scripts/soty-agent.mjs ctl mini-app --scope=account my-tool "My Tool" /mini-apps/my-tool/index.html chat.append,agent.invoke
+node scripts/soty-agent.mjs ctl mini-app --scope=chat --html-file=app.html --capabilities=chat.append,agent.invoke my-appka "My APPKA"
 ```
 
 Scopes:
 
-- `account`: appears for the current local Soty account.
-- `chat`: appears only in the selected chat at install time.
-- `device`: appears only when the selected/proven device matches.
+- `chat`: synced through the encrypted selected Soty room. This is the default
+  for generated APPKA helpers and is visible from other devices in that chat.
+- `device`: synced through the encrypted room but shown only when the
+  selected/proven device matches.
+- `account`: local account-wide convenience state in this browser profile.
 
-The app is stored in `localStorage` under `soty:mini-apps:v1` and is not synced
-to other users. Other Soty tabs on the same browser profile pick it up through
-the storage event.
+`chat` and `device` apps are stored in the room Y.Doc state, so they travel with
+the Soty chat. `account` apps are stored in `localStorage` under
+`soty:mini-apps:v1`; other Soty tabs on the same browser profile pick them up
+through the storage event.
 
 ## Static Catalog
 
@@ -86,19 +93,29 @@ invocation, terminal routing, file/artifact transfer, and proof.
 
 ## Bridge
 
-The shell opens the app with:
+Hosted apps are opened with:
 
 - `sotyMiniApp`: app id
 - `sotyNonce`: per-open nonce
 
-The app sends messages to the parent:
+Inline APPKA apps are opened in a sandboxed `srcdoc` frame and receive:
+
+```js
+const boot = window.SOTY_MINI_APP;
+const nonce = boot.nonce;
+const targetOrigin = boot.targetOrigin || "*";
+```
+
+The app sends messages to the parent. Hosted same-origin apps should use
+`location.origin`; inline sandboxed apps must use `targetOrigin` from the
+bootstrap, normally `"*"`.
 
 ```js
 parent.postMessage({
   schema: "soty.mini-app.v1",
   nonce,
   type: "ready"
-}, location.origin);
+}, targetOrigin);
 ```
 
 The shell replies with:
@@ -140,7 +157,9 @@ When the Soty Agent or Codex integrates a mini app, read
 `node_modules/trustlink-kernel/docs/app-surfaces.md` first, then this adapter
 doc. Keep new app UI thin, register only the needed capabilities, add the origin
 to CSP only when it is trusted, and keep remote-device access behind the Soty
-kernel bridge. Use `computer` operation `mini_app`/`surface` or `sotyctl
-mini-app` to install/open the app in the current account. If a repeated
-integration teaches a better route, update TrustLink Kernel first and then this
-Soty adapter.
+kernel bridge. Use `computer` operation `appka`/`mini_app`/`surface` or
+`sotyctl mini-app` to install/open the app. For generated APPKA helpers, default
+to inline HTML and `scope=chat`; use URL hosting only when the app is too large,
+needs its own build pipeline, or the user asks for a domain/server. If a
+repeated integration teaches a better route, update TrustLink Kernel first and
+then this Soty adapter.

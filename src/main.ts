@@ -7,7 +7,7 @@ import {
   normalizeAppSurfaceInstallRequest,
   resolveAppSurfaceUrl
 } from "trustlink-kernel";
-import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import type { IconName } from "./icons";
 import { colorFor, safeColor } from "./core/color";
@@ -118,11 +118,12 @@ type MiniAppDefinition = {
   readonly id: string;
   readonly title: string;
   readonly url: string;
+  readonly inlineHtml?: string;
   readonly summary: string;
   readonly icon: IconName;
   readonly height?: string;
   readonly capabilities: readonly string[];
-  readonly source?: "manifest" | "agent";
+  readonly source?: "manifest" | "agent" | "room";
   readonly scope?: MiniAppScope;
   readonly targetDeviceId?: string;
   readonly tunnelId?: string;
@@ -182,6 +183,7 @@ const miniAppContextProtocol = "soty.mini-app.context.v1";
 const staticMiniAppsEnabled = false;
 let miniApps: MiniAppDefinition[] = [];
 let manifestMiniApps: MiniAppDefinition[] = [];
+const roomMiniApps = new Map<string, MiniAppDefinition[]>();
 let miniAppsProbe: Promise<readonly MiniAppDefinition[]> | null = null;
 let miniAppsLoadedAt = 0;
 let miniAppSession: MiniAppSession | null = null;
@@ -1106,15 +1108,15 @@ function closeActionMenu(): void {
 }
 
 async function refreshMiniApps(force = false): Promise<readonly MiniAppDefinition[]> {
-  const localApps = localMiniAppsForSelected();
   if (!staticMiniAppsEnabled) {
-    miniApps = mergeMiniApps([], localApps);
+    miniApps = currentMiniApps();
     renderDialogChrome();
     return miniApps;
   }
+  const scopedApps = scopedMiniAppsForSelected();
   const now = Date.now();
   if (!force && miniAppsLoadedAt && now - miniAppsLoadedAt < 60_000) {
-    miniApps = mergeMiniApps(manifestMiniApps, localApps);
+    miniApps = mergeMiniApps(manifestMiniApps, scopedApps);
     return miniApps;
   }
   if (miniAppsProbe) {
@@ -1128,13 +1130,13 @@ async function refreshMiniApps(force = false): Promise<readonly MiniAppDefinitio
       const payload = await response.json() as unknown;
       const next = sanitizeMiniAppsManifest(payload);
       manifestMiniApps = next.map((item) => ({ ...item, source: "manifest" as const }));
-      miniApps = mergeMiniApps(manifestMiniApps, localMiniAppsForSelected());
+      miniApps = currentMiniApps();
       miniAppsLoadedAt = Date.now();
       renderDialogChrome();
       return miniApps;
     })
     .catch(() => {
-      miniApps = mergeMiniApps(manifestMiniApps, localMiniAppsForSelected());
+      miniApps = currentMiniApps();
       return miniApps;
     })
     .finally(() => {
@@ -1161,7 +1163,8 @@ function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
   const summary = cleanNick(recordString(value, "summary")).slice(0, 160);
   const iconName = recordString(value, "icon");
   const iconValue = isIconName(iconName) ? iconName : "remote";
-  const url = safeMiniAppUrl(recordString(value, "url"));
+  const inlineHtml = safeMiniAppInlineHtml(recordString(value, "inlineHtml") || recordString(value, "html"));
+  const url = inlineHtml ? "about:srcdoc" : safeMiniAppUrl(recordString(value, "url"));
   if (!id || !title || !url) {
     return null;
   }
@@ -1173,6 +1176,7 @@ function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
     id,
     title,
     url,
+    ...(inlineHtml ? { inlineHtml } : {}),
     summary,
     icon: iconValue,
     ...(height ? { height } : {}),
@@ -1194,7 +1198,7 @@ function mergeMiniApps(staticApps: readonly MiniAppDefinition[], localApps: read
 }
 
 function currentMiniApps(): MiniAppDefinition[] {
-  miniApps = mergeMiniApps(manifestMiniApps, localMiniAppsForSelected());
+  miniApps = mergeMiniApps(manifestMiniApps, scopedMiniAppsForSelected());
   return miniApps;
 }
 
@@ -1235,6 +1239,13 @@ function sanitizeLocalMiniAppDefinition(value: unknown): MiniAppDefinition | nul
   };
 }
 
+function scopedMiniAppsForSelected(): MiniAppDefinition[] {
+  return [
+    ...roomMiniAppsForSelected(),
+    ...localMiniAppsForSelected()
+  ];
+}
+
 function saveLocalMiniApps(apps: readonly MiniAppDefinition[]): void {
   try {
     const keep = apps
@@ -1268,6 +1279,56 @@ function localMiniAppsForSelected(): MiniAppDefinition[] {
   });
 }
 
+function roomMiniAppsForSelected(): MiniAppDefinition[] {
+  const targetDeviceId = selectedMiniAppTargetDeviceId();
+  return (roomMiniApps.get(selectedId) ?? []).filter((item) => {
+    const scope = item.scope || "chat";
+    if (scope === "chat") {
+      return true;
+    }
+    if (scope === "device") {
+      return Boolean(targetDeviceId && (!item.targetDeviceId || item.targetDeviceId === targetDeviceId));
+    }
+    return false;
+  });
+}
+
+function miniAppFromSynced(appItem: SyncedMiniApp): MiniAppDefinition | null {
+  const definition = sanitizeMiniAppDefinition(appItem);
+  if (!definition) {
+    return null;
+  }
+  return {
+    ...definition,
+    source: "room",
+    scope: appItem.scope,
+    ...(appItem.targetDeviceId ? { targetDeviceId: appItem.targetDeviceId } : {}),
+    ...(appItem.revision ? { revision: appItem.revision } : {}),
+    installedAt: appItem.installedAt,
+    updatedAt: appItem.updatedAt
+  };
+}
+
+function toSyncedMiniApp(appItem: MiniAppDefinition): SyncedMiniApp {
+  const scope = appItem.scope === "device" ? "device" : "chat";
+  const installedAt = appItem.installedAt || new Date().toISOString();
+  return {
+    id: appItem.id,
+    title: appItem.title,
+    url: appItem.inlineHtml ? "about:srcdoc" : appItem.url,
+    ...(appItem.inlineHtml ? { inlineHtml: appItem.inlineHtml } : {}),
+    summary: appItem.summary || appItem.id,
+    icon: appItem.icon,
+    ...(appItem.height ? { height: appItem.height } : {}),
+    capabilities: appItem.capabilities,
+    scope,
+    ...(scope === "device" && appItem.targetDeviceId ? { targetDeviceId: appItem.targetDeviceId } : {}),
+    ...(appItem.revision ? { revision: appItem.revision } : {}),
+    installedAt,
+    updatedAt: appItem.updatedAt || installedAt
+  };
+}
+
 function selectedMiniAppTargetDeviceId(): string {
   if (!selectedId) {
     return "";
@@ -1293,6 +1354,8 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
       kernelIntentSchemes: ["soty:"],
       allowedScopes: ["account", "chat", "device"],
       allowKernelProxy: false,
+      allowInlineHtml: true,
+      maximumInlineHtmlBytes: 300_000,
       now: new Date().toISOString()
     });
     if (plan.schema !== appSurfaceInstallSchema) {
@@ -1306,6 +1369,7 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
       id: plan.definition.id,
       title: plan.definition.title,
       url: plan.definition.url,
+      ...(plan.definition.inlineHtml ? { inlineHtml: plan.definition.inlineHtml } : {}),
       summary: plan.definition.summary || plan.definition.id,
       icon: isIconName(iconName) ? iconName : "remote",
       ...(height ? { height } : {}),
@@ -1324,11 +1388,27 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
     if (scope === "device" && !appItem.targetDeviceId) {
       return { ok: false, error: "device-scope-requires-selected-device" };
     }
-    const next = [
-      appItem,
-      ...loadLocalMiniApps().filter((item) => !sameMiniAppRecord(item, appItem))
-    ];
-    saveLocalMiniApps(next);
+    if (scope === "account") {
+      const next = [
+        appItem,
+        ...loadLocalMiniApps().filter((item) => !sameMiniAppRecord(item, appItem))
+      ];
+      saveLocalMiniApps(next);
+    } else {
+      const sync = syncs.get(selectedId);
+      if (!sync) {
+        return { ok: false, error: "selected-chat-sync-unavailable" };
+      }
+      const roomApp = {
+        ...appItem,
+        source: "room" as const
+      };
+      sync.setMiniApp(toSyncedMiniApp(roomApp));
+      roomMiniApps.set(selectedId, [
+        roomApp,
+        ...(roomMiniApps.get(selectedId) ?? []).filter((item) => !sameMiniAppRecord(item, roomApp))
+      ]);
+    }
     miniApps = currentMiniApps();
     renderDialogChrome();
     if (plan.open) {
@@ -1379,6 +1459,13 @@ function safeMiniAppUrl(value: string): string {
   } catch {
     return "";
   }
+}
+
+function safeMiniAppInlineHtml(value: string): string {
+  const raw = String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+    .trim();
+  return raw.length <= 300_000 ? raw : "";
 }
 
 async function openMiniAppLauncher(): Promise<void> {
@@ -1464,6 +1551,16 @@ function reloadMiniApp(): void {
   if (!frame || !miniAppSession) {
     return;
   }
+  if (miniAppSession.app.inlineHtml) {
+    const session = miniAppSession;
+    frame.srcdoc = "";
+    window.setTimeout(() => {
+      if (miniAppSession === session) {
+        frame.srcdoc = miniAppInlineHtmlWithContext(session);
+      }
+    }, 0);
+    return;
+  }
   frame.src = miniAppUrlWithContext(miniAppSession);
 }
 
@@ -1481,6 +1578,8 @@ function renderMiniAppPanel(): void {
   panel.classList.toggle("is-active", active);
   if (!miniAppSession) {
     frame.removeAttribute("src");
+    frame.removeAttribute("srcdoc");
+    frame.removeAttribute("sandbox");
     panel.dataset.state = "idle";
     return;
   }
@@ -1495,9 +1594,20 @@ function renderMiniAppPanel(): void {
   if (status) {
     status.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT";
   }
-  const nextUrl = miniAppUrlWithContext(session);
-  if (frame.src !== nextUrl) {
-    frame.src = nextUrl;
+  if (session.app.inlineHtml) {
+    frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-downloads");
+    frame.removeAttribute("src");
+    const nextHtml = miniAppInlineHtmlWithContext(session);
+    if (frame.srcdoc !== nextHtml) {
+      frame.srcdoc = nextHtml;
+    }
+  } else {
+    frame.removeAttribute("sandbox");
+    frame.removeAttribute("srcdoc");
+    const nextUrl = miniAppUrlWithContext(session);
+    if (frame.src !== nextUrl) {
+      frame.src = nextUrl;
+    }
   }
 }
 
@@ -1508,12 +1618,31 @@ function miniAppUrlWithContext(session: MiniAppSession): string {
   return url.href;
 }
 
+function miniAppInlineHtmlWithContext(session: MiniAppSession): string {
+  const boot = `<script>window.SOTY_MINI_APP=${JSON.stringify({
+    schema: "soty.mini-app.bootstrap.v1",
+    appId: session.app.id,
+    nonce: session.nonce,
+    messageSchema: miniAppProtocol,
+    contextSchema: miniAppContextProtocol,
+    targetOrigin: "*"
+  })};</script>`;
+  const html = session.app.inlineHtml || "";
+  if (/<head(?:\s[^>]*)?>/iu.test(html)) {
+    return html.replace(/<head(?:\s[^>]*)?>/iu, (match) => `${match}${boot}`);
+  }
+  if (/<html(?:\s[^>]*)?>/iu.test(html)) {
+    return html.replace(/<html(?:\s[^>]*)?>/iu, (match) => `${match}<head>${boot}</head>`);
+  }
+  return `<!doctype html><html><head>${boot}</head><body>${html}</body></html>`;
+}
+
 function handleMiniAppMessage(event: MessageEvent): void {
   if (!miniAppSession) {
     return;
   }
   const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
-  if (!frame?.contentWindow || event.source !== frame.contentWindow || !isAllowedMiniAppOrigin(event.origin, miniAppSession.app.url)) {
+  if (!frame?.contentWindow || event.source !== frame.contentWindow || !isAllowedMiniAppOrigin(event.origin, miniAppSession.app)) {
     return;
   }
   const message = event.data;
@@ -1559,8 +1688,11 @@ function handleMiniAppMessage(event: MessageEvent): void {
   }
 }
 
-function isAllowedMiniAppOrigin(origin: string, appUrl: string): boolean {
-  return appSurfaceAllowedOrigin(origin, appUrl, window.location.href, {
+function isAllowedMiniAppOrigin(origin: string, appItem: MiniAppDefinition): boolean {
+  if (appItem.inlineHtml) {
+    return origin === "null";
+  }
+  return appSurfaceAllowedOrigin(origin, appItem.url, window.location.href, {
     kernelIntentSchemes: ["soty:"]
   });
 }
@@ -1591,7 +1723,11 @@ function publishMiniAppContext(): void {
     } : null,
     capabilities: miniAppGrantedCapabilities(miniAppSession.app)
   };
-  frame.contentWindow.postMessage(message, new URL(miniAppSession.app.url, window.location.href).origin);
+  frame.contentWindow.postMessage(message, miniAppTargetOrigin(miniAppSession));
+}
+
+function miniAppTargetOrigin(session: MiniAppSession): string {
+  return session.app.inlineHtml ? "*" : new URL(session.app.url, window.location.href).origin;
 }
 
 function miniAppHasCapability(capability: string): boolean {
@@ -1666,7 +1802,7 @@ function postMiniAppEvent(type: string, detail: Record<string, unknown>): void {
     nonce: miniAppSession.nonce,
     type,
     ...detail
-  }, new URL(miniAppSession.app.url, window.location.href).origin);
+  }, miniAppTargetOrigin(miniAppSession));
 }
 
 function visibleQuickActions(query: string): readonly QuickAction[] {
@@ -3112,6 +3248,19 @@ function ensureSync(tunnel: TunnelRecord): void {
         renderFiles();
       }
     },
+    onMiniApps: (apps) => {
+      roomMiniApps.set(tunnel.id, apps
+        .map(miniAppFromSynced)
+        .filter((item): item is MiniAppDefinition => Boolean(item)));
+      if (tunnel.id === selectedId) {
+        miniApps = currentMiniApps();
+        if (miniAppSession && !miniApps.some((item) => item.id === miniAppSession?.app.id)) {
+          miniAppSession = null;
+          renderMiniAppPanel();
+        }
+        renderDialogChrome();
+      }
+    },
     onKnock: (knock) => {
       applyKnock(tunnel.id, knock);
     },
@@ -3158,6 +3307,7 @@ function ensureSync(tunnel: TunnelRecord): void {
       syncs.delete(tunnel.id);
       peerDevices.delete(tunnel.id);
       syncStates.delete(tunnel.id);
+      roomMiniApps.delete(tunnel.id);
       writerLines.delete(tunnel.id);
       activeActivities.delete(tunnel.id);
       activeActivityTicks.delete(tunnel.id);
@@ -4329,6 +4479,8 @@ function runOperatorMiniAppInstall(message: {
   readonly appId?: string;
   readonly title?: string;
   readonly url?: string;
+  readonly inlineHtml?: string;
+  readonly html?: string;
   readonly summary?: string;
   readonly icon?: string;
   readonly height?: string;
@@ -4374,6 +4526,8 @@ function operatorMiniAppPayload(message: {
   readonly appId?: string;
   readonly title?: string;
   readonly url?: string;
+  readonly inlineHtml?: string;
+  readonly html?: string;
   readonly summary?: string;
   readonly icon?: string;
   readonly height?: string;
@@ -4389,10 +4543,11 @@ function operatorMiniAppPayload(message: {
     id: recordString(appRecord, "id") || message.appId || "",
     title: recordString(appRecord, "title") || message.title || "",
     url: recordString(appRecord, "url") || message.url || "",
+    inlineHtml: recordString(appRecord, "inlineHtml") || recordString(appRecord, "html") || message.inlineHtml || message.html || "",
     summary: recordString(appRecord, "summary") || message.summary || "",
     icon: recordString(appRecord, "icon") || message.icon || "",
     height: recordString(appRecord, "height") || message.height || "",
-    scope: message.scope || recordString(appRecord, "scope") || "account",
+    scope: message.scope || recordString(appRecord, "scope") || "chat",
     targetDeviceId: message.targetDeviceId || recordString(appRecord, "targetDeviceId") || "",
     revision: message.revision || recordString(appRecord, "revision") || "",
     open: message.open !== false,

@@ -97,6 +97,8 @@ const manifest = {
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "appka",
+      "inline-mini-app",
       "mini-app",
       "surface",
       "browser",
