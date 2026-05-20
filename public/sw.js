@@ -1,4 +1,4 @@
-const cacheName = "soty-online-v19";
+const cacheName = "soty-online-v20";
 const shell = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {

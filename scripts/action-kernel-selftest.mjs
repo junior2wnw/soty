@@ -2089,7 +2089,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
       assert(!ui.includes("<aside class=\"side-panel\">"));
       assert(!ui.includes("terminal-close"));
-      assert(serviceWorker.includes('const cacheName = "soty-online-v19"'));
+      assert(styles.includes("user-select: none"));
+      assert(styles.includes(".chat-scroll,\n.chat-scroll *"));
+      assert(styles.includes(".terminal-collapse {\n  position: absolute;"));
+      assert(styles.includes(".mini-frame-collapse {\n  position: absolute;"));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v20"'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));

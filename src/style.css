@@ -29,6 +29,8 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 [hidden] {
@@ -71,6 +73,17 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+input,
+textarea,
+.chat-scroll,
+.chat-scroll *,
+.terminal-output,
+.terminal-output *,
+.terminal-form input {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 button {
@@ -1470,10 +1483,12 @@ button:disabled {
 
 .terminal-head {
   min-width: 0;
+  position: relative;
   display: grid;
-  grid-template-columns: 12px 34px minmax(0, 1fr) auto 30px 30px;
+  grid-template-columns: 12px 34px minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
+  padding-right: 38px;
 }
 
 .terminal-title,
@@ -1543,6 +1558,9 @@ button:disabled {
 }
 
 .terminal-collapse {
+  position: absolute;
+  top: 0;
+  right: 0;
   width: 30px;
   height: 30px;
   display: grid;
@@ -1707,10 +1725,12 @@ button:disabled {
 
 .mini-frame-head {
   min-width: 0;
+  position: relative;
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto 30px;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
   gap: 9px;
+  padding-right: 38px;
 }
 
 .mini-frame-title,
@@ -1743,6 +1763,9 @@ button:disabled {
 }
 
 .mini-frame-collapse {
+  position: absolute;
+  top: 0;
+  right: 0;
   width: 30px;
   height: 30px;
   display: grid;
