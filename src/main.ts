@@ -2391,7 +2391,6 @@ function renderApp(): void {
           <span class="retro-brand-mark">S</span>
           <span>
             <b>${escapeHtml(localDeviceNick)}</b>
-            <small>LIVE TUNNELS</small>
           </span>
         </div>
         <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
@@ -2399,16 +2398,16 @@ function renderApp(): void {
       </aside>
       <main class="dialog-shell">
         <header class="dialog-head">
-          <span class="dialog-avatar">.</span>
+          <span class="dialog-avatar"></span>
           <span class="dialog-copy">
-            <b class="dialog-name">.</b>
+            <b class="dialog-name"></b>
             <small class="dialog-state">OFFLINE</small>
           </span>
           <span class="dialog-live" aria-live="polite">
             <span class="writer-pop"></span>
           </span>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
-          <span class="dialog-id">0000</span>
+          <button class="dialog-id" type="button" aria-label="copy dialog id" data-tooltip="Скопировать номер диалога">0000</button>
         </header>
         <section class="editor retro-screen">
           <div class="chat-scroll">
@@ -2493,6 +2492,9 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
+  });
+  app.querySelector<HTMLButtonElement>(".dialog-id")?.addEventListener("click", () => {
+    void copySelectedDialogCode();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -3468,12 +3470,12 @@ function compareVersion(left: string, right: string): number {
 
 function renderDialogChrome(): void {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
-  const label = tunnel ? counterpartyLabel(tunnel) : ".";
+  const label = tunnel ? counterpartyLabel(tunnel) : "";
   const color = tunnel ? safeColor(tunnel.color, label + tunnel.id) : "#67e8f9";
   const avatar = app.querySelector<HTMLElement>(".dialog-avatar");
   const name = app.querySelector<HTMLElement>(".dialog-name");
   const state = app.querySelector<HTMLElement>(".dialog-state");
-  const id = app.querySelector<HTMLElement>(".dialog-id");
+  const id = app.querySelector<HTMLButtonElement>(".dialog-id");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
@@ -3489,7 +3491,7 @@ function renderDialogChrome(): void {
     shell.style.setProperty("--peer-color", color);
   }
   if (avatar) {
-    avatar.textContent = initials(label);
+    avatar.textContent = label ? initials(label) : "";
   }
   if (name) {
     name.textContent = label;
@@ -3501,7 +3503,7 @@ function renderDialogChrome(): void {
     } else if (mode === "update") {
       remote = "AGENT UPDATE";
     } else if (agentTunnel) {
-      remote = remoteEnabled.has(selectedId) ? "AGENT READY" : "AGENT";
+      remote = remoteEnabled.has(selectedId) ? "READY" : "AGENT";
     } else if (remoteAccess.has(selectedId)) {
       remote = "REMOTE READY";
     } else if (remoteEnabled.has(selectedId)) {
@@ -3512,7 +3514,13 @@ function renderDialogChrome(): void {
     state.textContent = `${remote}${syncSuffix}`;
   }
   if (id) {
-    id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT";
+    const code = selectedDialogCode();
+    id.textContent = code || "NO CHAT";
+    id.disabled = !code;
+    id.setAttribute("aria-label", code ? `copy dialog ${code}` : "no dialog selected");
+    if (id.dataset.copied !== "1") {
+      id.dataset.tooltip = code ? "Скопировать номер диалога" : "Диалог не выбран";
+    }
   }
   if (sendButton) {
     const stopping = agentThinking.has(selectedId);
@@ -7797,10 +7805,12 @@ function renderWriterPop(): void {
     }
     : null);
   if (!activity) {
-    pop.innerHTML = `<span class="idle-dot"></span><b>IDLE</b>`;
+    pop.innerHTML = "";
+    pop.dataset.state = "quiet";
     return;
   }
   const nick = cleanNick(activity.nick) || counterpartyLabelForSelected();
+  pop.dataset.state = "active";
   pop.innerHTML = `
     <span>${escapeHtml(initials(nick))}</span>
     <b>${escapeHtml(nick)}</b>
@@ -8140,6 +8150,30 @@ async function copyText(value: string): Promise<void> {
     document.execCommand("copy");
     input.remove();
   }
+}
+
+function selectedDialogCode(): string {
+  return selectedId ? selectedId.slice(0, 8).toUpperCase() : "";
+}
+
+async function copySelectedDialogCode(): Promise<void> {
+  const code = selectedDialogCode();
+  if (!code) {
+    return;
+  }
+  await copyText(code);
+  const id = app.querySelector<HTMLButtonElement>(".dialog-id");
+  if (!id) {
+    return;
+  }
+  id.dataset.copied = "1";
+  id.dataset.tooltip = "Скопировано";
+  window.setTimeout(() => {
+    if (id.dataset.copied === "1") {
+      delete id.dataset.copied;
+      id.dataset.tooltip = selectedDialogCode() ? "Скопировать номер диалога" : "Диалог не выбран";
+    }
+  }, 1200);
 }
 
 function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {

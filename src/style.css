@@ -730,6 +730,13 @@ button:disabled {
   background: rgba(6, 10, 14, 0.72);
 }
 
+.dialog-live .writer-pop[data-state="quiet"] {
+  min-height: 0;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
 .dialog-live .writer-pop span {
   width: 18px;
   height: 16px;
@@ -747,10 +754,40 @@ button:disabled {
 }
 
 .dialog-id {
+  appearance: none;
+  min-width: 92px;
   padding: 8px 9px;
   border: 1px solid #3d515f;
   background: #0b1015;
   color: var(--amber);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.dialog-id:hover,
+.dialog-id:focus-visible {
+  border-color: rgba(103, 232, 249, 0.72);
+  color: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.12), 0 0 18px rgba(103, 232, 249, 0.14);
+  outline: none;
+}
+
+.dialog-id:active {
+  transform: translateY(1px);
+}
+
+.dialog-id[data-copied="1"] {
+  border-color: rgba(68, 255, 154, 0.78);
+  color: var(--green);
+  box-shadow: 0 0 18px rgba(68, 255, 154, 0.16);
+}
+
+.dialog-id:disabled {
+  cursor: default;
+  opacity: 0.58;
+  transform: none;
+  box-shadow: none;
 }
 
 .clear-dialog-button {
@@ -2744,7 +2781,7 @@ button:disabled {
   }
 
   .dialog-head {
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    grid-template-columns: 40px minmax(0, 1fr) 40px minmax(76px, auto);
   }
 
   .dialog-avatar {
@@ -2753,7 +2790,9 @@ button:disabled {
   }
 
   .dialog-id {
-    display: none;
+    min-width: 76px;
+    padding: 7px 7px;
+    font-size: 10px;
   }
 
   .dialog-live {

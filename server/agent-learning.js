@@ -589,7 +589,7 @@ function memoryItemMatches(item, filters) {
   if (!item) {
     return false;
   }
-  if (filters.family && item.family !== filters.family && item.family !== "generic" && item.family !== "memory") {
+  if (filters.family && item.family !== filters.family && item.family !== "generic" && item.family !== "memory" && item.family !== "dialog-memory") {
     return false;
   }
   if (filters.platform && Array.isArray(item.evidence?.platforms) && item.evidence.platforms.length > 0) {

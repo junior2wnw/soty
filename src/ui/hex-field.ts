@@ -16,11 +16,15 @@ let panY = 0;
 let zoom = 1;
 let movedDuringPointer = false;
 let cancelActiveHexPress: (() => void) | null = null;
+let suppressClickId = "";
+let suppressClickUntil = 0;
 const panCleanups = new WeakMap<HTMLElement, () => void>();
 const hexStepX = 62;
 const hexStepY = 72;
 const minZoom = 0.62;
 const maxZoom = 1.7;
+const tapSlopPx = 10;
+const longPressMs = 560;
 
 type HexMetrics = {
   readonly stepX: number;
@@ -69,56 +73,15 @@ export function renderHexField(
     `;
   }).join("");
 
-  installPan(root, map);
+  installPan(root, map, actions);
   map.querySelectorAll<HTMLButtonElement>(".hex.filled").forEach((button) => {
-    let timer = 0;
-    let held = false;
-    let pressX = 0;
-    let pressY = 0;
     const id = button.dataset.id || "";
-    const open = (x: number, y: number) => actions.menu(id, x, y);
     button.addEventListener("contextmenu", (event) => {
       event.preventDefault();
-      open(event.clientX, event.clientY);
+      actions.menu(id, event.clientX, event.clientY);
     });
-    button.addEventListener("pointerdown", (event) => {
-      held = false;
-      movedDuringPointer = false;
-      pressX = event.clientX;
-      pressY = event.clientY;
-      window.addEventListener("pointerup", finishPress, { once: true });
-      window.addEventListener("pointercancel", finishPress, { once: true });
-      const cancelPress = () => {
-        window.clearTimeout(timer);
-        held = false;
-      };
-      cancelActiveHexPress = cancelPress;
-      timer = window.setTimeout(() => {
-        held = true;
-        open(event.clientX, event.clientY);
-      }, 560);
-    });
-    button.addEventListener("pointermove", (event) => {
-      if (Math.abs(event.clientX - pressX) + Math.abs(event.clientY - pressY) >= 5) {
-        movedDuringPointer = true;
-        window.clearTimeout(timer);
-        if (cancelActiveHexPress) {
-          cancelActiveHexPress();
-          cancelActiveHexPress = null;
-        }
-      }
-    });
-    const finishPress = () => {
-      window.clearTimeout(timer);
-      if (cancelActiveHexPress) {
-        cancelActiveHexPress = null;
-      }
-    };
-    button.addEventListener("pointerup", finishPress);
-    button.addEventListener("pointercancel", finishPress);
-    button.addEventListener("pointerleave", finishPress);
     button.addEventListener("click", (event) => {
-      if (held || movedDuringPointer) {
+      if (movedDuringPointer || shouldSuppressClick(id)) {
         event.preventDefault();
         return;
       }
@@ -127,7 +90,7 @@ export function renderHexField(
   });
 }
 
-function installPan(root: HTMLElement, map: HTMLElement): void {
+function installPan(root: HTMLElement, map: HTMLElement, actions: HexFieldActions): void {
   panCleanups.get(root)?.();
   let dragging = false;
   let startX = 0;
@@ -136,8 +99,27 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   let baseY = 0;
   let pinchDistance = 0;
   let pinchZoom = zoom;
+  let pressPointerId = 0;
+  let pressTargetId = "";
+  let pressX = 0;
+  let pressY = 0;
+  let pressHeld = false;
+  let pressTimer = 0;
   const pointers = new Map<number, Point>();
+  const cancelPress = () => {
+    window.clearTimeout(pressTimer);
+    pressTimer = 0;
+  };
+  const clearPress = () => {
+    cancelPress();
+    pressPointerId = 0;
+    pressTargetId = "";
+    pressHeld = false;
+  };
   const down = (event: PointerEvent) => {
+    if (event.button !== 0 && event.pointerType !== "touch") {
+      return;
+    }
     pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     movedDuringPointer = false;
     if (pointers.size >= 2) {
@@ -149,14 +131,38 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
         cancelActiveHexPress();
         cancelActiveHexPress = null;
       }
+      if (pressTargetId) {
+        suppressClick(pressTargetId);
+      }
+      clearPress();
     } else {
+      const hex = closestHexButton(event.target, root);
       dragging = true;
       startX = event.clientX;
       startY = event.clientY;
       baseX = panX;
       baseY = panY;
+      pressPointerId = event.pointerId;
+      pressTargetId = hex?.dataset.id || "";
+      pressX = event.clientX;
+      pressY = event.clientY;
+      pressHeld = false;
+      cancelActiveHexPress = cancelPress;
+      cancelPress();
+      if (pressTargetId) {
+        pressTimer = window.setTimeout(() => {
+          pressHeld = true;
+          movedDuringPointer = true;
+          suppressClick(pressTargetId);
+          actions.menu(pressTargetId, pressX, pressY);
+        }, longPressMs);
+      }
     }
-    root.setPointerCapture(event.pointerId);
+    try {
+      root.setPointerCapture(event.pointerId);
+    } catch {
+      // Some synthetic or cancelled pointer streams cannot be captured.
+    }
   };
   const move = (event: PointerEvent) => {
     if (!pointers.has(event.pointerId)) {
@@ -172,6 +178,10 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
           cancelActiveHexPress();
           cancelActiveHexPress = null;
         }
+        if (pressTargetId) {
+          suppressClick(pressTargetId);
+        }
+        cancelPress();
         zoomAt(root, map, midpoint(pair[0], pair[1]), pinchZoom * (nextDistance / pinchDistance));
       }
       event.preventDefault();
@@ -182,7 +192,7 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
     }
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
-    if (Math.abs(dx) + Math.abs(dy) < 5) {
+    if (Math.hypot(dx, dy) < tapSlopPx) {
       return;
     }
     movedDuringPointer = true;
@@ -190,11 +200,20 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
       cancelActiveHexPress();
       cancelActiveHexPress = null;
     }
+    if (pressTargetId) {
+      suppressClick(pressTargetId);
+    }
+    cancelPress();
     panX = baseX + dx;
     panY = baseY + dy;
     applyHexTransform(map);
+    event.preventDefault();
   };
   const up = (event: PointerEvent) => {
+    const shouldSelect = event.pointerId === pressPointerId
+      && Boolean(pressTargetId)
+      && !pressHeld
+      && !movedDuringPointer;
     pointers.delete(event.pointerId);
     if (pointers.size === 1) {
       const remaining = pointers.values().next().value;
@@ -213,18 +232,32 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
     } catch {
       // The capture may already be released by the browser.
     }
+    if (shouldSelect) {
+      actions.select(pressTargetId);
+      suppressClick(pressTargetId);
+      event.preventDefault();
+    }
+    if (event.pointerId === pressPointerId) {
+      clearPress();
+      if (cancelActiveHexPress === cancelPress) {
+        cancelActiveHexPress = null;
+      }
+    }
   };
   const wheel = (event: WheelEvent) => {
     event.preventDefault();
-    if (event.ctrlKey || event.shiftKey) {
-      const factor = Math.exp(-event.deltaY * 0.0018);
-      zoomAt(root, map, { x: event.clientX, y: event.clientY }, zoom * factor);
+    if (!event.ctrlKey && (event.shiftKey || event.altKey)) {
+      panX -= event.shiftKey && event.deltaX === 0 ? event.deltaY : event.deltaX;
+      panY -= event.altKey ? event.deltaY : 0;
+      movedDuringPointer = true;
+      applyHexTransform(map);
       return;
     }
-    panX -= event.deltaX;
-    panY -= event.deltaY;
+    const primaryDelta = event.deltaY || event.deltaX;
+    const modeFactor = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 0.045 : 0.0018;
+    const factor = Math.exp(-primaryDelta * modeFactor);
     movedDuringPointer = true;
-    applyHexTransform(map);
+    zoomAt(root, map, { x: event.clientX, y: event.clientY }, zoom * factor);
   };
   root.addEventListener("pointerdown", down);
   root.addEventListener("pointermove", move);
@@ -232,12 +265,38 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   root.addEventListener("pointercancel", up);
   root.addEventListener("wheel", wheel, { passive: false });
   panCleanups.set(root, () => {
+    clearPress();
     root.removeEventListener("pointerdown", down);
     root.removeEventListener("pointermove", move);
     root.removeEventListener("pointerup", up);
     root.removeEventListener("pointercancel", up);
     root.removeEventListener("wheel", wheel);
   });
+}
+
+function suppressClick(id: string): void {
+  suppressClickId = id;
+  suppressClickUntil = Date.now() + 350;
+}
+
+function shouldSuppressClick(id: string): boolean {
+  if (!id || id !== suppressClickId) {
+    return false;
+  }
+  if (Date.now() > suppressClickUntil) {
+    suppressClickId = "";
+    suppressClickUntil = 0;
+    return false;
+  }
+  return true;
+}
+
+function closestHexButton(target: EventTarget | null, root: HTMLElement): HTMLButtonElement | null {
+  if (!(target instanceof Element)) {
+    return null;
+  }
+  const button = target.closest<HTMLButtonElement>("button.hex.filled[data-id]");
+  return button && root.contains(button) ? button : null;
 }
 
 function applyHexTransform(map: HTMLElement): void {

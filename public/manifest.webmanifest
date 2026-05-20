@@ -8,8 +8,8 @@
   "launch_handler": {
     "client_mode": "navigate-existing"
   },
-  "background_color": "#f8f7f2",
-  "theme_color": "#f8f7f2",
+  "background_color": "#090b0f",
+  "theme_color": "#090b0f",
   "icons": [
     {
       "src": "/icon.svg",

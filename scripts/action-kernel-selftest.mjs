@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.84");
+      assertEqual(health.body.version, "0.4.85");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1844,7 +1844,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.84");
+      assertEqual(manifest.version, "0.4.85");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1941,6 +1941,7 @@ async function runScenarios({ relayUrl } = {}) {
       const realtime = (await readFile(join(root, "server", "realtime.js"), "utf8")).replace(/\r\n/gu, "\n");
       const validators = (await readFile(join(root, "server", "validators.js"), "utf8")).replace(/\r\n/gu, "\n");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
+      const html = await readFile(join(root, "index.html"), "utf8");
       const triggerDoc = await readFile(join(root, "docs", "soty-agent-triggers.md"), "utf8");
       let userWindowsInstallerExists = true;
       try {
@@ -2008,7 +2009,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.84"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.85"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2085,8 +2086,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.84"'));
+      assert(agentSource.includes('const agentVersion = "0.4.85"'));
       assert(agentSource.includes("agentTriggersPath"));
+      assert(agentSource.includes("recordExplicitDialogMemoryIfRequested"));
+      assert(agentSource.includes("isExplicitDialogMemoryRequest"));
+      assert(agentSource.includes('family: "memory"'));
+      assert(agentSource.includes("Explicit memory requests"));
+      assert(agentSource.includes("taskFamily,"));
       assert(agentSource.includes('url.pathname === "/operator/trigger"'));
       assert(agentSource.includes('url.pathname === "/operator/trigger-event"'));
       assert(agentSource.includes('emitAgentTriggerEvent("action.finished"'));
@@ -2180,6 +2186,17 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("return null;"));
       assert(ui.includes("enabledAgentIds.some((id) => id !== canonical.id)"));
       assert(ui.includes("clearCurrentDialog(active.id);\n    renderApp();\n    return;"));
+      assert(ui.includes('class="dialog-id" type="button"'));
+      assert(ui.includes("copySelectedDialogCode"));
+      assert(ui.includes("selectedDialogCode"));
+      assert(!ui.includes("LIVE TUNNELS"));
+      assert(!ui.includes("AGENT READY"));
+      assert(!ui.includes("<b>IDLE</b>"));
+      assert(!ui.includes('<span class="dialog-avatar">.</span>'));
+      assert(!ui.includes('<b class="dialog-name">.</b>'));
+      assert(ui.includes('pop.dataset.state = "quiet"'));
+      assert(styles.includes(".dialog-id[data-copied=\"1\"]"));
+      assert(styles.includes('.dialog-live .writer-pop[data-state="quiet"]'));
       assert(ui.includes("ensureAgentDialogBridgeReady"));
       assert(!ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
       assert(!ui.includes("<aside class=\"side-panel\">"));
@@ -2207,7 +2224,19 @@ async function runScenarios({ relayUrl } = {}) {
       assert(styles.includes("cursor: grab"));
       assert(!styles.includes(".agent-action-strip-head"));
       assert(hexField.includes("zoomAt(root, map"));
+      assert(hexField.includes("closestHexButton"));
+      assert(hexField.includes("actions.select(pressTargetId)"));
+      assert(hexField.includes("actions.menu(pressTargetId"));
+      assert(hexField.includes("const tapSlopPx = 10"));
+      assert(hexField.includes("shouldSuppressClick(id)"));
+      assert(hexField.includes("suppressClick(pressTargetId)"));
+      assert(hexField.includes("const primaryDelta = event.deltaY || event.deltaX"));
+      assert(hexField.includes("!event.ctrlKey && (event.shiftKey || event.altKey)"));
       assert(hexField.includes("root.addEventListener(\"wheel\", wheel, { passive: false })"));
+      assertEqual(webManifest.theme_color, "#090b0f");
+      assertEqual(webManifest.background_color, "#090b0f");
+      assert(html.includes('<meta name="theme-color" content="#090b0f"'));
+      assert(html.includes('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"'));
       assert(!webManifest.display_override?.includes("window-controls-overlay"));
       assert(!appRuntime.includes("window-controls-overlay"));
       assert(!ui.includes("pwaTitlebarMarkup"));
@@ -2277,14 +2306,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.84";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.85";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.84",
+            version: "0.4.85",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -2367,6 +2396,22 @@ async function runScenarios({ relayUrl } = {}) {
         }
       ], { limit: 1 });
       assert(report.candidates.some((item) => item.scope === "dialog" && item.marker === marker));
+    }],
+    ["memctl keeps dialog memory visible to task-specific queries", async () => {
+      const marker = "soty-memory: goal=Soty saved header restore hint | actual=stop watcher before restoring caption | success=hasCaption=true | env=agent-dialog";
+      const report = buildTeacherReport([
+        {
+          kind: "agent-runtime",
+          result: "ok",
+          family: "dialog-memory",
+          route: "dialog.explicit-save",
+          proof: marker,
+          exitCode: 0,
+          createdAt: "2026-05-20T22:50:00.000Z"
+        }
+      ], { limit: 1, family: "windows-reinstall" });
+      const query = buildMemoryQuery(report, { family: "windows-reinstall", limit: 4 });
+      assert(query.items.some((item) => item.kind === "memory-marker" && item.guidance === marker));
     }],
     ["learning teacher promotes low-quality runtime routes", async () => {
       const report = buildTeacherReport([

@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.84";
+const agentVersion = "0.4.85";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3474,10 +3474,12 @@ function cleanLearningHash(value) {
 function recordLearningReceipt(receipt) {
   const clean = cleanLearningReceipt(receipt);
   if (!clean) {
-    return;
+    return Promise.resolve(false);
   }
   invalidateCodexLearningMemoryCache();
-  void appendLearningReceipt(clean);
+  const pending = appendLearningReceipt(clean).then(() => true).catch(() => false);
+  void pending;
+  return pending;
 }
 
 function invalidateCodexLearningMemoryCache() {
@@ -4982,6 +4984,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
+  await recordExplicitDialogMemoryIfRequested(text, context, safeSource, target, taskFamily);
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
   const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
   const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
@@ -5226,6 +5229,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         ...learningContext
       });
       recordAgentLearningMarkers(state.learningMarkers, {
+        taskFamily,
         route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
         taskSig: taskSignature(text),
         durationMs: Date.now() - startedAt,
@@ -5298,6 +5302,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       ...learningContext
     });
     recordAgentLearningMarkers(state.learningMarkers, {
+      taskFamily,
       route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
       taskSig: taskSignature(text),
       durationMs: Date.now() - startedAt,
@@ -5344,6 +5349,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     ...learningContext
   });
   recordAgentLearningMarkers(state.learningMarkers, {
+    taskFamily,
     route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
     taskSig: taskSignature(text),
     durationMs: Date.now() - startedAt,
@@ -6501,13 +6507,120 @@ function cleanInternalLearningMarker(value) {
   return "";
 }
 
+async function recordExplicitDialogMemoryIfRequested(text, context, source, target, taskFamily = "generic") {
+  if (!isExplicitDialogMemoryRequest(text)) {
+    return "";
+  }
+  const marker = buildExplicitDialogMemoryMarker(text, context, taskFamily);
+  if (!marker) {
+    return "";
+  }
+  await recordLearningReceipt({
+    kind: "agent-runtime",
+    family: "memory",
+    result: "ok",
+    route: "dialog.explicit-save",
+    taskSig: taskSignature(`${taskFamily}:${marker}`),
+    proof: marker,
+    exitCode: 0,
+    ...learningContextForTurn(source, target)
+  });
+  return marker;
+}
+
+function isExplicitDialogMemoryRequest(value) {
+  const text = String(value || "").toLowerCase();
+  if (!text.trim()) {
+    return false;
+  }
+  return /(?:сохрани|запомни|запиши|занеси|добавь)\b.{0,120}(?:памят|будущ|повтор|пригод|инф|подсказ|знан)/iu.test(text)
+    || /(?:remember|save|record)\b.{0,120}(?:memory|future|reusable|next time|again)/iu.test(text);
+}
+
+function buildExplicitDialogMemoryMarker(text, context, taskFamily = "generic") {
+  const payload = explicitMemoryPayload(text);
+  const sourceText = payload || lastReusableDialogContext(context, text);
+  const actual = compactMemoryMarkerPart(sourceText, 520);
+  if (!actual) {
+    return "";
+  }
+  const family = compactMemoryMarkerPart(taskFamily && taskFamily !== "generic" ? taskFamily : "Soty", 80);
+  return `soty-memory: goal=${family} user-saved reusable hint | actual=${actual} | success=reuse only after fresh proof; avoid raw secrets | env=agent-dialog explicit-save`;
+}
+
+function explicitMemoryPayload(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  const colon = text.match(/(?:сохрани|запомни|запиши|занеси|remember|save|record)[^:\n]{0,120}:\s*([\s\S]+)/iu);
+  if (colon?.[1]?.trim()) {
+    return colon[1].trim();
+  }
+  const quote = text.match(/[«"']([^«»"']{12,900})[»"']/u);
+  return quote?.[1]?.trim() || "";
+}
+
+function lastReusableDialogContext(context, requestText) {
+  const text = String(context || "")
+    .replace(/\r\n?/gu, "\n")
+    .replace(String(requestText || "").trim(), "")
+    .trim();
+  if (!text) {
+    return "";
+  }
+  const blocks = dialogBlocks(text);
+  const agentBlock = [...blocks].reverse().find((block) =>
+    /(?:агент|agent|codex|sysadmin)/iu.test(block.speaker)
+    && block.body.trim()
+    && !isExplicitDialogMemoryRequest(block.body)
+  );
+  if (agentBlock) {
+    return agentBlock.body;
+  }
+  const last = [...blocks].reverse().find((block) => block.body.trim() && !isExplicitDialogMemoryRequest(block.body));
+  return last?.body || text.split("\n").slice(-14).join("\n");
+}
+
+function dialogBlocks(text) {
+  const blocks = [];
+  let speaker = "";
+  let body = [];
+  const push = () => {
+    const cleanBody = body.join("\n").trim();
+    if (cleanBody) {
+      blocks.push({ speaker, body: cleanBody });
+    }
+  };
+  for (const line of String(text || "").split("\n")) {
+    const header = line.match(/^(.{1,64}?)\s+(?:·|В·)\s+(\d{2}:\d{2})$/u);
+    if (header) {
+      push();
+      speaker = header[1].trim();
+      body = [];
+      continue;
+    }
+    body.push(line);
+  }
+  push();
+  return blocks;
+}
+
+function compactMemoryMarkerPart(value, max = 520) {
+  return redactLearningText(value)
+    .replace(/\b\d{2}:\d{2}\b/gu, "")
+    .replace(/[`*_>#-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, Math.max(1, max));
+}
+
 function recordAgentLearningMarkers(markers, context = {}) {
   const unique = [...new Set((markers || []).map(cleanInternalLearningMarker).filter(Boolean))]
     .slice(-maxLearningMarkersPerTurn);
+  const family = cleanLearningText(context.family || context.taskFamily || "", 80)
+    || (context.route === "codex.exec.resume" ? "memory" : "dialog-memory");
   for (const marker of unique) {
     recordLearningReceipt({
       kind: "agent-runtime",
-      family: "dialog-memory",
+      family,
       result: "ok",
       route: context.route || "codex.exec.resume",
       taskSig: context.taskSig || "",
@@ -7407,6 +7520,7 @@ function sotyRuntimeHints() {
     "- Agent triggers: optional wake-ups for idle/background waiting, reminders, and event callbacks. Keep working, polling, and using tools while there is active progress to make; do not use triggers to stop early. Use `computer` operation=trigger only when waiting is mostly idle or the next useful step depends on time/event. When it fires, the Agent receives a normal trigger message in chat. If matching/timing needed tuning, record a sanitized memory improvement so the trigger route gets faster.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
+    "- Explicit memory requests: when the user says `сохрани`, `запомни`, or asks to keep something for the future, save one sanitized reusable fact. Prefer `computer` operation=learn when a tool is available, or add one hidden `soty-memory:` line; the UI strips that line from chat and stores it as shared memory.",
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: first establish the user's mode (`clean` vs `keep-files`) and explicit permission to use the detected USB, then call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/repair/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
     "- For Windows reinstall problem reports, do not answer from memory alone. First call `computer` with operation=reinstall, capability=os-reinstall, action=repair or action=status, then use its structured proof/nextAction. If repair says nextAction=prepare and the user is asking to continue reinstall, call prepare; if it says nextAction=arm, ask only for the exact final confirmation phrase.",
     "- For Windows reinstall status, prefer `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful because it returns compact proof. Full shell/file access remains available for direct diagnostics and repair. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
