@@ -121,7 +121,9 @@ type MiniAppDefinition = {
   readonly inlineHtml?: string;
   readonly summary: string;
   readonly icon: IconName;
+  readonly layout?: MiniAppWindowLayout;
   readonly height?: string;
+  readonly width?: string;
   readonly capabilities: readonly string[];
   readonly source?: "manifest" | "agent" | "room";
   readonly scope?: MiniAppScope;
@@ -135,9 +137,14 @@ type MiniAppDefinition = {
 type MiniAppSession = {
   readonly app: MiniAppDefinition;
   readonly nonce: string;
+  readonly layout: MiniAppWindowLayout;
+  readonly height?: string;
+  readonly width?: string;
+  readonly collapsed: boolean;
 };
 
 type MiniAppScope = "account" | "chat" | "device";
+type MiniAppWindowLayout = "half" | "compact" | "large" | "full" | "floating";
 
 type MiniAppInstallResult = {
   readonly ok: boolean;
@@ -1168,7 +1175,10 @@ function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
   if (!id || !title || !url) {
     return null;
   }
-  const height = recordString(value, "height").slice(0, 40);
+  const display = isRecord(value.display) ? value.display : value;
+  const layout = normalizeMiniAppLayout(recordString(display, "layout") || recordString(value, "layout"));
+  const height = safeMiniAppCssSize(recordString(display, "height") || recordString(value, "height"));
+  const width = safeMiniAppCssSize(recordString(display, "width") || recordString(value, "width"));
   const capabilities = Array.isArray(value.capabilities)
     ? value.capabilities.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 80)).slice(0, 20)
     : [];
@@ -1179,7 +1189,9 @@ function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
     ...(inlineHtml ? { inlineHtml } : {}),
     summary,
     icon: iconValue,
+    ...(layout !== "half" ? { layout } : {}),
     ...(height ? { height } : {}),
+    ...(width ? { width } : {}),
     capabilities
   };
 }
@@ -1319,7 +1331,9 @@ function toSyncedMiniApp(appItem: MiniAppDefinition): SyncedMiniApp {
     ...(appItem.inlineHtml ? { inlineHtml: appItem.inlineHtml } : {}),
     summary: appItem.summary || appItem.id,
     icon: appItem.icon,
+    ...(appItem.layout && appItem.layout !== "half" ? { layout: appItem.layout } : {}),
     ...(appItem.height ? { height: appItem.height } : {}),
+    ...(appItem.width ? { width: appItem.width } : {}),
     capabilities: appItem.capabilities,
     scope,
     ...(scope === "device" && appItem.targetDeviceId ? { targetDeviceId: appItem.targetDeviceId } : {}),
@@ -1344,6 +1358,61 @@ function normalizeMiniAppScope(value: string): MiniAppScope {
   return clean === "chat" || clean === "device" ? clean : "account";
 }
 
+function normalizeMiniAppLayout(value: string): MiniAppWindowLayout {
+  const clean = value.trim().toLowerCase().replace(/_/gu, "-");
+  if (clean === "full" || clean === "fullscreen" || clean === "full-screen") {
+    return "full";
+  }
+  if (clean === "compact" || clean === "small" || clean === "mini") {
+    return "compact";
+  }
+  if (clean === "large" || clean === "big" || clean === "wide") {
+    return "large";
+  }
+  if (clean === "floating" || clean === "float" || clean === "free") {
+    return "floating";
+  }
+  return "half";
+}
+
+function safeMiniAppCssSize(value: string): string {
+  const clean = value.trim().slice(0, 80);
+  if (!clean || /[{};<>@"']/u.test(clean) || /url\s*\(/iu.test(clean)) {
+    return "";
+  }
+  if (/^\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|svh|svw|dvh|dvw)$/iu.test(clean)) {
+    return clean;
+  }
+  if (/^(?:clamp|min|max|calc)\([\w\s.+\-*/(),%]+(?:px|rem|em|%|vh|vw|svh|svw|dvh|dvw)[\w\s.+\-*/(),%]*\)$/iu.test(clean)) {
+    return clean;
+  }
+  return "";
+}
+
+function miniAppDefaultHeight(layout: MiniAppWindowLayout): string {
+  if (layout === "compact") {
+    return "clamp(190px, 30svh, 340px)";
+  }
+  if (layout === "large") {
+    return "clamp(360px, 68svh, 820px)";
+  }
+  if (layout === "full") {
+    return "calc(100svh - 124px)";
+  }
+  if (layout === "floating") {
+    return "clamp(260px, 48svh, 620px)";
+  }
+  return "clamp(260px, 50svh, 620px)";
+}
+
+function miniAppDefaultWidth(layout: MiniAppWindowLayout): string {
+  return layout === "floating" ? "min(760px, calc(100% - 36px))" : "auto";
+}
+
+function miniAppLayouts(): readonly MiniAppWindowLayout[] {
+  return ["half", "compact", "large", "full", "floating"];
+}
+
 function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
   try {
     const source = connectorMiniAppRecord(value);
@@ -1362,7 +1431,11 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
       return { ok: false, error: "unsupported-mini-app-schema" };
     }
     const iconName = recordString(source, "icon");
-    const height = recordString(source, "height").slice(0, 40);
+    const sourceDisplay = isRecord(source.display) ? source.display : source;
+    const planDisplay = isRecord(plan.definition.display) ? plan.definition.display : {};
+    const layout = normalizeMiniAppLayout(recordString(planDisplay, "layout") || recordString(sourceDisplay, "layout"));
+    const height = safeMiniAppCssSize(recordString(planDisplay, "height") || recordString(sourceDisplay, "height"));
+    const width = safeMiniAppCssSize(recordString(planDisplay, "width") || recordString(sourceDisplay, "width"));
     const scope = normalizeMiniAppScope(plan.scope);
     const now = new Date().toISOString();
     const appItem: MiniAppDefinition = {
@@ -1372,7 +1445,9 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
       ...(plan.definition.inlineHtml ? { inlineHtml: plan.definition.inlineHtml } : {}),
       summary: plan.definition.summary || plan.definition.id,
       icon: isIconName(iconName) ? iconName : "remote",
+      ...(layout !== "half" ? { layout } : {}),
       ...(height ? { height } : {}),
+      ...(width ? { width } : {}),
       capabilities: plan.definition.capabilities,
       source: "agent",
       scope,
@@ -1534,16 +1609,64 @@ function openMiniApp(appId: string): void {
   closeChessPanel();
   miniAppSession = {
     app: appItem,
-    nonce: crypto.randomUUID()
+    nonce: crypto.randomUUID(),
+    layout: appItem.layout || "half",
+    ...(appItem.height ? { height: appItem.height } : {}),
+    ...(appItem.width ? { width: appItem.width } : {}),
+    collapsed: false
   };
   renderMiniAppPanel();
   renderDialogChrome();
 }
 
-function closeMiniApp(): void {
+function clearMiniAppSession(): void {
   miniAppSession = null;
   renderMiniAppPanel();
   renderDialogChrome();
+}
+
+function collapseMiniApp(): void {
+  if (!miniAppSession) {
+    return;
+  }
+  miniAppSession = {
+    ...miniAppSession,
+    collapsed: true
+  };
+  renderMiniAppPanel();
+  renderDialogChrome();
+  publishMiniAppContext();
+}
+
+function restoreMiniApp(): void {
+  if (!miniAppSession) {
+    return;
+  }
+  miniAppSession = {
+    ...miniAppSession,
+    collapsed: false
+  };
+  renderMiniAppPanel();
+  renderDialogChrome();
+  publishMiniAppContext();
+}
+
+function resizeMiniAppWindow(layout: MiniAppWindowLayout, height = "", width = ""): void {
+  if (!miniAppSession) {
+    return;
+  }
+  const session = miniAppSession;
+  miniAppSession = {
+    app: session.app,
+    nonce: session.nonce,
+    layout,
+    ...(height ? { height } : {}),
+    ...(width ? { width } : {}),
+    collapsed: false
+  };
+  renderMiniAppPanel();
+  renderDialogChrome();
+  publishMiniAppContext();
 }
 
 function reloadMiniApp(): void {
@@ -1570,29 +1693,63 @@ function renderMiniAppPanel(): void {
   const editor = app.querySelector<HTMLElement>(".editor");
   const title = app.querySelector<HTMLElement>(".mini-frame-title");
   const status = app.querySelector<HTMLElement>(".mini-frame-status");
+  const collapseButton = app.querySelector<HTMLButtonElement>(".mini-frame-collapse");
+  const dock = app.querySelector<HTMLButtonElement>(".mini-frame-dock");
+  const dockTitle = app.querySelector<HTMLElement>(".mini-frame-dock-title");
   if (!panel || !frame || !editor) {
     return;
   }
   const active = Boolean(miniAppSession);
   editor.classList.toggle("mini-frame-active", active);
+  editor.classList.toggle("mini-frame-collapsed", Boolean(miniAppSession?.collapsed));
   panel.classList.toggle("is-active", active);
+  panel.classList.toggle("is-collapsed", Boolean(miniAppSession?.collapsed));
+  if (dock) {
+    dock.hidden = !miniAppSession?.collapsed;
+  }
   if (!miniAppSession) {
     frame.removeAttribute("src");
     frame.removeAttribute("srcdoc");
     frame.removeAttribute("sandbox");
     panel.dataset.state = "idle";
+    panel.dataset.layout = "half";
+    editor.removeAttribute("data-mini-app-layout");
+    editor.style.removeProperty("--mini-frame-height");
+    editor.style.removeProperty("--mini-frame-width");
     return;
   }
   const session = miniAppSession;
+  const height = session.height || miniAppDefaultHeight(session.layout);
+  const width = session.width || miniAppDefaultWidth(session.layout);
   panel.dataset.state = "run";
-  if (session.app.height) {
-    editor.style.setProperty("--mini-frame-height", session.app.height);
+  panel.dataset.layout = session.layout;
+  editor.dataset.miniAppLayout = session.layout;
+  editor.style.setProperty("--mini-frame-height", height);
+  if (width === "auto") {
+    editor.style.removeProperty("--mini-frame-width");
+  } else {
+    editor.style.setProperty("--mini-frame-width", width);
   }
   if (title) {
     title.textContent = session.app.title.toUpperCase();
   }
   if (status) {
-    status.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT";
+    status.textContent = session.layout === "full"
+      ? "FULL"
+      : session.layout === "floating"
+        ? "FLOAT"
+        : (selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT");
+  }
+  if (collapseButton) {
+    collapseButton.innerHTML = icon(session.collapsed ? "expand" : "collapse");
+    collapseButton.setAttribute("aria-label", session.collapsed ? "expand mini app" : "collapse mini app");
+    collapseButton.dataset.tooltip = session.collapsed ? "Развернуть мини-апп" : "Свернуть мини-апп";
+  }
+  if (dockTitle) {
+    dockTitle.textContent = session.app.title.toUpperCase();
+  }
+  if (session.collapsed) {
+    return;
   }
   if (session.app.inlineHtml) {
     frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-downloads");
@@ -1625,7 +1782,11 @@ function miniAppInlineHtmlWithContext(session: MiniAppSession): string {
     nonce: session.nonce,
     messageSchema: miniAppProtocol,
     contextSchema: miniAppContextProtocol,
-    targetOrigin: "*"
+    targetOrigin: "*",
+    window: {
+      defaultLayout: session.layout,
+      layouts: miniAppLayouts()
+    }
   })};</script>`;
   const html = session.app.inlineHtml || "";
   if (/<head(?:\s[^>]*)?>/iu.test(html)) {
@@ -1654,8 +1815,16 @@ function handleMiniAppMessage(event: MessageEvent): void {
     publishMiniAppContext();
     return;
   }
-  if (type === "close") {
-    closeMiniApp();
+  if (type === "window.collapse" || type === "collapse") {
+    collapseMiniApp();
+    return;
+  }
+  if (type === "window.resize" || type === "surface.resize") {
+    resizeMiniAppWindow(
+      normalizeMiniAppLayout(recordString(message, "layout")),
+      safeMiniAppCssSize(recordString(message, "height")),
+      safeMiniAppCssSize(recordString(message, "width"))
+    );
     return;
   }
   if (type === "chat.append") {
@@ -1721,6 +1890,13 @@ function publishMiniAppContext(): void {
       remoteHost: remoteEnabled.has(tunnel.id),
       syncState: syncStates.get(tunnel.id) || "connecting"
     } : null,
+    window: {
+      layout: miniAppSession.layout,
+      height: miniAppSession.height || miniAppDefaultHeight(miniAppSession.layout),
+      width: miniAppSession.width || miniAppDefaultWidth(miniAppSession.layout),
+      collapsed: miniAppSession.collapsed,
+      layouts: miniAppLayouts()
+    },
     capabilities: miniAppGrantedCapabilities(miniAppSession.app)
   };
   frame.contentWindow.postMessage(message, miniAppTargetOrigin(miniAppSession));
@@ -1736,8 +1912,8 @@ function miniAppHasCapability(capability: string): boolean {
 
 function miniAppGrantedCapabilities(appItem: MiniAppDefinition): readonly string[] {
   const requested = new Set(appItem.capabilities);
-  return ["chat.append", "agent.invoke", "terminal.run", "close"].filter((capability) =>
-    capability === "close" || requested.has(capability)
+  return ["chat.append", "agent.invoke", "terminal.run", "window.collapse", "window.resize"].filter((capability) =>
+    capability === "window.collapse" || capability === "window.resize" || requested.has(capability)
   );
 }
 
@@ -2224,11 +2400,13 @@ function renderApp(): void {
             <span class="mini-frame-led"></span>
             <b class="mini-frame-title">APP</b>
             <small class="mini-frame-status">READY</small>
-            <button class="mini-frame-refresh" type="button" aria-label="refresh mini app" data-tooltip="Reload app">${icon("refresh")}</button>
-            <button class="mini-frame-close" type="button" aria-label="close mini app" data-tooltip="Close app">${icon("close")}</button>
+            <button class="mini-frame-collapse" type="button" aria-label="collapse mini app" data-tooltip="Свернуть мини-апп">${icon("collapse")}</button>
           </div>
           <iframe class="mini-frame" title="Soty mini app" loading="lazy" referrerpolicy="no-referrer"></iframe>
         </div>
+        <button class="mini-frame-dock" type="button" hidden aria-label="restore mini app" data-tooltip="Развернуть мини-апп">
+          ${icon("expand")}<span class="mini-frame-dock-title">APP</span>
+        </button>
         <input class="file-input" type="file" multiple />
       </section>
       </main>
@@ -2343,11 +2521,11 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".agent-action")?.addEventListener("click", () => {
     void startAgentDialog();
   });
-  app.querySelector<HTMLButtonElement>(".mini-frame-close")?.addEventListener("click", () => {
-    closeMiniApp();
+  app.querySelector<HTMLButtonElement>(".mini-frame-collapse")?.addEventListener("click", () => {
+    collapseMiniApp();
   });
-  app.querySelector<HTMLButtonElement>(".mini-frame-refresh")?.addEventListener("click", () => {
-    reloadMiniApp();
+  app.querySelector<HTMLButtonElement>(".mini-frame-dock")?.addEventListener("click", () => {
+    restoreMiniApp();
   });
   app.querySelector<HTMLButtonElement>(".chess-action")?.addEventListener("click", () => {
     void openChessForSelected();
@@ -4483,7 +4661,10 @@ function runOperatorMiniAppInstall(message: {
   readonly html?: string;
   readonly summary?: string;
   readonly icon?: string;
+  readonly layout?: string;
   readonly height?: string;
+  readonly width?: string;
+  readonly display?: unknown;
   readonly scope?: string;
   readonly targetDeviceId?: string;
   readonly revision?: string;
@@ -4530,7 +4711,10 @@ function operatorMiniAppPayload(message: {
   readonly html?: string;
   readonly summary?: string;
   readonly icon?: string;
+  readonly layout?: string;
   readonly height?: string;
+  readonly width?: string;
+  readonly display?: unknown;
   readonly scope?: string;
   readonly targetDeviceId?: string;
   readonly revision?: string;
@@ -4546,7 +4730,10 @@ function operatorMiniAppPayload(message: {
     inlineHtml: recordString(appRecord, "inlineHtml") || recordString(appRecord, "html") || message.inlineHtml || message.html || "",
     summary: recordString(appRecord, "summary") || message.summary || "",
     icon: recordString(appRecord, "icon") || message.icon || "",
+    layout: recordString(appRecord, "layout") || message.layout || "",
     height: recordString(appRecord, "height") || message.height || "",
+    width: recordString(appRecord, "width") || message.width || "",
+    display: isRecord(message.display) ? message.display : (isRecord(appRecord.display) ? appRecord.display : undefined),
     scope: message.scope || recordString(appRecord, "scope") || "chat",
     targetDeviceId: message.targetDeviceId || recordString(appRecord, "targetDeviceId") || "",
     revision: message.revision || recordString(appRecord, "revision") || "",
@@ -4780,7 +4967,7 @@ async function openChessForSelected(): Promise<void> {
     return;
   }
   if (miniAppSession) {
-    closeMiniApp();
+    clearMiniAppSession();
   }
   if (activeChessTunnelId() === selectedId) {
     closeChessPanel();

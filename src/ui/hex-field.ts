@@ -14,6 +14,7 @@ export interface HexFieldActions {
 let panX = 0;
 let panY = 0;
 let movedDuringPointer = false;
+let cancelActiveHexPress: (() => void) | null = null;
 const panCleanups = new WeakMap<HTMLElement, () => void>();
 const hexStepX = 62;
 const hexStepY = 72;
@@ -77,6 +78,11 @@ export function renderHexField(
       movedDuringPointer = false;
       pressX = event.clientX;
       pressY = event.clientY;
+      const cancelPress = () => {
+        window.clearTimeout(timer);
+        held = false;
+      };
+      cancelActiveHexPress = cancelPress;
       timer = window.setTimeout(() => {
         held = true;
         open(event.clientX, event.clientY);
@@ -86,11 +92,21 @@ export function renderHexField(
       if (Math.abs(event.clientX - pressX) + Math.abs(event.clientY - pressY) >= 5) {
         movedDuringPointer = true;
         window.clearTimeout(timer);
+        if (cancelActiveHexPress) {
+          cancelActiveHexPress();
+          cancelActiveHexPress = null;
+        }
       }
     });
-    button.addEventListener("pointerup", () => window.clearTimeout(timer));
-    button.addEventListener("pointercancel", () => window.clearTimeout(timer));
-    button.addEventListener("pointerleave", () => window.clearTimeout(timer));
+    const finishPress = () => {
+      window.clearTimeout(timer);
+      if (cancelActiveHexPress) {
+        cancelActiveHexPress = null;
+      }
+    };
+    button.addEventListener("pointerup", finishPress);
+    button.addEventListener("pointercancel", finishPress);
+    button.addEventListener("pointerleave", finishPress);
     button.addEventListener("click", (event) => {
       if (held || movedDuringPointer) {
         event.preventDefault();
@@ -109,9 +125,6 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   let baseX = 0;
   let baseY = 0;
   const down = (event: PointerEvent) => {
-    if (event.target instanceof Element && event.target.closest(".hex.filled")) {
-      return;
-    }
     dragging = true;
     movedDuringPointer = false;
     startX = event.clientX;
@@ -130,12 +143,21 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
       return;
     }
     movedDuringPointer = true;
+    if (cancelActiveHexPress) {
+      cancelActiveHexPress();
+      cancelActiveHexPress = null;
+    }
     panX = baseX + dx;
     panY = baseY + dy;
     map.style.transform = `translate(${panX}px, ${panY}px)`;
   };
-  const up = () => {
+  const up = (event: PointerEvent) => {
     dragging = false;
+    try {
+      root.releasePointerCapture(event.pointerId);
+    } catch {
+      // The capture may already be released by the browser.
+    }
   };
   root.addEventListener("pointerdown", down);
   root.addEventListener("pointermove", move);

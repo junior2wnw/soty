@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.76");
+      assertEqual(health.body.version, "0.4.77");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -128,9 +128,16 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes("roomMiniApps"));
       assert(main.includes("miniAppInlineHtmlWithContext"));
       assert(main.includes("runOperatorMiniAppInstall"));
+      assert(main.includes("window.resize"));
+      assert(main.includes("window.collapse"));
+      assert(main.includes("mini-frame-collapse"));
+      assert(!main.includes("mini-frame-close"));
       assert(kernelDoc.includes("App surfaces are small frontend applications"));
       assert(kernelDoc.includes("inline"));
       assert(kernelDoc.includes("normalizeAppSurfaceInstallRequest"));
+      assert(kernelDoc.includes("display.layout"));
+      assert(kernelDoc.includes("window.resize"));
+      assert(kernelDoc.includes("window.collapse"));
       assert(kernelDoc.includes("same-origin"));
       assert(kernelDoc.includes("remote-origin"));
       assert(kernelDoc.includes("device-local"));
@@ -145,6 +152,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
       assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
+      assert(agentSource.includes("layout=half"));
+      assert(agentSource.includes("window.resize"));
+      assert(agentSource.includes("window.collapse"));
+      assert(miniAppsDoc.includes("lower half of the dialog"));
+      assert(miniAppsDoc.includes("window.resize"));
+      assert(miniAppsDoc.includes("window.collapse"));
+      assert(miniAppsDoc.includes("There is no app close affordance"));
     }],
     ["operator mini app connector is capability gated", async () => {
       const blocked = await post("/operator/mini-app", {
@@ -162,6 +176,9 @@ async function runScenarios({ relayUrl } = {}) {
           title: "Demo Tool",
           url: "/mini-apps/demo-tool/index.html",
           scope: "account",
+          layout: "floating",
+          height: "clamp(260px, 40svh, 520px)",
+          width: "640px",
           capabilities: ["chat.append"],
           open: true
         });
@@ -172,6 +189,9 @@ async function runScenarios({ relayUrl } = {}) {
           && message.appId === "demo-tool"
           && message.url === "/mini-apps/demo-tool/index.html"
           && message.scope === "account"
+          && message.layout === "floating"
+          && message.height === "clamp(260px, 40svh, 520px)"
+          && message.width === "640px"
           && message.open === true
           && message.capabilities.includes("chat.append")
         ));
@@ -1764,7 +1784,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.76");
+      assertEqual(manifest.version, "0.4.77");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1906,7 +1926,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.76"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.77"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -1981,7 +2001,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.76"'));
+      assert(agentSource.includes('const agentVersion = "0.4.77"'));
       assert(agentSource.includes("nudgeUpdateCheck()"));
       assert(agentSource.includes("update: agentUpdateStatus()"));
       assert(agentSource.includes('url.searchParams.get("update") === "1"'));
@@ -2115,14 +2135,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.76";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.77";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.76",
+            version: "0.4.77",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

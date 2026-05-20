@@ -166,7 +166,9 @@ export interface SyncedMiniApp {
   readonly inlineHtml?: string;
   readonly summary: string;
   readonly icon: string;
+  readonly layout?: "half" | "compact" | "large" | "full" | "floating";
   readonly height?: string;
+  readonly width?: string;
   readonly capabilities: readonly string[];
   readonly scope: "chat" | "device";
   readonly targetDeviceId?: string;
@@ -2047,7 +2049,9 @@ function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
     ...(inlineHtml ? { inlineHtml } : {}),
     summary: cleanMiniAppText(recordString(record, "summary") || id, 180),
     icon: cleanMiniAppToken(recordString(record, "icon"), 40) || "remote",
-    ...(cleanMiniAppText(recordString(record, "height"), 60) ? { height: cleanMiniAppText(recordString(record, "height"), 60) } : {}),
+    ...(cleanMiniAppLayout(recordString(record, "layout")) !== "half" ? { layout: cleanMiniAppLayout(recordString(record, "layout")) } : {}),
+    ...(cleanMiniAppCssSize(recordString(record, "height")) ? { height: cleanMiniAppCssSize(recordString(record, "height")) } : {}),
+    ...(cleanMiniAppCssSize(recordString(record, "width")) ? { width: cleanMiniAppCssSize(recordString(record, "width")) } : {}),
     capabilities,
     scope,
     ...(scope === "device" ? { targetDeviceId } : {}),
@@ -2077,6 +2081,37 @@ function cleanMiniAppText(value: string, maxLength: number): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, maxLength);
+}
+
+function cleanMiniAppLayout(value: string): "half" | "compact" | "large" | "full" | "floating" {
+  const clean = String(value || "").trim().toLowerCase().replace(/_/gu, "-");
+  if (clean === "full" || clean === "fullscreen" || clean === "full-screen") {
+    return "full";
+  }
+  if (clean === "compact" || clean === "small" || clean === "mini") {
+    return "compact";
+  }
+  if (clean === "large" || clean === "big" || clean === "wide") {
+    return "large";
+  }
+  if (clean === "floating" || clean === "float" || clean === "free") {
+    return "floating";
+  }
+  return "half";
+}
+
+function cleanMiniAppCssSize(value: string): string {
+  const clean = cleanMiniAppText(value, 80);
+  if (!clean || /[{};<>@"']/u.test(clean) || /url\s*\(/iu.test(clean)) {
+    return "";
+  }
+  if (/^\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|svh|svw|dvh|dvw)$/iu.test(clean)) {
+    return clean;
+  }
+  if (/^(?:clamp|min|max|calc)\([\w\s.+\-*/(),%]+(?:px|rem|em|%|vh|vw|svh|svw|dvh|dvw)[\w\s.+\-*/(),%]*\)$/iu.test(clean)) {
+    return clean;
+  }
+  return "";
 }
 
 function cleanMiniAppUrl(value: string): string {

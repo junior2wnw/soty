@@ -24,7 +24,7 @@
     "express": "^4.19.2",
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
-    "trustlink-kernel": "git+https://github.com/junior2wnw/4-2-rf.git#7530872fc43fa30b6b22f70e1a10a32b00515a69",
+    "trustlink-kernel": "git+https://github.com/junior2wnw/4-2-rf.git#b6cd753122ef67a6202896dd9ae73a53d669d4b5",
     "ws": "^8.18.0",
     "yjs": "^13.6.21"
   },

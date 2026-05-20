@@ -17,7 +17,8 @@ The default APPKA path for "сделай аппку" requests is:
 1. Build one self-contained HTML document. Avoid external CDNs unless the user
    explicitly wants a hosted app.
 2. Register it through the computer plane with `inlineHtml` and `scope=chat`.
-3. Verify that the app appears in the selected chat's APPS launcher and opens.
+3. Verify that the app appears in the selected chat's APPS launcher and opens
+   in the lower half of the dialog.
 
 ```json
 {
@@ -28,6 +29,7 @@ The default APPKA path for "сделай аппку" requests is:
   "icon": "remote",
   "inlineHtml": "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>...</body></html>",
   "scope": "chat",
+  "layout": "half",
   "open": true,
   "capabilities": ["chat.append", "agent.invoke", "terminal.run"]
 }
@@ -40,7 +42,7 @@ URL, then register it with `operation=mini_app` and `url`.
 Equivalent local CLI for an inline app:
 
 ```powershell
-node scripts/soty-agent.mjs ctl mini-app --scope=chat --html-file=app.html --capabilities=chat.append,agent.invoke my-appka "My APPKA"
+node scripts/soty-agent.mjs ctl mini-app --scope=chat --layout=half --html-file=app.html --capabilities=chat.append,agent.invoke my-appka "My APPKA"
 ```
 
 Scopes:
@@ -75,6 +77,7 @@ apps for later enabling:
       "summary": "Short label shown in Soty.",
       "icon": "remote",
       "url": "/mini-apps/my-tool/index.html",
+      "layout": "half",
       "height": "clamp(260px, 46vh, 560px)",
       "capabilities": ["chat.append", "agent.invoke", "terminal.run"]
     }
@@ -106,6 +109,13 @@ const nonce = boot.nonce;
 const targetOrigin = boot.targetOrigin || "*";
 ```
 
+Mini apps are chat surfaces, not separate browser windows. The shell opens them
+in the lower half of the current dialog by default. The app may ask the shell to
+switch layout with `window.resize`; supported layouts are `half`, `compact`,
+`large`, `full`, and `floating`, with optional safe CSS `height`/`width`.
+The shell always owns window chrome. There is no app close affordance or close
+capability; the required shell control is collapse/restore.
+
 The app sends messages to the parent. Hosted same-origin apps should use
 `location.origin`; inline sandboxed apps must use `targetOrigin` from the
 bootstrap, normally `"*"`.
@@ -135,7 +145,14 @@ The shell replies with:
     remoteHost,
     syncState
   },
-  capabilities: ["chat.append", "agent.invoke", "terminal.run", "close"]
+  window: {
+    layout: "half",
+    height: "clamp(260px, 50svh, 620px)",
+    width: "auto",
+    collapsed: false,
+    layouts: ["half", "compact", "large", "full", "floating"]
+  },
+  capabilities: ["chat.append", "agent.invoke", "terminal.run", "window.collapse", "window.resize"]
 }
 ```
 
@@ -144,12 +161,15 @@ Supported app-to-shell messages are capability-gated per app:
 - `chat.append`: `{ text }` appends a visible message to the selected chat.
 - `agent.invoke`: `{ text, visibleText? }` sends a task to the agent in the selected chat.
 - `terminal.run`: `{ command, timeoutMs?, runAs? }` runs through the selected remote console when control is ready.
-- `close`: closes the mini app panel.
+- `window.resize`: `{ layout, height?, width? }` requests a shell-managed size/layout.
+- `window.collapse`: collapses the mini app panel into its restore dock.
 
-`close` is always available; all other bridge actions must be listed in the
-registered `capabilities`. The contract intentionally stays tiny: apps own
-their frontend, Soty owns chat context, agent invocation, remote command
-routing, and room/device state.
+`window.collapse` and `window.resize` are always available; all other bridge
+actions must be listed in the registered `capabilities`. The contract
+intentionally stays tiny: apps own their frontend content and controls, Soty
+owns chat context, panel chrome, agent invocation, remote command routing, and
+room/device state. If the app has many controls, keep them inside the HTML with
+normal pointer/touch scrolling instead of asking Soty for more buttons.
 
 ## Agent Notes
 
