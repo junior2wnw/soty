@@ -160,7 +160,15 @@ function buildOpenAiToolPlane() {
   return {
     schema: "openai.responses-tools+mcp.v1",
     builtInTools: ["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"],
-    codexCliFeatureFlags: ["image_generation", "computer_use", "browser_use", "tool_search"],
+    codexCliFeatureFlags: [
+      "image_generation",
+      "tool_search",
+      "computer_use",
+      "browser_use",
+      "shell_tool",
+      "shell_snapshot",
+      "workspace_dependencies"
+    ],
     webSearch: "native --search",
     mcp: {
       server: "soty",

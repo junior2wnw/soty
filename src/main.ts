@@ -5413,12 +5413,12 @@ async function finalizeComposerDraft(): Promise<void> {
 }
 
 function containsAgentInvocation(text: string): boolean {
-  return /(^|[^\p{L}\p{N}_])(?:\u0430\u0433\u0435\u043d\u0442|agent)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+  return /(^|[^\p{L}\p{N}_])(?:\u043b\u043e\u0440\u0434|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
 }
 
 function stripAgentInvocation(text: string): string {
   const body = normalizeChatMessage(text);
-  const stripped = body.replace(/^\s*(?:\u0430\u0433\u0435\u043d\u0442|agent)\s*[,.:;!?-]*\s*/iu, "").trim();
+  const stripped = body.replace(/^\s*(?:\u043b\u043e\u0440\u0434|lord)\s*[,.:;!?-]*\s*/iu, "").trim();
   return stripped || body;
 }
 

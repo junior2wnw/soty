@@ -37,10 +37,11 @@ const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
   || (managed && process.env.SOTY_AGENT_AUTO_UPDATE !== "0");
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;
-const maxChatChars = 12_000;
+const maxChatChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_CHAT_CHARS, 64_000, 1_000_000);
 const maxArtifactTransferBytes = 64 * 1024 * 1024;
-const maxAgentContextChars = 16_000;
-const maxAgentRuntimePromptChars = 48_000;
+const maxAgentContextChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_CONTEXT_CHARS, 128_000, 1_000_000);
+const maxAgentRuntimePromptChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_RUNTIME_PROMPT_CHARS, 192_000, 1_000_000);
+const maxAgentMemoryChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_MEMORY_CHARS, 12_000, 128_000);
 const maxLearningMarkersPerTurn = 8;
 const maxOperatorTargets = 5000;
 const maxDeviceIdsPerTarget = 32;
@@ -60,7 +61,15 @@ const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexNativeWebSearch = process.env.SOTY_CODEX_WEB_SEARCH !== "0";
-const codexNativeOpenAiToolFeatures = Object.freeze(["image_generation", "tool_search"]);
+const codexNativeOpenAiToolFeatures = Object.freeze([
+  "image_generation",
+  "tool_search",
+  "computer_use",
+  "browser_use",
+  "shell_tool",
+  "shell_snapshot",
+  "workspace_dependencies"
+]);
 const openAiBuiltInTools = Object.freeze(["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"]);
 const sotyMcpPublicTools = Object.freeze(["computer"]);
 const sotyMcpLegacyTools = Object.freeze([
@@ -82,7 +91,8 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_open_url",
   "soty_audio"
 ]);
-const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
+const codexMinimumReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_MIN_REASONING_EFFORT || "high") || "high";
+const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "xhigh");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexDisabled = process.env.SOTY_CODEX_DISABLED === "1";
 const localCodexDisabled = true;
@@ -5057,28 +5067,52 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
 }
 
 function codexReasoningEffortForTask(taskFamily, target = null) {
-  if (codexDefaultReasoningEffort) {
-    return codexDefaultReasoningEffort;
-  }
   const family = cleanActionToken(taskFamily, "generic");
-  if (family === "windows-reinstall") {
+  return codexReasoningAtLeast(codexDefaultReasoningEffort || codexReasoningPolicyForTask(family, target));
+}
+
+function codexReasoningPolicyForTask(family, target = null) {
+  if ([
+    "windows-reinstall",
+    "package-install",
+    "driver-check",
+    "program-control",
+    "file-work",
+    "script-task",
+    "system-check",
+    "service-check",
+    "software-check",
+    "web-lookup",
+    "browser",
+    "lifecycle",
+    "durable-action",
+    "console",
+    "software"
+  ].includes(family)) {
     return "xhigh";
   }
-  if (["package-install", "driver-check"].includes(family)) {
-    return "high";
-  }
-  if (family === "web-lookup") {
-    return "medium";
-  }
-  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(family)) {
-    return "low";
-  }
-  return "medium";
+  return target?.id ? "xhigh" : "high";
+}
+
+function codexReasoningAtLeast(value) {
+  const effort = safeCodexReasoningEffort(value) || "high";
+  const rank = { high: 1, xhigh: 2 };
+  const floor = safeCodexReasoningEffort(codexMinimumReasoningEffort) || "high";
+  return rank[effort] < rank[floor] ? floor : effort;
 }
 
 function safeCodexReasoningEffort(value) {
   const effort = String(value || "").trim().toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(effort) ? effort : "";
+  if (!effort || ["auto", "adaptive", "task"].includes(effort)) {
+    return "";
+  }
+  if (["xhigh", "x-high", "max", "maximum", "deep"].includes(effort)) {
+    return "xhigh";
+  }
+  if (["high", "strong", "medium", "low"].includes(effort)) {
+    return "high";
+  }
+  return "";
 }
 
 function safeAgentResponseStyleId(value) {
@@ -6306,7 +6340,6 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   const agentDialog = isAgentDialogSource(safeSource);
   const targetForPrompt = target || null;
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
-  const routineTask = isRoutineAgentTaskFamily(taskFamily);
   const sourceDeviceId = promptInline(bridgeSourceDeviceId(targetForPrompt, safeSource) || (targetForPrompt ? safeSource.deviceId : "") || "");
   const targetLabel = promptInline(targetForPrompt?.label || (agentDialog ? "" : safeSource.preferredTargetLabel) || "");
   const targetId = promptInline(targetForPrompt?.id || (agentDialog ? "" : safeSource.preferredTargetId) || "");
@@ -6318,7 +6351,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   return {
     taskFamily,
     userText: String(text || "").trim().slice(0, maxChatChars),
-    visibleContext: cleanPromptBlock(context, routineTask ? 3000 : maxAgentContextChars),
+    visibleContext: cleanPromptBlock(context, maxAgentContextChars),
     source: {
       tunnelId: promptInline(safeSource.tunnelId),
       tunnelLabel: promptInline(safeSource.tunnelLabel),
@@ -6343,7 +6376,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       mode: codexSessionMode,
       workspaceDir: promptInline(jobDir)
     },
-    memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, routineTask ? 1400 : 4000)
+    memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, maxAgentMemoryChars)
   };
 }
 
@@ -6586,7 +6619,7 @@ function sotyRuntimeHints() {
     "- Source-device canonical: when a Soty source target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
     "- Web-controller canonical: if the current client is controller-only/web-controller and no current source-device agent target is listed, the current phone/browser is not a computer-use plane. It can request tasks on connected devices, but do not run shell/files/desktop/wallpaper on the phone or invent `agent-source:<phone>`.",
     "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. If the current client is web-controller only, require a named/selected connected device for device actions. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
-    "- Linked-device canonical: in a device chat invoked through `agent`/`агент`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
+    "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
@@ -6601,7 +6634,7 @@ function sotyRuntimeHints() {
     "- For Windows reinstall problem reports, do not answer from memory alone. First call `computer` with operation=reinstall, capability=os-reinstall, action=repair or action=status, then use its structured proof/nextAction. If repair says nextAction=prepare and the user is asking to continue reinstall, call prepare; if it says nextAction=arm, ask only for the exact final confirmation phrase.",
     "- For Windows reinstall status, prefer `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful because it returns compact proof. Full shell/file access remains available for direct diagnostics and repair. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
-    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `agent`/`агент`.",
+    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `lord`/`лорд`.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Soty is the data plane for files and artifacts. For source-device -> controller computer Downloads, use `computer` operation=file action=download: it streams exact bytes through the encrypted Soty room and asks the controller browser to save the file to its Downloads. For source-device -> room file rail only, use action=publish. For server/Codex artifact -> source-device, use `computer` operation=artifact. Never use 0x0.st, file.io, temp.sh, bashupload, ad-hoc local HTTP servers, pasted base64, or public upload services while Soty file/artifact operations are available.",
@@ -6792,6 +6825,11 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     ...sotyRuntimeHints(),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "",
+    "Codex capability policy:",
+    "- Optimize for the best verified outcome, not the shortest response. Use the full available Codex toolset: native search/image/computer/browser/shell/patch tools plus Soty `computer` for the selected user's device.",
+    "- For coding and repository work, inspect the relevant files first, preserve unrelated user changes, make focused patches, and run the narrowest useful verification before final answer.",
+    "- Do not downshift effort for routine-looking code, file, script, or system tasks; simple wording can still hide complex state.",
+    "",
     "Computer-use plane:",
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
     "- Full access model: managed capabilities are preferred routes, not walls. You may still use shell/script/file/terminal directly on the selected device when that is the right way to solve, inspect, or repair the task.",
@@ -6870,7 +6908,7 @@ async function codexLearningMemoryPrompt(taskFamily = "") {
   ]);
   cachedCodexLearningMemoryAt = now;
   cachedCodexLearningMemoryKey = key;
-  cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, 4000);
+  cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, maxAgentMemoryChars);
   return cachedCodexLearningMemoryText;
 }
 
@@ -12188,6 +12226,11 @@ function parseCtlTimeout(args) {
 function safeDurationMs(value, fallback, max = maxLongTaskTimeoutMs) {
   const timeoutMs = Number.parseInt(String(value || ""), 10);
   return Number.isSafeInteger(timeoutMs) ? Math.max(1000, Math.min(timeoutMs, max)) : fallback;
+}
+
+function safeAgentLimit(value, fallback, max) {
+  const limit = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(limit) ? Math.max(1000, Math.min(limit, max)) : fallback;
 }
 
 function safeRunTimeoutMs(value) {

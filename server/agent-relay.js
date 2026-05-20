@@ -1,9 +1,9 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
 
-const maxChatChars = 12_000;
-const maxContextChars = 16_000;
-const maxReplyChars = 12_000;
+const maxChatChars = safeRelayLimit(process.env.SOTY_AGENT_RELAY_MAX_CHAT_CHARS, 64_000, 1_000_000);
+const maxContextChars = safeRelayLimit(process.env.SOTY_AGENT_RELAY_MAX_CONTEXT_CHARS, 128_000, 1_000_000);
+const maxReplyChars = safeRelayLimit(process.env.SOTY_AGENT_RELAY_MAX_REPLY_CHARS, 64_000, 1_000_000);
 const maxSourceReplyChars = 1_000_000;
 const maxReplyMessages = 64;
 const maxSourceChars = 180;
@@ -31,7 +31,7 @@ const replyWaiters = new Map();
 const eventWaiters = new Map();
 const sourcePollWaiters = new Map();
 const sourceReplyWaiters = new Map();
-const jsonParser = express.json({ limit: "2mb", type: "application/json" });
+const jsonParser = express.json({ limit: process.env.SOTY_AGENT_RELAY_JSON_LIMIT || "8mb", type: "application/json" });
 const artifactParser = express.raw({ limit: `${maxArtifactBytes}b`, type: "application/octet-stream" });
 const configuredServerCodexRelayId = normalizeRelayId(process.env.SOTY_SERVER_CODEX_RELAY_ID || process.env.SOTY_AGENT_RELAY_ID || "");
 
@@ -1675,6 +1675,11 @@ function normalizeRelayId(value) {
 
 function cleanText(value, max) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function safeRelayLimit(value, fallback, max) {
+  const limit = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(limit) ? Math.max(1000, Math.min(limit, max)) : fallback;
 }
 
 function safeSourceReplyChars(value) {

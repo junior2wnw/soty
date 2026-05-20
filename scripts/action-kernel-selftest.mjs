@@ -1215,6 +1215,38 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(secondManifest.memoryPlane.queryUrl, "/api/agent/memory/query");
       assertEqual(secondManifest.opsSkill, undefined);
     }],
+    ["codex runtime defaults to max quality capability mode", async () => {
+      const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
+      const expectedFeatures = [
+        "image_generation",
+        "tool_search",
+        "computer_use",
+        "browser_use",
+        "shell_tool",
+        "shell_snapshot",
+        "workspace_dependencies"
+      ];
+      for (const feature of expectedFeatures) {
+        assert(agent.includes(`"${feature}"`));
+        assert(manifest.openAiToolPlane.codexCliFeatureFlags.includes(feature));
+      }
+      assert(agent.includes('process.env.SOTY_CODEX_REASONING_EFFORT || "xhigh"'));
+      assert(agent.includes('process.env.SOTY_CODEX_MIN_REASONING_EFFORT || "high"'));
+      assert(agent.includes("return codexReasoningAtLeast(codexDefaultReasoningEffort || codexReasoningPolicyForTask(family, target));"));
+      const reasoningStart = agent.indexOf("function codexReasoningEffortForTask");
+      const reasoningEnd = agent.indexOf("function safeAgentResponseStyleId");
+      const reasoningBlock = agent.slice(reasoningStart, reasoningEnd);
+      assert(reasoningStart > 0 && reasoningEnd > reasoningStart);
+      assert(reasoningBlock.includes('return "xhigh";'));
+      assert(!reasoningBlock.includes('return "medium";'));
+      assert(!reasoningBlock.includes('return "low";'));
+      assert(agent.includes("visibleContext: cleanPromptBlock(context, maxAgentContextChars)"));
+      assert(agent.includes("formatCodexLearningMemory(report).slice(0, maxAgentMemoryChars)"));
+      assert(!agent.includes("formatCodexLearningMemory(report).slice(0, 4000)"));
+      assert(!agent.includes("routineTask ? 3000 : maxAgentContextChars"));
+      assert(!agent.includes("routineTask ? 1400 : 4000"));
+    }],
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const relay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
@@ -1478,7 +1510,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!main.includes("sendOperatorUserMessage"));
       assert(!main.includes('type: "operator.message"'));
       assert(main.includes("containsAgentInvocation"));
-      assert(main.includes("(?:\\u0430\\u0433\\u0435\\u043d\\u0442|agent)"));
+      assert(main.includes("(?:\\u043b\\u043e\\u0440\\u0434|lord)"));
+      assert(!main.includes("(?:\\u0430\\u0433\\u0435\\u043d\\u0442|agent)"));
       assert(main.includes("stripAgentInvocation"));
       assert(main.includes("explicitMention: true"));
       assert(agent.includes("learningContextForTurn"));
