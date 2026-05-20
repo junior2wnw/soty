@@ -2088,6 +2088,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("ensureAgentDialogBridgeReady"));
       assert(!ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
       assert(!ui.includes("<aside class=\"side-panel\">"));
+      assert(!ui.includes("terminal-close"));
       assert(serviceWorker.includes('const cacheName = "soty-online-v19"'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));

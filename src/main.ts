@@ -2398,7 +2398,6 @@ function renderApp(): void {
             <span class="terminal-title">COMMANDS</span>
             <span class="terminal-status">READY</span>
             <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
-            <button class="terminal-close" type="button" aria-label="close" data-tooltip="Закрыть удаленные команды">${icon("close")}</button>
           </div>
           <div class="terminal-output"></div>
           <form class="terminal-form">
@@ -2489,12 +2488,6 @@ function renderApp(): void {
     stageFiles(fileInput?.files);
     if (fileInput) {
       fileInput.value = "";
-    }
-  });
-  app.querySelector<HTMLButtonElement>(".terminal-close")?.addEventListener("click", () => {
-    const tunnelId = activeTerminalTunnelId();
-    if (tunnelId) {
-      closeRemoteMode(tunnelId);
     }
   });
   app.querySelector<HTMLButtonElement>(".terminal-collapse")?.addEventListener("click", () => {
