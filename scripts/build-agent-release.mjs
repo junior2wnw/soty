@@ -13,6 +13,7 @@ const outputPath = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
 const windowsMachineCmdPath = join(outputDir, "install-windows-machine.cmd");
 const windowsReinstallDir = join(outputDir, "windows-reinstall");
+const nativeWindowChromeDir = join(outputDir, "native-window-chrome");
 const retiredOpsSkillArtifacts = [
   join(outputDir, "ops-skill.zip"),
   join(outputDir, "ops-skill.tar.gz")
@@ -39,6 +40,13 @@ const windowsReinstallScriptSpecs = [
     sourcePath: join(root, "scripts", "windows", "soty-make-fast-usb.ps1")
   }
 ];
+const nativeWindowChromeScriptSpecs = [
+  {
+    name: "windows",
+    fileName: "soty-pwa-window-chrome.ps1",
+    sourcePath: join(root, "scripts", "windows", "soty-pwa-window-chrome.ps1")
+  }
+];
 
 const source = await readFile(sourcePath, "utf8");
 const sourceText = source.replace(/\r\n/g, "\n");
@@ -52,9 +60,10 @@ await writeFile(outputPath, sourceText, { mode: 0o755 });
 await updateWindowsMachineInstallerRevision(version);
 await removeRetiredOpsSkillArtifacts();
 const windowsReinstall = await publishWindowsReinstallScripts();
-const routeProfiles = buildRouteProfiles(windowsReinstall);
+const nativeWindowChrome = await publishNativeWindowChromeScripts();
+const routeProfiles = buildRouteProfiles(windowsReinstall, nativeWindowChrome);
 const agentRuntime = buildSotyAgentRuntime();
-const automationToolkits = buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime);
+const automationToolkits = buildAutomationToolkits(windowsReinstall, nativeWindowChrome, routeProfiles, agentRuntime);
 const openAiToolPlane = buildOpenAiToolPlane();
 
 const manifest = {
@@ -108,6 +117,8 @@ const manifest = {
       "mouse",
       "wallpaper",
       "audio",
+      "native-window-chrome",
+      "frameless-pwa-window",
       "app",
       "api",
       "transaction",
@@ -118,6 +129,7 @@ const manifest = {
   agentRuntime,
   routeProfiles,
   windowsReinstall,
+  nativeWindowChrome,
   automationToolkits
 };
 
@@ -127,6 +139,7 @@ process.stdout.write(`memory-plane:${manifest.memoryPlane.schema}\n`);
 process.stdout.write(`computer-use-plane:${manifest.computerUsePlane.schema}\n`);
 process.stdout.write(`agent-runtime:${manifest.agentRuntime.schema}\n`);
 process.stdout.write(`windows-reinstall:${windowsReinstall.scripts.map((script) => `${script.name}:${script.sha256}`).join(",")}\n`);
+process.stdout.write(`native-window-chrome:${nativeWindowChrome.scripts.map((script) => `${script.name}:${script.sha256}`).join(",")}\n`);
 
 async function removeRetiredOpsSkillArtifacts() {
   await Promise.all(retiredOpsSkillArtifacts.map((path) => rm(path, { force: true }).catch(() => undefined)));
@@ -168,6 +181,30 @@ async function publishWindowsReinstallScripts() {
   };
 }
 
+async function publishNativeWindowChromeScripts() {
+  await mkdir(nativeWindowChromeDir, { recursive: true });
+  const scripts = [];
+  for (const spec of nativeWindowChromeScriptSpecs) {
+    if (!existsSync(spec.sourcePath)) {
+      throw new Error(`Native window chrome script not found: ${spec.sourcePath}`);
+    }
+    const bytes = await readFile(spec.sourcePath);
+    const outputFile = join(nativeWindowChromeDir, spec.fileName);
+    await writeFile(outputFile, bytes, { mode: 0o755 });
+    scripts.push({
+      name: spec.name,
+      platform: spec.name,
+      url: `/agent/native-window-chrome/${spec.fileName}`,
+      sha256: sha256(bytes),
+      bytes: bytes.length
+    });
+  }
+  return {
+    scriptsBaseUrl: "/agent/native-window-chrome/",
+    scripts
+  };
+}
+
 function buildOpenAiToolPlane() {
   return {
     schema: "openai.responses-tools+mcp.v1",
@@ -192,8 +229,13 @@ function buildOpenAiToolPlane() {
   };
 }
 
-function buildRouteProfiles(windowsReinstall) {
+function buildRouteProfiles(windowsReinstall, nativeWindowChrome) {
   const scriptProof = windowsReinstall.scripts.map((script) => ({
+    name: script.name,
+    sha256: script.sha256,
+    bytes: script.bytes
+  }));
+  const windowChromeScriptProof = nativeWindowChrome.scripts.map((script) => ({
     name: script.name,
     sha256: script.sha256,
     bytes: script.bytes
@@ -278,6 +320,39 @@ function buildRouteProfiles(windowsReinstall) {
           contextFingerprint: "codex-generated-image+source-user-desktop",
           receipt: "append-only sanitized route proof"
         }
+      },
+      {
+        id: "soty-native-window-chrome-fast-lane",
+        family: "native-window-chrome",
+        title: "Native frameless Soty PWA window chrome",
+        entryTool: "computer",
+        capability: "frameless-pwa-window",
+        defaultOperation: "window-chrome",
+        defaultAction: "install",
+        context: "interactive-user-desktop",
+        phases: ["status", "apply", "install", "restore", "uninstall"],
+        route: [
+          "prove the target is the interactive user desktop",
+          "find only Soty PWA windows by title/process",
+          "remove the native Windows caption from matching HWNDs",
+          "install a per-user watcher only after explicit user intent",
+          "return status with matched windows and caption/frameless state"
+        ],
+        doNot: [
+          "do not run against all browser windows",
+          "do not treat web manifest window-controls-overlay as guaranteed",
+          "do not run as SYSTEM for interactive window styling",
+          "do not install a persistent watcher for unrelated apps"
+        ],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+        scripts: windowChromeScriptProof,
+        learning: {
+          reuseKey: "soty-native-window-chrome-fast-lane",
+          scriptUse: "status/apply/install/restore/uninstall",
+          successCriteria: "matching Soty PWA HWND has caption=false and watcher installed when requested",
+          contextFingerprint: "interactive-user-desktop",
+          receipt: "append-only sanitized route proof"
+        }
       }
     ]
   };
@@ -291,7 +366,7 @@ function buildSotyAgentRuntime() {
   });
 }
 
-function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) {
+function buildAutomationToolkits(windowsReinstall, nativeWindowChrome, routeProfiles, agentRuntime) {
   const openAiToolPlane = buildOpenAiToolPlane();
   return {
     schema: "soty.automation-toolkits.v2",
@@ -377,6 +452,21 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         })),
         proof: ["backupProof", "installMedia", "unattend", "postinstall", "repairProof", "cancelProof", "rebooting"],
         routeProfile: "soty-windows-reinstall-managed-fast-lane"
+      },
+      {
+        name: "native-window-chrome",
+        entryTool: "computer",
+        kind: "managed-toolkit",
+        phases: ["status", "apply", "install", "restore", "uninstall"],
+        scriptSet: "nativeWindowChrome",
+        scripts: nativeWindowChrome.scripts.map((script) => ({
+          name: script.name,
+          platform: script.platform,
+          sha256: script.sha256,
+          bytes: script.bytes
+        })),
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+        routeProfile: "soty-native-window-chrome-fast-lane"
       }
     ],
     routeProfiles

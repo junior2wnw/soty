@@ -453,6 +453,7 @@ const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
+const nativeWindowChromeKey = "soty:native-window-chrome:v1";
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -465,6 +466,8 @@ window.addEventListener("message", (event) => {
 window.addEventListener("storage", (event) => {
   if (event.key === miniAppsRegistryKey) {
     handleMiniAppRegistryChange();
+  } else if (event.key === nativeWindowChromeKey) {
+    applyNativeWindowChromePreference();
   }
 });
 
@@ -497,6 +500,8 @@ void boot();
 
 async function boot(): Promise<void> {
   adoptAgentRelayFromUrl();
+  captureNativeWindowChromePreference();
+  applyNativeWindowChromePreference();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
 
@@ -585,6 +590,35 @@ async function registerServiceWorker(): Promise<void> {
   } catch (error) {
     console.warn("[soty] Service worker registration failed", error);
   }
+}
+
+function captureNativeWindowChromePreference(): void {
+  const url = new URL(window.location.href);
+  const value = url.searchParams.get("native-window-chrome") || "";
+  if (!value) {
+    return;
+  }
+  try {
+    if (value === "1" || value === "true" || value === "on") {
+      localStorage.setItem(nativeWindowChromeKey, "1");
+    } else if (value === "0" || value === "false" || value === "off") {
+      localStorage.removeItem(nativeWindowChromeKey);
+    }
+  } catch {
+    // Non-critical: the window can still use the native browser chrome.
+  }
+  url.searchParams.delete("native-window-chrome");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function applyNativeWindowChromePreference(): void {
+  let enabled = false;
+  try {
+    enabled = localStorage.getItem(nativeWindowChromeKey) === "1";
+  } catch {
+    enabled = false;
+  }
+  document.body.classList.toggle("native-window-chrome", enabled);
 }
 
 function scheduleServiceWorkerUpdate(registration: ServiceWorkerRegistration): void {

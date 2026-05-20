@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.77";
+const agentVersion = "0.4.78";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6665,6 +6665,7 @@ function runtimeTargetScore(target, preferredId) {
 
 const windowsReinstallRouteProfileId = "soty-windows-reinstall-managed-fast-lane";
 const generatedAssetRouteProfileId = "soty-generated-asset-wallpaper-fast-lane";
+const nativeWindowChromeRouteProfileId = "soty-native-window-chrome-fast-lane";
 const reinstallPrepareOrphanGraceSeconds = 120;
 const reinstallMediaResumeGraceSeconds = 900;
 
@@ -6677,7 +6678,7 @@ function routeProfilesStatus() {
       provenAfter: "two compatible successful runs without newer conflicting failure",
       promotedInto: "manifest-pinned capability, proof checks, eval/selftest"
     },
-    profiles: [windowsReinstallRouteProfile(), generatedAssetRouteProfile()]
+    profiles: [windowsReinstallRouteProfile(), generatedAssetRouteProfile(), nativeWindowChromeRouteProfile()]
   };
 }
 
@@ -6758,6 +6759,41 @@ function generatedAssetRouteProfile() {
       scriptUse: "image_gen/artifact/wallpaper/verify",
       successCriteria: "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
       contextFingerprint: "codex-generated-image+source-user-desktop",
+      receipt: "append-only sanitized route proof"
+    }
+  };
+}
+
+function nativeWindowChromeRouteProfile() {
+  return {
+    id: nativeWindowChromeRouteProfileId,
+    family: "native-window-chrome",
+    title: "Native frameless Soty PWA window chrome",
+    entryTool: "computer",
+    capability: "frameless-pwa-window",
+    defaultOperation: "window-chrome",
+    defaultAction: "install",
+    context: "interactive-user-desktop",
+    phases: ["status", "apply", "install", "restore", "uninstall"],
+    route: [
+      "prove the target is the interactive user desktop",
+      "find only Soty PWA windows by title/process",
+      "remove the native Windows caption from matching HWNDs",
+      "install a per-user watcher only after explicit user intent",
+      "return status with matched windows and caption/frameless state"
+    ],
+    doNot: [
+      "do not run against all browser windows",
+      "do not treat web manifest window-controls-overlay as guaranteed",
+      "do not run as SYSTEM for interactive window styling",
+      "do not install a persistent watcher for unrelated apps"
+    ],
+    proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+    learning: {
+      reuseKey: nativeWindowChromeRouteProfileId,
+      scriptUse: "status/apply/install/restore/uninstall",
+      successCriteria: "matching Soty PWA HWND has caption=false and watcher installed when requested",
+      contextFingerprint: "interactive-user-desktop",
       receipt: "append-only sanitized route proof"
     }
   };
@@ -8496,8 +8532,9 @@ function runMcpServer() {
     if (operation === "audio" || key.includes("audio") || key.includes("volume") || key.includes("mute")) {
       return "soty_audio";
     }
-    if (["desktop", "screen", "display", "screenshot", "windows", "window", "focus", "click", "type", "key", "keyboard", "mouse", "wallpaper"].includes(operation)
-      || /\b(?:desktop|screen|display|screenshot|window|keyboard|mouse|wallpaper)\b/u.test(key)) {
+    if (["desktop", "screen", "display", "screenshot", "windows", "window", "focus", "click", "type", "key", "keyboard", "mouse", "wallpaper", "window-chrome", "window_chrome", "frameless", "frameless-pwa"].includes(operation)
+      || ["native-window-chrome", "frameless-pwa-window"].includes(capability)
+      || /\b(?:desktop|screen|display|screenshot|window|keyboard|mouse|wallpaper|frameless|window-chrome|window_chrome)\b/u.test(key)) {
       return "soty_desktop";
     }
     if (operation === "run" && args.durable === false) {
@@ -8593,6 +8630,8 @@ function runMcpServer() {
         "mouse",
         "wallpaper",
         "audio",
+        "native-window-chrome",
+        "frameless-pwa-window",
         "generated-asset-save-apply-verify",
         "managed-windows-reinstall"
       ],
@@ -11106,7 +11145,12 @@ function sourceDesktopScript(args) {
     text: String(args.text || "").slice(0, 4000),
     keys: String(args.keys || "").slice(0, 200),
     path: String(args.path || "").slice(0, 2000),
-    fit: String(args.fit || "fill").slice(0, 40)
+    fit: String(args.fit || "fill").slice(0, 40),
+    mode: String(args.mode || args.phase || args.chromeAction || "").slice(0, 40),
+    persist: args.persist === true || args.install === true,
+    intervalMs: Number.isSafeInteger(args.intervalMs) ? args.intervalMs : 1500,
+    durationSeconds: Number.isSafeInteger(args.durationSeconds) ? args.durationSeconds : 0,
+    manifestUrl: String(args.manifestUrl || updateManifestUrl).slice(0, 4000)
   }), "utf8").toString("base64");
   return `
 $ErrorActionPreference = 'Stop'
@@ -11123,7 +11167,97 @@ function NormalizePathForCompare([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
   try { return ([System.IO.Path]::GetFullPath($Value)).TrimEnd('\') } catch { return ([string]$Value).Trim() }
 }
+function Invoke-NativeWindowChrome {
+  param(
+    [string] $Mode,
+    [string] $TitlePattern,
+    [bool] $Persist,
+    [int] $IntervalMs,
+    [int] $DurationSeconds,
+    [string] $ManifestUrl
+  )
+  $identityName = CurrentIdentityName
+  $isSystemIdentity = $false
+  try { $isSystemIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value -eq 'S-1-5-18' } catch {}
+  if ($isSystemIdentity -or $identityName -match '^(NT AUTHORITY|WORKGROUP)\\SYSTEM$') {
+    throw 'window chrome action is running as SYSTEM; retry through the selected interactive user route'
+  }
+  if ([string]::IsNullOrWhiteSpace($Mode)) {
+    $Mode = if ($Persist) { 'install' } else { 'apply' }
+  }
+  $Mode = $Mode.Trim().ToLowerInvariant()
+  if ($Mode -eq 'enable') { $Mode = 'install' }
+  if ($Mode -eq 'disable') { $Mode = 'uninstall' }
+  if ($Mode -eq 'remove') { $Mode = 'uninstall' }
+  if ($Mode -eq 'once') { $Mode = 'apply' }
+  if (@('status','apply','restore','watch','install','uninstall') -notcontains $Mode) {
+    throw ('unsupported window chrome mode: ' + $Mode)
+  }
+  if ([string]::IsNullOrWhiteSpace($TitlePattern)) {
+    $TitlePattern = '\u0441\u043e\u0442\u044b\.online|soty\.online|xn--n1afe0b\.online'
+  }
+  if ([string]::IsNullOrWhiteSpace($ManifestUrl)) { throw 'manifestUrl is empty' }
+  $manifest = Invoke-RestMethod -Uri $ManifestUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+  $scriptSpec = @($manifest.nativeWindowChrome.scripts | Where-Object { [string]$_.name -eq 'windows' } | Select-Object -First 1)
+  if (-not $scriptSpec) { throw 'manifest missing nativeWindowChrome windows script' }
+  if ([string]::IsNullOrWhiteSpace([string]$scriptSpec.url) -or [string]::IsNullOrWhiteSpace([string]$scriptSpec.sha256)) {
+    throw 'manifest nativeWindowChrome windows script is incomplete'
+  }
+  $baseUri = New-Object System.Uri -ArgumentList $ManifestUrl
+  $scriptUri = New-Object System.Uri -ArgumentList $baseUri, ([string]$scriptSpec.url)
+  $downloadRoot = Join-Path $env:LOCALAPPDATA 'Soty\agent-scripts\native-window-chrome'
+  New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+  $scriptPath = Join-Path $downloadRoot 'soty-pwa-window-chrome.ps1'
+  $needsDownload = $true
+  if (Test-Path -LiteralPath $scriptPath) {
+    $currentHash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $needsDownload = $currentHash -ne ([string]$scriptSpec.sha256).ToLowerInvariant()
+  }
+  if ($needsDownload) {
+    Invoke-WebRequest -Uri $scriptUri.AbsoluteUri -OutFile $scriptPath -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+    $downloadedHash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($downloadedHash -ne ([string]$scriptSpec.sha256).ToLowerInvariant()) {
+      throw 'nativeWindowChrome script hash mismatch'
+    }
+  }
+  $psArgs = @(
+    '-NoLogo',
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    $scriptPath,
+    '-Action',
+    $Mode,
+    '-TitlePattern',
+    $TitlePattern,
+    '-IntervalMs',
+    ([string][Math]::Max(500, $IntervalMs)),
+    '-DurationSeconds',
+    ([string][Math]::Max(0, $DurationSeconds))
+  )
+  $output = & powershell.exe @psArgs 2>&1
+  $exit = $LASTEXITCODE
+  $text = [string]::Join([Environment]::NewLine, @($output | ForEach-Object { [string]$_ }))
+  if ($exit -ne 0) {
+    Write-Output $text
+    exit $exit
+  }
+  Write-Output $text
+}
 switch ($action) {
+  'window-chrome' {
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+  }
+  'window_chrome' {
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+  }
+  'frameless' {
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+  }
+  'frameless-pwa' {
+    Invoke-NativeWindowChrome -Mode ([string]$req.mode) -TitlePattern ([string]$req.title) -Persist ([bool]$req.persist) -IntervalMs ([int]$req.intervalMs) -DurationSeconds ([int]$req.durationSeconds) -ManifestUrl ([string]$req.manifestUrl)
+  }
   'display' {
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
@@ -12948,6 +13082,8 @@ function runtimeComputerUsePlaneStatus() {
       "mouse",
       "wallpaper",
       "audio",
+      "native-window-chrome",
+      "frameless-pwa-window",
       "app",
       "api",
       "transaction",
@@ -12981,7 +13117,7 @@ function automationToolkitStatus() {
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       routeProfileSchema: "soty.route-profiles.v1"
     },
-    available: ["computer-use-plane", "agent-runtime", "surface", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
+    available: ["computer-use-plane", "agent-runtime", "surface", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall", "native-window-chrome"],
     toolkits: [
       {
         name: "agent-runtime",
@@ -12996,7 +13132,7 @@ function automationToolkitStatus() {
         entryTool: "computer",
         phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
-        routeProfiles: [windowsReinstallRouteProfileId, generatedAssetRouteProfileId]
+        routeProfiles: [windowsReinstallRouteProfileId, generatedAssetRouteProfileId, nativeWindowChromeRouteProfileId]
       },
       {
         name: "capability-gateway",
@@ -13023,6 +13159,13 @@ function automationToolkitStatus() {
         phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
         proof: ["backupProof", "installMedia", "unattend", "postinstall", "repairProof", "cancelProof", "rebooting"],
         routeProfile: windowsReinstallRouteProfileId
+      },
+      {
+        name: "native-window-chrome",
+        entryTool: "computer",
+        phases: ["status", "apply", "install", "restore", "uninstall"],
+        proof: ["matchedWindowTitle", "pid", "hwnd", "caption", "frameless", "taskName", "persistence"],
+        routeProfile: nativeWindowChromeRouteProfileId
       }
     ],
     routeProfiles: routeProfilesStatus()

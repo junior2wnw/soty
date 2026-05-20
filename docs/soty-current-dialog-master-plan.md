@@ -114,6 +114,22 @@
   chrome и свой крестик закрытия окна.
 - Верхняя область должна быть drag-region, а интерактивные кнопки - no-drag.
 - В обычной вкладке браузера этот chrome не должен появляться.
+- Если браузер/PWA не включает overlay фактически, это не чинится web-кодом.
+  Тогда нужен локальный native window chrome helper через агента.
+- На Windows helper должен работать точечно: искать только окно Сот, убирать
+  `WS_CAPTION` у его HWND, возвращать proof `pid/hwnd/caption/frameless` и
+  уметь ставить per-user watcher для следующих запусков.
+- Persist route на Windows: сначала пробовать per-user Scheduled Task, а если
+  текущий пользовательский контекст получает `Access denied`, сохранять watcher
+  через `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Это локальная
+  настройка конкретного пользователя и не требует SYSTEM/админа.
+- Собственный topbar Сот в native-helper режиме включается локальной настройкой
+  `native-window-chrome=1`, чтобы не показывать двойной верхний бар в обычной
+  PWA, где системная полоска еще не снята.
+- Helper нельзя запускать против всех окон браузера и нельзя считать SYSTEM
+  сессией правильным местом для интерактивного window styling.
+- На macOS правильный путь - отдельный native helper/wrapper с AppKit или
+  проверенный accessibility/fullscreen route; это не должно быть web-костылем.
 
 ### Мини-аппы и удаленная консоль
 
