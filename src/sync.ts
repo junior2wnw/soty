@@ -666,7 +666,7 @@ export class TunnelSync {
       name: file.name || "file",
       type: file.type || "application/octet-stream",
       size: file.size,
-      bytes: new Uint8Array(),
+      bytes,
       url: URL.createObjectURL(file),
       nick: this.device.nick,
       deviceId: this.device.id,

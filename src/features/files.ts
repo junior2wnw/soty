@@ -2,7 +2,7 @@ import { clock } from "../core/time";
 import { icon } from "../icons";
 import { ReceivedFile } from "../sync";
 
-export const maxFileBytes = 512_000_000;
+export const maxFileBytes = 2_000_000_000;
 
 export function filesFrom(list?: FileList | null): File[] {
   return list ? Array.from(list).filter((file) => file.size <= maxFileBytes) : [];
@@ -66,9 +66,12 @@ export function renderFileRail(
 }
 
 export function downloadReceivedFile(file: ReceivedFile): void {
-  const body = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
-  const blob = new Blob([body], { type: file.type || "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
+  const hasInlineBytes = file.bytes.byteLength > 0;
+  const body = hasInlineBytes
+    ? file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer
+    : null;
+  const blob = body ? new Blob([body], { type: file.type || "application/octet-stream" }) : null;
+  const url = blob ? URL.createObjectURL(blob) : file.url;
   const link = document.createElement("a");
   link.href = url;
   link.download = file.name || "file";
@@ -77,7 +80,9 @@ export function downloadReceivedFile(file: ReceivedFile): void {
   document.body.append(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  if (blob) {
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
 }
 
 function installRailScroll(root: HTMLElement): void {

@@ -146,6 +146,26 @@ type MiniAppSession = {
 type MiniAppScope = "account" | "chat" | "device";
 type MiniAppWindowLayout = "half" | "compact" | "large" | "full" | "floating";
 
+type PendingAttachment = {
+  readonly id: string;
+  readonly file: File;
+  readonly name: string;
+  readonly type: string;
+  readonly size: number;
+};
+
+type FileBundleAttachment = {
+  readonly id: string;
+  readonly name: string;
+  readonly type: string;
+  readonly size: number;
+};
+
+type FileBundleMarker = {
+  readonly id: string;
+  readonly files: readonly FileBundleAttachment[];
+};
+
 type MiniAppInstallResult = {
   readonly ok: boolean;
   readonly app?: MiniAppDefinition;
@@ -169,6 +189,7 @@ const peerDevices = new Map<string, readonly PeerInfo[]>();
 const syncStates = new Map<string, "open" | "closed" | "connecting">();
 const files = new Map<string, ReceivedFile[]>();
 const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
+const pendingAttachments = new Map<string, PendingAttachment[]>();
 const localDrafts = new Map<string, string>();
 const liveDrafts = new Map<string, Map<string, LiveDraftState>>();
 const liveDraftTimers = new Map<string, number>();
@@ -188,6 +209,9 @@ const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
 const miniAppContextProtocol = "soty.mini-app.context.v1";
 const staticMiniAppsEnabled = false;
+const mobileAppkaCreationEnabled = false;
+const fileBundlePrefix = "SOTY_FILE_BUNDLE:";
+const agentAttachmentLimit = 10;
 let miniApps: MiniAppDefinition[] = [];
 let manifestMiniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
@@ -687,6 +711,7 @@ function applySameDeviceWindowState(reason: string, followSelected: boolean): vo
   if ((followSelected || reason === selectedKey || !currentStillExists) && storedSelected) {
     selectedId = storedSelected;
   }
+  ensurePermanentAgentDialog();
   normalizeSelectedTunnel();
   const activeIds = new Set(tunnels.map((tunnel) => tunnel.id));
   for (const [id, sync] of syncs) {
@@ -703,7 +728,7 @@ function applySameDeviceWindowState(reason: string, followSelected: boolean): vo
   if (previousSignature !== nextSignature || reason === selectedKey || followSelected) {
     applySelectedText();
     renderTiles();
-    renderFiles();
+    renderComposerAttachments();
     renderTerminal();
     renderChess();
     renderMiniAppPanel();
@@ -1897,6 +1922,9 @@ function publishMiniAppContext(): void {
       collapsed: miniAppSession.collapsed,
       layouts: miniAppLayouts()
     },
+    appka: {
+      mobileCreationEnabled: mobileAppkaCreationEnabled
+    },
     capabilities: miniAppGrantedCapabilities(miniAppSession.app)
   };
   frame.contentWindow.postMessage(message, miniAppTargetOrigin(miniAppSession));
@@ -2317,6 +2345,7 @@ function renderApp(): void {
     tunnels = upsertTunnel(createTunnel());
     selectedId = tunnels[0]?.id || "";
   }
+  ensurePermanentAgentDialog();
   normalizeSelectedTunnel();
   for (const tunnel of tunnels) {
     ensureSync(tunnel);
@@ -2333,7 +2362,6 @@ function renderApp(): void {
             <small>LIVE TUNNELS</small>
           </span>
         </div>
-        <button class="agent-open retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
         <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
@@ -2355,6 +2383,7 @@ function renderApp(): void {
           <div class="line-meta" aria-hidden="true"></div>
           <textarea class="dialog-buffer" spellcheck="false" autocapitalize="sentences" aria-hidden="true" tabindex="-1"></textarea>
           <form class="composer-bar">
+            <div class="composer-attachments" hidden></div>
             <button class="composer-attach retro-icon-button" type="button" aria-label="attach" data-tooltip="Прикрепить файл">${icon("clip")}</button>
             <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
             <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
@@ -2415,23 +2444,6 @@ function renderApp(): void {
           <h2>LIVE</h2>
           <div class="writer-pop"></div>
         </section>
-        <section class="side-block file-block">
-          <h2>FILES</h2>
-          <div class="file-rail"></div>
-        </section>
-        <section class="side-block action-block">
-          <h2>TOOLS</h2>
-          <div class="side-actions">
-            <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>FILE</span></button>
-            <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
-            <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
-            <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>DO</span></button>
-            <button class="side-action apps-action" type="button" hidden aria-label="mini apps" data-tooltip="Mini apps">${icon("remote")}<span>APPS</span></button>
-            <button class="side-action remote-action" type="button" hidden aria-label="download" data-tooltip="Скачать Soty Agent">${icon("download")}<span>DOWNLOAD</span></button>
-            <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
-            <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
-          </div>
-        </section>
       </aside>
     </section>
   `;
@@ -2447,9 +2459,6 @@ function renderApp(): void {
   }, { passive: true });
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
-  });
-  app.querySelector<HTMLButtonElement>(".agent-open")?.addEventListener("click", () => {
-    void startAgentDialog();
   });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
@@ -2477,10 +2486,10 @@ function renderApp(): void {
   app.querySelector<HTMLElement>(".editor")?.addEventListener("drop", (event) => {
     event.preventDefault();
     app.querySelector(".editor")?.classList.remove("dropping");
-    void sendFiles(event.dataTransfer?.files);
+    stageFiles(event.dataTransfer?.files);
   });
   fileInput?.addEventListener("change", () => {
-    void sendFiles(fileInput?.files);
+    stageFiles(fileInput?.files);
     if (fileInput) {
       fileInput.value = "";
     }
@@ -2503,52 +2512,15 @@ function renderApp(): void {
   app.querySelector<HTMLDivElement>(".chess-panel")?.addEventListener("click", (event) => {
     handleChessPanelClick(event);
   });
-  app.querySelector<HTMLButtonElement>(".attach-action")?.addEventListener("click", () => fileInput?.click());
-  app.querySelector<HTMLButtonElement>(".knock-action")?.addEventListener("click", () => {
-    if (!selectedId) {
-      return;
-    }
-    syncs.get(selectedId)?.sendKnock("*");
-    tunnels = touchTunnel(selectedId);
-    renderTiles();
-  });
-  app.querySelector<HTMLButtonElement>(".quick-actions-action")?.addEventListener("click", () => {
-    openActionMenu();
-  });
-  app.querySelector<HTMLButtonElement>(".apps-action")?.addEventListener("click", () => {
-    void openMiniAppLauncher();
-  });
-  app.querySelector<HTMLButtonElement>(".agent-action")?.addEventListener("click", () => {
-    void startAgentDialog();
-  });
   app.querySelector<HTMLButtonElement>(".mini-frame-collapse")?.addEventListener("click", () => {
     collapseMiniApp();
   });
   app.querySelector<HTMLButtonElement>(".mini-frame-dock")?.addEventListener("click", () => {
     restoreMiniApp();
   });
-  app.querySelector<HTMLButtonElement>(".chess-action")?.addEventListener("click", () => {
-    void openChessForSelected();
-  });
-  app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
-    void (async () => {
-      if (!selectedId) {
-        return;
-      }
-      const mode = await refreshAgentButtonState(true);
-      if (mode !== "link") {
-        requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
-      }
-    })();
-  });
-  app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
-    if (selectedId) {
-      closeTunnel(selectedId);
-    }
-  });
   setupSplitter();
   applySelectedText();
-  renderFiles();
+  renderComposerAttachments();
   renderTerminal();
   renderChess();
   renderMiniAppPanel();
@@ -2590,13 +2562,22 @@ function renderTiles(): void {
       tunnels = markTunnel(id, false);
       renderTiles();
       applySelectedText(true);
-      renderFiles();
+      renderComposerAttachments();
       renderTerminal();
       renderChess();
       renderMiniAppPanel();
       publishMiniAppContext();
     },
     menu: (id, x, y) => {
+      selectTunnel(id);
+      applySelectedText(true);
+      renderComposerAttachments();
+      renderTerminal();
+      renderChess();
+      renderMiniAppPanel();
+      const tunnel = loadTunnels().find((item) => item.id === id);
+      const canClose = !tunnel || !isAgentTunnel(tunnel);
+      const availableMiniApps = currentMiniApps();
       openCounterpartyMenu(x, y, {
         attach: () => {
           selectTunnel(id);
@@ -2616,9 +2597,33 @@ function renderTiles(): void {
             void toggleRemoteGrant(id);
           }
         },
-        close: () => closeTunnel(id)
+        actions: () => {
+          selectTunnel(id);
+          openActionMenu();
+        },
+        apps: () => {
+          selectTunnel(id);
+          void openMiniAppLauncher();
+        },
+        chess: () => {
+          selectTunnel(id);
+          void openChessForSelected();
+        },
+        agentInstall: () => {
+          void (async () => {
+            selectTunnel(id);
+            const mode = await refreshAgentButtonState(true);
+            if (mode !== "link") {
+              requestAgentDownload(isAgentTunnelId(id) ? device || undefined : undefined);
+            }
+          })();
+        },
+        ...(canClose ? { close: () => closeTunnel(id) } : {})
       }, {
-        remoteEnabled: remoteEnabled.has(id)
+        remoteEnabled: remoteEnabled.has(id),
+        canClose,
+        hasMiniApps: availableMiniApps.length > 0,
+        needsAgentInstall: agentButtonMode() !== "link"
       });
     }
   });
@@ -2629,10 +2634,6 @@ function renderEmptyHiveActions(field: HTMLDivElement): void {
   const actions = document.createElement("div");
   actions.className = "empty-hive-actions";
   actions.innerHTML = `
-    <button class="empty-hive-action empty-agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">
-      ${icon("person")}
-      <span>AGENT</span>
-    </button>
     <button class="empty-hive-action empty-qr-action" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">
       ${icon("qr")}
       <span>QR</span>
@@ -2641,9 +2642,6 @@ function renderEmptyHiveActions(field: HTMLDivElement): void {
   field.append(actions);
   actions.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
-  });
-  actions.querySelector<HTMLButtonElement>(".empty-agent-action")?.addEventListener("click", () => {
-    void startAgentDialog();
   });
   actions.querySelector<HTMLButtonElement>(".empty-qr-action")?.addEventListener("click", () => {
     void showQr();
@@ -3062,6 +3060,51 @@ function counterpartyLabel(tunnel: TunnelRecord): string {
   return label;
 }
 
+function ensurePermanentAgentDialog(): void {
+  const current = loadTunnels();
+  const now = new Date().toISOString();
+  let changed = false;
+  let found = false;
+  const next = current.map((tunnel) => {
+    if (!isAgentTunnel(tunnel)) {
+      return tunnel;
+    }
+    found = true;
+    if (!tunnel.archived && tunnel.label === agentDialogLabel && tunnel.counterparty === true) {
+      return tunnel;
+    }
+    changed = true;
+    return {
+      ...tunnel,
+      label: agentDialogLabel,
+      counterparty: true,
+      archived: false,
+      updatedAt: now
+    };
+  });
+  if (!found) {
+    changed = true;
+    next.unshift({
+      ...createTunnel(agentDialogLabel, true),
+      agent: true,
+      color: colorFor(`agent:${device?.id || now}`),
+      score: -1
+    });
+  }
+  if (!changed) {
+    tunnels = current;
+    return;
+  }
+  saveTunnels(next);
+  tunnels = next;
+  if (!selectedId || !next.some((tunnel) => tunnel.id === selectedId)) {
+    selectedId = next[0]?.id || "";
+    if (selectedId) {
+      saveSelectedTunnelId(selectedId);
+    }
+  }
+}
+
 function startFreshDialog(): void {
   const active = loadTunnels().find((tunnel) => tunnel.id === selectedId);
   if (active && !isAgentTunnel(active) && hasCounterparty(active)) {
@@ -3111,6 +3154,7 @@ function clearCurrentDialog(tunnelId: string): void {
   texts.set(tunnelId, "");
   saveTextSnapshotNow(tunnelId, "");
   localDrafts.delete(tunnelId);
+  pendingAttachments.delete(tunnelId);
   writerLines.delete(tunnelId);
   activeActivities.delete(tunnelId);
   activeActivityTicks.delete(tunnelId);
@@ -3416,14 +3460,16 @@ function ensureSync(tunnel: TunnelRecord): void {
       maybeAutoDownloadReceivedFile(tunnel.id, file);
       tunnels = tunnel.id === selectedId ? touchTunnel(tunnel.id) : markTunnel(tunnel.id, true);
       if (tunnel.id === selectedId) {
-        renderFiles();
+        renderTextPaint();
+        renderComposerAttachments();
       }
       renderTiles();
     },
     onFileDeleted: (fileId) => {
       files.set(tunnel.id, (files.get(tunnel.id) ?? []).filter((item) => item.id !== fileId));
       if (tunnel.id === selectedId) {
-        renderFiles();
+        renderTextPaint();
+        renderComposerAttachments();
       }
     },
     onMiniApps: (apps) => {
@@ -3586,6 +3632,12 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
 }
 
 function closeTunnel(id: string): void {
+  const tunnel = loadTunnels().find((item) => item.id === id);
+  if (tunnel && isAgentTunnel(tunnel)) {
+    selectTunnel(id);
+    renderTiles();
+    return;
+  }
   const sync = syncs.get(id);
   sync?.closeForEveryone();
   syncs.delete(id);
@@ -3614,6 +3666,7 @@ function closeTunnel(id: string): void {
   clearLiveDraftState(id);
   agentThinking.delete(id);
   localDrafts.delete(id);
+  pendingAttachments.delete(id);
   files.delete(id);
   fileNotices.delete(id);
   tunnels = removeTunnel(id);
@@ -3640,6 +3693,7 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     chessGames.delete(tunnel.id);
     chessFlipped.delete(tunnel.id);
     forgetChessSnapshot(tunnel.id);
+    pendingAttachments.delete(tunnel.id);
     files.delete(tunnel.id);
     fileNotices.delete(tunnel.id);
   }
@@ -3711,7 +3765,7 @@ function setFileNotice(tunnelId: string, text: string): void {
     if (notice && notice.until <= Date.now()) {
       fileNotices.delete(tunnelId);
       if (tunnelId === selectedId) {
-        renderFiles();
+        renderComposerAttachments();
       }
     }
   }, 9200);
@@ -3739,7 +3793,127 @@ function deleteFile(fileId: string): void {
   }
   files.set(selectedId, (files.get(selectedId) ?? []).filter((item) => item.id !== fileId));
   syncs.get(selectedId)?.deleteFile(fileId);
-  renderFiles();
+  renderComposerAttachments();
+}
+
+function stageFiles(list?: FileList | null): void {
+  if (!selectedId) {
+    return;
+  }
+  const tunnelId = selectedId;
+  const accepted = filesFrom(list);
+  const oversized = oversizedFilesFrom(list);
+  const current = pendingAttachments.get(tunnelId) ?? [];
+  const limit = isAgentTunnelId(tunnelId) ? agentAttachmentLimit : Number.POSITIVE_INFINITY;
+  const openSlots = Math.max(0, limit - current.length);
+  const nextFiles = accepted.slice(0, openSlots).map(pendingAttachmentFromFile);
+  const rejectedByCount = accepted.length - nextFiles.length;
+  if (nextFiles.length > 0) {
+    pendingAttachments.set(tunnelId, [...current, ...nextFiles]);
+  }
+  if (oversized.length > 0 || rejectedByCount > 0) {
+    const parts = [
+      oversized.length > 0 ? `File is too large: current browser transfer limit is ${formatFileSize(maxFileBytes)}` : "",
+      rejectedByCount > 0 ? `Agent messages accept up to ${agentAttachmentLimit} files at once` : ""
+    ].filter(Boolean);
+    setFileNotice(tunnelId, parts.join(". "));
+  }
+  renderComposerAttachments();
+}
+
+function pendingAttachmentFromFile(file: File): PendingAttachment {
+  return {
+    id: `pending_${crypto.randomUUID()}`,
+    file,
+    name: file.name || "file",
+    type: file.type || "application/octet-stream",
+    size: file.size
+  };
+}
+
+async function sendPendingAttachments(tunnelId: string, sync: TunnelSync): Promise<ReceivedFile[]> {
+  const pending = pendingAttachments.get(tunnelId) ?? [];
+  if (pending.length === 0) {
+    return [];
+  }
+  const limit = isAgentTunnelId(tunnelId) ? agentAttachmentLimit : Number.POSITIVE_INFINITY;
+  const sending = pending.slice(0, limit);
+  const remaining = pending.slice(sending.length);
+  const sent: ReceivedFile[] = [];
+  let failed = 0;
+  for (const item of sending) {
+    try {
+      const localFile = await sync.sendFile(item.file);
+      sent.push(localFile);
+      files.set(tunnelId, [localFile, ...(files.get(tunnelId) ?? []).filter((file) => file.id !== localFile.id)]);
+    } catch {
+      failed += 1;
+    }
+  }
+  if (remaining.length > 0) {
+    pendingAttachments.set(tunnelId, remaining);
+  } else {
+    pendingAttachments.delete(tunnelId);
+  }
+  if (failed > 0) {
+    setFileNotice(tunnelId, "Some files did not send. Keep the chat open and try again.");
+  }
+  return sent;
+}
+
+function renderComposerAttachments(): void {
+  const root = app.querySelector<HTMLDivElement>(".composer-attachments");
+  if (!root) {
+    return;
+  }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
+  const pending = pendingAttachments.get(selectedId) ?? [];
+  const notice = activeFileNotice(selectedId);
+  root.hidden = pending.length === 0 && !notice;
+  root.innerHTML = [
+    notice ? `<div class="composer-file-notice" style="--color:${color}">${escapeHtml(notice)}</div>` : "",
+    ...pending.map((item) => `
+      <div class="composer-file-chip" style="--color:${color}" data-pending-id="${escapeHtml(item.id)}">
+        <span>${icon("clip")}</span>
+        <b>${escapeHtml(item.name)}</b>
+        <small>${escapeHtml(formatFileSize(item.size))}</small>
+        <button type="button" data-pending-id="${escapeHtml(item.id)}" aria-label="remove file" data-tooltip="Remove file">${icon("close")}</button>
+      </div>
+    `)
+  ].join("");
+  root.querySelectorAll<HTMLButtonElement>("button[data-pending-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removePendingAttachment(button.dataset.pendingId || "");
+    });
+  });
+}
+
+function removePendingAttachment(id: string): void {
+  if (!selectedId || !id) {
+    return;
+  }
+  const next = (pendingAttachments.get(selectedId) ?? []).filter((item) => item.id !== id);
+  if (next.length > 0) {
+    pendingAttachments.set(selectedId, next);
+  } else {
+    pendingAttachments.delete(selectedId);
+  }
+  renderComposerAttachments();
+}
+
+function activeFileNotice(tunnelId: string): string {
+  const notice = fileNotices.get(tunnelId);
+  if (!notice) {
+    return "";
+  }
+  if (notice.until <= Date.now()) {
+    fileNotices.delete(tunnelId);
+    return "";
+  }
+  return notice.text;
 }
 
 function applyKnock(tunnelId: string, knock: NoticeKnock): void {
@@ -3853,7 +4027,7 @@ function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
   tunnels = markTunnel(tunnelId, false);
   renderTiles();
   applySelectedText(true);
-  renderFiles();
+  renderComposerAttachments();
   void runLocalAgentCommand(tunnelId, command);
   renderTerminal();
 }
@@ -3875,7 +4049,7 @@ function applyRemoteScript(tunnelId: string, script: RemoteScript): void {
   tunnels = markTunnel(tunnelId, false);
   renderTiles();
   applySelectedText(true);
-  renderFiles();
+  renderComposerAttachments();
   void runLocalAgentScript(tunnelId, script);
   renderTerminal();
 }
@@ -4336,7 +4510,7 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   renderTiles();
   if (!keepCurrentDialog) {
     applySelectedText(true);
-    renderFiles();
+    renderComposerAttachments();
   }
   renderTerminal();
   try {
@@ -4425,7 +4599,7 @@ async function runOperatorScript(message: {
   renderTiles();
   if (!keepCurrentDialog) {
     applySelectedText(true);
-    renderFiles();
+    renderComposerAttachments();
   }
   renderTerminal();
   try {
@@ -4967,7 +5141,7 @@ async function openChessForSelected(): Promise<void> {
     return;
   }
   if (miniAppSession) {
-    clearMiniAppSession();
+    collapseMiniApp();
   }
   if (activeChessTunnelId() === selectedId) {
     closeChessPanel();
@@ -6057,16 +6231,24 @@ async function finalizeComposerDraft(): Promise<void> {
   primeAgentDoneSound();
   const draft = composer.value || localDrafts.get(tunnelId) || "";
   const message = normalizeChatMessage(draft);
-  if (!message) {
+  const pendingCount = pendingAttachments.get(tunnelId)?.length ?? 0;
+  if (!message && pendingCount === 0) {
     if (draft) {
       composer.value = "";
       rememberComposerDraft();
     }
     return;
   }
+  const sentFiles = await sendPendingAttachments(tunnelId, sync);
+  if (!message && sentFiles.length === 0) {
+    renderComposerAttachments();
+    return;
+  }
   const current = texts.get(tunnelId) ?? textarea.value;
   const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-  const next = `${current}${separator}${message}\n`;
+  const bundleLine = sentFiles.length > 0 ? fileBundleLine(sentFiles) : "";
+  const visibleMessage = [message, bundleLine].filter(Boolean).join("\n");
+  const next = `${current}${separator}${visibleMessage}\n`;
   textarea.value = next;
   texts.set(tunnelId, next);
   sync.setText(next);
@@ -6077,19 +6259,55 @@ async function finalizeComposerDraft(): Promise<void> {
     liveDraftSendTimers.delete(tunnelId);
   }
   void sync.sendLiveDraft("");
+  const agentMessage = messageWithAttachmentContext(message, sentFiles);
   if (tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
-    void sendAgentDialogMessage(tunnelId, message);
+    void sendAgentDialogMessage(tunnelId, agentMessage);
   } else if (tunnel && containsAgentInvocation(message)) {
-    void sendAgentDialogMessage(tunnelId, message, { explicitMention: true });
+    void sendAgentDialogMessage(tunnelId, agentMessage, { explicitMention: true });
   }
   localDrafts.delete(tunnelId);
   composer.value = "";
   touchSelected();
   resizeComposer();
   renderTiles();
+  renderComposerAttachments();
   renderTextPaint();
   renderWriterPop();
+}
+
+function fileBundleLine(sentFiles: readonly ReceivedFile[]): string {
+  const bundle: FileBundleMarker = {
+    id: `bundle_${crypto.randomUUID()}`,
+    files: sentFiles.map(fileBundleAttachment)
+  };
+  return `${fileBundlePrefix}${JSON.stringify(bundle)}`;
+}
+
+function fileBundleAttachment(file: ReceivedFile): FileBundleAttachment {
+  return {
+    id: file.id,
+    name: file.name || "file",
+    type: file.type || "application/octet-stream",
+    size: Math.max(0, Math.trunc(file.size || file.bytes.byteLength || 0))
+  };
+}
+
+function messageWithAttachmentContext(message: string, sentFiles: readonly ReceivedFile[]): string {
+  if (sentFiles.length === 0) {
+    return message;
+  }
+  const summary = sentFiles
+    .map((file) => `- ${file.name || "file"} (${formatFileSize(file.size || file.bytes.byteLength || 0)}, sotyFileId=${file.id})`)
+    .join("\n");
+  return [
+    message || "Files attached.",
+    "",
+    "Attached files in this Soty message:",
+    summary,
+    "",
+    "Use the room-file-transfer / artifact route to inspect or move these files when needed."
+  ].join("\n");
 }
 
 function containsAgentInvocation(text: string): boolean {
@@ -6562,6 +6780,7 @@ function applySelectedText(focus = false): void {
     resizeComposer();
   }
   renderLineTags();
+  renderComposerAttachments();
   renderTextPaint();
   renderWriterPop();
   restoreSelectedChatScroll();
@@ -6939,10 +7158,31 @@ function renderTextPaint(): void {
     time: string;
     className: string;
     lines: string[];
+    attachments: FileBundleMarker[];
     live: WriterActivity | null;
   }[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
+    const fileBundle = parseFileBundleLine(line);
+    if (fileBundle) {
+      const current = bubbles[bubbles.length - 1];
+      if (current) {
+        current.attachments.push(fileBundle);
+      } else {
+        bubbles.push({
+          key: `files:${fileBundle.id}`,
+          side: "surface",
+          nick: counterpartyLabelForSelected(),
+          color: safeColor(undefined, `${selectedId}:files`),
+          time: clock(),
+          className: "is-file-bundle",
+          lines: [],
+          attachments: [fileBundle],
+          live: null
+        });
+      }
+      continue;
+    }
     const label = labels.get(index);
     let state = classifyChatLine(line, operatorBlock);
     const operatorNick = operatorNameFromLine(line);
@@ -6986,6 +7226,7 @@ function renderTextPaint(): void {
       time: label?.time || clock(),
       className: state.className,
       lines: [line],
+      attachments: [],
       live
     });
   }
@@ -6998,6 +7239,7 @@ function renderTextPaint(): void {
       time: clock(),
       className: "is-agent-thinking",
       lines: ["думаю"],
+      attachments: [],
       live: null
     });
   }
@@ -7011,6 +7253,7 @@ function renderTextPaint(): void {
       time: clock(new Date(draft.createdAt)),
       className: "is-live-draft",
       lines: draft.text.split("\n"),
+      attachments: [],
       live: {
         deviceId: draft.deviceId,
         nick,
@@ -7021,8 +7264,23 @@ function renderTextPaint(): void {
       }
     });
   }
+  const referencedFiles = new Set(bubbles.flatMap((bubble) => bubble.attachments.flatMap((bundle) => bundle.files.map((file) => file.id))));
+  const looseFiles = (files.get(selectedId) ?? []).filter((file) => !referencedFiles.has(file.id));
+  if (looseFiles.length > 0) {
+    bubbles.push({
+      key: "loose-files",
+      side: "surface",
+      nick: counterpartyLabelForSelected(),
+      color: safeColor(undefined, `${selectedId}:files`),
+      time: clock(),
+      className: "is-file-bundle",
+      lines: [],
+      attachments: [{ id: "loose-files", files: looseFiles.map(fileBundleAttachment) }],
+      live: null
+    });
+  }
   const visibleBubbles = bubbles.filter((bubble) =>
-    bubble.className === "is-agent-thinking" || bubble.live || bubble.lines.some((line) => line.trim())
+    bubble.className === "is-agent-thinking" || bubble.live || bubble.attachments.length > 0 || bubble.lines.some((line) => line.trim())
   );
   textPaint.innerHTML = visibleBubbles.map((bubble) => {
     const body = bubble.className === "is-agent-thinking"
@@ -7030,6 +7288,7 @@ function renderTextPaint(): void {
       : bubble.lines
         .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
         .join("");
+    const attachmentHtml = bubble.attachments.length > 0 ? renderBubbleAttachments(bubble.attachments) : "";
     const live = bubble.live
       ? `<em class="live-chip">${escapeHtml(activityCode(bubble.live.action))}${bubble.live.preview ? ` ${escapeHtml(compactPreview(bubble.live.preview))}` : ""}</em>`
       : "";
@@ -7041,15 +7300,79 @@ function renderTextPaint(): void {
           <small>${escapeHtml(bubble.time)}</small>
           ${live}
         </div>
-        <p>${body}</p>
+        ${body ? `<p>${body}</p>` : ""}
+        ${attachmentHtml}
       </article>
     `;
   }).join("");
+  installBubbleAttachmentDownloads();
   if (scroll && stickToBottom) {
     window.setTimeout(() => {
       scroll.scrollTop = scroll.scrollHeight;
     }, 0);
   }
+}
+
+function parseFileBundleLine(line: string): FileBundleMarker | null {
+  if (!line.startsWith(fileBundlePrefix)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(line.slice(fileBundlePrefix.length)) as unknown;
+    if (!isRecord(payload)) {
+      return null;
+    }
+    const id = recordString(payload, "id").slice(0, 120) || "bundle";
+    const rawFiles = Array.isArray(payload.files) ? payload.files : [];
+    const bundleFiles = rawFiles
+      .map((item) => isRecord(item) ? {
+        id: recordString(item, "id").slice(0, 140),
+        name: cleanDownloadedFileName(recordString(item, "name") || "file"),
+        type: recordString(item, "type").slice(0, 160) || "application/octet-stream",
+        size: Math.max(0, Math.trunc(Number(item.size) || 0))
+      } : null)
+      .filter((item): item is FileBundleAttachment => Boolean(item?.id));
+    return bundleFiles.length > 0 ? { id, files: bundleFiles } : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderBubbleAttachments(bundles: readonly FileBundleMarker[]): string {
+  const known = new Map((files.get(selectedId) ?? []).map((file) => [file.id, file]));
+  const items = bundles.flatMap((bundle) => bundle.files);
+  if (items.length === 0) {
+    return "";
+  }
+  return `
+    <div class="bubble-files">
+      ${items.map((item) => {
+        const file = known.get(item.id);
+        const ready = Boolean(file);
+        return `
+          <button class="bubble-file" type="button" data-file-id="${escapeHtml(item.id)}" ${ready ? "" : "disabled"} data-tooltip="${ready ? "Download file" : "Waiting for file data"}">
+            <span>${icon(ready ? "download" : "clip")}</span>
+            <b>${escapeHtml(item.name)}</b>
+            <small>${escapeHtml(formatFileSize(item.size))}</small>
+          </button>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function installBubbleAttachmentDownloads(): void {
+  textPaint?.querySelectorAll<HTMLButtonElement>(".bubble-file[data-file-id]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const fileId = button.dataset.fileId || "";
+      const file = (files.get(selectedId) ?? []).find((item) => item.id === fileId);
+      if (file) {
+        downloadReceivedFile(file);
+      }
+    });
+  });
 }
 
 function liveDraftsForSelected(): LiveDraftState[] {
@@ -7176,10 +7499,22 @@ function isOperatorHeader(line: string): boolean {
 function cleanAgentContext(value: string): string {
   return value
     .split(/\r?\n/u)
+    .map(agentContextLine)
     .filter((line) => !isAgentContextChromeLine(line))
     .join("\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
+}
+
+function agentContextLine(line: string): string {
+  const bundle = parseFileBundleLine(line);
+  if (!bundle) {
+    return line;
+  }
+  const names = bundle.files
+    .map((file) => `${file.name} (${formatFileSize(file.size)}, sotyFileId=${file.id})`)
+    .join("; ");
+  return `Attached files: ${names}`;
 }
 
 function isAgentContextChromeLine(line: string): boolean {

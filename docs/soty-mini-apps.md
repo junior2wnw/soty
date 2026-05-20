@@ -10,6 +10,30 @@ Remote connection technology lives in TrustLink Kernel
 adapter: it owns the manifest, account gating, CSP env wiring, and the visible
 chat panel.
 
+## Mobile Creation Status
+
+Creating an APPKA from a phone is intentionally OFF for now:
+
+```json
+{
+  "schema": "soty.mobile-appka.policy.v1",
+  "enabled": false
+}
+```
+
+Best future route: the phone should only be the controller UI. The actual build
+and serving work should run on a selected trusted device through the Soty/Kernel
+computer plane, then the result should be registered back into the chat as
+inline HTML or a trusted hosted surface. This keeps server load low because the
+server remains a relay/control plane, not a build host or asset CDN. For small
+apps, prefer one sandboxed inline HTML document synced in the room; for larger
+apps, prefer a device-local or user-provided host that is exposed through the
+kernel app-surface route.
+
+Until this policy is enabled, agents must not promise phone-local deployment.
+They may design the app, choose the target trusted device, and ask the device
+agent to build/register it through the normal APPKA path.
+
 ## Agent Install/Open
 
 The default APPKA path for "сделай аппку" requests is:

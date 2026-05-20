@@ -1992,7 +1992,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("canInstallMachineAgent"));
       assert(ui.includes("quickActions"));
       assert(ui.includes("soty.action-card.v1"));
-      assert(ui.includes("quick-actions-action"));
+      assert(ui.includes("openCounterpartyMenu"));
+      assert(ui.includes("actions: () =>"));
+      assert(!ui.includes("quick-actions-action"));
       assert(ui.includes("Комментарий пользователя"));
       assert(ui.includes("PRIVATE_ACTION_CARD"));
       assert(ui.includes("appendUserMessageToDialog"));

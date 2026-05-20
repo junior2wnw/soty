@@ -4,11 +4,18 @@ export interface CounterpartyMenuActions {
   readonly attach: () => void;
   readonly knock: () => void;
   readonly remote: () => void;
-  readonly close: () => void;
+  readonly actions: () => void;
+  readonly apps: () => void;
+  readonly chess: () => void;
+  readonly agentInstall: () => void;
+  readonly close?: () => void;
 }
 
 export interface CounterpartyMenuState {
   readonly remoteEnabled: boolean;
+  readonly canClose?: boolean;
+  readonly hasMiniApps?: boolean;
+  readonly needsAgentInstall?: boolean;
 }
 
 let currentCleanup = () => undefined;
@@ -23,10 +30,14 @@ export function openCounterpartyMenu(
   const menu = document.createElement("div");
   menu.className = "counterparty-menu retro-menu";
   menu.innerHTML = `
-    <button type="button" data-action="attach" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}</button>
-    <button type="button" data-action="knock" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}</button>
-    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote" data-tooltip="Удаленное подключение">${icon("remote")}</button>
-    <button type="button" data-action="close" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}</button>
+    <button type="button" data-action="attach" aria-label="attach" data-tooltip="Attach files">${icon("clip")}</button>
+    <button type="button" data-action="knock" aria-label="knock" data-tooltip="Ping">${icon("bell")}</button>
+    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote" data-tooltip="Remote commands">${icon("remote")}</button>
+    <button type="button" data-action="actions" aria-label="actions" data-tooltip="Actions">${icon("check")}</button>
+    <button class="${state.hasMiniApps ? "" : "is-disabled"}" type="button" data-action="apps" aria-label="mini apps" data-tooltip="Mini apps" ${state.hasMiniApps ? "" : "disabled"}>${icon("upload")}</button>
+    <button type="button" data-action="chess" aria-label="chess" data-tooltip="Chess">${icon("chess")}</button>
+    ${state.needsAgentInstall ? `<button type="button" data-action="agentInstall" aria-label="download" data-tooltip="Download or update agent">${icon("download")}</button>` : ""}
+    ${state.canClose === false ? "" : `<button type="button" data-action="close" aria-label="close" data-tooltip="Close cell">${icon("close")}</button>`}
   `;
   document.body.append(menu);
   const rect = menu.getBoundingClientRect();
@@ -56,6 +67,9 @@ export function openCounterpartyMenu(
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (button.disabled) {
+        return;
+      }
       const action = button.dataset.action as keyof CounterpartyMenuActions;
       closeCounterpartyMenu();
       actions[action]?.();

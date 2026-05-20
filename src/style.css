@@ -8,19 +8,19 @@
   --muted: #8fa39b;
   --panel: #10151b;
   --panel-2: #151b22;
-  --edge: #31414c;
+  --edge: #263640;
   --deep: #06080b;
   --green: #6dff8f;
   --cyan: #67e8f9;
   --amber: #ffcb62;
   --red: #ff6b6b;
   --cream: #f4ecd0;
-  --surface-top: rgba(255, 255, 255, 0.07);
-  --surface-mid: rgba(16, 24, 31, 0.94);
-  --surface-bottom: rgba(5, 8, 12, 0.98);
-  --shadow-soft: 0 14px 38px rgba(0, 0, 0, 0.28);
-  --shadow-deep: 0 26px 80px rgba(0, 0, 0, 0.48);
-  --shadow-lift: 0 18px 52px rgba(0, 0, 0, 0.36);
+  --surface-top: rgba(255, 255, 255, 0.032);
+  --surface-mid: rgba(15, 21, 27, 0.98);
+  --surface-bottom: rgba(7, 11, 15, 0.99);
+  --shadow-soft: 0 8px 18px rgba(0, 0, 0, 0.24);
+  --shadow-deep: 0 18px 46px rgba(0, 0, 0, 0.42);
+  --shadow-lift: 0 10px 26px rgba(0, 0, 0, 0.30);
   --ring-focus: 0 0 0 2px rgba(103, 232, 249, 0.22), 0 0 0 4px rgba(109, 255, 143, 0.09);
   --motion-fast: 120ms cubic-bezier(.2, .8, .2, 1);
   --motion-mid: 180ms cubic-bezier(.2, .8, .2, 1);
@@ -46,10 +46,8 @@ body,
 body {
   overflow: hidden;
   background:
-    linear-gradient(145deg, rgba(103, 232, 249, 0.10) 0%, transparent 28%),
-    linear-gradient(225deg, rgba(255, 203, 98, 0.08) 0%, transparent 32%),
-    linear-gradient(0deg, rgba(0, 0, 0, 0.40), transparent 38%, rgba(0, 0, 0, 0.30)),
-    linear-gradient(180deg, #07090d 0%, #0d1117 100%);
+    radial-gradient(circle at 14% 0%, rgba(103, 232, 249, 0.035), transparent 34%),
+    linear-gradient(180deg, #070a0e 0%, #0b0f14 100%);
 }
 
 body::before {
@@ -58,15 +56,15 @@ body::before {
   inset: 0;
   z-index: 9999;
   pointer-events: none;
-  opacity: 0.26;
+  opacity: 0.08;
   background: repeating-linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.06) 0,
-    rgba(255, 255, 255, 0.06) 1px,
+    rgba(255, 255, 255, 0.055) 0,
+    rgba(255, 255, 255, 0.055) 1px,
     transparent 1px,
-    transparent 4px
+    transparent 7px
   );
-  mix-blend-mode: soft-light;
+  mix-blend-mode: normal;
 }
 
 button,
@@ -103,8 +101,8 @@ svg {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(90deg, rgba(103, 232, 249, 0.10) 1px, transparent 1px),
-    linear-gradient(rgba(109, 255, 143, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px),
+    linear-gradient(rgba(109, 255, 143, 0.026) 1px, transparent 1px),
     #090b0f;
   background-size: 28px 28px;
 }
@@ -113,13 +111,13 @@ svg {
 .nick-form,
 .access-sheet,
 .qr-sheet {
-  border: 2px solid var(--edge);
+  border: 1px solid var(--edge);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, var(--surface-top), transparent 42%),
+    linear-gradient(180deg, var(--surface-top), transparent 120px),
     linear-gradient(180deg, var(--surface-mid), var(--surface-bottom));
   box-shadow:
-    inset 0 0 0 1px rgba(232, 247, 239, 0.08),
+    inset 0 1px 0 rgba(232, 247, 239, 0.055),
     var(--shadow-lift);
 }
 
@@ -129,24 +127,22 @@ svg {
   place-items: center;
   background: #17202a;
   color: var(--green);
-  border: 1px solid #3d515f;
+  border: 1px solid #344852;
   border-radius: 6px;
   box-shadow:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.12),
-    inset -1px -1px 0 rgba(0, 0, 0, 0.55),
-    0 10px 24px rgba(0, 0, 0, 0.20);
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 4px 10px rgba(0, 0, 0, 0.18);
   cursor: pointer;
 }
 
 .icon-button:hover,
 .retro-icon-button:hover {
   border-color: color-mix(in srgb, currentColor 54%, #3d515f);
-  filter: brightness(1.08);
+  filter: brightness(1.04);
   transform: translateY(-1px);
   box-shadow:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.14),
-    inset -1px -1px 0 rgba(0, 0, 0, 0.52),
-    var(--shadow-soft);
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    0 6px 14px rgba(0, 0, 0, 0.20);
 }
 
 .icon-button,
@@ -160,7 +156,7 @@ svg {
 .hex:active,
 .side-action:active {
   transform: translateY(1px);
-  box-shadow: inset -1px -1px 0 rgba(255, 255, 255, 0.08), inset 1px 1px 0 rgba(0, 0, 0, 0.7);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.62);
 }
 
 .nick-form {
@@ -250,16 +246,16 @@ svg {
 }
 
 .shell {
-  --terminal-height: clamp(230px, 40vh, 440px);
+  --terminal-height: clamp(190px, 32vh, 360px);
   width: 100%;
   height: 100svh;
   display: grid;
-  grid-template-columns: minmax(210px, 25vw) minmax(0, 1fr) minmax(220px, 22vw);
+  grid-template-columns: minmax(210px, 24vw) minmax(0, 1fr) minmax(150px, 15vw);
   gap: 10px;
   padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
   background:
-    linear-gradient(90deg, rgba(103, 232, 249, 0.08) 1px, transparent 1px),
-    linear-gradient(rgba(109, 255, 143, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.028) 1px, transparent 1px),
+    linear-gradient(rgba(109, 255, 143, 0.020) 1px, transparent 1px),
     transparent;
   background-size: 32px 32px;
 }
@@ -276,14 +272,13 @@ svg {
 .dialog-head,
 .editor {
   position: relative;
-  border: 2px solid var(--edge);
+  border: 1px solid var(--edge);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 36%),
-    linear-gradient(180deg, rgba(18, 25, 32, 0.95), rgba(8, 12, 17, 0.96));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent 128px),
+    linear-gradient(180deg, rgba(15, 22, 28, 0.98), rgba(8, 12, 16, 0.98));
   box-shadow:
-    inset 0 0 0 1px rgba(232, 247, 239, 0.07),
-    0 1px 0 rgba(255, 255, 255, 0.055),
+    inset 0 1px 0 rgba(232, 247, 239, 0.045),
     var(--shadow-soft);
   isolation: isolate;
 }
@@ -299,9 +294,9 @@ svg {
   border-radius: inherit;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(103, 232, 249, 0.11), transparent 34%, rgba(255, 203, 98, 0.08)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 24%, rgba(0, 0, 0, 0.18));
-  opacity: 0.62;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), transparent 96px),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.14), transparent 40%);
+  opacity: 0.72;
 }
 
 .hive-panel > *,
@@ -412,16 +407,15 @@ svg {
 
 .hex-field::before {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 22%),
-    linear-gradient(90deg, rgba(103, 232, 249, 0.06), transparent 28%, rgba(255, 203, 98, 0.035) 74%, transparent);
-  mix-blend-mode: screen;
-  opacity: 0.66;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), transparent 18%),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.025), transparent 30%, rgba(255, 203, 98, 0.014) 76%, transparent);
+  opacity: 0.48;
 }
 
 .hex-field::after {
   background:
-    linear-gradient(0deg, rgba(0, 0, 0, 0.38), transparent 34%),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.24), transparent 16%, transparent 84%, rgba(0, 0, 0, 0.24));
+    linear-gradient(0deg, rgba(0, 0, 0, 0.24), transparent 32%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.16), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.16));
 }
 
 .empty-hive-actions {
@@ -442,16 +436,13 @@ svg {
   display: grid;
   place-items: center;
   gap: 3px;
-  border: 1px solid #3d515f;
+  border: 1px solid #344852;
   border-radius: 7px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 46%),
-    #0b1015;
+  background: #0b1015;
   color: var(--ink);
   box-shadow:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.09),
-    inset -1px -1px 0 rgba(0, 0, 0, 0.62),
-    0 12px 34px rgba(0, 0, 0, 0.34);
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 6px 14px rgba(0, 0, 0, 0.24);
   cursor: pointer;
 }
 
@@ -459,9 +450,8 @@ svg {
   border-color: color-mix(in srgb, currentColor 44%, #3d515f);
   transform: translateY(-1px);
   box-shadow:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.10),
-    inset -1px -1px 0 rgba(0, 0, 0, 0.58),
-    var(--shadow-soft);
+    inset 0 1px 0 rgba(255, 255, 255, 0.065),
+    0 8px 18px rgba(0, 0, 0, 0.26);
 }
 
 .empty-hive-action svg {
@@ -502,11 +492,11 @@ svg {
   height: 2400px;
   transform: translate(-50%, -50%);
   background:
-    linear-gradient(180deg, rgba(15, 25, 31, 0.72), rgba(7, 10, 14, 0.92)),
-    linear-gradient(90deg, rgba(103, 232, 249, 0.035), transparent 34%, rgba(255, 203, 98, 0.025) 68%, transparent),
+    linear-gradient(180deg, rgba(13, 19, 24, 0.86), rgba(6, 9, 12, 0.96)),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.014), transparent 34%, rgba(255, 203, 98, 0.010) 68%, transparent),
     #0c1117;
   background-size: 100% 100%, 420px 100%, auto;
-  opacity: 0.72;
+  opacity: 0.86;
 }
 
 .hex-map::after {
@@ -519,9 +509,9 @@ svg {
   height: 2400px;
   transform: translate(-50%, -50%);
   background:
-    repeating-linear-gradient(90deg, transparent 0 46px, rgba(103, 232, 249, 0.018) 46px 47px),
-    repeating-linear-gradient(0deg, transparent 0 52px, rgba(255, 203, 98, 0.012) 52px 53px);
-  opacity: 0.58;
+    repeating-linear-gradient(90deg, transparent 0 46px, rgba(103, 232, 249, 0.010) 46px 47px),
+    repeating-linear-gradient(0deg, transparent 0 52px, rgba(255, 203, 98, 0.008) 52px 53px);
+  opacity: 0.44;
 }
 
 button:focus-visible,
@@ -572,17 +562,16 @@ button:disabled {
 
 .hex::after {
   inset: 3px;
-  background: linear-gradient(180deg, #111922, #080d12);
+  background: #0b1117;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
-    inset 0 0 15px rgba(103, 232, 249, 0.07);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .hex em {
   inset: 8px;
   z-index: 1;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0));
-  opacity: 0.36;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0));
+  opacity: 0.18;
 }
 
 .hex-cell {
@@ -603,7 +592,7 @@ button:disabled {
 .hex.filled {
   z-index: 2;
   cursor: pointer;
-  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.34));
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.28));
   transition:
     transform var(--motion-mid),
     filter var(--motion-mid),
@@ -611,22 +600,22 @@ button:disabled {
 }
 
 .hex.filled:hover {
-  transform: translateY(-2px);
-  filter: brightness(1.12) drop-shadow(0 13px 22px rgba(0, 0, 0, 0.38));
+  transform: translateY(-1px);
+  filter: brightness(1.06) drop-shadow(0 6px 12px rgba(0, 0, 0, 0.30));
 }
 
 .hex.active {
   z-index: 3;
-  transform: translateY(-2px) scale(1.06);
-  filter: brightness(1.16) drop-shadow(0 18px 30px rgba(0, 0, 0, 0.48));
+  transform: translateY(-1px) scale(1.035);
+  filter: brightness(1.08) drop-shadow(0 8px 16px rgba(0, 0, 0, 0.34));
 }
 
 .hex.active::after {
   inset: 4px;
-  background: linear-gradient(180deg, #14202a, #091017);
+  background: #0d151c;
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--color) 52%, #ffffff),
-    inset 0 0 16px rgba(109, 255, 143, 0.08);
+    inset 0 0 10px rgba(109, 255, 143, 0.035);
 }
 
 .hex-core,
@@ -670,7 +659,7 @@ button:disabled {
   height: 9px;
   border-radius: 50%;
   background: var(--red);
-  box-shadow: 0 0 12px rgba(255, 107, 107, 0.78);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.18);
 }
 
 .dialog-shell {
@@ -796,17 +785,15 @@ button:disabled {
   display: grid;
   gap: 7px;
   padding: 10px 12px 11px;
-  border: 1px solid color-mix(in srgb, var(--bubble-color) 70%, #24323d);
+  border: 1px solid color-mix(in srgb, var(--bubble-color) 52%, #263640);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 46%),
-    linear-gradient(90deg, color-mix(in srgb, var(--bubble-color) 10%, transparent), transparent 42%),
-    #0c1218;
+    linear-gradient(90deg, color-mix(in srgb, var(--bubble-color) 6%, transparent), transparent 48%),
+    #0b1117;
   color: var(--ink);
   box-shadow:
     inset 3px 0 0 var(--bubble-color),
-    0 1px 0 rgba(255, 255, 255, 0.045),
-    0 10px 28px rgba(0, 0, 0, 0.18);
+    0 4px 10px rgba(0, 0, 0, 0.14);
   transition:
     transform var(--motion-fast),
     border-color var(--motion-fast),
@@ -817,9 +804,8 @@ button:disabled {
 .chat-bubble.local {
   align-self: flex-end;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 46%),
-    linear-gradient(90deg, rgba(109, 255, 143, 0.10), transparent 42%),
-    #112018;
+    linear-gradient(90deg, rgba(109, 255, 143, 0.07), transparent 48%),
+    #0d1712;
 }
 
 .chat-bubble.remote {
@@ -831,8 +817,7 @@ button:disabled {
   transform: translateY(-1px);
   box-shadow:
     inset 3px 0 0 var(--bubble-color),
-    0 1px 0 rgba(255, 255, 255, 0.06),
-    var(--shadow-soft);
+    0 5px 12px rgba(0, 0, 0, 0.18);
 }
 
 .chat-bubble.surface {
@@ -876,12 +861,11 @@ button:disabled {
   min-width: 174px;
   border-color: color-mix(in srgb, var(--amber) 76%, var(--cyan));
   background:
-    linear-gradient(135deg, rgba(255, 203, 98, 0.14), transparent 44%),
-    #121923;
+    linear-gradient(90deg, rgba(255, 203, 98, 0.10), transparent 48%),
+    #111820;
   box-shadow:
     inset 3px 0 0 var(--amber),
-    0 0 0 1px rgba(103, 232, 249, 0.16),
-    0 14px 34px rgba(0, 0, 0, 0.24);
+    0 6px 14px rgba(0, 0, 0, 0.20);
   animation: thinking-hop 720ms cubic-bezier(.2, .9, .25, 1.35) infinite;
 }
 
@@ -990,6 +974,64 @@ button:disabled {
   line-height: 1.45;
 }
 
+.bubble-files {
+  display: grid;
+  gap: 7px;
+  min-width: min(260px, 100%);
+}
+
+.bubble-file {
+  min-width: 0;
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--bubble-color) 62%, #24323d);
+  border-radius: 7px;
+  background: rgba(5, 9, 12, 0.72);
+  color: var(--ink);
+  text-align: left;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.024),
+    0 4px 10px rgba(0, 0, 0, 0.12);
+}
+
+.bubble-file:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--bubble-color) 82%, var(--cream));
+}
+
+.bubble-file:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.bubble-file svg {
+  color: var(--bubble-color);
+}
+
+.bubble-file b,
+.bubble-file small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+.bubble-file b {
+  font-size: 12px;
+}
+
+.bubble-file small {
+  color: color-mix(in srgb, var(--bubble-color) 72%, var(--muted));
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .dialog-buffer {
   position: absolute;
   width: 1px;
@@ -1004,10 +1046,91 @@ button:disabled {
   align-items: end;
   gap: 8px;
   padding: 10px;
-  border-top: 2px solid var(--edge);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 42%),
-    #0b1015;
+  border-top: 1px solid var(--edge);
+  background: #0b1015;
+}
+
+.composer-attachments {
+  grid-column: 1 / -1;
+  min-width: 0;
+  max-height: min(30svh, 220px);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  overflow: auto;
+  padding: 2px 2px 4px;
+  scrollbar-width: thin;
+}
+
+.composer-attachments[hidden] {
+  display: none;
+}
+
+.composer-file-chip,
+.composer-file-notice {
+  min-width: 0;
+  max-width: min(100%, 320px);
+  min-height: 34px;
+  display: grid;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--color) 74%, #263844);
+  border-radius: 7px;
+  background: #071015;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.024),
+    0 4px 10px rgba(0, 0, 0, 0.16);
+}
+
+.composer-file-chip {
+  grid-template-columns: 18px minmax(0, 1fr) auto 26px;
+  gap: 7px;
+  padding: 5px 5px 5px 9px;
+}
+
+.composer-file-chip > span,
+.composer-file-chip svg {
+  color: var(--color);
+}
+
+.composer-file-chip b,
+.composer-file-chip small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+.composer-file-chip b {
+  font-size: 12px;
+}
+
+.composer-file-chip small {
+  color: color-mix(in srgb, var(--color) 76%, var(--muted));
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.composer-file-chip button {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.composer-file-chip button:hover {
+  color: var(--red);
+}
+
+.composer-file-notice {
+  padding: 7px 10px;
+  border-style: dashed;
+  color: color-mix(in srgb, var(--ink) 86%, var(--amber));
+  font-size: 12px;
+  line-height: 1.25;
 }
 
 .chat-composer {
@@ -1019,9 +1142,7 @@ button:disabled {
   border-radius: 7px;
   outline: 0;
   padding: 11px 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 38%),
-    #06090d;
+  background: #06090d;
   color: var(--ink);
   caret-color: var(--green);
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
@@ -1033,8 +1154,8 @@ button:disabled {
 .chat-composer:focus {
   border-color: var(--green);
   box-shadow:
-    0 0 0 2px rgba(109, 255, 143, 0.14),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    0 0 0 2px rgba(109, 255, 143, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .send-button {
@@ -1074,11 +1195,11 @@ button:disabled {
 
 .side-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto;
   gap: 10px;
-  padding: 10px;
+  padding: 9px;
   overflow: hidden;
-  background: rgba(12, 17, 23, 0.95);
+  background: #0b1117;
 }
 
 .side-block {
@@ -1103,14 +1224,14 @@ button:disabled {
 .writer-pop {
   min-height: 42px;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
 }
 
 .writer-pop span {
-  width: 32px;
-  height: 28px;
+  width: 24px;
+  height: 20px;
   display: grid;
   place-items: center;
   clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
@@ -1121,8 +1242,8 @@ button:disabled {
 }
 
 .writer-pop .idle-dot {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   clip-path: none;
   background: #3d515f;
@@ -1162,13 +1283,11 @@ button:disabled {
   padding: 5px 5px 5px 8px;
   border: 1px solid var(--color);
   border-radius: 7px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 46%),
-    #0b1015;
+  background: #0b1015;
   color: var(--ink);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.025),
-    0 8px 18px rgba(0, 0, 0, 0.16);
+    inset 0 1px 0 rgba(255, 255, 255, 0.024),
+    0 4px 10px rgba(0, 0, 0, 0.14);
   transition:
     transform var(--motion-fast),
     border-color var(--motion-fast),
@@ -1179,8 +1298,8 @@ button:disabled {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--color) 76%, var(--cream));
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.035),
-    var(--shadow-soft);
+    inset 0 1px 0 rgba(255, 255, 255, 0.032),
+    0 5px 12px rgba(0, 0, 0, 0.16);
 }
 
 .file-chip a {
@@ -1263,13 +1382,10 @@ button:disabled {
   gap: 2px;
   border: 1px solid #3d515f;
   border-radius: 7px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 46%),
-    #0b1015;
+  background: #0b1015;
   color: var(--ink);
   box-shadow:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.09),
-    inset -1px -1px 0 rgba(0, 0, 0, 0.62);
+    inset 0 1px 0 rgba(255, 255, 255, 0.055);
   cursor: pointer;
 }
 
@@ -1277,9 +1393,8 @@ button:disabled {
   border-color: color-mix(in srgb, currentColor 38%, #3d515f);
   transform: translateY(-1px);
   box-shadow:
-    inset 1px 1px 0 rgba(255, 255, 255, 0.11),
-    inset -1px -1px 0 rgba(0, 0, 0, 0.58),
-    var(--shadow-soft);
+    inset 0 1px 0 rgba(255, 255, 255, 0.065),
+    0 5px 12px rgba(0, 0, 0, 0.16);
 }
 
 .side-action svg {
@@ -1297,8 +1412,7 @@ button:disabled {
   border-color: var(--green);
   color: var(--green);
   box-shadow:
-    inset 0 0 0 1px rgba(109, 255, 143, 0.10),
-    0 0 22px rgba(109, 255, 143, 0.08);
+    inset 0 0 0 1px rgba(109, 255, 143, 0.10);
 }
 
 .side-action.needs-agent {
@@ -1317,17 +1431,16 @@ button:disabled {
   grid-template-rows: 34px minmax(0, 1fr) 42px;
   gap: 8px;
   padding: 8px 12px 12px;
-  border: 2px solid #3d515f;
+  border: 1px solid #344852;
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(109, 255, 143, 0.055), transparent 38%),
-    linear-gradient(180deg, rgba(14, 22, 28, 0.96), rgba(5, 7, 10, 0.98)),
+    linear-gradient(180deg, rgba(109, 255, 143, 0.026), transparent 120px),
+    linear-gradient(180deg, rgba(10, 16, 20, 0.98), rgba(4, 7, 10, 0.99)),
     #05070a;
   color: var(--ink);
   box-shadow:
-    inset 0 0 0 1px rgba(109, 255, 143, 0.16),
-    inset 0 18px 34px rgba(255, 255, 255, 0.022),
-    var(--shadow-deep);
+    inset 0 1px 0 rgba(109, 255, 143, 0.10),
+    0 12px 28px rgba(0, 0, 0, 0.36);
 }
 
 .editor.terminal-active .terminal-panel {
@@ -1395,18 +1508,18 @@ button:disabled {
   height: 10px;
   border-radius: 50%;
   background: #6b7d79;
-  box-shadow: 0 0 0 3px rgba(107, 125, 121, 0.14);
+  box-shadow: 0 0 0 2px rgba(107, 125, 121, 0.14);
 }
 
 .terminal-panel[data-state="run"] .terminal-led {
   background: var(--amber);
-  box-shadow: 0 0 0 3px rgba(255, 203, 98, 0.16);
+  box-shadow: 0 0 0 2px rgba(255, 203, 98, 0.16);
   animation: led-breathe 1.15s ease-in-out infinite;
 }
 
 .terminal-panel[data-state="ok"] .terminal-led {
   background: var(--green);
-  box-shadow: 0 0 0 3px rgba(109, 255, 143, 0.16);
+  box-shadow: 0 0 0 2px rgba(109, 255, 143, 0.16);
 }
 
 .terminal-panel[data-state="bad"],
@@ -1417,7 +1530,7 @@ button:disabled {
 .terminal-panel[data-state="bad"] .terminal-led,
 .terminal-panel[data-state="off"] .terminal-led {
   background: var(--red);
-  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.16);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.16);
 }
 
 .terminal-peer {
@@ -1508,17 +1621,16 @@ button:disabled {
   grid-template-rows: 34px minmax(0, 1fr) auto;
   gap: 8px;
   padding: 8px 12px 12px;
-  border: 2px solid #4b5b63;
+  border: 1px solid #4b5b63;
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 203, 98, 0.055), transparent 38%),
-    linear-gradient(180deg, rgba(14, 18, 20, 0.96), rgba(6, 8, 10, 0.98)),
+    linear-gradient(180deg, rgba(255, 203, 98, 0.026), transparent 120px),
+    linear-gradient(180deg, rgba(13, 17, 19, 0.98), rgba(6, 8, 10, 0.99)),
     #070a0c;
   color: var(--ink);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 203, 98, 0.16),
-    inset 0 18px 34px rgba(255, 255, 255, 0.022),
-    var(--shadow-deep);
+    inset 0 1px 0 rgba(255, 203, 98, 0.10),
+    0 12px 28px rgba(0, 0, 0, 0.36);
 }
 
 .editor.chess-active .chess-panel {
@@ -1545,18 +1657,16 @@ button:disabled {
   grid-template-rows: 34px minmax(0, 1fr);
   gap: 8px;
   padding: 8px 12px 12px;
-  border: 2px solid #3d515f;
+  border: 1px solid #344852;
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(14, 22, 28, 0.96), rgba(5, 7, 10, 0.98)),
+    linear-gradient(180deg, rgba(10, 16, 20, 0.98), rgba(4, 7, 10, 0.99)),
     #05070a;
   color: var(--ink);
   isolation: isolate;
   box-shadow:
-    inset 0 0 0 1px rgba(103, 232, 249, 0.16),
-    inset 0 18px 34px rgba(255, 255, 255, 0.025),
-    0 1px 0 rgba(255, 255, 255, 0.08),
-    0 20px 64px rgba(0, 0, 0, 0.52),
+    inset 0 1px 0 rgba(103, 232, 249, 0.10),
+    0 14px 34px rgba(0, 0, 0, 0.40),
     0 0 0 1px rgba(7, 10, 13, 0.85);
 }
 
@@ -1652,9 +1762,7 @@ button:disabled {
   border: 1px solid #1f2d36;
   border-radius: 6px;
   background: #070a0d;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.035),
-    inset 0 16px 28px rgba(255, 255, 255, 0.018);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.028);
 }
 
 .mini-frame-dock {
@@ -1672,13 +1780,11 @@ button:disabled {
   padding: 0 12px;
   border: 1px solid rgba(103, 232, 249, 0.34);
   border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(20, 32, 40, 0.94), rgba(5, 8, 11, 0.98)),
-    #071017;
+  background: #071017;
   color: var(--ink);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
-    0 14px 38px rgba(0, 0, 0, 0.46);
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 8px 20px rgba(0, 0, 0, 0.32);
 }
 
 .editor.mini-frame-active.mini-frame-collapsed .mini-frame-dock {
@@ -1789,8 +1895,8 @@ button:disabled {
   grid-template-rows: repeat(8, 1fr);
   border: 2px solid #0d1418;
   box-shadow:
-    inset 0 0 0 1px rgba(232, 247, 239, 0.08),
-    0 12px 32px rgba(0, 0, 0, 0.32);
+    inset 0 0 0 1px rgba(232, 247, 239, 0.055),
+    0 8px 18px rgba(0, 0, 0, 0.24);
 }
 
 .chess-square {
@@ -1983,11 +2089,9 @@ button:disabled {
   grid-template-columns: repeat(3, 44px);
   gap: 5px;
   padding: 6px;
-  border: 2px solid var(--edge);
+  border: 1px solid var(--edge);
   border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 42%),
-    #0b1015;
+  background: #0b1015;
   box-shadow: var(--shadow-lift);
   animation: surface-pop 120ms cubic-bezier(.2, .8, .2, 1);
 }
@@ -2018,6 +2122,13 @@ button:disabled {
   border-color: var(--green);
 }
 
+.counterparty-menu button.is-disabled,
+.counterparty-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+  filter: grayscale(0.5);
+}
+
 .soty-tooltip {
   position: fixed;
   z-index: 130;
@@ -2025,13 +2136,11 @@ button:disabled {
   padding: 7px 9px;
   border: 1px solid rgba(103, 232, 249, 0.42);
   border-radius: 7px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 44%),
-    rgba(7, 10, 14, 0.96);
+  background: rgba(7, 10, 14, 0.97);
   color: var(--cream);
   box-shadow:
-    inset 0 0 0 1px rgba(232, 247, 239, 0.06),
-    0 14px 38px rgba(0, 0, 0, 0.42);
+    inset 0 1px 0 rgba(232, 247, 239, 0.045),
+    0 8px 20px rgba(0, 0, 0, 0.34);
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
   font-size: 11px;
   line-height: 1.3;
@@ -2059,9 +2168,9 @@ button:disabled {
   place-items: center;
   padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   background:
-    linear-gradient(180deg, rgba(6, 8, 11, 0.72), rgba(6, 8, 11, 0.88)),
-    rgba(6, 8, 11, 0.78);
-  backdrop-filter: blur(7px);
+    linear-gradient(180deg, rgba(6, 8, 11, 0.64), rgba(6, 8, 11, 0.84)),
+    rgba(6, 8, 11, 0.72);
+  backdrop-filter: blur(3px);
 }
 
 .access-sheet {
@@ -2123,11 +2232,11 @@ button:disabled {
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px;
-  border: 2px solid var(--edge);
+  border: 1px solid var(--edge);
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 38%),
-    linear-gradient(180deg, rgba(15, 23, 30, 0.98), rgba(7, 10, 14, 0.98)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), transparent 120px),
+    linear-gradient(180deg, rgba(15, 23, 30, 0.98), rgba(7, 10, 14, 0.99)),
     #0b1015;
   color: var(--ink);
   box-shadow: var(--shadow-deep);
@@ -2242,28 +2351,24 @@ button:disabled {
   padding: 7px 9px;
   border: 1px solid rgba(61, 81, 95, 0.92);
   border-radius: 7px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 48%),
-    #121b24;
+  background: #121b24;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.025),
-    0 9px 22px rgba(0, 0, 0, 0.18);
+    inset 0 1px 0 rgba(255, 255, 255, 0.025),
+    0 4px 10px rgba(0, 0, 0, 0.14);
 }
 
 .quick-action-run:hover,
 .quick-action-run:focus-visible {
   border-color: var(--green);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 48%),
-    #17232d;
+  background: #17232d;
   outline: none;
   transform: translateY(-1px);
   box-shadow:
     inset 0 0 0 1px rgba(109, 255, 143, 0.08),
-    var(--shadow-soft);
+    0 5px 12px rgba(0, 0, 0, 0.16);
 }
 
 .quick-action-label {
@@ -2599,7 +2704,7 @@ button:disabled {
     left: 8px;
     right: 8px;
     bottom: 78px;
-    height: var(--mini-frame-height, min(48svh, 360px));
+    height: var(--mini-frame-height, min(38svh, 300px));
   }
 
   .editor.mini-frame-active[data-mini-app-layout="full"] .mini-frame-panel {
