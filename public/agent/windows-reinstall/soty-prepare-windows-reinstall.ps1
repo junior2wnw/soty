@@ -944,6 +944,12 @@ function Copy-LargeFileToUsb([string] $Source, [string] $Destination, [int] $Tim
   }
   $robocopyExitCode = if ($null -eq $process.ExitCode) { 16 } else { [int] $process.ExitCode }
   if ($robocopyExitCode -ge 8) {
+    $destinationAfterFailure = Get-Item -LiteralPath $Destination -ErrorAction SilentlyContinue
+    if ($destinationAfterFailure -and [int64]$destinationAfterFailure.Length -eq [int64]$sourceItem.Length) {
+      Log "WARN robocopy returned exit code $robocopyExitCode, but destination size matches source; continuing after verified copy length."
+      $global:LASTEXITCODE = 0
+      return
+    }
     throw "robocopy failed while copying $Source to $Destination with exit code $robocopyExitCode. See $log"
   }
   if (-not (Test-Path -LiteralPath $Destination)) {

@@ -1566,6 +1566,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes("Test-ParallelWindowsImageDownloadEnabled"));
       assert(prepare.includes("HttpWebRequest status="));
       assert(prepare.includes("$request.AddRange($before)"));
+      assert(prepare.includes("destination size matches source; continuing after verified copy length"));
       assert(prepare.includes("Get-HttpRangeProbeInfo"));
       assert(prepare.includes("continuing with guarded streaming download and SHA256 verification"));
       assert(prepare.includes("curl.exe --silent --show-error -I -L"));
