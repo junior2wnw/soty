@@ -1852,6 +1852,7 @@ async function runScenarios({ relayUrl } = {}) {
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const styles = (await readFile(join(root, "src", "style.css"), "utf8")).replace(/\r\n/gu, "\n");
+      const serviceWorker = await readFile(join(root, "public", "sw.js"), "utf8");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
@@ -2087,6 +2088,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("ensureAgentDialogBridgeReady"));
       assert(!ui.includes("moveAgentLinkToFreshDialog(active.id, fresh.id)"));
       assert(!ui.includes("<aside class=\"side-panel\">"));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v19"'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));
