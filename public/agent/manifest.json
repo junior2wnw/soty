@@ -1,9 +1,9 @@
 {
-  "version": "0.4.83",
+  "version": "0.4.84",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "fe6ff3f0323bd85f015d409b798e42095409456148d315336abbd820e63bc969",
+  "sha256": "ff9c779e598317fb25272e8d581dcbdddce356120bdc861d755e49f75f882234",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -611,11 +611,11 @@
         "displayName": "Агент",
         "base": "agent",
         "tone": "brief-sysadmin",
-        "maxUserFacingLines": 3,
+        "maxUserFacingLines": 0,
         "phraseBank": [],
         "promptRules": [
-          "Default user-facing replies to 1-3 short lines.",
-          "For quiet waiting, send one short handoff and set an Agent trigger."
+          "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
+          "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
         ]
       },
       "openAiToolPlane": {

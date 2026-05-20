@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.83";
+const agentVersion = "0.4.84";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -25,7 +25,7 @@ const managed = process.argv.includes("--managed") || process.env.SOTY_AGENT_MAN
 const agentScope = safeScope(process.env.SOTY_AGENT_SCOPE || (managed ? "CurrentUser" : "Dev"));
 const agentCompanion = process.env.SOTY_AGENT_COMPANION === "1";
 const port = Number.parseInt(arg("--port") || process.env.SOTY_AGENT_PORT || (agentCompanion ? "0" : "49424"), 10);
-const maxLongTaskTimeoutMs = 24 * 60 * 60_000;
+const maxLongTaskTimeoutMs = safeDurationMs(process.env.SOTY_AGENT_MAX_LONG_TASK_TIMEOUT_MS, 30 * 24 * 60 * 60_000, 365 * 24 * 60 * 60_000);
 const defaultTimeoutMs = safeDurationMs(arg("--timeout") || process.env.SOTY_AGENT_TIMEOUT_MS, 30 * 60_000, maxLongTaskTimeoutMs);
 const mcpInlineToolBudgetMs = 95_000;
 const turnkeyStatusRecoveryWindowMs = 30 * 60_000;
@@ -110,11 +110,11 @@ const agentResponseStyleProfiles = Object.freeze([
     displayName: "Агент",
     base: "agent",
     tone: "brief-sysadmin",
-    maxUserFacingLines: 3,
+    maxUserFacingLines: 0,
     phraseBank: [],
     promptRules: [
-      "Default user-facing replies to 1-3 short lines. Put proof/detail in tool results, not chat narration.",
-      "For quiet waiting, send one short handoff and set an Agent trigger instead of keeping the user in a long status monologue."
+      "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
+      "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
     ]
   }
 ]);
@@ -1005,7 +1005,7 @@ async function handleOperatorHttpTrigger(request, response, headers) {
     trigger: publicAgentTrigger(trigger),
     text: "trigger set\n",
     exitCode: 0,
-    agentGuidance: "Tell the user one short status line, then continue elsewhere or wait. When the trigger fires, it will enter the Agent chat as a normal user-visible trigger message. Record reusable trigger fixes through memory if timing or matching needed debugging."
+    agentGuidance: "Trigger set. Keep working normally when active work remains. Use the trigger only as an optional wake-up for idle/background waiting; when it fires, it will enter the Agent chat as a normal user-visible trigger message. Record reusable trigger fixes through memory if timing or matching needed debugging."
   });
 }
 
@@ -1698,7 +1698,7 @@ function agentTriggersStatus() {
     count: agentTriggers.size,
     triggers: [...agentTriggers.values()].map(publicAgentTrigger),
     events: ["time", "interval", "manual", "operator.attached", "operator.message", "action.started", "action.finished", "custom"],
-    guidance: "Use triggers for short handoffs and delayed/event-based continuation. Set one, tell the user briefly what will happen, then let the fired trigger re-enter the Agent chat."
+    guidance: "Use triggers for delayed/event-based wake-ups during idle/background waiting. They extend the Agent runtime; they are not a reason to stop active work, polling, or investigation."
   };
 }
 
@@ -1988,7 +1988,7 @@ function agentTriggerDialogMessage(trigger, reason, eventPayload) {
     "",
     trigger.message || `Trigger ${trigger.label} fired.`,
     "",
-    "Agent instruction: continue from this trigger. Start with one short human-facing sentence; use tools/status only if needed; record a sanitized memory improvement if this trigger needed tuning."
+    "Agent instruction: continue from this trigger and work until the task reaches a real terminal state or blocker. Keep user-facing text concise when useful, use tools/status as needed, and record a sanitized memory improvement if this trigger needed tuning."
   ].join("\n").slice(0, maxChatChars);
 }
 
@@ -7404,7 +7404,7 @@ function sotyRuntimeHints() {
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
     "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
-    "- Agent triggers: for quiet waiting or event-based continuation, give the user one short handoff and set `computer` operation=trigger. Use kind=time with afterMs/at, kind=interval with everyMs, or kind=event with event+match. When it fires, the Agent receives a normal trigger message in chat. If matching/timing needed tuning, record a sanitized memory improvement so the trigger route gets faster.",
+    "- Agent triggers: optional wake-ups for idle/background waiting, reminders, and event callbacks. Keep working, polling, and using tools while there is active progress to make; do not use triggers to stop early. Use `computer` operation=trigger only when waiting is mostly idle or the next useful step depends on time/event. When it fires, the Agent receives a normal trigger message in chat. If matching/timing needed tuning, record a sanitized memory improvement so the trigger route gets faster.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: first establish the user's mode (`clean` vs `keep-files`) and explicit permission to use the detected USB, then call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/repair/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
@@ -7493,7 +7493,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "Prepare or continue preparation:",
     "",
     "```json",
-    "{\"operation\":\"reinstall\",\"capability\":\"os-reinstall\",\"action\":\"prepare\",\"installMode\":\"clean\",\"usbConfirmed\":true,\"waitForCompletion\":true,\"waitTimeoutMs\":86400000,\"timeoutMs\":120000}",
+    "{\"operation\":\"reinstall\",\"capability\":\"os-reinstall\",\"action\":\"prepare\",\"installMode\":\"clean\",\"usbConfirmed\":true,\"waitForCompletion\":true,\"waitTimeoutMs\":2592000000,\"timeoutMs\":120000}",
     "```",
     "",
     "Read current status:",
@@ -7519,12 +7519,12 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "## Agent Triggers",
     "",
-    "Use this route when the best user experience is a short handoff now and automatic continuation later: reminders, quiet waits, action completion callbacks, or any event that should wake the Agent back into the chat.",
+    "Use this route only when active work would otherwise be mostly idle waiting: reminders, low-frequency background checks, action completion callbacks, or an event that should wake the Agent back into the chat. Triggers extend the runtime; they do not replace active tool calls, durable polling, or end-to-end ownership.",
     "",
     "Set a one-shot time trigger:",
     "",
     "```json",
-    "{\"operation\":\"trigger\",\"action\":\"set\",\"kind\":\"time\",\"afterMs\":300000,\"label\":\"check install\",\"message\":\"Check whether the install finished; answer briefly first, then inspect status.\"}",
+    "{\"operation\":\"trigger\",\"action\":\"set\",\"kind\":\"time\",\"afterMs\":300000,\"label\":\"check install\",\"message\":\"Check whether the install finished, inspect status/proof, and continue the task until a terminal state or real blocker.\"}",
     "```",
     "",
     "Set an event trigger:",
@@ -7541,14 +7541,14 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "{\"operation\":\"trigger\",\"action\":\"fire\",\"triggerId\":\"<id>\"}",
     "```",
     "",
-    "Rules: tell the user only the useful handoff (`встретимся через 5 минут`, `я вернусь когда задача завершится`, etc.), then stop talking until the trigger wakes you. Keep trigger messages compact and include the next exact status check. If a trigger was too broad, too narrow, or late, record a sanitized memory improvement through `computer` operation=learn.",
+    "Rules: before setting a trigger, first continue any active investigation/polling/tool chain that can still make progress. If the remaining wait is idle/background, set a trigger and give only the useful handoff (`встретимся через 5 минут`, `я вернусь когда задача завершится`, etc.). Keep trigger messages compact and include the next exact status check. If a trigger was too broad, too narrow, or late, record a sanitized memory improvement through `computer` operation=learn.",
     "",
     "## Long Turnkey Job",
     "",
     "Use this route whenever an install, repair, backup, download, browser automation, Windows reinstall prepare, or other user-facing task may outlive a short chat turn:",
     "",
     "1. Start one durable job through `computer` operation=action/terminal/script/run or the route-profile capability. Use a stable `idempotencyKey` for retries. Start multiple detached jobs when independent console lanes help the task.",
-    "2. Wait through the tool itself whenever possible: `waitForCompletion:true` and a realistic `waitTimeoutMs`, up to `86400000` for all-day work.",
+    "2. Wait through the tool itself whenever possible: `waitForCompletion:true` and a realistic `waitTimeoutMs`; the default long-task ceiling is 30 days and can be raised by configuration.",
     "3. If you already have a `jobId`, poll with:",
     "",
     "```json",
@@ -7673,7 +7673,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
     "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
     "- Parallel terminal model: when one command may hang or a task needs multiple lanes, start separate durable terminal/action jobs with operation=terminal/action and detached=true; use job_status/job_stop/jobs to manage them instead of waiting for one console to become free.",
-    "- Trigger model: when waiting should not hold the turn open, set `computer` operation=trigger and give a short handoff. Use `kind:\"time\"` with `afterMs`/`at`, `kind:\"interval\"` with `everyMs`, or `kind:\"event\"` with `event`+`match`; the fired trigger will message this Agent chat and continue.",
+    "- Trigger model: triggers are optional wake-ups, not work limits. Keep polling and using tools while progress is possible. Use `computer` operation=trigger only for idle/background waits where the next useful step depends on time or event; use `kind:\"time\"` with `afterMs`/`at`, `kind:\"interval\"` with `everyMs`, or `kind:\"event\"` with `event`+`match`; the fired trigger will message this Agent chat and continue.",
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
@@ -8419,8 +8419,8 @@ function runMcpServer() {
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
             waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
             waitMs: { type: "integer", description: "For status/job_status: sleep inside the Soty tool before reading status again. Use this instead of asking the user to continue." },
-            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." },
+            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." },
             triggerAction: { type: "string", description: "For operation=trigger: set, list, cancel, fire, or event." },
             triggerId: { type: "string", description: "Stable trigger id for cancel/fire/update." },
             afterMs: { type: "integer", description: "For time triggers: fire after this many milliseconds." },
@@ -8459,8 +8459,8 @@ function runMcpServer() {
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll status." },
             waitForCompletion: { type: "boolean", description: "When true, wait for a terminal state unless the user explicitly asked for background mode." },
             waitMs: { type: "integer", description: "For status: sleep inside the Soty toolkit before reading status again. Use this instead of asking the user to continue." },
-            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
-            timeoutMs: { type: "integer", description: "Per-action timeout in milliseconds, 1000-86400000." },
+            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." },
+            timeoutMs: { type: "integer", description: "Per-action timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." },
             jobId: { type: "string", description: "Job id for status/stop." },
             action: { type: "string", description: "Windows reinstall action when toolkit=windows-reinstall: preflight, prepare, status, repair, cancel, or arm." },
             usbDriveLetter: { type: "string", description: "Windows reinstall USB drive letter." },
@@ -8490,7 +8490,7 @@ function runMcpServer() {
           type: "object",
           properties: {
             command: { type: "string", description: "Command to run on the source device." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["command"],
           additionalProperties: false
@@ -8505,7 +8505,7 @@ function runMcpServer() {
             script: { type: "string", description: "Script body to run on the source device." },
             shell: { type: "string", description: "Optional shell hint, usually powershell on Windows." },
             name: { type: "string", description: "Short technical label shown in the LINK console." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["script"],
           additionalProperties: false
@@ -8531,8 +8531,8 @@ function runMcpServer() {
             idempotencyKey: { type: "string", description: "Stable key to avoid duplicate execution on retries." },
             detached: { type: "boolean", description: "When true, return immediately with a running jobId and poll with soty_action_status." },
             waitForCompletion: { type: "boolean", description: "When true, keep the tool call open until the action reaches a terminal state. Use this for turnkey user-facing tasks unless the user explicitly asked for background mode." },
-            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." },
+            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." },
             improvement: { type: "string", description: "Optional sanitized reusable improvement note when this job proves a safe toolkit improvement." },
             reuseKey: { type: "string", description: "Stable reusable route/script key when this action should help unrelated future tasks reuse the same method." },
             pivotFrom: { type: "string", description: "Optional previous task vector when the user changed direction and this action continues with existing proof/artifacts." },
@@ -8597,7 +8597,7 @@ function runMcpServer() {
       },
       {
         name: "soty_trigger",
-        description: "Set, list, cancel, manually fire, or emit a Soty Agent trigger. Triggers are a small wake-up mechanism: time, interval, or event -> the Agent receives a normal chat message and continues. Use after a short user-facing handoff instead of keeping the chat turn open for quiet waiting.",
+        description: "Set, list, cancel, manually fire, or emit a Soty Agent trigger. Triggers are a wake-up mechanism: time, interval, or event -> the Agent receives a normal chat message and continues. Use for idle/background waits, not as a substitute for active tool work, polling, or investigation.",
         inputSchema: {
           type: "object",
           properties: {
@@ -8636,7 +8636,7 @@ function runMcpServer() {
             usbUseConfirmed: { type: "boolean", description: "Alias for usbConfirmed." },
             usbConsent: { type: "boolean", description: "Alias for usbConfirmed." },
             waitForCompletion: { type: "boolean", description: "Default true for prepare. Keep true unless the user explicitly asked to run in background." },
-            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, default up to 86400000 for prepare." },
+            waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, default up to the configured long-task ceiling (2592000000 unless overridden)." },
             waitMs: { type: "integer", description: "For status only: wait inside the toolkit before reading status again. Prefer this to occupying a terminal with sleep." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds. Use short timeouts for preflight/status/repair; prepare and arm are durable actions." }
           },
@@ -8651,7 +8651,7 @@ function runMcpServer() {
           type: "object",
           properties: {
             url: { type: "string", description: "URL to open on the source device." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["url"],
           additionalProperties: false
@@ -8676,7 +8676,7 @@ function runMcpServer() {
             maxResults: { type: "integer", description: "Maximum list/search results, 1-500." },
             maxChars: { type: "integer", description: "Maximum characters returned for read/search, 1000-12000." },
             maxBytes: { type: "integer", description: "Maximum bytes for action=download/publish. Default and hard cap are 512000000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["action", "path"],
           additionalProperties: false
@@ -8691,7 +8691,7 @@ function runMcpServer() {
             localPath: { type: "string", description: "Path to the existing file in the Codex/server workspace. Relative paths resolve from the current Codex workspace." },
             targetPath: { type: "string", description: "Absolute destination path on the user's source device, for example C:\\Users\\Public\\Pictures\\wallpaper.jpg." },
             overwrite: { type: "boolean", description: "Whether to overwrite an existing destination. Default true." },
-            timeoutMs: { type: "integer", description: "Timeout per chunk in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout per chunk in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["localPath", "targetPath"],
           additionalProperties: false
@@ -8718,7 +8718,7 @@ function runMcpServer() {
             revision: { type: "string", description: "Optional app revision." },
             capabilities: { type: "array", items: { type: "string" }, description: "Bridge grants such as chat.append, agent.invoke, terminal.run." },
             open: { type: "boolean", description: "Open after registration. Default true." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["appId", "title"],
           additionalProperties: false
@@ -8737,7 +8737,7 @@ function runMcpServer() {
             selector: { type: "string", description: "CSS selector for type/eval helper actions." },
             headless: { type: "boolean", description: "Launch browser headless. Default false so the user can see it." },
             maxChars: { type: "integer", description: "Maximum returned text, 1000-12000." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["action"],
           additionalProperties: false
@@ -8758,7 +8758,7 @@ function runMcpServer() {
             keys: { type: "string", description: "SendKeys pattern for key action, for example ^l or %{F4}." },
             path: { type: "string", description: "Source-device image path for action=wallpaper." },
             fit: { type: "string", description: "Wallpaper fit mode: fill, fit, stretch, center, tile, or span. Default fill." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000)." }
           },
           required: ["action"],
           additionalProperties: false
@@ -8772,7 +8772,7 @@ function runMcpServer() {
           properties: {
             volumePercent: { type: "integer", description: "Optional output volume percent, 0-100." },
             muted: { type: "boolean", description: "Optional mute state. true mutes output; false unmutes output." },
-            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000. Default is 120000 to survive cold Windows audio startup." }
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, from 1000 up to the configured long-task ceiling (default 2592000000). Default is 120000 to survive cold Windows audio startup." }
           },
           additionalProperties: false
         }

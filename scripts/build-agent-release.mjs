@@ -410,11 +410,11 @@ function buildResponseStylePolicy() {
     displayName: "Агент",
     base: "agent",
     tone: "brief-sysadmin",
-    maxUserFacingLines: 3,
+    maxUserFacingLines: 0,
     phraseBank: [],
     promptRules: [
-      "Default user-facing replies to 1-3 short lines.",
-      "For quiet waiting, send one short handoff and set an Agent trigger."
+      "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
+      "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
     ]
   };
 }

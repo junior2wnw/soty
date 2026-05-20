@@ -44,13 +44,13 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.83");
+      assertEqual(health.body.version, "0.4.84");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
       assertEqual(health.body.responseStyle.id, "agent-sysadmin");
       assertEqual(health.body.responseStyle.displayName, "Агент");
-      assertEqual(health.body.responseStyle.maxUserFacingLines, 3);
+      assertEqual(health.body.responseStyle.maxUserFacingLines, 0);
       assertEqual(health.body.memory.schema, "soty.memory-plane.v1");
       assertEqual(health.body.memory.controller, "soty.memctl.v1");
       assertEqual(health.body.computerUsePlane.schema, "soty.computer-use-plane.v1");
@@ -97,7 +97,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!health.body.automationToolkits.available.includes("native-window-chrome"));
       assertEqual(health.body.automationToolkits.defaultKernel, "jobs");
       assertEqual(health.body.automationToolkits.responseStyle.id, "agent-sysadmin");
-      assertEqual(health.body.automationToolkits.responseStyle.maxUserFacingLines, 3);
+      assertEqual(health.body.automationToolkits.responseStyle.maxUserFacingLines, 0);
       const liveAgentRuntimeToolkit = health.body.automationToolkits.toolkits.find((toolkit) => toolkit.name === "agent-runtime");
       const liveComputerPlaneToolkit = health.body.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
       assert(liveAgentRuntimeToolkit?.phases.includes("trigger"));
@@ -117,7 +117,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(timeTrigger.body.ok, true);
       assertEqual(timeTrigger.body.trigger.id, "selftest-time-trigger");
       assertEqual(timeTrigger.body.trigger.kind, "time");
-      assert(timeTrigger.body.agentGuidance.includes("one short"));
+      assert(timeTrigger.body.agentGuidance.includes("Keep working normally"));
       const eventTrigger = await post("/operator/trigger", {
         id: "selftest-event-trigger",
         kind: "event",
@@ -1593,7 +1593,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("waitForSotyReinstallPrepare"));
       assert(agent.includes("waitForCompletion"));
       assert(agent.includes("sourceManagedWindowsReinstallBootstrap"));
-      assert(agent.includes("86400000"));
+      assert(agent.includes("2592000000"));
+      assert(agent.includes("SOTY_AGENT_MAX_LONG_TASK_TIMEOUT_MS"));
       assert(agent.includes("mcpInlineToolBudgetMs"));
       assert(agent.includes("turnkeyStatusRecoveryWindowMs"));
       assert(agent.includes("withTurnkeyPollingGuidance"));
@@ -1717,7 +1718,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("shouldRunDeterministicFastRoutine"));
       assert(!agent.includes("isCreativeOrGenerativeMessage"));
       assert(relay.includes("pollRequesterCanLeaseSourceJobs"));
-      assert(relay.includes("const maxTaskTimeoutMs = 24 * 60 * 60_000"));
+      assert(relay.includes("SOTY_AGENT_RELAY_MAX_TASK_TIMEOUT_MS"));
+      assert(relay.includes("30 * 24 * 60 * 60_000"));
       assert(relay.includes("direct-device-worker-required"));
       assert(relay.includes("agentSourceDirectWorkerFresh"));
       assert(relay.includes("directWorkerSeenAt"));
@@ -1842,7 +1844,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.83");
+      assertEqual(manifest.version, "0.4.84");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1888,8 +1890,9 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
       assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
       assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Агент");
-      assertEqual(manifest.automationToolkits.policy.responseStyle.maxUserFacingLines, 3);
+      assertEqual(manifest.automationToolkits.policy.responseStyle.maxUserFacingLines, 0);
       assert(manifest.automationToolkits.policy.responseStyle.promptRules.some((rule) => rule.includes("trigger")));
+      assert(manifest.automationToolkits.policy.responseStyle.promptRules.some((rule) => rule.includes("never stop active work")));
       assertEqual(manifest.automationToolkits.policy.responseStyle.phraseBank.length, 0);
       const computerUsePlane = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
       assert(computerUsePlane);
@@ -2005,7 +2008,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.83"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.84"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2082,7 +2085,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.83"'));
+      assert(agentSource.includes('const agentVersion = "0.4.84"'));
       assert(agentSource.includes("agentTriggersPath"));
       assert(agentSource.includes('url.pathname === "/operator/trigger"'));
       assert(agentSource.includes('url.pathname === "/operator/trigger-event"'));
@@ -2090,7 +2093,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("SOTY_TRIGGER_FIRED"));
       assert(agentSource.includes("soty.agent.triggers.v1"));
       assert(agentSource.includes("soty_trigger"));
-      assert(agentSource.includes("maxUserFacingLines: 3"));
+      assert(agentSource.includes("maxUserFacingLines: 0"));
+      assert(!agentSource.includes("max_user_facing_lines=3"));
+      assert(!agentSource.includes("stop talking until the trigger wakes you"));
       assert(agentSource.includes("operation=trigger"));
       assert(triggerDoc.includes("Soty Agent Triggers"));
       assert(triggerDoc.includes('"operation": "trigger"'));
@@ -2272,14 +2277,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.83";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.84";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.83",
+            version: "0.4.84",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

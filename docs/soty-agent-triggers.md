@@ -20,13 +20,17 @@ apply.
 
 ## Agent Use
 
-Use a trigger when the user should not wait in a long open answer:
+Use a trigger only when the remaining work is genuinely idle/background
+waiting. A trigger must never replace active investigation, durable polling, or
+tool continuation while there is still progress to make.
 
-1. Say one short handoff in the user's language, for example: "Back in 5
-   minutes." or "I will write when the task finishes."
+1. Keep working normally until the next useful step depends on time or an event.
 2. Set a trigger with a compact message describing the next exact check.
-3. When the trigger fires, continue from the trigger message.
-4. If timing or matching was wrong, record a sanitized memory improvement so the
+3. Give a short handoff in the user's language if the user needs to know why the
+   chat will be quiet.
+4. When the trigger fires, continue from the trigger message until a real
+   terminal state or blocker.
+5. If timing or matching was wrong, record a sanitized memory improvement so the
    next comparable trigger is faster and more precise.
 
 Time trigger:
@@ -38,7 +42,7 @@ Time trigger:
   "kind": "time",
   "afterMs": 300000,
   "label": "install status",
-  "message": "Check the install status now. Start with one short update, then inspect proof."
+  "message": "Check the install status now, inspect proof, and continue until a terminal state or real blocker."
 }
 ```
 

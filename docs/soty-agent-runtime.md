@@ -35,11 +35,15 @@ operation `mini_app` or `surface`.
 
 Agent Triggers are a small wake-up layer:
 
-1. The Agent gives the user a short handoff.
-2. It sets a `time`, `interval`, or `event` trigger through `computer`
+1. The Agent keeps active work and durable polling going while progress is
+   possible.
+2. If the next useful step depends on time or an event, it sets a `time`,
+   `interval`, or `event` trigger through `computer`
    operation `trigger`.
-3. When the trigger fires, Soty sends a normal message into the Agent chat.
-4. The Agent continues from that message, verifies state with tools, and records
+3. It gives a short handoff only when the user needs to know why the chat will
+   be quiet.
+4. When the trigger fires, Soty sends a normal message into the Agent chat.
+5. The Agent continues from that message, verifies state with tools, and records
    sanitized memory if the trigger needed tuning.
 
 Program-specific work should enter through `app.*`, `api.*`, or
