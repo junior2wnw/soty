@@ -2,6 +2,7 @@ import QRCode from "qrcode";
 import jsQR from "jsqr";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
+import type { IconName } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
@@ -106,6 +107,21 @@ type AgentRelease = {
   readonly sha256?: string;
 };
 
+type MiniAppDefinition = {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+  readonly summary: string;
+  readonly icon: IconName;
+  readonly height?: string;
+  readonly capabilities: readonly string[];
+};
+
+type MiniAppSession = {
+  readonly app: MiniAppDefinition;
+  readonly nonce: string;
+};
+
 let device: DeviceRecord | null = null;
 let tunnels: TunnelRecord[] = [];
 let selectedId = "";
@@ -136,6 +152,14 @@ const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
+const miniAppsManifestUrl = "/mini-apps/manifest.json";
+const miniAppProtocol = "soty.mini-app.v1";
+const miniAppContextProtocol = "soty.mini-app.context.v1";
+let miniApps: MiniAppDefinition[] = [];
+let miniAppsProbe: Promise<readonly MiniAppDefinition[]> | null = null;
+let miniAppsLoadedAt = 0;
+let miniAppSession: MiniAppSession | null = null;
+let miniAppOverlay: HTMLDivElement | null = null;
 const quickActions: readonly QuickAction[] = [
   {
     id: "windows-reinstall",
@@ -364,6 +388,8 @@ let serviceWorkerReloading = false;
 let serviceWorkerUpdateTimer = 0;
 let appBundleReloading = false;
 let appBundleWatchTimer = 0;
+let sameDeviceWindowSyncStarted = false;
+let sameDeviceWindowSyncTimer = 0;
 const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
@@ -371,6 +397,10 @@ const appBundlePath = currentAppBundlePath();
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
+});
+
+window.addEventListener("message", (event) => {
+  handleMiniAppMessage(event);
 });
 
 window.addEventListener("appinstalled", () => {
@@ -402,6 +432,8 @@ void boot();
 
 async function boot(): Promise<void> {
   adoptAgentRelayFromUrl();
+  startSameDeviceWindowSync();
+  void refreshMiniApps(true);
 
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
@@ -578,6 +610,79 @@ function mainModulePathFromHtml(html: string): string {
     }
   }
   return "";
+}
+
+function startSameDeviceWindowSync(): void {
+  if (sameDeviceWindowSyncStarted) {
+    return;
+  }
+  sameDeviceWindowSyncStarted = true;
+  window.addEventListener("storage", (event) => {
+    if (!event.key || event.key === tunnelsKey || event.key === selectedKey) {
+      scheduleSameDeviceWindowState(event.key || "storage", false);
+    }
+  });
+  window.addEventListener("focus", () => scheduleSameDeviceWindowState("focus", true));
+  window.addEventListener("pageshow", () => scheduleSameDeviceWindowState("pageshow", true));
+}
+
+function scheduleSameDeviceWindowState(reason: string, followSelected: boolean): void {
+  window.clearTimeout(sameDeviceWindowSyncTimer);
+  sameDeviceWindowSyncTimer = window.setTimeout(() => {
+    applySameDeviceWindowState(reason, followSelected);
+  }, 40);
+}
+
+function applySameDeviceWindowState(reason: string, followSelected: boolean): void {
+  if (!device || !app.querySelector(".shell")) {
+    return;
+  }
+  const previousSignature = tunnelListSignature(tunnels);
+  const nextTunnels = loadTunnels();
+  const nextSignature = tunnelListSignature(nextTunnels);
+  const storedSelected = loadSelectedTunnelId() || "";
+  const currentStillExists = nextTunnels.some((tunnel) => tunnel.id === selectedId);
+  tunnels = nextTunnels;
+  if ((followSelected || reason === selectedKey || !currentStillExists) && storedSelected) {
+    selectedId = storedSelected;
+  }
+  normalizeSelectedTunnel();
+  const activeIds = new Set(tunnels.map((tunnel) => tunnel.id));
+  for (const [id, sync] of syncs) {
+    if (!activeIds.has(id)) {
+      sync.destroy();
+      syncs.delete(id);
+      peerDevices.delete(id);
+      syncStates.delete(id);
+    }
+  }
+  for (const tunnel of tunnels) {
+    ensureSync(tunnel);
+  }
+  if (previousSignature !== nextSignature || reason === selectedKey || followSelected) {
+    applySelectedText();
+    renderTiles();
+    renderFiles();
+    renderTerminal();
+    renderChess();
+    renderMiniAppPanel();
+    publishMiniAppContext();
+    publishOperatorTargets();
+  }
+}
+
+function tunnelListSignature(items: readonly TunnelRecord[]): string {
+  return items
+    .map((item) => [
+      item.id,
+      item.label,
+      item.updatedAt,
+      item.lastActionAt || "",
+      item.unread ? "1" : "0",
+      item.archived ? "1" : "0",
+      item.agent ? "1" : "0"
+    ].join(":"))
+    .join("|");
 }
 
 function shouldResetLocalState(): boolean {
@@ -966,6 +1071,354 @@ function openActionMenu(): void {
 function closeActionMenu(): void {
   actionOverlay?.remove();
   actionOverlay = null;
+}
+
+async function refreshMiniApps(force = false): Promise<readonly MiniAppDefinition[]> {
+  const now = Date.now();
+  if (!force && miniAppsLoadedAt && now - miniAppsLoadedAt < 60_000) {
+    return miniApps;
+  }
+  if (miniAppsProbe) {
+    return miniAppsProbe;
+  }
+  miniAppsProbe = fetch(miniAppsManifestUrl, { cache: "no-store", headers: { Accept: "application/json" } })
+    .then(async (response) => {
+      if (!response.ok) {
+        return [];
+      }
+      const payload = await response.json() as unknown;
+      const next = sanitizeMiniAppsManifest(payload);
+      miniApps = next;
+      miniAppsLoadedAt = Date.now();
+      renderDialogChrome();
+      return next;
+    })
+    .catch(() => miniApps)
+    .finally(() => {
+      miniAppsProbe = null;
+    });
+  return miniAppsProbe;
+}
+
+function sanitizeMiniAppsManifest(payload: unknown): MiniAppDefinition[] {
+  const rawItems = Array.isArray((payload as { readonly apps?: unknown })?.apps)
+    ? (payload as { readonly apps: readonly unknown[] }).apps
+    : [];
+  return rawItems
+    .map(sanitizeMiniAppDefinition)
+    .filter((item): item is MiniAppDefinition => Boolean(item));
+}
+
+function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = recordString(value, "id").toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").slice(0, 80);
+  const title = cleanNick(recordString(value, "title") || id).slice(0, 80);
+  const summary = cleanNick(recordString(value, "summary")).slice(0, 160);
+  const iconName = recordString(value, "icon");
+  const iconValue = isIconName(iconName) ? iconName : "remote";
+  const url = safeMiniAppUrl(recordString(value, "url"));
+  if (!id || !title || !url) {
+    return null;
+  }
+  const height = recordString(value, "height").slice(0, 40);
+  const capabilities = Array.isArray(value.capabilities)
+    ? value.capabilities.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 80)).slice(0, 20)
+    : [];
+  return {
+    id,
+    title,
+    url,
+    summary,
+    icon: iconValue,
+    ...(height ? { height } : {}),
+    capabilities
+  };
+}
+
+function isIconName(value: string): value is IconName {
+  return ["install", "qr", "scan", "close", "check", "person", "clip", "remote", "download", "upload", "refresh", "copy", "bell", "shield", "send", "stop", "chess", "collapse", "expand"].includes(value);
+}
+
+function safeMiniAppUrl(value: string): string {
+  if (!value) {
+    return "";
+  }
+  try {
+    const url = new URL(value, window.location.origin);
+    const loopback = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    const trustedHttps = url.protocol === "https:";
+    if (url.origin !== window.location.origin && !loopback && !trustedHttps) {
+      return "";
+    }
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+async function openMiniAppLauncher(): Promise<void> {
+  closeMiniAppLauncher();
+  const apps = await refreshMiniApps(true);
+  const overlay = document.createElement("div");
+  overlay.className = "action-modal mini-launcher-modal";
+  overlay.innerHTML = `
+    <section class="action-sheet mini-launcher-sheet" role="dialog" aria-modal="true" aria-label="mini apps">
+      <header class="action-head">
+        <span class="action-mark">${icon("remote")}</span>
+        <span>
+          <b>MINI APPS</b>
+          <small>${escapeHtml(counterpartyLabelForSelected())}</small>
+        </span>
+        <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
+      </header>
+      <div class="action-list">
+        ${apps.map((appItem) => miniAppRowHtml(appItem)).join("")}
+      </div>
+      ${apps.length === 0 ? `<output class="action-empty">No apps</output>` : ""}
+    </section>
+  `;
+  document.body.append(overlay);
+  miniAppOverlay = overlay;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeMiniAppLauncher();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", () => closeMiniAppLauncher());
+  overlay.querySelectorAll<HTMLButtonElement>(".mini-app-run").forEach((button) => {
+    button.addEventListener("click", () => {
+      openMiniApp(button.dataset.appId || "");
+    });
+  });
+}
+
+function closeMiniAppLauncher(): void {
+  miniAppOverlay?.remove();
+  miniAppOverlay = null;
+}
+
+function miniAppRowHtml(appItem: MiniAppDefinition): string {
+  return `
+    <button class="quick-action-run mini-app-run" type="button" data-app-id="${escapeHtml(appItem.id)}">
+      <span class="quick-action-label">${icon(appItem.icon)}</span>
+      <span class="quick-action-copy">
+        <b>${escapeHtml(appItem.title)}</b>
+        <small>${escapeHtml(appItem.summary || appItem.id)}</small>
+      </span>
+    </button>
+  `;
+}
+
+function openMiniApp(appId: string): void {
+  const appItem = miniApps.find((item) => item.id === appId);
+  if (!appItem) {
+    return;
+  }
+  closeMiniAppLauncher();
+  closeChessPanel();
+  miniAppSession = {
+    app: appItem,
+    nonce: crypto.randomUUID()
+  };
+  renderMiniAppPanel();
+  renderDialogChrome();
+}
+
+function closeMiniApp(): void {
+  miniAppSession = null;
+  renderMiniAppPanel();
+  renderDialogChrome();
+}
+
+function reloadMiniApp(): void {
+  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
+  if (!frame || !miniAppSession) {
+    return;
+  }
+  frame.src = miniAppUrlWithContext(miniAppSession);
+}
+
+function renderMiniAppPanel(): void {
+  const panel = app.querySelector<HTMLDivElement>(".mini-frame-panel");
+  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
+  const editor = app.querySelector<HTMLElement>(".editor");
+  const title = app.querySelector<HTMLElement>(".mini-frame-title");
+  const status = app.querySelector<HTMLElement>(".mini-frame-status");
+  if (!panel || !frame || !editor) {
+    return;
+  }
+  const active = Boolean(miniAppSession);
+  editor.classList.toggle("mini-frame-active", active);
+  panel.classList.toggle("is-active", active);
+  if (!miniAppSession) {
+    frame.removeAttribute("src");
+    panel.dataset.state = "idle";
+    return;
+  }
+  const session = miniAppSession;
+  panel.dataset.state = "run";
+  if (session.app.height) {
+    editor.style.setProperty("--mini-frame-height", session.app.height);
+  }
+  if (title) {
+    title.textContent = session.app.title.toUpperCase();
+  }
+  if (status) {
+    status.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT";
+  }
+  const nextUrl = miniAppUrlWithContext(session);
+  if (frame.src !== nextUrl) {
+    frame.src = nextUrl;
+  }
+}
+
+function miniAppUrlWithContext(session: MiniAppSession): string {
+  const url = new URL(session.app.url, window.location.href);
+  url.searchParams.set("sotyMiniApp", session.app.id);
+  url.searchParams.set("sotyNonce", session.nonce);
+  return url.href;
+}
+
+function handleMiniAppMessage(event: MessageEvent): void {
+  if (!miniAppSession) {
+    return;
+  }
+  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
+  if (!frame?.contentWindow || event.source !== frame.contentWindow || !isAllowedMiniAppOrigin(event.origin, miniAppSession.app.url)) {
+    return;
+  }
+  const message = event.data;
+  if (!isRecord(message) || message.schema !== miniAppProtocol || message.nonce !== miniAppSession.nonce) {
+    return;
+  }
+  const type = recordString(message, "type");
+  if (type === "ready") {
+    publishMiniAppContext();
+    return;
+  }
+  if (type === "close") {
+    closeMiniApp();
+    return;
+  }
+  if (type === "chat.append") {
+    const text = normalizeChatMessage(recordString(message, "text"));
+    if (selectedId && text) {
+      appendUserMessageToDialog(selectedId, text);
+      renderTextPaint();
+      renderWriterPop();
+    }
+    return;
+  }
+  if (type === "agent.invoke") {
+    void invokeAgentFromMiniApp(message);
+    return;
+  }
+  if (type === "terminal.run") {
+    void runTerminalFromMiniApp(message);
+  }
+}
+
+function isAllowedMiniAppOrigin(origin: string, appUrl: string): boolean {
+  try {
+    return origin === new URL(appUrl, window.location.href).origin;
+  } catch {
+    return false;
+  }
+}
+
+function publishMiniAppContext(): void {
+  if (!miniAppSession) {
+    return;
+  }
+  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
+  if (!frame?.contentWindow) {
+    return;
+  }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId) || null;
+  const label = tunnel ? counterpartyLabel(tunnel) : "";
+  const message = {
+    schema: miniAppContextProtocol,
+    nonce: miniAppSession.nonce,
+    appId: miniAppSession.app.id,
+    device: device ? { id: device.id, nick: device.nick } : null,
+    selected: tunnel ? {
+      tunnelId: tunnel.id,
+      label,
+      color: safeColor(tunnel.color, label + tunnel.id),
+      agent: isAgentTunnel(tunnel),
+      remoteController: remoteAccess.has(tunnel.id),
+      remoteHost: remoteEnabled.has(tunnel.id),
+      syncState: syncStates.get(tunnel.id) || "connecting"
+    } : null,
+    capabilities: ["chat.append", "agent.invoke", "terminal.run", "close"]
+  };
+  frame.contentWindow.postMessage(message, new URL(miniAppSession.app.url, window.location.href).origin);
+}
+
+async function invokeAgentFromMiniApp(message: Record<string, unknown>): Promise<void> {
+  if (!selectedId) {
+    return;
+  }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  if (!tunnel) {
+    return;
+  }
+  const text = normalizeChatMessage(recordString(message, "text"));
+  const visible = normalizeChatMessage(recordString(message, "visibleText"));
+  if (!text) {
+    return;
+  }
+  if (visible) {
+    appendUserMessageToDialog(selectedId, visible);
+  }
+  await sendAgentDialogMessage(selectedId, text, {
+    ...(isAgentTunnel(tunnel) ? {} : { explicitMention: true })
+  });
+}
+
+async function runTerminalFromMiniApp(message: Record<string, unknown>): Promise<void> {
+  const tunnelId = selectedId;
+  const sync = tunnelId ? syncs.get(tunnelId) : null;
+  const hostDeviceId = tunnelId ? remoteAccess.get(tunnelId) : "";
+  const command = recordString(message, "command").trim();
+  if (!tunnelId || !sync || !hostDeviceId || !command) {
+    postMiniAppEvent("terminal.error", { error: "remote-not-ready" });
+    return;
+  }
+  const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
+  const runAs = recordString(message, "runAs").slice(0, 40);
+  terminalOpenId = tunnelId;
+  terminalCollapsed = false;
+  setTerminalState(tunnelId, "run");
+  appendTerminalLine(tunnelId, `$ ${command}`);
+  renderTerminal();
+  try {
+    const commandId = await sync.sendRemoteCommand(hostDeviceId, command, timeoutMs, runAs);
+    postMiniAppEvent("terminal.started", { commandId });
+  } catch (error) {
+    setTerminalState(tunnelId, "bad");
+    appendTerminalLine(tunnelId, `! ${error instanceof Error ? error.message : "failed"}`);
+    renderTerminal();
+    postMiniAppEvent("terminal.error", { error: "send-failed" });
+  }
+}
+
+function postMiniAppEvent(type: string, detail: Record<string, unknown>): void {
+  if (!miniAppSession) {
+    return;
+  }
+  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
+  if (!frame?.contentWindow) {
+    return;
+  }
+  frame.contentWindow.postMessage({
+    schema: miniAppContextProtocol,
+    nonce: miniAppSession.nonce,
+    type,
+    ...detail
+  }, new URL(miniAppSession.app.url, window.location.href).origin);
 }
 
 function visibleQuickActions(query: string): readonly QuickAction[] {
@@ -1382,6 +1835,16 @@ function renderApp(): void {
           </div>
           <div class="chess-promotion" hidden></div>
         </div>
+        <div class="mini-frame-panel" data-state="idle">
+          <div class="mini-frame-head">
+            <span class="mini-frame-led"></span>
+            <b class="mini-frame-title">APP</b>
+            <small class="mini-frame-status">READY</small>
+            <button class="mini-frame-refresh" type="button" aria-label="refresh mini app" data-tooltip="Reload app">${icon("refresh")}</button>
+            <button class="mini-frame-close" type="button" aria-label="close mini app" data-tooltip="Close app">${icon("close")}</button>
+          </div>
+          <iframe class="mini-frame" title="Soty mini app" loading="lazy" referrerpolicy="no-referrer"></iframe>
+        </div>
         <input class="file-input" type="file" multiple />
       </section>
       </main>
@@ -1401,6 +1864,7 @@ function renderApp(): void {
             <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
             <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
             <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>DO</span></button>
+            <button class="side-action apps-action" type="button" aria-label="mini apps" data-tooltip="Mini apps">${icon("remote")}<span>APPS</span></button>
             <button class="side-action remote-action" type="button" hidden aria-label="download" data-tooltip="Скачать Soty Agent">${icon("download")}<span>DOWNLOAD</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
             <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
@@ -1489,8 +1953,17 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".quick-actions-action")?.addEventListener("click", () => {
     openActionMenu();
   });
+  app.querySelector<HTMLButtonElement>(".apps-action")?.addEventListener("click", () => {
+    void openMiniAppLauncher();
+  });
   app.querySelector<HTMLButtonElement>(".agent-action")?.addEventListener("click", () => {
     void startAgentDialog();
+  });
+  app.querySelector<HTMLButtonElement>(".mini-frame-close")?.addEventListener("click", () => {
+    closeMiniApp();
+  });
+  app.querySelector<HTMLButtonElement>(".mini-frame-refresh")?.addEventListener("click", () => {
+    reloadMiniApp();
   });
   app.querySelector<HTMLButtonElement>(".chess-action")?.addEventListener("click", () => {
     void openChessForSelected();
@@ -1516,6 +1989,7 @@ function renderApp(): void {
   renderFiles();
   renderTerminal();
   renderChess();
+  renderMiniAppPanel();
   void ensureOperatorBridge(true);
   resumeAgentSourceControl();
 }
@@ -1557,6 +2031,8 @@ function renderTiles(): void {
       renderFiles();
       renderTerminal();
       renderChess();
+      renderMiniAppPanel();
+      publishMiniAppContext();
     },
     menu: (id, x, y) => {
       openCounterpartyMenu(x, y, {
@@ -2000,6 +2476,7 @@ function selectTunnel(id: string): void {
   rememberCurrentChatScroll();
   selectedId = id;
   saveSelectedTunnelId(id);
+  publishMiniAppContext();
 }
 
 function hasVisibleSelection(id = selectedId): boolean {
@@ -2238,6 +2715,7 @@ function renderDialogChrome(): void {
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
+  const appsButton = app.querySelector<HTMLButtonElement>(".apps-action");
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
   if (shell) {
@@ -2288,6 +2766,10 @@ function renderDialogChrome(): void {
       remoteButton.dataset.tooltip = mode === "update" ? "Download current Soty Agent" : "Download Soty Agent";
     }
   }
+  if (appsButton) {
+    appsButton.classList.toggle("is-on", Boolean(miniAppSession));
+  }
+  publishMiniAppContext();
 }
 
 function ensureSync(tunnel: TunnelRecord): void {
@@ -3787,6 +4269,9 @@ function activeChessTunnelId(): string {
 async function openChessForSelected(): Promise<void> {
   if (!selectedId) {
     return;
+  }
+  if (miniAppSession) {
+    closeMiniApp();
   }
   if (activeChessTunnelId() === selectedId) {
     closeChessPanel();

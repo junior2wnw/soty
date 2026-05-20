@@ -22,6 +22,7 @@ The browser side stays deliberately simple:
 - the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`;
 - when Chrome/Edge blocks direct loopback access, the app can pair the companion with a secret server relay and keep agent chat working without browser local-network permission;
 - Windows maintenance work uses the same PWA channel plus a machine-scope Soty Worker when admin/SYSTEM actions are required.
+- mini apps are registered through `public/mini-apps/manifest.json` and render inside the selected chat with a tiny postMessage bridge for chat context, agent tasks, and remote commands.
 
 ## Boundary
 
@@ -42,6 +43,7 @@ instead of turning those primitives into a separate legal or technology surface.
 - `src/ui/*` contains UI primitives such as the honeycomb field and counterparty menu.
 - `src/features/*` contains optional tunnel features.
 - `src/core/*` contains tiny shared helpers.
+- `public/mini-apps/*` contains static mini app bundles; see `docs/soty-mini-apps.md`.
 - `server/*` is the relay: HTTP shell, room store, validators, and WebSocket routing.
 - `public/*` is the PWA manifest, service worker, and icon.
 - `trustlink-kernel` is the separate SDK for room secrets, compact join codes, byte encoding, and web crypto primitives.

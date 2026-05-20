@@ -11,7 +11,13 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     .map((item) => item.trim())
     .filter(Boolean)
     .join(" ");
-  app.use((_req, res, next) => {
+  const miniAppFrameSrc = String(process.env.SOTY_MINI_APP_FRAME_SRC || "")
+    .split(/\s+/u)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(" ");
+  app.use((req, res, next) => {
+    const miniAppAsset = req.path === "/mini-apps/manifest.json" || req.path.startsWith("/mini-apps/");
     res.setHeader("Content-Security-Policy", [
       "default-src 'self'",
       "base-uri 'none'",
@@ -21,9 +27,10 @@ export function createHttpApp(distDir, { dataDir } = {}) {
       "img-src 'self' blob: data:",
       "font-src 'self'",
       `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ws://127.0.0.1:49424 ws://localhost:49424${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
+      `frame-src 'self' http://127.0.0.1:* http://localhost:*${miniAppFrameSrc ? ` ${miniAppFrameSrc}` : ""}`,
       "manifest-src 'self'",
       "worker-src 'self'",
-      "frame-ancestors 'none'",
+      `frame-ancestors ${miniAppAsset ? "'self'" : "'none'"}`,
       "form-action 'self'"
     ].join("; "));
     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
@@ -42,7 +49,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-Frame-Options", miniAppAsset ? "SAMEORIGIN" : "DENY");
     next();
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));

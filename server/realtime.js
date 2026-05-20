@@ -32,6 +32,7 @@ export function attachRealtime(wss, store) {
     const queuedMessages = [];
     let queuedBytes = 0;
     const peer = {
+      connectionId: `conn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
       id: "",
       nick: "",
       joinRequestId: "",
@@ -77,9 +78,9 @@ export function attachRealtime(wss, store) {
           peer.disconnectedAt = Date.now();
         }
       }
-      if (peer.id && room.peers.get(peer.id) === peer) {
-        room.peers.delete(peer.id);
-        broadcast(room, peer.id, {
+      if (peer.id && room.peers.get(peer.connectionId) === peer) {
+        room.peers.delete(peer.connectionId);
+        broadcast(room, peer, {
           type: "presence",
           peers: [...room.peers.values()].map(publicPeer)
         });
@@ -138,7 +139,7 @@ async function handleMessage(room, peer, ws, store, raw) {
   if (!peer.id) {
     return;
   }
-  const joinedPeer = room.peers.get(peer.id) === peer;
+  const joinedPeer = room.peers.get(peer.connectionId) === peer;
   if (!joinedPeer) {
     return;
   }
@@ -152,56 +153,56 @@ async function handleMessage(room, peer, ws, store, raw) {
     return;
   }
   if (message.type === "notice.knock" && isNoticeKnock(message.knock)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "notice.knock",
       knock: withPeer(peer, message.knock)
     });
     return;
   }
   if (message.type === "live.draft" && isLiveDraft(message.draft)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "live.draft",
       draft: withPeer(peer, message.draft)
     });
     return;
   }
   if (message.type === "remote.grant" && isRemoteGrant(message.grant)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "remote.grant",
       grant: withPeer(peer, message.grant)
     });
     return;
   }
   if (message.type === "remote.request" && isRemoteRequest(message.request)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "remote.request",
       request: withPeer(peer, message.request)
     });
     return;
   }
   if (message.type === "remote.command" && isRemoteCommand(message.command)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "remote.command",
       command: withPeer(peer, message.command)
     });
     return;
   }
   if (message.type === "remote.script" && isRemoteScript(message.script)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "remote.script",
       script: withPeer(peer, message.script)
     });
     return;
   }
   if (message.type === "remote.cancel" && isRemoteCancel(message.cancel)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "remote.cancel",
       cancel: withPeer(peer, message.cancel)
     });
     return;
   }
   if (message.type === "remote.output" && isRemoteOutput(message.output)) {
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "remote.output",
       output: withPeer(peer, message.output)
     });
@@ -269,7 +270,7 @@ async function handleMessage(room, peer, ws, store, raw) {
     room.state.files = [];
     room.waiting.clear();
     await store.save(room);
-    broadcast(room, "", { type: "closed", closed: room.state.closed });
+    broadcast(room, null, { type: "closed", closed: room.state.closed });
   }
 }
 
@@ -316,7 +317,7 @@ async function handleHello(room, peer, ws, store, message) {
     }
     room.waiting.set(peer.joinRequestId, peer);
     ws.send(JSON.stringify({ type: "join.waiting", requestId: peer.joinRequestId }));
-    broadcast(room, peer.id, {
+    broadcast(room, peer, {
       type: "join.request",
       request: peer.joinRequest
     });
@@ -334,7 +335,7 @@ async function handleHello(room, peer, ws, store, message) {
     ws.close(1008, "bad auth");
     return;
   }
-  room.peers.set(peer.id, peer);
+  room.peers.set(peer.connectionId, peer);
   const peers = [...room.peers.values()].map(publicPeer);
   ws.send(JSON.stringify({
     type: "hello",
@@ -345,7 +346,7 @@ async function handleHello(room, peer, ws, store, message) {
     peers,
     joinRequests: pendingJoinRequests(room, peer.id)
   }));
-  broadcast(room, peer.id, {
+  broadcast(room, peer, {
     type: "presence",
     peers
   });
@@ -369,7 +370,7 @@ async function storeUpdate(room, peer, ws, store, update) {
   room.seen.add(stored.id);
   await store.save(room);
   ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-  broadcast(room, peer.id, { type: "update", update: withPeer(peer, stored, true) });
+  broadcast(room, peer, { type: "update", update: withPeer(peer, stored, true) });
 }
 
 async function storeFile(room, peer, ws, store, file) {
@@ -383,14 +384,14 @@ async function storeFile(room, peer, ws, store, file) {
     room.state.files = room.state.files.filter((item) => fileIdentity(item) !== stored.fileId);
     await store.save(room);
     ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-    broadcast(room, peer.id, { type: "file", file: withPeer(peer, stored, true) });
+    broadcast(room, peer, { type: "file", file: withPeer(peer, stored, true) });
     return;
   }
   room.state.files.push(stored);
   trimStoredFiles(room.state.files);
   await store.save(room);
   ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-  broadcast(room, peer.id, { type: "file", file: withPeer(peer, stored, true) });
+  broadcast(room, peer, { type: "file", file: withPeer(peer, stored, true) });
 }
 
 function withPeer(peer, payload, includeNick = true) {
@@ -406,19 +407,21 @@ function withPeer(peer, payload, includeNick = true) {
   return next;
 }
 
-function broadcast(room, exceptDeviceId, message) {
+function broadcast(room, exceptPeer, message) {
   const json = JSON.stringify(message);
   for (const peer of room.peers.values()) {
-    if (peer.id !== exceptDeviceId && peer.ws.readyState === 1) {
+    if (peer !== exceptPeer && peer.ws.readyState === 1) {
       peer.ws.send(json);
     }
   }
 }
 
 function sendTo(room, deviceId, message) {
-  const peer = room.peers.get(deviceId);
-  if (peer?.ws?.readyState === 1) {
-    peer.ws.send(JSON.stringify(message));
+  const json = JSON.stringify(message);
+  for (const peer of room.peers.values()) {
+    if (peer.id === deviceId && peer.ws?.readyState === 1) {
+      peer.ws.send(json);
+    }
   }
 }
 

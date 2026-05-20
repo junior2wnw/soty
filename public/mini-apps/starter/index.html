@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Soty Starter Mini App</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+        background: #070a0d;
+        color: #e8f7ef;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(90deg, rgba(103, 232, 249, 0.08) 1px, transparent 1px),
+          linear-gradient(rgba(109, 255, 143, 0.06) 1px, transparent 1px),
+          #070a0d;
+        background-size: 24px 24px;
+      }
+
+      main {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 12px;
+        padding: 14px;
+      }
+
+      header,
+      form,
+      output {
+        border: 1px solid #31414c;
+        background: rgba(16, 21, 27, 0.94);
+        box-shadow: inset 0 0 0 1px rgba(232, 247, 239, 0.06);
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: 12px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px;
+      }
+
+      .led {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ffcb62;
+      }
+
+      b,
+      small {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      small {
+        color: #8fa39b;
+      }
+
+      form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 8px;
+        padding: 10px;
+        align-self: start;
+      }
+
+      input,
+      button {
+        height: 38px;
+        border: 1px solid #3d515f;
+        font: inherit;
+      }
+
+      input {
+        min-width: 0;
+        padding: 0 10px;
+        outline: 0;
+        background: #05070a;
+        color: #e8f7ef;
+      }
+
+      button {
+        padding: 0 12px;
+        background: #17202a;
+        color: #6dff8f;
+        cursor: pointer;
+      }
+
+      output {
+        min-height: 80px;
+        padding: 10px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #cfe8dd;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="led"></span>
+        <span>
+          <b id="title">Soty Mini App</b>
+          <small id="context">waiting for chat context</small>
+        </span>
+        <small id="state">READY</small>
+      </header>
+      <form id="form">
+        <input id="input" autocomplete="off" placeholder="Message for the selected chat" />
+        <button type="submit">CHAT</button>
+        <button id="agent" type="button">AGENT</button>
+      </form>
+      <output id="log">Bridge ready.</output>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
