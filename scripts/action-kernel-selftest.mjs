@@ -1564,6 +1564,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes("Invoke-ResumableDownload"));
       assert(prepare.includes("Invoke-ParallelRangeDownloadAttempt"));
       assert(prepare.includes("Test-ParallelWindowsImageDownloadEnabled"));
+      assert(prepare.includes("HttpWebRequest status="));
+      assert(prepare.includes("$request.AddRange($before)"));
       assert(prepare.includes("Get-HttpRangeProbeInfo"));
       assert(prepare.includes("continuing with guarded streaming download and SHA256 verification"));
       assert(prepare.includes("curl.exe --silent --show-error -I -L"));
@@ -1577,6 +1579,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(prepare.includes("$curl -and $parallelDownloadEnabled"));
       assert(prepare.includes("SOTY_WINDOWS_ENABLE_PARALLEL_DOWNLOAD"));
       assert(prepare.includes("SOTY_WINDOWS_PARALLEL_NO_PROGRESS_SECONDS"));
+      assert(prepare.includes("falling back to single-stream download."));
+      assert(prepare.includes("$parallelDownloadEnabled = $false"));
       assert(prepare.includes("falling back to single-stream download"));
       assert(prepare.includes("Windows image download did not complete within the retry window"));
       const sotyUserCodepoints = "0x0421, 0x043E, 0x0442, 0x044B";

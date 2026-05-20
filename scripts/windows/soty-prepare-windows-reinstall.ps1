@@ -338,16 +338,42 @@ function Invoke-HttpRangeDownloadAttempt([string] $Uri, [string] $TempPath, [str
   $before = Get-FileLengthSafe $TempPath
   $part = $TempPath + ".part"
   Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
-  $headers = @{}
-  if ($before -gt 0) { $headers["Range"] = "bytes=$before-" }
-  $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -Headers $headers -OutFile $part -TimeoutSec 1800 -ErrorAction Stop
-  $statusCode = if ($response -and $null -ne $response.StatusCode) { [int]$response.StatusCode } else { 0 }
-  Set-Content -LiteralPath (Join-Path $JobRoot $LogName) -Encoding UTF8 -Value ("Invoke-WebRequest status=" + $statusCode + " resumeFrom=" + $before)
+  $response = $null
+  $stream = $null
+  $file = $null
+  $statusCode = 0
+  try {
+    $request = [System.Net.HttpWebRequest]::Create($Uri)
+    $request.Method = "GET"
+    $request.AllowAutoRedirect = $true
+    $request.Timeout = 1800000
+    $request.ReadWriteTimeout = 1800000
+    $request.UserAgent = "Soty Windows reinstall media downloader"
+    if ($before -gt 0) { $request.AddRange($before) }
+    $response = $request.GetResponse()
+    $statusCode = [int] $response.StatusCode
+    $stream = $response.GetResponseStream()
+    $file = [System.IO.File]::Open($part, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+    $buffer = New-Object byte[] 1048576
+    while ($true) {
+      $read = $stream.Read($buffer, 0, $buffer.Length)
+      if ($read -le 0) { break }
+      $file.Write($buffer, 0, $read)
+    }
+  } finally {
+    if ($file) { $file.Dispose() }
+    if ($stream) { $stream.Dispose() }
+    if ($response) { $response.Dispose() }
+  }
+  Set-Content -LiteralPath (Join-Path $JobRoot $LogName) -Encoding UTF8 -Value ("HttpWebRequest status=" + $statusCode + " resumeFrom=" + $before)
   if (-not (Test-Path -LiteralPath $part)) { throw "HTTP download attempt did not create $part" }
   if ($before -gt 0 -and $statusCode -eq 206) {
     Join-BinaryFile -Source $part -Destination $TempPath
     Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
   } else {
+    if ($before -gt 0 -and $statusCode -ne 200) {
+      throw "HTTP range download returned status $statusCode while resuming from $before."
+    }
     Move-Item -LiteralPath $part -Destination $TempPath -Force
   }
 }
@@ -760,7 +786,16 @@ function Invoke-ResumableDownload([string] $Uri, [string] $Destination, [string]
     try {
       $usedParallel = $false
       if ($curl -and $parallelDownloadEnabled) {
-        $usedParallel = Invoke-ParallelRangeDownloadAttempt -Uri $Uri -TempPath $tmp -LogPrefix ($LogPrefix + "-attempt-" + $attempt)
+        try {
+          $usedParallel = Invoke-ParallelRangeDownloadAttempt -Uri $Uri -TempPath $tmp -LogPrefix ($LogPrefix + "-attempt-" + $attempt)
+        } catch {
+          Log ("WARN parallel range download failed: " + $_.Exception.Message + "; falling back to single-stream download.")
+          $parallelDownloadEnabled = $false
+          $usedParallel = $false
+        }
+        if (-not $usedParallel) {
+          $parallelDownloadEnabled = $false
+        }
       }
       if (-not $usedParallel -and $curl) {
         Remove-Item -LiteralPath $parts -Recurse -Force -ErrorAction SilentlyContinue
