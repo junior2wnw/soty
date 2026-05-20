@@ -1541,6 +1541,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(managed.includes("Invoke-ManagedCancel"));
       assert(managed.includes("Remove-StaleMediaArtifacts"));
       assert(managed.includes("Repair-StaleMediaState"));
+      assert(managed.includes("if (@($activeForJob).Count -gt 0)"));
+      assert(managed.includes("$extraPaths += @(Get-PrepareMediaArtifactPaths $Root)"));
       assert(managed.includes("Test-UsbFreeSpaceRequired"));
       assert(managed.includes("$Status.backupProofOk -eq $true"));
       assert(managed.includes("staleMediaRecovered"));

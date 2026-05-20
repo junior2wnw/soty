@@ -350,17 +350,23 @@ function Get-PrepareJobs([string] $Root) {
         $result = Read-JsonFile $resultPath
         $stdoutPath = Join-Path $jobPath "stdout.txt"
         $stderrPath = Join-Path $jobPath "stderr.txt"
+        $activeForJob = @($prepareProcesses | Where-Object { Test-PrepareProcessMatchesJob $_ $jobId $jobPath $Root })
         $extraPaths = @(
           $resultPath,
           $stdoutPath,
           $stderrPath,
           (Join-Path $jobPath "dism-export-drivers.txt"),
           (Join-Path $jobPath "backup-proof.json")
-        ) + @(Get-PrepareMediaArtifactPaths $Root)
+        )
+        $mediaActive = $false
+        if (@($activeForJob).Count -gt 0) {
+          $mediaActive = Test-PrepareJobMediaActive $Root $jobPath
+          if ($mediaActive) {
+            $extraPaths += @(Get-PrepareMediaArtifactPaths $Root)
+          }
+        }
         $updatedUtc = Get-PrepareJobUpdatedUtc $jobPath $extraPaths
         $updatedAgeSeconds = [math]::Round(($nowUtc - $updatedUtc).TotalSeconds, 0)
-        $activeForJob = @($prepareProcesses | Where-Object { Test-PrepareProcessMatchesJob $_ $jobId $jobPath $Root })
-        $mediaActive = Test-PrepareJobMediaActive $Root $jobPath
         $status = if ($result) { [string] $result.status } else { "running-or-started" }
         if (-not $result -and @($activeForJob).Count -eq 0 -and -not $mediaActive -and $updatedAgeSeconds -ge $script:PrepareOrphanGraceSeconds) {
           $status = "stale-orphaned"
