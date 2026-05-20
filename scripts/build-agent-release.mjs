@@ -108,6 +108,8 @@ const manifest = {
       "mouse",
       "wallpaper",
       "audio",
+      "trigger",
+      "agent-trigger",
       "app",
       "api",
       "transaction",
@@ -284,10 +286,19 @@ function buildRouteProfiles(windowsReinstall) {
 }
 
 function buildSotyAgentRuntime() {
+  const capabilities = defaultAgentRuntimeCapabilities();
+  if (!capabilities.some((capability) => capability.family === "trigger")) {
+    capabilities.push({
+      family: "trigger",
+      actions: ["set", "list", "cancel", "fire", "event"],
+      risk: "low",
+      proof: ["triggerId", "nextFireAt", "event", "firedCount"]
+    });
+  }
   return buildAgentRuntimeManifest({
     runtimeId: "soty-agent",
     entrypoint: "computer",
-    capabilities: defaultAgentRuntimeCapabilities()
+    capabilities
   });
 }
 
@@ -317,7 +328,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         name: "agent-runtime",
         entryTool: "computer",
         kind: "runtime-contract",
-        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "learn"],
+        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "trigger", "learn"],
         proof: ["capability", "risk", "confirmation", "jobId", "result", "proof"],
         schema: agentRuntime.schema,
         capabilities: agentRuntime.capabilities.map((capability) => capability.family)
@@ -326,7 +337,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         name: "computer-use-plane",
         entryTool: "computer",
         kind: "front-door",
-        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop"],
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop", "trigger"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
         promotion: "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
@@ -354,6 +365,15 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         phases: ["start", "status", "wait", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"],
         promotion: "Durable supervised execution for long or repeatable jobs."
+      },
+      {
+        name: "agent-trigger",
+        entryTool: "computer",
+        kind: "wake-up-kernel",
+        phases: ["set", "list", "cancel", "fire", "event"],
+        proof: ["triggerId", "nextFireAt", "event", "firedCount"],
+        schema: "soty.agent.triggers.v1",
+        promotion: "Short handoff now, automatic Agent chat continuation on time/event later."
       },
       {
         name: "generated-asset",
@@ -390,8 +410,12 @@ function buildResponseStylePolicy() {
     displayName: "Агент",
     base: "agent",
     tone: "brief-sysadmin",
-    maxUserFacingLines: 0,
-    phraseBank: []
+    maxUserFacingLines: 3,
+    phraseBank: [],
+    promptRules: [
+      "Default user-facing replies to 1-3 short lines.",
+      "For quiet waiting, send one short handoff and set an Agent trigger."
+    ]
   };
 }
 

@@ -10,6 +10,9 @@ documents the Soty adapter.
 - `soty_*` names are compatibility aliases behind that front door.
 - Long or repeated work should become durable jobs with status, result, proof,
   and a reusable learning receipt.
+- Quiet waits and event-based continuation should use Agent Triggers
+  (`docs/soty-agent-triggers.md`) instead of keeping a chat turn open just to
+  say "still waiting".
 - Specific programs should be connected as adapters, not as one-off command
   strings.
 
@@ -22,10 +25,22 @@ Soty publishes the TrustLink runtime families through `/health`,
 - browser, desktop, screen, keyboard, mouse, clipboard
 - network, surface, app, api, job, artifact, audio
 - os, transaction, device
+- trigger
 
 Mini app work enters through `surface.*` plus the app-surface install request:
 build/serve the frontend, then register/open it with `computer`
 operation `mini_app` or `surface`.
+
+## Triggers
+
+Agent Triggers are a small wake-up layer:
+
+1. The Agent gives the user a short handoff.
+2. It sets a `time`, `interval`, or `event` trigger through `computer`
+   operation `trigger`.
+3. When the trigger fires, Soty sends a normal message into the Agent chat.
+4. The Agent continues from that message, verifies state with tools, and records
+   sanitized memory if the trigger needed tuning.
 
 Program-specific work should enter through `app.*`, `api.*`, or
 `transaction.*` and then use the existing lower-level browser/desktop/console

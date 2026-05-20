@@ -1,9 +1,9 @@
 {
-  "version": "0.4.82",
+  "version": "0.4.83",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "2af6872285d90a6eb1bd24d0f5a8c6cb219de408544c9874290758b6a99c0439",
+  "sha256": "fe6ff3f0323bd85f015d409b798e42095409456148d315336abbd820e63bc969",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -89,6 +89,8 @@
       "mouse",
       "wallpaper",
       "audio",
+      "trigger",
+      "agent-trigger",
       "app",
       "api",
       "transaction",
@@ -398,6 +400,23 @@
           "status",
           "result"
         ]
+      },
+      {
+        "family": "trigger",
+        "actions": [
+          "set",
+          "list",
+          "cancel",
+          "fire",
+          "event"
+        ],
+        "risk": "low",
+        "proof": [
+          "triggerId",
+          "nextFireAt",
+          "event",
+          "firedCount"
+        ]
       }
     ],
     "terminalStates": [
@@ -592,8 +611,12 @@
         "displayName": "Агент",
         "base": "agent",
         "tone": "brief-sysadmin",
-        "maxUserFacingLines": 0,
-        "phraseBank": []
+        "maxUserFacingLines": 3,
+        "phraseBank": [],
+        "promptRules": [
+          "Default user-facing replies to 1-3 short lines.",
+          "For quiet waiting, send one short handoff and set an Agent trigger."
+        ]
       },
       "openAiToolPlane": {
         "schema": "openai.responses-tools+mcp.v1",
@@ -648,6 +671,7 @@
           "confirm",
           "status",
           "stop",
+          "trigger",
           "learn"
         ],
         "proof": [
@@ -680,7 +704,8 @@
           "audio",
           "os",
           "transaction",
-          "device"
+          "device",
+          "trigger"
         ]
       },
       {
@@ -695,7 +720,8 @@
           "jobs",
           "job_status",
           "wait",
-          "job_stop"
+          "job_stop",
+          "trigger"
         ],
         "proof": [
           "sourceDeviceId",
@@ -770,6 +796,26 @@
           "proof"
         ],
         "promotion": "Durable supervised execution for long or repeatable jobs."
+      },
+      {
+        "name": "agent-trigger",
+        "entryTool": "computer",
+        "kind": "wake-up-kernel",
+        "phases": [
+          "set",
+          "list",
+          "cancel",
+          "fire",
+          "event"
+        ],
+        "proof": [
+          "triggerId",
+          "nextFireAt",
+          "event",
+          "firedCount"
+        ],
+        "schema": "soty.agent.triggers.v1",
+        "promotion": "Short handoff now, automatic Agent chat continuation on time/event later."
       },
       {
         "name": "generated-asset",

@@ -8,13 +8,14 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.82";
+const agentVersion = "0.4.83";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
 const codexSessionsPath = join(agentDir, "agent-codex-sessions.json");
 const codexWorkspacesDir = join(agentDir, "codex-workspaces");
 const agentTracesDir = resolve(process.env.SOTY_AGENT_TRACE_DIR || join(agentDir, "agent-traces"));
+const agentTriggersPath = resolve(process.env.SOTY_AGENT_TRIGGERS_PATH || join(agentDir, "agent-triggers.json"));
 const learningOutboxPath = join(agentDir, "learning-outbox.jsonl");
 const learningSentPath = join(agentDir, "learning-sent.jsonl");
 const actionJobsDir = resolve(process.env.SOTY_AGENT_ACTION_JOBS_DIR || join(agentDir, "action-jobs"));
@@ -82,6 +83,7 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_action_stop",
   "soty_action_list",
   "soty_link_status",
+  "soty_trigger",
   "soty_run",
   "soty_script",
   "soty_file",
@@ -108,9 +110,12 @@ const agentResponseStyleProfiles = Object.freeze([
     displayName: "Агент",
     base: "agent",
     tone: "brief-sysadmin",
-    maxUserFacingLines: 0,
+    maxUserFacingLines: 3,
     phraseBank: [],
-    promptRules: []
+    promptRules: [
+      "Default user-facing replies to 1-3 short lines. Put proof/detail in tool results, not chat narration.",
+      "For quiet waiting, send one short handoff and set an Agent trigger instead of keeping the user in a long status monologue."
+    ]
   }
 ]);
 const defaultAgentResponseStyleId = "agent-sysadmin";
@@ -126,6 +131,8 @@ const operatorMessages = [];
 const operatorMessageWaiters = new Set();
 const agentOperatorReplyQueues = new Map();
 const recentAgentOperatorMessageKeys = new Map();
+const agentTriggers = new Map();
+const agentTriggerTimers = new Map();
 const activeRelayJobs = new Map();
 const activeCodexTargetTurns = new Map();
 let learningSyncTimer = null;
@@ -252,6 +259,7 @@ function startServer() {
     void preparePersistentStockCodexHome();
     scheduleWindowsAudioWarmup();
     scheduleUpdate();
+    void loadAndScheduleAgentTriggers();
     void markInterruptedAgentTracesAtStartup();
     startAgentRelay();
   });
@@ -497,6 +505,18 @@ async function handleHttpRequest(request, response) {
     await handleOperatorHttpActions(response, headers);
     return;
   }
+  if (url.pathname === "/operator/triggers" && request.method === "GET") {
+    handleOperatorHttpTriggers(response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/trigger" && request.method === "POST") {
+    await handleOperatorHttpTrigger(request, response, headers);
+    return;
+  }
+  if (url.pathname === "/operator/trigger-event" && request.method === "POST") {
+    await handleOperatorHttpTriggerEvent(request, response, headers);
+    return;
+  }
   if (url.pathname === "/operator/action" && request.method === "POST") {
     await handleOperatorHttpAction(request, response, headers);
     return;
@@ -725,6 +745,13 @@ function promoteOperatorBridge(ws, state = operatorBridgeAttachState({})) {
   operatorDeviceNetwork = state.deviceNetwork || emptyDeviceNetwork();
   operatorDeviceId = state.deviceId || "";
   operatorDeviceNick = state.deviceNick || "";
+  void emitAgentTriggerEvent("operator.attached", {
+    visible: operatorBridgeVisible,
+    protocol: operatorBridgeProtocol,
+    targets: operatorTargets.length,
+    deviceId: operatorDeviceId ? "<set>" : "",
+    deviceNick: operatorDeviceNick
+  });
 }
 
 function maybePromoteOperatorStandby(ws) {
@@ -923,6 +950,80 @@ async function operatorSourceStatus({ target = "", sourceRelayId = "", sourceDev
 async function handleOperatorHttpActions(response, headers) {
   const jobs = await listActionJobs();
   sendJson(response, 200, headers, { ok: true, jobs });
+}
+
+function handleOperatorHttpTriggers(response, headers) {
+  sendJson(response, 200, headers, {
+    ok: true,
+    ...agentTriggersStatus()
+  });
+}
+
+async function handleOperatorHttpTrigger(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 120_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const action = cleanActionToken(payload?.action || payload?.operation || "set", "set");
+  if (["list", "status", "show"].includes(action)) {
+    handleOperatorHttpTriggers(response, headers);
+    return;
+  }
+  if (["cancel", "delete", "remove", "stop"].includes(action)) {
+    const id = cleanActionId(payload?.id || payload?.triggerId || "");
+    const cancelled = await cancelAgentTrigger(id);
+    sendJson(response, cancelled.ok ? 200 : 404, headers, cancelled);
+    return;
+  }
+  if (["fire", "run", "manual"].includes(action)) {
+    const id = cleanActionId(payload?.id || payload?.triggerId || "");
+    const trigger = id ? agentTriggers.get(id) : normalizeAgentTrigger(payload);
+    if (!trigger) {
+      sendJson(response, 400, headers, { ok: false, text: "! trigger", exitCode: 400 });
+      return;
+    }
+    const result = await fireAgentTrigger(trigger, "manual", {
+      event: "manual",
+      request: sanitizeTriggerEventPayload(payload)
+    });
+    sendJson(response, result.ok ? 200 : 409, headers, result);
+    return;
+  }
+  const trigger = normalizeAgentTrigger(payload);
+  if (!trigger) {
+    sendJson(response, 400, headers, { ok: false, text: "! trigger", exitCode: 400 });
+    return;
+  }
+  agentTriggers.set(trigger.id, trigger);
+  await saveAgentTriggers();
+  scheduleAgentTrigger(trigger);
+  sendJson(response, 200, headers, {
+    ok: true,
+    trigger: publicAgentTrigger(trigger),
+    text: "trigger set\n",
+    exitCode: 0,
+    agentGuidance: "Tell the user one short status line, then continue elsewhere or wait. When the trigger fires, it will enter the Agent chat as a normal user-visible trigger message. Record reusable trigger fixes through memory if timing or matching needed debugging."
+  });
+}
+
+async function handleOperatorHttpTriggerEvent(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 120_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, text: "! json", exitCode: 400 });
+    return;
+  }
+  const event = cleanTriggerEventName(payload?.event || payload?.type || payload?.name || "");
+  if (!event) {
+    sendJson(response, 400, headers, { ok: false, text: "! trigger-event", exitCode: 400 });
+    return;
+  }
+  const result = await emitAgentTriggerEvent(event, sanitizeTriggerEventPayload(payload));
+  sendJson(response, 200, headers, result);
 }
 
 async function handleOperatorHttpActionStatus(jobId, response, headers) {
@@ -1214,6 +1315,16 @@ async function runActionJob(job, action) {
     cancel: () => abortController.abort()
   });
   await writeActionJob(current);
+  void emitAgentTriggerEvent("action.started", {
+    jobId: job.id,
+    toolkit: action.toolkit,
+    phase: action.phase,
+    family: action.family,
+    kind: action.actionType,
+    risk: action.risk,
+    target: action.target ? "<set>" : "",
+    sourceDeviceId: action.sourceDeviceId ? "<set>" : ""
+  });
   let execution;
   try {
     execution = await executeOperatorAction({ ...action, jobId: job.id }, abortController.signal);
@@ -1314,6 +1425,20 @@ async function runActionJob(job, action) {
     exitCode,
     durationMs,
     ...learningContextForAction(action)
+  });
+  void emitAgentTriggerEvent("action.finished", {
+    jobId: job.id,
+    status,
+    ok: status === "ok",
+    toolkit: action.toolkit,
+    phase: action.phase,
+    family: action.family,
+    kind: action.actionType,
+    risk: action.risk,
+    route,
+    exitCode,
+    durationMs,
+    proof
   });
   return {
     httpStatus: status === "blocked" ? 422 : 200,
@@ -1551,6 +1676,492 @@ async function writeJsonAtomic(filePath, value) {
   const tempPath = join(dir, `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await rename(tempPath, filePath);
+}
+
+async function loadAndScheduleAgentTriggers() {
+  const doc = await readJsonFile(agentTriggersPath);
+  const items = Array.isArray(doc?.triggers) ? doc.triggers : [];
+  agentTriggers.clear();
+  for (const raw of items) {
+    const trigger = normalizeAgentTrigger(raw, { preserveState: true });
+    if (trigger) {
+      agentTriggers.set(trigger.id, trigger);
+      scheduleAgentTrigger(trigger);
+    }
+  }
+}
+
+function agentTriggersStatus() {
+  return {
+    schema: "soty.agent.triggers.v1",
+    capability: "agent-trigger",
+    count: agentTriggers.size,
+    triggers: [...agentTriggers.values()].map(publicAgentTrigger),
+    events: ["time", "interval", "manual", "operator.attached", "operator.message", "action.started", "action.finished", "custom"],
+    guidance: "Use triggers for short handoffs and delayed/event-based continuation. Set one, tell the user briefly what will happen, then let the fired trigger re-enter the Agent chat."
+  };
+}
+
+async function saveAgentTriggers() {
+  await writeJsonAtomic(agentTriggersPath, {
+    schema: "soty.agent.triggers.v1",
+    updatedAt: new Date().toISOString(),
+    triggers: [...agentTriggers.values()]
+      .map(persistedAgentTrigger)
+      .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+  }).catch(() => undefined);
+}
+
+function normalizeAgentTrigger(payload, options = {}) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const rawKind = payload.kind || payload.type || payload.trigger || (payload.event ? "event" : payload.everyMs || payload.intervalMs ? "interval" : "time");
+  const kind = cleanActionToken(rawKind, "time");
+  if (!["time", "interval", "event"].includes(kind)) {
+    return null;
+  }
+  const id = cleanActionId(payload.id || payload.triggerId || payload.name || "") || `trg_${randomUUID().replace(/-/gu, "").slice(0, 24)}`;
+  const label = cleanActionText(payload.label || payload.title || id, 120) || id;
+  const createdAt = cleanIsoDate(payload.createdAt) || nowIso;
+  const firedCount = options.preserveState ? Math.max(0, Math.trunc(Number(payload.firedCount || 0))) : 0;
+  const maxFires = safeTriggerInteger(payload.maxFires ?? payload.limit, kind === "time" ? 1 : 0, 0, 10_000);
+  const event = kind === "event" ? cleanTriggerEventName(payload.event || payload.eventName || payload.on || "*") : "";
+  const everyMs = kind === "interval"
+    ? safeTriggerMs(payload.everyMs || payload.intervalMs || payload.ms, 60_000, 1000, 30 * 24 * 60 * 60_000)
+    : 0;
+  const fireAt = kind === "time" ? cleanTriggerFireAt(payload, now) : "";
+  const nextFireAt = kind === "event"
+    ? ""
+    : cleanIsoDate(payload.nextFireAt) || (kind === "interval" ? new Date(now + everyMs).toISOString() : fireAt);
+  if (kind !== "event" && !nextFireAt) {
+    return null;
+  }
+  const match = sanitizeTriggerMatch(payload.match || payload.where || payload.filter);
+  const message = cleanAgentTriggerMessage(payload.message || payload.text || payload.prompt || "");
+  const note = cleanAgentTriggerMessage(payload.note || payload.reason || payload.summary || "");
+  const defaultMessage = [
+    `SOTY_TRIGGER ${label}`,
+    note || "Continue from this trigger.",
+    "Keep the first reply short, then use tools/status if more work is needed."
+  ].join("\n");
+  return {
+    schema: "soty.agent.trigger.v1",
+    id,
+    kind,
+    label,
+    enabled: payload.enabled === false ? false : true,
+    target: safeSourceText(payload.target || payload.tunnelId || ""),
+    sourceDeviceId: safeSourceText(payload.sourceDeviceId || ""),
+    sourceDeviceNick: safeSourceText(payload.sourceDeviceNick || ""),
+    event,
+    match,
+    fireAt,
+    everyMs,
+    nextFireAt,
+    maxFires,
+    firedCount,
+    lastFiredAt: cleanIsoDate(payload.lastFiredAt) || "",
+    lastError: cleanActionText(payload.lastError || "", 220),
+    message: message || defaultMessage,
+    note,
+    createdAt,
+    updatedAt: nowIso
+  };
+}
+
+function cleanTriggerFireAt(payload, now) {
+  const explicit = cleanIsoDate(payload.at || payload.fireAt || payload.when || "");
+  if (explicit) {
+    return explicit;
+  }
+  const afterMs = safeTriggerMs(payload.afterMs || payload.delayMs || payload.inMs || payload.waitMs, 0, 0, 365 * 24 * 60 * 60_000);
+  if (afterMs > 0) {
+    return new Date(now + afterMs).toISOString();
+  }
+  return "";
+}
+
+function persistedAgentTrigger(trigger) {
+  return {
+    schema: "soty.agent.trigger.v1",
+    id: trigger.id,
+    kind: trigger.kind,
+    label: trigger.label,
+    enabled: trigger.enabled === true,
+    target: trigger.target || "",
+    sourceDeviceId: trigger.sourceDeviceId || "",
+    sourceDeviceNick: trigger.sourceDeviceNick || "",
+    event: trigger.event || "",
+    match: trigger.match || {},
+    fireAt: trigger.fireAt || "",
+    everyMs: trigger.everyMs || 0,
+    nextFireAt: trigger.nextFireAt || "",
+    maxFires: trigger.maxFires || 0,
+    firedCount: trigger.firedCount || 0,
+    lastFiredAt: trigger.lastFiredAt || "",
+    lastError: trigger.lastError || "",
+    message: trigger.message || "",
+    note: trigger.note || "",
+    createdAt: trigger.createdAt || "",
+    updatedAt: trigger.updatedAt || ""
+  };
+}
+
+function publicAgentTrigger(trigger) {
+  return {
+    id: trigger.id,
+    kind: trigger.kind,
+    label: trigger.label,
+    enabled: trigger.enabled === true,
+    target: trigger.target || "",
+    sourceDeviceId: trigger.sourceDeviceId || "",
+    event: trigger.event || "",
+    match: trigger.match || {},
+    fireAt: trigger.fireAt || "",
+    everyMs: trigger.everyMs || 0,
+    nextFireAt: trigger.nextFireAt || "",
+    maxFires: trigger.maxFires || 0,
+    firedCount: trigger.firedCount || 0,
+    lastFiredAt: trigger.lastFiredAt || "",
+    lastError: trigger.lastError || "",
+    note: trigger.note || "",
+    messagePreview: cleanActionText(trigger.message || "", 220),
+    createdAt: trigger.createdAt || "",
+    updatedAt: trigger.updatedAt || ""
+  };
+}
+
+function scheduleAgentTrigger(trigger) {
+  const existing = agentTriggerTimers.get(trigger.id);
+  if (existing) {
+    clearTimeout(existing);
+    agentTriggerTimers.delete(trigger.id);
+  }
+  if (!trigger.enabled || trigger.kind === "event") {
+    return;
+  }
+  const dueAt = Date.parse(trigger.nextFireAt || trigger.fireAt || "");
+  if (!Number.isFinite(dueAt)) {
+    return;
+  }
+  const delay = Math.max(250, Math.min(dueAt - Date.now(), 24 * 60 * 60_000));
+  const timer = setTimeout(() => {
+    agentTriggerTimers.delete(trigger.id);
+    void handleDueAgentTrigger(trigger.id);
+  }, delay);
+  timer.unref?.();
+  agentTriggerTimers.set(trigger.id, timer);
+}
+
+async function handleDueAgentTrigger(id) {
+  const trigger = agentTriggers.get(id);
+  if (!trigger || !trigger.enabled || trigger.kind === "event") {
+    return;
+  }
+  const dueAt = Date.parse(trigger.nextFireAt || trigger.fireAt || "");
+  if (Number.isFinite(dueAt) && dueAt - Date.now() > 250) {
+    scheduleAgentTrigger(trigger);
+    return;
+  }
+  await fireAgentTrigger(trigger, trigger.kind, { event: trigger.kind, dueAt: trigger.nextFireAt || trigger.fireAt || "" });
+}
+
+async function cancelAgentTrigger(id) {
+  if (!id || !agentTriggers.has(id)) {
+    return { ok: false, text: "! trigger", exitCode: 404 };
+  }
+  const timer = agentTriggerTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    agentTriggerTimers.delete(id);
+  }
+  const trigger = agentTriggers.get(id);
+  agentTriggers.delete(id);
+  await saveAgentTriggers();
+  return { ok: true, text: "trigger cancelled\n", exitCode: 0, trigger: trigger ? publicAgentTrigger(trigger) : { id } };
+}
+
+async function emitAgentTriggerEvent(event, payload = {}) {
+  const eventName = cleanTriggerEventName(event);
+  if (!eventName) {
+    return { ok: false, text: "! trigger-event", exitCode: 400, fired: 0 };
+  }
+  const safePayload = sanitizeTriggerEventPayload(payload);
+  const candidates = [...agentTriggers.values()].filter((trigger) => trigger.enabled && trigger.kind === "event" && triggerMatchesEvent(trigger, eventName, safePayload));
+  const results = [];
+  for (const trigger of candidates) {
+    results.push(await fireAgentTrigger(trigger, eventName, { event: eventName, payload: safePayload }));
+  }
+  return {
+    ok: true,
+    event: eventName,
+    fired: results.filter((item) => item.ok).length,
+    matched: candidates.length,
+    results: results.map((item) => ({ ok: item.ok, id: item.id || "", exitCode: item.exitCode || 0 }))
+  };
+}
+
+async function fireAgentTrigger(trigger, reason, eventPayload = {}) {
+  const current = agentTriggers.get(trigger.id) || trigger;
+  if (!current.enabled && agentTriggers.has(current.id)) {
+    return { ok: false, id: current.id, text: "! trigger-disabled", exitCode: 409 };
+  }
+  if (!operatorBridge?.open) {
+    const retryAt = new Date(Date.now() + 30_000).toISOString();
+    const next = {
+      ...current,
+      lastError: "operator bridge unavailable",
+      updatedAt: new Date().toISOString(),
+      ...(current.kind === "time" ? { nextFireAt: retryAt } : {})
+    };
+    agentTriggers.set(next.id, next);
+    await saveAgentTriggers();
+    scheduleAgentTrigger(next);
+    return { ok: false, id: next.id, text: "! bridge", exitCode: 409, retryAt };
+  }
+  const nowIso = new Date().toISOString();
+  const firedCount = Math.max(0, Number(current.firedCount || 0)) + 1;
+  const shouldDisable = current.maxFires > 0 && firedCount >= current.maxFires;
+  const nextFireAt = shouldDisable
+    ? ""
+    : current.kind === "interval" && current.everyMs > 0
+      ? new Date(Date.now() + current.everyMs).toISOString()
+      : current.kind === "time"
+        ? ""
+        : current.nextFireAt || "";
+  const next = {
+    ...current,
+    enabled: shouldDisable ? false : current.enabled,
+    firedCount,
+    lastFiredAt: nowIso,
+    lastError: "",
+    nextFireAt,
+    updatedAt: nowIso
+  };
+  agentTriggers.set(next.id, next);
+  await saveAgentTriggers();
+  scheduleAgentTrigger(next);
+  const id = `trigger_${randomUUID()}`;
+  sendRaw(operatorBridge, {
+    type: "operator.agent-message",
+    id,
+    target: next.target || "",
+    sourceDeviceId: next.sourceDeviceId || operatorDeviceId || agentDeviceId || "",
+    sourceDeviceNick: next.sourceDeviceNick || operatorDeviceNick || agentDeviceNick || "",
+    text: agentTriggerDialogMessage(next, reason, eventPayload)
+  });
+  recordLearningReceipt({
+    kind: "agent-runtime",
+    toolkit: "agent-trigger",
+    phase: cleanActionToken(reason || next.kind, next.kind),
+    family: "trigger",
+    result: "ok",
+    route: "agent-trigger.message",
+    commandSig: commandSignature(`${next.kind}:${next.event || next.fireAt || next.everyMs}`, "trigger"),
+    taskSig: taskSignature(`${next.id}:${next.label}`),
+    proof: `trigger=${cleanProofToken(next.id)}; kind=${next.kind}; event=${cleanProofToken(reason || next.event || next.kind)}; target=${next.target ? "set" : "agent-default"}`,
+    exitCode: 0,
+    durationMs: 0,
+    ...learningContextForTurn()
+  });
+  return { ok: true, id: next.id, text: "trigger fired\n", exitCode: 0, firedCount, disabled: shouldDisable };
+}
+
+function agentTriggerDialogMessage(trigger, reason, eventPayload) {
+  const packet = {
+    schema: "soty.agent.trigger-fired.v1",
+    id: trigger.id,
+    label: trigger.label,
+    kind: trigger.kind,
+    event: cleanTriggerEventName(reason || trigger.event || trigger.kind),
+    firedAt: trigger.lastFiredAt || new Date().toISOString(),
+    firedCount: trigger.firedCount || 0,
+    note: trigger.note || "",
+    payload: sanitizeTriggerEventPayload(eventPayload)
+  };
+  return [
+    "SOTY_TRIGGER_FIRED:",
+    JSON.stringify(packet),
+    "",
+    trigger.message || `Trigger ${trigger.label} fired.`,
+    "",
+    "Agent instruction: continue from this trigger. Start with one short human-facing sentence; use tools/status only if needed; record a sanitized memory improvement if this trigger needed tuning."
+  ].join("\n").slice(0, maxChatChars);
+}
+
+function triggerMatchesEvent(trigger, eventName, payload) {
+  const event = cleanTriggerEventName(trigger.event || "*");
+  if (event && event !== "*" && event !== eventName) {
+    return false;
+  }
+  const match = trigger.match && typeof trigger.match === "object" ? trigger.match : {};
+  for (const [key, expected] of Object.entries(match)) {
+    if (key === "contains") {
+      if (!String(JSON.stringify(payload)).toLowerCase().includes(String(expected || "").toLowerCase())) {
+        return false;
+      }
+      continue;
+    }
+    const actual = triggerPayloadValue(payload, key);
+    if (!triggerValueMatches(actual, expected)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function triggerPayloadValue(payload, path) {
+  const parts = String(path || "").split(".").filter(Boolean).slice(0, 8);
+  let value = payload;
+  for (const part of parts) {
+    if (!value || typeof value !== "object") {
+      return undefined;
+    }
+    value = value[part];
+  }
+  return value;
+}
+
+function triggerValueMatches(actual, expected) {
+  if (expected && typeof expected === "object" && !Array.isArray(expected)) {
+    if (typeof expected.contains === "string") {
+      return String(actual || "").toLowerCase().includes(expected.contains.toLowerCase());
+    }
+    if (Array.isArray(expected.oneOf)) {
+      return expected.oneOf.some((item) => triggerValueMatches(actual, item));
+    }
+    if (Object.prototype.hasOwnProperty.call(expected, "equals")) {
+      return triggerValueMatches(actual, expected.equals);
+    }
+  }
+  if (Array.isArray(expected)) {
+    return expected.some((item) => triggerValueMatches(actual, item));
+  }
+  if (typeof expected === "boolean") {
+    return Boolean(actual) === expected;
+  }
+  if (typeof expected === "number") {
+    return Number(actual) === expected;
+  }
+  const expectedText = String(expected ?? "").trim().toLowerCase();
+  const actualText = String(actual ?? "").trim().toLowerCase();
+  return expectedText === "" ? actualText === "" : actualText === expectedText;
+}
+
+function sanitizeTriggerMatch(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const out = {};
+  for (const [key, raw] of Object.entries(value).slice(0, 32)) {
+    const safeKey = String(key || "").replace(/[^A-Za-z0-9_.:-]+/gu, "").slice(0, 80);
+    if (!safeKey) {
+      continue;
+    }
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const nested = {};
+      if (typeof raw.contains === "string") {
+        nested.contains = cleanActionText(raw.contains, 200);
+      }
+      if (Object.prototype.hasOwnProperty.call(raw, "equals")) {
+        nested.equals = cleanActionText(raw.equals, 200);
+      }
+      if (Array.isArray(raw.oneOf)) {
+        nested.oneOf = raw.oneOf.map((item) => cleanActionText(item, 120)).filter(Boolean).slice(0, 24);
+      }
+      if (Object.keys(nested).length > 0) {
+        out[safeKey] = nested;
+      }
+      continue;
+    }
+    if (typeof raw === "boolean" || typeof raw === "number") {
+      out[safeKey] = raw;
+    } else {
+      const text = cleanActionText(raw, 200);
+      if (text) {
+        out[safeKey] = text;
+      }
+    }
+  }
+  return out;
+}
+
+function sanitizeTriggerEventPayload(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return sanitizeTriggerEventPayloadValue(value, 0);
+}
+
+function sanitizeTriggerEventPayloadValue(value, depth) {
+  if (depth > 4) {
+    return "[truncated]";
+  }
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string") {
+    return cleanAgentTriggerMessage(value).slice(0, 2000);
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 24).map((item) => sanitizeTriggerEventPayloadValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value).slice(0, 48)) {
+      const safeKey = String(key || "").replace(/[^A-Za-z0-9_.:-]+/gu, "").slice(0, 80);
+      if (safeKey) {
+        out[safeKey] = sanitizeTriggerEventPayloadValue(item, depth + 1);
+      }
+    }
+    return out;
+  }
+  return String(value || "").slice(0, 200);
+}
+
+function cleanAgentTriggerMessage(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, " ")
+    .replace(/[ \t]+/gu, " ")
+    .replace(/\n{4,}/gu, "\n\n\n")
+    .trim()
+    .slice(0, maxChatChars);
+}
+
+function cleanTriggerEventName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 80);
+}
+
+function cleanIsoDate(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  const time = Date.parse(text);
+  return Number.isFinite(time) ? new Date(time).toISOString() : "";
+}
+
+function safeTriggerMs(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(Math.trunc(number), max));
+}
+
+function safeTriggerInteger(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(Math.trunc(number), max));
 }
 
 async function beginAgentTrace({ entrypoint, text, context = "", source = {} }) {
@@ -3732,6 +4343,14 @@ function handleOperatorIncomingMessage(message) {
     operatorMessages.shift();
   }
   flushOperatorMessageWaiters();
+  void emitAgentTriggerEvent("operator.message", {
+    target: item.target,
+    label: item.label,
+    agent: item.agent === true,
+    sourceDeviceId: item.sourceDeviceId ? "<set>" : "",
+    hasContext: Boolean(item.context),
+    text: item.text.slice(0, 1000)
+  });
   if (isDuplicateAgentOperatorMessage(item)) {
     return;
   }
@@ -6785,6 +7404,7 @@ function sotyRuntimeHints() {
     "- Route profiles are memory-derived accelerators, not canned chat replies: reuse the best profile through the first-class capability, verify proof, and record sanitized outcomes so the next run is faster.",
     "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
+    "- Agent triggers: for quiet waiting or event-based continuation, give the user one short handoff and set `computer` operation=trigger. Use kind=time with afterMs/at, kind=interval with everyMs, or kind=event with event+match. When it fires, the Agent receives a normal trigger message in chat. If matching/timing needed tuning, record a sanitized memory improvement so the trigger route gets faster.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
     "- For Windows reinstall/reset on an attached source computer, use route profile `soty-windows-reinstall-managed-fast-lane`: first establish the user's mode (`clean` vs `keep-files`) and explicit permission to use the detected USB, then call `computer` with operation=reinstall/capability=os-reinstall and phase/action=prepare/status/repair/cancel/arm. Do not ask the user to manually download an ISO or browse Microsoft pages while the managed source-device capability is available.",
@@ -6896,6 +7516,32 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "3. Ignore older failed prepare jobs while the current latest prepare is running or media is active.",
     "4. Stop only on `ready`/`needs-confirmation`, a fresh `blocker`, or a proven source-device outage after the recovery window.",
     "5. Never arm or start the final reinstall/reset step without a separate exact final reinstall confirmation phrase after ready proof.",
+    "",
+    "## Agent Triggers",
+    "",
+    "Use this route when the best user experience is a short handoff now and automatic continuation later: reminders, quiet waits, action completion callbacks, or any event that should wake the Agent back into the chat.",
+    "",
+    "Set a one-shot time trigger:",
+    "",
+    "```json",
+    "{\"operation\":\"trigger\",\"action\":\"set\",\"kind\":\"time\",\"afterMs\":300000,\"label\":\"check install\",\"message\":\"Check whether the install finished; answer briefly first, then inspect status.\"}",
+    "```",
+    "",
+    "Set an event trigger:",
+    "",
+    "```json",
+    "{\"operation\":\"trigger\",\"action\":\"set\",\"kind\":\"event\",\"event\":\"action.finished\",\"match\":{\"family\":\"windows-reinstall\",\"status\":{\"oneOf\":[\"ok\",\"failed\",\"blocked\"]}},\"message\":\"A reinstall action finished. Read status/proof and continue the user-facing dialog.\"}",
+    "```",
+    "",
+    "List/cancel/fire:",
+    "",
+    "```json",
+    "{\"operation\":\"trigger\",\"action\":\"list\"}",
+    "{\"operation\":\"trigger\",\"action\":\"cancel\",\"triggerId\":\"<id>\"}",
+    "{\"operation\":\"trigger\",\"action\":\"fire\",\"triggerId\":\"<id>\"}",
+    "```",
+    "",
+    "Rules: tell the user only the useful handoff (`встретимся через 5 минут`, `я вернусь когда задача завершится`, etc.), then stop talking until the trigger wakes you. Keep trigger messages compact and include the next exact status check. If a trigger was too broad, too narrow, or late, record a sanitized memory improvement through `computer` operation=learn.",
     "",
     "## Long Turnkey Job",
     "",
@@ -7027,6 +7673,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
     "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
     "- Parallel terminal model: when one command may hang or a task needs multiple lanes, start separate durable terminal/action jobs with operation=terminal/action and detached=true; use job_status/job_stop/jobs to manage them instead of waiting for one console to become free.",
+    "- Trigger model: when waiting should not hold the turn open, set `computer` operation=trigger and give a short handoff. Use `kind:\"time\"` with `afterMs`/`at`, `kind:\"interval\"` with `everyMs`, or `kind:\"event\"` with `event`+`match`; the fired trigger will message this Agent chat and continue.",
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
@@ -7720,8 +8367,8 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, mini_app, surface, appka, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, surface, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, mini_app, surface, appka, browser, desktop, wallpaper, open_url, audio, trigger, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, trigger, artifact, surface, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
@@ -7774,6 +8421,13 @@ function runMcpServer() {
             waitMs: { type: "integer", description: "For status/job_status: sleep inside the Soty tool before reading status again. Use this instead of asking the user to continue." },
             waitTimeoutMs: { type: "integer", description: "Maximum turnkey wait in milliseconds, 1000-86400000." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." },
+            triggerAction: { type: "string", description: "For operation=trigger: set, list, cancel, fire, or event." },
+            triggerId: { type: "string", description: "Stable trigger id for cancel/fire/update." },
+            afterMs: { type: "integer", description: "For time triggers: fire after this many milliseconds." },
+            at: { type: "string", description: "For time triggers: ISO date/time to fire." },
+            everyMs: { type: "integer", description: "For interval triggers: repeat every N milliseconds." },
+            event: { type: "string", description: "For event triggers: event name such as action.finished, operator.message, operator.attached, or a custom event." },
+            match: { type: "object", description: "Optional event payload matcher. Values are exact, {contains}, {equals}, or {oneOf}." },
             improvement: { type: "string", description: "Optional sanitized reusable improvement note." },
             reuseKey: { type: "string", description: "Stable reusable route/script key." },
             pivotFrom: { type: "string", description: "Optional previous task vector." },
@@ -7939,6 +8593,31 @@ function runMcpServer() {
           type: "object",
           properties: {},
           additionalProperties: false
+        }
+      },
+      {
+        name: "soty_trigger",
+        description: "Set, list, cancel, manually fire, or emit a Soty Agent trigger. Triggers are a small wake-up mechanism: time, interval, or event -> the Agent receives a normal chat message and continues. Use after a short user-facing handoff instead of keeping the chat turn open for quiet waiting.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "set, list, cancel, fire, or event. Default set." },
+            id: { type: "string", description: "Stable trigger id. Optional for set, required for cancel/fire." },
+            kind: { type: "string", description: "time, interval, or event." },
+            label: { type: "string", description: "Short trigger label." },
+            target: { type: "string", description: "Optional Agent dialog/tunnel id. Empty means current/default Agent chat." },
+            at: { type: "string", description: "ISO date/time for kind=time." },
+            afterMs: { type: "integer", description: "Delay in milliseconds for kind=time." },
+            everyMs: { type: "integer", description: "Repeat interval in milliseconds for kind=interval." },
+            event: { type: "string", description: "Event name for kind=event or action=event, for example action.finished." },
+            match: { type: "object", description: "Optional event payload matcher. Values are exact, {contains}, {equals}, or {oneOf}." },
+            maxFires: { type: "integer", description: "Maximum fire count. Default 1 for time, unlimited for interval/event." },
+            message: { type: "string", description: "Message the Agent should receive when the trigger fires." },
+            note: { type: "string", description: "Private short reason/summary." },
+            payload: { type: "object", description: "Payload for action=event." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds for local trigger operation." }
+          },
+          additionalProperties: true
         }
       },
       {
@@ -8122,6 +8801,11 @@ function runMcpServer() {
       jobs: "soty_action_list",
       job_status: "soty_action_status",
       job_stop: "soty_action_stop",
+      trigger: "soty_trigger",
+      triggers: "soty_trigger",
+      alarm: "soty_trigger",
+      timer: "soty_trigger",
+      reminder: "soty_trigger",
       shell: "soty_action",
       filesystem: "soty_file",
       file: "soty_file",
@@ -8191,6 +8875,9 @@ function runMcpServer() {
     }
     if (name === "soty_mini_app") {
       return await callSotyMiniAppTool(args);
+    }
+    if (name === "soty_trigger") {
+      return await callSotyTriggerTool(args);
     }
     if (!mcpTarget || !mcpSourceDeviceId) {
       return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
@@ -8466,6 +9153,9 @@ function runMcpServer() {
     if (operation === "toolkit" || operation === "toolkits" || capability === "capability-gateway") {
       return "soty_toolkit";
     }
+    if (["trigger", "triggers", "alarm", "timer", "reminder"].includes(operation) || ["trigger", "agent-trigger"].includes(capability)) {
+      return "soty_trigger";
+    }
     if (operation === "reinstall" || ["windows-reinstall", "os-reinstall", "reinstall"].includes(capability)) {
       return "soty_reinstall";
     }
@@ -8593,11 +9283,39 @@ function runMcpServer() {
         "mouse",
         "wallpaper",
         "audio",
+        "trigger",
+        "agent-trigger",
         "generated-asset-save-apply-verify",
         "managed-windows-reinstall"
       ],
       proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"]
     };
+  }
+
+  async function callSotyTriggerTool(args) {
+    const action = cleanActionToken(args.triggerAction || args.action || args.operation || (args.event && args.payload ? "event" : "set"), "set");
+    if (["list", "status", "show"].includes(action)) {
+      const result = await mcpRequestOperator("GET", "/operator/triggers");
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    if (action === "event" || action === "emit") {
+      const result = await mcpPostOperator("/operator/trigger-event", {
+        event: args.event || args.name || args.type || "",
+        ...(args.payload && typeof args.payload === "object" && !Array.isArray(args.payload) ? args.payload : {}),
+        payload: args.payload && typeof args.payload === "object" && !Array.isArray(args.payload) ? args.payload : undefined
+      });
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    const result = await mcpPostOperator("/operator/trigger", {
+      ...args,
+      action,
+      id: args.id || args.triggerId || "",
+      triggerId: args.triggerId || args.id || "",
+      target: args.target || mcpTarget || "",
+      sourceDeviceId: args.sourceDeviceId || mcpSourceDeviceId || "",
+      sourceDeviceNick: args.sourceDeviceNick || ""
+    });
+    return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
   }
 
   function mcpSourceUnavailableResult() {
@@ -12831,6 +13549,7 @@ function agentRuntimeStatus() {
       { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },
       { family: "artifact", actions: ["push", "pull", "verify"], risk: "medium", proof: ["status", "result"] },
       { family: "audio", actions: ["status", "set"], risk: "medium", proof: ["status", "result"] },
+      { family: "trigger", actions: ["set", "list", "cancel", "fire", "event"], risk: "low", proof: ["triggerId", "nextFireAt", "event", "firedCount"] },
       { family: "os", actions: ["status", "repair", "reinstall", "reset"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] },
       { family: "transaction", actions: ["prepare", "preview", "submit", "cancel"], risk: "critical", requiresConfirmation: true, proof: ["preparedActionId", "visiblePreview", "confirmation", "result"] },
       { family: "device", actions: ["status", "reboot", "poweroff"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] }
@@ -12866,6 +13585,7 @@ function runtimeHealth() {
     responseStyle: agentResponseStyleStatus(),
     trace: agentTraceStatus(),
     update: agentUpdateStatus(),
+    triggers: agentTriggersStatus(),
     memory: memoryPlaneStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
     agentRuntime: agentRuntimeStatus(),
@@ -12948,6 +13668,8 @@ function runtimeComputerUsePlaneStatus() {
       "mouse",
       "wallpaper",
       "audio",
+      "trigger",
+      "agent-trigger",
       "app",
       "api",
       "transaction",
@@ -12981,12 +13703,12 @@ function automationToolkitStatus() {
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       routeProfileSchema: "soty.route-profiles.v1"
     },
-    available: ["computer-use-plane", "agent-runtime", "surface", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
+    available: ["computer-use-plane", "agent-runtime", "surface", "capability-gateway", "durable-action", "turnkey-monitoring", "agent-trigger", "generated-asset", "windows-reinstall"],
     toolkits: [
       {
         name: "agent-runtime",
         entryTool: "computer",
-        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "learn"],
+        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "trigger", "learn"],
         proof: ["capability", "risk", "confirmation", "jobId", "result", "proof"],
         schema: agentRuntimeStatus().schema,
         capabilities: agentRuntimeStatus().capabilities.map((capability) => capability.family)
@@ -12994,7 +13716,7 @@ function automationToolkitStatus() {
       {
         name: "computer-use-plane",
         entryTool: "computer",
-        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop"],
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop", "trigger"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
         routeProfiles: [windowsReinstallRouteProfileId, generatedAssetRouteProfileId]
       },
@@ -13009,6 +13731,13 @@ function automationToolkitStatus() {
         entryTool: "jobs",
         phases: ["start", "status", "wait", "stop"],
         proof: ["jobId", "statusPath", "resultPath", "proof"]
+      },
+      {
+        name: "agent-trigger",
+        entryTool: "computer",
+        phases: ["set", "list", "cancel", "fire", "event"],
+        proof: ["triggerId", "nextFireAt", "event", "firedCount"],
+        schema: "soty.agent.triggers.v1"
       },
       {
         name: "generated-asset",

@@ -44,12 +44,13 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.82");
+      assertEqual(health.body.version, "0.4.83");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
       assertEqual(health.body.responseStyle.id, "agent-sysadmin");
       assertEqual(health.body.responseStyle.displayName, "Агент");
+      assertEqual(health.body.responseStyle.maxUserFacingLines, 3);
       assertEqual(health.body.memory.schema, "soty.memory-plane.v1");
       assertEqual(health.body.memory.controller, "soty.memctl.v1");
       assertEqual(health.body.computerUsePlane.schema, "soty.computer-use-plane.v1");
@@ -60,6 +61,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "app"));
       assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "api"));
       assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "transaction" && capability.requiresConfirmation === true));
+      assert(health.body.agentRuntime.capabilities.some((capability) => capability.family === "trigger"));
       assert(health.body.openAiToolPlane.builtInTools.includes("image_generation"));
       assert(health.body.openAiToolPlane.mcp.publicTools.includes("computer"));
       assert(!health.body.openAiToolPlane.mcp.publicTools.includes("image_gen"));
@@ -79,6 +81,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.capabilities.includes("inline-mini-app"));
       assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
       assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
+      assert(health.body.computerUsePlane.capabilities.includes("agent-trigger"));
+      assertEqual(health.body.triggers.schema, "soty.agent.triggers.v1");
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
       assertEqual(health.body.automationToolkits.frontDoor, "computer");
       assertEqual(health.body.automationToolkits.legacyFrontDoor, "soty_computer");
@@ -89,10 +93,59 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.automationToolkits.available.includes("durable-action"));
       assert(health.body.automationToolkits.available.includes("turnkey-monitoring"));
       assert(health.body.automationToolkits.available.includes("windows-reinstall"));
+      assert(health.body.automationToolkits.available.includes("agent-trigger"));
       assert(!health.body.automationToolkits.available.includes("native-window-chrome"));
       assertEqual(health.body.automationToolkits.defaultKernel, "jobs");
       assertEqual(health.body.automationToolkits.responseStyle.id, "agent-sysadmin");
+      assertEqual(health.body.automationToolkits.responseStyle.maxUserFacingLines, 3);
+      const liveAgentRuntimeToolkit = health.body.automationToolkits.toolkits.find((toolkit) => toolkit.name === "agent-runtime");
+      const liveComputerPlaneToolkit = health.body.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
+      assert(liveAgentRuntimeToolkit?.phases.includes("trigger"));
+      assert(liveComputerPlaneToolkit?.phases.includes("trigger"));
+      assert(health.body.automationToolkits.toolkits.some((toolkit) => toolkit.name === "agent-trigger" && toolkit.entryTool === "computer"));
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
+    }],
+    ["agent triggers can be set, listed, emitted, and cancelled", async () => {
+      const timeTrigger = await post("/operator/trigger", {
+        id: "selftest-time-trigger",
+        kind: "time",
+        afterMs: 120_000,
+        label: "selftest wait",
+        message: "Continue the selftest after the wait."
+      });
+      assertEqual(timeTrigger.status, 200);
+      assertEqual(timeTrigger.body.ok, true);
+      assertEqual(timeTrigger.body.trigger.id, "selftest-time-trigger");
+      assertEqual(timeTrigger.body.trigger.kind, "time");
+      assert(timeTrigger.body.agentGuidance.includes("one short"));
+      const eventTrigger = await post("/operator/trigger", {
+        id: "selftest-event-trigger",
+        kind: "event",
+        event: "selftest.event",
+        match: { phase: { equals: "probe" } },
+        label: "selftest event",
+        message: "Continue the selftest after the event."
+      });
+      assertEqual(eventTrigger.status, 200);
+      assertEqual(eventTrigger.body.ok, true);
+      const list = await get("/operator/triggers");
+      assertEqual(list.status, 200);
+      assertEqual(list.body.schema, "soty.agent.triggers.v1");
+      assert(list.body.triggers.some((trigger) => trigger.id === "selftest-time-trigger"));
+      assert(list.body.triggers.some((trigger) => trigger.id === "selftest-event-trigger"));
+      const ignored = await post("/operator/trigger-event", { event: "selftest.event", phase: "other" });
+      assertEqual(ignored.status, 200);
+      assertEqual(ignored.body.matched, 0);
+      const matched = await post("/operator/trigger-event", { event: "selftest.event", phase: "probe" });
+      assertEqual(matched.status, 200);
+      assertEqual(matched.body.matched, 1);
+      assertEqual(matched.body.fired, 0);
+      const cancelTime = await post("/operator/trigger", { action: "cancel", id: "selftest-time-trigger" });
+      assertEqual(cancelTime.status, 200);
+      assertEqual(cancelTime.body.ok, true);
+      const cancelEvent = await post("/operator/trigger", { action: "cancel", id: "selftest-event-trigger" });
+      assertEqual(cancelEvent.status, 200);
+      assertEqual(cancelEvent.body.ok, true);
     }],
     ["installed agent runtime contract is kernel-backed", async () => {
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
@@ -111,10 +164,12 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.agentRuntime.schema, "trustlink.agent-runtime.v1");
       assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "surface"));
       assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "transaction" && capability.requiresConfirmation === true));
+      assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "trigger"));
       assert(manifest.computerUsePlane.capabilities.includes("surface"));
       assert(manifest.computerUsePlane.capabilities.includes("appka"));
       assert(manifest.computerUsePlane.capabilities.includes("inline-mini-app"));
       assert(manifest.computerUsePlane.capabilities.includes("transaction"));
+      assert(manifest.computerUsePlane.capabilities.includes("agent-trigger"));
     }],
     ["mini app remote kernel docs are agent-visible", async () => {
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
@@ -1787,7 +1842,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.82");
+      assertEqual(manifest.version, "0.4.83");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
@@ -1821,7 +1876,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(manifest.computerUsePlane.openAiBuiltInTools.includes("image_generation"));
       assertEqual(manifest.computerUsePlane.imagePipeline, "openai.image_generation+computer.artifact-save-apply-verify");
       assert(manifest.computerUsePlane.capabilities.includes("wallpaper"));
+      assert(manifest.computerUsePlane.capabilities.includes("agent-trigger"));
       assert(!manifest.computerUsePlane.capabilities.includes("native-window-chrome"));
+      assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "trigger"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
@@ -1831,6 +1888,8 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
       assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
       assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Агент");
+      assertEqual(manifest.automationToolkits.policy.responseStyle.maxUserFacingLines, 3);
+      assert(manifest.automationToolkits.policy.responseStyle.promptRules.some((rule) => rule.includes("trigger")));
       assertEqual(manifest.automationToolkits.policy.responseStyle.phraseBank.length, 0);
       const computerUsePlane = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
       assert(computerUsePlane);
@@ -1853,6 +1912,12 @@ async function runScenarios({ relayUrl } = {}) {
       const generatedAssetToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "generated-asset");
       assert(generatedAssetToolkit);
       assertEqual(generatedAssetToolkit.routeProfile, "soty-generated-asset-wallpaper-fast-lane");
+      const agentTriggerToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "agent-trigger");
+      assert(agentTriggerToolkit);
+      assertEqual(agentTriggerToolkit.entryTool, "computer");
+      assertEqual(agentTriggerToolkit.schema, "soty.agent.triggers.v1");
+      assert(agentTriggerToolkit.phases.includes("set"));
+      assert(agentTriggerToolkit.phases.includes("event"));
     }],
     ["agent installers stay lightweight by default", async () => {
       const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
@@ -1873,6 +1938,7 @@ async function runScenarios({ relayUrl } = {}) {
       const realtime = (await readFile(join(root, "server", "realtime.js"), "utf8")).replace(/\r\n/gu, "\n");
       const validators = (await readFile(join(root, "server", "validators.js"), "utf8")).replace(/\r\n/gu, "\n");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
+      const triggerDoc = await readFile(join(root, "docs", "soty-agent-triggers.md"), "utf8");
       let userWindowsInstallerExists = true;
       try {
         await readFile(join(root, "public", "agent", "install-windows.cmd"), "utf8");
@@ -1939,7 +2005,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.82"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.83"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2016,7 +2082,18 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.82"'));
+      assert(agentSource.includes('const agentVersion = "0.4.83"'));
+      assert(agentSource.includes("agentTriggersPath"));
+      assert(agentSource.includes('url.pathname === "/operator/trigger"'));
+      assert(agentSource.includes('url.pathname === "/operator/trigger-event"'));
+      assert(agentSource.includes('emitAgentTriggerEvent("action.finished"'));
+      assert(agentSource.includes("SOTY_TRIGGER_FIRED"));
+      assert(agentSource.includes("soty.agent.triggers.v1"));
+      assert(agentSource.includes("soty_trigger"));
+      assert(agentSource.includes("maxUserFacingLines: 3"));
+      assert(agentSource.includes("operation=trigger"));
+      assert(triggerDoc.includes("Soty Agent Triggers"));
+      assert(triggerDoc.includes('"operation": "trigger"'));
       assert(!agentSource.includes("clientTitlebarHeight"));
       assert(agentSource.includes("nudgeUpdateCheck()"));
       assert(agentSource.includes("update: agentUpdateStatus()"));
@@ -2112,10 +2189,18 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("if (!action || action.hidden"));
       assert(ui.includes("agent-action-strip"));
       assert(ui.includes("agentActionButtonHtml"));
+      assert(ui.includes("bindAgentActionGridScroll"));
+      assert(ui.includes("dragScrollBound"));
+      assert(ui.includes("dataset.justDragged"));
+      assert(!ui.includes("agent-action-strip-head"));
       assert(!ui.includes("requestLocalWindowControl"));
       assert(!agentSource.includes('url.pathname === "/window/control"'));
       assert(styles.includes(".terminal-panel.has-agent-actions"));
       assert(styles.includes(".agent-action-grid"));
+      assert(styles.includes("scrollbar-width: none"));
+      assert(styles.includes(".agent-action-grid::-webkit-scrollbar"));
+      assert(styles.includes("cursor: grab"));
+      assert(!styles.includes(".agent-action-strip-head"));
       assert(hexField.includes("zoomAt(root, map"));
       assert(hexField.includes("root.addEventListener(\"wheel\", wheel, { passive: false })"));
       assert(!webManifest.display_override?.includes("window-controls-overlay"));
@@ -2187,14 +2272,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.82";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.83";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.82",
+            version: "0.4.83",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

@@ -2432,10 +2432,6 @@ function renderApp(): void {
             <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
           </div>
           <div class="agent-action-strip" hidden>
-            <div class="agent-action-strip-head">
-              <span>Действия</span>
-              <small>агент выполнит в текущей соте</small>
-            </div>
             <div class="agent-action-grid"></div>
           </div>
           <div class="terminal-output"></div>
@@ -5248,8 +5244,12 @@ function renderTerminal(): void {
     actionGrid.innerHTML = showAgentActions
       ? visibleQuickActions("").map((action) => agentActionButtonHtml(action)).join("")
       : "";
+    bindAgentActionGridScroll(actionGrid);
     actionGrid.querySelectorAll<HTMLButtonElement>(".agent-action-button").forEach((button) => {
       button.addEventListener("click", () => {
+        if (actionGrid.dataset.justDragged === "1") {
+          return;
+        }
         void runQuickAction(button.dataset.actionId || "");
       });
     });
@@ -5276,6 +5276,63 @@ function renderTerminal(): void {
     output.scrollTop = output.scrollHeight;
     window.setTimeout(() => app.querySelector<HTMLInputElement>(".terminal-form input")?.focus(), 0);
   }
+}
+
+function bindAgentActionGridScroll(scroller: HTMLDivElement): void {
+  if (scroller.dataset.dragScrollBound === "1") {
+    return;
+  }
+  scroller.dataset.dragScrollBound = "1";
+  let pointerId = -1;
+  let startX = 0;
+  let startScrollLeft = 0;
+  let dragged = false;
+  const stop = () => {
+    if (pointerId < 0) {
+      return;
+    }
+    pointerId = -1;
+    scroller.classList.remove("is-dragging");
+    if (dragged) {
+      scroller.dataset.justDragged = "1";
+      window.setTimeout(() => {
+        if (scroller.dataset.justDragged === "1") {
+          delete scroller.dataset.justDragged;
+        }
+      }, 120);
+    }
+  };
+  scroller.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || scroller.scrollWidth <= scroller.clientWidth + 2) {
+      return;
+    }
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    startScrollLeft = scroller.scrollLeft;
+    dragged = false;
+    scroller.classList.add("is-dragging");
+    scroller.setPointerCapture(event.pointerId);
+  });
+  scroller.addEventListener("pointermove", (event) => {
+    if (event.pointerId !== pointerId) {
+      return;
+    }
+    const delta = event.clientX - startX;
+    if (Math.abs(delta) > 3) {
+      dragged = true;
+      event.preventDefault();
+    }
+    scroller.scrollLeft = startScrollLeft - delta;
+  });
+  scroller.addEventListener("pointerup", stop);
+  scroller.addEventListener("pointercancel", stop);
+  scroller.addEventListener("wheel", (event) => {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || scroller.scrollWidth <= scroller.clientWidth + 2) {
+      return;
+    }
+    event.preventDefault();
+    scroller.scrollLeft += event.deltaY;
+  }, { passive: false });
 }
 
 function activeTerminalTunnelId(): string {

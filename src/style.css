@@ -1583,38 +1583,8 @@ button:disabled {
 .agent-action-strip {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(92px, 118px) minmax(0, 1fr);
   align-items: stretch;
-  gap: 8px;
-  padding: 7px;
-  border: 1px solid rgba(103, 232, 249, 0.12);
-  background:
-    linear-gradient(180deg, rgba(103, 232, 249, 0.035), transparent),
-    rgba(8, 12, 16, 0.82);
-}
-
-.agent-action-strip-head {
-  min-width: 0;
-  display: grid;
-  align-content: center;
-  gap: 2px;
-  color: var(--muted);
-  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  text-transform: uppercase;
-}
-
-.agent-action-strip-head span {
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.agent-action-strip-head small {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 9px;
+  padding: 0;
 }
 
 .agent-action-grid {
@@ -1626,7 +1596,18 @@ button:disabled {
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  cursor: grab;
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+}
+
+.agent-action-grid::-webkit-scrollbar {
+  display: none;
+}
+
+.agent-action-grid.is-dragging {
+  cursor: grabbing;
 }
 
 .agent-action-button {
@@ -2825,16 +2806,11 @@ button:disabled {
   }
 
   .agent-action-strip {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
+    padding: 0;
   }
 
   .agent-action-grid {
     grid-auto-columns: minmax(104px, 132px);
-  }
-
-  .agent-action-strip-head {
-    display: none;
   }
 
   .editor.mini-frame-active[data-mini-app-layout="full"] .mini-frame-panel {
