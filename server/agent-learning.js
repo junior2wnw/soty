@@ -762,8 +762,9 @@ function buildRecommendations(rows, topFailures) {
   const lowQualityGroups = lowQualityRouteGroups(rows);
   const reusableCapsules = reusableRouteCapsuleGroups(rows);
   for (const item of reusableCapsules.slice(0, 3)) {
+    const strongCapsule = Boolean(item.successCriteria && item.context && item.scriptUse);
     recommendations.push({
-      priority: item.count >= 2 ? "normal" : "low",
+      priority: item.count >= 2 || strongCapsule ? "normal" : "low",
       family: item.family,
       title: "Promote reusable route capsule",
       action: `Route capsule ${item.reuseKey} proved ${item.count} time(s). Reuse it for comparable tasks before broad discovery, and keep success criteria plus context boundary attached.`

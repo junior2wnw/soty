@@ -1407,7 +1407,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(secondManifest.memoryPlane.queryUrl, "/api/agent/memory/query");
       assertEqual(secondManifest.opsSkill, undefined);
     }],
-    ["codex runtime defaults to max quality capability mode", async () => {
+    ["codex runtime defaults to adaptive quality capability mode", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
       const expectedFeatures = [
@@ -1423,16 +1423,21 @@ async function runScenarios({ relayUrl } = {}) {
         assert(agent.includes(`"${feature}"`));
         assert(manifest.openAiToolPlane.codexCliFeatureFlags.includes(feature));
       }
-      assert(agent.includes('process.env.SOTY_CODEX_REASONING_EFFORT || "xhigh"'));
+      assert(agent.includes('process.env.SOTY_CODEX_REASONING_EFFORT || ""'));
       assert(agent.includes('process.env.SOTY_CODEX_MIN_REASONING_EFFORT || "high"'));
       assert(agent.includes("return codexReasoningAtLeast(codexDefaultReasoningEffort || codexReasoningPolicyForTask(family, target));"));
       const reasoningStart = agent.indexOf("function codexReasoningEffortForTask");
       const reasoningEnd = agent.indexOf("function safeAgentResponseStyleId");
       const reasoningBlock = agent.slice(reasoningStart, reasoningEnd);
       assert(reasoningStart > 0 && reasoningEnd > reasoningStart);
+      assert(reasoningBlock.includes('["generated-image-wallpaper", "wallpaper", "generated-asset"].includes(family)'));
       assert(reasoningBlock.includes('return "xhigh";'));
-      assert(!reasoningBlock.includes('return "medium";'));
-      assert(!reasoningBlock.includes('return "low";'));
+      assert(reasoningBlock.includes('return "medium";'));
+      assert(reasoningBlock.includes('return "low";'));
+      assert(agent.includes("hasGeneratedWallpaperIntent"));
+      assert(agent.includes("hasWallpaperRouteIntent"));
+      assert(agent.includes("codexTaskRouteLearningProof"));
+      assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
       assert(agent.includes("visibleContext: cleanPromptBlock(context, maxAgentContextChars)"));
       assert(agent.includes("formatCodexLearningMemory(report).slice(0, maxAgentMemoryChars)"));
       assert(!agent.includes("formatCodexLearningMemory(report).slice(0, 4000)"));
@@ -2155,11 +2160,18 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("mcpToolJsonText(result)"));
       assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('operation === "browser"'));
       assert(ui.includes("agentReplyControllers"));
+      assert(ui.includes("agentReplyStopTokens"));
+      assert(ui.includes("function agentReplyStopToken"));
+      assert(ui.includes("agentReplyStopToken(tunnelId) !== replyToken"));
       assert(ui.includes("stopAgentDialogReply"));
+      assert(ui.includes("bumpAgentReplyStopToken(tunnelId);"));
       assert(ui.includes("restorePendingAgentDialogSelection"));
+      assert(ui.includes("if (hasVisibleSelection(selectedId)) {\n    return;\n  }\n  const stored = loadSelectedTunnelId();"));
       assert(ui.includes("resumePendingAgentDialogReplies"));
       assert(ui.includes("isAgentReplyTunnel"));
       assert(ui.includes("finishAgentDialogReply"));
+      assert(ui.includes("const shouldFocusAgentMessage = !hasVisibleSelection();"));
+      assert(ui.includes("if (shouldFocusAgentMessage) {\n    selectTunnel(tunnel.id);\n  }"));
       assert(ui.includes("operatorBlockNick"));
       assert(ui.includes("speakerForLine(line, state.className, label, operatorBlockNick)"));
       assert(ui.includes("loadWriterLineSnapshots"));
@@ -2458,6 +2470,7 @@ async function runScenarios({ relayUrl } = {}) {
         }
       ], { limit: 1 });
       assert(report.recommendations.some((item) => item.title === "Promote reusable route capsule"));
+      assert(report.recommendations.some((item) => item.title === "Promote reusable route capsule" && item.priority === "normal"));
       assert(report.candidates.some((item) => item.marker.includes("reusable route capsule powershell-structured-proof")));
     }],
     ["memctl ranks proven routes above rediscovery", async () => {

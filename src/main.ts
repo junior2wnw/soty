@@ -457,6 +457,7 @@ const sotyFileStreams = new Map<string, SotyFileStreamState>();
 const operatorBridgeProtocol = "soty.operator-bridge.v2";
 const agentReplyQueues = new Map<string, Promise<LocalAgentReply | null | void>>();
 const agentReplyControllers = new Map<string, AbortController>();
+const agentReplyStopTokens = new Map<string, number>();
 const agentThinking = new Set<string>();
 let agentDoneAudio: AudioContext | null = null;
 let agentSourceControlTunnelId = "";
@@ -4985,8 +4986,10 @@ async function runOperatorAgentMessage(message: {
     sendOperatorOutput(requestId, "! tunnel", 409);
     return;
   }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  const shouldFocusAgentMessage = !hasVisibleSelection();
+  if (shouldFocusAgentMessage) {
+    selectTunnel(tunnel.id);
+  }
   const current = texts.get(tunnel.id) || "";
   const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
   const next = `${current}${separator}${body}\n`;
@@ -4996,11 +4999,13 @@ async function runOperatorAgentMessage(message: {
   localDrafts.delete(tunnel.id);
   clearLiveDraftState(tunnel.id);
   void sync.sendLiveDraft("");
-  touchSelected();
+  tunnels = touchTunnel(tunnel.id);
   renderTiles();
-  applySelectedText();
-  renderTextPaint();
-  renderWriterPop();
+  if (tunnel.id === selectedId) {
+    applySelectedText();
+    renderTextPaint();
+    renderWriterPop();
+  }
   try {
     const reply = await sendAgentDialogMessage(tunnel.id, body);
     sendOperatorOutput(
@@ -6664,7 +6669,26 @@ function stripAgentInvocation(text: string): string {
   return stripped || body;
 }
 
+function agentReplyStopToken(tunnelId: string): number {
+  return agentReplyStopTokens.get(tunnelId) ?? 0;
+}
+
+function bumpAgentReplyStopToken(tunnelId: string): number {
+  const next = agentReplyStopToken(tunnelId) + 1;
+  agentReplyStopTokens.set(tunnelId, next);
+  return next;
+}
+
+function cancelledAgentDialogReply(): LocalAgentReply {
+  return {
+    ok: false,
+    text: "! cancelled",
+    exitCode: 130
+  };
+}
+
 function stopAgentDialogReply(tunnelId: string): void {
+  bumpAgentReplyStopToken(tunnelId);
   const controller = agentReplyControllers.get(tunnelId);
   if (!controller) {
     clearPendingAgentRelayRepliesForTunnel(tunnelId);
@@ -6730,6 +6754,14 @@ function ensureAgentDoneAudio(): AudioContext | null {
 }
 
 function restorePendingAgentDialogSelection(): void {
+  if (hasVisibleSelection(selectedId)) {
+    return;
+  }
+  const stored = loadSelectedTunnelId();
+  if (stored && hasVisibleSelection(stored)) {
+    selectedId = stored;
+    return;
+  }
   const pending = loadPendingAgentRelayReplies()
     .find((reply) => loadTunnels().some((tunnel) => tunnel.id === reply.tunnelId && isAgentReplyTunnel(tunnel)));
   if (!pending) {
@@ -6805,19 +6837,26 @@ function sendAgentDialogMessage(
   const taskText = options.explicitMention === true ? stripAgentInvocation(text) : text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
+  const replyToken = agentReplyStopToken(tunnelId);
   const next = previous
     .catch(() => undefined)
     .then(async () => {
+      if (agentReplyStopToken(tunnelId) !== replyToken) {
+        return cancelledAgentDialogReply();
+      }
       const controller = new AbortController();
       agentReplyControllers.set(tunnelId, controller);
       setAgentThinking(tunnelId, true);
-      let reply: LocalAgentReply;
+      let reply: LocalAgentReply | null = null;
       const streamedMessages: string[] = [];
       try {
         if (agentTunnel) {
           await prepareAgentSourceForDialog(tunnelId, tunnel);
         } else if (options.explicitMention === true) {
           await preparePeerAgentInvocation(tunnelId);
+        }
+        if (controller.signal.aborted || agentReplyStopToken(tunnelId) !== replyToken) {
+          return cancelledAgentDialogReply();
         }
         const source = agentRequestSourceForTunnel(tunnelId, tunnel, agentTunnel);
         reply = await askLocalAgentReply(taskText, context, source, 2 * 60 * 60_000, (message) => {
@@ -6834,12 +6873,8 @@ function sendAgentDialogMessage(
         }
         setAgentThinking(tunnelId, false);
       }
-      if (controller.signal.aborted) {
-        return {
-          ok: false,
-          text: "! cancelled",
-          exitCode: 130
-        };
+      if (!reply || controller.signal.aborted || agentReplyStopToken(tunnelId) !== replyToken) {
+        return cancelledAgentDialogReply();
       }
       finishAgentDialogReply(tunnelId, reply, streamedMessages);
       return reply;

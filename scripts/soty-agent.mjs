@@ -95,7 +95,7 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_audio"
 ]);
 const codexMinimumReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_MIN_REASONING_EFFORT || "high") || "high";
-const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "xhigh");
+const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexDisabled = process.env.SOTY_CODEX_DISABLED === "1";
 const localCodexDisabled = true;
@@ -3228,6 +3228,9 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 
 function classifyRoutineSourceTask(lower) {
   const text = normalizeRoutineIntentText(lower);
+  if (hasWallpaperRouteIntent(text)) {
+    return "generated-image-wallpaper";
+  }
   if (hasDriverCheckIntent(text)) {
     return "driver-check";
   }
@@ -3326,6 +3329,9 @@ function isRoutineAgentTaskFamily(family) {
 
 function classifySourceCommand(command) {
   const lower = String(command || "").toLowerCase();
+  if (hasWallpaperRouteIntent(lower)) {
+    return "generated-image-wallpaper";
+  }
   const routineFamily = classifyRoutineSourceTask(lower);
   if (routineFamily) {
     return routineFamily;
@@ -3381,6 +3387,12 @@ function sourceOutputShape(text) {
 
 function sourceFailureProof(text) {
   const value = String(text || "");
+  if (/unsupported desktop action:\s*status/iu.test(value)) {
+    return "unsupported-desktop-status";
+  }
+  if (/systemparametersinfo|soty-desktop-wallpaper|wallpaper/iu.test(value) && /лишние закрывающие скобки|extra closing|regex|regular expression|parse/iu.test(value)) {
+    return "wallpaper-powershell-regex";
+  }
   const known = value.match(/!\s*(target|bridge|source-target|access|tunnel|timeout|cancelled|agent-source|relay|request)\b/iu);
   if (known) {
     return `! ${known[1].toLowerCase()}`;
@@ -5223,7 +5235,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         result: "failed",
         route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
         taskSig: taskSignature(text),
-        proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
+        proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}${codexTaskRouteLearningProof(taskFamily) ? `; ${codexTaskRouteLearningProof(taskFamily)}` : ""}`,
         exitCode: 125,
         durationMs: Date.now() - startedAt,
         ...learningContext
@@ -5296,7 +5308,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       result: codexTurnResult,
       route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
       taskSig: taskSignature(text),
-      proof: `exitCode=${codexTurnExitCode}; messages=${messages.length}; final=nonempty; postCodexGuard=${postCodexGuardPayload ? cleanProofToken(postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "none"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
+      proof: `exitCode=${codexTurnExitCode}; messages=${messages.length}; final=nonempty; postCodexGuard=${postCodexGuardPayload ? cleanProofToken(postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "none"}; ${codexUsageProof(state.usage, prompt, finalText)}${codexTaskRouteLearningProof(taskFamily) ? `; ${codexTaskRouteLearningProof(taskFamily)}` : ""}`,
       exitCode: codexTurnExitCode,
       durationMs: Date.now() - startedAt,
       ...learningContext
@@ -5343,7 +5355,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     result: result.exitCode === 124 ? "timeout" : "failed",
     route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
     taskSig: taskSignature(text),
-    proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
+    proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}${codexTaskRouteLearningProof(taskFamily) ? `; ${codexTaskRouteLearningProof(taskFamily)}` : ""}`,
     exitCode: result.exitCode || 1,
     durationMs: Date.now() - startedAt,
     ...learningContext
@@ -5848,6 +5860,9 @@ function codexReasoningEffortForTask(taskFamily, target = null) {
 }
 
 function codexReasoningPolicyForTask(family, target = null) {
+  if (["generated-image-wallpaper", "wallpaper", "generated-asset"].includes(family)) {
+    return "high";
+  }
   if ([
     "windows-reinstall",
     "package-install",
@@ -5872,7 +5887,7 @@ function codexReasoningPolicyForTask(family, target = null) {
 
 function codexReasoningAtLeast(value) {
   const effort = safeCodexReasoningEffort(value) || "high";
-  const rank = { high: 1, xhigh: 2 };
+  const rank = { low: 0, medium: 0.5, high: 1, xhigh: 2 };
   const floor = safeCodexReasoningEffort(codexMinimumReasoningEffort) || "high";
   return rank[effort] < rank[floor] ? floor : effort;
 }
@@ -5885,8 +5900,14 @@ function safeCodexReasoningEffort(value) {
   if (["xhigh", "x-high", "max", "maximum", "deep"].includes(effort)) {
     return "xhigh";
   }
-  if (["high", "strong", "medium", "low"].includes(effort)) {
+  if (["high", "strong"].includes(effort)) {
     return "high";
+  }
+  if (effort === "medium") {
+    return "medium";
+  }
+  if (effort === "low") {
+    return "low";
   }
   return "";
 }
@@ -6102,6 +6123,9 @@ function codexSessionFamilyBucket(taskFamily) {
 }
 
 function classifyTaskFamily(text, target = null) {
+  if (hasGeneratedWallpaperIntent(text)) {
+    return "generated-image-wallpaper";
+  }
   const family = classifySourceCommand(text);
   if (family !== "generic") {
     return family;
@@ -6110,6 +6134,17 @@ function classifyTaskFamily(text, target = null) {
     return target?.id ? "source-scoped-dialog" : "plain-dialog";
   }
   return target?.id ? "source-scoped-dialog" : "plain-dialog";
+}
+
+function hasGeneratedWallpaperIntent(text) {
+  const lower = String(text || "").toLowerCase();
+  const wantsGeneratedImage = /\b(?:generate|draw|create|make|image|picture|wallpaper)\b|(?:\u0441\u0433\u0435\u043d\u0435\u0440|\u043d\u0430\u0440\u0438\u0441\u0443|\u0441\u043e\u0437\u0434\u0430|\u043a\u0430\u0440\u0442\u0438\u043d\u043a|\u0438\u0437\u043e\u0431\u0440\u0430\u0436)/iu.test(lower);
+  const wantsDesktopApply = /\b(?:desktop|wallpaper|background)\b|(?:\u0440\u0430\u0431\u043e\u0447\w*\s+\u0441\u0442\u043e\u043b|\u043e\u0431\u043e\u0438|\u0444\u043e\u043d)/iu.test(lower);
+  return wantsGeneratedImage && wantsDesktopApply;
+}
+
+function hasWallpaperRouteIntent(text) {
+  return /\b(?:wallpaper|currentwallpaper|tilewallpaper|wallpaperstyle|systemparametersinfo|soty-desktop-wallpaper|control panel\\desktop|control panel\\\\desktop)\b|(?:\u0440\u0430\u0431\u043e\u0447\w*\s+\u0441\u0442\u043e\u043b|\u043e\u0431\u043e\u0438)/iu.test(String(text || ""));
 }
 
 function usableCodexSessionRecord(value) {
@@ -6464,6 +6499,19 @@ function codexUsageProof(usage, prompt, finalText) {
   const input = estimateTokenCount(prompt);
   const output = estimateTokenCount(finalText);
   return `tokens=estimated; input=${input}; output=${output}; total=${input + output}; cached=0`;
+}
+
+function codexTaskRouteLearningProof(taskFamily) {
+  const family = cleanActionToken(taskFamily, "");
+  if (family === "generated-image-wallpaper") {
+    return [
+      `reuseKey=${generatedAssetRouteProfileId}`,
+      "scriptUse=image_gen/artifact/wallpaper/verify",
+      "successCriteria=set",
+      "context=codex-generated-image+source-user-desktop"
+    ].join("; ");
+  }
+  return "";
 }
 
 function estimateTokenCount(text) {
@@ -8930,6 +8978,21 @@ function runMcpServer() {
     return aliases[normalized] || name;
   }
 
+  function isInternalSourceJobId(value) {
+    return /^source_[0-9a-f-]{12,}$/iu.test(String(value || "").trim());
+  }
+
+  function mcpInternalSourceJobResult(jobId, action) {
+    return mcpToolJson({
+      ok: false,
+      error: "internal-source-job-id",
+      jobId,
+      action,
+      exitCode: 2,
+      agentGuidance: "This id belongs to a one-shot source command poll, not a durable action job. Do not call job_status/job_stop for it. Use the original durable act_* job id, call computer operation=jobs, or start the next source command with detached=true when future polling/cancel is required."
+    }, true, 2);
+  }
+
   async function callSotyMcpTool(params) {
     const name = canonicalSotyMcpToolName(params.name);
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
@@ -8968,6 +9031,9 @@ function runMcpServer() {
     }
     if (name === "soty_action_status") {
       const jobId = String(args.jobId || "").trim();
+      if (isInternalSourceJobId(jobId)) {
+        return mcpInternalSourceJobResult(jobId, "status");
+      }
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
         return mcpToolText("! action-job", true, 2);
       }
@@ -8981,6 +9047,9 @@ function runMcpServer() {
     }
     if (name === "soty_action_stop") {
       const jobId = String(args.jobId || "").trim();
+      if (isInternalSourceJobId(jobId)) {
+        return mcpInternalSourceJobResult(jobId, "stop");
+      }
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
         return mcpToolText("! action-job", true, 2);
       }
@@ -9200,14 +9269,15 @@ function runMcpServer() {
         agentGuidance: "To record reusable route learning, pass a sanitized improvement note plus family/toolkit/reuseKey/successCriteria when known."
       }, true, 2);
     }
-    const toolkit = normalizeToolkitName(args?.toolkit || capability || "computer-use-plane");
-    const family = cleanActionText(args?.family || args?.taskFamily || toolkit || "generic", 80);
+    const defaults = inferredComputerLearningDefaults(args, operation, capability, improvement);
+    const toolkit = normalizeToolkitName(args?.toolkit || defaults.toolkit || capability || "computer-use-plane");
+    const family = cleanActionText(args?.family || args?.taskFamily || defaults.family || toolkit || "generic", 80);
     const phase = cleanActionToken(args?.phase || args?.kind || operation || "learn", "learn");
-    const reuseKey = cleanActionText(args?.reuseKey || args?.routeKey || "", 120);
-    const successCriteria = cleanActionText(args?.successCriteria || "", 220);
-    const scriptUse = cleanActionText(args?.scriptUse || "", 180);
-    const contextFingerprint = cleanActionText(args?.contextFingerprint || "", 120);
-    const route = cleanActionText(args?.route || `computer.learn.${phase}`, 120);
+    const reuseKey = cleanActionText(args?.reuseKey || args?.routeKey || defaults.reuseKey || "", 120);
+    const successCriteria = cleanActionText(args?.successCriteria || defaults.successCriteria || "", 220);
+    const scriptUse = cleanActionText(args?.scriptUse || defaults.scriptUse || "", 180);
+    const contextFingerprint = cleanActionText(args?.contextFingerprint || defaults.contextFingerprint || "", 120);
+    const route = cleanActionText(args?.route || defaults.route || `computer.learn.${phase}`, 120);
     const proof = [
       `improvement=${improvement}`,
       reuseKey ? `reuseKey=${cleanProofToken(reuseKey)}` : "",
@@ -9242,6 +9312,29 @@ function runMcpServer() {
       successCriteria: Boolean(successCriteria),
       agentGuidance: "Learning receipt saved as route guidance only. It is not a proof of task completion; still verify future work through the relevant capability/toolkit."
     });
+  }
+
+  function inferredComputerLearningDefaults(args, operation, capability, improvement) {
+    const text = [
+      improvement,
+      args?.intent,
+      args?.successCriteria,
+      args?.contextFingerprint,
+      operation,
+      capability
+    ].map((item) => String(item || "")).join(" ");
+    if (hasWallpaperRouteIntent(text) || /generated[-\s]?image|image_gen|artifact.*wallpaper/iu.test(text)) {
+      return {
+        toolkit: "generated-asset",
+        family: "generated-image-wallpaper",
+        route: "computer.generated-asset.wallpaper",
+        reuseKey: generatedAssetRouteProfileId,
+        scriptUse: "image_gen/artifact/wallpaper/verify",
+        successCriteria: "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
+        contextFingerprint: "codex-generated-image+source-user-desktop"
+      };
+    }
+    return {};
   }
 
   function computerToolAlias(operation, capability, args = {}) {
@@ -9742,6 +9835,9 @@ function runMcpServer() {
     }
     if (operation === "status" && args.jobId) {
       const jobId = String(args.jobId || "").trim();
+      if (isInternalSourceJobId(jobId)) {
+        return mcpInternalSourceJobResult(jobId, "status");
+      }
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
         return mcpToolText("! action-job", true, 2);
       }
@@ -9751,6 +9847,9 @@ function runMcpServer() {
     }
     if (operation === "stop") {
       const jobId = String(args.jobId || "").trim();
+      if (isInternalSourceJobId(jobId)) {
+        return mcpInternalSourceJobResult(jobId, "stop");
+      }
       if (!/^[A-Za-z0-9_-]{8,96}$/u.test(jobId)) {
         return mcpToolText("! action-job", true, 2);
       }
@@ -11951,12 +12050,15 @@ function Emit($Value) { $Value | ConvertTo-Json -Depth 6 -Compress }
 function CurrentIdentityName {
   try { return [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { return '' }
 }
+function CurrentIdentitySid {
+  try { return [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { return '' }
+}
 function NormalizePathForCompare([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
   try { return ([System.IO.Path]::GetFullPath($Value)).TrimEnd('\') } catch { return ([string]$Value).Trim() }
 }
 switch ($action) {
-  'display' {
+  { $_ -in @('display','status') } {
     $virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
       [pscustomobject]@{
@@ -12034,7 +12136,8 @@ switch ($action) {
   }
   'wallpaper' {
     $identityName = CurrentIdentityName
-    if ($identityName -match '^(NT AUTHORITY|WORKGROUP)\\(SYSTEM|СИСТЕМА)$') {
+    $identitySid = CurrentIdentitySid
+    if ($identitySid -eq 'S-1-5-18' -or $identityName -match '^(?:NT AUTHORITY|WORKGROUP)\\SYSTEM$') {
       throw 'desktop action is running as SYSTEM; retry through the selected interactive user route'
     }
     $imagePath = [string]$req.path
@@ -12094,6 +12197,7 @@ public class SotyWallpaper {
       display=[pscustomobject]@{ x=$virtual.Left; y=$virtual.Top; width=$virtual.Width; height=$virtual.Height }
       user=$env:USERNAME
       identity=$identityName
+      identitySid=$identitySid
       exitCode=$exitCode
     })
     if (-not $applied) { exit $exitCode }
