@@ -149,14 +149,14 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["installed agent runtime contract is kernel-backed", async () => {
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
-      const releaseBuilder = await readFile(join(root, "scripts", "build-agent-release.mjs"), "utf8");
+      const releaseManifest = await readFile(join(root, "scripts", "agent-release", "manifest.mjs"), "utf8");
       const docs = await readFile(join(root, "docs", "soty-agent-runtime.md"), "utf8");
       const kernelDoc = await readFile(join(root, "node_modules", "trustlink-kernel", "docs", "agent-runtime.md"), "utf8");
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
       assert(docs.includes("trustlink-kernel/docs/agent-runtime.md"));
       assert(kernelDoc.includes("Agent runtime is the installed local capability host"));
-      assert(releaseBuilder.includes("buildAgentRuntimeManifest"));
-      assert(releaseBuilder.includes("defaultAgentRuntimeCapabilities"));
+      assert(releaseManifest.includes("buildAgentRuntimeManifest"));
+      assert(releaseManifest.includes("defaultAgentRuntimeCapabilities"));
       assert(agentSource.includes("Installed agent runtime"));
       assert(agentSource.includes("transaction.prepare"));
       assert(agentSource.includes("transaction.submit"));
@@ -174,12 +174,14 @@ async function runScenarios({ relayUrl } = {}) {
     ["mini app remote kernel docs are agent-visible", async () => {
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
+      const miniAppsSource = await readFile(join(root, "src", "features", "mini-apps.ts"), "utf8");
       const miniAppsDoc = await readFile(join(root, "docs", "soty-mini-apps.md"), "utf8");
       const kernelDoc = await readFile(join(root, "node_modules", "trustlink-kernel", "docs", "app-surfaces.md"), "utf8");
       assert(miniAppsDoc.includes("TrustLink Kernel"));
       assert(miniAppsDoc.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(main.includes('from "trustlink-kernel"'));
-      assert(main.includes("resolveAppSurfaceUrl"));
+      assert(miniAppsSource.includes("resolveAppSurfaceUrl"));
+      assert(miniAppsSource.includes("sanitizeMiniAppDefinition"));
       assert(main.includes("appSurfaceAllowedOrigin"));
       assert(main.includes("normalizeAppSurfaceInstallRequest"));
       assert(main.includes("miniAppsRegistryKey"));
@@ -1447,6 +1449,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const relay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
+      const relayWaiters = await readFile(join(root, "server", "agent-relay", "waiters.js"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
@@ -1529,7 +1532,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(relay.includes("sourceWorkerRoute"));
       assert(relay.includes("workers: {}"));
       assert(relay.includes("user-session-agent-unavailable"));
-      assert(relay.includes("waiter.buildPayload"));
+      assert(relayWaiters.includes("waiter.buildPayload"));
       assert(windowsInstall.includes("Reset-BrokenNodeOptions"));
       assert(windowsInstall.includes("soty-node-require-shim|C:Users.*soty-node-require-shim"));
       assert(windowsInstall.includes('$env:NODE_OPTIONS = ""'));
@@ -1933,6 +1936,7 @@ async function runScenarios({ relayUrl } = {}) {
       const windowsMachineBootstrap = await readFile(join(root, "public", "agent", "install-windows-machine-bootstrap.ps1"), "utf8");
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
+      const quickActionsSource = (await readFile(join(root, "src", "features", "quick-actions.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const styles = (await readFile(join(root, "src", "style.css"), "utf8")).replace(/\r\n/gu, "\n");
       const appRuntime = (await readFile(join(root, "src", "trustlink", "runtime.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const hexField = (await readFile(join(root, "src", "ui", "hex-field.ts"), "utf8")).replace(/\r\n/gu, "\n");
@@ -2034,7 +2038,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentFeature.includes("bootstrap-elevated.log"));
       assert(agentFeature.includes("--- install.log tail ---"));
       assert(agentFeature.includes("node-probe.err.log"));
-      assert(agentFeature.includes("http://127.0.0.1:49424/health?update=1"));
+      assert(agentFeature.includes('from "./local-agent-endpoint"'));
+      assert(agentFeature.includes('localAgentHttpUrl("/health?update=1")'));
+      assert(!agentFeature.includes("http://127.0.0.1:49424/health?update=1"));
       assert(agentFeature.includes("deviceId: message.deviceId.slice(0, 180)"));
       assert(!agentFeature.includes("/agent/install-windows.cmd"));
       assert(!agentFeature.includes('"install-soty-agent.cmd"'));
@@ -2065,7 +2071,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes('downloadAgentInstallerForDevice('));
       assert(ui.includes('"machine",'));
       assert(ui.includes("remoteButton.hidden = !needsAgent"));
-      assert(ui.includes("void prepareAgentSourceForDialog(tunnel.id, tunnel);"));
+      assert(ui.includes("await prepareAgentSourceForDialog(tunnelId, tunnel);"));
       assert(ui.includes("AGENT CONSOLE"));
       assert(ui.includes("+ agent console"));
       assert(!ui.includes("<span>LINK</span>"));
@@ -2118,7 +2124,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
       assert(ui.includes('if (message.type === "operator.terminal")'));
-      assert(ui.includes("redactVisibleTerminalSecrets"));
+      assert(ui.includes('if (message.type === "operator.terminal") {\n      return;\n    }'));
+      assert(!ui.includes("redactVisibleTerminalSecrets"));
       assert(!ui.includes("appendAgentTerminalTranscript"));
       assert(agentRelay.includes("redactTerminalText"));
       assert(syncSource.includes("joinRequests?: readonly JoinRequest[]"));
@@ -2234,8 +2241,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(styles.includes(".chat-scroll,\n.chat-scroll *"));
       assert(styles.includes(".terminal-collapse {\n  position: absolute;"));
       assert(styles.includes(".mini-frame-collapse {\n  position: absolute;"));
-      assert(ui.includes('id: "native-window-chrome"'));
-      assert(ui.includes("hidden: true"));
+      assert(quickActionsSource.includes('id: "native-window-chrome"'));
+      assert(quickActionsSource.includes("hidden: true"));
+      assert(quickActionsSource.includes("readonly hidden?: boolean"));
       assert(ui.includes("quickActions.filter((action) => !action.hidden)"));
       assert(ui.includes("if (!action || action.hidden"));
       assert(ui.includes("agent-action-strip"));

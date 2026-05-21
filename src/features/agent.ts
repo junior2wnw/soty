@@ -190,7 +190,7 @@ export async function bindLocalAgentRelay(device?: { readonly id?: string; reado
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const expectedDeviceId = typeof device?.id === "string" ? device.id : "";
-    const response = await fetch("http://127.0.0.1:49424/agent/relay", {
+    const response = await fetch(localAgentHttpUrl("/agent/relay"), {
       method: "POST",
       cache: "no-store",
       headers: { "Content-Type": "application/json" },
@@ -807,15 +807,11 @@ function cleanReplyMessages(value: readonly unknown[] | undefined): string[] {
     .slice(0, maxCodexDialogMessages);
 }
 
-function isCodexMissingReply(reply: LocalAgentReply): boolean {
-  return !reply.ok && (reply.exitCode === 126 || /codex-cli:\s*not found/iu.test(reply.text));
-}
-
 async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch("http://127.0.0.1:49424/health?update=1", {
+    const response = await fetch(localAgentHttpUrl("/health?update=1"), {
       cache: "no-store",
       signal: controller.signal,
       targetAddressSpace: "loopback"
@@ -1084,3 +1080,4 @@ function createRelayId(): string {
 function shellEscape(value: string): string {
   return value.replace(/["\\$`]/gu, "\\$&");
 }
+import { localAgentHttpUrl } from "./local-agent-endpoint";

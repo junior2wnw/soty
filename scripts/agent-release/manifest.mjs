@@ -1,0 +1,328 @@
+import { createHash } from "node:crypto";
+import { buildAgentRuntimeManifest, defaultAgentRuntimeCapabilities } from "trustlink-kernel";
+
+export function buildAgentReleaseManifest({ version, sourceText, windowsReinstall }) {
+  const routeProfiles = buildRouteProfiles(windowsReinstall);
+  const agentRuntime = buildSotyAgentRuntime();
+  const automationToolkits = buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime);
+  const openAiToolPlane = buildOpenAiToolPlane();
+
+  return {
+  version,
+  schema: "soty.agent.release.v2",
+  architecture: "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
+  agentUrl: "/agent/soty-agent.mjs",
+  sha256: sha256(sourceText),
+  openAiToolPlane,
+  memoryPlane: {
+    schema: "soty.memory-plane.v1",
+    controller: "soty.memctl.v1",
+    backend: "append-only-jsonl",
+    querySchema: "soty.memory.query.v2",
+    reportSchema: "soty.memory.report.v2",
+    routeProfileSchema: "soty.route-profiles.v1",
+    healthUrl: "/api/agent/memory/health",
+    queryUrl: "/api/agent/memory/query",
+    receiptsUrl: "/api/agent/memory/receipts",
+    reportUrl: "/api/agent/memory/report"
+  },
+  computerUsePlane: {
+    schema: "soty.computer-use-plane.v1",
+    entryTool: "computer",
+    legacyEntrypoint: "soty_computer",
+    mcpTools: ["computer"],
+    standardTools: ["computer"],
+    openAiBuiltInTools: openAiToolPlane.builtInTools,
+    model: "discover+invoke+durable-jobs+artifacts+source-proof",
+    imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
+    agentRuntimeSchema: agentRuntime.schema,
+    routeProfileSchema: "soty.route-profiles.v1",
+    capabilities: [
+      "discover",
+      "status",
+      "shell",
+      "script",
+      "durable-action",
+      "turnkey-monitoring",
+      "filesystem",
+      "soty-room-file-download",
+      "artifact",
+      "appka",
+      "inline-mini-app",
+      "mini-app",
+      "surface",
+      "browser",
+      "desktop",
+      "screen",
+      "keyboard",
+      "mouse",
+      "wallpaper",
+      "audio",
+      "trigger",
+      "agent-trigger",
+      "app",
+      "api",
+      "transaction",
+      "generated-asset-save-apply-verify",
+      "managed-windows-reinstall"
+    ]
+  },
+  agentRuntime,
+  routeProfiles,
+  windowsReinstall,
+  automationToolkits
+};
+}
+
+export function buildOpenAiToolPlane() {
+  return {
+    schema: "openai.responses-tools+mcp.v1",
+    builtInTools: ["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"],
+    codexCliFeatureFlags: [
+      "image_generation",
+      "tool_search",
+      "computer_use",
+      "browser_use",
+      "shell_tool",
+      "shell_snapshot",
+      "workspace_dependencies"
+    ],
+    webSearch: "native --search",
+    mcp: {
+      server: "soty",
+      entryTool: "computer",
+      publicTools: ["computer"],
+      legacyAliasesHidden: true
+    },
+    rule: "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
+  };
+}
+
+export function buildRouteProfiles(windowsReinstall) {
+  const scriptProof = windowsReinstall.scripts.map((script) => ({
+    name: script.name,
+    sha256: script.sha256,
+    bytes: script.bytes
+  }));
+  return {
+    schema: "soty.route-profiles.v1",
+    model: "memory-derived-route-profile+first-class-capability",
+    promotionPolicy: {
+      candidateAfter: "one proofed run",
+      provenAfter: "two compatible successful runs without newer conflicting failure",
+      promotedInto: "manifest-pinned capability, proof checks, eval/selftest"
+    },
+    profiles: [
+      {
+        id: "soty-windows-reinstall-managed-fast-lane",
+        family: "windows-reinstall",
+        title: "Managed Windows reinstall fast lane",
+        entryTool: "computer",
+        capability: "os-reinstall",
+        legacyTool: "soty_reinstall",
+        defaultOperation: "reinstall",
+        defaultAction: "prepare",
+        context: "windows-machine-worker",
+        phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
+        route: [
+          "prove selected source device and machine/system worker",
+          "recover stale prepare state before starting managed prepare",
+          "run repair/status when the user reports a broken or interrupted reinstall workflow",
+          "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
+          "start managed prepare once with stable idempotency",
+          "download Windows media with the guarded parallel/resumable route on the selected PC",
+          "prove backup, install media, unattended account, Autounattend, postinstall",
+          "ask final reinstall confirmation only after proof is complete",
+          "arm reinstall and stop probing while reboot return path is expected"
+        ],
+        doNot: [
+          "do not ask the user to manually download ISO when the source computer is attached",
+          "do not open Microsoft download pages as the normal route",
+          "do not replace the managed downloader with ad-hoc browser automation",
+          "do not start a second prepare while one is active",
+          "do not treat stale orphaned prepare jobs as active blockers",
+          "do not answer reinstall failure reports from memory without fresh repair/status proof"
+        ],
+        proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "repairProof", "cancelProof", "postArmReturnPath"],
+        scripts: scriptProof,
+        learning: {
+          reuseKey: "soty-windows-reinstall-managed-fast-lane",
+          scriptUse: "prepare/status/repair/cancel/arm",
+          successCriteria: "backupProof+installMedia+unattend+postinstall",
+          contextFingerprint: "windows-machine-worker",
+          receipt: "append-only sanitized route proof"
+        }
+      },
+      {
+        id: "soty-generated-asset-wallpaper-fast-lane",
+        family: "generated-image-wallpaper",
+        title: "Native image generation to source-device wallpaper",
+        entryTool: "computer",
+        capability: "generated-asset-save-apply-verify",
+        defaultOperation: "artifact",
+        defaultAction: "wallpaper",
+        context: "codex-generated-image+source-user-desktop",
+        phases: ["generate-native", "artifact", "wallpaper", "verify"],
+        route: [
+          "generate the image with native OpenAI image_gen/image_generation",
+          "use the exact newest generated_images artifact path when Codex did not expose a direct path",
+          "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
+          "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
+          "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
+        ],
+        doNot: [
+          "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
+          "do not ask for OPENAI_API_KEY on the source device",
+          "do not replace the generated artifact with a stock/public image",
+          "do not check desktop/display before native generation just to choose size"
+        ],
+        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
+        learning: {
+          reuseKey: "soty-generated-asset-wallpaper-fast-lane",
+          scriptUse: "image_gen/artifact/wallpaper/verify",
+          successCriteria: "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
+          contextFingerprint: "codex-generated-image+source-user-desktop",
+          receipt: "append-only sanitized route proof"
+        }
+      }
+    ]
+  };
+}
+
+export function buildSotyAgentRuntime() {
+  const capabilities = defaultAgentRuntimeCapabilities();
+  if (!capabilities.some((capability) => capability.family === "trigger")) {
+    capabilities.push({
+      family: "trigger",
+      actions: ["set", "list", "cancel", "fire", "event"],
+      risk: "low",
+      proof: ["triggerId", "nextFireAt", "event", "firedCount"]
+    });
+  }
+  return buildAgentRuntimeManifest({
+    runtimeId: "soty-agent",
+    entrypoint: "computer",
+    capabilities
+  });
+}
+
+export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) {
+  const openAiToolPlane = buildOpenAiToolPlane();
+  return {
+    schema: "soty.automation-toolkits.v2",
+    architecture: "openai-built-in-tools+soty-mcp-computer",
+    policy: {
+      entrypoint: "computer",
+      legacyEntrypoint: "soty_computer",
+      route: "computer-use-plane-with-memory-hints",
+      fallbackKernel: "jobs",
+      routeProfiles: "soty.route-profiles.v1",
+      agentRuntime: agentRuntime.schema,
+      chat: "agent-sysadmin",
+      responseStyle: buildResponseStylePolicy(),
+      openAiToolPlane,
+      diagnostics: {
+        trace: "soty.agent.trace.v1",
+        eval: "soty-agent-eval"
+      },
+      terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"]
+    },
+    toolkits: [
+      {
+        name: "agent-runtime",
+        entryTool: "computer",
+        kind: "runtime-contract",
+        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "trigger", "learn"],
+        proof: ["capability", "risk", "confirmation", "jobId", "result", "proof"],
+        schema: agentRuntime.schema,
+        capabilities: agentRuntime.capabilities.map((capability) => capability.family)
+      },
+      {
+        name: "computer-use-plane",
+        entryTool: "computer",
+        kind: "front-door",
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop", "trigger"],
+        proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
+        promotion: "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
+        routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
+      },
+      {
+        name: "surface",
+        entryTool: "computer",
+        kind: "app-surface",
+        phases: ["build", "serve", "install", "open", "update", "remove"],
+        proof: ["appId", "origin", "scope", "result"],
+        promotion: "Agent-generated frontend helpers installed through the app-surface contract."
+      },
+      {
+        name: "capability-gateway",
+        entryTool: "computer",
+        kind: "legacy-alias",
+        phases: ["describe", "start", "status", "stop", "list", "reinstall"],
+        proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"],
+        promotion: "Thin, proofed computer-control surface for Server Codex."
+      },
+      {
+        name: "durable-action",
+        entryTool: "jobs",
+        kind: "generic-kernel",
+        phases: ["start", "status", "wait", "stop"],
+        proof: ["jobId", "statusPath", "resultPath", "proof"],
+        promotion: "Durable supervised execution for long or repeatable jobs."
+      },
+      {
+        name: "agent-trigger",
+        entryTool: "computer",
+        kind: "wake-up-kernel",
+        phases: ["set", "list", "cancel", "fire", "event"],
+        proof: ["triggerId", "nextFireAt", "event", "firedCount"],
+        schema: "soty.agent.triggers.v1",
+        promotion: "Short handoff now, automatic Agent chat continuation on time/event later."
+      },
+      {
+        name: "generated-asset",
+        entryTool: "computer",
+        kind: "managed-toolkit",
+        phases: ["image_gen", "artifact", "wallpaper", "verify"],
+        proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
+        routeProfile: "soty-generated-asset-wallpaper-fast-lane",
+        promotion: "Native OpenAI image generation with Soty artifact transfer and source desktop wallpaper proof."
+      },
+      {
+        name: "windows-reinstall",
+        entryTool: "computer",
+        kind: "managed-toolkit",
+        phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
+        scriptSet: "windowsReinstall",
+        scripts: windowsReinstall.scripts.map((script) => ({
+          name: script.name,
+          sha256: script.sha256,
+          bytes: script.bytes
+        })),
+        proof: ["backupProof", "installMedia", "unattend", "postinstall", "repairProof", "cancelProof", "rebooting"],
+        routeProfile: "soty-windows-reinstall-managed-fast-lane"
+      }
+    ],
+    routeProfiles
+  };
+}
+
+export function buildResponseStylePolicy() {
+  return {
+    schema: "soty.response-style.v1",
+    id: "agent-sysadmin",
+    displayName: "Агент",
+    base: "agent",
+    tone: "brief-sysadmin",
+    maxUserFacingLines: 0,
+    phraseBank: [],
+    promptRules: [
+      "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
+      "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
+    ]
+  };
+}
+
+export function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}

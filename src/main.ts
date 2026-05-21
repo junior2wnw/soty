@@ -3,20 +3,22 @@ import jsQR from "jsqr";
 import {
   appSurfaceAllowedOrigin,
   appSurfaceInstallSchema,
-  normalizeAppSurfaceId,
-  normalizeAppSurfaceInstallRequest,
-  resolveAppSurfaceUrl
+  normalizeAppSurfaceInstallRequest
 } from "trustlink-kernel";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, SyncedWriterLine, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
-import type { IconName } from "./icons";
+import { quickActions } from "./features/quick-actions";
+import type { QuickAction } from "./features/quick-actions";
+import { dedupeMiniApps, isIconName, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition } from "./features/mini-apps";
+import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
 import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
-import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
+import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
+import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
@@ -80,23 +82,6 @@ interface RestoreResult {
   readonly texts: Map<string, string>;
 }
 
-type QuickAction = {
-  readonly id: string;
-  readonly title: string;
-  readonly label: string;
-  readonly summary: string;
-  readonly tags: readonly string[];
-  readonly hidden?: boolean;
-  readonly agentCard: {
-    readonly intent: string;
-    readonly targetPolicy: string;
-    readonly firstMoves: readonly string[];
-    readonly confirmBefore: readonly string[];
-    readonly successProof: readonly string[];
-    readonly avoid: readonly string[];
-  };
-};
-
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
   throw new Error("App root missing");
@@ -105,7 +90,6 @@ const app: HTMLDivElement = root;
 installTooltips();
 
 const agentDialogLabel = "Агент";
-const agentDialogMinVersion = "0.3.16";
 const agentReleaseCheckTtlMs = 60_000;
 
 type AgentButtonMode = "download" | "update" | "link";
@@ -113,65 +97,6 @@ type AgentButtonMode = "download" | "update" | "link";
 type AgentRelease = {
   readonly version: string;
   readonly sha256?: string;
-};
-
-type MiniAppDefinition = {
-  readonly id: string;
-  readonly title: string;
-  readonly url: string;
-  readonly inlineHtml?: string;
-  readonly summary: string;
-  readonly icon: IconName;
-  readonly layout?: MiniAppWindowLayout;
-  readonly height?: string;
-  readonly width?: string;
-  readonly capabilities: readonly string[];
-  readonly source?: "manifest" | "agent" | "room";
-  readonly scope?: MiniAppScope;
-  readonly targetDeviceId?: string;
-  readonly tunnelId?: string;
-  readonly revision?: string;
-  readonly installedAt?: string;
-  readonly updatedAt?: string;
-};
-
-type MiniAppSession = {
-  readonly app: MiniAppDefinition;
-  readonly nonce: string;
-  readonly layout: MiniAppWindowLayout;
-  readonly height?: string;
-  readonly width?: string;
-  readonly collapsed: boolean;
-};
-
-type MiniAppScope = "account" | "chat" | "device";
-type MiniAppWindowLayout = "half" | "compact" | "large" | "full" | "floating";
-
-type PendingAttachment = {
-  readonly id: string;
-  readonly file: File;
-  readonly name: string;
-  readonly type: string;
-  readonly size: number;
-};
-
-type FileBundleAttachment = {
-  readonly id: string;
-  readonly name: string;
-  readonly type: string;
-  readonly size: number;
-};
-
-type FileBundleMarker = {
-  readonly id: string;
-  readonly files: readonly FileBundleAttachment[];
-};
-
-type MiniAppInstallResult = {
-  readonly ok: boolean;
-  readonly app?: MiniAppDefinition;
-  readonly opened?: boolean;
-  readonly error?: string;
 };
 
 let device: DeviceRecord | null = null;
@@ -205,157 +130,15 @@ const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
-const miniAppsManifestUrl = "/mini-apps/manifest.json";
 const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
 const miniAppContextProtocol = "soty.mini-app.context.v1";
-const staticMiniAppsEnabled = false;
-const mobileAppkaCreationEnabled = false;
 const fileBundlePrefix = "SOTY_FILE_BUNDLE:";
 const agentAttachmentLimit = 10;
 let miniApps: MiniAppDefinition[] = [];
-let manifestMiniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
-let miniAppsProbe: Promise<readonly MiniAppDefinition[]> | null = null;
-let miniAppsLoadedAt = 0;
 let miniAppSession: MiniAppSession | null = null;
 let miniAppOverlay: HTMLDivElement | null = null;
-const quickActions: readonly QuickAction[] = [
-  {
-    id: "windows-reinstall",
-    title: "Переустановка Windows",
-    label: "WIN",
-    summary: "Подготовить, проверить, подтвердить и сопровождать установку.",
-    tags: ["windows", "винда", "переустановка", "usb", "флешка", "драйверы"],
-    agentCard: {
-      intent: "Safely prepare and guide a Windows reinstall/reset on the selected/current device.",
-      targetPolicy: "Use the current dialog/source device unless the user explicitly names another linked device.",
-      firstMoves: [
-        "Ask only for missing install mode, USB presence, and USB erase permission.",
-        "Use managed reinstall capability for prepare/status/repair/arm when available.",
-        "Keep long work durable and continue polling until completed, blocked, or waiting for final confirmation."
-      ],
-      confirmBefore: ["erasing USB media", "starting the final reboot/install step"],
-      successProof: ["fresh reinstall status", "prepared media proof", "final user confirmation before destructive step"],
-      avoid: ["manual ISO path requests when managed media download is available", "starting duplicate prepare jobs", "treating a healthy running job as a blocker"]
-    }
-  },
-  {
-    id: "wallpaper",
-    title: "Поставить обои",
-    label: "WALL",
-    summary: "Создать или взять картинку и поставить на нужный рабочий стол.",
-    tags: ["обои", "wallpaper", "рабочий стол", "картинка", "image"],
-    agentCard: {
-      intent: "Create or use an image and set it as wallpaper on the correct target desktop.",
-      targetPolicy: "Never switch to an unnamed linked device. Use the current/source computer unless the current dialog or comment names another device.",
-      firstMoves: [
-        "Resolve image source: generate, use attached file, or use named existing file.",
-        "Resolve target device from current dialog and user wording.",
-        "Apply wallpaper through the best available interactive/user route and verify the actual wallpaper path or visible state."
-      ],
-      confirmBefore: [],
-      successProof: ["target device identity", "file path/hash or generated image proof", "wallpaper readback on the same target"],
-      avoid: ["claiming success without readback", "using the only linked device as implicit target", "hiding a failed apply behind a generic done message"]
-    }
-  },
-  {
-    id: "copy-file",
-    title: "Скопировать файл",
-    label: "COPY",
-    summary: "Перенести файл между текущим и подключенным устройством.",
-    tags: ["копировать", "файл", "download", "upload", "передать", "скачать"],
-    agentCard: {
-      intent: "Copy a file between the current computer and a selected/mentioned linked device.",
-      targetPolicy: "Infer direction from wording and current dialog: in a device chat, source is that device and destination is the user's current computer unless stated otherwise.",
-      firstMoves: [
-        "Identify exact source file and destination.",
-        "Use the native Soty artifact/file route for cross-device transfer.",
-        "Verify size/hash or destination listing."
-      ],
-      confirmBefore: ["overwriting an existing file", "copying large/sensitive folders"],
-      successProof: ["source path", "destination path", "size/hash readback"],
-      avoid: ["printing raw secrets from files", "copying ambiguous paths", "claiming transfer before destination proof"]
-    }
-  },
-  {
-    id: "check-device",
-    title: "Проверить устройство",
-    label: "CHECK",
-    summary: "Понять состояние агента, сети, диска, процессов и доступа.",
-    tags: ["проверить", "статус", "диагностика", "агент", "сеть", "диск"],
-    agentCard: {
-      intent: "Run a compact health/status diagnostic on the current or named device.",
-      targetPolicy: "Probe the selected/current device first; only inspect another device if the user names it.",
-      firstMoves: [
-        "Collect identity, agent/link status, OS, disk, network, and recent task status.",
-        "Keep probes short and non-destructive.",
-        "Summarize one concrete blocker or the next useful action."
-      ],
-      confirmBefore: [],
-      successProof: ["device identity", "fresh timestamped status", "specific failed component if any"],
-      avoid: ["large inventories before a focused probe", "raw transport jargon in user-facing answer", "mixing statuses from different devices"]
-    }
-  },
-  {
-    id: "agent-repair",
-    title: "Починить агент",
-    label: "AGENT",
-    summary: "Проверить установку, обновление, автозапуск и связь агента.",
-    tags: ["агент", "установить", "обновить", "починить", "bridge", "relay"],
-    agentCard: {
-      intent: "Repair or update the Soty agent on the current/named device with proof.",
-      targetPolicy: "Prefer the current device context; for linked devices use only explicit current dialog target or named target.",
-      firstMoves: [
-        "Check agent health/version/autostart before reinstalling.",
-        "Use the official Soty installer/update path.",
-        "Verify local health and relay/source status after changes."
-      ],
-      confirmBefore: ["privileged install/update prompts", "stopping user-visible active work"],
-      successProof: ["agent version", "health endpoint or relay status", "source worker/machine link readiness when relevant"],
-      avoid: ["installing duplicate agents", "masking PATH/runtime issues as missing Codex", "leaving the user without a clear next action"]
-    }
-  },
-  {
-    id: "native-window-chrome",
-    hidden: true,
-    title: "Окно без хедера",
-    label: "HDR",
-    summary: "Спрятать системную полосу PWA, закрепить watcher и проверить, что окно не уходит под Пуск.",
-    tags: ["окно", "хедер", "titlebar", "pwa", "chrome", "frameless", "свернуть", "двигать", "resize"],
-    agentCard: {
-      intent: "Enable and verify the frameless Soty PWA window on the selected/current device.",
-      targetPolicy: "Prefer the current/source device. Use another linked device only when the current dialog or user wording names it.",
-      firstMoves: [
-        "Run the native-window-chrome computer operation in install/apply mode with ClientTitlebarHeight=32.",
-        "Verify caption=false, frameless=true, clientTitlebar.hidden=true, and watcher persistence.",
-        "Check that the visible window stays inside the working area and can still be resized from the side edges."
-      ],
-      confirmBefore: [],
-      successProof: ["caption=false", "frameless=true", "clientTitlebar.hidden=true", "clientTitlebar.bottomInsideWorkingArea=true", "persistence includes scheduled-task or hkcu-run"],
-      avoid: ["changing unrelated Chrome windows", "leaving duplicate watcher processes", "claiming success without fresh status JSON"]
-    }
-  },
-  {
-    id: "soty-export",
-    title: "Экспорт Сот",
-    label: "EXPORT",
-    summary: "Собрать перенос состояния в один файл и восстановить из него.",
-    tags: ["экспорт", "импорт", "backup", "перенос", "флешка", "соты"],
-    agentCard: {
-      intent: "Help the user export/import Soty state as a single portable file.",
-      targetPolicy: "This is normally a current-browser/current-device action unless the user names another device.",
-      firstMoves: [
-        "Find the current available export/import mechanism.",
-        "Guide or perform the export/import with one file.",
-        "Verify dialogs/devices restored after import."
-      ],
-      confirmBefore: ["overwriting current local Soty state during import"],
-      successProof: ["export file exists or import count", "selected device/dialog state after import"],
-      avoid: ["automatic hidden backup during OS reinstall", "splitting state across many files", "pretending an import happened without count/readback"]
-    }
-  }
-];
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
 const chessAgentTimers = new Map<string, number>();
@@ -1212,103 +995,14 @@ function closeActionMenu(): void {
   actionOverlay = null;
 }
 
-async function refreshMiniApps(force = false): Promise<readonly MiniAppDefinition[]> {
-  if (!staticMiniAppsEnabled) {
-    miniApps = currentMiniApps();
-    renderDialogChrome();
-    return miniApps;
-  }
-  const scopedApps = scopedMiniAppsForSelected();
-  const now = Date.now();
-  if (!force && miniAppsLoadedAt && now - miniAppsLoadedAt < 60_000) {
-    miniApps = mergeMiniApps(manifestMiniApps, scopedApps);
-    return miniApps;
-  }
-  if (miniAppsProbe) {
-    return miniAppsProbe;
-  }
-  miniAppsProbe = fetch(miniAppsManifestUrl, { cache: "no-store", headers: { Accept: "application/json" } })
-    .then(async (response) => {
-      if (!response.ok) {
-        return [];
-      }
-      const payload = await response.json() as unknown;
-      const next = sanitizeMiniAppsManifest(payload);
-      manifestMiniApps = next.map((item) => ({ ...item, source: "manifest" as const }));
-      miniApps = currentMiniApps();
-      miniAppsLoadedAt = Date.now();
-      renderDialogChrome();
-      return miniApps;
-    })
-    .catch(() => {
-      miniApps = currentMiniApps();
-      return miniApps;
-    })
-    .finally(() => {
-      miniAppsProbe = null;
-    });
-  return miniAppsProbe;
-}
-
-function sanitizeMiniAppsManifest(payload: unknown): MiniAppDefinition[] {
-  const rawItems = Array.isArray((payload as { readonly apps?: unknown })?.apps)
-    ? (payload as { readonly apps: readonly unknown[] }).apps
-    : [];
-  return rawItems
-    .map(sanitizeMiniAppDefinition)
-    .filter((item): item is MiniAppDefinition => Boolean(item));
-}
-
-function sanitizeMiniAppDefinition(value: unknown): MiniAppDefinition | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const id = normalizeAppSurfaceId(recordString(value, "id"));
-  const title = cleanNick(recordString(value, "title") || id).slice(0, 80);
-  const summary = cleanNick(recordString(value, "summary")).slice(0, 160);
-  const iconName = recordString(value, "icon");
-  const iconValue = isIconName(iconName) ? iconName : "remote";
-  const inlineHtml = safeMiniAppInlineHtml(recordString(value, "inlineHtml") || recordString(value, "html"));
-  const url = inlineHtml ? "about:srcdoc" : safeMiniAppUrl(recordString(value, "url"));
-  if (!id || !title || !url) {
-    return null;
-  }
-  const display = isRecord(value.display) ? value.display : value;
-  const layout = normalizeMiniAppLayout(recordString(display, "layout") || recordString(value, "layout"));
-  const height = safeMiniAppCssSize(recordString(display, "height") || recordString(value, "height"));
-  const width = safeMiniAppCssSize(recordString(display, "width") || recordString(value, "width"));
-  const capabilities = Array.isArray(value.capabilities)
-    ? value.capabilities.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 80)).slice(0, 20)
-    : [];
-  return {
-    id,
-    title,
-    url,
-    ...(inlineHtml ? { inlineHtml } : {}),
-    summary,
-    icon: iconValue,
-    ...(layout !== "half" ? { layout } : {}),
-    ...(height ? { height } : {}),
-    ...(width ? { width } : {}),
-    capabilities
-  };
-}
-
-function mergeMiniApps(staticApps: readonly MiniAppDefinition[], localApps: readonly MiniAppDefinition[]): MiniAppDefinition[] {
-  const seen = new Set<string>();
-  const result: MiniAppDefinition[] = [];
-  for (const item of [...localApps, ...staticApps]) {
-    if (!item.id || seen.has(item.id)) {
-      continue;
-    }
-    seen.add(item.id);
-    result.push(item);
-  }
-  return result;
+async function refreshMiniApps(_force = false): Promise<readonly MiniAppDefinition[]> {
+  miniApps = currentMiniApps();
+  renderDialogChrome();
+  return miniApps;
 }
 
 function currentMiniApps(): MiniAppDefinition[] {
-  miniApps = mergeMiniApps(manifestMiniApps, scopedMiniAppsForSelected());
+  miniApps = dedupeMiniApps(scopedMiniAppsForSelected());
   return miniApps;
 }
 
@@ -1319,7 +1013,7 @@ function loadLocalMiniApps(): MiniAppDefinition[] {
       ? (parsed as { readonly apps: readonly unknown[] }).apps
       : [];
     return rawItems
-      .map(sanitizeLocalMiniAppDefinition)
+      .map((item) => sanitizeLocalMiniAppDefinition(item))
       .filter((item): item is MiniAppDefinition => Boolean(item));
   } catch {
     return [];
@@ -1364,29 +1058,6 @@ function syncedWriterLinesForSnapshot(tunnelId: string): SyncedWriterLine[] {
       action: writer.action,
       preview: writer.preview
     }));
-}
-
-function sanitizeLocalMiniAppDefinition(value: unknown): MiniAppDefinition | null {
-  const definition = sanitizeMiniAppDefinition(value);
-  if (!definition || !isRecord(value)) {
-    return null;
-  }
-  const scope = normalizeMiniAppScope(recordString(value, "scope"));
-  const tunnelId = recordString(value, "tunnelId").slice(0, 120);
-  const targetDeviceId = recordString(value, "targetDeviceId").slice(0, 180);
-  const revision = recordString(value, "revision").slice(0, 80);
-  const installedAt = recordString(value, "installedAt").slice(0, 40);
-  const updatedAt = recordString(value, "updatedAt").slice(0, 40);
-  return {
-    ...definition,
-    source: "agent",
-    scope,
-    ...(scope === "chat" && tunnelId ? { tunnelId } : {}),
-    ...(scope === "device" && targetDeviceId ? { targetDeviceId } : {}),
-    ...(revision ? { revision } : {}),
-    ...(installedAt ? { installedAt } : {}),
-    ...(updatedAt ? { updatedAt } : {})
-  };
 }
 
 function scopedMiniAppsForSelected(): MiniAppDefinition[] {
@@ -1491,66 +1162,6 @@ function selectedMiniAppTargetDeviceId(): string {
   return remoteAccess.get(selectedId) || "";
 }
 
-function normalizeMiniAppScope(value: string): MiniAppScope {
-  const clean = value.trim().toLowerCase();
-  return clean === "chat" || clean === "device" ? clean : "account";
-}
-
-function normalizeMiniAppLayout(value: string): MiniAppWindowLayout {
-  const clean = value.trim().toLowerCase().replace(/_/gu, "-");
-  if (clean === "full" || clean === "fullscreen" || clean === "full-screen") {
-    return "full";
-  }
-  if (clean === "compact" || clean === "small" || clean === "mini") {
-    return "compact";
-  }
-  if (clean === "large" || clean === "big" || clean === "wide") {
-    return "large";
-  }
-  if (clean === "floating" || clean === "float" || clean === "free") {
-    return "floating";
-  }
-  return "half";
-}
-
-function safeMiniAppCssSize(value: string): string {
-  const clean = value.trim().slice(0, 80);
-  if (!clean || /[{};<>@"']/u.test(clean) || /url\s*\(/iu.test(clean)) {
-    return "";
-  }
-  if (/^\d+(?:\.\d+)?(?:px|rem|em|%|vh|vw|svh|svw|dvh|dvw)$/iu.test(clean)) {
-    return clean;
-  }
-  if (/^(?:clamp|min|max|calc)\([\w\s.+\-*/(),%]+(?:px|rem|em|%|vh|vw|svh|svw|dvh|dvw)[\w\s.+\-*/(),%]*\)$/iu.test(clean)) {
-    return clean;
-  }
-  return "";
-}
-
-function miniAppDefaultHeight(layout: MiniAppWindowLayout): string {
-  if (layout === "compact") {
-    return "clamp(190px, 30svh, 340px)";
-  }
-  if (layout === "large") {
-    return "clamp(360px, 68svh, 820px)";
-  }
-  if (layout === "full") {
-    return "calc(100svh - 124px)";
-  }
-  if (layout === "floating") {
-    return "clamp(260px, 48svh, 620px)";
-  }
-  return "clamp(260px, 50svh, 620px)";
-}
-
-function miniAppDefaultWidth(layout: MiniAppWindowLayout): string {
-  return layout === "floating" ? "min(760px, calc(100% - 36px))" : "auto";
-}
-
-function miniAppLayouts(): readonly MiniAppWindowLayout[] {
-  return ["half", "compact", "large", "full", "floating"];
-}
-
 function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
   try {
     const source = connectorMiniAppRecord(value);
@@ -1633,13 +1244,6 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
   }
 }
 
-function sameMiniAppRecord(left: MiniAppDefinition, right: MiniAppDefinition): boolean {
-  return left.id === right.id
-    && (left.scope || "account") === (right.scope || "account")
-    && (left.tunnelId || "") === (right.tunnelId || "")
-    && (left.targetDeviceId || "") === (right.targetDeviceId || "");
-}
-
 function connectorMiniAppRecord(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
     return {};
@@ -1654,31 +1258,6 @@ function handleMiniAppRegistryChange(): void {
     renderMiniAppPanel();
   }
   renderDialogChrome();
-}
-
-function isIconName(value: string): value is IconName {
-  return ["install", "qr", "scan", "close", "check", "person", "clip", "remote", "download", "upload", "refresh", "copy", "bell", "shield", "send", "stop", "chess", "collapse", "expand"].includes(value);
-}
-
-function safeMiniAppUrl(value: string): string {
-  try {
-    const resolved = resolveAppSurfaceUrl(value, {
-      baseUrl: window.location.origin,
-      allowLoopbackHttp: true,
-      allowTrustedHttps: true,
-      kernelIntentSchemes: ["soty:"]
-    });
-    return resolved.requiresKernelProxy ? "" : resolved.url;
-  } catch {
-    return "";
-  }
-}
-
-function safeMiniAppInlineHtml(value: string): string {
-  const raw = String(value || "")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
-    .trim();
-  return raw.length <= 300_000 ? raw : "";
 }
 
 async function openMiniAppLauncher(): Promise<void> {
@@ -1757,12 +1336,6 @@ function openMiniApp(appId: string): void {
   renderDialogChrome();
 }
 
-function clearMiniAppSession(): void {
-  miniAppSession = null;
-  renderMiniAppPanel();
-  renderDialogChrome();
-}
-
 function collapseMiniApp(): void {
   if (!miniAppSession) {
     return;
@@ -1805,24 +1378,6 @@ function resizeMiniAppWindow(layout: MiniAppWindowLayout, height = "", width = "
   renderMiniAppPanel();
   renderDialogChrome();
   publishMiniAppContext();
-}
-
-function reloadMiniApp(): void {
-  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
-  if (!frame || !miniAppSession) {
-    return;
-  }
-  if (miniAppSession.app.inlineHtml) {
-    const session = miniAppSession;
-    frame.srcdoc = "";
-    window.setTimeout(() => {
-      if (miniAppSession === session) {
-        frame.srcdoc = miniAppInlineHtmlWithContext(session);
-      }
-    }, 0);
-    return;
-  }
-  frame.src = miniAppUrlWithContext(miniAppSession);
 }
 
 function renderMiniAppPanel(): void {
@@ -2034,9 +1589,6 @@ function publishMiniAppContext(): void {
       width: miniAppSession.width || miniAppDefaultWidth(miniAppSession.layout),
       collapsed: miniAppSession.collapsed,
       layouts: miniAppLayouts()
-    },
-    appka: {
-      mobileCreationEnabled: mobileAppkaCreationEnabled
     },
     capabilities: miniAppGrantedCapabilities(miniAppSession.app)
   };
@@ -2793,16 +2345,6 @@ async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<bool
   return true;
 }
 
-function openRemoteCommands(id: string): void {
-  terminalOpenId = id;
-  terminalCollapsed = false;
-  saveTerminalCollapsed(false);
-  if (!terminalState.has(id)) {
-    setTerminalState(id, "idle");
-  }
-  renderTerminal();
-}
-
 async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (remoteEnabled.has(agentTunnelId)) {
     closeRemoteMode(agentTunnelId);
@@ -3373,21 +2915,6 @@ function startFreshDialog(): void {
   renderApp();
 }
 
-function moveAgentLinkToFreshDialog(previousId: string, freshId: string): void {
-  if (!device || previousId === freshId || !remoteEnabled.has(previousId)) {
-    return;
-  }
-  remoteEnabled = setRemoteEnabled(previousId, false);
-  remoteEnabled = setRemoteEnabled(freshId, true);
-  terminalOpenId = freshId;
-  terminalLogs.delete(freshId);
-  terminalState.delete(previousId);
-  setTerminalState(freshId, "idle");
-  appendTerminalLine(freshId, "+ agent console");
-  void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
-  startAgentSourceControl(freshId);
-}
-
 function clearCurrentDialog(tunnelId: string): void {
   let sync = syncs.get(tunnelId);
   if (!sync) {
@@ -3426,39 +2953,6 @@ function clearCurrentDialog(tunnelId: string): void {
   renderTiles();
   renderTextPaint();
   renderWriterPop();
-}
-
-async function startAgentDialog(): Promise<void> {
-  let tunnel = findActiveAgentDialog();
-  if (!tunnel) {
-    tunnel = createFreshDialog(agentDialogLabel, { agent: true, archiveCurrent: false });
-  } else {
-    tunnel = normalizeAgentDialog(tunnel.id) || tunnel;
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-    tunnels = markTunnel(tunnel.id, false);
-  }
-  if (!tunnel) {
-    return;
-  }
-  renderApp();
-  const agent = await refreshLocalAgent();
-  if (agent.ok && !agent.relay) {
-    void bindLocalAgentRelay(device || undefined).then((bound) => {
-      if (bound) {
-        void refreshLocalAgent();
-      }
-    });
-  }
-  if (!agentSupportsDialogInbox(agent)) {
-    markAgentDownloadNeeded();
-    composer?.focus();
-    return;
-  }
-  void prepareAgentSourceForDialog(tunnel.id, tunnel);
-  await ensureOperatorBridge();
-  publishOperatorTargets();
-  composer?.focus();
 }
 
 function findActiveAgentDialog(): TunnelRecord | null {
@@ -3538,13 +3032,6 @@ function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
     tunnels = next;
   }
   return normalized;
-}
-
-function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
-  return agent.ok
-    && agent.relay === true
-    && agent.codex !== false
-    && compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0;
 }
 
 function compareVersion(left: string, right: string): number {
@@ -3972,51 +3459,6 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
   return tunnel;
 }
 
-async function sendFiles(list?: FileList | null): Promise<void> {
-  if (!selectedId) {
-    return;
-  }
-  const tunnelId = selectedId;
-  const sync = syncs.get(tunnelId);
-  if (!sync) {
-    return;
-  }
-  const accepted = filesFrom(list);
-  const oversized = oversizedFilesFrom(list);
-  let failed = 0;
-  for (const file of accepted) {
-    try {
-      const localFile = await sync.sendFile(file);
-      files.set(tunnelId, [localFile, ...(files.get(tunnelId) ?? []).filter((item) => item.id !== localFile.id)]);
-    } catch {
-      failed += 1;
-    }
-  }
-  if (oversized.length > 0 || failed > 0) {
-    const parts = [
-      oversized.length > 0 ? `Слишком большой файл: максимум ${formatFileSize(maxFileBytes)}` : "",
-      failed > 0 ? "Не отправилось, связь восстановится и можно повторить" : ""
-    ].filter(Boolean);
-    setFileNotice(tunnelId, parts.join(". "));
-  }
-  tunnels = touchTunnel(tunnelId);
-  renderTiles();
-  if (tunnelId === selectedId) {
-    renderFiles();
-  }
-}
-
-function renderFiles(): void {
-  const rail = app.querySelector<HTMLDivElement>(".file-rail");
-  if (!rail) {
-    return;
-  }
-  const tunnel = loadTunnels().find((item) => item.id === selectedId);
-  const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
-  renderFileRail(rail, files.get(selectedId) ?? [], color, deleteFile);
-  renderFileNotice(rail, color);
-}
-
 function setFileNotice(tunnelId: string, text: string): void {
   fileNotices.set(tunnelId, { text, until: Date.now() + 9000 });
   window.setTimeout(() => {
@@ -4028,31 +3470,6 @@ function setFileNotice(tunnelId: string, text: string): void {
       }
     }
   }, 9200);
-}
-
-function renderFileNotice(rail: HTMLDivElement, color: string): void {
-  const notice = fileNotices.get(selectedId);
-  if (!notice) {
-    return;
-  }
-  if (notice.until <= Date.now()) {
-    fileNotices.delete(selectedId);
-    return;
-  }
-  const chip = document.createElement("div");
-  chip.className = "file-chip file-notice";
-  chip.style.setProperty("--color", color);
-  chip.textContent = notice.text;
-  rail.prepend(chip);
-}
-
-function deleteFile(fileId: string): void {
-  if (!selectedId) {
-    return;
-  }
-  files.set(selectedId, (files.get(selectedId) ?? []).filter((item) => item.id !== fileId));
-  syncs.get(selectedId)?.deleteFile(fileId);
-  renderComposerAttachments();
 }
 
 function stageFiles(list?: FileList | null): void {
@@ -4433,7 +3850,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
     }
     return;
   }
-  const ws = new WebSocket("ws://127.0.0.1:49424");
+  const ws = new WebSocket(localAgentWsUrl);
   operatorSocket = ws;
   ws.onopen = () => {
     ws.send(JSON.stringify({
@@ -6294,7 +5711,7 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   let finished = false;
   const timeoutMs = localAgentRunTimeoutMs(command.timeoutMs);
   let watchdogTimer = 0;
-  const ws = new WebSocket("ws://127.0.0.1:49424");
+  const ws = new WebSocket(localAgentWsUrl);
   const fail = () => {
     if (finished || opened) {
       return;
@@ -6302,11 +5719,11 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     finished = true;
     cleanupSotyFileDataPlane(command.id);
     setTerminalState(tunnelId, "off");
-    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
+    appendTerminalLine(tunnelId, localAgentUnavailableText);
     renderTerminal();
     window.clearTimeout(timer);
     window.clearTimeout(watchdogTimer);
-    void sync.sendRemoteOutput(command.deviceId, command.id, "! 127.0.0.1:49424", 127);
+    void sync.sendRemoteOutput(command.deviceId, command.id, localAgentUnavailableText, 127);
   };
   const timer = window.setTimeout(() => {
     fail();
@@ -6409,7 +5826,7 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
   let finished = false;
   const timeoutMs = localAgentRunTimeoutMs(script.timeoutMs);
   let watchdogTimer = 0;
-  const ws = new WebSocket("ws://127.0.0.1:49424");
+  const ws = new WebSocket(localAgentWsUrl);
   const fail = () => {
     if (finished || opened) {
       return;
@@ -6417,11 +5834,11 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     finished = true;
     cleanupSotyFileDataPlane(script.id);
     setTerminalState(tunnelId, "off");
-    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
+    appendTerminalLine(tunnelId, localAgentUnavailableText);
     renderTerminal();
     window.clearTimeout(timer);
     window.clearTimeout(watchdogTimer);
-    void sync.sendRemoteOutput(script.deviceId, script.id, "! 127.0.0.1:49424", 127);
+    void sync.sendRemoteOutput(script.deviceId, script.id, localAgentUnavailableText, 127);
   };
   const timer = window.setTimeout(() => {
     fail();
@@ -7053,24 +6470,6 @@ function setAgentThinking(tunnelId: string, active: boolean): void {
   }
 }
 
-function cleanTerminalTranscript(value: string): string {
-  return redactVisibleTerminalSecrets(value)
-    .replace(/\r\n?/gu, "\n")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
-    .replace(/\n{5,}/gu, "\n\n\n\n")
-    .trim()
-    .slice(0, 12_000);
-}
-
-function redactVisibleTerminalSecrets(value: string): string {
-  return String(value || "")
-    .replace(/\b((?:https?|socks5h?|socks5):\/\/)([^:@\s/]+):([^@\s/]+)@/giu, "$1<redacted>@")
-    .replace(/\b(SOTY_CODEX_PROXY_URL|SOTY_AGENT_PROXY_URL|HTTPS?_PROXY|ALL_PROXY|https?_proxy|all_proxy)\s*[:=]\s*['"]?[^'"\s]+/gu, "$1=<redacted>")
-    .replace(/(api[_-]?key|authorization|bearer|token|secret|password|passwd|cap_sid)\s*[:=]\s*['"]?[^'"\s]+/giu, "$1=<redacted>")
-    .replace(/\b(?:sk|sess|cap|pat|ghp|github_pat)_[A-Za-z0-9_-]{16,}\b/gu, "<redacted-token>")
-    .replace(/[A-Za-z0-9+/]{80,}={0,2}/gu, "<redacted-long-token>");
-}
-
 function cleanAgentReplyText(value: string): string {
   return value
     .replace(/\r\n?/gu, "\n")
@@ -7113,7 +6512,7 @@ function normalizeChatMessage(value: string): string {
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
   return !reply.ok
     && reply.exitCode === 127
-    && /127\.0\.0\.1:49424/u.test(reply.text)
+    && isLocalAgentUnavailableText(reply.text)
     && !hasAgentRelayId();
 }
 
@@ -8029,67 +7428,6 @@ function columnFromIndex(text: string, index: number): number {
   const safeIndex = Math.max(0, Math.min(index, text.length));
   const lineStart = text.lastIndexOf("\n", Math.max(0, safeIndex - 1)) + 1;
   return safeIndex - lineStart;
-}
-
-function normalizeLocalEdit(before: string, next: string, caret: number): { readonly text: string; readonly caret: number } {
-  if (!device || before === next) {
-    return { text: next, caret };
-  }
-  const [start, deleteCount, insertText] = diffPlain(before, next);
-  if (deleteCount > 0 || insertText.length === 0) {
-    return { text: next, caret };
-  }
-  const line = lineFromIndex(before, start);
-  const owner = writerLines.get(selectedId)?.get(line);
-  const isFreshRemoteLine = owner && owner.deviceId !== device.id && Date.now() - owner.at < 8000;
-  if (!isFreshRemoteLine) {
-    return { text: next, caret };
-  }
-  const localLine = findFreshLineForDevice(selectedId, device.id);
-  if (localLine !== null) {
-    const localEnd = endOfLine(before, localLine);
-    return {
-      text: `${before.slice(0, localEnd)}${insertText}${before.slice(localEnd)}`,
-      caret: localEnd + insertText.length
-    };
-  }
-  const lineEnd = endOfLine(before, line);
-  const separator = insertText.startsWith("\n") || (lineEnd > 0 && before[lineEnd - 1] === "\n") ? "" : "\n";
-  const text = `${before.slice(0, lineEnd)}${separator}${insertText}${before.slice(lineEnd)}`;
-  return {
-    text,
-    caret: lineEnd + separator.length + insertText.length
-  };
-}
-
-function findFreshLineForDevice(tunnelId: string, deviceId: string): number | null {
-  const lines = writerLines.get(tunnelId);
-  if (!lines) {
-    return null;
-  }
-  let bestLine: number | null = null;
-  let bestAt = 0;
-  const now = Date.now();
-  for (const [line, label] of lines) {
-    if (label.deviceId === deviceId && now - label.at < 8000 && label.at > bestAt) {
-      bestLine = line;
-      bestAt = label.at;
-    }
-  }
-  return bestLine;
-}
-
-function endOfLine(text: string, line: number): number {
-  let cursor = 0;
-  for (let current = 0; current < line; current += 1) {
-    const nextBreak = text.indexOf("\n", cursor);
-    if (nextBreak === -1) {
-      return text.length;
-    }
-    cursor = nextBreak + 1;
-  }
-  const lineBreak = text.indexOf("\n", cursor);
-  return lineBreak === -1 ? text.length : lineBreak;
 }
 
 function diffPlain(before: string, after: string): [number, number, string] {

@@ -1,5 +1,8 @@
 import express from "express";
 import { randomUUID } from "node:crypto";
+import { createArtifactStore } from "./agent-relay/artifacts.js";
+import { cleanArtifactToken, cleanDownloadName, cleanHex, cleanMimeType, cleanStringList, cleanText, normalizeRelayId, safeRelayLimit, safeRunAs } from "./agent-relay/sanitize.js";
+import { addWaiter, flushWaiters } from "./agent-relay/waiters.js";
 
 const maxChatChars = safeRelayLimit(process.env.SOTY_AGENT_RELAY_MAX_CHAT_CHARS, 64_000, 1_000_000);
 const maxContextChars = safeRelayLimit(process.env.SOTY_AGENT_RELAY_MAX_CONTEXT_CHARS, 128_000, 1_000_000);
@@ -25,12 +28,12 @@ const maxJobsPerChannel = 80;
 const maxDiagnosticSources = 16;
 const channels = new Map();
 const agentSources = new Map();
-const artifacts = new Map();
 const pollWaiters = new Map();
 const replyWaiters = new Map();
 const eventWaiters = new Map();
 const sourcePollWaiters = new Map();
 const sourceReplyWaiters = new Map();
+const artifactStore = createArtifactStore({ ttlMs: artifactTtlMs });
 const jsonParser = express.json({ limit: process.env.SOTY_AGENT_RELAY_JSON_LIMIT || "8mb", type: "application/json" });
 const artifactParser = express.raw({ limit: `${maxArtifactBytes}b`, type: "application/octet-stream" });
 const configuredServerCodexRelayId = normalizeRelayId(process.env.SOTY_SERVER_CODEX_RELAY_ID || process.env.SOTY_AGENT_RELAY_ID || "");
@@ -44,40 +47,34 @@ export function attachAgentRelay(app) {
       res.status(400).json({ ok: false, text: "! artifact", exitCode: 400 });
       return;
     }
-    cleanupArtifacts();
-    const token = `${Date.now().toString(36)}_${randomUUID().replace(/-/gu, "")}`;
     const name = cleanDownloadName(req.headers["x-soty-artifact-name"]);
     const mimeType = cleanMimeType(req.headers["x-soty-artifact-type"]);
     const sha256 = cleanHex(req.headers["x-soty-artifact-sha256"], 64);
-    artifacts.set(token, {
+    const stored = artifactStore.put({
       bytes,
       name,
       mimeType,
       sha256,
       relayId,
-      deviceId,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + artifactTtlMs
+      deviceId
     });
     res.json({
       ok: true,
-      id: token,
-      url: `/api/agent/artifacts/${encodeURIComponent(token)}`,
+      id: stored.id,
+      url: `/api/agent/artifacts/${encodeURIComponent(stored.id)}`,
       bytes: bytes.length,
       sha256,
-      expiresAt: new Date(Date.now() + artifactTtlMs).toISOString()
+      expiresAt: new Date(stored.artifact.expiresAt).toISOString()
     });
   });
 
   app.get("/api/agent/artifacts/:id", (req, res) => {
-    cleanupArtifacts();
     const token = cleanArtifactToken(req.params.id);
-    const artifact = token ? artifacts.get(token) : null;
+    const artifact = token ? artifactStore.get(token) : null;
     if (!artifact) {
       res.status(404).json({ ok: false, text: "! artifact", exitCode: 404 });
       return;
     }
-    artifact.lastReadAt = Date.now();
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Content-Type", artifact.mimeType || "application/octet-stream");
     res.setHeader("Content-Length", String(artifact.bytes.length));
@@ -1512,13 +1509,6 @@ function emptyDeviceNetwork() {
   };
 }
 
-function cleanStringList(value, maxItems, maxChars) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return [...new Set(value.map((item) => cleanText(item, maxChars)).filter(Boolean))].slice(0, maxItems);
-}
-
 function mergeOperatorTargets(...groups) {
   const merged = new Map();
   for (const target of groups.flat()) {
@@ -1559,38 +1549,6 @@ function findReply(relayId, id) {
   return job?.reply || null;
 }
 
-function addWaiter(map, key, req, res, buildPayload, timeoutMs = 30_000) {
-  const waiter = {
-    res,
-    buildPayload,
-    timer: setTimeout(() => {
-      removeWaiter(map, key, waiter);
-      res.json(buildPayload());
-    }, Math.max(1000, timeoutMs))
-  };
-  res.on("close", () => {
-    if (res.writableEnded) {
-      return;
-    }
-    clearTimeout(waiter.timer);
-    removeWaiter(map, key, waiter);
-  });
-  const waiters = map.get(key) || new Set();
-  waiters.add(waiter);
-  map.set(key, waiters);
-}
-
-function removeWaiter(map, key, waiter) {
-  const waiters = map.get(key);
-  if (!waiters) {
-    return;
-  }
-  waiters.delete(waiter);
-  if (waiters.size === 0) {
-    map.delete(key);
-  }
-}
-
 function flushPollWaiters(relayId) {
   const channel = channels.get(relayId);
   if (!channel) {
@@ -1607,18 +1565,6 @@ function flushEventWaiters(relayId, id) {
   flushWaiters(eventWaiters, replyKey(relayId, id), () => relayEventsPayload(relayId, id, 0));
 }
 
-function flushWaiters(map, key, buildPayload = null) {
-  const waiters = map.get(key);
-  if (!waiters) {
-    return;
-  }
-  map.delete(key);
-  for (const waiter of waiters) {
-    clearTimeout(waiter.timer);
-    waiter.res.json((buildPayload || waiter.buildPayload)());
-  }
-}
-
 function cleanupChannels() {
   const now = Date.now();
   for (const [relayId, channel] of channels) {
@@ -1630,7 +1576,7 @@ function cleanupChannels() {
     }
   }
   cleanupAgentSources();
-  cleanupArtifacts();
+  artifactStore.cleanup();
 }
 
 function replyKey(relayId, id) {
@@ -1668,63 +1614,11 @@ function findRelayJob(relayId, id) {
   return null;
 }
 
-function normalizeRelayId(value) {
-  const text = String(value || "").trim();
-  return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
-}
-
-function cleanText(value, max) {
-  return typeof value === "string" ? value.slice(0, max) : "";
-}
-
-function safeRelayLimit(value, fallback, max) {
-  const limit = Number.parseInt(String(value || ""), 10);
-  return Number.isSafeInteger(limit) ? Math.max(1000, Math.min(limit, max)) : fallback;
-}
-
 function safeSourceReplyChars(value) {
   const parsed = Number.parseInt(String(value || ""), 10);
   return Number.isSafeInteger(parsed)
     ? Math.max(1000, Math.min(parsed, maxSourceReplyChars))
     : maxReplyChars;
-}
-
-function cleanArtifactToken(value) {
-  const text = String(value || "").trim();
-  return /^[0-9a-z]+_[0-9a-f]{32}$/u.test(text) ? text : "";
-}
-
-function cleanDownloadName(value) {
-  return String(Array.isArray(value) ? value[0] : value || "")
-    .replace(/[\\/:*?"<>|]/gu, "_")
-    .trim()
-    .slice(0, 160) || "artifact.bin";
-}
-
-function cleanMimeType(value) {
-  const text = String(Array.isArray(value) ? value[0] : value || "").trim().slice(0, 160);
-  return /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/u.test(text)
-    ? text
-    : "application/octet-stream";
-}
-
-function cleanHex(value, length) {
-  const text = String(Array.isArray(value) ? value[0] : value || "").trim().toLowerCase();
-  return new RegExp(`^[0-9a-f]{${length}}$`, "u").test(text) ? text : "";
-}
-
-function cleanupArtifacts() {
-  const now = Date.now();
-  for (const [token, artifact] of artifacts) {
-    if (!artifact || now > artifact.expiresAt) {
-      artifacts.delete(token);
-    }
-  }
-}
-
-function safeRunAs(value) {
-  const text = String(value || "").trim().toLowerCase();
-  return text === "system" || text === "machine" || text === "elevated" ? "system" : "user";
 }
 
 function cleanReplyMessages(value) {

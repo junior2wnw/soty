@@ -15,6 +15,7 @@
     "codex:runtime:update": "node scripts/update-codex-runtime.mjs",
     "codex:runtime:latest": "node scripts/update-codex-runtime.mjs --print-latest",
     "agent:release": "node scripts/build-agent-release.mjs",
+    "agent:release:check": "node scripts/agent-release/check.mjs",
     "agent:selftest": "node scripts/action-kernel-selftest.mjs",
     "agent:eval": "node scripts/soty-agent-eval.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

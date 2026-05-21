@@ -2299,19 +2299,6 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function cleanTerminalLine(value: string): string {
-  return value
-    .replace(/\r\n?/gu, "\n")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
-    .replace(/\n{5,}/gu, "\n\n\n\n")
-    .trim()
-    .slice(0, 12_000);
-}
-
-function terminalStateFrom(value: unknown): TerminalSnapshot["state"] {
-  return value === "run" || value === "ok" || value === "bad" || value === "off" ? value : "idle";
-}
-
 function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
   const total = chunks.reduce((sum, chunk) => sum + (chunk?.byteLength ?? 0), 0);
   const result = new Uint8Array(total);
