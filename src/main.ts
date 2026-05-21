@@ -6948,12 +6948,7 @@ function renderTextPaint(): void {
   const hasAgentThinking = agentThinking.has(selectedId);
   textPaint.style.transform = "";
   if (!text.trim() && drafts.length === 0 && !hasAgentThinking) {
-    textPaint.innerHTML = `
-      <div class="chat-empty">
-        <span>READY</span>
-        <b>${escapeHtml(counterpartyLabelForSelected())}</b>
-      </div>
-    `;
+    textPaint.innerHTML = "";
     return;
   }
   let operatorBlock = false;

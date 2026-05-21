@@ -832,30 +832,6 @@ button:disabled {
   gap: 10px;
 }
 
-.chat-empty {
-  min-height: 100%;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-}
-
-.chat-empty span {
-  padding: 5px 8px;
-  border: 1px solid #3d515f;
-  color: var(--green);
-}
-
-.chat-empty b {
-  max-width: min(60vw, 420px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
-}
-
 .chat-bubble {
   position: relative;
   width: fit-content;
