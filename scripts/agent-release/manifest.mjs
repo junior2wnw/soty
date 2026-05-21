@@ -37,6 +37,7 @@ export function buildAgentReleaseManifest({ version, sourceText, windowsReinstal
     imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
     agentRuntimeSchema: agentRuntime.schema,
     routeProfileSchema: "soty.route-profiles.v1",
+    actionMemory: buildActionMemoryPolicy(),
     capabilities: [
       "discover",
       "status",
@@ -218,6 +219,7 @@ export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRu
       fallbackKernel: "jobs",
       routeProfiles: "soty.route-profiles.v1",
       agentRuntime: agentRuntime.schema,
+      actionMemory: buildActionMemoryPolicy(),
       chat: "agent-sysadmin",
       responseStyle: buildResponseStylePolicy(),
       openAiToolPlane,
@@ -241,7 +243,7 @@ export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRu
         name: "computer-use-plane",
         entryTool: "computer",
         kind: "front-door",
-        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop", "trigger"],
+        phases: ["discover", "route_profiles", "status", "invoke", "jobs", "job_status", "wait", "job_stop", "trigger", "learn"],
         proof: ["sourceDeviceId", "jobId", "statusPath", "resultPath", "exitCode", "artifactSha256"],
         promotion: "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         routeProfiles: routeProfiles.profiles.map((profile) => profile.id)
@@ -320,6 +322,16 @@ export function buildResponseStylePolicy() {
       "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
       "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
     ]
+  };
+}
+
+function buildActionMemoryPolicy() {
+  return {
+    schema: "soty.action-memory.v1",
+    before: "Use shared route memory as a hint before nontrivial or repeated actions.",
+    after: "Record sanitized outcome proof for success, failure, timeout, fallback, and unexpected result.",
+    write: "Automatic action-job receipts plus computer operation=learn for route improvements.",
+    safety: ["memory-is-evidence-not-authority", "fresh-proof-required", "no-secrets-or-raw-logs"]
   };
 }
 

@@ -22,6 +22,17 @@ The simplest reliable long-term memory is a durable event log plus deterministic
 6. The next task asks `/memory/query` with family/platform filters.
 7. Codex receives only compact hints: confidence, score, route, guidance, and evidence.
 
+## Action Memory Contract
+
+Every Soty action follows one small memory loop:
+
+1. Before a nontrivial or repeated action, use shared memory as route evidence: query route profiles or consume the compact memory hints already attached to the Agent runtime.
+2. Execute through the first-class capability or durable action kernel, then verify fresh proof from the selected device.
+3. After the action, write one sanitized outcome receipt. Success, failure, timeout, cancellation, fallback, and unexpected results are all useful.
+4. When the run teaches a better reusable route, record a separate `computer` `operation=learn` improvement with `family`, `route`, `reuseKey`, `successCriteria`, and `contextFingerprint` when known.
+
+The receipt is global learning for future users, but it is not authority. Future runs may prefer a proven route from memory, yet they still need fresh proof and user confirmation for risky actions. Receipts must not contain secrets, raw logs, private identifiers, or long commands.
+
 ## Promotion Rules
 
 Routes become reusable only when evidence is strong enough:
@@ -45,6 +56,7 @@ Routes become reusable only when evidence is strong enough:
 
 - `soty.memory-plane.v1`: public memory plane contract in the agent manifest.
 - `soty.memory.receipt.v1`: sanitized event written by agents.
+- `soty.action-memory.v1`: per-action memory loop: hint before action, sanitized receipt after action, route improvement on better reusable paths.
 - `soty.memctl.v1`: deterministic promotion and scoring controller.
 - `soty.memory.report.v2`: full server report for review.
 - `soty.memory.query.v2`: compact ranked hints for Codex.

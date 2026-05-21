@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "33333debac38a630f887311f9633d5d1a23193909713bdbf1f3130c03375c80c",
+  "sha256": "85ab0208286192394545fea51f15c7209040392c43ef5c1871809c07c91b0a7f",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -68,6 +68,17 @@
     "imagePipeline": "openai.image_generation+computer.artifact-save-apply-verify",
     "agentRuntimeSchema": "trustlink.agent-runtime.v1",
     "routeProfileSchema": "soty.route-profiles.v1",
+    "actionMemory": {
+      "schema": "soty.action-memory.v1",
+      "before": "Use shared route memory as a hint before nontrivial or repeated actions.",
+      "after": "Record sanitized outcome proof for success, failure, timeout, fallback, and unexpected result.",
+      "write": "Automatic action-job receipts plus computer operation=learn for route improvements.",
+      "safety": [
+        "memory-is-evidence-not-authority",
+        "fresh-proof-required",
+        "no-secrets-or-raw-logs"
+      ]
+    },
     "capabilities": [
       "discover",
       "status",
@@ -604,6 +615,17 @@
       "fallbackKernel": "jobs",
       "routeProfiles": "soty.route-profiles.v1",
       "agentRuntime": "trustlink.agent-runtime.v1",
+      "actionMemory": {
+        "schema": "soty.action-memory.v1",
+        "before": "Use shared route memory as a hint before nontrivial or repeated actions.",
+        "after": "Record sanitized outcome proof for success, failure, timeout, fallback, and unexpected result.",
+        "write": "Automatic action-job receipts plus computer operation=learn for route improvements.",
+        "safety": [
+          "memory-is-evidence-not-authority",
+          "fresh-proof-required",
+          "no-secrets-or-raw-logs"
+        ]
+      },
       "chat": "agent-sysadmin",
       "responseStyle": {
         "schema": "soty.response-style.v1",
@@ -721,7 +743,8 @@
           "job_status",
           "wait",
           "job_stop",
-          "trigger"
+          "trigger",
+          "learn"
         ],
         "proof": [
           "sourceDeviceId",

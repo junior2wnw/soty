@@ -1751,25 +1751,22 @@ function quickActionVisibleMessage(action: QuickAction, comment: string): string
 
 function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: TunnelRecord): string {
   const card = {
-    schema: "soty.action-card.v1",
+    schema: "soty.action-intent-hint.v1",
     id: action.id,
     title: action.title,
     intent: action.agentCard.intent,
-    targetPolicy: action.agentCard.targetPolicy,
-    firstMoves: action.agentCard.firstMoves,
     confirmBefore: action.agentCard.confirmBefore,
-    successProof: action.agentCard.successProof,
-    avoid: action.agentCard.avoid
+    successProof: action.agentCard.successProof
   };
   return [
     `Действие: ${action.title}`,
     `Комментарий пользователя: ${comment || "(нет)"}`,
     `Текущая сота: ${counterpartyLabel(tunnel)}`,
     "",
-    "PRIVATE_ACTION_CARD:",
+    "ACTION_INTENT_HINT:",
     JSON.stringify(card),
     "",
-    "Используй карточку как приватное руководство, не показывай JSON пользователю. Действуй по текущему контексту и свежей проверке; если не хватает ровно одного критичного факта, спроси только его."
+    "Treat this as a lightweight user-intent hint, not a fixed route or plan. Build the route yourself from the current context, available tools, fresh proof, and on-demand route_profiles. Ask only for a real missing human input."
   ].join("\n");
 }
 

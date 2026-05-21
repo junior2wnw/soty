@@ -68,6 +68,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.standardTools.includes("computer"));
       assert(!health.body.computerUsePlane.standardTools.includes("image_gen"));
       assertEqual(health.body.computerUsePlane.routeProfiles.schema, "soty.route-profiles.v1");
+      assertEqual(health.body.computerUsePlane.actionMemory.schema, "soty.action-memory.v1");
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-windows-reinstall-managed-fast-lane"));
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
       assert(!health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-native-window-chrome-fast-lane"));
@@ -87,6 +88,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.frontDoor, "computer");
       assertEqual(health.body.automationToolkits.legacyFrontDoor, "soty_computer");
       assertEqual(health.body.automationToolkits.computerUsePlane.entryTool, "computer");
+      assertEqual(health.body.automationToolkits.actionMemory.schema, "soty.action-memory.v1");
       assert(health.body.automationToolkits.available.includes("computer-use-plane"));
       assert(health.body.automationToolkits.available.includes("agent-runtime"));
       assert(health.body.automationToolkits.available.includes("capability-gateway"));
@@ -102,6 +104,7 @@ async function runScenarios({ relayUrl } = {}) {
       const liveComputerPlaneToolkit = health.body.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
       assert(liveAgentRuntimeToolkit?.phases.includes("trigger"));
       assert(liveComputerPlaneToolkit?.phases.includes("trigger"));
+      assert(liveComputerPlaneToolkit?.phases.includes("learn"));
       assert(health.body.automationToolkits.toolkits.some((toolkit) => toolkit.name === "agent-trigger" && toolkit.entryTool === "computer"));
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
     }],
@@ -170,6 +173,16 @@ async function runScenarios({ relayUrl } = {}) {
       assert(manifest.computerUsePlane.capabilities.includes("inline-mini-app"));
       assert(manifest.computerUsePlane.capabilities.includes("transaction"));
       assert(manifest.computerUsePlane.capabilities.includes("agent-trigger"));
+    }],
+    ["action memory contract is documented and manifest-backed", async () => {
+      const docs = await readFile(join(root, "docs", "soty-memory-plane.md"), "utf8");
+      const releaseManifest = await readFile(join(root, "scripts", "agent-release", "manifest.mjs"), "utf8");
+      const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      assert(docs.includes("Action Memory Contract"));
+      assert(docs.includes("operation=learn"));
+      assert(docs.includes("soty.action-memory.v1"));
+      assert(releaseManifest.includes("buildActionMemoryPolicy"));
+      assert(agentSource.includes("actionMemoryContractStatus"));
     }],
     ["mini app remote kernel docs are agent-visible", async () => {
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
@@ -348,6 +361,7 @@ async function runScenarios({ relayUrl } = {}) {
       const toolkits = await get("/operator/toolkits");
       assertEqual(toolkits.status, 200);
       assertEqual(toolkits.body.schema, "soty.automation-toolkits.v2");
+      assertEqual(toolkits.body.actionMemory.schema, "soty.action-memory.v1");
       assertEqual(toolkits.body.responseStyle.displayName, "Агент");
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "computer-use-plane"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "capability-gateway"));
@@ -1321,6 +1335,7 @@ async function runScenarios({ relayUrl } = {}) {
       const outbox = await readFile(join(tempRoot, "learning-outbox.jsonl"), "utf8");
       assert(outbox.includes("\"kind\":\"action-job\"") || outbox.includes("\"kind\": \"action-job\""));
       assert(outbox.includes("\"toolkit\":\"durable-action\"") || outbox.includes("\"toolkit\": \"durable-action\""));
+      assert(outbox.includes("actionMemory=soty.action-memory.v1"));
     }],
     ["cli action list works", async () => {
       const cli = await runCli(["action", "list"]);
@@ -1673,6 +1688,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("mcpRecordComputerLearning"));
       assert(agent.includes("shouldRecordComputerLearning"));
       assert(agent.includes("Learning receipt saved as route guidance only"));
+      assert(agent.includes("Action memory contract"));
+      assert(agent.includes("actionMemory=soty.action-memory.v1"));
       assert(agent.includes("operation=terminal/action"));
       assert(agent.includes('"terminal", "console"'));
       assert(agent.includes("activeCodexTargetTurns"));
@@ -1890,10 +1907,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!manifest.computerUsePlane.capabilities.includes("native-window-chrome"));
       assert(manifest.agentRuntime.capabilities.some((capability) => capability.family === "trigger"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
+      assertEqual(manifest.computerUsePlane.actionMemory.schema, "soty.action-memory.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "jobs");
       assertEqual(manifest.automationToolkits.policy.routeProfiles, "soty.route-profiles.v1");
+      assertEqual(manifest.automationToolkits.policy.actionMemory.schema, "soty.action-memory.v1");
       assertEqual(manifest.automationToolkits.policy.chat, "agent-sysadmin");
       assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
       assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
@@ -1905,6 +1924,7 @@ async function runScenarios({ relayUrl } = {}) {
       const computerUsePlane = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "computer-use-plane");
       assert(computerUsePlane);
       assertEqual(computerUsePlane.entryTool, "computer");
+      assert(computerUsePlane.phases.includes("learn"));
       const capabilityGateway = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "capability-gateway");
       assert(capabilityGateway);
       assertEqual(capabilityGateway.entryTool, "computer");
@@ -2085,12 +2105,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("machine-button"));
       assert(!ui.includes("canInstallMachineAgent"));
       assert(ui.includes("quickActions"));
-      assert(ui.includes("soty.action-card.v1"));
+      assert(ui.includes("soty.action-intent-hint.v1"));
       assert(ui.includes("openCounterpartyMenu"));
       assert(ui.includes("actions: () =>"));
       assert(!ui.includes("quick-actions-action"));
       assert(ui.includes("Комментарий пользователя"));
-      assert(ui.includes("PRIVATE_ACTION_CARD"));
+      assert(ui.includes("ACTION_INTENT_HINT"));
+      assert(ui.includes("not a fixed route or plan"));
       assert(ui.includes("appendUserMessageToDialog"));
       assert(!ui.includes("soty:scenarios"));
       assert(!ui.includes("scenarioInvocationPrompt"));
