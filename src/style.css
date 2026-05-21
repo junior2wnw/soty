@@ -857,11 +857,12 @@ button:disabled {
 }
 
 .chat-bubble {
+  position: relative;
   width: fit-content;
   max-width: min(72ch, 78%);
   display: grid;
   gap: 7px;
-  padding: 10px 12px 11px;
+  padding: 11px 14px 22px;
   border: 1px solid color-mix(in srgb, var(--bubble-color) 52%, #263640);
   border-radius: 8px;
   background:
@@ -880,6 +881,7 @@ button:disabled {
 
 .chat-bubble.local {
   align-self: flex-end;
+  margin-right: 28px;
   background:
     linear-gradient(90deg, rgba(109, 255, 143, 0.07), transparent 48%),
     #0d1712;
@@ -887,6 +889,7 @@ button:disabled {
 
 .chat-bubble.remote {
   align-self: flex-start;
+  margin-left: 28px;
 }
 
 .chat-bubble:hover {
@@ -899,6 +902,8 @@ button:disabled {
 
 .chat-bubble.surface {
   align-self: center;
+  margin-right: 0;
+  margin-left: 0;
   max-width: min(80ch, 88%);
   border-style: dashed;
   background: rgba(12, 18, 24, 0.72);
@@ -944,10 +949,6 @@ button:disabled {
     inset 3px 0 0 var(--amber),
     0 6px 14px rgba(0, 0, 0, 0.20);
   animation: thinking-hop 720ms cubic-bezier(.2, .9, .25, 1.35) infinite;
-}
-
-.chat-bubble.is-agent-thinking .bubble-meta small {
-  color: var(--amber);
 }
 
 .chat-bubble.is-agent-thinking p {
@@ -997,45 +998,53 @@ button:disabled {
   animation-delay: 320ms;
 }
 
-.bubble-meta {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 26px minmax(0, auto) auto auto;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
+.bubble-time {
+  position: absolute;
+  right: 9px;
+  bottom: 5px;
+  color: color-mix(in srgb, var(--bubble-color) 54%, var(--muted));
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
 }
 
-.bubble-meta span {
-  width: 26px;
-  height: 23px;
+.bubble-avatar {
+  position: absolute;
+  top: 7px;
+  width: 22px;
+  height: 20px;
   display: grid;
   place-items: center;
   clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
   background: var(--bubble-color);
   color: #061015;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 8px;
   font-weight: 900;
+  line-height: 1;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 4px 10px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
 }
 
-.bubble-meta b {
-  min-width: 0;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
+.chat-bubble.remote .bubble-avatar {
+  left: -28px;
 }
 
-.bubble-meta small {
-  color: var(--muted);
+.chat-bubble.local .bubble-avatar {
+  right: -28px;
 }
 
 .live-chip {
+  width: fit-content;
   padding: 3px 6px;
   border: 1px solid var(--amber);
   color: var(--amber);
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 10px;
   font-style: normal;
   animation: blink 1s steps(2, start) infinite;
 }
@@ -1049,6 +1058,17 @@ button:disabled {
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
   font-size: 15px;
   line-height: 1.45;
+}
+
+.chat-bubble p a {
+  color: var(--cyan);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.chat-bubble p a:hover {
+  color: var(--cream);
 }
 
 .bubble-files {
@@ -2821,12 +2841,7 @@ button:disabled {
     height: 54px;
   }
 
-  .bubble-meta {
-    grid-template-columns: 26px minmax(0, auto) auto;
-  }
-
   .live-chip {
-    grid-column: 2 / -1;
     width: fit-content;
   }
 

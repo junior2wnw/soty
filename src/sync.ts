@@ -18,6 +18,7 @@ export interface PeerInfo {
 
 export interface SyncCallbacks {
   readonly onText: (text: string) => void;
+  readonly onWriterLines: (lines: readonly SyncedWriterLine[]) => void;
   readonly onTerminal: (terminal: TerminalSnapshot) => void;
   readonly onChess: (chess: SyncedChessState | null) => void;
   readonly onActivity: (activity: WriterActivity) => void;
@@ -68,6 +69,15 @@ export interface LiveDraft {
   readonly active: boolean;
   readonly seq: number;
   readonly createdAt: string;
+}
+
+export interface SyncedWriterLine {
+  readonly line: number;
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly createdAt: string;
+  readonly action: WriterActivity["action"];
+  readonly preview: string;
 }
 
 export interface ReceivedFile {
@@ -366,6 +376,12 @@ interface OutboundUpdate {
   readonly update: Uint8Array;
 }
 
+interface WriterOverride {
+  readonly deviceId?: string;
+  readonly nick?: string;
+  readonly local?: boolean;
+}
+
 type ControlMessage =
   | { readonly type: "join.accept"; readonly requestId: string; readonly accept: JoinAcceptPayload }
   | { readonly type: "join.deny"; readonly requestId: string }
@@ -416,6 +432,7 @@ export class TunnelSync {
   private readonly text = this.doc.getText("body");
   private readonly chessMeta = this.doc.getMap<string>("chessMeta");
   private readonly miniAppsMeta = this.doc.getMap<string>("miniApps");
+  private readonly lineMeta = this.doc.getMap<string>("lineMeta");
   private ws: WebSocket | null = null;
   private destroyed = false;
   private ready = false;
@@ -476,6 +493,9 @@ export class TunnelSync {
     this.text.observe(() => {
       this.callbacks.onText(this.text.toString());
     });
+    this.lineMeta.observe(() => {
+      this.callbacks.onWriterLines(this.writerLineSnapshot());
+    });
     this.chessMeta.observe(() => {
       this.callbacks.onChess(this.chessSnapshot());
     });
@@ -494,25 +514,39 @@ export class TunnelSync {
     this.connect();
   }
 
-  setText(next: string): void {
+  setText(
+    next: string,
+    writerOverride: WriterOverride = {},
+    writerLineSnapshot?: readonly SyncedWriterLine[]
+  ): void {
     const current = this.text.toString();
     if (current === next) {
+      if (writerLineSnapshot) {
+        this.doc.transact(() => {
+          this.replaceWriterLineMeta(writerLineSnapshot);
+        }, "local");
+      }
       return;
     }
     const [start, deleteCount, insertText] = diffText(current, next);
     const activity = describeActivity(current, start, deleteCount, insertText);
+    const writerDeviceId = writerOverride.deviceId || this.device.id;
+    const writerNick = writerOverride.nick ?? this.device.nick;
+    const startLine = lineFromIndex(current, start);
+    const startColumn = columnFromIndex(current, start);
+    const deletedText = current.slice(start, start + deleteCount);
     this.callbacks.onActivity({
-      deviceId: this.device.id,
-      nick: this.device.nick,
+      deviceId: writerDeviceId,
+      nick: writerNick,
       index: start,
-      local: true,
+      local: writerOverride.local ?? writerDeviceId === this.device.id,
       action: activity.action,
       preview: activity.preview,
       insertText,
       deleteCount,
-      startLine: lineFromIndex(current, start),
-      startColumn: columnFromIndex(current, start),
-      lineDelta: lineBreakCount(insertText) - lineBreakCount(current.slice(start, start + deleteCount))
+      startLine,
+      startColumn,
+      lineDelta: lineBreakCount(insertText) - lineBreakCount(deletedText)
     });
     this.doc.transact(() => {
       if (deleteCount > 0) {
@@ -521,7 +555,89 @@ export class TunnelSync {
       if (insertText.length > 0) {
         this.text.insert(start, insertText);
       }
+      if (writerLineSnapshot) {
+        this.replaceWriterLineMeta(writerLineSnapshot);
+      } else {
+        this.applyWriterLineMeta({
+          startLine,
+          startColumn,
+          deletedText,
+          insertText,
+          writer: {
+            deviceId: writerDeviceId,
+            nick: writerNick,
+            createdAt: new Date().toISOString(),
+            action: activity.action,
+            preview: activity.preview
+          }
+        });
+      }
     }, "local");
+  }
+
+  private replaceWriterLineMeta(lines: readonly SyncedWriterLine[]): void {
+    this.lineMeta.clear();
+    for (const item of [...lines]
+      .filter((line) => Number.isSafeInteger(line.line) && line.line >= 0)
+      .sort((left, right) => left.line - right.line)
+      .slice(-5000)) {
+      this.setWriterLineMeta(item.line, item);
+    }
+  }
+
+  private applyWriterLineMeta(input: {
+    readonly startLine: number;
+    readonly startColumn: number;
+    readonly deletedText: string;
+    readonly insertText: string;
+    readonly writer: Omit<SyncedWriterLine, "line">;
+  }): void {
+    const lineDelta = lineBreakCount(input.insertText) - lineBreakCount(input.deletedText);
+    const shiftFrom = input.startColumn === 0 ? input.startLine : input.startLine + 1;
+    const existing = this.writerLineSnapshot();
+    this.lineMeta.clear();
+    for (const item of existing) {
+      if (item.line < shiftFrom) {
+        this.setWriterLineMeta(item.line, item);
+        continue;
+      }
+      const nextLine = item.line + lineDelta;
+      if (nextLine >= 0) {
+        this.setWriterLineMeta(nextLine, { ...item, line: nextLine });
+      }
+    }
+    if (!input.insertText.trim()) {
+      return;
+    }
+    const labelStartLine = input.startLine + (input.startColumn > 0 && input.insertText.startsWith("\n") ? 1 : 0);
+    const span = insertedLineSpan(input.insertText || input.writer.preview, input.startColumn > 0);
+    for (let offset = 0; offset < span; offset += 1) {
+      this.setWriterLineMeta(labelStartLine + offset, {
+        line: labelStartLine + offset,
+        ...input.writer
+      });
+    }
+  }
+
+  private setWriterLineMeta(line: number, item: SyncedWriterLine): void {
+    if (!Number.isSafeInteger(line) || line < 0) {
+      return;
+    }
+    this.lineMeta.set(String(line), JSON.stringify({
+      deviceId: cleanMetaText(item.deviceId, 140),
+      nick: cleanMetaText(item.nick, 80),
+      createdAt: cleanMetaText(item.createdAt, 40),
+      action: item.action === "erase" || item.action === "edit" ? item.action : "write",
+      preview: cleanMetaText(item.preview, 120)
+    }));
+  }
+
+  private writerLineSnapshot(): readonly SyncedWriterLine[] {
+    return Array.from(this.lineMeta.entries())
+      .map(([line, raw]) => parseWriterLineMeta(line, raw))
+      .filter((item): item is SyncedWriterLine => Boolean(item))
+      .sort((left, right) => left.line - right.line)
+      .slice(-5000);
   }
 
   appendTerminalLine(line: string): void {
@@ -984,6 +1100,7 @@ export class TunnelSync {
       this.reconnectDelay = minReconnectDelayMs;
       this.callbacks.onState("open");
       this.callbacks.onText(this.text.toString());
+      this.callbacks.onWriterLines(this.writerLineSnapshot());
       this.callbacks.onTerminal(this.terminalSnapshot());
       this.flushOfflineQueue();
       this.flushControls();
@@ -2131,6 +2248,51 @@ function cleanMiniAppDate(value: string): string {
   const raw = String(value || "").slice(0, 40);
   const time = Date.parse(raw);
   return Number.isFinite(time) ? new Date(time).toISOString() : "";
+}
+
+function parseWriterLineMeta(lineKey: string, raw: string): SyncedWriterLine | null {
+  const line = Number.parseInt(lineKey, 10);
+  if (!Number.isSafeInteger(line) || line < 0) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    const deviceId = cleanMetaText(record.deviceId, 140);
+    const nick = cleanMetaText(record.nick, 80);
+    const createdAt = cleanMetaText(record.createdAt, 40);
+    const action = record.action === "erase" || record.action === "edit" ? record.action : "write";
+    return {
+      line,
+      deviceId,
+      nick,
+      createdAt,
+      action,
+      preview: cleanMetaText(record.preview, 120)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function cleanMetaText(value: unknown, maxLength: number): string {
+  return String(value || "")
+    .replace(/[\u0000-\u001F\u007F]/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function insertedLineSpan(text: string, dropLeadingBreak = false): number {
+  if (!text) {
+    return 1;
+  }
+  const withoutLeading = dropLeadingBreak && text.startsWith("\n") ? text.slice(1) : text;
+  const body = withoutLeading.endsWith("\n") ? withoutLeading.slice(0, -1) : withoutLeading;
+  return body ? body.split("\n").length : 1;
 }
 
 function wait(ms: number): Promise<void> {

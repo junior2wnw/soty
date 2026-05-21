@@ -7,7 +7,7 @@ import {
   normalizeAppSurfaceInstallRequest,
   resolveAppSurfaceUrl
 } from "trustlink-kernel";
-import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, SyncedWriterLine, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import type { IconName } from "./icons";
 import { colorFor, safeColor } from "./core/color";
@@ -832,6 +832,10 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
     saveSelectedTunnelId(selectedId);
   }
   const snapshots = loadTextSnapshots();
+  const writerSnapshots = loadWriterLineSnapshots();
+  for (const [tunnelId, lines] of writerSnapshots) {
+    writerLines.set(tunnelId, lines);
+  }
   for (const tunnel of tunnels) {
     if (!restoredTexts.has(tunnel.id)) {
       const snapshot = snapshots.get(tunnel.id);
@@ -984,7 +988,8 @@ function applyRestoredTextSnapshots(restoredTexts: Map<string, string>): void {
   for (const [tunnelId, text] of restoredTexts) {
     texts.set(tunnelId, text);
     saveTextSnapshotNow(tunnelId, text);
-    syncs.get(tunnelId)?.setText(text);
+    const syncedWriters = syncedWriterLinesForSnapshot(tunnelId);
+    syncs.get(tunnelId)?.setText(text, {}, syncedWriters.length > 0 ? syncedWriters : undefined);
   }
   if (selectedId && restoredTexts.has(selectedId)) {
     applySelectedText();
@@ -1010,6 +1015,48 @@ function loadTextSnapshots(): Map<string, string> {
   }
 }
 
+function loadWriterLineSnapshots(): Map<string, Map<number, WriterLine>> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(textSnapshotsKey) || "{}");
+    if (!isRecord(parsed)) {
+      return new Map();
+    }
+    const result = new Map<string, Map<number, WriterLine>>();
+    for (const [tunnelId, record] of Object.entries(parsed)) {
+      if (!isRecord(record) || !isRecord(record.writers)) {
+        continue;
+      }
+      const lines = new Map<number, WriterLine>();
+      for (const [lineText, value] of Object.entries(record.writers)) {
+        const line = Number.parseInt(lineText, 10);
+        if (!Number.isSafeInteger(line) || line < 0 || !isRecord(value)) {
+          continue;
+        }
+        const nick = cleanNick(recordString(value, "nick"));
+        const deviceId = recordString(value, "deviceId").slice(0, 140);
+        const at = Math.max(0, Math.trunc(Number(value.at) || 0));
+        const time = recordString(value, "time").slice(0, 8) || clock(at > 0 ? new Date(at) : undefined);
+        const action = value.action === "erase" || value.action === "edit" ? value.action : "write";
+        lines.set(line, {
+          nick,
+          deviceId,
+          color: recordString(value, "color").slice(0, 32) || colorFor(`${nick}:${deviceId || tunnelId}`),
+          time,
+          at,
+          action,
+          preview: recordString(value, "preview").slice(0, 120)
+        });
+      }
+      if (lines.size > 0) {
+        result.set(tunnelId, lines);
+      }
+    }
+    return result;
+  } catch {
+    return new Map();
+  }
+}
+
 function saveTextSnapshotNow(tunnelId: string, text: string): void {
   if (!tunnelId) {
     return;
@@ -1018,14 +1065,18 @@ function saveTextSnapshotNow(tunnelId: string, text: string): void {
     const parsed: unknown = JSON.parse(localStorage.getItem(textSnapshotsKey) || "{}");
     const current = isRecord(parsed) ? parsed : {};
     const now = Date.now();
-    const next: Record<string, { readonly text: string; readonly at: number }> = {};
-    next[tunnelId] = { text: text.slice(-200_000), at: now };
+    const next: Record<string, { readonly text: string; readonly at: number; readonly writers?: Record<string, unknown> }> = {};
+    next[tunnelId] = { text: text.slice(-200_000), at: now, writers: writerLinesForSnapshot(tunnelId) };
     for (const [id, record] of Object.entries(current)) {
       if (id === tunnelId || !isRecord(record) || typeof record.text !== "string") {
         continue;
       }
       const at = typeof record.at === "number" && Number.isFinite(record.at) ? record.at : 0;
-      next[id] = { text: record.text.slice(-200_000), at };
+      next[id] = {
+        text: record.text.slice(-200_000),
+        at,
+        ...(isRecord(record.writers) ? { writers: record.writers } : {})
+      };
     }
     const keep = Object.entries(next)
       .sort((left, right) => right[1].at - left[1].at)
@@ -1272,6 +1323,46 @@ function loadLocalMiniApps(): MiniAppDefinition[] {
   } catch {
     return [];
   }
+}
+
+function writerLinesForSnapshot(tunnelId: string): Record<string, unknown> {
+  const lines = writerLines.get(tunnelId);
+  if (!lines || lines.size === 0) {
+    return {};
+  }
+  const entries = [...lines.entries()]
+    .filter(([line]) => Number.isSafeInteger(line) && line >= 0)
+    .sort((left, right) => left[0] - right[0])
+    .slice(-5000)
+    .map(([line, writer]) => [String(line), {
+      nick: writer.nick,
+      deviceId: writer.deviceId,
+      color: writer.color,
+      time: writer.time,
+      at: writer.at,
+      action: writer.action,
+      preview: writer.preview
+    }]);
+  return Object.fromEntries(entries);
+}
+
+function syncedWriterLinesForSnapshot(tunnelId: string): SyncedWriterLine[] {
+  const lines = writerLines.get(tunnelId);
+  if (!lines || lines.size === 0) {
+    return [];
+  }
+  return [...lines.entries()]
+    .filter(([line]) => Number.isSafeInteger(line) && line >= 0)
+    .sort((left, right) => left[0] - right[0])
+    .slice(-5000)
+    .map(([line, writer]) => ({
+      line,
+      deviceId: writer.deviceId,
+      nick: writer.nick,
+      createdAt: new Date(writer.at > 0 ? writer.at : Date.now()).toISOString(),
+      action: writer.action,
+      preview: writer.preview
+    }));
 }
 
 function sanitizeLocalMiniAppDefinition(value: unknown): MiniAppDefinition | null {
@@ -3559,6 +3650,9 @@ function ensureSync(tunnel: TunnelRecord): void {
       if (tunnel.id === selectedId) {
         applySelectedText();
       }
+    },
+    onWriterLines: (lines) => {
+      applySyncedWriterLines(tunnel.id, lines);
     },
     onTerminal: (terminal) => {
       applySyncedTerminal(tunnel.id, terminal);
@@ -6894,7 +6988,7 @@ function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
     startColumn: columnFromIndex(before, index),
     lineDelta: lineBreakCount(insertText)
   };
-  sync.setText(next);
+  sync.setText(next, { deviceId: "codex", nick: agentDialogLabel, local: false });
   texts.set(tunnelId, next);
   saveTextSnapshotNow(tunnelId, next);
   rememberWriter(tunnelId, activity);
@@ -7070,7 +7164,7 @@ function appendOperatorChatText(tunnelId: string, text: string): void {
   }
   const before = texts.get(tunnelId) || "";
   const next = `${before}${text}`;
-  sync.setText(next);
+  sync.setText(next, { deviceId: "operator", nick: isAgentTunnelId(tunnelId) ? agentDialogLabel : "Operator", local: false });
   texts.set(tunnelId, next);
   scheduleTextSnapshot(tunnelId, next);
   rememberWriter(tunnelId, {
@@ -7103,7 +7197,7 @@ function removeOperatorChatSuffix(tunnelId: string, suffix: string): void {
     return;
   }
   const next = current.slice(0, -suffix.length);
-  sync.setText(next);
+  sync.setText(next, { deviceId: "operator", nick: isAgentTunnelId(tunnelId) ? agentDialogLabel : "Operator", local: false });
   texts.set(tunnelId, next);
   scheduleTextSnapshot(tunnelId, next);
   if (tunnelId === selectedId && textarea) {
@@ -7239,6 +7333,39 @@ function rememberWriter(tunnelId: string, activity: WriterActivity): void {
     lines.set(labelStartLine + offset, writer);
   }
   writerLines.set(tunnelId, lines);
+}
+
+function applySyncedWriterLines(tunnelId: string, synced: readonly SyncedWriterLine[]): void {
+  if (synced.length === 0) {
+    return;
+  }
+  const lines = new Map<number, WriterLine>();
+  for (const item of synced) {
+    if (!Number.isSafeInteger(item.line) || item.line < 0) {
+      continue;
+    }
+    const nick = cleanNick(item.nick) || (item.deviceId === device?.id ? cleanNick(device?.nick || "") : counterpartyLabelForTunnelId(tunnelId));
+    const at = Date.parse(item.createdAt);
+    const safeAt = Number.isFinite(at) ? at : Date.now();
+    lines.set(item.line, {
+      nick,
+      deviceId: item.deviceId,
+      color: colorFor(`${nick}:${item.deviceId || tunnelId}`),
+      time: clock(new Date(safeAt)),
+      at: safeAt,
+      action: item.action,
+      preview: item.preview
+    });
+  }
+  if (lines.size === 0) {
+    return;
+  }
+  writerLines.set(tunnelId, lines);
+  saveTextSnapshotNow(tunnelId, texts.get(tunnelId) || "");
+  if (tunnelId === selectedId) {
+    renderTextPaint();
+    renderWriterPop();
+  }
 }
 
 function rebaseWriterLines(tunnelId: string, fromLine: number, lineDelta: number): Map<number, WriterLine> {
@@ -7400,6 +7527,7 @@ function renderTextPaint(): void {
   }
   let operatorBlock = false;
   let operatorBlockNick = "";
+  let operatorBlockTime = "";
   const bubbles: {
     key: string;
     side: string;
@@ -7438,6 +7566,7 @@ function renderTextPaint(): void {
     const operatorNick = operatorNameFromLine(line);
     if (operatorNick) {
       operatorBlockNick = operatorNick;
+      operatorBlockTime = operatorTimeFromLine(line);
     }
     if (label && label.deviceId !== "operator" && !isAgentChromeLineClass(state.className)) {
       state = { className: "is-user-line", operatorBlock: false };
@@ -7446,25 +7575,29 @@ function renderTextPaint(): void {
     if (isAgentChromeLineClass(state.className)) {
       if (!operatorBlock) {
         operatorBlockNick = "";
+        operatorBlockTime = "";
       }
       continue;
     }
     if (!line.trim()) {
       operatorBlock = false;
       operatorBlockNick = "";
+      operatorBlockTime = "";
       if (bubbles.length > 0) {
         bubbles[bubbles.length - 1]?.lines.push("");
       }
       continue;
     }
     const speaker = speakerForLine(line, state.className, label, operatorBlockNick);
+    const time = label?.time || operatorBlockTime || clock();
     if (!operatorBlock) {
       operatorBlockNick = "";
+      operatorBlockTime = "";
     }
     const live = active && index === activeLine ? active : null;
     const key = `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}`;
     const current = bubbles[bubbles.length - 1];
-    if (current && current.key === key && !live) {
+    if (current && current.key === key && current.time === time && !live) {
       current.lines.push(line);
       continue;
     }
@@ -7473,7 +7606,7 @@ function renderTextPaint(): void {
       side: speaker.side,
       nick: speaker.nick,
       color: speaker.color,
-      time: label?.time || clock(),
+      time,
       className: state.className,
       lines: [line],
       attachments: [],
@@ -7536,20 +7669,21 @@ function renderTextPaint(): void {
     const body = bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
       : bubble.lines
-        .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
+        .map((line) => line ? `<span>${linkifyChatLine(line)}</span>` : "<br>")
         .join("");
     const attachmentHtml = bubble.attachments.length > 0 ? renderBubbleAttachments(bubble.attachments) : "";
     const live = bubble.live
       ? `<em class="live-chip">${escapeHtml(activityCode(bubble.live.action))}${bubble.live.preview ? ` ${escapeHtml(compactPreview(bubble.live.preview))}` : ""}</em>`
       : "";
+    const time = bubble.time ? `<time class="bubble-time">${escapeHtml(bubble.time)}</time>` : "";
+    const avatar = bubble.side === "local" || bubble.side === "remote"
+      ? `<span class="bubble-avatar" aria-hidden="true">${escapeHtml(initials(bubble.nick))}</span>`
+      : "";
     return `
       <article class="chat-bubble ${bubble.side} ${bubble.className}" style="--bubble-color:${bubble.color}">
-        <div class="bubble-meta">
-          <span>${escapeHtml(initials(bubble.nick))}</span>
-          <b>${escapeHtml(bubble.nick)}</b>
-          <small>${escapeHtml(bubble.time)}</small>
-          ${live}
-        </div>
+        ${avatar}
+        ${time}
+        ${live}
         ${body ? `<p>${body}</p>` : ""}
         ${attachmentHtml}
       </article>
@@ -7682,7 +7816,7 @@ function speakerForLine(
     nick,
     deviceId: "",
     color: safeColor(undefined, `${nick}:${selectedId}`),
-    side: "surface"
+    side: "remote"
   };
 }
 
@@ -7691,8 +7825,16 @@ function operatorNameFromLine(line: string): string {
   return cleanNick(match?.[1] || "");
 }
 
+function operatorTimeFromLine(line: string): string {
+  return line.trim().match(/\s+·\s+(\d{1,2}:\d{2})$/u)?.[1] || "";
+}
+
 function counterpartyLabelForSelected(): string {
-  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  return counterpartyLabelForTunnelId(selectedId);
+}
+
+function counterpartyLabelForTunnelId(tunnelId: string): string {
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   return tunnel ? counterpartyLabel(tunnel) : ".";
 }
 
@@ -8251,6 +8393,46 @@ function saveTerminalCollapsed(value: boolean): void {
     localStorage.setItem(terminalCollapsedKey, value ? "1" : "0");
   } catch {
     // Ignore storage failures; the current in-memory setting still applies.
+  }
+}
+
+function linkifyChatLine(line: string): string {
+  const urlPattern = /\b(?:https?:\/\/|www\.)[^\s<>"']+/giu;
+  let html = "";
+  let lastIndex = 0;
+  for (const match of line.matchAll(urlPattern)) {
+    const start = match.index ?? 0;
+    const raw = match[0] || "";
+    html += escapeHtml(line.slice(lastIndex, start));
+    const [urlText, suffix] = splitTrailingUrlPunctuation(raw);
+    const href = safeChatHref(urlText);
+    if (href) {
+      html += `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlText)}</a>${escapeHtml(suffix)}`;
+    } else {
+      html += escapeHtml(raw);
+    }
+    lastIndex = start + raw.length;
+  }
+  return `${html}${escapeHtml(line.slice(lastIndex))}`;
+}
+
+function splitTrailingUrlPunctuation(value: string): readonly [string, string] {
+  let urlText = value;
+  let suffix = "";
+  while (/[.,!?;:)\]}]$/u.test(urlText)) {
+    suffix = `${urlText.slice(-1)}${suffix}`;
+    urlText = urlText.slice(0, -1);
+  }
+  return [urlText, suffix] as const;
+}
+
+function safeChatHref(value: string): string {
+  const normalized = value.toLowerCase().startsWith("www.") ? `https://${value}` : value;
+  try {
+    const url = new URL(normalized);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
   }
 }
 
