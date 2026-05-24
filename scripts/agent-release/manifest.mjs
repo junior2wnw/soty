@@ -131,7 +131,9 @@ export function buildRouteProfiles(windowsReinstall) {
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
           "start managed prepare once with stable idempotency",
+          "resolve hosted windows-media manifest first when supplied, otherwise use the pinned fallback URL/SHA",
           "download Windows media with the guarded parallel/resumable route on the selected PC",
+          "reuse a valid existing USB install image or prepared reinstall root without forcing the full 12GB media path",
           "prove backup, install media, unattended account, Autounattend, postinstall",
           "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"
@@ -139,12 +141,13 @@ export function buildRouteProfiles(windowsReinstall) {
         doNot: [
           "do not ask the user to manually download ISO when the source computer is attached",
           "do not open Microsoft download pages as the normal route",
+          "do not hard-code a single Windows media URL when a verified hosted media manifest is available",
           "do not replace the managed downloader with ad-hoc browser automation",
           "do not start a second prepare while one is active",
           "do not treat stale orphaned prepare jobs as active blockers",
           "do not answer reinstall failure reports from memory without fresh repair/status proof"
         ],
-        proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "repairProof", "cancelProof", "postArmReturnPath"],
+        proof: ["machineWorker", "scriptSha256", "mediaSpec", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "repairProof", "cancelProof", "postArmReturnPath"],
         scripts: scriptProof,
         learning: {
           reuseKey: "soty-windows-reinstall-managed-fast-lane",

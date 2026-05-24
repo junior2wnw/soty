@@ -11,6 +11,8 @@ import { quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
 import { dedupeMiniApps, isIconName, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition } from "./features/mini-apps";
 import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
+import { commonMessageDialogTarget, createMessageDialogLine, isMessageDialogLine, messageDialogVisibleForTarget, parseMessageDialogLine } from "./features/message-dialogs";
+import type { MessageDialogEntry, MessageDialogTarget } from "./features/message-dialogs";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
 import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
@@ -20,6 +22,8 @@ import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
+import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
+import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import { installTooltips } from "./ui/tooltips";
@@ -89,6 +93,7 @@ if (!root) {
 const app: HTMLDivElement = root;
 installTooltips();
 
+const selfCellLabel = "Я";
 const agentDialogLabel = "Агент";
 const agentReleaseCheckTtlMs = 60_000;
 
@@ -102,6 +107,8 @@ type AgentRelease = {
 let device: DeviceRecord | null = null;
 let tunnels: TunnelRecord[] = [];
 let selectedId = "";
+let firstSurfacePending = true;
+let bareChatMode = requestedBareChatMode();
 let textarea: HTMLTextAreaElement | null = null;
 let composer: HTMLTextAreaElement | null = null;
 let textPaint: HTMLDivElement | null = null;
@@ -129,6 +136,7 @@ const chessStoreKey = "soty:chess:v1";
 const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
+const spaceModeKey = "soty:space-mode:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
@@ -139,6 +147,7 @@ let miniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
 let miniAppSession: MiniAppSession | null = null;
 let miniAppOverlay: HTMLDivElement | null = null;
+let openMessageDialog: OpenMessageDialog | null = null;
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
 const chessAgentTimers = new Map<string, number>();
@@ -180,6 +189,15 @@ type LiveDraftState = LiveDraft & {
   readonly color: string;
 };
 
+type OpenMessageDialog = {
+  readonly chatId: string;
+  readonly sourceId: string;
+  readonly sourceLine: number;
+  readonly sourceText: string;
+  readonly sourceAuthor: string;
+  readonly target: MessageDialogTarget;
+};
+
 const writerLines = new Map<string, Map<number, WriterLine>>();
 const activeActivities = new Map<string, WriterActivity>();
 const activeActivityTicks = new Map<string, number>();
@@ -208,6 +226,7 @@ let operatorBridgeAllowEmpty = false;
 const operatorPending = new Map<string, string>();
 let operatorBridgeEpoch = 0;
 let terminalCollapsed = loadTerminalCollapsed();
+let spaceModes = loadSpaceModes();
 type OperatorRemoteRun = {
   readonly commandId: string;
   readonly tunnelId: string;
@@ -301,6 +320,7 @@ window.addEventListener("online", () => {
 void boot();
 
 async function boot(): Promise<void> {
+  bareChatMode = requestedBareChatMode();
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
@@ -313,7 +333,7 @@ async function boot(): Promise<void> {
     terminalOpenId = "";
     chessOpenId = "";
     rememberAppRuntime();
-    window.history.replaceState({}, "", "/?pwa=1");
+    window.history.replaceState({}, "", bareChatPath());
   }
 
   await registerServiceWorker();
@@ -321,7 +341,7 @@ async function boot(): Promise<void> {
 
   const capturedJoin = captureJoinInviteFromLocation();
   if (capturedJoin) {
-    window.history.replaceState({}, "", "/");
+    window.history.replaceState({}, "", bareChatPath());
   }
   clearPendingInvite();
 
@@ -516,7 +536,7 @@ function applySameDeviceWindowState(reason: string, followSelected: boolean): vo
   if ((followSelected || reason === selectedKey || !currentStillExists) && storedSelected) {
     selectedId = storedSelected;
   }
-  ensurePermanentAgentDialog();
+  ensurePermanentCells();
   normalizeSelectedTunnel();
   const activeIds = new Set(tunnels.map((tunnel) => tunnel.id));
   for (const [id, sync] of syncs) {
@@ -561,6 +581,15 @@ function shouldResetLocalState(): boolean {
   return url.searchParams.get("reset-local") === "1"
     || url.searchParams.get("soty-reset") === "1"
     || url.searchParams.get("repair") === "reset";
+}
+
+function requestedBareChatMode(): boolean {
+  const url = new URL(window.location.href);
+  return url.searchParams.get("bare") === "1" || url.searchParams.get("view") === "chat";
+}
+
+function bareChatPath(): string {
+  return bareChatMode ? "/?pwa=1&bare=1" : "/?pwa=1";
 }
 
 function renderNick(): void {
@@ -749,6 +778,7 @@ function normalizeImportedTunnel(raw: unknown, now: string): TunnelRecord | null
     counterparty,
     archived: raw.archived === true,
     ...(raw.agent === true ? { agent: true } : {}),
+    ...(raw.self === true ? { self: true } : {}),
     score,
     lastActionAt: recordString(raw, "lastActionAt") || now,
     createdAt: recordString(raw, "createdAt") || now,
@@ -923,6 +953,42 @@ function rememberCurrentChatScroll(): void {
   if (scroll && selectedId) {
     saveChatScroll(selectedId, scroll.scrollTop);
   }
+}
+
+function loadSpaceModes(): Map<string, SpaceMode> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(spaceModeKey) || "{}");
+    if (!isRecord(parsed)) {
+      return new Map();
+    }
+    return new Map(Object.entries(parsed).map(([id, mode]) => [id, normalizeSpaceMode(String(mode || ""))]));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveSpaceModes(): void {
+  try {
+    localStorage.setItem(spaceModeKey, JSON.stringify(Object.fromEntries(spaceModes)));
+  } catch {
+    // Space mode is local UI memory.
+  }
+}
+
+function selectedSpaceMode(): SpaceMode {
+  return normalizeSpaceMode(spaceModes.get(selectedId) || "dialog");
+}
+
+function setSelectedSpaceMode(mode: SpaceMode): void {
+  if (!selectedId) {
+    return;
+  }
+  spaceModes.set(selectedId, mode);
+  saveSpaceModes();
+  renderSpace();
+  updateComposerSpaceMode();
+  renderTextPaint();
+  restoreSelectedChatScroll();
 }
 
 function restoreSelectedChatScroll(): void {
@@ -1428,10 +1494,10 @@ function renderMiniAppPanel(): void {
   }
   if (status) {
     status.textContent = session.layout === "full"
-      ? "FULL"
+      ? "на весь экран"
       : session.layout === "floating"
-        ? "FLOAT"
-        : (selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO CHAT");
+        ? "окно"
+        : "сота";
   }
   if (collapseButton) {
     collapseButton.innerHTML = icon(session.collapsed ? "expand" : "collapse");
@@ -1815,7 +1881,7 @@ function recordString(value: unknown, key: string): string {
 
 function continueWithoutPending(): void {
   clearPendingJoin();
-  window.history.replaceState({}, "", "/?pwa=1");
+  window.history.replaceState({}, "", bareChatPath());
   tunnels = loadTunnels();
   if (device && tunnels.length === 0) {
     tunnels = upsertTunnel(createTunnel());
@@ -1964,7 +2030,7 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
             selectedId = tunnel.id;
             saveSelectedTunnelId(selectedId);
             clearPendingJoin();
-            window.history.replaceState({}, "", "/?pwa=1");
+            window.history.replaceState({}, "", bareChatPath());
             ws.close();
             renderApp();
             applySelectedText(true);
@@ -2017,24 +2083,25 @@ function renderApp(): void {
     tunnels = upsertTunnel(createTunnel());
     selectedId = tunnels[0]?.id || "";
   }
-  ensurePermanentAgentDialog();
+  ensurePermanentCells();
+  selectFirstSurface();
   normalizeSelectedTunnel();
   for (const tunnel of tunnels) {
     ensureSync(tunnel);
   }
 
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
-  const localDeviceNick = cleanNick(device.nick) || "SOTY";
   app.innerHTML = `
-    <section class="shell retro-shell">
+    <section class="shell retro-shell${bareChatMode ? " bare-chat-shell" : ""}">
       <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}">
         <div class="retro-brand">
           <span class="retro-brand-mark">S</span>
           <span>
-            <b>${escapeHtml(localDeviceNick)}</b>
+            <b>Соты</b>
+            <small>мое место</small>
           </span>
         </div>
-        <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
+        <button class="qr-open retro-icon-button" type="button" aria-label="подключить" data-tooltip="Подключить человека или устройство">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
       <main class="dialog-shell">
@@ -2047,9 +2114,10 @@ function renderApp(): void {
           <span class="dialog-live" aria-live="polite">
             <span class="writer-pop"></span>
           </span>
-          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
-          <button class="dialog-id" type="button" aria-label="copy dialog id" data-tooltip="Скопировать номер диалога">0000</button>
+          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
+          <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">ссылка</button>
         </header>
+        <section class="space-rail" aria-label="пространство соты"></section>
         <section class="editor retro-screen">
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
@@ -2059,16 +2127,16 @@ function renderApp(): void {
           <textarea class="dialog-buffer" spellcheck="false" autocapitalize="sentences" aria-hidden="true" tabindex="-1"></textarea>
           <form class="composer-bar">
             <div class="composer-attachments" hidden></div>
-            <button class="composer-attach retro-icon-button" type="button" aria-label="attach" data-tooltip="Прикрепить файл">${icon("clip")}</button>
-            <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
+            <button class="composer-attach retro-icon-button" type="button" aria-label="прикрепить" data-tooltip="Прикрепить файл">${icon("clip")}</button>
+            <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="сообщение"></textarea>
             <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
           </form>
         <div class="terminal-panel mini-app-panel" data-mini-app="commands" data-tooltip="Окно удаленных команд" data-tooltip-side="top">
           <div class="terminal-head">
             <span class="terminal-led"></span>
             <span class="terminal-peer"></span>
-            <span class="terminal-title">COMMANDS</span>
-            <span class="terminal-status">READY</span>
+            <span class="terminal-title">Инструменты</span>
+            <span class="terminal-status">готово</span>
             <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
           </div>
           <div class="agent-action-strip" hidden>
@@ -2085,7 +2153,7 @@ function renderApp(): void {
           <div class="chess-head">
             <span class="chess-led"></span>
             <b class="chess-title">CHESS</b>
-            <small class="chess-status">READY</small>
+            <small class="chess-status">готово</small>
             <button class="chess-coach" type="button" data-tooltip="Гений">${icon("person")}<span>ГЕНИЙ</span></button>
             <button class="chess-flip" type="button" aria-label="flip" data-tooltip="Развернуть доску">${icon("refresh")}</button>
             <button class="chess-new" type="button" aria-label="new chess game" data-tooltip="Новая партия">${icon("check")}</button>
@@ -2105,7 +2173,7 @@ function renderApp(): void {
           <div class="mini-frame-head">
             <span class="mini-frame-led"></span>
             <b class="mini-frame-title">APP</b>
-            <small class="mini-frame-status">READY</small>
+            <small class="mini-frame-status">готово</small>
             <button class="mini-frame-collapse" type="button" aria-label="collapse mini app" data-tooltip="Свернуть мини-апп">${icon("collapse")}</button>
           </div>
           <iframe class="mini-frame" title="Soty mini app" loading="lazy" referrerpolicy="no-referrer"></iframe>
@@ -2135,7 +2203,7 @@ function renderApp(): void {
     startFreshDialog();
   });
   app.querySelector<HTMLButtonElement>(".dialog-id")?.addEventListener("click", () => {
-    void copySelectedDialogCode();
+    void copySelectedDialogLink();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -2244,7 +2312,7 @@ function renderTiles(): void {
       renderChess();
       renderMiniAppPanel();
       const tunnel = loadTunnels().find((item) => item.id === id);
-      const canClose = !tunnel || !isAgentTunnel(tunnel);
+      const canClose = !tunnel || !isPermanentCell(tunnel);
       const availableMiniApps = currentMiniApps();
       openCounterpartyMenu(x, y, {
         attach: () => {
@@ -2380,7 +2448,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   agentSourceGrantRefreshAt = Date.now() + agentSourceGrantRefreshMs;
   terminalOpenId = agentTunnelId;
   setTerminalState(agentTunnelId, "idle");
-  appendTerminalLine(agentTunnelId, "+ agent console");
+  appendTerminalLine(agentTunnelId, "+ инструменты");
   renderTerminal();
   renderTiles();
   startAgentSourceControl(agentTunnelId);
@@ -2662,12 +2730,26 @@ function sortedVisibleTunnels(): TunnelRecord[] {
   return loadTunnels()
     .filter((tunnel) => !tunnel.archived && hasCounterparty(tunnel))
     .sort((a, b) => {
+      const rank = permanentCellRank(b) - permanentCellRank(a);
+      if (rank !== 0) {
+        return rank;
+      }
       const score = (b.score ?? 0) - (a.score ?? 0);
       if (score !== 0) {
         return score;
       }
       return Date.parse(b.lastActionAt || b.updatedAt) - Date.parse(a.lastActionAt || a.updatedAt);
     });
+}
+
+function permanentCellRank(tunnel: TunnelRecord): number {
+  if (isSelfTunnel(tunnel)) {
+    return 2;
+  }
+  if (isAgentTunnel(tunnel)) {
+    return 1;
+  }
+  return 0;
 }
 
 function normalizeSelectedTunnel(): void {
@@ -2690,8 +2772,22 @@ function normalizeSelectedTunnel(): void {
   }
 }
 
+function selectFirstSurface(): void {
+  if (!firstSurfacePending) {
+    return;
+  }
+  firstSurfacePending = false;
+  const self = loadTunnels().find((tunnel) => !tunnel.archived && isSelfTunnel(tunnel));
+  if (!self) {
+    return;
+  }
+  selectedId = self.id;
+  saveSelectedTunnelId(self.id);
+}
+
 function selectTunnel(id: string): void {
   rememberCurrentChatScroll();
+  openMessageDialog = null;
   selectedId = id;
   saveSelectedTunnelId(id);
   publishMiniAppContext();
@@ -2706,11 +2802,21 @@ function shouldAutoSelectTunnel(id: string): boolean {
 }
 
 function hasCounterparty(tunnel: TunnelRecord): boolean {
+  if (isPermanentCell(tunnel)) {
+    return true;
+  }
   const label = cleanNick(peers.get(tunnel.id) || tunnel.label || "");
   return Boolean(tunnel.counterparty || peers.has(tunnel.id) || (label !== "." && label !== device?.nick));
 }
 
+function isOwnSpace(tunnel: TunnelRecord | null | undefined): boolean {
+  return Boolean(tunnel && isSelfTunnel(tunnel));
+}
+
 function counterpartyLabel(tunnel: TunnelRecord): string {
+  if (isSelfTunnel(tunnel)) {
+    return selfCellLabel;
+  }
   const label = rawCounterpartyLabel(tunnel);
   if (tunnel.agent === true) {
     return agentDialogLabel;
@@ -2718,97 +2824,201 @@ function counterpartyLabel(tunnel: TunnelRecord): string {
   return label;
 }
 
-function ensurePermanentAgentDialog(): void {
-  const current = loadTunnels();
-  const now = new Date().toISOString();
-  const agentTunnels = current.filter((tunnel) => isAgentTunnel(tunnel));
-  let changed = false;
-  if (agentTunnels.length === 0) {
-    const agent = {
-      ...createTunnel(agentDialogLabel, true),
-      agent: true,
-      color: colorFor(`agent:${device?.id || now}`),
-      score: -1
-    };
-    const next = [agent, ...current];
-    saveTunnels(next);
-    tunnels = next;
-    if (!selectedId || !next.some((tunnel) => tunnel.id === selectedId)) {
-      selectedId = agent.id;
-      saveSelectedTunnelId(agent.id);
-    }
-    return;
+type PermanentCellKind = "self" | "agent";
+
+type CellRecordOptions = {
+  readonly label?: string;
+  readonly counterparty?: boolean;
+  readonly agent?: boolean;
+  readonly self?: boolean;
+  readonly score?: number;
+  readonly color?: string;
+  readonly colorSeed?: string;
+};
+
+type PermanentCellSpec = {
+  readonly kind: PermanentCellKind;
+  readonly label: string;
+  readonly score: number;
+  readonly colorSeed: string;
+  readonly match: (tunnel: TunnelRecord) => boolean;
+};
+
+function createCellRecord(options: CellRecordOptions = {}): TunnelRecord {
+  const label = cleanNick(options.label || "");
+  const counterparty = options.counterparty ?? Boolean(label);
+  const cell = createTunnel(label, counterparty);
+  const colorSeed = options.colorSeed || `${label || "cell"}:${cell.createdAt}`;
+  return {
+    ...cell,
+    label,
+    counterparty,
+    ...(options.agent === true ? { agent: true } : {}),
+    ...(options.self === true ? { self: true } : {}),
+    score: typeof options.score === "number" ? options.score : (cell.score ?? 0),
+    color: options.color || colorFor(colorSeed)
+  };
+}
+
+function addCell(
+  options: CellRecordOptions = {},
+  behavior: { readonly archiveSelected?: boolean; readonly select?: boolean } = {}
+): TunnelRecord | null {
+  if (!device) {
+    return null;
   }
-  const canonical = chooseCanonicalAgentDialog(agentTunnels);
-  const duplicateAgentIds = agentTunnels
-    .filter((tunnel) => tunnel.id !== canonical.id)
-    .map((tunnel) => tunnel.id);
-  const enabledAgentIds = agentTunnels.filter((tunnel) => remoteEnabled.has(tunnel.id)).map((tunnel) => tunnel.id);
-  if (enabledAgentIds.some((id) => id !== canonical.id)) {
-    remoteEnabled = setRemoteEnabled(canonical.id, true);
-    for (const id of enabledAgentIds) {
-      if (id !== canonical.id) {
-        remoteEnabled = setRemoteEnabled(id, false);
+  const current = loadTunnels();
+  const active = current.find((tunnel) => tunnel.id === selectedId);
+  const archiveSelected = behavior.archiveSelected === true;
+  const now = new Date().toISOString();
+  const fresh = createCellRecord(options);
+  const next = [
+    fresh,
+    ...current.map((tunnel) => tunnel.id === selectedId && archiveSelected
+      ? { ...tunnel, archived: true, unread: false, updatedAt: now, lastActionAt: now }
+      : tunnel)
+  ];
+  saveTunnels(next);
+  tunnels = next;
+  if (behavior.select !== false) {
+    selectedId = fresh.id;
+    saveSelectedTunnelId(fresh.id);
+  }
+  localDrafts.delete(active?.id || "");
+  texts.set(fresh.id, "");
+  saveTextSnapshotNow(fresh.id, "");
+  ensureSync(fresh);
+  return fresh;
+}
+
+function permanentCellSpecs(now = new Date().toISOString()): readonly PermanentCellSpec[] {
+  return [
+    {
+      kind: "self",
+      label: selfCellLabel,
+      score: 2_000_000,
+      colorSeed: `self:${device?.id || now}`,
+      match: isSelfTunnel
+    },
+    {
+      kind: "agent",
+      label: agentDialogLabel,
+      score: 1_900_000,
+      colorSeed: `agent:${device?.id || now}`,
+      match: isAgentTunnel
+    }
+  ];
+}
+
+function ensurePermanentCells(): void {
+  let current = loadTunnels();
+  const now = new Date().toISOString();
+  let changed = false;
+  const duplicateIds: string[] = [];
+
+  for (const spec of permanentCellSpecs(now)) {
+    const matches = current.filter(spec.match);
+    if (matches.length === 0) {
+      const cell = createCellRecord({
+        label: spec.label,
+        counterparty: true,
+        self: spec.kind === "self",
+        agent: spec.kind === "agent",
+        score: spec.score,
+        colorSeed: spec.colorSeed
+      });
+      current = [cell, ...current];
+      changed = true;
+      if (!selectedId || !current.some((tunnel) => tunnel.id === selectedId && !tunnel.archived)) {
+        selectedId = cell.id;
+        saveSelectedTunnelId(cell.id);
+      }
+      continue;
+    }
+
+    const canonical = chooseCanonicalPermanentCell(matches);
+    const duplicateMatches = matches.filter((tunnel) => tunnel.id !== canonical.id);
+    duplicateIds.push(...duplicateMatches.map((tunnel) => tunnel.id));
+    const enabledIds = matches.filter((tunnel) => remoteEnabled.has(tunnel.id)).map((tunnel) => tunnel.id);
+    if (enabledIds.some((id) => id !== canonical.id)) {
+      remoteEnabled = setRemoteEnabled(canonical.id, true);
+      for (const id of enabledIds) {
+        if (id !== canonical.id) {
+          remoteEnabled = setRemoteEnabled(id, false);
+        }
       }
     }
+
+    current = current.map((tunnel) => {
+      if (!spec.match(tunnel)) {
+        return tunnel;
+      }
+      if (tunnel.id !== canonical.id) {
+        changed = true;
+        return null;
+      }
+      const normalized = normalizePermanentCell(tunnel, spec, now);
+      if (!samePermanentCell(tunnel, normalized)) {
+        changed = true;
+      }
+      return normalized;
+    }).filter((tunnel): tunnel is TunnelRecord => tunnel !== null);
   }
-  const next = current.map((tunnel) => {
-    if (!isAgentTunnel(tunnel)) {
-      return tunnel;
-    }
-    const keepVisible = tunnel.id === canonical.id;
-    if (!keepVisible) {
-      changed = true;
-      return null;
-    }
-    const normalized = {
-      ...tunnel,
-      agent: true,
-      label: agentDialogLabel,
-      counterparty: true,
-      archived: false,
-      unread: tunnel.unread,
-      color: tunnel.color || colorFor(`agent:${device?.id || tunnel.id}`),
-      updatedAt: tunnel.updatedAt || now,
-      lastActionAt: tunnel.lastActionAt || tunnel.updatedAt || now
-    };
-    if (
-      normalized.agent === tunnel.agent
-      && normalized.label === tunnel.label
-      && normalized.counterparty === tunnel.counterparty
-      && normalized.archived === tunnel.archived
-      && normalized.unread === tunnel.unread
-      && normalized.color === tunnel.color
-      && normalized.updatedAt === tunnel.updatedAt
-      && normalized.lastActionAt === tunnel.lastActionAt
-    ) {
-      return tunnel;
-    }
-    changed = true;
-    return normalized;
-  }).filter((tunnel): tunnel is TunnelRecord => tunnel !== null);
+
   if (!changed) {
     tunnels = current;
   } else {
-    saveTunnels(next);
-    tunnels = next;
-    forgetDuplicateAgentDialogs(duplicateAgentIds);
+    saveTunnels(current);
+    tunnels = current;
+    forgetDuplicateCells(duplicateIds);
   }
-  if (!selectedId || !next.some((tunnel) => tunnel.id === selectedId && !tunnel.archived)) {
-    selectedId = canonical.id;
-    if (selectedId) {
-      saveSelectedTunnelId(selectedId);
-    }
+  if (!selectedId || !current.some((tunnel) => tunnel.id === selectedId && !tunnel.archived)) {
+    selectedId = current.find(isSelfTunnel)?.id || current.find(isAgentTunnel)?.id || current.find((tunnel) => !tunnel.archived)?.id || "";
+  }
+  if (selectedId) {
+    saveSelectedTunnelId(selectedId);
   }
 }
 
-function chooseCanonicalAgentDialog(agentTunnels: readonly TunnelRecord[]): TunnelRecord {
-  const selected = agentTunnels.find((tunnel) => tunnel.id === selectedId);
-  return mostRecentTunnel(agentTunnels.filter((tunnel) => remoteEnabled.has(tunnel.id)))
+function normalizePermanentCell(tunnel: TunnelRecord, spec: PermanentCellSpec, now: string): TunnelRecord {
+  const base: TunnelRecord & { agent?: boolean; self?: boolean } = { ...tunnel };
+  delete base.agent;
+  delete base.self;
+  return {
+    ...base,
+    ...(spec.kind === "agent" ? { agent: true } : {}),
+    ...(spec.kind === "self" ? { self: true } : {}),
+    label: spec.label,
+    counterparty: true,
+    archived: false,
+    unread: tunnel.unread,
+    score: Math.max(tunnel.score ?? 0, spec.score),
+    color: tunnel.color || colorFor(spec.colorSeed),
+    updatedAt: tunnel.updatedAt || now,
+    lastActionAt: tunnel.lastActionAt || tunnel.updatedAt || now
+  };
+}
+
+function samePermanentCell(a: TunnelRecord, b: TunnelRecord): boolean {
+  return a.agent === b.agent
+    && a.self === b.self
+    && a.label === b.label
+    && a.counterparty === b.counterparty
+    && a.archived === b.archived
+    && a.unread === b.unread
+    && a.score === b.score
+    && a.color === b.color
+    && a.updatedAt === b.updatedAt
+    && a.lastActionAt === b.lastActionAt;
+}
+
+function chooseCanonicalPermanentCell(items: readonly TunnelRecord[]): TunnelRecord {
+  const selected = items.find((tunnel) => tunnel.id === selectedId);
+  return mostRecentTunnel(items.filter((tunnel) => remoteEnabled.has(tunnel.id)))
     || selected
-    || mostRecentTunnel(agentTunnels.filter((tunnel) => !tunnel.archived))
-    || mostRecentTunnel(agentTunnels)
-    || agentTunnels[0]!;
+    || mostRecentTunnel(items.filter((tunnel) => !tunnel.archived))
+    || mostRecentTunnel(items)
+    || items[0]!;
 }
 
 function mostRecentTunnel(items: readonly TunnelRecord[]): TunnelRecord | null {
@@ -2825,7 +3035,7 @@ function tunnelTime(tunnel: TunnelRecord): number {
   return Date.parse(tunnel.lastActionAt || tunnel.updatedAt || tunnel.createdAt) || 0;
 }
 
-function forgetDuplicateAgentDialogs(ids: readonly string[]): void {
+function forgetDuplicateCells(ids: readonly string[]): void {
   if (ids.length === 0) {
     return;
   }
@@ -2895,6 +3105,7 @@ function removeTextSnapshots(ids: readonly string[]): void {
 }
 
 function startFreshDialog(): void {
+  openMessageDialog = null;
   const active = loadTunnels().find((tunnel) => tunnel.id === selectedId);
   if (active && !isAgentTunnel(active) && hasCounterparty(active)) {
     clearCurrentDialog(active.id);
@@ -2913,6 +3124,9 @@ function startFreshDialog(): void {
 }
 
 function clearCurrentDialog(tunnelId: string): void {
+  if (openMessageDialog?.chatId === tunnelId) {
+    openMessageDialog = null;
+  }
   let sync = syncs.get(tunnelId);
   if (!sync) {
     const tunnel = loadTunnels().find((item) => item.id === tunnelId);
@@ -2962,6 +3176,14 @@ function isAgentTunnel(tunnel: TunnelRecord): boolean {
   return tunnel.agent === true;
 }
 
+function isSelfTunnel(tunnel: TunnelRecord): boolean {
+  return tunnel.self === true;
+}
+
+function isPermanentCell(tunnel: TunnelRecord): boolean {
+  return isSelfTunnel(tunnel) || isAgentTunnel(tunnel);
+}
+
 function createFreshDialog(
   labelOverride = "",
   options: { readonly agent?: boolean; readonly archiveCurrent?: boolean } = {}
@@ -2978,26 +3200,16 @@ function createFreshDialog(
   const now = new Date().toISOString();
   const isAgent = options.agent === true || (!requestedLabel && active?.agent === true);
   const archiveCurrent = options.archiveCurrent !== false;
-  const fresh = {
-    ...createTunnel(label, true),
-    ...(isAgent ? { agent: true } : {}),
+  return addCell({
+    label,
+    counterparty: true,
+    agent: isAgent,
+    score: isAgent ? 1_900_000 : 0,
     color: (archiveCurrent ? active?.color : "") || colorFor(`${label}:${now}`)
-  };
-  const next = [
-    fresh,
-    ...current.map((tunnel) => tunnel.id === selectedId
-      ? { ...tunnel, archived: archiveCurrent, unread: false, updatedAt: now, lastActionAt: now }
-      : tunnel)
-  ];
-  saveTunnels(next);
-  selectedId = fresh.id;
-  saveSelectedTunnelId(fresh.id);
-  tunnels = next;
-  localDrafts.delete(active?.id || "");
-  texts.set(fresh.id, "");
-  saveTextSnapshotNow(fresh.id, "");
-  ensureSync(fresh);
-  return fresh;
+  }, {
+    archiveSelected: archiveCurrent,
+    select: true
+  });
 }
 
 function rawCounterpartyLabel(tunnel: TunnelRecord): string {
@@ -3073,36 +3285,36 @@ function renderDialogChrome(): void {
     name.textContent = label;
   }
   if (state) {
-    let remote = "LIVE TEXT";
-    if (mode === "download") {
-      remote = "AGENT SETUP";
-    } else if (mode === "update") {
-      remote = "AGENT UPDATE";
+    let remote = tunnel && isSelfTunnel(tunnel) ? "мое место" : "на связи";
+    if (agentTunnel && mode === "download") {
+      remote = "подключить Алика";
+    } else if (agentTunnel && mode === "update") {
+      remote = "обновить Алика";
     } else if (agentTunnel) {
-      remote = remoteEnabled.has(selectedId) ? "READY" : "AGENT";
+      remote = remoteEnabled.has(selectedId) ? "Алик рядом" : "Алик";
     } else if (remoteAccess.has(selectedId)) {
-      remote = "REMOTE READY";
+      remote = "доступ открыт";
     } else if (remoteEnabled.has(selectedId)) {
-      remote = "HOST READY";
+      remote = "можно подключиться";
     }
     const syncState = selectedId ? syncStates.get(selectedId) : "";
-    const syncSuffix = syncState === "connecting" ? " / SYNCING" : syncState === "closed" ? " / OFFLINE" : "";
+    const syncSuffix = syncState === "connecting" ? " · соединяем" : syncState === "closed" ? " · не в сети" : "";
     state.textContent = `${remote}${syncSuffix}`;
   }
   if (id) {
     const code = selectedDialogCode();
-    id.textContent = code || "NO CHAT";
+    id.textContent = code ? "ссылка" : "";
     id.disabled = !code;
-    id.setAttribute("aria-label", code ? `copy dialog ${code}` : "no dialog selected");
+    id.setAttribute("aria-label", code ? "скопировать ссылку чата" : "сота не выбрана");
     if (id.dataset.copied !== "1") {
-      id.dataset.tooltip = code ? "Скопировать номер диалога" : "Диалог не выбран";
+      id.dataset.tooltip = code ? `Скопировать ссылку · ${code}` : "Сота не выбрана";
     }
   }
   if (sendButton) {
-    const stopping = agentThinking.has(selectedId);
+    const stopping = selectedSpaceMode() === "dialog" && agentThinking.has(selectedId);
     sendButton.classList.toggle("is-stop", stopping);
-    sendButton.setAttribute("aria-label", stopping ? "stop" : "send");
-    sendButton.dataset.tooltip = stopping ? "Stop agent" : "Send message";
+    sendButton.setAttribute("aria-label", stopping ? "остановить" : "отправить");
+    sendButton.dataset.tooltip = stopping ? "Остановить" : "Отправить";
     sendButton.innerHTML = icon(stopping ? "stop" : "send");
   }
   if (remoteButton) {
@@ -3113,8 +3325,8 @@ function renderDialogChrome(): void {
     remoteButton.classList.toggle("needs-agent", needsAgent);
     if (needsAgent) {
       remoteButton.setAttribute("aria-label", mode === "update" ? "update" : "download");
-      remoteButton.innerHTML = `${icon("download")}<span>${mode === "update" ? "UPDATE" : "DOWNLOAD"}</span>`;
-      remoteButton.dataset.tooltip = mode === "update" ? "Download current Soty Agent" : "Download Soty Agent";
+      remoteButton.innerHTML = `${icon("download")}<span>${mode === "update" ? "Обновить" : "Подключить"}</span>`;
+      remoteButton.dataset.tooltip = mode === "update" ? "Обновить Алика" : "Подключить Алика";
     }
   }
   if (appsButton) {
@@ -3122,6 +3334,68 @@ function renderDialogChrome(): void {
     appsButton.classList.toggle("is-on", Boolean(miniAppSession));
   }
   publishMiniAppContext();
+  renderSpace();
+  updateComposerSpaceMode();
+}
+
+function renderSpace(): void {
+  const rail = app.querySelector<HTMLDivElement>(".space-rail");
+  if (!rail) {
+    return;
+  }
+  const model = selectedSpaceModel();
+  if (!model) {
+    rail.innerHTML = "";
+    return;
+  }
+  rail.innerHTML = renderSpaceRail(model);
+  rail.querySelectorAll<HTMLButtonElement>("[data-space-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSelectedSpaceMode(normalizeSpaceMode(button.dataset.spaceMode || "dialog"));
+    });
+  });
+}
+
+function selectedSpaceModel(): SpaceModel | null {
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  if (!tunnel) {
+    return null;
+  }
+  const label = counterpartyLabel(tunnel);
+  const color = safeColor(tunnel.color, label + tunnel.id);
+  return {
+    id: tunnel.id,
+    color,
+    mode: selectedSpaceMode()
+  };
+}
+
+function updateComposerSpaceMode(): void {
+  if (!composer) {
+    return;
+  }
+  const mode = selectedSpaceMode();
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const access = composerAccessFor(tunnel, mode);
+  composer.placeholder = access.placeholder;
+  composer.disabled = !access.canCompose;
+  const bar = app.querySelector<HTMLFormElement>(".composer-bar");
+  if (bar) {
+    bar.hidden = !access.canCompose;
+    bar.dataset.spaceMode = mode;
+    bar.classList.toggle("is-wall-mode", mode === "wall");
+    bar.classList.toggle("is-reputation-mode", mode === "reputation");
+    bar.classList.toggle("is-readonly-space", !access.canCompose);
+  }
+  app.querySelector<HTMLButtonElement>(".composer-attach")?.toggleAttribute("disabled", !access.canCompose);
+  app.querySelector<HTMLButtonElement>(".send-button")?.toggleAttribute("disabled", !access.canCompose);
+}
+
+function composerAccessFor(tunnel: TunnelRecord | null | undefined, mode = selectedSpaceMode()): SpaceComposerAccess {
+  if (!tunnel) {
+    return { canCompose: false, entryKind: null, placeholder: "" };
+  }
+  return spaceComposerAccess(mode, counterpartyLabel(tunnel), isOwnSpace(tunnel));
 }
 
 function ensureSync(tunnel: TunnelRecord): void {
@@ -3376,7 +3650,7 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
 
 function closeTunnel(id: string): void {
   const tunnel = loadTunnels().find((item) => item.id === id);
-  if (tunnel && isAgentTunnel(tunnel)) {
+  if (tunnel && isPermanentCell(tunnel)) {
     selectTunnel(id);
     renderTiles();
     return;
@@ -3474,10 +3748,14 @@ function stageFiles(list?: FileList | null): void {
     return;
   }
   const tunnelId = selectedId;
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  if (!composerAccessFor(tunnel).canCompose) {
+    return;
+  }
   const accepted = filesFrom(list);
   const oversized = oversizedFilesFrom(list);
   const current = pendingAttachments.get(tunnelId) ?? [];
-  const limit = isAgentTunnelId(tunnelId) ? agentAttachmentLimit : Number.POSITIVE_INFINITY;
+  const limit = attachmentLimitForComposer(tunnelId);
   const openSlots = Math.max(0, limit - current.length);
   const nextFiles = accepted.slice(0, openSlots).map(pendingAttachmentFromFile);
   const rejectedByCount = accepted.length - nextFiles.length;
@@ -3487,7 +3765,7 @@ function stageFiles(list?: FileList | null): void {
   if (oversized.length > 0 || rejectedByCount > 0) {
     const parts = [
       oversized.length > 0 ? `File is too large: current browser transfer limit is ${formatFileSize(maxFileBytes)}` : "",
-      rejectedByCount > 0 ? `Agent messages accept up to ${agentAttachmentLimit} files at once` : ""
+      rejectedByCount > 0 ? `Диалог с агентом принимает до ${agentAttachmentLimit} файлов за раз` : ""
     ].filter(Boolean);
     setFileNotice(tunnelId, parts.join(". "));
   }
@@ -3509,7 +3787,7 @@ async function sendPendingAttachments(tunnelId: string, sync: TunnelSync): Promi
   if (pending.length === 0) {
     return [];
   }
-  const limit = isAgentTunnelId(tunnelId) ? agentAttachmentLimit : Number.POSITIVE_INFINITY;
+  const limit = attachmentLimitForComposer(tunnelId);
   const sending = pending.slice(0, limit);
   const remaining = pending.slice(sending.length);
   const sent: ReceivedFile[] = [];
@@ -3532,6 +3810,12 @@ async function sendPendingAttachments(tunnelId: string, sync: TunnelSync): Promi
     setFileNotice(tunnelId, "Some files did not send. Keep the chat open and try again.");
   }
   return sent;
+}
+
+function attachmentLimitForComposer(tunnelId: string): number {
+  return selectedSpaceMode() === "dialog" && isAgentTunnelId(tunnelId)
+    ? agentAttachmentLimit
+    : Number.POSITIVE_INFINITY;
 }
 
 function renderComposerAttachments(): void {
@@ -4780,10 +5064,10 @@ function renderTerminal(): void {
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   peer.textContent = tunnel ? initials(counterpartyLabel(tunnel)) : ".";
   if (title) {
-    title.textContent = tunnel && isAgentTunnel(tunnel) ? "AGENT CONSOLE" : "REMOTE CONSOLE";
+    title.textContent = "Инструменты";
   }
   if (status) {
-    status.textContent = controller ? "CONTROL" : host ? "HOST" : state.toUpperCase();
+    status.textContent = controller ? "доступ" : host ? "открыто" : terminalStateLabel(state);
   }
   if (collapseButton) {
     collapseButton.innerHTML = icon(terminalCollapsed ? "expand" : "collapse");
@@ -4857,7 +5141,11 @@ function bindAgentActionGridScroll(scroller: HTMLDivElement): void {
 }
 
 function activeTerminalTunnelId(): string {
-  if (terminalOpenId && (remoteAccess.has(terminalOpenId) || remoteEnabled.has(terminalOpenId) || terminalLogs.has(terminalOpenId))) {
+  if (
+    terminalOpenId
+    && terminalOpenId === selectedId
+    && (remoteAccess.has(terminalOpenId) || remoteEnabled.has(terminalOpenId) || terminalLogs.has(terminalOpenId))
+  ) {
     return terminalOpenId;
   }
   if (selectedId && isAgentTunnelId(selectedId)) {
@@ -4869,6 +5157,19 @@ function activeTerminalTunnelId(): string {
     return selectedId;
   }
   return "";
+}
+
+function terminalStateLabel(state: "idle" | "run" | "ok" | "bad" | "off"): string {
+  if (state === "run") {
+    return "работает";
+  }
+  if (state === "bad") {
+    return "ошибка";
+  }
+  if (state === "off") {
+    return "не в сети";
+  }
+  return "готово";
 }
 
 function isAgentLinkedTunnel(tunnelId: string): boolean {
@@ -5057,7 +5358,7 @@ function renderChess(): void {
     title.textContent = snapshot.mode === "agent" ? "CHESS / ГЕНИЙ" : "CHESS";
   }
   if (status) {
-    status.textContent = snapshot.result ? "DONE" : game.isCheck() ? "CHECK" : `${game.moveNumber()}`;
+    status.textContent = snapshot.result ? "готово" : game.isCheck() ? "шах" : `${game.moveNumber()}`;
   }
   coach.hidden = snapshot.mode !== "agent";
   coach.classList.toggle("is-on", snapshot.coach === geniusCoach);
@@ -5447,7 +5748,6 @@ function resumeAgentSourceControl(): void {
   if (!agentTunnel) {
     return;
   }
-  terminalOpenId = terminalOpenId || agentTunnel.id;
   setTerminalState(agentTunnel.id, "idle");
   void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
   startAgentSourceControl(agentTunnel.id);
@@ -5950,6 +6250,10 @@ function rememberComposerDraft(): void {
   if (!selectedId || !composer) {
     return;
   }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  if (!composerAccessFor(tunnel).canCompose) {
+    return;
+  }
   // Drafts stay local; Enter or the send button is the only publish path.
   const draft = composer.value;
   if (draft) {
@@ -5982,19 +6286,11 @@ async function finalizeComposerDraft(): Promise<void> {
   if (!tunnelId || !composer || !textarea) {
     return;
   }
-  const sync = syncs.get(tunnelId);
-  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  if (!sync) {
-    return;
-  }
-  if (agentThinking.has(tunnelId)) {
-    stopAgentDialogReply(tunnelId);
-    return;
-  }
   primeAgentDoneSound();
   const draft = composer.value || localDrafts.get(tunnelId) || "";
   const message = normalizeChatMessage(draft);
   const pendingCount = pendingAttachments.get(tunnelId)?.length ?? 0;
+  const spaceMode = selectedSpaceMode();
   if (!message && pendingCount === 0) {
     if (draft) {
       composer.value = "";
@@ -6002,15 +6298,35 @@ async function finalizeComposerDraft(): Promise<void> {
     }
     return;
   }
+  const sync = syncs.get(tunnelId);
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  if (!sync) {
+    return;
+  }
+  const access = composerAccessFor(tunnel, spaceMode);
+  if (!access.canCompose) {
+    renderDialogChrome();
+    return;
+  }
+  if (spaceMode === "dialog" && agentThinking.has(tunnelId)) {
+    stopAgentDialogReply(tunnelId);
+    return;
+  }
   const sentFiles = await sendPendingAttachments(tunnelId, sync);
   if (!message && sentFiles.length === 0) {
     renderComposerAttachments();
     return;
   }
+  const author = cleanNick(device?.nick || "") || "Я";
+  const markerText = message || (sentFiles.length > 0 ? "Медиа" : "");
+  const entryKind = access.entryKind;
+  const visibleText = entryKind && markerText
+    ? makeSpaceEntryLine(entryKind, { author, authorId: device?.id || "", text: markerText })
+    : message;
   const current = texts.get(tunnelId) ?? textarea.value;
   const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
   const bundleLine = sentFiles.length > 0 ? fileBundleLine(sentFiles) : "";
-  const visibleMessage = [message, bundleLine].filter(Boolean).join("\n");
+  const visibleMessage = [visibleText, bundleLine].filter(Boolean).join("\n");
   const next = `${current}${separator}${visibleMessage}\n`;
   textarea.value = next;
   texts.set(tunnelId, next);
@@ -6023,10 +6339,10 @@ async function finalizeComposerDraft(): Promise<void> {
   }
   void sync.sendLiveDraft("");
   const agentMessage = messageWithAttachmentContext(message, sentFiles);
-  if (tunnel && isAgentTunnel(tunnel)) {
+  if (spaceMode === "dialog" && tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
     void sendAgentDialogMessage(tunnelId, agentMessage);
-  } else if (tunnel && containsAgentInvocation(message)) {
+  } else if (spaceMode === "dialog" && tunnel && containsAgentInvocation(message)) {
     void sendAgentDialogMessage(tunnelId, agentMessage, { explicitMention: true });
   }
   localDrafts.delete(tunnelId);
@@ -6074,12 +6390,12 @@ function messageWithAttachmentContext(message: string, sentFiles: readonly Recei
 }
 
 function containsAgentInvocation(text: string): boolean {
-  return /(^|[^\p{L}\p{N}_])(?:\u043b\u043e\u0440\u0434|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+  return /(^|[^\p{L}\p{N}_])(?:\u0430\u043b\u0438\u043a|alik)(?=$|[^\p{L}\p{N}_])/iu.test(text);
 }
 
 function stripAgentInvocation(text: string): string {
   const body = normalizeChatMessage(text);
-  const stripped = body.replace(/^\s*(?:\u043b\u043e\u0440\u0434|lord)\s*[,.:;!?-]*\s*/iu, "").trim();
+  const stripped = body.replace(/^\s*(?:\u0430\u043b\u0438\u043a|alik)\s*[,.:;!?-]*\s*/iu, "").trim();
   return stripped || body;
 }
 
@@ -6547,7 +6863,7 @@ function applySelectedText(focus = false): void {
       Math.min(mapPosition(end), next.length)
     );
   }
-  if (focus) {
+  if (focus && composer && !composer.disabled) {
     composer?.focus();
   }
   if (composer) {
@@ -6940,15 +7256,20 @@ function renderTextPaint(): void {
   const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
   const stickToBottom = scroll ? scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 180 : false;
   const labels = writerLines.get(selectedId) ?? new Map();
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const text = textarea.value;
   const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  const spaceMode = selectedSpaceMode();
+  const showDialog = spaceMode === "dialog";
+  const markedSources = markedSourceIds(lines);
+  const messageDialogs = messageDialogEntriesBySource(lines);
   const active = activeActivities.get(selectedId);
   const activeLine = active ? lineFromIndex(text, active.index) : -1;
-  const drafts = liveDraftsForSelected();
-  const hasAgentThinking = agentThinking.has(selectedId);
+  const drafts = showDialog ? liveDraftsForSelected() : [];
+  const hasAgentThinking = showDialog && agentThinking.has(selectedId);
   textPaint.style.transform = "";
   if (!text.trim() && drafts.length === 0 && !hasAgentThinking) {
-    textPaint.innerHTML = "";
+    textPaint.innerHTML = renderEmptySpacePrompt(spaceMode, tunnel);
     return;
   }
   let operatorBlock = false;
@@ -6963,12 +7284,55 @@ function renderTextPaint(): void {
     className: string;
     lines: string[];
     attachments: FileBundleMarker[];
+    entry: SpaceEntry | null;
     live: WriterActivity | null;
+    sourceLine: number;
+    sourceText: string;
+    sourceId: string;
+    markKind: SpaceEntryKind | null;
+    marked: boolean;
   }[] = [];
+  let lastHiddenEntry = false;
+  const referencedFileIds = new Set<string>();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
+    if (isMessageDialogLine(line)) {
+      lastHiddenEntry = false;
+      continue;
+    }
+    const spaceEntry = parseSpaceEntryLine(line);
+    if (spaceEntry) {
+      if (!spaceEntryVisibleInMode(spaceEntry, spaceMode)) {
+        lastHiddenEntry = true;
+        continue;
+      }
+      const mine = Boolean(spaceEntry.authorId && spaceEntry.authorId === device?.id);
+      bubbles.push({
+        key: `space-entry:${spaceEntry.id}`,
+        side: mine ? "local" : "remote",
+        nick: spaceEntry.author,
+        color: mine ? colorFor(`local:${device?.id || selectedId}`) : safeColor(undefined, `${selectedId}:${spaceEntry.author}`),
+        time: clock(new Date(spaceEntry.createdAt)),
+        className: `is-space-entry is-space-${spaceEntry.kind}`,
+        lines: [],
+        attachments: [],
+        entry: spaceEntry,
+        live: null,
+        sourceLine: -1,
+        sourceText: "",
+        sourceId: "",
+        markKind: null,
+        marked: true
+      });
+      lastHiddenEntry = false;
+      continue;
+    }
     const fileBundle = parseFileBundleLine(line);
     if (fileBundle) {
+      fileBundle.files.forEach((file) => referencedFileIds.add(file.id));
+      if (lastHiddenEntry) {
+        continue;
+      }
       const current = bubbles[bubbles.length - 1];
       if (current) {
         current.attachments.push(fileBundle);
@@ -6982,9 +7346,19 @@ function renderTextPaint(): void {
           className: "is-file-bundle",
           lines: [],
           attachments: [fileBundle],
-          live: null
+          entry: null,
+          live: null,
+          sourceLine: -1,
+          sourceText: "",
+          sourceId: "",
+          markKind: null,
+          marked: false
         });
       }
+      continue;
+    }
+    if (!showDialog) {
+      lastHiddenEntry = Boolean(line.trim());
       continue;
     }
     const label = labels.get(index);
@@ -7003,15 +7377,14 @@ function renderTextPaint(): void {
         operatorBlockNick = "";
         operatorBlockTime = "";
       }
+      lastHiddenEntry = true;
       continue;
     }
     if (!line.trim()) {
       operatorBlock = false;
       operatorBlockNick = "";
       operatorBlockTime = "";
-      if (bubbles.length > 0) {
-        bubbles[bubbles.length - 1]?.lines.push("");
-      }
+      lastHiddenEntry = false;
       continue;
     }
     const speaker = speakerForLine(line, state.className, label, operatorBlockNick);
@@ -7021,14 +7394,10 @@ function renderTextPaint(): void {
       operatorBlockTime = "";
     }
     const live = active && index === activeLine ? active : null;
-    const key = `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}`;
-    const current = bubbles[bubbles.length - 1];
-    if (current && current.key === key && current.time === time && !live) {
-      current.lines.push(line);
-      continue;
-    }
+    const sourceId = spaceMessageSourceId(selectedId, index, line);
+    const markKind: SpaceEntryKind = speaker.side === "local" ? "wall" : "reputation";
     bubbles.push({
-      key,
+      key: `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}:${index}`,
       side: speaker.side,
       nick: speaker.nick,
       color: speaker.color,
@@ -7036,8 +7405,15 @@ function renderTextPaint(): void {
       className: state.className,
       lines: [line],
       attachments: [],
-      live
+      entry: null,
+      live,
+      sourceLine: index,
+      sourceText: line,
+      sourceId,
+      markKind,
+      marked: markedSources.has(sourceId) || markedSources.has(spaceFallbackMarkerId(markKind, line))
     });
+    lastHiddenEntry = false;
   }
   if (hasAgentThinking) {
     bubbles.push({
@@ -7049,7 +7425,13 @@ function renderTextPaint(): void {
       className: "is-agent-thinking",
       lines: ["думаю"],
       attachments: [],
-      live: null
+      entry: null,
+      live: null,
+      sourceLine: -1,
+      sourceText: "",
+      sourceId: "",
+      markKind: null,
+      marked: false
     });
   }
   for (const draft of drafts) {
@@ -7063,6 +7445,7 @@ function renderTextPaint(): void {
       className: "is-live-draft",
       lines: draft.text.split("\n"),
       attachments: [],
+      entry: null,
       live: {
         deviceId: draft.deviceId,
         nick,
@@ -7070,11 +7453,16 @@ function renderTextPaint(): void {
         local: draft.deviceId === device?.id,
         action: "write",
         preview: draft.text
-      }
+      },
+      sourceLine: -1,
+      sourceText: "",
+      sourceId: "",
+      markKind: null,
+      marked: false
     });
   }
-  const referencedFiles = new Set(bubbles.flatMap((bubble) => bubble.attachments.flatMap((bundle) => bundle.files.map((file) => file.id))));
-  const looseFiles = (files.get(selectedId) ?? []).filter((file) => !referencedFiles.has(file.id));
+  bubbles.forEach((bubble) => bubble.attachments.forEach((bundle) => bundle.files.forEach((file) => referencedFileIds.add(file.id))));
+  const looseFiles = showDialog ? (files.get(selectedId) ?? []).filter((file) => !referencedFileIds.has(file.id)) : [];
   if (looseFiles.length > 0) {
     bubbles.push({
       key: "loose-files",
@@ -7085,14 +7473,26 @@ function renderTextPaint(): void {
       className: "is-file-bundle",
       lines: [],
       attachments: [{ id: "loose-files", files: looseFiles.map(fileBundleAttachment) }],
-      live: null
+      entry: null,
+      live: null,
+      sourceLine: -1,
+      sourceText: "",
+      sourceId: "",
+      markKind: null,
+      marked: false
     });
   }
   const visibleBubbles = bubbles.filter((bubble) =>
-    bubble.className === "is-agent-thinking" || bubble.live || bubble.attachments.length > 0 || bubble.lines.some((line) => line.trim())
+    bubble.entry || bubble.className === "is-agent-thinking" || bubble.live || bubble.attachments.length > 0 || bubble.lines.some((line) => line.trim())
   );
+  if (visibleBubbles.length === 0) {
+    textPaint.innerHTML = renderEmptySpacePrompt(spaceMode, tunnel);
+    return;
+  }
   textPaint.innerHTML = visibleBubbles.map((bubble) => {
-    const body = bubble.className === "is-agent-thinking"
+    const body = bubble.entry
+      ? renderSpaceEntryBubble(bubble.entry, bubble.side === "local")
+      : bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
       : bubble.lines
         .map((line) => line ? `<span>${linkifyChatLine(line)}</span>` : "<br>")
@@ -7105,22 +7505,346 @@ function renderTextPaint(): void {
     const avatar = bubble.side === "local" || bubble.side === "remote"
       ? `<span class="bubble-avatar" aria-hidden="true">${escapeHtml(initials(bubble.nick))}</span>`
       : "";
+    const action = bubble.markKind && bubble.sourceLine >= 0 && !bubble.entry
+      ? renderBubbleMarkButton(bubble.markKind, bubble.sourceLine, bubble.sourceId, bubble.nick, bubble.sourceText, bubble.marked)
+      : "";
+    const entries = bubble.sourceId ? messageDialogs.get(bubble.sourceId) ?? [] : [];
+    const messageDialog = bubble.sourceId && !bubble.entry
+      ? renderMessageDialogPanel(bubble, entries, openMessageDialog?.chatId === selectedId && openMessageDialog.sourceId === bubble.sourceId)
+      : "";
+    const dialogAttrs = bubble.sourceId && !bubble.entry
+      ? ` data-dialog-source-id="${escapeHtml(bubble.sourceId)}" data-source-line="${bubble.sourceLine}" data-source-author="${escapeHtml(bubble.nick)}" data-source-text="${escapeHtml(bubble.sourceText)}" tabindex="0"`
+      : "";
     return `
-      <article class="chat-bubble ${bubble.side} ${bubble.className}" style="--bubble-color:${bubble.color}">
+      <article class="chat-bubble ${bubble.side} ${bubble.className}" style="--bubble-color:${bubble.color}"${dialogAttrs}>
         ${avatar}
+        ${action}
         ${time}
         ${live}
-        ${body ? `<p>${body}</p>` : ""}
+        ${body ? bubble.entry ? body : `<p>${body}</p>` : ""}
         ${attachmentHtml}
+        ${messageDialog}
       </article>
     `;
   }).join("");
   installBubbleAttachmentDownloads();
+  installBubbleMarkButtons();
+  installMessageDialogOpeners();
   if (scroll && stickToBottom) {
     window.setTimeout(() => {
       scroll.scrollTop = scroll.scrollHeight;
     }, 0);
   }
+}
+
+function messageDialogEntriesBySource(lines: readonly string[]): Map<string, MessageDialogEntry[]> {
+  const result = new Map<string, MessageDialogEntry[]>();
+  const viewer = {
+    deviceId: device?.id || "",
+    cellIds: loadTunnels().filter((tunnel) => !tunnel.archived).map((tunnel) => tunnel.id)
+  };
+  for (const line of lines) {
+    const entry = parseMessageDialogLine(line);
+    if (!entry || entry.chatId !== selectedId || !messageDialogVisibleForTarget(entry, viewer)) {
+      continue;
+    }
+    const current = result.get(entry.sourceId) ?? [];
+    current.push(entry);
+    result.set(entry.sourceId, current);
+  }
+  for (const entries of result.values()) {
+    entries.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+  }
+  return result;
+}
+
+function renderMessageDialogPanel(
+  bubble: {
+    readonly sourceId: string;
+    readonly sourceLine: number;
+    readonly sourceText: string;
+    readonly nick: string;
+  },
+  entries: readonly MessageDialogEntry[],
+  open: boolean
+): string {
+  const sourceAttrs = `data-dialog-source-id="${escapeHtml(bubble.sourceId)}" data-source-line="${bubble.sourceLine}" data-source-author="${escapeHtml(bubble.nick)}" data-source-text="${escapeHtml(bubble.sourceText)}"`;
+  if (!open) {
+    if (entries.length === 0) {
+      return "";
+    }
+    const latest = entries[entries.length - 1];
+    return `
+      <button class="message-dialog-peek" type="button" ${sourceAttrs} aria-label="открыть диалог" data-tooltip="Открыть диалог">
+        <span>${escapeHtml(latest?.text || "")}</span>
+        <b>${entries.length}</b>
+      </button>
+    `;
+  }
+  const thread = entries.length > 0
+    ? entries.map((entry) => `
+      <div class="message-dialog-reply">
+        <b>${escapeHtml(entry.author)}</b>
+        <span>${linkifyChatLine(entry.text)}</span>
+        <time>${escapeHtml(clock(new Date(entry.createdAt)))}</time>
+      </div>
+    `).join("")
+    : `<div class="message-dialog-empty"></div>`;
+  return `
+    <section class="message-dialog-panel" ${sourceAttrs} aria-label="диалог сообщения">
+      <header>
+        <span>общий</span>
+        <button class="message-dialog-close" type="button" aria-label="закрыть" data-tooltip="Закрыть">${icon("close")}</button>
+      </header>
+      <div class="message-dialog-thread">${thread}</div>
+      <form class="message-dialog-form">
+        <textarea rows="1" spellcheck="false" autocapitalize="sentences" aria-label="ответ"></textarea>
+        <button type="submit" aria-label="отправить" data-tooltip="Отправить">${icon("send")}</button>
+      </form>
+    </section>
+  `;
+}
+
+function installMessageDialogOpeners(): void {
+  textPaint?.querySelectorAll<HTMLElement>(".chat-bubble[data-dialog-source-id]").forEach((bubble) => {
+    bubble.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("a, button, textarea, input, .message-dialog-panel, .bubble-file")) {
+        return;
+      }
+      openMessageDialogFromElement(bubble);
+    });
+    bubble.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openMessageDialogFromElement(bubble);
+      }
+    });
+  });
+  textPaint?.querySelectorAll<HTMLElement>(".message-dialog-peek").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMessageDialogFromElement(button);
+    });
+  });
+  textPaint?.querySelectorAll<HTMLButtonElement>(".message-dialog-close").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMessageDialog = null;
+      renderTextPaint();
+    });
+  });
+  textPaint?.querySelectorAll<HTMLFormElement>(".message-dialog-form").forEach((form) => {
+    form.addEventListener("click", (event) => event.stopPropagation());
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void submitMessageDialogReply(form);
+    });
+    form.querySelector<HTMLTextAreaElement>("textarea")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        void submitMessageDialogReply(form);
+      }
+    });
+  });
+}
+
+function openMessageDialogFromElement(element: HTMLElement): void {
+  const sourceId = element.dataset.dialogSourceId || "";
+  if (!selectedId || !sourceId) {
+    return;
+  }
+  openMessageDialog = {
+    chatId: selectedId,
+    sourceId,
+    sourceLine: Number(element.dataset.sourceLine || "-1"),
+    sourceText: normalizeChatMessage(element.dataset.sourceText || ""),
+    sourceAuthor: cleanNick(element.dataset.sourceAuthor || "") || counterpartyLabelForSelected(),
+    target: commonMessageDialogTarget()
+  };
+  renderTextPaint();
+  window.setTimeout(() => {
+    textPaint?.querySelector<HTMLTextAreaElement>(`.message-dialog-panel[data-dialog-source-id="${cssEscape(sourceId)}"] textarea`)?.focus();
+  }, 0);
+}
+
+async function submitMessageDialogReply(form: HTMLFormElement): Promise<void> {
+  if (!selectedId || !textarea || !openMessageDialog || openMessageDialog.chatId !== selectedId) {
+    return;
+  }
+  const input = form.querySelector<HTMLTextAreaElement>("textarea");
+  const reply = normalizeChatMessage(input?.value || "");
+  if (!reply) {
+    return;
+  }
+  const sync = syncs.get(selectedId);
+  if (!sync) {
+    return;
+  }
+  const author = cleanNick(device?.nick || "") || "Я";
+  const line = createMessageDialogLine({
+    chatId: selectedId,
+    sourceId: openMessageDialog.sourceId,
+    sourceText: openMessageDialog.sourceText,
+    sourceAuthor: openMessageDialog.sourceAuthor,
+    author,
+    authorId: device?.id || "",
+    text: reply,
+    target: openMessageDialog.target
+  });
+  if (!line) {
+    return;
+  }
+  const current = texts.get(selectedId) ?? textarea.value;
+  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const next = `${current}${separator}${line}\n`;
+  textarea.value = next;
+  texts.set(selectedId, next);
+  sync.setText(next);
+  saveTextSnapshotNow(selectedId, next);
+  input && (input.value = "");
+  touchSelected();
+  renderTiles();
+  renderTextPaint();
+}
+
+function spaceEntryVisibleInMode(entry: SpaceEntry, mode: SpaceMode): boolean {
+  if (mode === "wall") {
+    return entry.kind === "wall" || entry.kind === "wall-comment";
+  }
+  if (mode === "reputation") {
+    return entry.kind === "reputation" || entry.kind === "reputation-comment";
+  }
+  return false;
+}
+
+function markedSourceIds(lines: readonly string[]): Set<string> {
+  const result = new Set<string>();
+  for (const line of lines) {
+    const entry = parseSpaceEntryLine(line);
+    if (!entry) {
+      continue;
+    }
+    if (entry.sourceId) {
+      result.add(entry.sourceId);
+    }
+    result.add(spaceFallbackMarkerId(entry.kind, entry.text));
+  }
+  return result;
+}
+
+function renderBubbleMarkButton(
+  kind: SpaceEntryKind,
+  lineIndex: number,
+  sourceId: string,
+  author: string,
+  text: string,
+  marked: boolean
+): string {
+  const own = kind === "wall";
+  const label = own ? "В мою соту" : "Лайк";
+  return `
+    <button class="bubble-mark ${own ? "is-hex" : "is-heart"}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
+      ${icon(own ? "hexagon" : "heart")}
+    </button>
+  `;
+}
+
+function installBubbleMarkButtons(): void {
+  textPaint?.querySelectorAll<HTMLButtonElement>(".bubble-mark").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      markDialogMessage(button);
+    });
+  });
+}
+
+function markDialogMessage(button: HTMLButtonElement): void {
+  if (!selectedId || !textarea) {
+    return;
+  }
+  const kind = normalizeSpaceEntryKind(button.dataset.markKind || "");
+  if (!kind) {
+    return;
+  }
+  const current = texts.get(selectedId) ?? textarea.value;
+  const lines = current.endsWith("\n") ? current.slice(0, -1).split("\n") : current.split("\n");
+  const lineIndex = Number(button.dataset.lineIndex || "-1");
+  const line = lines[lineIndex] ?? "";
+  const text = normalizeChatMessage(line || button.dataset.text || "");
+  if (!text) {
+    return;
+  }
+  const sourceId = button.dataset.sourceId || spaceMessageSourceId(selectedId, lineIndex, text);
+  const existing = markedSourceIds(lines);
+  if (existing.has(sourceId) || existing.has(spaceFallbackMarkerId(kind, text))) {
+    button.classList.add("is-marked");
+    return;
+  }
+  const sync = syncs.get(selectedId);
+  if (!sync) {
+    return;
+  }
+  const author = cleanNick(button.dataset.author || "") || cleanNick(device?.nick || "") || "Я";
+  const marker = makeSpaceEntryLine(kind, {
+    author,
+    authorId: kind === "wall" ? device?.id || "" : "",
+    sourceId,
+    text
+  });
+  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const next = `${current}${separator}${marker}\n`;
+  textarea.value = next;
+  texts.set(selectedId, next);
+  sync.setText(next);
+  saveTextSnapshotNow(selectedId, next);
+  button.classList.add("is-marked");
+  renderTextPaint();
+}
+
+function normalizeSpaceEntryKind(value: string): SpaceEntryKind | null {
+  if (value === "wall" || value === "reputation") {
+    return value;
+  }
+  return null;
+}
+
+function spaceMessageSourceId(tunnelId: string, lineIndex: number, text: string): string {
+  return `msg:${tunnelId}:${lineIndex}:${hashShort(text)}`;
+}
+
+function spaceFallbackMarkerId(kind: SpaceEntryKind, text: string): string {
+  return `fallback:${kind}:${hashShort(text)}`;
+}
+
+function hashShort(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | undefined): string {
+  const label = tunnel ? counterpartyLabel(tunnel) : "сота";
+  const own = isOwnSpace(tunnel);
+  let text = "Напиши первое сообщение";
+  if (mode === "wall") {
+    void label;
+    void own;
+    text = "Нажми шестиугольник на своем сообщении";
+  } else if (mode === "reputation") {
+    text = "Нажми сердце возле сообщения";
+  } else if (tunnel && isAgentTunnel(tunnel)) {
+    text = "Попроси Алика сделать задачу";
+  } else if (tunnel && isSelfTunnel(tunnel)) {
+    text = "Место для быстрых мыслей";
+  }
+  return `<div class="space-empty">${escapeHtml(text)}</div>`;
 }
 
 function parseFileBundleLine(line: string): FileBundleMarker | null {
@@ -7338,6 +8062,7 @@ function agentContextLine(line: string): string {
 function isAgentContextChromeLine(line: string): boolean {
   const trimmed = line.trim();
   return isOperatorHeader(trimmed)
+    || isMessageDialogLine(trimmed)
     || trimmed === "Ответ:"
     || trimmed === "Ответьте ниже:"
     || trimmed === "Reply:"
@@ -7663,22 +8388,36 @@ function selectedDialogCode(): string {
   return selectedId ? selectedId.slice(0, 8).toUpperCase() : "";
 }
 
-async function copySelectedDialogCode(): Promise<void> {
-  const code = selectedDialogCode();
-  if (!code) {
+async function selectedDialogLink(): Promise<string> {
+  if (!device || !selectedId) {
+    return "";
+  }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  if (!tunnel) {
+    return "";
+  }
+  const url = new URL(await inviteUrl(tunnel, device));
+  url.searchParams.set("bare", "1");
+  return url.href;
+}
+
+async function copySelectedDialogLink(): Promise<void> {
+  const link = await selectedDialogLink();
+  if (!link) {
     return;
   }
-  await copyText(code);
+  await copyText(link);
   const id = app.querySelector<HTMLButtonElement>(".dialog-id");
   if (!id) {
     return;
   }
   id.dataset.copied = "1";
-  id.dataset.tooltip = "Скопировано";
+  id.dataset.tooltip = "Ссылка скопирована";
   window.setTimeout(() => {
     if (id.dataset.copied === "1") {
       delete id.dataset.copied;
-      id.dataset.tooltip = selectedDialogCode() ? "Скопировать номер диалога" : "Диалог не выбран";
+      const code = selectedDialogCode();
+      id.dataset.tooltip = code ? `Скопировать ссылку · ${code}` : "Диалог не выбран";
     }
   }, 1200);
 }
@@ -7799,6 +8538,11 @@ function safeChatHref(value: string): string {
   } catch {
     return "";
   }
+}
+
+function cssEscape(value: string): string {
+  const css = (window as Window & { CSS?: { escape?: (input: string) => string } }).CSS;
+  return css?.escape ? css.escape(value) : value.replace(/["\\]/gu, "\\$&");
 }
 
 function escapeHtml(value: string): string {

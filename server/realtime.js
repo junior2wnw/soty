@@ -127,7 +127,11 @@ async function handleMessage(room, peer, ws, store, raw) {
   pruneWaiting(room);
 
   if (message.type === "ping") {
-    ws.send(JSON.stringify({ type: "pong" }));
+    ws.send(JSON.stringify({
+      type: "pong",
+      ...(isShortText(message.id, 80) ? { id: message.id } : {}),
+      ...(Number.isSafeInteger(message.t) && message.t > 0 ? { t: message.t } : {})
+    }));
     return;
   }
 

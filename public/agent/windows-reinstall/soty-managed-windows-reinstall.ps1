@@ -6,6 +6,9 @@ param(
   [switch] $UseExistingUsbInstallImage,
   [string] $ManifestUrl = "https://xn--n1afe0b.online/agent/manifest.json",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
+  [string] $WindowsMediaManifestUrl = "",
+  [string] $WindowsImageUrl = "",
+  [string] $WindowsImageSha256 = "",
   [ValidateSet("auto", "current", "home", "pro", "iot-ltsc", "enterprise-ltsc")]
   [string] $WindowsEditionPolicy = "auto",
   [string] $WindowsEditionHint = "",
@@ -179,6 +182,16 @@ function Resolve-UsbDrive([string] $RequestedLetter) {
     ambiguous = (@($usable).Count -gt 1)
     candidates = @($candidates)
   }
+}
+
+function Get-MinimumUsbFreeGB([bool] $UseExistingInstallImage, $Usb) {
+  if ($UseExistingInstallImage) { return 8 }
+  try {
+    if ($Usb -and ($Usb.hasInstallImage -eq $true -or $Usb.hasSotyReinstall -eq $true)) {
+      return 8
+    }
+  } catch {}
+  return 12
 }
 
 function Get-SotyUserName {
@@ -473,6 +486,7 @@ function Test-MediaDownloadProcess($Process, [bool] $AllowCommandLineUnavailable
 function Get-MediaStatus([string] $Root, [string] $Letter) {
   $usbRoot = if ([string]::IsNullOrWhiteSpace($Letter)) { "" } else { $Letter + ":\" }
   $downloadProcesses = @()
+  $mediaSpec = Read-JsonFile (Join-Path (Join-Path $Root "media") "windows-media-spec.json")
   $roots = @((Join-Path $Root "media"))
   if (-not [string]::IsNullOrWhiteSpace($usbRoot)) {
     $roots += @(
@@ -540,7 +554,7 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
   } catch { $downloadProcesses = @() }
   $largest = @($items | Sort-Object bytes -Descending | Select-Object -First 1)
   if (-not $largest) {
-    return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; stalled = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null }
+    return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; stalled = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null; spec = $mediaSpec }
   }
   $age = if ($null -ne $largest.updatedAgeSeconds) { [double] $largest.updatedAgeSeconds } else { $null }
   $stalled = [bool]($largest.downloading -and $null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
@@ -558,6 +572,7 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
     activeProcessCount = @($downloadProcesses).Count
     updated = [string] $largest.updated
     updatedAgeSeconds = $age
+    spec = $mediaSpec
   }
 }
 
@@ -818,7 +833,8 @@ function Get-ManagedRepairBlockers($Status) {
     $blockers.Add("usb-not-accepted")
   }
   try {
-    if ([double] $usb.freeGB -lt 12 -and (Test-UsbFreeSpaceRequired $usb $Status)) {
+    $minimumUsbFreeGB = Get-MinimumUsbFreeGB -UseExistingInstallImage:$UseExistingUsbInstallImage -Usb $usb
+    if ([double] $usb.freeGB -lt $minimumUsbFreeGB -and (Test-UsbFreeSpaceRequired $usb $Status)) {
       $blockers.Add("usb-free-space-low")
     }
   } catch {}
@@ -1026,6 +1042,9 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
     "-WindowsEditionPolicy", $WindowsEditionPolicy,
     "-NoTemporaryManagedPassword"
   )
+  if (-not [string]::IsNullOrWhiteSpace($WindowsMediaManifestUrl)) { $psArgs += @("-WindowsMediaManifestUrl", $WindowsMediaManifestUrl) }
+  if (-not [string]::IsNullOrWhiteSpace($WindowsImageUrl)) { $psArgs += @("-WindowsImageUrl", $WindowsImageUrl) }
+  if (-not [string]::IsNullOrWhiteSpace($WindowsImageSha256)) { $psArgs += @("-WindowsImageSha256", $WindowsImageSha256) }
   if (-not [string]::IsNullOrWhiteSpace($WindowsEditionHint)) { $psArgs += @("-WindowsEditionHint", $WindowsEditionHint) }
   if ($UseExistingUsbInstallImage) { $psArgs += "-UseExistingUsbInstallImage" }
   if (-not [string]::IsNullOrWhiteSpace($ConfirmationPhrase)) { $psArgs += @("-ConfirmationPhrase", $ConfirmationPhrase) }
@@ -1091,6 +1110,7 @@ try {
       $bitlocker = [pscustomobject]@{ protectionStatus = [string] $blv.ProtectionStatus; volumeStatus = [string] $blv.VolumeStatus; encryptionPercentage = [int] $blv.EncryptionPercentage }
     } catch {}
     $status = Get-ReinstallStatus $WorkspaceRoot $letter
+    $minimumUsbFreeGB = Get-MinimumUsbFreeGB -UseExistingInstallImage:$UseExistingUsbInstallImage -Usb $usb
     $blockers = New-Object System.Collections.Generic.List[string]
     if (-not $isAdmin) { $blockers.Add("not-elevated") }
     if ($status.ready -eq $true -and $status.backupProofOk -eq $true -and $status.readyEditionOk -ne $true) {
@@ -1100,7 +1120,7 @@ try {
       if ($usb.ambiguous) { $blockers.Add("usb-ambiguous") } else { $blockers.Add("usb-not-found") }
     }
     elseif ($usb.accepted -ne $true) { $blockers.Add("usb-not-removable") }
-    elseif ($usb.freeGB -lt 12 -and (Test-UsbFreeSpaceRequired $usb $status)) { $blockers.Add("usb-free-space-low") }
+    elseif ($usb.freeGB -lt $minimumUsbFreeGB -and (Test-UsbFreeSpaceRequired $usb $status)) { $blockers.Add("usb-free-space-low") }
     Emit ([pscustomobject]@{
       ok = ($blockers.Count -eq 0)
       action = "preflight"
@@ -1109,6 +1129,7 @@ try {
       osVersion = if ($os) { [string] $os.Version } else { "" }
       isAdmin = $isAdmin
       usb = $usb
+      minimumUsbFreeGB = $minimumUsbFreeGB
       bitLockerC = $bitlocker
       status = $status
       blockers = @($blockers)

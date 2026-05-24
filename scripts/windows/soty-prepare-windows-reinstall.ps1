@@ -4,6 +4,7 @@ param(
   [string] $ManagedUserName = (-join ([char[]](0x0421, 0x043E, 0x0442, 0x044B))),
   [string] $ManagedUserPassword = "",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
+  [string] $WindowsMediaManifestUrl = "",
   [string] $WindowsImageUrl = "http://dl.delivery.mp.microsoft.com/filestreamingservice/files/071fc359-1d92-46c0-ad88-c7801d2f69be/26200.6584.250915-1905.25h2_ge_release_svc_refresh_CLIENTCONSUMER_RET_x64FRE_ru-ru.esd",
   [string] $WindowsImageSha256 = "cb2fbc4af7979cf7e5f740f03289d6eacb19dd75a4858d66bc6a50aa26c37005",
   [ValidateSet("auto", "current", "home", "pro", "iot-ltsc", "enterprise-ltsc")]
@@ -162,6 +163,8 @@ if (-not $Detached) {
     (Quote-Arg $ManagedUserPassword),
     "-PanelSiteUrl",
     (Quote-Arg $PanelSiteUrl),
+    "-WindowsMediaManifestUrl",
+    (Quote-Arg $WindowsMediaManifestUrl),
     "-WindowsImageUrl",
     (Quote-Arg $WindowsImageUrl),
     "-WindowsImageSha256",
@@ -319,6 +322,84 @@ function Test-FileSha256([string] $Path, [string] $ExpectedSha256) {
   } catch {
     return $false
   }
+}
+
+function Get-MinimumUsbFreeGB([bool] $UseExistingInstallImage, $UsbSelection) {
+  if ($UseExistingInstallImage) { return 8 }
+  try {
+    if ($UsbSelection -and ($UsbSelection.hasInstallImage -eq $true -or $UsbSelection.hasSotyReinstall -eq $true)) {
+      return 8
+    }
+  } catch {}
+  return 12
+}
+
+function Get-WindowsMediaFileName([string] $Url, [string] $ExplicitName) {
+  $fileName = ([string] $ExplicitName).Trim()
+  if ([string]::IsNullOrWhiteSpace($fileName)) {
+    try {
+      $uri = [System.Uri] $Url
+      $fileName = [System.IO.Path]::GetFileName($uri.AbsolutePath)
+    } catch {
+      $fileName = Split-Path -Leaf $Url
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($fileName)) { throw "Windows media filename is empty." }
+  foreach ($ch in [System.IO.Path]::GetInvalidFileNameChars()) {
+    if ($fileName.IndexOf($ch) -ge 0) { throw "Windows media filename contains invalid characters: $fileName" }
+  }
+  return $fileName
+}
+
+function Resolve-WindowsInstallMediaSpec([string] $ManifestUrl, [string] $FallbackUrl, [string] $FallbackSha256) {
+  $cleanManifestUrl = ([string] $ManifestUrl).Trim()
+  if (-not [string]::IsNullOrWhiteSpace($cleanManifestUrl)) {
+    try {
+      Log ("Resolving Windows media manifest: " + $cleanManifestUrl)
+      $manifest = Invoke-RestMethod -Uri $cleanManifestUrl -UseBasicParsing -TimeoutSec 45 -ErrorAction Stop
+      $downloadUrl = ([string] $manifest.downloadUrl).Trim()
+      if ([string]::IsNullOrWhiteSpace($downloadUrl)) { $downloadUrl = ([string] $manifest.url).Trim() }
+      $sha256 = ([string] $manifest.sha256).Trim().ToLowerInvariant()
+      if ([string]::IsNullOrWhiteSpace($downloadUrl) -or [string]::IsNullOrWhiteSpace($sha256)) {
+        throw "Windows media manifest must contain downloadUrl/url and sha256."
+      }
+      try {
+        $baseUri = [System.Uri] $cleanManifestUrl
+        $downloadUrl = ([System.Uri]::new($baseUri, $downloadUrl)).AbsoluteUri
+      } catch {}
+      $fileName = Get-WindowsMediaFileName -Url $downloadUrl -ExplicitName ([string] $manifest.fileName)
+      $sizeBytes = [int64]0
+      try { $sizeBytes = [int64] $manifest.sizeBytes } catch {}
+      return [pscustomobject]@{
+        source = "manifest"
+        manifestUrl = $cleanManifestUrl
+        url = $downloadUrl
+        sha256 = $sha256
+        fileName = $fileName
+        sizeBytes = $sizeBytes
+      }
+    } catch {
+      if ([string]::IsNullOrWhiteSpace($FallbackUrl) -or [string]::IsNullOrWhiteSpace($FallbackSha256)) { throw }
+      Log ("WARN Windows media manifest failed, falling back to direct image URL: " + $_.Exception.Message)
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($FallbackUrl) -or [string]::IsNullOrWhiteSpace($FallbackSha256)) {
+    throw "Windows media source is empty. Provide -WindowsMediaManifestUrl or -WindowsImageUrl with -WindowsImageSha256."
+  }
+  return [pscustomobject]@{
+    source = "fallback-url"
+    manifestUrl = ""
+    url = ([string] $FallbackUrl).Trim()
+    sha256 = ([string] $FallbackSha256).Trim().ToLowerInvariant()
+    fileName = (Get-WindowsMediaFileName -Url ([string] $FallbackUrl) -ExplicitName "")
+    sizeBytes = [int64]0
+  }
+}
+
+function Write-WindowsMediaSpecReceipt($MediaRoot, $MediaSpec) {
+  if (-not $MediaSpec) { return }
+  New-Directory $MediaRoot
+  $MediaSpec | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $MediaRoot "windows-media-spec.json") -Encoding UTF8
 }
 
 function Join-BinaryFile([string] $Source, [string] $Destination) {
@@ -1735,10 +1816,12 @@ try {
   New-Directory $earlyUsbReinstall
   Clear-ReinstallArmMarkers $earlyUsbReinstall
   $usbInstallImageReclaimableGB = Get-UsbInstallImageReclaimableGB $earlyUsbRoot
-  if (([double] $usbSelection.freeGB + [double] $usbInstallImageReclaimableGB) -lt 12) {
+  $minimumUsbFreeGB = Get-MinimumUsbFreeGB -UseExistingInstallImage:$UseExistingUsbInstallImage -UsbSelection $usbSelection
+  if (([double] $usbSelection.freeGB + [double] $usbInstallImageReclaimableGB) -lt $minimumUsbFreeGB) {
     Finish "blocked" 2 @{
       blockers = @("usb-free-space-low")
       usb = $usbSelection
+      minimumUsbFreeGB = $minimumUsbFreeGB
       reclaimableInstallImageGB = $usbInstallImageReclaimableGB
     }
   }
@@ -1831,6 +1914,7 @@ try {
   # reinstall backup.
 
   $selectedWindowsImage = $null
+  $windowsMediaSpec = $null
   $existingUsbImage = Get-InstallImageCandidate @($usbMediaSources, $usbSources)
   if ($existingUsbImage -and (Test-ExistingInstallImage -Path $existingUsbImage.Path -SourceRoot $existingUsbImage.SourceRoot -PreferredEditionHint $preferredEditionHint)) {
     $script:installMediaSources = $existingUsbImage.SourceRoot
@@ -1840,15 +1924,15 @@ try {
     throw "UseExistingUsbInstallImage was set, but no valid install.swm/esd/wim exists under $usbMediaSources or $usbSources."
   } else {
     $script:installMediaSources = $usbSources
-    $esdPath = Join-Path $mediaRoot "Windows11_25H2_CLIENTCONSUMER_RET_x64FRE_ru-ru.esd"
-    if (Test-Path -LiteralPath $esdPath) {
-      $existingHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $esdPath).Hash.ToLowerInvariant()
-      if ($existingHash -ne $WindowsImageSha256.ToLowerInvariant()) {
-        Remove-Item -LiteralPath $esdPath -Force
-      }
+    $windowsMediaSpec = Resolve-WindowsInstallMediaSpec -ManifestUrl $WindowsMediaManifestUrl -FallbackUrl $WindowsImageUrl -FallbackSha256 $WindowsImageSha256
+    Write-WindowsMediaSpecReceipt -MediaRoot $mediaRoot -MediaSpec $windowsMediaSpec
+    $mediaPath = Join-Path $mediaRoot ([string] $windowsMediaSpec.fileName)
+    if ((Test-Path -LiteralPath $mediaPath) -and -not (Test-FileSha256 -Path $mediaPath -ExpectedSha256 ([string] $windowsMediaSpec.sha256))) {
+      Log "Removing cached Windows media with wrong SHA-256."
+      Remove-Item -LiteralPath $mediaPath -Force
     }
-    if (-not (Test-Path -LiteralPath $esdPath)) {
-      Invoke-ResumableDownload -Uri $WindowsImageUrl -Destination $esdPath -ExpectedSha256 $WindowsImageSha256 -LogPrefix "windows-image-download"
+    if (-not (Test-Path -LiteralPath $mediaPath)) {
+      Invoke-ResumableDownload -Uri ([string] $windowsMediaSpec.url) -Destination $mediaPath -ExpectedSha256 ([string] $windowsMediaSpec.sha256) -LogPrefix "windows-image-download"
     }
 
     $installWim = Join-Path $sourceRoot "install.wim"
@@ -1857,12 +1941,14 @@ try {
       Remove-Item -LiteralPath $installWim -Force
     }
     if (-not (Test-Path -LiteralPath $installWim)) {
-      Log "Exporting Windows edition from ESD."
-      $images = @(Get-WindowsImage -ImagePath $esdPath -ErrorAction Stop)
+      $mediaExtension = ([System.IO.Path]::GetExtension([string] $mediaPath)).ToLowerInvariant()
+      if ($mediaExtension -notin @(".esd", ".wim")) { throw "Unsupported Windows media format: $mediaExtension" }
+      Log ("Exporting Windows edition from " + $mediaExtension.TrimStart([char[]] ".").ToUpperInvariant() + ".")
+      $images = @(Get-WindowsImage -ImagePath $mediaPath -ErrorAction Stop)
       $image = Select-WindowsInstallImage -Images $images -PreferredEditionHint $preferredEditionHint
       $selectedWindowsImage = ConvertTo-WindowsImageSelection $image
       Log ("Selected image index " + [int]$image.ImageIndex + ": " + [string]$image.ImageName)
-      Invoke-LoggedCli dism.exe @("/Export-Image", "/SourceImageFile:$esdPath", "/SourceIndex:$([int]$image.ImageIndex)", "/DestinationImageFile:$installWim", "/Compress:max", "/CheckIntegrity") "dism-export-installwim.txt"
+      Invoke-LoggedCli dism.exe @("/Export-Image", "/SourceImageFile:$mediaPath", "/SourceIndex:$([int]$image.ImageIndex)", "/DestinationImageFile:$installWim", "/Compress:max", "/CheckIntegrity") "dism-export-installwim.txt"
     }
     if (-not $selectedWindowsImage) {
       $selectedWindowsImage = Get-InstallImageSelection -Path $installWim
@@ -1948,6 +2034,7 @@ try {
     backupScope = $backupScope
     personalFolderNames = $personalFolderNames
     installImageSourceRoot = $script:installMediaSources
+    windowsMediaSpec = $windowsMediaSpec
     currentEditionHint = $currentEditionHint
     windowsEditionPolicy = $editionPolicy
     preferredEditionHint = $preferredEditionHint

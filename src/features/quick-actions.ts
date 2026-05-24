@@ -19,7 +19,7 @@ export const quickActions: readonly QuickAction[] = [
   {
     id: "windows-reinstall",
     title: "Переустановка Windows",
-    label: "WIN",
+    label: "ОС",
     summary: "Подготовить, проверить, подтвердить и сопровождать установку.",
     tags: ["windows", "винда", "переустановка", "usb", "флешка", "драйверы"],
     agentCard: {
@@ -38,7 +38,7 @@ export const quickActions: readonly QuickAction[] = [
   {
     id: "wallpaper",
     title: "Поставить обои",
-    label: "WALL",
+    label: "ФОН",
     summary: "Создать или взять картинку и поставить на нужный рабочий стол.",
     tags: ["обои", "wallpaper", "рабочий стол", "картинка", "image"],
     agentCard: {
@@ -57,7 +57,7 @@ export const quickActions: readonly QuickAction[] = [
   {
     id: "copy-file",
     title: "Скопировать файл",
-    label: "COPY",
+    label: "ФАЙЛ",
     summary: "Перенести файл между текущим и подключенным устройством.",
     tags: ["копировать", "файл", "download", "upload", "передать", "скачать"],
     agentCard: {
@@ -76,7 +76,7 @@ export const quickActions: readonly QuickAction[] = [
   {
     id: "check-device",
     title: "Проверить устройство",
-    label: "CHECK",
+    label: "ПРОВ",
     summary: "Понять состояние агента, сети, диска, процессов и доступа.",
     tags: ["проверить", "статус", "диагностика", "агент", "сеть", "диск"],
     agentCard: {
@@ -95,7 +95,7 @@ export const quickActions: readonly QuickAction[] = [
   {
     id: "agent-repair",
     title: "Починить агент",
-    label: "AGENT",
+    label: "АЛИК",
     summary: "Проверить установку, обновление, автозапуск и связь агента.",
     tags: ["агент", "установить", "обновить", "починить", "bridge", "relay"],
     agentCard: {
@@ -134,7 +134,7 @@ export const quickActions: readonly QuickAction[] = [
   {
     id: "soty-export",
     title: "Экспорт Сот",
-    label: "EXPORT",
+    label: "СОХР",
     summary: "Собрать перенос состояния в один файл и восстановить из него.",
     tags: ["экспорт", "импорт", "backup", "перенос", "флешка", "соты"],
     agentCard: {

@@ -14,6 +14,7 @@ export interface TunnelRecord {
   readonly counterparty?: boolean;
   readonly archived?: boolean;
   readonly agent?: boolean;
+  readonly self?: boolean;
   readonly score?: number;
   readonly lastActionAt?: string;
   readonly createdAt: string;

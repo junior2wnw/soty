@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "85ab0208286192394545fea51f15c7209040392c43ef5c1871809c07c91b0a7f",
+  "sha256": "1c9780ce34c62f42e51fe3920ade4b57d4ceb49436ef9a0977fcbd281316a1f4",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -474,7 +474,9 @@
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
           "start managed prepare once with stable idempotency",
+          "resolve hosted windows-media manifest first when supplied, otherwise use the pinned fallback URL/SHA",
           "download Windows media with the guarded parallel/resumable route on the selected PC",
+          "reuse a valid existing USB install image or prepared reinstall root without forcing the full 12GB media path",
           "prove backup, install media, unattended account, Autounattend, postinstall",
           "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"
@@ -482,6 +484,7 @@
         "doNot": [
           "do not ask the user to manually download ISO when the source computer is attached",
           "do not open Microsoft download pages as the normal route",
+          "do not hard-code a single Windows media URL when a verified hosted media manifest is available",
           "do not replace the managed downloader with ad-hoc browser automation",
           "do not start a second prepare while one is active",
           "do not treat stale orphaned prepare jobs as active blockers",
@@ -490,6 +493,7 @@
         "proof": [
           "machineWorker",
           "scriptSha256",
+          "mediaSpec",
           "mediaSha256",
           "backupProof",
           "installMedia",
@@ -502,13 +506,13 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "265656065ad03310e0b3f926064580395696a677fe9c211e63b10efef6a51d52",
-            "bytes": 51294
+            "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
+            "bytes": 52468
           },
           {
             "name": "prepare",
-            "sha256": "88ef4d0426225ac11b6c92bba255958395adc08485ea875ca4092fc697aeb06b",
-            "bytes": 91560
+            "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
+            "bytes": 95809
           },
           {
             "name": "arm",
@@ -582,14 +586,14 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "265656065ad03310e0b3f926064580395696a677fe9c211e63b10efef6a51d52",
-        "bytes": 51294
+        "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
+        "bytes": 52468
       },
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "88ef4d0426225ac11b6c92bba255958395adc08485ea875ca4092fc697aeb06b",
-        "bytes": 91560
+        "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
+        "bytes": 95809
       },
       {
         "name": "arm",
@@ -878,13 +882,13 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "265656065ad03310e0b3f926064580395696a677fe9c211e63b10efef6a51d52",
-            "bytes": 51294
+            "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
+            "bytes": 52468
           },
           {
             "name": "prepare",
-            "sha256": "88ef4d0426225ac11b6c92bba255958395adc08485ea875ca4092fc697aeb06b",
-            "bytes": 91560
+            "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
+            "bytes": 95809
           },
           {
             "name": "arm",
@@ -942,7 +946,9 @@
             "run repair/status when the user reports a broken or interrupted reinstall workflow",
             "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
             "start managed prepare once with stable idempotency",
+            "resolve hosted windows-media manifest first when supplied, otherwise use the pinned fallback URL/SHA",
             "download Windows media with the guarded parallel/resumable route on the selected PC",
+            "reuse a valid existing USB install image or prepared reinstall root without forcing the full 12GB media path",
             "prove backup, install media, unattended account, Autounattend, postinstall",
             "ask final reinstall confirmation only after proof is complete",
             "arm reinstall and stop probing while reboot return path is expected"
@@ -950,6 +956,7 @@
           "doNot": [
             "do not ask the user to manually download ISO when the source computer is attached",
             "do not open Microsoft download pages as the normal route",
+            "do not hard-code a single Windows media URL when a verified hosted media manifest is available",
             "do not replace the managed downloader with ad-hoc browser automation",
             "do not start a second prepare while one is active",
             "do not treat stale orphaned prepare jobs as active blockers",
@@ -958,6 +965,7 @@
           "proof": [
             "machineWorker",
             "scriptSha256",
+            "mediaSpec",
             "mediaSha256",
             "backupProof",
             "installMedia",
@@ -970,13 +978,13 @@
           "scripts": [
             {
               "name": "managed",
-              "sha256": "265656065ad03310e0b3f926064580395696a677fe9c211e63b10efef6a51d52",
-              "bytes": 51294
+              "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
+              "bytes": 52468
             },
             {
               "name": "prepare",
-              "sha256": "88ef4d0426225ac11b6c92bba255958395adc08485ea875ca4092fc697aeb06b",
-              "bytes": 91560
+              "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
+              "bytes": 95809
             },
             {
               "name": "arm",

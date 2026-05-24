@@ -351,7 +351,7 @@ interface FileTransfer {
 type ServerMessage =
   | { readonly type: "hello"; readonly snapshot: EncryptedUpdate | null; readonly updates: readonly EncryptedUpdate[]; readonly files?: readonly EncryptedFile[]; readonly peers: readonly PeerInfo[]; readonly joinRequests?: readonly JoinRequest[] }
   | { readonly type: "ack"; readonly id: string }
-  | { readonly type: "pong" }
+  | { readonly type: "pong"; readonly id?: string; readonly t?: number }
   | { readonly type: "update"; readonly update: EncryptedUpdate }
   | { readonly type: "file"; readonly file: EncryptedFile }
   | { readonly type: "presence"; readonly peers: readonly PeerInfo[] }
@@ -409,6 +409,9 @@ type DirectMessage =
   | { readonly type: "remote.output"; readonly output: EncryptedRemoteOutput };
 
 const heartbeatIntervalMs = 12_000;
+const hiddenHeartbeatIntervalMs = 36_000;
+const directHeartbeatIntervalMs = 24_000;
+const busyHeartbeatIntervalMs = 7_000;
 const staleConnectionMs = 42_000;
 const reconnectJitterMs = 750;
 const minReconnectDelayMs = 500;
@@ -443,6 +446,9 @@ export class TunnelSync {
   private heartbeatTimer = 0;
   private pingWatchdogTimer = 0;
   private lastSeenAt = 0;
+  private lastPingSentAt = 0;
+  private lastPongLatencyMs = 0;
+  private pingSeq = 0;
   private needsSnapshot = false;
   private readonly auth: Promise<string>;
   private readonly offlineQueue: OutboundUpdate[] = [];
@@ -1055,6 +1061,9 @@ export class TunnelSync {
     }
 
     if (message.type === "pong") {
+      if (message.id && message.t && message.t === this.lastPingSentAt) {
+        this.lastPongLatencyMs = Math.max(1, Date.now() - message.t);
+      }
       return;
     }
 
@@ -2056,7 +2065,7 @@ export class TunnelSync {
       this.closeAndReconnect(ws);
       return;
     }
-    if (forcePing || staleFor > heartbeatIntervalMs) {
+    if (forcePing || staleFor > this.heartbeatDueMs()) {
       this.safePing(ws);
     }
   }
@@ -2077,7 +2086,30 @@ export class TunnelSync {
       this.closeAndReconnect(ws);
       return;
     }
-    this.safePing(ws);
+    const quietFor = Date.now() - this.lastSeenAt;
+    if (quietFor >= this.heartbeatDueMs() || this.hasPendingServerWork()) {
+      this.safePing(ws);
+    }
+  }
+
+  private heartbeatDueMs(): number {
+    if (this.hasPendingServerWork()) {
+      return busyHeartbeatIntervalMs;
+    }
+    if (document.visibilityState === "hidden") {
+      return hiddenHeartbeatIntervalMs;
+    }
+    if (this.hasOpenDirectChannels()) {
+      return directHeartbeatIntervalMs;
+    }
+    if (this.lastPongLatencyMs > 1200) {
+      return Math.min(directHeartbeatIntervalMs, heartbeatIntervalMs + Math.round(this.lastPongLatencyMs * 2));
+    }
+    return heartbeatIntervalMs;
+  }
+
+  private hasPendingServerWork(): boolean {
+    return this.pendingAcks.size > 0 || this.pendingFileControls.size > 0 || this.controlQueue.length > 0 || this.offlineQueue.length > 0;
   }
 
   private closeAndReconnect(ws: WebSocket): void {
@@ -2099,13 +2131,14 @@ export class TunnelSync {
   private safePing(ws: WebSocket): void {
     try {
       const sentAt = Date.now();
-      ws.send(JSON.stringify({ type: "ping" }));
+      this.lastPingSentAt = sentAt;
+      ws.send(JSON.stringify({ type: "ping", id: `p${++this.pingSeq}`, t: sentAt }));
       window.clearTimeout(this.pingWatchdogTimer);
       this.pingWatchdogTimer = window.setTimeout(() => {
         if (!this.destroyed && this.ws === ws && ws.readyState === WebSocket.OPEN && this.lastSeenAt <= sentAt) {
           this.closeAndReconnect(ws);
         }
-      }, 4500);
+      }, Math.max(4500, Math.min(9000, 1800 + this.lastPongLatencyMs * 4)));
     } catch {
       this.closeAndReconnect(ws);
     }
