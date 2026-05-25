@@ -24,6 +24,7 @@ import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
+import { agentDialogLabel, containsAgentInvocationText, isOperatorHeaderText, stripAgentInvocationText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import { installTooltips } from "./ui/tooltips";
@@ -94,7 +95,6 @@ const app: HTMLDivElement = root;
 installTooltips();
 
 const selfCellLabel = "Я";
-const agentDialogLabel = "Агент";
 const agentReleaseCheckTtlMs = 60_000;
 
 type AgentButtonMode = "download" | "update" | "link";
@@ -2190,6 +2190,9 @@ function renderApp(): void {
   textarea = app.querySelector(".dialog-buffer");
   composer = app.querySelector(".chat-composer");
   textPaint = app.querySelector<HTMLDivElement>(".text-paint-inner");
+  if (textPaint) {
+    bindTextPaintInteractions(textPaint);
+  }
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
@@ -2208,9 +2211,9 @@ function renderApp(): void {
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
   composer?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (isMessageSendEnter(event)) {
       event.preventDefault();
-      finalizeComposerDraft();
+      void finalizeComposerDraft();
     }
   });
   app.querySelector<HTMLFormElement>(".composer-bar")?.addEventListener("submit", (event) => {
@@ -2439,7 +2442,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   if (!granted) {
     await typeOperatorChat(
       agentTunnelId,
-      formatOperatorChat("Агент не смог подключить командный канал. Проверь интернет: чат сам повторит подключение.", "sysadmin"),
+      formatOperatorChat("Клава не смогла подключить командный канал. Проверь интернет: чат сам повторит подключение.", "sysadmin"),
       "fast"
     );
     return;
@@ -3287,11 +3290,11 @@ function renderDialogChrome(): void {
   if (state) {
     let remote = tunnel && isSelfTunnel(tunnel) ? "мое место" : "на связи";
     if (agentTunnel && mode === "download") {
-      remote = "подключить Алика";
+      remote = "подключить Клаву";
     } else if (agentTunnel && mode === "update") {
-      remote = "обновить Алика";
+      remote = "обновить Клаву";
     } else if (agentTunnel) {
-      remote = remoteEnabled.has(selectedId) ? "Алик рядом" : "Алик";
+      remote = remoteEnabled.has(selectedId) ? "Клава рядом" : "Клава";
     } else if (remoteAccess.has(selectedId)) {
       remote = "доступ открыт";
     } else if (remoteEnabled.has(selectedId)) {
@@ -3326,7 +3329,7 @@ function renderDialogChrome(): void {
     if (needsAgent) {
       remoteButton.setAttribute("aria-label", mode === "update" ? "update" : "download");
       remoteButton.innerHTML = `${icon("download")}<span>${mode === "update" ? "Обновить" : "Подключить"}</span>`;
-      remoteButton.dataset.tooltip = mode === "update" ? "Обновить Алика" : "Подключить Алика";
+      remoteButton.dataset.tooltip = mode === "update" ? "Обновить Клаву" : "Подключить Клаву";
     }
   }
   if (appsButton) {
@@ -5683,8 +5686,8 @@ function isChessPromotionPiece(value: unknown): value is PieceSymbol {
   return value === "q" || value === "r" || value === "b" || value === "n";
 }
 
-function grantTargetsThisDevice(targetDeviceId: string): boolean {
-  return targetDeviceId === "*" || targetDeviceId === device?.id;
+function grantTargetsThisDevice(targetDeviceId?: string): boolean {
+  return !targetDeviceId || targetDeviceId === "*" || targetDeviceId === device?.id;
 }
 
 function tunnelHasNotice(tunnelId: string): boolean {
@@ -6265,6 +6268,15 @@ function rememberComposerDraft(): void {
   resizeComposer();
 }
 
+function isMessageSendEnter(event: KeyboardEvent): boolean {
+  return event.key === "Enter"
+    && !event.shiftKey
+    && !event.ctrlKey
+    && !event.altKey
+    && !event.metaKey
+    && !event.isComposing;
+}
+
 function scheduleLiveDraft(tunnelId: string, draft: string): void {
   const sync = syncs.get(tunnelId);
   if (!sync) {
@@ -6390,13 +6402,12 @@ function messageWithAttachmentContext(message: string, sentFiles: readonly Recei
 }
 
 function containsAgentInvocation(text: string): boolean {
-  return /(^|[^\p{L}\p{N}_])(?:\u0430\u043b\u0438\u043a|alik)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+  return containsAgentInvocationText(text);
 }
 
 function stripAgentInvocation(text: string): string {
   const body = normalizeChatMessage(text);
-  const stripped = body.replace(/^\s*(?:\u0430\u043b\u0438\u043a|alik)\s*[,.:;!?-]*\s*/iu, "").trim();
-  return stripped || body;
+  return stripAgentInvocationText(body);
 }
 
 function agentReplyStopToken(tunnelId: string): number {
@@ -7248,6 +7259,106 @@ function renderLineTags(): void {
   lineMeta.innerHTML = last ? `<span style="--color:${last.color}">${escapeHtml(last.time)}</span>` : "";
 }
 
+function bindTextPaintInteractions(root: HTMLDivElement): void {
+  root.addEventListener("click", handleTextPaintClick);
+  root.addEventListener("keydown", handleTextPaintKeydown);
+  root.addEventListener("submit", handleTextPaintSubmit);
+}
+
+function handleTextPaintClick(event: MouseEvent): void {
+  const target = event.target instanceof Element ? event.target : null;
+  const root = event.currentTarget instanceof HTMLElement ? event.currentTarget : textPaint;
+  if (!target || !root || !root.contains(target)) {
+    return;
+  }
+
+  const fileButton = target.closest<HTMLButtonElement>(".bubble-file[data-file-id]");
+  if (fileButton && root.contains(fileButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    const fileId = fileButton.dataset.fileId || "";
+    const file = (files.get(selectedId) ?? []).find((item) => item.id === fileId);
+    if (file) {
+      downloadReceivedFile(file);
+    }
+    return;
+  }
+
+  const markButton = target.closest<HTMLButtonElement>(".bubble-mark");
+  if (markButton && root.contains(markButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    markDialogMessage(markButton);
+    return;
+  }
+
+  const peekButton = target.closest<HTMLElement>(".message-dialog-peek");
+  if (peekButton && root.contains(peekButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    openMessageDialogFromElement(peekButton);
+    return;
+  }
+
+  const closeButton = target.closest<HTMLButtonElement>(".message-dialog-close");
+  if (closeButton && root.contains(closeButton)) {
+    event.preventDefault();
+    event.stopPropagation();
+    openMessageDialog = null;
+    renderTextPaint();
+    return;
+  }
+
+  const dialogForm = target.closest(".message-dialog-form");
+  if (dialogForm && root.contains(dialogForm)) {
+    event.stopPropagation();
+    return;
+  }
+
+  if (target.closest("a, button, textarea, input, .message-dialog-panel, .bubble-file")) {
+    return;
+  }
+  const bubble = target.closest<HTMLElement>(".chat-bubble[data-dialog-source-id]");
+  if (bubble && root.contains(bubble)) {
+    openMessageDialogFromElement(bubble);
+  }
+}
+
+function handleTextPaintKeydown(event: KeyboardEvent): void {
+  const target = event.target instanceof Element ? event.target : null;
+  const root = event.currentTarget instanceof HTMLElement ? event.currentTarget : textPaint;
+  if (!target || !root || !root.contains(target)) {
+    return;
+  }
+
+  const replyInput = target.closest<HTMLTextAreaElement>(".message-dialog-form textarea");
+  const replyForm = replyInput?.closest<HTMLFormElement>(".message-dialog-form") ?? null;
+  if (replyInput && replyForm && root.contains(replyForm) && isMessageSendEnter(event)) {
+    event.preventDefault();
+    void submitMessageDialogReply(replyForm);
+    return;
+  }
+
+  if (target.closest("a, button, textarea, input, .message-dialog-panel, .bubble-file")) {
+    return;
+  }
+  const bubble = target.closest<HTMLElement>(".chat-bubble[data-dialog-source-id]");
+  if (bubble && root.contains(bubble) && (event.key === "Enter" || event.key === " ")) {
+    event.preventDefault();
+    openMessageDialogFromElement(bubble);
+  }
+}
+
+function handleTextPaintSubmit(event: SubmitEvent): void {
+  const form = event.target instanceof HTMLFormElement ? event.target : null;
+  const root = event.currentTarget instanceof HTMLElement ? event.currentTarget : textPaint;
+  if (!form || !root || !root.contains(form) || !form.classList.contains("message-dialog-form")) {
+    return;
+  }
+  event.preventDefault();
+  void submitMessageDialogReply(form);
+}
+
 function renderTextPaint(): void {
   if (!textarea || !textPaint) {
     return;
@@ -7527,9 +7638,6 @@ function renderTextPaint(): void {
       </article>
     `;
   }).join("");
-  installBubbleAttachmentDownloads();
-  installBubbleMarkButtons();
-  installMessageDialogOpeners();
   if (scroll && stickToBottom) {
     window.setTimeout(() => {
       scroll.scrollTop = scroll.scrollHeight;
@@ -7603,52 +7711,6 @@ function renderMessageDialogPanel(
       </form>
     </section>
   `;
-}
-
-function installMessageDialogOpeners(): void {
-  textPaint?.querySelectorAll<HTMLElement>(".chat-bubble[data-dialog-source-id]").forEach((bubble) => {
-    bubble.addEventListener("click", (event) => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest("a, button, textarea, input, .message-dialog-panel, .bubble-file")) {
-        return;
-      }
-      openMessageDialogFromElement(bubble);
-    });
-    bubble.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        openMessageDialogFromElement(bubble);
-      }
-    });
-  });
-  textPaint?.querySelectorAll<HTMLElement>(".message-dialog-peek").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openMessageDialogFromElement(button);
-    });
-  });
-  textPaint?.querySelectorAll<HTMLButtonElement>(".message-dialog-close").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openMessageDialog = null;
-      renderTextPaint();
-    });
-  });
-  textPaint?.querySelectorAll<HTMLFormElement>(".message-dialog-form").forEach((form) => {
-    form.addEventListener("click", (event) => event.stopPropagation());
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      void submitMessageDialogReply(form);
-    });
-    form.querySelector<HTMLTextAreaElement>("textarea")?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-        event.preventDefault();
-        void submitMessageDialogReply(form);
-      }
-    });
-  });
 }
 
 function openMessageDialogFromElement(element: HTMLElement): void {
@@ -7752,16 +7814,6 @@ function renderBubbleMarkButton(
   `;
 }
 
-function installBubbleMarkButtons(): void {
-  textPaint?.querySelectorAll<HTMLButtonElement>(".bubble-mark").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      markDialogMessage(button);
-    });
-  });
-}
-
 function markDialogMessage(button: HTMLButtonElement): void {
   if (!selectedId || !textarea) {
     return;
@@ -7840,7 +7892,7 @@ function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | u
   } else if (mode === "reputation") {
     text = "Нажми сердце возле сообщения";
   } else if (tunnel && isAgentTunnel(tunnel)) {
-    text = "Попроси Алика сделать задачу";
+    text = "Попроси Клаву сделать задачу";
   } else if (tunnel && isSelfTunnel(tunnel)) {
     text = "Место для быстрых мыслей";
   }
@@ -7893,20 +7945,6 @@ function renderBubbleAttachments(bundles: readonly FileBundleMarker[]): string {
       }).join("")}
     </div>
   `;
-}
-
-function installBubbleAttachmentDownloads(): void {
-  textPaint?.querySelectorAll<HTMLButtonElement>(".bubble-file[data-file-id]").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const fileId = button.dataset.fileId || "";
-      const file = (files.get(selectedId) ?? []).find((item) => item.id === fileId);
-      if (file) {
-        downloadReceivedFile(file);
-      }
-    });
-  });
 }
 
 function liveDraftsForSelected(): LiveDraftState[] {
@@ -8035,7 +8073,7 @@ function isAgentChromeLineClass(className: string): boolean {
 }
 
 function isOperatorHeader(line: string): boolean {
-  return /^(Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
+  return isOperatorHeaderText(line);
 }
 
 function cleanAgentContext(value: string): string {

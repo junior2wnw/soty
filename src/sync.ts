@@ -1149,8 +1149,8 @@ export class TunnelSync {
     }
 
     if (message.type === "notice.knock") {
-      if (this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
-        this.callbacks.onKnock(message.knock);
+      if (this.shouldAcceptTargetedControl(message.knock.id, message.knock.deviceId, message.knock.targetDeviceId)) {
+        this.callbacks.onKnock(this.withControlTarget(message.knock));
       }
       return;
     }
@@ -1163,8 +1163,8 @@ export class TunnelSync {
     }
 
     if (message.type === "remote.request") {
-      if (this.rememberControl(message.request.id) && message.request.deviceId !== this.device.id) {
-        this.callbacks.onRemoteRequest(message.request);
+      if (this.shouldAcceptTargetedControl(message.request.id, message.request.deviceId, message.request.targetDeviceId)) {
+        this.callbacks.onRemoteRequest(this.withControlTarget(message.request));
       }
       return;
     }
@@ -1180,35 +1180,35 @@ export class TunnelSync {
     }
 
     if (message.type === "remote.grant") {
-      if (this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
-        this.callbacks.onRemoteGrant(message.grant);
+      if (this.shouldAcceptTargetedControl(message.grant.id, message.grant.deviceId, message.grant.targetDeviceId)) {
+        this.callbacks.onRemoteGrant(this.withControlTarget(message.grant));
       }
       return;
     }
 
     if (message.type === "remote.command") {
-      if (this.rememberControl(message.command.id) && message.command.deviceId !== this.device.id) {
+      if (this.shouldAcceptTargetedControl(message.command.id, message.command.deviceId, message.command.targetDeviceId)) {
         await this.applyRemoteCommand(message.command);
       }
       return;
     }
 
     if (message.type === "remote.script") {
-      if (this.rememberControl(message.script.id) && message.script.deviceId !== this.device.id) {
+      if (this.shouldAcceptTargetedControl(message.script.id, message.script.deviceId, message.script.targetDeviceId)) {
         await this.applyRemoteScript(message.script);
       }
       return;
     }
 
     if (message.type === "remote.cancel") {
-      if (this.rememberControl(message.cancel.id) && message.cancel.deviceId !== this.device.id) {
+      if (this.shouldAcceptTargetedControl(message.cancel.id, message.cancel.deviceId, message.cancel.targetDeviceId)) {
         this.applyRemoteCancel(message.cancel);
       }
       return;
     }
 
     if (message.type === "remote.output") {
-      if (this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {
+      if (this.shouldAcceptTargetedControl(message.output.id, message.output.deviceId, message.output.targetDeviceId)) {
         await this.applyRemoteOutput(message.output);
       }
       return;
@@ -1230,6 +1230,28 @@ export class TunnelSync {
 
   private rememberControl(id: string): boolean {
     return rememberBounded(this.seenControlIds, id);
+  }
+
+  private controlTarget(targetDeviceId?: string): string {
+    return targetDeviceId || "*";
+  }
+
+  private withControlTarget<T extends { readonly targetDeviceId?: string }>(message: T): T & { readonly targetDeviceId: string } {
+    const targetDeviceId = this.controlTarget(message.targetDeviceId);
+    return targetDeviceId === message.targetDeviceId
+      ? message as T & { readonly targetDeviceId: string }
+      : { ...message, targetDeviceId };
+  }
+
+  private targetsThisDevice(targetDeviceId?: string): boolean {
+    const target = this.controlTarget(targetDeviceId);
+    return target === "*" || target === this.device.id;
+  }
+
+  private shouldAcceptTargetedControl(id: string, sourceDeviceId?: string, targetDeviceId?: string): boolean {
+    return (!sourceDeviceId || sourceDeviceId !== this.device.id)
+      && this.targetsThisDevice(targetDeviceId)
+      && this.rememberControl(id);
   }
 
   private async applyEncrypted(update: EncryptedUpdate): Promise<void> {
@@ -1387,7 +1409,7 @@ export class TunnelSync {
       command: text,
       ...(safeRemoteTimeoutMs(payload.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(payload.timeoutMs) } : {}),
       ...(typeof payload.runAs === "string" ? { runAs: payload.runAs.slice(0, 20) } : {}),
-      targetDeviceId: command.targetDeviceId,
+      targetDeviceId: this.controlTarget(command.targetDeviceId),
       deviceId: command.deviceId || "",
       nick: command.deviceNick || command.nick || "",
       createdAt: command.createdAt || new Date().toISOString()
@@ -1408,7 +1430,7 @@ export class TunnelSync {
       script: text,
       ...(safeRemoteTimeoutMs(payload.timeoutMs) ? { timeoutMs: safeRemoteTimeoutMs(payload.timeoutMs) } : {}),
       ...(typeof payload.runAs === "string" ? { runAs: payload.runAs.slice(0, 20) } : {}),
-      targetDeviceId: script.targetDeviceId,
+      targetDeviceId: this.controlTarget(script.targetDeviceId),
       deviceId: script.deviceId || "",
       nick: script.deviceNick || script.nick || "",
       createdAt: script.createdAt || new Date().toISOString()
@@ -1422,7 +1444,7 @@ export class TunnelSync {
     this.callbacks.onRemoteCancel({
       id: cancel.id,
       commandId: cancel.commandId,
-      targetDeviceId: cancel.targetDeviceId,
+      targetDeviceId: this.controlTarget(cancel.targetDeviceId),
       deviceId: cancel.deviceId || "",
       nick: cancel.deviceNick || cancel.nick || "",
       createdAt: cancel.createdAt || new Date().toISOString()
@@ -1437,7 +1459,7 @@ export class TunnelSync {
       id: output.id,
       commandId: output.commandId,
       text,
-      targetDeviceId: output.targetDeviceId,
+      targetDeviceId: this.controlTarget(output.targetDeviceId),
       ...(typeof output.exitCode === "number" ? { exitCode: output.exitCode } : {}),
       deviceId: output.deviceId || "",
       nick: output.deviceNick || output.nick || "",
@@ -1992,35 +2014,35 @@ export class TunnelSync {
       await this.applyFile(message.file);
       return;
     }
-    if (message.type === "notice.knock" && this.rememberControl(message.knock.id) && message.knock.deviceId !== this.device.id) {
-      this.callbacks.onKnock(message.knock);
+    if (message.type === "notice.knock" && this.shouldAcceptTargetedControl(message.knock.id, message.knock.deviceId, message.knock.targetDeviceId)) {
+      this.callbacks.onKnock(this.withControlTarget(message.knock));
       return;
     }
     if (message.type === "live.draft" && this.rememberControl(message.draft.id) && message.draft.deviceId !== this.device.id) {
       await this.applyLiveDraft(message.draft);
       return;
     }
-    if (message.type === "remote.request" && this.rememberControl(message.request.id) && message.request.deviceId !== this.device.id) {
-      this.callbacks.onRemoteRequest(message.request);
+    if (message.type === "remote.request" && this.shouldAcceptTargetedControl(message.request.id, message.request.deviceId, message.request.targetDeviceId)) {
+      this.callbacks.onRemoteRequest(this.withControlTarget(message.request));
       return;
     }
-    if (message.type === "remote.grant" && this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
-      this.callbacks.onRemoteGrant(message.grant);
+    if (message.type === "remote.grant" && this.shouldAcceptTargetedControl(message.grant.id, message.grant.deviceId, message.grant.targetDeviceId)) {
+      this.callbacks.onRemoteGrant(this.withControlTarget(message.grant));
       return;
     }
-    if (message.type === "remote.command" && this.rememberControl(message.command.id) && message.command.deviceId !== this.device.id) {
+    if (message.type === "remote.command" && this.shouldAcceptTargetedControl(message.command.id, message.command.deviceId, message.command.targetDeviceId)) {
       await this.applyRemoteCommand(message.command);
       return;
     }
-    if (message.type === "remote.script" && this.rememberControl(message.script.id) && message.script.deviceId !== this.device.id) {
+    if (message.type === "remote.script" && this.shouldAcceptTargetedControl(message.script.id, message.script.deviceId, message.script.targetDeviceId)) {
       await this.applyRemoteScript(message.script);
       return;
     }
-    if (message.type === "remote.cancel" && this.rememberControl(message.cancel.id) && message.cancel.deviceId !== this.device.id) {
+    if (message.type === "remote.cancel" && this.shouldAcceptTargetedControl(message.cancel.id, message.cancel.deviceId, message.cancel.targetDeviceId)) {
       this.applyRemoteCancel(message.cancel);
       return;
     }
-    if (message.type === "remote.output" && this.rememberControl(message.output.id) && message.output.deviceId !== this.device.id) {
+    if (message.type === "remote.output" && this.shouldAcceptTargetedControl(message.output.id, message.output.deviceId, message.output.targetDeviceId)) {
       await this.applyRemoteOutput(message.output);
     }
   }

@@ -40,19 +40,19 @@ export function isRemoteGrant(value) {
   return value
     && isShortText(value.id, 140)
     && typeof value.enabled === "boolean"
-    && isShortText(value.targetDeviceId, 140);
+    && optionalTargetDeviceId(value.targetDeviceId);
 }
 
 export function isRemoteRequest(value) {
   return value
     && isShortText(value.id, 140)
-    && isShortText(value.targetDeviceId, 140);
+    && optionalTargetDeviceId(value.targetDeviceId);
 }
 
 export function isNoticeKnock(value) {
   return value
     && isShortText(value.id, 140)
-    && isShortText(value.targetDeviceId, 140);
+    && optionalTargetDeviceId(value.targetDeviceId);
 }
 
 export function isLiveDraft(value) {
@@ -65,7 +65,7 @@ export function isLiveDraft(value) {
 export function isRemoteCommand(value) {
   return value
     && isShortText(value.id, 140)
-    && isShortText(value.targetDeviceId, 140)
+    && optionalTargetDeviceId(value.targetDeviceId)
     && isShortText(value.nonce, 64)
     && isShortText(value.ciphertext, 20_000);
 }
@@ -73,7 +73,7 @@ export function isRemoteCommand(value) {
 export function isRemoteScript(value) {
   return value
     && isShortText(value.id, 140)
-    && isShortText(value.targetDeviceId, 140)
+    && optionalTargetDeviceId(value.targetDeviceId)
     && isShortText(value.nonce, 64)
     && isShortText(value.ciphertext, 2_000_000);
 }
@@ -82,7 +82,7 @@ export function isRemoteOutput(value) {
   return value
     && isShortText(value.id, 140)
     && isShortText(value.commandId, 140)
-    && isShortText(value.targetDeviceId, 140)
+    && optionalTargetDeviceId(value.targetDeviceId)
     && isShortText(value.nonce, 64)
     && isShortText(value.ciphertext, 80_000)
     && (value.exitCode === undefined || isSafeRange(value.exitCode, -32768, 32767));
@@ -92,7 +92,7 @@ export function isRemoteCancel(value) {
   return value
     && isShortText(value.id, 140)
     && isShortText(value.commandId, 140)
-    && isShortText(value.targetDeviceId, 140);
+    && optionalTargetDeviceId(value.targetDeviceId);
 }
 
 export function isP2pDescription(value, kind) {
@@ -165,6 +165,10 @@ function isJoinPublicJwk(value) {
 
 function optionalShortText(value, max) {
   return value === undefined || value === null || isShortText(value, max);
+}
+
+function optionalTargetDeviceId(value) {
+  return value === undefined || isShortText(value, 140);
 }
 
 function isSafeRange(value, min, max) {

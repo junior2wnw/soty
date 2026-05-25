@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 import { attachAgentRelay } from "../server/agent-relay.js";
+import { attachRealtime } from "../server/realtime.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourceAgentPath = join(root, "scripts", "soty-agent.mjs");
@@ -49,7 +50,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
       assertEqual(health.body.responseStyle.id, "agent-sysadmin");
-      assertEqual(health.body.responseStyle.displayName, "Агент");
+      assertEqual(health.body.responseStyle.displayName, "Клава");
       assertEqual(health.body.responseStyle.maxUserFacingLines, 0);
       assertEqual(health.body.memory.schema, "soty.memory-plane.v1");
       assertEqual(health.body.memory.controller, "soty.memctl.v1");
@@ -362,7 +363,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(toolkits.status, 200);
       assertEqual(toolkits.body.schema, "soty.automation-toolkits.v2");
       assertEqual(toolkits.body.actionMemory.schema, "soty.action-memory.v1");
-      assertEqual(toolkits.body.responseStyle.displayName, "Агент");
+      assertEqual(toolkits.body.responseStyle.displayName, "Клава");
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "computer-use-plane"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "capability-gateway"));
       assert(toolkits.body.toolkits.some((toolkit) => toolkit.name === "durable-action"));
@@ -889,6 +890,61 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(mentionedJob.source.preferredTargetLabel, "вай вай");
       } finally {
         await closeServer(relayServer);
+      }
+    }],
+    ["realtime remote controls are routed to their target device only", async () => {
+      const { server, wss, baseUrl } = await startRealtimeSelftestServer();
+      const roomId = "room_targeted_remote_00000001";
+      const controller = await connectRealtimeSelftestPeer(baseUrl, roomId, "controller-dev", "controller");
+      const target = await connectRealtimeSelftestPeer(baseUrl, roomId, "target-dev", "target");
+      const bystander = await connectRealtimeSelftestPeer(baseUrl, roomId, "bystander-dev", "bystander");
+      try {
+        controller.clear();
+        target.clear();
+        bystander.clear();
+        controller.send({
+          type: "remote.command",
+          command: {
+            id: "cmd-target-only",
+            targetDeviceId: "target-dev",
+            nonce: "nonce",
+            ciphertext: "cipher"
+          }
+        });
+        const routed = await target.next("remote.command");
+        assertEqual(routed.command.id, "cmd-target-only");
+        assertEqual(routed.command.deviceId, "controller-dev");
+        await sleep(80);
+        assertEqual(bystander.messages.filter((message) => message.type === "remote.command").length, 0);
+        controller.send({
+          type: "remote.request",
+          request: {
+            id: "request-all",
+            targetDeviceId: "*"
+          }
+        });
+        assertEqual((await target.next("remote.request")).request.id, "request-all");
+        assertEqual((await bystander.next("remote.request")).request.id, "request-all");
+        controller.clear();
+        target.clear();
+        bystander.clear();
+        controller.send({
+          type: "remote.command",
+          command: {
+            id: "cmd-legacy-broadcast",
+            nonce: "nonce",
+            ciphertext: "cipher"
+          }
+        });
+        assertEqual((await target.next("remote.command")).command.id, "cmd-legacy-broadcast");
+        assertEqual((await bystander.next("remote.command")).command.id, "cmd-legacy-broadcast");
+        await sleep(80);
+        assertEqual(controller.messages.filter((message) => message.type === "remote.command").length, 0);
+      } finally {
+        controller.close();
+        target.close();
+        bystander.close();
+        await closeRealtimeSelftestServer(server, wss);
       }
     }],
     ["invalid json is rejected", async () => {
@@ -1467,6 +1523,7 @@ async function runScenarios({ relayUrl } = {}) {
       const relayWaiters = await readFile(join(root, "server", "agent-relay", "waiters.js"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
+      const agentIdentitySource = await readFile(join(root, "src", "features", "agent-identity.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const prepare = await readFile(join(root, "scripts", "windows", "soty-prepare-windows-reinstall.ps1"), "utf8");
       const arm = await readFile(join(root, "scripts", "windows", "soty-arm-windows-reinstall.ps1"), "utf8");
@@ -1592,7 +1649,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("verification='registry-current-wallpaper-matches-path'"));
       assert(agent.includes("currentWallpaper"));
       assert(agent.includes("Wallpaper honesty"));
-      assert(agent.includes("Hidden Link devices are not candidates"));
+      assert(agent.includes("Hidden or unnamed Link devices must not be guessed"));
       assert(!agent.includes("return accessTargets.length === 1 ? accessTargets[0] : null"));
       assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
       assert(agent.includes("native-openai-image-generation-required"));
@@ -1648,7 +1705,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("rememberPostArmReboot"));
       assert(agent.includes("agentResponseStyleProfiles"));
       assert(agent.includes("agent-sysadmin"));
-      assert(agent.includes("Агент"));
+      assert(agent.includes("Клава"));
       assert(agent.includes("response_style_rule_${index + 1}"));
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
       assert(!agent.includes("isActionableTargetOperatorMessage"));
@@ -1732,8 +1789,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!main.includes("sendOperatorUserMessage"));
       assert(!main.includes('type: "operator.message"'));
       assert(main.includes("containsAgentInvocation"));
-      assert(main.includes("(?:\\u0430\\u043b\\u0438\\u043a|alik)"));
-      assert(!main.includes("(?:\\u0430\\u0433\\u0435\\u043d\\u0442|agent)"));
+      assert(main.includes("containsAgentInvocationText"));
+      assert(main.includes("stripAgentInvocationText"));
+      assert(agentIdentitySource.includes("invocationWords"));
+      assert(agentIdentitySource.includes("\\u043a\\u043b\\u0430\\u0432\\u0430"));
+      assert(agentIdentitySource.includes("klava"));
+      assert(agentIdentitySource.includes("\\u0430\\u043b\\u0438\\u043a"));
+      assert(agentIdentitySource.includes("alik"));
       assert(main.includes("stripAgentInvocation"));
       assert(main.includes("explicitMention: true"));
       assert(agent.includes("learningContextForTurn"));
@@ -1933,7 +1995,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.automationToolkits.policy.chat, "agent-sysadmin");
       assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
       assertEqual(manifest.automationToolkits.policy.diagnostics.eval, "soty-agent-eval");
-      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Агент");
+      assertEqual(manifest.automationToolkits.policy.responseStyle.displayName, "Клава");
       assertEqual(manifest.automationToolkits.policy.responseStyle.maxUserFacingLines, 0);
       assert(manifest.automationToolkits.policy.responseStyle.promptRules.some((rule) => rule.includes("trigger")));
       assert(manifest.automationToolkits.policy.responseStyle.promptRules.some((rule) => rule.includes("never stop active work")));
@@ -2176,7 +2238,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(realtime.includes("maxPendingJoinRequests"));
       assert(realtime.includes("pendingJoinRequests"));
       assert(realtime.includes("waiting.accept = message.accept"));
+      assert(realtime.includes("function routeTargeted(room, exceptPeer, targetDeviceId, message)"));
+      assert(realtime.includes('if (!targetDeviceId || targetDeviceId === "*")'));
+      assert(realtime.includes("routeTargeted(room, peer, message.command.targetDeviceId"));
+      assert(realtime.includes("routeTargeted(room, peer, message.output.targetDeviceId"));
+      assert(syncSource.includes("shouldAcceptTargetedControl"));
+      assert(syncSource.includes("this.targetsThisDevice(targetDeviceId)"));
+      assert(syncSource.includes("return (!sourceDeviceId || sourceDeviceId !== this.device.id)"));
       assert(validators.includes("function isJoinPublicJwk"));
+      assert(validators.includes("function optionalTargetDeviceId"));
       assert(validators.includes("jsonLength <= 4096"));
       assert(agentSource.includes("startOperatorRunJsonStream"));
       assert(agentSource.includes("sendLongOperatorJson"));
@@ -2186,8 +2256,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("agentDialogVisibleTargets"));
       assert(agentSource.includes("allRuntimeActiveTargets"));
-      assert(agentSource.includes("Hidden Link devices are not candidates"));
-      assert(agentSource.includes("A plain Agent chat defaults to the current/source computer, never to an unnamed Link target."));
+      assert(agentSource.includes("for (const item of sanitizeTargets(allTargets))"));
+      assert(agentSource.includes("Hidden or unnamed Link devices must not be guessed"));
+      assert(agentSource.includes("A plain Klava chat defaults to the current/source computer when it exists, never to an unnamed Link target."));
       assert(!agentSource.includes("if there is exactly one Link target, it may be the default"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
       assert(agentSource.includes("soty-agent-machine:bootstrap-download"));
@@ -2206,6 +2277,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('operation === "browser"'));
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("agentReplyStopTokens"));
+      assert(ui.includes("function isMessageSendEnter(event: KeyboardEvent): boolean"));
+      assert(ui.includes("&& !event.ctrlKey"));
+      assert(ui.includes("&& !event.altKey"));
+      assert(ui.includes("&& !event.metaKey"));
       assert(ui.includes("function agentReplyStopToken"));
       assert(ui.includes("agentReplyStopToken(tunnelId) !== replyToken"));
       assert(ui.includes("stopAgentDialogReply"));
@@ -2219,6 +2294,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("if (shouldFocusAgentMessage) {\n    selectTunnel(tunnel.id);\n  }"));
       assert(ui.includes("operatorBlockNick"));
       assert(ui.includes("speakerForLine(line, state.className, label, operatorBlockNick)"));
+      assert(ui.includes("bindTextPaintInteractions(textPaint);"));
+      assert(!ui.includes("installBubbleMarkButtons"));
+      assert(!ui.includes("installMessageDialogOpeners"));
+      assert(!ui.includes("installBubbleAttachmentDownloads"));
       assert(ui.includes("loadWriterLineSnapshots"));
       assert(ui.includes("writerLinesForSnapshot"));
       assert(ui.includes("syncedWriterLinesForSnapshot"));
@@ -2604,6 +2683,106 @@ async function runScenarios({ relayUrl } = {}) {
 
 function sourceRun(command) {
   return { target: "agent-source:dev1", command };
+}
+
+async function startRealtimeSelftestServer() {
+  const server = createServer();
+  const wss = new WebSocketServer({ noServer: true });
+  attachRealtime(wss, createRealtimeMemoryStore());
+  server.on("upgrade", (request, socket, head) => {
+    const url = new URL(request.url || "/", "http://localhost");
+    const roomId = url.pathname.replace(/^\/ws\//u, "");
+    if (!roomId) {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request, roomId);
+    });
+  });
+  await listen(server, "127.0.0.1", 0);
+  return { server, wss, baseUrl: `ws://127.0.0.1:${server.address().port}` };
+}
+
+function createRealtimeMemoryStore() {
+  const rooms = new Map();
+  return {
+    async load(roomId) {
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, {
+          id: roomId,
+          state: { auth: null, snapshot: null, updates: [], files: [], closed: null },
+          peers: new Map(),
+          waiting: new Map(),
+          seen: new Set(),
+          save: Promise.resolve()
+        });
+      }
+      return rooms.get(roomId);
+    },
+    async save() {}
+  };
+}
+
+async function connectRealtimeSelftestPeer(baseUrl, roomId, deviceId, nick) {
+  const ws = new WebSocket(`${baseUrl}/ws/${roomId}`);
+  const messages = [];
+  const waiters = [];
+  ws.on("message", (chunk) => {
+    const message = JSON.parse(chunk.toString("utf8"));
+    messages.push(message);
+    for (const waiter of waiters.splice(0)) {
+      waiter();
+    }
+  });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`realtime open timeout: ${deviceId}`)), 3000);
+    ws.once("open", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    ws.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+  ws.send(JSON.stringify({ type: "hello", deviceId, nick, roomAuth: "selftest-auth" }));
+  await waitForRealtimeMessage(messages, waiters, "hello");
+  return {
+    messages,
+    clear: () => {
+      messages.splice(0);
+    },
+    send: (message) => ws.send(JSON.stringify(message)),
+    next: (type) => waitForRealtimeMessage(messages, waiters, type),
+    close: () => ws.close()
+  };
+}
+
+async function waitForRealtimeMessage(messages, waiters, type) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    const index = messages.findIndex((message) => message.type === type);
+    if (index >= 0) {
+      return messages.splice(index, 1)[0];
+    }
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 50);
+      waiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+  throw new Error(`realtime message timeout: ${type}`);
+}
+
+async function closeRealtimeSelftestServer(server, wss) {
+  for (const client of wss.clients) {
+    client.terminate();
+  }
+  await new Promise((resolve) => wss.close(resolve));
+  await closeServer(server);
 }
 
 async function attachSelftestOperatorBridge(targets, options = {}) {

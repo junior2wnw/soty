@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { buildAgentRuntimeManifest, defaultAgentRuntimeCapabilities } from "trustlink-kernel";
+import { agentIdentity } from "./identity.mjs";
 
 export function buildAgentReleaseManifest({ version, sourceText, windowsReinstall }) {
   const routeProfiles = buildRouteProfiles(windowsReinstall);
@@ -223,7 +224,7 @@ export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRu
       routeProfiles: "soty.route-profiles.v1",
       agentRuntime: agentRuntime.schema,
       actionMemory: buildActionMemoryPolicy(),
-      chat: "agent-sysadmin",
+      chat: agentIdentity.responseStyleId,
       responseStyle: buildResponseStylePolicy(),
       openAiToolPlane,
       diagnostics: {
@@ -282,7 +283,7 @@ export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRu
         phases: ["set", "list", "cancel", "fire", "event"],
         proof: ["triggerId", "nextFireAt", "event", "firedCount"],
         schema: "soty.agent.triggers.v1",
-        promotion: "Short handoff now, automatic Agent chat continuation on time/event later."
+        promotion: `Short handoff now, automatic ${agentIdentity.triggerName} chat continuation on time/event later.`
       },
       {
         name: "generated-asset",
@@ -315,15 +316,15 @@ export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRu
 export function buildResponseStylePolicy() {
   return {
     schema: "soty.response-style.v1",
-    id: "agent-sysadmin",
-    displayName: "Агент",
-    base: "agent",
+    id: agentIdentity.responseStyleId,
+    displayName: agentIdentity.displayName,
+    base: agentIdentity.base,
     tone: "brief-sysadmin",
     maxUserFacingLines: 0,
     phraseBank: [],
     promptRules: [
       "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
-      "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
+      `${agentIdentity.triggerName} triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation.`
     ]
   };
 }

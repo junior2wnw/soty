@@ -157,7 +157,7 @@ async function handleMessage(room, peer, ws, store, raw) {
     return;
   }
   if (message.type === "notice.knock" && isNoticeKnock(message.knock)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.knock.targetDeviceId, {
       type: "notice.knock",
       knock: withPeer(peer, message.knock)
     });
@@ -171,42 +171,42 @@ async function handleMessage(room, peer, ws, store, raw) {
     return;
   }
   if (message.type === "remote.grant" && isRemoteGrant(message.grant)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.grant.targetDeviceId, {
       type: "remote.grant",
       grant: withPeer(peer, message.grant)
     });
     return;
   }
   if (message.type === "remote.request" && isRemoteRequest(message.request)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.request.targetDeviceId, {
       type: "remote.request",
       request: withPeer(peer, message.request)
     });
     return;
   }
   if (message.type === "remote.command" && isRemoteCommand(message.command)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.command.targetDeviceId, {
       type: "remote.command",
       command: withPeer(peer, message.command)
     });
     return;
   }
   if (message.type === "remote.script" && isRemoteScript(message.script)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.script.targetDeviceId, {
       type: "remote.script",
       script: withPeer(peer, message.script)
     });
     return;
   }
   if (message.type === "remote.cancel" && isRemoteCancel(message.cancel)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.cancel.targetDeviceId, {
       type: "remote.cancel",
       cancel: withPeer(peer, message.cancel)
     });
     return;
   }
   if (message.type === "remote.output" && isRemoteOutput(message.output)) {
-    broadcast(room, peer, {
+    routeTargeted(room, peer, message.output.targetDeviceId, {
       type: "remote.output",
       output: withPeer(peer, message.output)
     });
@@ -418,6 +418,14 @@ function broadcast(room, exceptPeer, message) {
       peer.ws.send(json);
     }
   }
+}
+
+function routeTargeted(room, exceptPeer, targetDeviceId, message) {
+  if (!targetDeviceId || targetDeviceId === "*") {
+    broadcast(room, exceptPeer, message);
+    return;
+  }
+  sendTo(room, targetDeviceId, message);
 }
 
 function sendTo(room, deviceId, message) {

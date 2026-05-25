@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "1c9780ce34c62f42e51fe3920ade4b57d4ceb49436ef9a0977fcbd281316a1f4",
+  "sha256": "13830acdd93ec6b48c0b5b689580d3b3fd9ba516dfc203dfe395f2250abac231",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -511,8 +511,8 @@
           },
           {
             "name": "prepare",
-            "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
-            "bytes": 95809
+            "sha256": "84ef1cc3594c44f2facd5d2b5ac8036f7119795ce954b29548dfa70eb4abf598",
+            "bytes": 94289
           },
           {
             "name": "arm",
@@ -592,8 +592,8 @@
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
-        "bytes": 95809
+        "sha256": "84ef1cc3594c44f2facd5d2b5ac8036f7119795ce954b29548dfa70eb4abf598",
+        "bytes": 94289
       },
       {
         "name": "arm",
@@ -634,14 +634,14 @@
       "responseStyle": {
         "schema": "soty.response-style.v1",
         "id": "agent-sysadmin",
-        "displayName": "Агент",
+        "displayName": "Клава",
         "base": "agent",
         "tone": "brief-sysadmin",
         "maxUserFacingLines": 0,
         "phraseBank": [],
         "promptRules": [
           "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
-          "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
+          "Klava triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
         ]
       },
       "openAiToolPlane": {
@@ -842,7 +842,7 @@
           "firedCount"
         ],
         "schema": "soty.agent.triggers.v1",
-        "promotion": "Short handoff now, automatic Agent chat continuation on time/event later."
+        "promotion": "Short handoff now, automatic Klava chat continuation on time/event later."
       },
       {
         "name": "generated-asset",
@@ -887,8 +887,8 @@
           },
           {
             "name": "prepare",
-            "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
-            "bytes": 95809
+            "sha256": "84ef1cc3594c44f2facd5d2b5ac8036f7119795ce954b29548dfa70eb4abf598",
+            "bytes": 94289
           },
           {
             "name": "arm",
@@ -983,8 +983,8 @@
             },
             {
               "name": "prepare",
-              "sha256": "92b2ecb18ac494df461a6fd86d7c920e7b9c889ab450fd389baaf0ecf614b703",
-              "bytes": 95809
+              "sha256": "84ef1cc3594c44f2facd5d2b5ac8036f7119795ce954b29548dfa70eb4abf598",
+              "bytes": 94289
             },
             {
               "name": "arm",

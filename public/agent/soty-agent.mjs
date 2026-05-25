@@ -105,21 +105,28 @@ const agentTraceFullPrompt = process.env.SOTY_AGENT_TRACE_FULL_PROMPT !== "0";
 const agentTraceRetain = Math.max(10, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_RETAIN || "200", 10) || 200, 5000));
 const agentTraceMaxJsonEvents = Math.max(20, Math.min(Number.parseInt(process.env.SOTY_AGENT_TRACE_MAX_EVENTS || "360", 10) || 360, 5000));
 const codexSessionMode = "soty-clean-codex-memory-plane-v1";
+const agentIdentity = Object.freeze({
+  responseStyleId: "agent-sysadmin",
+  displayName: "\u041a\u043b\u0430\u0432\u0430",
+  base: "agent",
+  triggerName: "Klava",
+  triggerNameRu: "\u041a\u043b\u0430\u0432\u0430"
+});
 const agentResponseStyleProfiles = Object.freeze([
   {
-    id: "agent-sysadmin",
-    displayName: "Агент",
-    base: "agent",
+    id: agentIdentity.responseStyleId,
+    displayName: agentIdentity.displayName,
+    base: agentIdentity.base,
     tone: "brief-sysadmin",
     maxUserFacingLines: 0,
     phraseBank: [],
     promptRules: [
       "Be concise when that helps the user, but never stop active work, truncate reasoning, or final-answer early to satisfy style.",
-      "Agent triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation."
+      `${agentIdentity.triggerName} triggers are optional wake-ups for idle/background waits after durable work is already scheduled; do not use them instead of active investigation, polling, or tool continuation.`
     ]
   }
 ]);
-const defaultAgentResponseStyleId = "agent-sysadmin";
+const defaultAgentResponseStyleId = agentIdentity.responseStyleId;
 const agentResponseStyleId = safeAgentResponseStyleId(
   process.env.SOTY_AGENT_RESPONSE_STYLE || persistedAgentConfig.responseStyle || defaultAgentResponseStyleId
 );
@@ -1006,7 +1013,7 @@ async function handleOperatorHttpTrigger(request, response, headers) {
     trigger: publicAgentTrigger(trigger),
     text: "trigger set\n",
     exitCode: 0,
-    agentGuidance: "Trigger set. Keep working normally when active work remains. Use the trigger only as an optional wake-up for idle/background waiting; when it fires, it will enter the Agent chat as a normal user-visible trigger message. Record reusable trigger fixes through memory if timing or matching needed debugging."
+    agentGuidance: "Trigger set. Keep working normally when active work remains. Use the trigger only as an optional wake-up for idle/background waiting; when it fires, it will enter the Klava chat as a normal user-visible trigger message. Record reusable trigger fixes through memory if timing or matching needed debugging."
   });
 }
 
@@ -4431,7 +4438,7 @@ async function replyToAgentOperatorMessage(item) {
   const agentDialog = isAgentOperatorMessage(item);
   const source = {
     tunnelId: item.target,
-    tunnelLabel: item.label || "Агент",
+    tunnelLabel: item.label || agentIdentity.displayName,
     deviceId: item.sourceDeviceId || operatorDeviceId || "",
     deviceNick: item.sourceDeviceNick || operatorDeviceNick || "",
     appOrigin: agentRelayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online",
@@ -7433,13 +7440,17 @@ function agentDialogVisibleTargets(source, target = null, sourceTargets = [], al
     add(item);
     add(matchingAgentSourceTarget(item, sourceTargets));
   };
+  for (const item of sanitizeTargets(allTargets)) {
+    add(item);
+  }
   const mentionedTarget = targetMentionedInRequest(text, allTargets);
+  const sourceTarget = sourceDeviceRuntimeTarget(safe, sourceTargets);
   if (mentionedTarget) {
     addWithSourceChannel(mentionedTarget);
   } else {
-    add(sourceDeviceRuntimeTarget(safe, sourceTargets));
+    add(sourceTarget);
   }
-  const preferredId = mentionedTarget?.id || target?.id || sourceDeviceRuntimeTarget(safe, sourceTargets)?.id || "";
+  const preferredId = mentionedTarget?.id || target?.id || sourceTarget?.id || "";
   return [...visible.values()]
     .sort((left, right) => runtimeTargetScore(right, preferredId) - runtimeTargetScore(left, preferredId));
 }
@@ -7560,12 +7571,12 @@ function generatedAssetRouteProfile() {
 
 function sotyRuntimeHints() {
   return [
-    "- Identity: \u0410\u0433\u0435\u043d\u0442.",
+    `- Identity: ${agentIdentity.displayName}.`,
     "- Use memory as short reusable hints, not as rules.",
     "- Source-device canonical: when a Soty source target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
     "- Web-controller canonical: if the current client is controller-only/web-controller and no current source-device agent target is listed, the current phone/browser is not a computer-use plane. It can request tasks on connected devices, but do not run shell/files/desktop/wallpaper on the phone or invent `agent-source:<phone>`.",
-    "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. If the current client is web-controller only, require a named/selected connected device for device actions. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
-    "- Linked-device canonical: in a device chat invoked through `Alik`/`Алик`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
+    "- Target policy: in a plain Klava chat, all explicitly granted active targets may be listed for planning, but device action still requires the current/source computer, a selected device-chat target, or a Link device named in the current request. If the current client is web-controller only, require a named connected device for device actions. Hidden or unnamed Link devices must not be guessed from access state, count, memory, or previous turns.",
+    "- Linked-device canonical: in a device chat invoked through `Klava`/`Клава`, or in a Klava chat where the current request names one or more Link devices, every selected/named Link target is a first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
     "- Installed agent runtime: TrustLink Kernel `docs/agent-runtime.md` is the reusable contract. Treat the user agent as a capability runtime with console, filesystem, process, service, package, browser, desktop, surface, app, api, job, artifact, os, transaction, and device adapters.",
@@ -7581,13 +7592,13 @@ function sotyRuntimeHints() {
     "- Action memory contract: before a nontrivial or repeated action, use shared route memory as a hint; after the action, write sanitized outcome proof for success, failure, timeout, fallback, or unexpected result. Memory is global evidence for all users, not authority, and fresh proof still decides.",
     "- Turnkey ownership: do the task end-to-end. Ask the user only for final confirmation, missing credentials, physical action, or a proven source-device outage after the recovery window. Do not ask the user to type `continue`, `resume`, or to poll status for you.",
     "- Long work: start or reuse a durable job, then wait through `computer` job_status/status with waitMs or waitForCompletion. If a tool returns running/still-running/nextTool, call the next status tool yourself until completed, failed, blocked, or waiting-confirmation.",
-    "- Agent triggers: optional wake-ups for idle/background waiting, reminders, and event callbacks. Keep working, polling, and using tools while there is active progress to make; do not use triggers to stop early. Use `computer` operation=trigger only when waiting is mostly idle or the next useful step depends on time/event. When it fires, the Agent receives a normal trigger message in chat. If matching/timing needed tuning, record a sanitized memory improvement so the trigger route gets faster.",
+    "- Klava triggers: optional wake-ups for idle/background waiting, reminders, and event callbacks. Keep working, polling, and using tools while there is active progress to make; do not use triggers to stop early. Use `computer` operation=trigger only when waiting is mostly idle or the next useful step depends on time/event. When it fires, Klava receives a normal trigger message in chat. If matching/timing needed tuning, record a sanitized memory improvement so the trigger route gets faster.",
     "- Efficient waiting: sleep inside the Soty tool/status route with low-frequency polling and rare progress messages when that is enough. Keep shell/terminal jobs available for direct investigation instead of treating managed routes as access barriers.",
     "- Self-improvement: memory and ops-style receipts exist to make repeated work faster and more deterministic. After reusable success, failure, fallback, or route change, record a sanitized improvement/proof through the available computer/toolkit fields instead of repeating manual chat steps next time.",
     "- Explicit memory requests: when the user says `сохрани`, `запомни`, or asks to keep something for the future, save one sanitized reusable fact. Prefer `computer` operation=learn when a tool is available, or add one hidden `soty-memory:` line; the UI strips that line from chat and stores it as shared memory.",
     "- Route details are on demand: for Windows reinstall, generated image/wallpaper, file transfer, and mini apps, read `SOTY_ROUTES.md` or call `computer` discover/route_profiles when that route is actually relevant. Treat route profiles as accelerators, not global laws.",
     ...sotyOptionalDetailedRuntimeRouteHints(),
-    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `Alik`/`Алик`.",
+    "- Klava dialog targeting: a plain Klava chat defaults to the current/source computer when it exists. Use a Link device only when the user names it in the current Klava-chat request, or when the request came from that device chat via `Klava`/`Клава`; multiple named devices can be used in one turn.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Never set persistent `NODE_OPTIONS`, `--require`, or a `soty-node-require-shim` on a user's computer. If such a shim exists, remove it before running Node; use `.mjs`/dynamic `import()` or the Soty artifact/file tools instead.",
@@ -7862,7 +7873,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "- Action memory loop: use route_profiles/memory hints before nontrivial or repeated actions; after meaningful outcomes, keep the automatic action receipt and add `computer` operation=learn for unexpected results, fallback, or a better reusable route.",
     "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
     "- Parallel terminal model: when one command may hang or a task needs multiple lanes, start separate durable terminal/action jobs with operation=terminal/action and detached=true; use job_status/job_stop/jobs to manage them instead of waiting for one console to become free.",
-    "- Trigger model: triggers are optional wake-ups, not work limits. Keep polling and using tools while progress is possible. Use `computer` operation=trigger only for idle/background waits where the next useful step depends on time or event; use `kind:\"time\"` with `afterMs`/`at`, `kind:\"interval\"` with `everyMs`, or `kind:\"event\"` with `event`+`match`; the fired trigger will message this Agent chat and continue.",
+    "- Trigger model: triggers are optional wake-ups, not work limits. Keep polling and using tools while progress is possible. Use `computer` operation=trigger only for idle/background waits where the next useful step depends on time or event; use `kind:\"time\"` with `afterMs`/`at`, `kind:\"interval\"` with `everyMs`, or `kind:\"event\"` with `event`+`match`; the fired trigger will message this Klava chat and continue.",
     "- Ask the user only when the task truly requires human input: final confirmation, credentials, a physical action, or a source device that stayed unavailable after the recovery window. Otherwise use durable jobs, rare progress, and verified proof.",
     "- For long waits, prefer the Soty durable job/status path over local shell sleep. A healthy running job is not a blocker; it is a reason to sleep and check again.",
     "- Use memory/route-profile learning on repeated work: pass reuseKey/successCriteria/scriptUse/contextFingerprint or an improvement note when a run proves a better deterministic path.",
@@ -7880,8 +7891,8 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     runtime.deviceNetworkText || "none",
     "",
     "Device targeting rule:",
-    "- Link means capability forwarding only when device B is the selected device-chat target or is explicitly named in the current Agent-chat request. A plain Agent chat defaults to the current/source computer, never to an unnamed Link target.",
-    "- In Agent chat, hidden Link targets are unavailable: do not infer or choose them from access=true, a single-device list, previous task memory, or selected_target fields. The runtime target list is the allowed set for this turn.",
+    "- Link means capability forwarding only when device B is the selected device-chat target or is explicitly named in the current Klava-chat request. A plain Klava chat defaults to the current/source computer when it exists, never to an unnamed Link target.",
+    "- In Klava chat, listed Link targets are available for explicit naming and multi-device planning, but do not infer or choose an unnamed target from access=true, a single-device list, previous task memory, or selected_target fields. The runtime target list is the allowed set for this turn.",
     "- Never confuse controller and target: controller is the route, selected/named target is the computer where user-visible work happens. Report a target blocker only after trying the attached `computer` capability for the allowed target.",
     "- Do not narrate recoverable transport retries, command timeouts, status polling, or fallback routing when the target action ultimately succeeds. Users should see the outcome, not the plumbing.",
     "- For tasks involving several linked devices, keep controller and target names explicit and operate through the same device network context.",
@@ -8804,7 +8815,7 @@ function runMcpServer() {
       },
       {
         name: "soty_trigger",
-        description: "Set, list, cancel, manually fire, or emit a Soty Agent trigger. Triggers are a wake-up mechanism: time, interval, or event -> the Agent receives a normal chat message and continues. Use for idle/background waits, not as a substitute for active tool work, polling, or investigation.",
+        description: "Set, list, cancel, manually fire, or emit a Soty Klava trigger. Triggers are a wake-up mechanism: time, interval, or event -> Klava receives a normal chat message and continues. Use for idle/background waits, not as a substitute for active tool work, polling, or investigation.",
         inputSchema: {
           type: "object",
           properties: {
@@ -8812,14 +8823,14 @@ function runMcpServer() {
             id: { type: "string", description: "Stable trigger id. Optional for set, required for cancel/fire." },
             kind: { type: "string", description: "time, interval, or event." },
             label: { type: "string", description: "Short trigger label." },
-            target: { type: "string", description: "Optional Agent dialog/tunnel id. Empty means current/default Agent chat." },
+            target: { type: "string", description: "Optional Klava dialog/tunnel id. Empty means current/default Klava chat." },
             at: { type: "string", description: "ISO date/time for kind=time." },
             afterMs: { type: "integer", description: "Delay in milliseconds for kind=time." },
             everyMs: { type: "integer", description: "Repeat interval in milliseconds for kind=interval." },
             event: { type: "string", description: "Event name for kind=event or action=event, for example action.finished." },
             match: { type: "object", description: "Optional event payload matcher. Values are exact, {contains}, {equals}, or {oneOf}." },
             maxFires: { type: "integer", description: "Maximum fire count. Default 1 for time, unlimited for interval/event." },
-            message: { type: "string", description: "Message the Agent should receive when the trigger fires." },
+            message: { type: "string", description: "Message Klava should receive when the trigger fires." },
             note: { type: "string", description: "Private short reason/summary." },
             payload: { type: "object", description: "Payload for action=event." },
             timeoutMs: { type: "integer", description: "Timeout in milliseconds for local trigger operation." }

@@ -62,7 +62,7 @@ async function publishWindowsReinstallScripts() {
     if (!existsSync(spec.sourcePath)) {
       throw new Error(`Windows reinstall script not found: ${spec.sourcePath}`);
     }
-    const bytes = await readFile(spec.sourcePath);
+    const bytes = await readNormalizedScriptBytes(spec.sourcePath);
     const outputFile = join(windowsReinstallDir, spec.fileName);
     await writeFile(outputFile, bytes, { mode: 0o755 });
     scripts.push({
@@ -76,4 +76,9 @@ async function publishWindowsReinstallScripts() {
     scriptsBaseUrl: "/agent/windows-reinstall/",
     scripts
   };
+}
+
+async function readNormalizedScriptBytes(path) {
+  const text = await readFile(path, "utf8");
+  return Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
 }

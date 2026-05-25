@@ -34,9 +34,9 @@ const windowsReinstall = {
   scripts: []
 };
 for (const spec of windowsReinstallScriptSpecs) {
-  const sourceBytes = await readRequiredBytes(spec.sourcePath, `source ${spec.fileName}`);
+  const sourceBytes = await readRequiredNormalizedBytes(spec.sourcePath, `source ${spec.fileName}`);
   const publishedPath = join(windowsReinstallDir, spec.fileName);
-  const publishedBytes = await readRequiredBytes(publishedPath, `published ${spec.fileName}`);
+  const publishedBytes = await readRequiredNormalizedBytes(publishedPath, `published ${spec.fileName}`);
   if (sourceBytes && publishedBytes && Buffer.compare(sourceBytes, publishedBytes) !== 0) {
     fail(`public/agent/windows-reinstall/${spec.fileName} differs from scripts/windows/${spec.fileName}`);
   }
@@ -92,9 +92,10 @@ async function readRequiredText(path, label) {
   }
 }
 
-async function readRequiredBytes(path, label) {
+async function readRequiredNormalizedBytes(path, label) {
   try {
-    return await readFile(path);
+    const text = await readFile(path, "utf8");
+    return Buffer.from(text.replace(/\r\n/g, "\n"), "utf8");
   } catch (error) {
     fail(`${label} missing or unreadable: ${path} (${error.message})`);
     return null;
