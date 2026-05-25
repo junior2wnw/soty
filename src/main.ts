@@ -711,6 +711,7 @@ function bindPaymentPage(): void {
   const status = app.querySelector<HTMLElement>("[data-payment-status]");
   const plansNode = app.querySelector<HTMLElement>("[data-payment-plans]");
   const actionNode = app.querySelector<HTMLElement>("[data-payment-action]");
+  const consent = app.querySelector<HTMLInputElement>("[data-payment-consent]");
   if (!status || !plansNode || !actionNode) {
     return;
   }
@@ -719,7 +720,14 @@ function bindPaymentPage(): void {
   setPaymentStatus(status, "loading", "Проверяю, подключена ли оплата...");
   void loadPaymentConfig().then((config) => {
     selectedPlanId = config.plans[0]?.id || "";
-    renderPaymentConfig(config, selectedPlanId, plansNode, actionNode, status);
+    const rerender = (nextPlanId = selectedPlanId) => {
+      selectedPlanId = nextPlanId;
+      renderPaymentConfig(config, selectedPlanId, plansNode, actionNode, status, consent, rerender);
+    };
+    rerender();
+    consent?.addEventListener("change", () => {
+      rerender();
+    });
   });
 }
 
@@ -728,7 +736,9 @@ function renderPaymentConfig(
   selectedPlanId: string,
   plansNode: HTMLElement,
   actionNode: HTMLElement,
-  status: HTMLElement
+  status: HTMLElement,
+  consent?: HTMLInputElement | null,
+  onPlanSelect?: (planId: string) => void
 ): void {
   const provider = config.enabled
     ? `Подключено: ${config.providerLabel}`
@@ -741,17 +751,22 @@ function renderPaymentConfig(
   plansNode.querySelectorAll<HTMLButtonElement>(".payment-plan").forEach((button) => {
     button.addEventListener("click", () => {
       const nextPlanId = button.dataset.planId || "";
-      renderPaymentConfig(config, nextPlanId, plansNode, actionNode, status);
+      if (onPlanSelect) {
+        onPlanSelect(nextPlanId);
+      } else {
+        renderPaymentConfig(config, nextPlanId, plansNode, actionNode, status, consent);
+      }
     });
   });
 
   if (config.enabled) {
+    const consentReady = consent?.checked === true;
     actionNode.innerHTML = `
-      <button class="payment-start" type="button">${icon("heart")} Открыть оплату</button>
+      <button class="payment-start" type="button" ${consentReady ? "" : "disabled"}>${icon("heart")} Открыть оплату</button>
       <small>${escapeHtml(config.policy?.text || "Оплата откроется на внешней странице провайдера.")}</small>
     `;
     actionNode.querySelector<HTMLButtonElement>(".payment-start")?.addEventListener("click", () => {
-      void startPayment(selectedPlanId, status);
+      void startPayment(selectedPlanId, status, consent);
     });
     return;
   }
@@ -777,7 +792,11 @@ function paymentPlanButton(plan: PaymentPlan, currency: string, selected: boolea
   `;
 }
 
-async function startPayment(planId: string, status: HTMLElement): Promise<void> {
+async function startPayment(planId: string, status: HTMLElement, consent?: HTMLInputElement | null): Promise<void> {
+  if (consent && !consent.checked) {
+    setPaymentStatus(status, "manual", "Сначала примите оферту, политику ПДн и правила доступа.");
+    return;
+  }
   setPaymentStatus(status, "loading", "Готовлю переход к оплате...");
   const intent = await createPaymentIntent(planId);
   if (intent.ok && intent.paymentUrl) {

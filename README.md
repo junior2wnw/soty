@@ -85,6 +85,14 @@ SOTY_PAYMENT_PLANS='[{"id":"task","title":"Разовая задача","descrip
 
 If `SOTY_PAYMENT_URL` is absent, `/pay` stays usable as a manual agreement page and offers the contact link when `SOTY_PAYMENT_CONTACT_URL` is set.
 
+Before enabling payment acceptance in Russia, fill and verify the public legal surface on `/info`:
+
+- executor details: legal name or full name, INN, OGRN/OGRNIP where applicable, address, email, phone, tax regime;
+- offer or service agreement: scope, acceptance, result, deadlines, refusal, liability, claim route;
+- personal data documents: privacy policy, consent text, processor list, storage region, retention and deletion route;
+- payment and fiscal route: YooKassa contract, hosted payment URL, online receipt setup under 54-FZ or "Мой налог" checks for NPD;
+- operations route: refund, dispute, chargeback, personal data incident, remote access incident, support contact.
+
 ## Local Agent
 
 The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads the single admin installer `install-soty-agent-machine.cmd`; the script elevates once, installs the managed machine agent, brings portable Node.js when needed, seeds the relay/device config for the user-session companion, starts the agent, registers OS autostart, and keeps auto-update enabled. On macOS and Linux, `install-macos-linux.sh` installs the same managed agent, verifies release hashes from `/agent/manifest.json`, resumes interrupted downloads, and starts from LaunchAgent, systemd user service, or desktop autostart. The machine scope uses LaunchDaemon on macOS and systemd system service on Linux. After the installer runs once, the agent starts with the OS and updates itself.
