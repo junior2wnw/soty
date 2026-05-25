@@ -24,6 +24,8 @@ import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
+import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
+import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, containsAgentInvocationText, isOperatorHeaderText, stripAgentInvocationText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
@@ -240,6 +242,7 @@ const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
 const operatorRemoteRunTimers = new Map<string, number>();
 const operatorStartingTunnels = new Set<string>();
 const localAgentRuns = new Map<string, WebSocket>();
+const webControllerPending = new Map<string, WebControllerPending>();
 const operatorChatQueues = new Map<string, Promise<void>>();
 type SotyFileStreamState = {
   readonly tunnelId: string;
@@ -317,6 +320,14 @@ window.addEventListener("online", () => {
   startAppBundleWatcher(true);
 });
 
+installWebController({
+  targets: webControllerTargets,
+  status: webControllerStatus,
+  select: webControllerSelect,
+  send: webControllerSend,
+  cancel: webControllerCancel,
+  tail: webControllerTail
+});
 void boot();
 
 async function boot(): Promise<void> {
@@ -4090,6 +4101,7 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
       clearOperatorRemoteRunTimer(operatorId);
     }
   }
+  resolveWebControllerOutput(tunnelId, output);
   terminalOpenId = tunnelId;
   renderTerminal();
 }
@@ -4113,6 +4125,207 @@ async function sendTerminalCommand(): Promise<void> {
   appendTerminalLine(tunnelId, `$ ${command}`);
   renderTerminal();
   await sync.sendRemoteCommand(hostDeviceId, command);
+}
+
+function webControllerTargets(): WebControllerTargetInfo[] {
+  remoteAccess = loadRemoteAccess();
+  return sortedVisibleTunnels()
+    .filter((tunnel) => !isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id))
+    .map(webControllerTargetInfo);
+}
+
+function webControllerStatus(): {
+  readonly deviceId: string;
+  readonly deviceNick: string;
+  readonly localAgentOk: boolean;
+  readonly pending: readonly string[];
+} {
+  return {
+    deviceId: device?.id || "",
+    deviceNick: device?.nick || "",
+    localAgentOk: localAgent.ok === true,
+    pending: [...webControllerPending.keys()]
+  };
+}
+
+function webControllerTargetInfo(tunnel: TunnelRecord): WebControllerTargetInfo {
+  const hostDeviceId = remoteAccess.get(tunnel.id) || "";
+  return {
+    tunnelId: tunnel.id,
+    label: counterpartyLabel(tunnel),
+    hostDeviceId,
+    deviceIds: [...new Set((peerDevices.get(tunnel.id) ?? []).map((peer) => peer.id).filter(Boolean))],
+    selected: tunnel.id === selectedId,
+    syncState: syncStates.get(tunnel.id) || (syncs.has(tunnel.id) ? "connecting" : "closed"),
+    terminalState: terminalState.get(tunnel.id) || "idle"
+  };
+}
+
+function webControllerSelect(target?: WebControllerTargetRef): WebControllerTargetInfo {
+  const resolved = webControllerTarget(target);
+  selectedId = resolved.tunnel.id;
+  saveSelectedTunnelId(selectedId);
+  terminalOpenId = resolved.tunnel.id;
+  ensureSync(resolved.tunnel);
+  renderApp();
+  return resolved.info;
+}
+
+async function webControllerSend(request: WebControllerRunRequest): Promise<WebControllerRunResult> {
+  const command = request.body.trim();
+  const options = request.options;
+  const kind = request.kind;
+  if (!command) {
+    throw new Error("SOTY.remote: empty command");
+  }
+  if (!device) {
+    throw new Error("SOTY.remote: local Soty device is not ready");
+  }
+  const resolved = webControllerTarget(options.target);
+  const hostDeviceId = resolved.info.hostDeviceId;
+  if (!hostDeviceId) {
+    throw new Error("SOTY.remote: selected target has no trusted host device");
+  }
+  ensureSync(resolved.tunnel);
+  const sync = syncs.get(resolved.tunnel.id);
+  if (!sync) {
+    throw new Error("SOTY.remote: tunnel sync is not available");
+  }
+  const timeoutMs = safeOperatorTimeoutMs(options.timeoutMs) || 30_000;
+  const wasSelected = selectedId === resolved.tunnel.id;
+  selectedId = resolved.tunnel.id;
+  saveSelectedTunnelId(selectedId);
+  terminalOpenId = resolved.tunnel.id;
+  setTerminalState(resolved.tunnel.id, "run");
+  appendTerminalLine(resolved.tunnel.id, kind === "run" ? `$ ${command}` : `$ ${options.name || "script"}`);
+  if (wasSelected) {
+    renderTerminal();
+  } else {
+    renderApp();
+  }
+  const startedAt = new Date().toISOString();
+  let commandId = "";
+  try {
+    commandId = kind === "run"
+      ? await sync.sendRemoteCommand(hostDeviceId, command, timeoutMs, options.runAs || "")
+      : await sync.sendRemoteScript(hostDeviceId, {
+        name: options.name || "script",
+        shell: options.shell || "",
+        script: command,
+        runAs: options.runAs || "",
+        timeoutMs
+      });
+  } catch (error) {
+    setTerminalState(resolved.tunnel.id, "bad");
+    appendTerminalLine(resolved.tunnel.id, `! ${error instanceof Error ? error.message : String(error)}`);
+    renderTerminal();
+    throw error;
+  }
+  return await new Promise<WebControllerRunResult>((resolve) => {
+    const timer = window.setTimeout(() => {
+      const pending = webControllerPending.get(commandId);
+      if (!pending) {
+        return;
+      }
+      webControllerPending.delete(commandId);
+      void sync.sendRemoteCancel(hostDeviceId, commandId).catch(() => undefined);
+      setTerminalState(resolved.tunnel.id, "bad");
+      appendTerminalLine(resolved.tunnel.id, "! timeout");
+      renderTerminal();
+      resolve({
+        ok: false,
+        tunnelId: pending.tunnelId,
+        label: pending.label,
+        hostDeviceId: pending.hostDeviceId,
+        commandId,
+        text: `${pending.chunks.join("") || ""}! timeout\n`,
+        exitCode: 124,
+        startedAt: pending.startedAt,
+        finishedAt: new Date().toISOString(),
+        timedOut: true
+      });
+    }, timeoutMs + 2000);
+    webControllerPending.set(commandId, {
+      tunnelId: resolved.tunnel.id,
+      label: resolved.info.label,
+      hostDeviceId,
+      commandId,
+      startedAt,
+      timer,
+      chunks: [],
+      resolve
+    });
+  });
+}
+
+function webControllerTarget(target?: WebControllerTargetRef): { readonly tunnel: TunnelRecord; readonly info: WebControllerTargetInfo } {
+  const targets = webControllerTargets();
+  if (targets.length === 0) {
+    throw new Error("SOTY.remote: no trusted remote targets");
+  }
+  const info = resolveWebControllerTarget(targets, selectedId, target);
+  const tunnel = loadTunnels().find((item) => item.id === info.tunnelId);
+  if (!tunnel) {
+    throw new Error("SOTY.remote: tunnel record is missing");
+  }
+  return { tunnel, info };
+}
+
+function resolveWebControllerOutput(tunnelId: string, output: RemoteOutput): void {
+  const pending = webControllerPending.get(output.commandId);
+  if (!pending || pending.tunnelId !== tunnelId) {
+    return;
+  }
+  if (output.text) {
+    pending.chunks.push(output.text);
+  }
+  if (typeof output.exitCode !== "number") {
+    return;
+  }
+  window.clearTimeout(pending.timer);
+  webControllerPending.delete(output.commandId);
+  pending.resolve({
+    ok: output.exitCode === 0,
+    tunnelId: pending.tunnelId,
+    label: pending.label,
+    hostDeviceId: pending.hostDeviceId,
+    commandId: pending.commandId,
+    text: pending.chunks.join(""),
+    exitCode: output.exitCode,
+    startedAt: pending.startedAt,
+    finishedAt: new Date().toISOString()
+  });
+}
+
+function webControllerCancel(commandId: string): boolean {
+  const pending = webControllerPending.get(commandId);
+  if (!pending) {
+    return false;
+  }
+  const sync = syncs.get(pending.tunnelId);
+  window.clearTimeout(pending.timer);
+  webControllerPending.delete(commandId);
+  if (sync) {
+    void sync.sendRemoteCancel(pending.hostDeviceId, commandId).catch(() => undefined);
+  }
+  pending.resolve({
+    ok: false,
+    tunnelId: pending.tunnelId,
+    label: pending.label,
+    hostDeviceId: pending.hostDeviceId,
+    commandId,
+    text: `${pending.chunks.join("") || ""}! cancelled\n`,
+    exitCode: 130,
+    startedAt: pending.startedAt,
+    finishedAt: new Date().toISOString()
+  });
+  return true;
+}
+
+function webControllerTail(target?: WebControllerTargetRef, lines = 80): string[] {
+  const resolved = webControllerTarget(target);
+  const count = Math.max(1, Math.min(Math.trunc(lines) || 80, 600));
+  return (terminalLogs.get(resolved.tunnel.id) || []).slice(-count);
 }
 
 async function ensureOperatorBridge(allowEmpty = false): Promise<void> {

@@ -117,6 +117,28 @@ The bridge works when the PWA is open on the controlling device. `run` and `scri
 Use `script` for larger jobs: the agent writes a temporary file on the remote device, runs it hidden, streams output back, and removes the temporary file.
 Use `say` to queue live typing into the shared text surface through the PWA; it returns after the message is queued so long operator notes do not hold the HTTP request open. Use `read` to fetch messages sent from the PWA after Enter, or `listen` to long-poll them as JSON lines for an IDE-side assistant loop. Use `computer` file `action=download`/`publish` from the agent dialog to pull a granted device file into the room file rail. Use `export` to save a local JSON backup of the PWA-visible device metadata, tunnel records, selected room, current shared text, and file metadata. Use `import` on a fresh PWA to create a new local device from that backup and restore rooms/text snapshots. Remote command grants are session-only and are intentionally not backed up or restored.
 
+Browser-only controller access is supported for a trusted computer that has Soty
+open but does not have the local companion installed. A browser automation agent,
+for example a normal Codex running on macOS, can use the top-window API exposed
+by the PWA:
+
+```js
+const remote = SOTY.remote
+remote.status()
+remote.targets()
+await remote.run({ target: "<label|tunnelId|hostDeviceId>", command: "hostname", timeoutMs: 30000 })
+await remote.script({ target: "<target>", script: "Write-Output $env:COMPUTERNAME", shell: "powershell" })
+remote.tail("<target>")
+```
+
+This route does not give the controller machine local OS capabilities. It only
+uses already granted remote access in the encrypted room and sends commands to
+the remote device that owns the installed Soty Agent. If there is no granted
+remote target, no open Soty browser profile, or the remote device/agent is
+offline, the API must report that rather than installing anything on the
+controller. `SOTY_REMOTE_CONTROLLER` remains available as a compatibility alias
+for browser consoles that already use it.
+
 Emergency local repair:
 
 ```text
