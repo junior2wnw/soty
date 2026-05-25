@@ -94,9 +94,9 @@ export const quickActions: readonly QuickAction[] = [
   },
   {
     id: "agent-repair",
-    title: "Починить агент",
-    label: "АЛИК",
-    summary: "Проверить установку, обновление, автозапуск и связь агента.",
+    title: "Починить Клаву",
+    label: "КЛАВА",
+    summary: "Проверить установку, обновление, автозапуск и связь Клавы.",
     tags: ["агент", "установить", "обновить", "починить", "bridge", "relay"],
     agentCard: {
       intent: "Repair or update the Soty agent on the current/named device with proof.",

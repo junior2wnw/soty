@@ -15,14 +15,14 @@ The browser side stays deliberately simple:
 - the relay remains the reliable path for signaling, reconnects, history, and fallback delivery;
 - file transfer works from the counterparty menu, drag and drop, and agent-initiated device file publishing;
 - the bell icon sends one small wake pulse through the existing tunnel;
-- the remote icon grants one-way command access to the selected counterparty;
+- the remote icon grants one-way command access to one selected device, not every device in the room;
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
 - local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
 - long remote jobs can be staged as temporary scripts and launched without visible terminal windows;
 - the installed companion agent starts with the OS and updates itself from `/agent/manifest.json`;
 - when Chrome/Edge blocks direct loopback access, the app can pair the companion with a secret server relay and keep agent chat working without browser local-network permission;
 - Windows maintenance work uses the same PWA channel plus a machine-scope Soty Worker when admin/SYSTEM actions are required.
-- mini apps have a manifest/bridge contract, but user-installed mini apps are currently disabled; the only enabled mini app is the built-in command window in the `Агент` account.
+- mini apps have a manifest/bridge contract, but user-installed mini apps are currently disabled; the only enabled mini app is the built-in command window in the `Клава` account.
 
 ## Boundary
 
@@ -60,6 +60,14 @@ pnpm start
 ```
 
 Default port: `8080`.
+
+## Trust Surface
+
+The public trust page is `/info`. The app also has a shield panel for live access grants, an installer passport before downloading Клава, and Docker build exclusions for local secrets/logs. Windows PowerShell release scripts can be Authenticode-signed with:
+
+```bash
+pnpm run agent:sign:windows -- -CertificatePath path/to/cert.pfx
+```
 
 ## Local Agent
 

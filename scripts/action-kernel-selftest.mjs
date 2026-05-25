@@ -1802,8 +1802,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentIdentitySource.includes("invocationWords"));
       assert(agentIdentitySource.includes("\\u043a\\u043b\\u0430\\u0432\\u0430"));
       assert(agentIdentitySource.includes("klava"));
-      assert(agentIdentitySource.includes("\\u0430\\u043b\\u0438\\u043a"));
-      assert(agentIdentitySource.includes("alik"));
+      assert(!agentIdentitySource.includes("\\u0430\\u043b\\u0438\\u043a"));
+      assert(!agentIdentitySource.includes(["a", "lik"].join("")));
       assert(main.includes("stripAgentInvocation"));
       assert(main.includes("explicitMention: true"));
       assert(agent.includes("learningContextForTurn"));

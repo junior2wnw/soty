@@ -1,8 +1,10 @@
 export const remoteKey = "soty:remote-enabled:v1";
 export const accessKey = "soty:remote-access:v1";
+export const grantTargetsKey = "soty:remote-grant-targets:v1";
 
 let memoryRemoteEnabled = new Set<string>();
 let memoryRemoteAccess = new Map<string, string>();
+let memoryRemoteGrantTargets = new Map<string, string>();
 
 function readStored(key: string): string | null {
   try {
@@ -83,14 +85,40 @@ export function setRemoteAccess(tunnelId: string, hostDeviceId: string, enabled:
   return items;
 }
 
+export function loadRemoteGrantTargets(): Map<string, string> {
+  try {
+    const parsed = JSON.parse(readStored(grantTargetsKey) || "{}") as Record<string, unknown>;
+    memoryRemoteGrantTargets = new Map(Object.entries(parsed)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0));
+    return new Map(memoryRemoteGrantTargets);
+  } catch {
+    return new Map(memoryRemoteGrantTargets);
+  }
+}
+
+export function setRemoteGrantTarget(tunnelId: string, targetDeviceId: string, enabled: boolean): Map<string, string> {
+  const items = loadRemoteGrantTargets();
+  if (enabled && targetDeviceId) {
+    items.set(tunnelId, targetDeviceId);
+  } else {
+    items.delete(tunnelId);
+  }
+  memoryRemoteGrantTargets = new Map(items);
+  writeStored(grantTargetsKey, JSON.stringify(Object.fromEntries(items)));
+  return items;
+}
+
 export function clearRemoteSessionState(): void {
   memoryRemoteEnabled = new Set();
   memoryRemoteAccess = new Map();
+  memoryRemoteGrantTargets = new Map();
   try {
     sessionStorage.removeItem(remoteKey);
     sessionStorage.removeItem(accessKey);
+    sessionStorage.removeItem(grantTargetsKey);
     localStorage.removeItem(remoteKey);
     localStorage.removeItem(accessKey);
+    localStorage.removeItem(grantTargetsKey);
   } catch {
     // Best effort only.
   }

@@ -21,9 +21,11 @@ import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnap
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
-import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
+import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
+import { infoPageHtml, showAccessPanelModal, showTrustModal } from "./features/trust-ui";
+import type { AccessPanelRow } from "./features/trust-ui";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, containsAgentInvocationText, isOperatorHeaderText, stripAgentInvocationText } from "./features/agent-identity";
@@ -98,6 +100,7 @@ installTooltips();
 
 const selfCellLabel = "Я";
 const agentReleaseCheckTtlMs = 60_000;
+const infoPagePath = "/info";
 
 type AgentButtonMode = "download" | "update" | "link";
 
@@ -131,6 +134,7 @@ const liveDraftTimers = new Map<string, number>();
 const liveDraftSendTimers = new Map<string, number>();
 let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
+let remoteGrantTargets = loadRemoteGrantTargets();
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
 const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
@@ -335,12 +339,14 @@ async function boot(): Promise<void> {
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
+  const infoRoute = isInfoRoute();
 
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
     clearRemoteSessionState();
     remoteEnabled = loadRemoteEnabled();
     remoteAccess = loadRemoteAccess();
+    remoteGrantTargets = loadRemoteGrantTargets();
     terminalOpenId = "";
     chessOpenId = "";
     rememberAppRuntime();
@@ -358,6 +364,11 @@ async function boot(): Promise<void> {
 
   if (!isAppRuntime()) {
     rememberAppRuntime();
+  }
+
+  if (infoRoute) {
+    renderInfoPage();
+    return;
   }
 
   device = await loadDevice();
@@ -603,24 +614,53 @@ function bareChatPath(): string {
   return bareChatMode ? "/?pwa=1&bare=1" : "/?pwa=1";
 }
 
+function isInfoRoute(): boolean {
+  const url = new URL(window.location.href);
+  return url.pathname === infoPagePath || url.searchParams.get("info") === "1";
+}
+
+function openInfoPage(): void {
+  window.location.assign(infoPagePath);
+}
+
+function renderInfoPage(): void {
+  app.innerHTML = infoPageHtml(bareChatPath());
+}
+
 function renderNick(): void {
   app.innerHTML = `
     <section class="nick-screen">
-      <form class="nick-form">
-        <span>${icon("person")}</span>
-        <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
-        <button class="restore-button" type="button" aria-label="restore" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
-        <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
-        <input class="restore-file" type="file" accept="application/json,.json" />
-      </form>
+      <div class="nick-panel">
+        <div class="nick-brand">
+          <span class="retro-brand-mark">S</span>
+          <span>
+            <b>Соты</b>
+            <small>мое место</small>
+          </span>
+        </div>
+        <p>Чат, файлы и доступ к вашим устройствам. Управление всегда включается отдельно.</p>
+        <div class="trust-strip" aria-label="границы доступа">
+          <span>${icon("shield")}Доступ выключен</span>
+          <span>Клава ставится отдельно</span>
+        </div>
+        <form class="nick-form">
+          <span>${icon("person")}</span>
+          <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
+          <button class="restore-button" type="button" aria-label="restore" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
+          <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
+          <input class="restore-file" type="file" accept="application/json,.json" />
+        </form>
+        <button class="nick-info" type="button">${icon("shield")}Инфа</button>
+      </div>
     </section>
   `;
   const form = app.querySelector<HTMLFormElement>("form");
-  const input = app.querySelector<HTMLInputElement>("input");
+  const input = app.querySelector<HTMLInputElement>("input[name='nick']");
   const restoreButton = app.querySelector<HTMLButtonElement>(".restore-button");
   const restoreFile = app.querySelector<HTMLInputElement>(".restore-file");
   input?.focus();
   void ensureOperatorBridge(true);
+  app.querySelector<HTMLButtonElement>(".nick-info")?.addEventListener("click", openInfoPage);
   restoreButton?.addEventListener("click", () => {
     restoreFile?.click();
   });
@@ -710,6 +750,7 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   clearRemoteSessionState();
   remoteEnabled = loadRemoteEnabled();
   remoteAccess = loadRemoteAccess();
+  remoteGrantTargets = loadRemoteGrantTargets();
   terminalOpenId = "";
   chessOpenId = "";
   return {
@@ -2112,6 +2153,7 @@ function renderApp(): void {
             <small>мое место</small>
           </span>
         </div>
+        <button class="info-open retro-icon-button" type="button" aria-label="инфа" data-tooltip="Инфа и безопасность">${icon("shield")}</button>
         <button class="qr-open retro-icon-button" type="button" aria-label="подключить" data-tooltip="Подключить человека или устройство">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
@@ -2126,6 +2168,7 @@ function renderApp(): void {
             <span class="writer-pop"></span>
           </span>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
+          <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">ссылка</button>
         </header>
         <section class="space-rail" aria-label="пространство соты"></section>
@@ -2212,6 +2255,10 @@ function renderApp(): void {
   }, { passive: true });
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
+  });
+  app.querySelector<HTMLButtonElement>(".info-open")?.addEventListener("click", openInfoPage);
+  app.querySelector<HTMLButtonElement>(".access-open")?.addEventListener("click", () => {
+    showAccessPanel();
   });
   app.querySelector<HTMLButtonElement>(".clear-dialog-button")?.addEventListener("click", () => {
     startFreshDialog();
@@ -2364,7 +2411,7 @@ function renderTiles(): void {
             selectTunnel(id);
             const mode = await refreshAgentButtonState(true);
             if (mode !== "link") {
-              requestAgentDownload(isAgentTunnelId(id) ? device || undefined : undefined);
+              requestAgentDownload(isAgentTunnelId(id) ? device || undefined : undefined, "Клава ставится один раз и потом дает управляемые инструменты для выбранных устройств.");
             }
           })();
         },
@@ -2407,15 +2454,32 @@ async function toggleRemoteGrant(id: string): Promise<void> {
   await enableRemoteGrant(id);
 }
 
-async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<boolean> {
+async function enableRemoteGrant(id: string, requestedTargetDeviceId = ""): Promise<boolean> {
   const mode = await refreshAgentButtonState(true);
   if (mode !== "link") {
     markAgentDownloadNeeded();
-    requestAgentDownload();
+    requestAgentDownload(undefined, "Команды на устройстве идут через Клаву. Сначала поставьте локальную программу.");
+    return false;
+  }
+
+  const targetDeviceId = resolveRemoteGrantTarget(id, requestedTargetDeviceId);
+  if (!targetDeviceId) {
+    await showTrustModal({
+      title: "Нужен точный получатель",
+      lead: "В этой соте нет одного понятного устройства для доступа. Пусть нужное устройство запросит доступ само.",
+      facts: ["Так право не попадет другому телефону или компьютеру.", "Запрос придет отдельным окном с именем устройства."],
+      primaryLabel: "Понятно",
+      cancelLabel: "",
+      icon: "shield"
+    });
+    return false;
+  }
+  if (!(await confirmRemoteGrant(id, targetDeviceId))) {
     return false;
   }
 
   remoteEnabled = setRemoteEnabled(id, true);
+  remoteGrantTargets = setRemoteGrantTarget(id, targetDeviceId, true);
   syncs.get(id)?.grantRemote(true, targetDeviceId);
   terminalOpenId = id;
   setTerminalState(id, "idle");
@@ -2435,18 +2499,21 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   const mode = await refreshAgentButtonState(true);
   if (mode !== "link") {
     markAgentDownloadNeeded();
-    requestAgentDownload(device);
+    requestAgentDownload(device, "Чтобы Клава могла работать с этого устройства, нужен локальный machine-агент.");
     return;
   }
   const companion = await ensureAgentSourceCompanion();
   if (!companion.ok) {
     markAgentDownloadNeeded();
-    requestAgentDownload(device);
+    requestAgentDownload(device, "Клава не отвечает на локальном канале. Установщик проверит версию, автозапуск и связь.");
     return;
   }
   if (!isAgentSourceCompanionReady(companion, device.id)) {
     markAgentDownloadNeeded();
-    requestAgentDownload(device);
+    requestAgentDownload(device, "Клава установлена не для этого устройства. Нужна привязка к текущей соте.");
+    return;
+  }
+  if (!(await confirmRemoteGrant(agentTunnelId, device.id, true))) {
     return;
   }
   const granted = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
@@ -2459,6 +2526,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
     return;
   }
   remoteEnabled = setRemoteEnabled(agentTunnelId, true);
+  remoteGrantTargets = setRemoteGrantTarget(agentTunnelId, device.id, true);
   agentSourceGrantRefreshAt = Date.now() + agentSourceGrantRefreshMs;
   terminalOpenId = agentTunnelId;
   setTerminalState(agentTunnelId, "idle");
@@ -2466,6 +2534,52 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   renderTerminal();
   renderTiles();
   startAgentSourceControl(agentTunnelId);
+}
+
+function resolveRemoteGrantTarget(tunnelId: string, requestedTargetDeviceId = ""): string {
+  const requested = requestedTargetDeviceId.trim();
+  if (requested && requested !== "*") {
+    return requested;
+  }
+  const stored = remoteGrantTargets.get(tunnelId);
+  if (stored && stored !== "*") {
+    return stored;
+  }
+  const peerIds = uniquePeerDeviceIds(tunnelId);
+  return peerIds.length === 1 ? peerIds[0] || "" : "";
+}
+
+function uniquePeerDeviceIds(tunnelId: string): string[] {
+  return [...new Set((peerDevices.get(tunnelId) ?? [])
+    .map((peer) => peer.id.trim())
+    .filter(Boolean))];
+}
+
+function remoteGrantTargetLabel(tunnelId: string, targetDeviceId: string): string {
+  const peer = (peerDevices.get(tunnelId) ?? []).find((item) => item.id === targetDeviceId);
+  return cleanNick(peer?.nick || "") || targetDeviceId.slice(0, 12) || "устройство";
+}
+
+async function confirmRemoteGrant(tunnelId: string, targetDeviceId: string, agentSource = false): Promise<boolean> {
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  const label = tunnel ? counterpartyLabel(tunnel) : "сота";
+  const target = agentSource
+    ? cleanNick(device?.nick || "") || "это устройство"
+    : remoteGrantTargetLabel(tunnelId, targetDeviceId);
+  return showTrustModal({
+    title: agentSource ? "Дать Клаве инструменты" : "Открыть доступ",
+    lead: agentSource
+      ? "Клава сможет выполнять задачи на этом устройстве, пока доступ включен."
+      : `${label} сможет отправлять команды только на выбранное устройство.`,
+    facts: [
+      `Устройство: ${target}`,
+      "Разрешение можно отключить повторным нажатием или кнопкой щита.",
+      agentSource ? "Файлы и команды остаются в выбранном контексте Сот." : "Если в соте появится другое устройство, оно не получит это право автоматически."
+    ],
+    primaryLabel: agentSource ? "Разрешить Клаву" : "Открыть доступ",
+    cancelLabel: "Не сейчас",
+    icon: "shield"
+  });
 }
 
 function isAgentSourceCompanionReady(agent: LocalAgentStatus, expectedDeviceId = ""): boolean {
@@ -2505,11 +2619,16 @@ async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
   return agent;
 }
 
-function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
+function announceRemoteGrant(tunnelId: string, targetDeviceId = ""): void {
   if (!remoteEnabled.has(tunnelId)) {
     return;
   }
-  syncs.get(tunnelId)?.grantRemote(true, targetDeviceId);
+  const target = resolveRemoteGrantTarget(tunnelId, targetDeviceId);
+  if (!target) {
+    return;
+  }
+  remoteGrantTargets = setRemoteGrantTarget(tunnelId, target, true);
+  syncs.get(tunnelId)?.grantRemote(true, target);
 }
 
 async function refreshLocalAgent(): Promise<LocalAgentStatus> {
@@ -2699,7 +2818,11 @@ function isAgentMachineLinkReady(agent: LocalAgentStatus, expectedDeviceId = "")
     && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
 }
 
-function requestAgentDownload(sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }): void {
+function requestAgentDownload(sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }, reason = ""): void {
+  void showAgentInstallPassport(sourceDeviceForInstaller, reason);
+}
+
+function startAgentDownload(sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }): void {
   downloadAgentInstallerForDevice(
     "machine",
     sourceDeviceForInstaller?.id ? sourceDeviceForInstaller : device || {},
@@ -2714,12 +2837,71 @@ function markAgentDownloadNeeded(): void {
   renderDialogChrome();
 }
 
+async function showAgentInstallPassport(sourceDeviceForInstaller?: { readonly id?: string; readonly nick?: string }, reason = ""): Promise<void> {
+  const release = await refreshAgentRelease(true);
+  const mode = agentButtonMode();
+  const version = release?.version || agentRelease?.version || "последняя";
+  const sha = release?.sha256 || agentRelease?.sha256 || "";
+  const shortSha = sha ? `${sha.slice(0, 12)}…${sha.slice(-8)}` : "в manifest.json";
+  const ok = await showTrustModal({
+    title: mode === "update" ? "Обновить Клаву" : "Установить Клаву",
+    lead: reason || "Клава нужна только для действий на устройстве: команды, файлы, проверка состояния.",
+    facts: [
+      `Версия: ${version}`,
+      `SHA-256: ${shortSha}`,
+      "Установщик попросит права администратора только для machine-агента.",
+      "Сам доступ к устройствам включается отдельно."
+    ],
+    primaryLabel: mode === "update" ? "Скачать обновление" : "Скачать",
+    cancelLabel: "Не сейчас",
+    icon: "download",
+    footerHtml: `<a href="/agent/manifest.json" target="_blank" rel="noopener noreferrer">manifest.json</a>`
+  });
+  if (ok) {
+    startAgentDownload(sourceDeviceForInstaller);
+  }
+}
+
+function showAccessPanel(): void {
+  showAccessPanelModal(accessPanelRows(), () => {
+    for (const tunnelId of [...new Set([...remoteEnabled, ...remoteAccess.keys()])]) {
+      closeRemoteMode(tunnelId);
+    }
+  }, infoPagePath);
+}
+
+function accessPanelRows(): AccessPanelRow[] {
+  const visible = sortedVisibleTunnels();
+  const rows: AccessPanelRow[] = [];
+  for (const tunnel of visible) {
+    if (remoteEnabled.has(tunnel.id)) {
+      const target = remoteGrantTargets.get(tunnel.id);
+      rows.push({
+        kind: "открыто",
+        label: counterpartyLabel(tunnel),
+        detail: target && target !== "*" ? `получатель: ${remoteGrantTargetLabel(tunnel.id, target)}` : "ожидает точный запрос устройства"
+      });
+    }
+    const hostDeviceId = remoteAccess.get(tunnel.id);
+    if (hostDeviceId) {
+      rows.push({
+        kind: "управляю",
+        label: counterpartyLabel(tunnel),
+        detail: `удаленное устройство: ${remoteGrantTargetLabel(tunnel.id, hostDeviceId)}`
+      });
+    }
+  }
+  return rows;
+}
+
 function closeRemoteMode(tunnelId: string): void {
   const sync = syncs.get(tunnelId);
   const hostDeviceId = remoteAccess.get(tunnelId);
   if (remoteEnabled.has(tunnelId)) {
+    const grantTarget = remoteGrantTargets.get(tunnelId) || "*";
     remoteEnabled = setRemoteEnabled(tunnelId, false);
-    sync?.grantRemote(false, "*");
+    remoteGrantTargets = setRemoteGrantTarget(tunnelId, "", false);
+    sync?.grantRemote(false, grantTarget);
     if (isAgentTunnelId(tunnelId) && device) {
       void grantAgentSourceAccess(device.id, device.nick, false);
       stopAgentSourceControl(tunnelId);
@@ -2956,9 +3138,16 @@ function ensurePermanentCells(): void {
     const enabledIds = matches.filter((tunnel) => remoteEnabled.has(tunnel.id)).map((tunnel) => tunnel.id);
     if (enabledIds.some((id) => id !== canonical.id)) {
       remoteEnabled = setRemoteEnabled(canonical.id, true);
+      const target = remoteGrantTargets.get(canonical.id)
+        || enabledIds.map((id) => remoteGrantTargets.get(id)).find(Boolean)
+        || "";
+      if (target) {
+        remoteGrantTargets = setRemoteGrantTarget(canonical.id, target, true);
+      }
       for (const id of enabledIds) {
         if (id !== canonical.id) {
           remoteEnabled = setRemoteEnabled(id, false);
+          remoteGrantTargets = setRemoteGrantTarget(id, "", false);
         }
       }
     }
@@ -3059,6 +3248,7 @@ function forgetDuplicateCells(ids: readonly string[]): void {
     syncStates.delete(id);
     peerDevices.delete(id);
     remoteEnabled = setRemoteEnabled(id, false);
+    remoteGrantTargets = setRemoteGrantTarget(id, "", false);
     remoteAccess = setRemoteAccess(id, "", false);
     if (terminalOpenId === id) {
       terminalOpenId = "";
@@ -3674,6 +3864,7 @@ function closeTunnel(id: string): void {
   syncs.delete(id);
   syncStates.delete(id);
   remoteEnabled = setRemoteEnabled(id, false);
+  remoteGrantTargets = setRemoteGrantTarget(id, "", false);
   remoteAccess = setRemoteAccess(id, "", false);
   if (terminalOpenId === id) {
     terminalOpenId = "";
@@ -3905,8 +4096,12 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
   }
   const sync = syncs.get(tunnelId);
   if (remoteEnabled.has(tunnelId)) {
-    sync?.grantRemote(true, request.deviceId);
-    return;
+    const currentTarget = remoteGrantTargets.get(tunnelId);
+    if (!currentTarget || currentTarget === request.deviceId || currentTarget === "*") {
+      remoteGrantTargets = setRemoteGrantTarget(tunnelId, request.deviceId, true);
+      sync?.grantRemote(true, request.deviceId);
+      return;
+    }
   }
   if (shouldAutoSelectTunnel(tunnelId)) {
     selectTunnel(tunnelId);
@@ -3929,7 +4124,11 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
     <div class="access-sheet">
       <span class="access-mark">${icon("remote")}</span>
       <b>Удалённое управление</b>
-      <p>${escapeHtml(requester || "Оператор")} просит доступ к этому компьютеру.</p>
+      <p>${escapeHtml(requester || "Оператор")} просит доступ к этому устройству.</p>
+      <ul class="trust-facts">
+        <li>Разрешение только для устройства, которое отправило запрос.</li>
+        <li>Отключается повторным нажатием или кнопкой щита.</li>
+      </ul>
       <div class="access-actions">
         <button class="access-accept" type="button">Разрешить</button>
         <button class="access-deny" type="button">Не сейчас</button>
@@ -3943,10 +4142,11 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
       if (!agent.ok) {
         overlay.remove();
         markAgentDownloadNeeded();
-        requestAgentDownload();
+        requestAgentDownload(undefined, "Чтобы принять удаленные команды, этому устройству нужна Клава.");
         return;
       }
       remoteEnabled = setRemoteEnabled(tunnelId, true);
+      remoteGrantTargets = setRemoteGrantTarget(tunnelId, request.deviceId, true);
       syncs.get(tunnelId)?.grantRemote(true, request.deviceId);
       terminalOpenId = tunnelId;
       setTerminalState(tunnelId, "idle");
@@ -3965,6 +4165,7 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   }
   if (!grant.enabled && remoteEnabled.has(tunnelId)) {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
+    remoteGrantTargets = setRemoteGrantTarget(tunnelId, "", false);
     syncs.get(tunnelId)?.grantRemote(false, "*");
   }
   remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
@@ -6876,6 +7077,7 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   if (!remoteEnabled.has(tunnelId)) {
     remoteEnabled = setRemoteEnabled(tunnelId, true);
   }
+  remoteGrantTargets = setRemoteGrantTarget(tunnelId, device.id, true);
   terminalOpenId = tunnelId;
   if (!terminalState.has(tunnelId)) {
     setTerminalState(tunnelId, "idle");
