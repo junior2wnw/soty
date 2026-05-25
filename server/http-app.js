@@ -2,6 +2,7 @@ import express from "express";
 import path from "node:path";
 import { attachAgentLearning } from "./agent-learning.js";
 import { attachAgentRelay } from "./agent-relay.js";
+import { attachPayments } from "./payments.js";
 
 export function createHttpApp(distDir, { dataDir } = {}) {
   const app = express();
@@ -53,6 +54,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     next();
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  attachPayments(app);
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });
   app.use(express.static(distDir, {

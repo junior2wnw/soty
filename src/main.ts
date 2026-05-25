@@ -24,8 +24,10 @@ import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
-import { infoPageHtml, showAccessPanelModal, showTrustModal } from "./features/trust-ui";
+import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } from "./features/trust-ui";
 import type { AccessPanelRow } from "./features/trust-ui";
+import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
+import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, containsAgentInvocationText, isOperatorHeaderText, stripAgentInvocationText } from "./features/agent-identity";
@@ -101,6 +103,7 @@ installTooltips();
 const selfCellLabel = "Я";
 const agentReleaseCheckTtlMs = 60_000;
 const infoPagePath = "/info";
+const paymentPagePath = "/pay";
 
 type AgentButtonMode = "download" | "update" | "link";
 
@@ -340,6 +343,7 @@ async function boot(): Promise<void> {
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
   const infoRoute = isInfoRoute();
+  const paymentRoute = isPaymentRoute();
 
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
@@ -368,6 +372,11 @@ async function boot(): Promise<void> {
 
   if (infoRoute) {
     renderInfoPage();
+    return;
+  }
+
+  if (paymentRoute) {
+    renderPaymentPage();
     return;
   }
 
@@ -619,12 +628,26 @@ function isInfoRoute(): boolean {
   return url.pathname === infoPagePath || url.searchParams.get("info") === "1";
 }
 
+function isPaymentRoute(): boolean {
+  const url = new URL(window.location.href);
+  return url.pathname === paymentPagePath || url.searchParams.get("pay") === "1";
+}
+
 function openInfoPage(): void {
   window.location.assign(infoPagePath);
 }
 
+function openPaymentPage(): void {
+  window.location.assign(paymentPagePath);
+}
+
 function renderInfoPage(): void {
-  app.innerHTML = infoPageHtml(bareChatPath());
+  app.innerHTML = infoPageHtml(bareChatPath(), paymentPagePath);
+}
+
+function renderPaymentPage(): void {
+  app.innerHTML = paymentPageHtml(bareChatPath(), infoPagePath);
+  bindPaymentPage();
 }
 
 function renderNick(): void {
@@ -635,13 +658,14 @@ function renderNick(): void {
           <span class="retro-brand-mark">S</span>
           <span>
             <b>Соты</b>
-            <small>мое место</small>
+            <small>личный рабочий контур</small>
           </span>
         </div>
-        <p>Чат, файлы и доступ к вашим устройствам. Управление всегда включается отдельно.</p>
+        <p class="nick-lead">Чат, файлы, Клава и подключенные устройства в одном месте. Доступ к управлению всегда включается отдельно.</p>
         <div class="trust-strip" aria-label="границы доступа">
           <span>${icon("shield")}Доступ выключен</span>
-          <span>Клава ставится отдельно</span>
+          <span>${icon("check")}Клава ставится отдельно</span>
+          <span>${icon("heart")}Оплата после согласования</span>
         </div>
         <form class="nick-form">
           <span>${icon("person")}</span>
@@ -650,7 +674,10 @@ function renderNick(): void {
           <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
           <input class="restore-file" type="file" accept="application/json,.json" />
         </form>
-        <button class="nick-info" type="button">${icon("shield")}Инфа</button>
+        <div class="nick-links">
+          <button class="nick-info" type="button">${icon("shield")}Инфа</button>
+          <button class="nick-payment" type="button">${icon("heart")}Оплата</button>
+        </div>
       </div>
     </section>
   `;
@@ -661,6 +688,7 @@ function renderNick(): void {
   input?.focus();
   void ensureOperatorBridge(true);
   app.querySelector<HTMLButtonElement>(".nick-info")?.addEventListener("click", openInfoPage);
+  app.querySelector<HTMLButtonElement>(".nick-payment")?.addEventListener("click", openPaymentPage);
   restoreButton?.addEventListener("click", () => {
     restoreFile?.click();
   });
@@ -677,6 +705,92 @@ function renderNick(): void {
     device = await createDevice(nick);
     finishDeviceBoot();
   });
+}
+
+function bindPaymentPage(): void {
+  const status = app.querySelector<HTMLElement>("[data-payment-status]");
+  const plansNode = app.querySelector<HTMLElement>("[data-payment-plans]");
+  const actionNode = app.querySelector<HTMLElement>("[data-payment-action]");
+  if (!status || !plansNode || !actionNode) {
+    return;
+  }
+
+  let selectedPlanId = "";
+  setPaymentStatus(status, "loading", "Проверяю, подключена ли оплата...");
+  void loadPaymentConfig().then((config) => {
+    selectedPlanId = config.plans[0]?.id || "";
+    renderPaymentConfig(config, selectedPlanId, plansNode, actionNode, status);
+  });
+}
+
+function renderPaymentConfig(
+  config: PaymentConfig,
+  selectedPlanId: string,
+  plansNode: HTMLElement,
+  actionNode: HTMLElement,
+  status: HTMLElement
+): void {
+  const provider = config.enabled
+    ? `Подключено: ${config.providerLabel}`
+    : "Оплата после согласования";
+  setPaymentStatus(status, config.enabled ? "ready" : "manual", provider);
+
+  plansNode.innerHTML = config.plans.length
+    ? config.plans.map((plan) => paymentPlanButton(plan, config.currency, plan.id === selectedPlanId)).join("")
+    : `<div class="payment-empty">Варианты оплаты появятся после настройки платежей.</div>`;
+  plansNode.querySelectorAll<HTMLButtonElement>(".payment-plan").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextPlanId = button.dataset.planId || "";
+      renderPaymentConfig(config, nextPlanId, plansNode, actionNode, status);
+    });
+  });
+
+  if (config.enabled) {
+    actionNode.innerHTML = `
+      <button class="payment-start" type="button">${icon("heart")} Открыть оплату</button>
+      <small>${escapeHtml(config.policy?.text || "Оплата откроется на внешней странице провайдера.")}</small>
+    `;
+    actionNode.querySelector<HTMLButtonElement>(".payment-start")?.addEventListener("click", () => {
+      void startPayment(selectedPlanId, status);
+    });
+    return;
+  }
+
+  actionNode.innerHTML = config.contactUrl
+    ? `
+      <a class="payment-start" href="${escapeHtml(config.contactUrl)}" target="_blank" rel="noopener noreferrer">${icon("send")} Написать по оплате</a>
+      <small>${escapeHtml(config.policy?.text || "Сначала согласуйте задачу в чате.")}</small>
+    `
+    : `
+      <a class="payment-start" href="${escapeHtml(bareChatPath())}">${icon("send")} Согласовать в чате</a>
+      <small>${escapeHtml(config.policy?.text || "Сначала согласуйте задачу в чате.")}</small>
+    `;
+}
+
+function paymentPlanButton(plan: PaymentPlan, currency: string, selected: boolean): string {
+  return `
+    <button class="payment-plan${selected ? " is-selected" : ""}" type="button" data-plan-id="${escapeHtml(plan.id)}">
+      <span>${escapeHtml(formatPaymentAmount(plan, currency))}</span>
+      <b>${escapeHtml(plan.title)}</b>
+      ${plan.description ? `<small>${escapeHtml(plan.description)}</small>` : ""}
+    </button>
+  `;
+}
+
+async function startPayment(planId: string, status: HTMLElement): Promise<void> {
+  setPaymentStatus(status, "loading", "Готовлю переход к оплате...");
+  const intent = await createPaymentIntent(planId);
+  if (intent.ok && intent.paymentUrl) {
+    setPaymentStatus(status, "ready", intent.reference ? `Переход к оплате. Номер: ${intent.reference}` : "Переход к оплате.");
+    window.location.assign(intent.paymentUrl);
+    return;
+  }
+  setPaymentStatus(status, "manual", intent.message || "Оплата пока недоступна. Согласуйте задачу в чате.");
+}
+
+function setPaymentStatus(node: HTMLElement, state: "loading" | "ready" | "manual", text: string): void {
+  node.dataset.state = state;
+  node.textContent = text;
 }
 
 function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {

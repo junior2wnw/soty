@@ -69,6 +69,22 @@ The public trust page is `/info`. The app also has a shield panel for live acces
 pnpm run agent:sign:windows -- -CertificatePath path/to/cert.pfx
 ```
 
+## Payments
+
+The public payment page is `/pay`. It is provider-neutral: Soty shows the client a clear work/payment flow and redirects only to an external hosted payment page. Card data is never collected by the PWA or relay.
+
+Runtime environment:
+
+```bash
+SOTY_PAYMENT_URL=https://...
+SOTY_PAYMENT_PROVIDER_LABEL=ЮKassa
+SOTY_PAYMENT_CONTACT_URL=https://...
+SOTY_PAYMENT_CURRENCY=RUB
+SOTY_PAYMENT_PLANS='[{"id":"task","title":"Разовая задача","description":"Диагностика и настройка","amount":3000,"currency":"RUB"}]'
+```
+
+If `SOTY_PAYMENT_URL` is absent, `/pay` stays usable as a manual agreement page and offers the contact link when `SOTY_PAYMENT_CONTACT_URL` is set.
+
 ## Local Agent
 
 The PWA never runs OS commands by itself. For normal use, open the counterparty menu and press the remote icon. If the local companion agent is absent, the PWA shows the installer control. On Windows it downloads the single admin installer `install-soty-agent-machine.cmd`; the script elevates once, installs the managed machine agent, brings portable Node.js when needed, seeds the relay/device config for the user-session companion, starts the agent, registers OS autostart, and keeps auto-update enabled. On macOS and Linux, `install-macos-linux.sh` installs the same managed agent, verifies release hashes from `/agent/manifest.json`, resumes interrupted downloads, and starts from LaunchAgent, systemd user service, or desktop autostart. The machine scope uses LaunchDaemon on macOS and systemd system service on Linux. After the installer runs once, the agent starts with the OS and updates itself.
