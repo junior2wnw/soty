@@ -15,6 +15,12 @@ documents the Soty adapter.
   say "still waiting".
 - Specific programs should be connected as adapters, not as one-off command
   strings.
+- Frontend actions are data, not hand-written mirrors. The server publishes
+  `/api/frontend/capabilities` with normalized action descriptors derived from
+  `/agent/manifest.json`, route profiles, automation toolkits, runtime
+  capabilities, and `/mini-apps/manifest.json`. New social features, settings,
+  app surfaces, or toolkit entries should add a manifest descriptor first; the
+  chat UI consumes the same descriptor without a new bespoke button path.
 
 ## Capability Families
 

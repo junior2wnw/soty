@@ -10,6 +10,7 @@ import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 import { attachAgentRelay } from "../server/agent-relay.js";
+import { buildFrontendCapabilityCatalog } from "../server/frontend-capabilities.js";
 import { attachRealtime } from "../server/realtime.js";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -108,6 +109,16 @@ async function runScenarios({ relayUrl } = {}) {
       assert(liveComputerPlaneToolkit?.phases.includes("learn"));
       assert(health.body.automationToolkits.toolkits.some((toolkit) => toolkit.name === "agent-trigger" && toolkit.entryTool === "computer"));
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
+    }],
+    ["frontend capability catalog projects server and agent contracts", async () => {
+      const catalog = await buildFrontendCapabilityCatalog(join(root, "public"));
+      assertEqual(catalog.schema, "soty.frontend-capabilities.v1");
+      assert(catalog.sources.some((source) => source.id === "agent-manifest"));
+      assert(catalog.actions.some((action) => action.id === "route-profile:soty-windows-reinstall-managed-fast-lane"));
+      assert(catalog.actions.some((action) => action.id === "toolkit:computer-use-plane"));
+      assert(catalog.actions.some((action) => action.id === "runtime:transaction"));
+      assert(catalog.actions.some((action) => action.id === "computer:managed-windows-reinstall"));
+      assert(catalog.actions.every((action) => action.agentCard?.intent && action.agentCard.successProof?.length > 0));
     }],
     ["agent triggers can be set, listed, emitted, and cancelled", async () => {
       const timeTrigger = await post("/operator/trigger", {
@@ -2371,7 +2382,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(quickActionsSource.includes('id: "native-window-chrome"'));
       assert(quickActionsSource.includes("hidden: true"));
       assert(quickActionsSource.includes("readonly hidden?: boolean"));
-      assert(ui.includes("quickActions.filter((action) => !action.hidden)"));
+      assert(quickActionsSource.includes("fetchFrontendQuickActions"));
+      assert(quickActionsSource.includes("mergeQuickActions"));
+      assert(ui.includes("quickActionCatalog.filter((action) => !action.hidden)"));
+      assert(ui.includes("refreshQuickActionCatalog"));
       assert(ui.includes("if (!action || action.hidden"));
       assert(ui.includes("agent-action-strip"));
       assert(ui.includes("agentActionButtonHtml"));

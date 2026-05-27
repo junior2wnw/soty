@@ -7,7 +7,7 @@ import {
 } from "trustlink-kernel";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, SyncedWriterLine, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
-import { quickActions } from "./features/quick-actions";
+import { fetchFrontendQuickActions, mergeQuickActions, quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
 import { dedupeMiniApps, isIconName, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition } from "./features/mini-apps";
 import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
@@ -224,6 +224,10 @@ const joinStaleMs = 22_000;
 let qrOverlay: HTMLDivElement | null = null;
 let actionOverlay: HTMLDivElement | null = null;
 let actionSearchText = "";
+let quickActionCatalog: readonly QuickAction[] = quickActions;
+let quickActionCatalogProbe: Promise<readonly QuickAction[]> | null = null;
+let quickActionCatalogCheckedAt = 0;
+const quickActionCatalogTtlMs = 5 * 60_000;
 let qrMode: "manual" | "auto" | null = null;
 let qrResetClicks = 0;
 let qrResetTimer = 0;
@@ -402,6 +406,7 @@ async function boot(): Promise<void> {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
+  void refreshQuickActionCatalog(true).then(() => renderTerminal());
   startAgentButtonWatcher(true);
   resumePendingAgentDialogReplies();
 }
@@ -1195,7 +1200,50 @@ function restoreSelectedChatScroll(): void {
   }, 0);
 }
 
+function maybeRefreshQuickActionCatalog(): void {
+  if (quickActionCatalogProbe || Date.now() - quickActionCatalogCheckedAt < quickActionCatalogTtlMs) {
+    return;
+  }
+  const previous = quickActionCatalogSignature();
+  void refreshQuickActionCatalog().then(() => {
+    if (actionOverlay && quickActionCatalogSignature() !== previous) {
+      openActionMenu();
+    }
+    if (activeTerminalTunnelId()) {
+      renderTerminal();
+    }
+  });
+}
+
+async function refreshQuickActionCatalog(force = false): Promise<readonly QuickAction[]> {
+  if (!force && Date.now() - quickActionCatalogCheckedAt < quickActionCatalogTtlMs) {
+    return quickActionCatalog;
+  }
+  if (quickActionCatalogProbe) {
+    return quickActionCatalogProbe;
+  }
+  quickActionCatalogProbe = fetchFrontendQuickActions()
+    .then((generated) => {
+      quickActionCatalog = mergeQuickActions(quickActions, generated);
+      quickActionCatalogCheckedAt = Date.now();
+      return quickActionCatalog;
+    })
+    .catch(() => {
+      quickActionCatalogCheckedAt = Date.now();
+      return quickActionCatalog;
+    })
+    .finally(() => {
+      quickActionCatalogProbe = null;
+    });
+  return quickActionCatalogProbe;
+}
+
+function quickActionCatalogSignature(): string {
+  return quickActionCatalog.map((action) => action.id).join("|");
+}
+
 function openActionMenu(): void {
+  maybeRefreshQuickActionCatalog();
   closeActionMenu();
   const query = actionSearchText.trim();
   const actions = visibleQuickActions(query);
@@ -1928,7 +1976,7 @@ function postMiniAppEvent(type: string, detail: Record<string, unknown>): void {
 }
 
 function visibleQuickActions(query: string): readonly QuickAction[] {
-  const available = quickActions.filter((action) => !action.hidden);
+  const available = quickActionCatalog.filter((action) => !action.hidden);
   const needle = actionSearchNeedle(query);
   if (!needle) {
     return available;
@@ -1941,7 +1989,8 @@ function visibleQuickActions(query: string): readonly QuickAction[] {
 }
 
 function quickActionMatchScore(action: QuickAction, needle: string): number {
-  const haystack = actionSearchNeedle(`${action.title} ${action.summary} ${action.tags.join(" ")} ${action.agentCard.intent}`);
+  const runtimeText = action.runtime ? Object.values(action.runtime).flat().join(" ") : "";
+  const haystack = actionSearchNeedle(`${action.title} ${action.summary} ${action.kind || ""} ${action.source || ""} ${action.tags.join(" ")} ${runtimeText} ${action.agentCard.intent}`);
   if (haystack.includes(needle)) {
     return 1000 + needle.length;
   }
@@ -1978,10 +2027,16 @@ function agentActionButtonHtml(action: QuickAction): string {
 }
 
 async function runQuickAction(actionId: string): Promise<void> {
-  const action = quickActions.find((item) => item.id === actionId);
+  const action = quickActionCatalog.find((item) => item.id === actionId);
   const tunnelId = selectedId;
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   if (!action || action.hidden || !tunnelId || !tunnel) {
+    return;
+  }
+  const appId = typeof action.runtime?.appId === "string" ? action.runtime.appId : "";
+  if (action.kind === "mini-app" && appId && currentMiniApps().some((item) => item.id === appId)) {
+    closeActionMenu();
+    openMiniApp(appId);
     return;
   }
   const comment = normalizeChatMessage(composer?.value || localDrafts.get(tunnelId) || "");
@@ -2007,9 +2062,15 @@ function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: T
     schema: "soty.action-intent-hint.v1",
     id: action.id,
     title: action.title,
+    source: action.source || "curated",
+    kind: action.kind || "curated",
     intent: action.agentCard.intent,
+    targetPolicy: action.agentCard.targetPolicy || "",
+    firstMoves: action.agentCard.firstMoves || [],
     confirmBefore: action.agentCard.confirmBefore,
-    successProof: action.agentCard.successProof
+    successProof: action.agentCard.successProof,
+    avoid: action.agentCard.avoid || [],
+    runtime: action.runtime || {}
   };
   return [
     `Действие: ${action.title}`,

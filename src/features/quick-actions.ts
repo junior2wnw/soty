@@ -1,17 +1,21 @@
 export type QuickAction = {
+  readonly schema?: string;
   readonly id: string;
   readonly title: string;
   readonly label: string;
   readonly summary: string;
   readonly tags: readonly string[];
+  readonly source?: string;
+  readonly kind?: string;
+  readonly runtime?: Record<string, unknown>;
   readonly hidden?: boolean;
   readonly agentCard: {
     readonly intent: string;
-    readonly targetPolicy: string;
-    readonly firstMoves: readonly string[];
+    readonly targetPolicy?: string;
+    readonly firstMoves?: readonly string[];
     readonly confirmBefore: readonly string[];
     readonly successProof: readonly string[];
-    readonly avoid: readonly string[];
+    readonly avoid?: readonly string[];
   };
 };
 
@@ -151,3 +155,141 @@ export const quickActions: readonly QuickAction[] = [
     }
   }
 ];
+
+export async function fetchFrontendQuickActions(timeoutMs = 1400): Promise<readonly QuickAction[]> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch("/api/frontend/capabilities", {
+      cache: "no-store",
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json() as { readonly actions?: readonly unknown[] };
+    return Array.isArray(payload.actions)
+      ? payload.actions
+        .map((item) => normalizeFrontendQuickAction(item))
+        .filter((item): item is QuickAction => Boolean(item))
+      : [];
+  } catch {
+    return [];
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export function mergeQuickActions(
+  curated: readonly QuickAction[],
+  generated: readonly QuickAction[]
+): readonly QuickAction[] {
+  const seen = new Set<string>();
+  const result: QuickAction[] = [];
+  for (const action of [...curated, ...generated]) {
+    if (!action.id || action.hidden || seen.has(action.id)) {
+      continue;
+    }
+    seen.add(action.id);
+    result.push(action);
+  }
+  return result;
+}
+
+function normalizeFrontendQuickAction(value: unknown): QuickAction | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = cleanId(recordString(value, "id"));
+  const title = cleanText(recordString(value, "title"), 100);
+  if (!id || !title) {
+    return null;
+  }
+  const agentCard = isRecord(value.agentCard) ? value.agentCard : {};
+  const intent = cleanText(recordString(agentCard, "intent") || title, 260);
+  const successProof = cleanList(agentCard.successProof, 10, 140);
+  return {
+    schema: cleanText(recordString(value, "schema"), 80),
+    id,
+    title,
+    label: cleanText(recordString(value, "label"), 16) || labelFor(title),
+    summary: cleanText(recordString(value, "summary"), 220),
+    tags: cleanList(value.tags, 32, 80),
+    source: cleanText(recordString(value, "source"), 60),
+    kind: cleanText(recordString(value, "kind"), 60),
+    runtime: cleanRuntime(value.runtime),
+    agentCard: {
+      intent,
+      targetPolicy: cleanText(recordString(agentCard, "targetPolicy"), 260),
+      firstMoves: cleanList(agentCard.firstMoves, 10, 220),
+      confirmBefore: cleanList(agentCard.confirmBefore, 10, 180),
+      successProof: successProof.length > 0 ? successProof : ["status", "result"],
+      avoid: cleanList(agentCard.avoid, 10, 180)
+    }
+  };
+}
+
+function cleanRuntime(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value).slice(0, 32)) {
+    const cleanKey = cleanId(key).slice(0, 80);
+    if (!cleanKey) {
+      continue;
+    }
+    if (typeof raw === "boolean" || typeof raw === "number") {
+      result[cleanKey] = raw;
+    } else if (typeof raw === "string") {
+      result[cleanKey] = cleanText(raw, 240);
+    } else if (Array.isArray(raw)) {
+      result[cleanKey] = cleanList(raw, 32, 120);
+    }
+  }
+  return result;
+}
+
+function cleanList(value: unknown, maxItems: number, maxLength: number): readonly string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => cleanText(String(item || ""), maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function cleanId(value: string): string {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9._:-]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .replace(/^-|-$/gu, "")
+    .slice(0, 180);
+}
+
+function cleanText(value: string, maxLength: number): string {
+  return String(value || "")
+    .replace(/[\u0000-\u001F\u007F]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function labelFor(value: string): string {
+  const words = cleanText(value, 80).split(/[^A-Za-z0-9]+/u).filter(Boolean);
+  if (words.length >= 2) {
+    return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
+  }
+  return (words[0] || "ACT").slice(0, 4).toUpperCase();
+}
+
+function recordString(value: Record<string, unknown>, key: string): string {
+  const item = value[key];
+  return typeof item === "string" ? item : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

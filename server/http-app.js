@@ -2,6 +2,7 @@ import express from "express";
 import path from "node:path";
 import { attachAgentLearning } from "./agent-learning.js";
 import { attachAgentRelay } from "./agent-relay.js";
+import { attachFrontendCapabilities } from "./frontend-capabilities.js";
 import { attachPayments } from "./payments.js";
 
 export function createHttpApp(distDir, { dataDir } = {}) {
@@ -57,6 +58,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   attachPayments(app);
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });
+  attachFrontendCapabilities(app, { distDir });
   app.use(express.static(distDir, {
     etag: true,
     index: false,
