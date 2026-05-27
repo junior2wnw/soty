@@ -6878,10 +6878,9 @@ function rememberComposerDraft(): void {
 
 function isMessageSendEnter(event: KeyboardEvent): boolean {
   return event.key === "Enter"
+    && (event.ctrlKey || event.metaKey)
     && !event.shiftKey
-    && !event.ctrlKey
     && !event.altKey
-    && !event.metaKey
     && !event.isComposing;
 }
 
@@ -7438,7 +7437,6 @@ function normalizeChatMessage(value: string): string {
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n")
-    .replace(/\n{2,}/gu, "\n")
     .trim();
 }
 
@@ -7968,6 +7966,19 @@ function handleTextPaintSubmit(event: SubmitEvent): void {
   void submitMessageDialogReply(form);
 }
 
+function messageBubbleGroupKey(label: WriterLine | undefined): string {
+  if (!label || !(label.deviceId || label.nick) || !Number.isFinite(label.at)) {
+    return "";
+  }
+  return [
+    label.deviceId || "",
+    label.nick || "",
+    Math.trunc(label.at),
+    label.action,
+    label.preview || ""
+  ].join("\u001f");
+}
+
 function renderTextPaint(): void {
   if (!textarea || !textPaint) {
     return;
@@ -8006,6 +8017,7 @@ function renderTextPaint(): void {
     attachments: FileBundleMarker[];
     entry: SpaceEntry | null;
     live: WriterActivity | null;
+    groupKey: string;
     sourceLine: number;
     sourceText: string;
     sourceId: string;
@@ -8037,6 +8049,7 @@ function renderTextPaint(): void {
         attachments: [],
         entry: spaceEntry,
         live: null,
+        groupKey: "",
         sourceLine: -1,
         sourceText: "",
         sourceId: "",
@@ -8066,6 +8079,7 @@ function renderTextPaint(): void {
           attachments: [fileBundle],
           entry: null,
           live: null,
+          groupKey: "",
           sourceLine: -1,
           sourceText: "",
           sourceId: "",
@@ -8080,6 +8094,7 @@ function renderTextPaint(): void {
       continue;
     }
     const label = labels.get(index);
+    const groupKey = messageBubbleGroupKey(label);
     let state = classifyChatLine(line, operatorBlock);
     const operatorNick = operatorNameFromLine(line);
     if (operatorNick) {
@@ -8099,6 +8114,12 @@ function renderTextPaint(): void {
       continue;
     }
     if (!line.trim()) {
+      const current = bubbles[bubbles.length - 1];
+      if (groupKey && current?.groupKey === groupKey && !current.entry && !current.live) {
+        current.lines.push("");
+        lastHiddenEntry = false;
+        continue;
+      }
       operatorBlock = false;
       operatorBlockNick = "";
       operatorBlockTime = "";
@@ -8114,6 +8135,20 @@ function renderTextPaint(): void {
     const live = active && index === activeLine ? active : null;
     const sourceId = spaceMessageSourceId(selectedId, index, line);
     const markKind: SpaceEntryKind = speaker.side === "local" ? "wall" : "reputation";
+    const current = bubbles[bubbles.length - 1];
+    if (
+      groupKey
+      && current?.groupKey === groupKey
+      && !current.entry
+      && !current.live
+      && current.side === speaker.side
+      && current.nick === speaker.nick
+      && current.className === state.className
+    ) {
+      current.lines.push(line);
+      lastHiddenEntry = false;
+      continue;
+    }
     bubbles.push({
       key: `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}:${index}`,
       side: speaker.side,
@@ -8125,6 +8160,7 @@ function renderTextPaint(): void {
       attachments: [],
       entry: null,
       live,
+      groupKey,
       sourceLine: index,
       sourceText: line,
       sourceId,
@@ -8145,6 +8181,7 @@ function renderTextPaint(): void {
       attachments: [],
       entry: null,
       live: null,
+      groupKey: "",
       sourceLine: -1,
       sourceText: "",
       sourceId: "",
@@ -8172,6 +8209,7 @@ function renderTextPaint(): void {
         action: "write",
         preview: draft.text
       },
+      groupKey: "",
       sourceLine: -1,
       sourceText: "",
       sourceId: "",

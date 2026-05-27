@@ -414,6 +414,8 @@ const hiddenHeartbeatIntervalMs = 36_000;
 const directHeartbeatIntervalMs = 24_000;
 const busyHeartbeatIntervalMs = 7_000;
 const staleConnectionMs = 42_000;
+const connectTimeoutMs = 14_000;
+const handshakeTimeoutMs = 16_000;
 const reconnectJitterMs = 750;
 const minReconnectDelayMs = 500;
 const maxReconnectDelayMs = 30_000;
@@ -446,6 +448,8 @@ export class TunnelSync {
   private snapshotTimer = 0;
   private heartbeatTimer = 0;
   private pingWatchdogTimer = 0;
+  private connectWatchdogTimer = 0;
+  private connectionStartedAt = 0;
   private lastSeenAt = 0;
   private lastPingSentAt = 0;
   private lastPongLatencyMs = 0;
@@ -480,6 +484,18 @@ export class TunnelSync {
   };
   private readonly offlineState = () => {
     this.ready = false;
+    window.clearTimeout(this.reconnectTimer);
+    window.clearTimeout(this.pingWatchdogTimer);
+    window.clearTimeout(this.connectWatchdogTimer);
+    this.closeP2pPeers();
+    this.callbacks.onPeers([]);
+    const ws = this.ws;
+    this.ws = null;
+    try {
+      ws?.close();
+    } catch {
+      // Network transitions can leave the browser socket in a non-closeable state.
+    }
     this.callbacks.onState("closed");
   };
   private readonly networkConnection = (navigator as Navigator & { connection?: EventTarget }).connection ?? null;
@@ -969,6 +985,7 @@ export class TunnelSync {
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.snapshotTimer);
     window.clearTimeout(this.pingWatchdogTimer);
+    window.clearTimeout(this.connectWatchdogTimer);
     window.clearInterval(this.heartbeatTimer);
     window.removeEventListener("online", this.wakeReconnect);
     window.removeEventListener("offline", this.offlineState);
@@ -991,6 +1008,10 @@ export class TunnelSync {
     if (this.destroyed) {
       return;
     }
+    if (navigator.onLine === false) {
+      this.offlineState();
+      return;
+    }
     if (this.ws && this.ws.readyState < WebSocket.CLOSING) {
       return;
     }
@@ -998,6 +1019,8 @@ export class TunnelSync {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${this.tunnel.id}`);
     this.ws = ws;
+    this.connectionStartedAt = Date.now();
+    this.armConnectWatchdog(ws, connectTimeoutMs);
 
     ws.onopen = () => {
       if (this.destroyed) {
@@ -1005,6 +1028,7 @@ export class TunnelSync {
         return;
       }
       this.lastSeenAt = Date.now();
+      this.armConnectWatchdog(ws, handshakeTimeoutMs);
       void this.auth.then((auth) => {
         if (!this.destroyed && this.ws === ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
@@ -1035,6 +1059,10 @@ export class TunnelSync {
       }
       this.ready = false;
       window.clearTimeout(this.pingWatchdogTimer);
+      window.clearTimeout(this.connectWatchdogTimer);
+      this.ws = null;
+      this.closeP2pPeers();
+      this.callbacks.onPeers([]);
       this.callbacks.onState("closed");
       if (!this.destroyed) {
         const delay = this.reconnectDelay + Math.round(Math.random() * reconnectJitterMs);
@@ -1042,6 +1070,15 @@ export class TunnelSync {
         this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
       }
     };
+  }
+
+  private armConnectWatchdog(ws: WebSocket, timeoutMs: number): void {
+    window.clearTimeout(this.connectWatchdogTimer);
+    this.connectWatchdogTimer = window.setTimeout(() => {
+      if (!this.destroyed && this.ws === ws && ws.readyState < WebSocket.CLOSING && !this.ready) {
+        this.closeAndReconnect(ws);
+      }
+    }, timeoutMs);
   }
 
   private async handleRawMessage(raw: string): Promise<void> {
@@ -1055,6 +1092,9 @@ export class TunnelSync {
   private async handleMessage(message: ServerMessage): Promise<void> {
     this.lastSeenAt = Date.now();
     window.clearTimeout(this.pingWatchdogTimer);
+    if (message.type === "hello" || message.type === "closed" || this.ready) {
+      window.clearTimeout(this.connectWatchdogTimer);
+    }
     if (message.type === "closed") {
       this.callbacks.onClosed();
       this.destroy();
@@ -2072,6 +2112,10 @@ export class TunnelSync {
       return;
     }
     window.clearTimeout(this.reconnectTimer);
+    if (navigator.onLine === false) {
+      this.offlineState();
+      return;
+    }
     const ws = this.ws;
     if (!ws || ws.readyState >= WebSocket.CLOSING) {
       this.ready = false;
@@ -2079,6 +2123,9 @@ export class TunnelSync {
       return;
     }
     if (ws.readyState === WebSocket.CONNECTING) {
+      if (Date.now() - this.connectionStartedAt > connectTimeoutMs) {
+        this.closeAndReconnect(ws);
+      }
       return;
     }
     if (ws.readyState !== WebSocket.OPEN) {
@@ -2099,9 +2146,19 @@ export class TunnelSync {
     if (this.destroyed) {
       return;
     }
+    if (navigator.onLine === false) {
+      this.offlineState();
+      return;
+    }
     const ws = this.ws;
     if (!ws || ws.readyState >= WebSocket.CLOSING) {
       this.wakeReconnect();
+      return;
+    }
+    if (ws.readyState === WebSocket.CONNECTING) {
+      if (Date.now() - this.connectionStartedAt > connectTimeoutMs) {
+        this.closeAndReconnect(ws);
+      }
       return;
     }
     if (ws.readyState !== WebSocket.OPEN) {
@@ -2143,6 +2200,9 @@ export class TunnelSync {
     }
     this.ready = false;
     window.clearTimeout(this.pingWatchdogTimer);
+    window.clearTimeout(this.connectWatchdogTimer);
+    this.closeP2pPeers();
+    this.callbacks.onPeers([]);
     this.ws = null;
     this.callbacks.onState("connecting");
     try {

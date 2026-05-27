@@ -139,7 +139,13 @@ function cleanList(value: unknown, limit: number): readonly string[] {
 }
 
 function cleanText(value: string, limit: number): string {
-  return String(value || "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  return String(value || "")
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/gu, " ").trimEnd())
+    .join("\n")
+    .trim()
+    .slice(0, limit);
 }
 
 function cleanToken(value: string, limit: number): string {

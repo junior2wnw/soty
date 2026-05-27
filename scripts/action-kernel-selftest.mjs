@@ -2286,9 +2286,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("agentReplyStopTokens"));
       assert(ui.includes("function isMessageSendEnter(event: KeyboardEvent): boolean"));
-      assert(ui.includes("&& !event.ctrlKey"));
+      assert(ui.includes("&& (event.ctrlKey || event.metaKey)"));
+      assert(ui.includes("&& !event.shiftKey"));
       assert(ui.includes("&& !event.altKey"));
-      assert(ui.includes("&& !event.metaKey"));
       assert(ui.includes("function agentReplyStopToken"));
       assert(ui.includes("agentReplyStopToken(tunnelId) !== replyToken"));
       assert(ui.includes("stopAgentDialogReply"));

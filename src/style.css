@@ -1878,6 +1878,7 @@ button:disabled {
 .message-dialog-reply span {
   color: var(--ink);
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .message-dialog-reply time {
