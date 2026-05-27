@@ -93,6 +93,7 @@ export interface ReceivedFile {
   readonly autoDownload?: boolean;
   readonly delivery?: string;
   readonly commandId?: string;
+  readonly historical?: boolean;
 }
 
 export interface NoticeKnock {
@@ -1095,7 +1096,7 @@ export class TunnelSync {
         await this.applyIncomingUpdate(update);
       }
       for (const file of message.files ?? []) {
-        await this.applyFile(file);
+        await this.applyFile(file, true);
       }
       const peers = message.peers.filter((peer) => peer.id !== this.device.id);
       this.callbacks.onPeers(peers);
@@ -1259,7 +1260,7 @@ export class TunnelSync {
     Y.applyUpdate(this.doc, bytes, "remote");
   }
 
-  private async applyFile(file: EncryptedFile): Promise<void> {
+  private async applyFile(file: EncryptedFile, historical = false): Promise<void> {
     if (file.kind === "delete") {
       this.fileTransfers.delete(file.fileId);
       this.completedFileIds.delete(file.fileId);
@@ -1271,7 +1272,7 @@ export class TunnelSync {
       return;
     }
     if (file.kind === "chunk") {
-      await this.applyFileChunk(file);
+      await this.applyFileChunk(file, historical);
       return;
     }
     if (this.completedFileIds.has(file.id) || this.deletedFileIds.has(file.id)) {
@@ -1304,12 +1305,13 @@ export class TunnelSync {
       createdAt: file.createdAt || new Date().toISOString(),
       ...(meta.autoDownload === true ? { autoDownload: true } : {}),
       ...(meta.delivery ? { delivery: String(meta.delivery).slice(0, 80) } : {}),
-      ...(meta.commandId ? { commandId: String(meta.commandId).slice(0, 120) } : {})
+      ...(meta.commandId ? { commandId: String(meta.commandId).slice(0, 120) } : {}),
+      ...(historical ? { historical: true } : {})
     });
     rememberBounded(this.completedFileIds, file.id);
   }
 
-  private async applyFileChunk(file: EncryptedFileChunk): Promise<void> {
+  private async applyFileChunk(file: EncryptedFileChunk, historical = false): Promise<void> {
     if (this.completedFileIds.has(file.fileId) || this.deletedFileIds.has(file.fileId)) {
       return;
     }
@@ -1368,7 +1370,8 @@ export class TunnelSync {
       createdAt: transfer.createdAt || new Date().toISOString(),
       ...(transfer.meta.autoDownload === true ? { autoDownload: true } : {}),
       ...(transfer.meta.delivery ? { delivery: String(transfer.meta.delivery).slice(0, 80) } : {}),
-      ...(transfer.meta.commandId ? { commandId: String(transfer.meta.commandId).slice(0, 120) } : {})
+      ...(transfer.meta.commandId ? { commandId: String(transfer.meta.commandId).slice(0, 120) } : {}),
+      ...(historical ? { historical: true } : {})
     });
     this.fileTransfers.delete(file.fileId);
     rememberBounded(this.completedFileIds, file.fileId);

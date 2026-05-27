@@ -21,6 +21,7 @@ const maxMessagesPerWindow = 600;
 const maxBytesPerWindow = 70_000_000;
 const maxStoredFiles = 3000;
 const maxStoredFileBytes = 512_000_000;
+const maxStoredFileAgeMs = storedFileAgeMsFromEnv();
 const joinRequestTtlMs = 10 * 60_000;
 const joinDecisionTtlMs = 60_000;
 const maxPendingJoinRequests = 16;
@@ -339,6 +340,9 @@ async function handleHello(room, peer, ws, store, message) {
     ws.close(1008, "bad auth");
     return;
   }
+  if (trimStoredFiles(room.state.files)) {
+    await store.save(room);
+  }
   room.peers.set(peer.connectionId, peer);
   const peers = [...room.peers.values()].map(publicPeer);
   ws.send(JSON.stringify({
@@ -485,12 +489,35 @@ function allowMessage(peer, raw) {
 }
 
 function trimStoredFiles(files) {
+  let changed = false;
+  const now = Date.now();
+  for (let index = files.length - 1; index >= 0; index -= 1) {
+    if (isExpiredStoredFile(files[index], now)) {
+      files.splice(index, 1);
+      changed = true;
+    }
+  }
   while (files.length > maxStoredFiles) {
     files.shift();
+    changed = true;
   }
   let total = files.reduce((sum, file) => sum + (Number.isSafeInteger(file.bytes) ? file.bytes : 0), 0);
   while (total > maxStoredFileBytes && files.length > 0) {
     const removed = files.shift();
+    changed = true;
     total -= Number.isSafeInteger(removed?.bytes) ? removed.bytes : 0;
   }
+  return changed;
+}
+
+function isExpiredStoredFile(file, now) {
+  const createdAt = typeof file?.createdAt === "string" ? Date.parse(file.createdAt) : Number.NaN;
+  return Number.isFinite(createdAt) && now - createdAt > maxStoredFileAgeMs;
+}
+
+function storedFileAgeMsFromEnv() {
+  const value = Number.parseInt(process.env.SOTY_FILE_CACHE_TTL_MS || "", 10);
+  return Number.isSafeInteger(value) && value >= 60_000
+    ? value
+    : 7 * 24 * 60 * 60_000;
 }

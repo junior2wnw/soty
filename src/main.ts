@@ -539,12 +539,12 @@ function startSameDeviceWindowSync(): void {
   }
   sameDeviceWindowSyncStarted = true;
   window.addEventListener("storage", (event) => {
-    if (!event.key || event.key === tunnelsKey || event.key === selectedKey) {
+    if (!event.key || event.key === tunnelsKey) {
       scheduleSameDeviceWindowState(event.key || "storage", false);
     }
   });
-  window.addEventListener("focus", () => scheduleSameDeviceWindowState("focus", true));
-  window.addEventListener("pageshow", () => scheduleSameDeviceWindowState("pageshow", true));
+  window.addEventListener("focus", () => scheduleSameDeviceWindowState("focus", false));
+  window.addEventListener("pageshow", () => scheduleSameDeviceWindowState("pageshow", false));
 }
 
 function scheduleSameDeviceWindowState(reason: string, followSelected: boolean): void {
@@ -558,17 +558,19 @@ function applySameDeviceWindowState(reason: string, followSelected: boolean): vo
   if (!device || !app.querySelector(".shell")) {
     return;
   }
+  const previousSelected = selectedId;
   const previousSignature = tunnelListSignature(tunnels);
   const nextTunnels = loadTunnels();
   const nextSignature = tunnelListSignature(nextTunnels);
   const storedSelected = loadSelectedTunnelId() || "";
   const currentStillExists = nextTunnels.some((tunnel) => tunnel.id === selectedId);
   tunnels = nextTunnels;
-  if ((followSelected || reason === selectedKey || !currentStillExists) && storedSelected) {
+  if ((!currentStillExists || followSelected) && storedSelected && nextTunnels.some((tunnel) => tunnel.id === storedSelected)) {
     selectedId = storedSelected;
   }
   ensurePermanentCells();
   normalizeSelectedTunnel();
+  const selectionChanged = selectedId !== previousSelected;
   const activeIds = new Set(tunnels.map((tunnel) => tunnel.id));
   for (const [id, sync] of syncs) {
     if (!activeIds.has(id)) {
@@ -581,7 +583,7 @@ function applySameDeviceWindowState(reason: string, followSelected: boolean): vo
   for (const tunnel of tunnels) {
     ensureSync(tunnel);
   }
-  if (previousSignature !== nextSignature || reason === selectedKey || followSelected) {
+  if (previousSignature !== nextSignature || selectionChanged || reason === "focus" || reason === "pageshow") {
     applySelectedText();
     renderTiles();
     renderComposerAttachments();
@@ -3057,18 +3059,16 @@ function closeRemoteMode(tunnelId: string): void {
 
 function sortedVisibleTunnels(): TunnelRecord[] {
   return loadTunnels()
-    .filter((tunnel) => !tunnel.archived && hasCounterparty(tunnel))
+    .map((tunnel, index) => ({ tunnel, index }))
+    .filter((item) => !item.tunnel.archived && hasCounterparty(item.tunnel))
     .sort((a, b) => {
-      const rank = permanentCellRank(b) - permanentCellRank(a);
+      const rank = permanentCellRank(b.tunnel) - permanentCellRank(a.tunnel);
       if (rank !== 0) {
         return rank;
       }
-      const score = (b.score ?? 0) - (a.score ?? 0);
-      if (score !== 0) {
-        return score;
-      }
-      return Date.parse(b.lastActionAt || b.updatedAt) - Date.parse(a.lastActionAt || a.updatedAt);
-    });
+      return a.index - b.index;
+    })
+    .map((item) => item.tunnel);
 }
 
 function permanentCellRank(tunnel: TunnelRecord): number {
@@ -3106,6 +3106,9 @@ function selectFirstSurface(): void {
     return;
   }
   firstSurfacePending = false;
+  if (hasVisibleSelection(selectedId)) {
+    return;
+  }
   const self = loadTunnels().find((tunnel) => !tunnel.archived && isSelfTunnel(tunnel));
   if (!self) {
     return;
@@ -3124,10 +3127,6 @@ function selectTunnel(id: string): void {
 
 function hasVisibleSelection(id = selectedId): boolean {
   return Boolean(id && loadTunnels().some((tunnel) => !tunnel.archived && tunnel.id === id && hasCounterparty(tunnel)));
-}
-
-function shouldAutoSelectTunnel(id: string): boolean {
-  return selectedId === id || !hasVisibleSelection();
 }
 
 function hasCounterparty(tunnel: TunnelRecord): boolean {
@@ -3783,7 +3782,10 @@ function ensureSync(tunnel: TunnelRecord): void {
     },
     onRemoteChange: (activity) => {
       const hadNotice = tunnelHasNotice(tunnel.id);
-      maybeKnockForTyping(tunnel.id, activity, hadNotice);
+      const visibleChange = remoteActivityTouchesVisibleChat(tunnel.id, activity);
+      if (visibleChange) {
+        maybeKnockForTyping(tunnel.id, activity, hadNotice);
+      }
       rememberWriter(tunnel.id, activity);
       activeActivities.set(tunnel.id, activity);
       const tick = Date.now();
@@ -3798,26 +3800,32 @@ function ensureSync(tunnel: TunnelRecord): void {
           }
         }
       }, 1800);
-      if (tunnel.id !== selectedId || document.visibilityState === "hidden") {
+      if (visibleChange && (tunnel.id !== selectedId || document.visibilityState === "hidden")) {
         tunnels = markTunnel(tunnel.id, true);
         renderTiles();
       } else {
         tunnels = touchTunnel(tunnel.id);
-        renderLineTags();
-        renderTextPaint();
-        renderWriterPop();
+        if (tunnel.id === selectedId) {
+          renderLineTags();
+          renderTextPaint();
+          renderWriterPop();
+        }
       }
     },
     onFile: (file) => {
       const next = [file, ...(files.get(tunnel.id) ?? []).filter((item) => item.id !== file.id)];
       files.set(tunnel.id, next);
-      maybeAutoDownloadReceivedFile(tunnel.id, file);
-      tunnels = tunnel.id === selectedId ? touchTunnel(tunnel.id) : markTunnel(tunnel.id, true);
+      if (file.historical !== true) {
+        maybeAutoDownloadReceivedFile(tunnel.id, file);
+        tunnels = tunnel.id === selectedId ? touchTunnel(tunnel.id) : markTunnel(tunnel.id, true);
+      }
       if (tunnel.id === selectedId) {
         renderTextPaint();
         renderComposerAttachments();
       }
-      renderTiles();
+      if (file.historical !== true) {
+        renderTiles();
+      }
     },
     onFileDeleted: (fileId) => {
       files.set(tunnel.id, (files.get(tunnel.id) ?? []).filter((item) => item.id !== fileId));
@@ -4211,6 +4219,57 @@ function activeFileNotice(tunnelId: string): string {
   return notice.text;
 }
 
+function remoteActivityTouchesVisibleChat(tunnelId: string, activity: WriterActivity): boolean {
+  if (activity.local) {
+    return false;
+  }
+  if ((activity.deleteCount ?? 0) > 0) {
+    return true;
+  }
+  const inserted = activity.insertText || "";
+  const lines = inserted
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return Boolean(activity.preview.trim());
+  }
+  return lines.some((line) => !isSilentProtocolNoticeLine(tunnelId, line));
+}
+
+function isSilentProtocolNoticeLine(tunnelId: string, line: string): boolean {
+  if (!isMessageDialogLine(line)) {
+    return false;
+  }
+  const entry = parseMessageDialogLine(line);
+  if (!entry || entry.chatId !== tunnelId) {
+    return true;
+  }
+  const viewer = {
+    deviceId: device?.id || "",
+    cellIds: loadTunnels().filter((tunnel) => !tunnel.archived).map((tunnel) => tunnel.id)
+  };
+  return !messageDialogVisibleForTarget(entry, viewer) || !messageDialogSourceExists(tunnelId, entry.sourceId);
+}
+
+function messageDialogSourceExists(tunnelId: string, sourceId: string): boolean {
+  if (!sourceId) {
+    return false;
+  }
+  const text = texts.get(tunnelId) || "";
+  const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (!line.trim() || isMessageDialogLine(line) || parseSpaceEntryLine(line) || parseFileBundleLine(line)) {
+      continue;
+    }
+    if (spaceMessageSourceId(tunnelId, index, line) === sourceId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function applyKnock(tunnelId: string, knock: NoticeKnock): void {
   if (!device || knock.deviceId === device.id || !grantTargetsThisDevice(knock.targetDeviceId)) {
     return;
@@ -4236,14 +4295,8 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
       return;
     }
   }
-  if (shouldAutoSelectTunnel(tunnelId)) {
-    selectTunnel(tunnelId);
-    renderTiles();
-    applySelectedText();
-  } else {
-    tunnels = markTunnel(tunnelId, true);
-    renderTiles();
-  }
+  tunnels = tunnelId === selectedId ? touchTunnel(tunnelId) : markTunnel(tunnelId, true);
+  renderTiles();
   renderRemoteRequest(tunnelId, request);
 }
 
@@ -4323,16 +4376,21 @@ function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
     void syncs.get(tunnelId)?.sendRemoteOutput(command.deviceId, command.id, "! access", 409);
     return;
   }
-  selectedId = tunnelId;
-  saveSelectedTunnelId(tunnelId);
+  const wasSelected = tunnelId === selectedId;
   terminalOpenId = tunnelId;
   setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `< ${command.command}`);
-  clearTunnelNotices(tunnelId);
-  tunnels = markTunnel(tunnelId, false);
+  if (wasSelected) {
+    clearTunnelNotices(tunnelId);
+    tunnels = markTunnel(tunnelId, false);
+  } else {
+    tunnels = markTunnel(tunnelId, true);
+  }
   renderTiles();
-  applySelectedText(true);
-  renderComposerAttachments();
+  if (wasSelected) {
+    applySelectedText(true);
+    renderComposerAttachments();
+  }
   void runLocalAgentCommand(tunnelId, command);
   renderTerminal();
 }
@@ -4345,16 +4403,21 @@ function applyRemoteScript(tunnelId: string, script: RemoteScript): void {
     void syncs.get(tunnelId)?.sendRemoteOutput(script.deviceId, script.id, "! access", 409);
     return;
   }
-  selectedId = tunnelId;
-  saveSelectedTunnelId(tunnelId);
+  const wasSelected = tunnelId === selectedId;
   terminalOpenId = tunnelId;
   setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `< ${script.name || "script"}`);
-  clearTunnelNotices(tunnelId);
-  tunnels = markTunnel(tunnelId, false);
+  if (wasSelected) {
+    clearTunnelNotices(tunnelId);
+    tunnels = markTunnel(tunnelId, false);
+  } else {
+    tunnels = markTunnel(tunnelId, true);
+  }
   renderTiles();
-  applySelectedText(true);
-  renderComposerAttachments();
+  if (wasSelected) {
+    applySelectedText(true);
+    renderComposerAttachments();
+  }
   void runLocalAgentScript(tunnelId, script);
   renderTerminal();
 }
@@ -4527,15 +4590,15 @@ async function webControllerSend(request: WebControllerRunRequest): Promise<WebC
   }
   const timeoutMs = safeOperatorTimeoutMs(options.timeoutMs) || 30_000;
   const wasSelected = selectedId === resolved.tunnel.id;
-  selectedId = resolved.tunnel.id;
-  saveSelectedTunnelId(selectedId);
   terminalOpenId = resolved.tunnel.id;
   setTerminalState(resolved.tunnel.id, "run");
   appendTerminalLine(resolved.tunnel.id, kind === "run" ? `$ ${command}` : `$ ${options.name || "script"}`);
+  tunnels = wasSelected ? touchTunnel(resolved.tunnel.id) : markTunnel(resolved.tunnel.id, true);
   if (wasSelected) {
+    renderTiles();
     renderTerminal();
   } else {
-    renderApp();
+    renderTiles();
   }
   const startedAt = new Date().toISOString();
   let commandId = "";
@@ -5004,18 +5067,18 @@ async function runOperatorCommand(message: { readonly id?: string; readonly targ
   const bridgeEpoch = operatorBridgeEpoch;
   const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
   operatorStartingTunnels.add(tunnel.id);
-  const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
-  if (!keepCurrentDialog) {
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-  }
+  const wasSelected = tunnel.id === selectedId;
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${command}`);
-  clearTunnelNotices(tunnel.id);
-  tunnels = markTunnel(tunnel.id, false);
+  if (wasSelected) {
+    clearTunnelNotices(tunnel.id);
+    tunnels = markTunnel(tunnel.id, false);
+  } else {
+    tunnels = markTunnel(tunnel.id, true);
+  }
   renderTiles();
-  if (!keepCurrentDialog) {
+  if (wasSelected) {
     applySelectedText(true);
     renderComposerAttachments();
   }
@@ -5093,18 +5156,18 @@ async function runOperatorScript(message: {
   const bridgeEpoch = operatorBridgeEpoch;
   const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
   operatorStartingTunnels.add(tunnel.id);
-  const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
-  if (!keepCurrentDialog) {
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-  }
+  const wasSelected = tunnel.id === selectedId;
   terminalOpenId = tunnel.id;
   setTerminalState(tunnel.id, "run");
   appendTerminalLine(tunnel.id, `$ ${name}`);
-  clearTunnelNotices(tunnel.id);
-  tunnels = markTunnel(tunnel.id, false);
+  if (wasSelected) {
+    clearTunnelNotices(tunnel.id);
+    tunnels = markTunnel(tunnel.id, false);
+  } else {
+    tunnels = markTunnel(tunnel.id, true);
+  }
   renderTiles();
-  if (!keepCurrentDialog) {
+  if (wasSelected) {
     applySelectedText(true);
     renderComposerAttachments();
   }
@@ -5185,10 +5248,12 @@ async function runOperatorChat(message: {
     sendOperatorOutput(requestId, "! tunnel", 409);
     return;
   }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
+  const wasSelected = tunnel.id === selectedId;
+  tunnels = wasSelected ? touchTunnel(tunnel.id) : markTunnel(tunnel.id, true);
   renderTiles();
-  applySelectedText();
+  if (wasSelected) {
+    applySelectedText();
+  }
   sendOperatorOutput(requestId, "typing\n");
   const previous = operatorChatQueues.get(tunnel.id) ?? Promise.resolve();
   const displayText = formatOperatorChat(text, message.persona || "operator");
@@ -5533,10 +5598,6 @@ function operatorTargetMatchesDevice(tunnelId: string, sourceDeviceId: string): 
     return true;
   }
   return (peerDevices.get(tunnelId) ?? []).some((peer) => peer.id === sourceId);
-}
-
-function shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId: string): boolean {
-  return Boolean(sourceDeviceId.trim() && selectedId && isAgentTunnelId(selectedId));
 }
 
 function findVisibleOperatorTarget(target: string): TunnelRecord | null {
@@ -7952,7 +8013,6 @@ function renderTextPaint(): void {
     marked: boolean;
   }[] = [];
   let lastHiddenEntry = false;
-  const referencedFileIds = new Set<string>();
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (isMessageDialogLine(line)) {
@@ -7988,7 +8048,6 @@ function renderTextPaint(): void {
     }
     const fileBundle = parseFileBundleLine(line);
     if (fileBundle) {
-      fileBundle.files.forEach((file) => referencedFileIds.add(file.id));
       if (lastHiddenEntry) {
         continue;
       }
@@ -8113,27 +8172,6 @@ function renderTextPaint(): void {
         action: "write",
         preview: draft.text
       },
-      sourceLine: -1,
-      sourceText: "",
-      sourceId: "",
-      markKind: null,
-      marked: false
-    });
-  }
-  bubbles.forEach((bubble) => bubble.attachments.forEach((bundle) => bundle.files.forEach((file) => referencedFileIds.add(file.id))));
-  const looseFiles = showDialog ? (files.get(selectedId) ?? []).filter((file) => !referencedFileIds.has(file.id)) : [];
-  if (looseFiles.length > 0) {
-    bubbles.push({
-      key: "loose-files",
-      side: "surface",
-      nick: counterpartyLabelForSelected(),
-      color: safeColor(undefined, `${selectedId}:files`),
-      time: clock(),
-      className: "is-file-bundle",
-      lines: [],
-      attachments: [{ id: "loose-files", files: looseFiles.map(fileBundleAttachment) }],
-      entry: null,
-      live: null,
       sourceLine: -1,
       sourceText: "",
       sourceId: "",
