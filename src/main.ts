@@ -101,6 +101,15 @@ type MiniAppInstallDraft = {
   readonly placement: string;
 };
 
+type LauncherItem = {
+  readonly kind: "action" | "app" | "install";
+  readonly key: string;
+  readonly markHtml: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly meta?: string;
+};
+
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
   throw new Error("App root missing");
@@ -163,8 +172,6 @@ const agentAttachmentLimit = 10;
 let miniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
 let miniAppSession: MiniAppSession | null = null;
-let miniAppOverlay: HTMLDivElement | null = null;
-let miniAppSearchText = "";
 let openMessageDialog: OpenMessageDialog | null = null;
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
@@ -1214,7 +1221,7 @@ function maybeRefreshQuickActionCatalog(): void {
   const previous = quickActionCatalogSignature();
   void refreshQuickActionCatalog().then(() => {
     if (actionOverlay && quickActionCatalogSignature() !== previous) {
-      openActionMenu();
+      openLauncher();
     }
     if (activeTerminalTunnelId()) {
       renderTerminal();
@@ -1250,31 +1257,37 @@ function quickActionCatalogSignature(): string {
 }
 
 function openActionMenu(): void {
+  actionSearchText = "";
+  openLauncher();
+}
+
+function openLauncher(): void {
   maybeRefreshQuickActionCatalog();
   closeActionMenu();
   const query = actionSearchText.trim();
-  const actions = visibleQuickActions(query);
+  const items = launcherItems(query);
+  const appsCount = globalMiniApps().length;
   const comment = selectedId
     ? normalizeChatMessage(composer?.value || localDrafts.get(selectedId) || "")
     : "";
   const overlay = document.createElement("div");
   overlay.className = "action-modal";
   overlay.innerHTML = `
-    <section class="action-sheet" role="dialog" aria-modal="true" aria-label="actions">
+    <section class="action-sheet" role="dialog" aria-modal="true" aria-label="launcher">
       <header class="action-head">
         <span class="action-mark">${icon("check")}</span>
         <span>
-          <b>ДЕЙСТВИЯ</b>
-          <small>${escapeHtml(counterpartyLabelForSelected())}</small>
+          <b>LAUNCH</b>
+          <small>${escapeHtml(counterpartyLabelForSelected())} / ${appsCount}</small>
         </span>
-        <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
+        <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
       </header>
-      <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="что сделать" />
-      ${comment ? `<div class="action-comment"><b>Комментарий</b><span>${escapeHtml(comment.slice(0, 180))}</span></div>` : ""}
+      <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="app, action, tag, url" />
+      ${comment ? `<div class="action-comment"><b>TEXT</b><span>${escapeHtml(comment.slice(0, 180))}</span></div>` : ""}
       <div class="action-list">
-        ${actions.map((action) => quickActionRowHtml(action)).join("")}
+        ${items.map((item) => launcherRowHtml(item)).join("")}
       </div>
-      ${actions.length === 0 ? `<output class="action-empty">Ничего не найдено</output>` : ""}
+      ${items.length === 0 ? `<output class="action-empty">No matches</output>` : ""}
     </section>
   `;
   document.body.append(overlay);
@@ -1287,15 +1300,62 @@ function openActionMenu(): void {
   overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", () => closeActionMenu());
   overlay.querySelector<HTMLInputElement>(".action-search")?.addEventListener("input", (event) => {
     actionSearchText = (event.currentTarget as HTMLInputElement).value.slice(0, 120);
-    openActionMenu();
+    openLauncher();
     actionOverlay?.querySelector<HTMLInputElement>(".action-search")?.focus();
   });
-  overlay.querySelectorAll<HTMLButtonElement>(".quick-action-run").forEach((button) => {
+  overlay.querySelectorAll<HTMLButtonElement>(".launcher-row").forEach((button) => {
     button.addEventListener("click", () => {
-      void runQuickAction(button.dataset.actionId || "");
+      runLauncherItem(button.dataset.kind || "", button.dataset.key || "");
     });
   });
   overlay.querySelector<HTMLInputElement>(".action-search")?.focus();
+}
+
+function launcherItems(query: string): LauncherItem[] {
+  const indexedApps = globalMiniApps();
+  const installDraft = miniAppInstallDraftFromSearch(query, indexedApps);
+  return [
+    ...(installDraft ? [installDraftLauncherItem(installDraft)] : []),
+    ...searchMiniApps(indexedApps, query).map(appLauncherItem),
+    ...visibleQuickActions(query).map(actionLauncherItem)
+  ];
+}
+
+function launcherRowHtml(item: LauncherItem): string {
+  return `
+    <button class="quick-action-run launcher-row" type="button" data-kind="${escapeHtml(item.kind)}" data-key="${escapeHtml(item.key)}">
+      <span class="quick-action-label">${item.markHtml}</span>
+      <span class="quick-action-copy">
+        <b>${escapeHtml(item.title)}</b>
+        <small>${escapeHtml(item.summary)}</small>
+        ${item.meta ? `<em class="launcher-meta">${escapeHtml(item.meta)}</em>` : ""}
+      </span>
+    </button>
+  `;
+}
+
+function runLauncherItem(kind: string, key: string): void {
+  if (kind === "action") {
+    void runQuickAction(key);
+    return;
+  }
+  if (kind === "app") {
+    openMiniAppByKey(key);
+    return;
+  }
+  if (kind === "install") {
+    const draft = miniAppInstallDraftFromSearch(actionSearchText, globalMiniApps());
+    if (!draft) {
+      return;
+    }
+    installMiniAppFromConnector({
+      ...draft,
+      icon: "remote",
+      scope: "account",
+      open: true,
+      capabilities: []
+    });
+  }
 }
 
 function closeActionMenu(): void {
@@ -1598,73 +1658,7 @@ function handleMiniAppRegistryChange(): void {
   renderDialogChrome();
 }
 
-async function openMiniAppLauncher(): Promise<void> {
-  closeMiniAppLauncher();
-  await refreshMiniApps(true);
-  const indexedApps = globalMiniApps();
-  const apps = searchMiniApps(indexedApps, miniAppSearchText);
-  const installDraft = miniAppInstallDraftFromSearch(miniAppSearchText, indexedApps);
-  const overlay = document.createElement("div");
-  overlay.className = "action-modal mini-launcher-modal";
-  overlay.innerHTML = `
-    <section class="action-sheet mini-launcher-sheet" role="dialog" aria-modal="true" aria-label="mini apps">
-      <header class="action-head">
-        <span class="action-mark">${icon("remote")}</span>
-        <span>
-          <b>APPS</b>
-          <small>${escapeHtml(counterpartyLabelForSelected())} / ${indexedApps.length}</small>
-        </span>
-        <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
-      </header>
-      <input class="action-search mini-app-search" type="search" value="${escapeHtml(miniAppSearchText)}" placeholder="title, tag, profile, url" />
-      <div class="action-list">
-        ${installDraft ? miniAppInstallDraftRowHtml(installDraft) : ""}
-        ${apps.map((appItem) => miniAppRowHtml(appItem)).join("")}
-      </div>
-      ${indexedApps.length === 0 && !installDraft ? `<output class="action-empty">No apps installed</output>` : ""}
-      ${indexedApps.length > 0 && apps.length === 0 ? `<output class="action-empty">No matches</output>` : ""}
-    </section>
-  `;
-  document.body.append(overlay);
-  miniAppOverlay = overlay;
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      closeMiniAppLauncher();
-    }
-  });
-  overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", () => closeMiniAppLauncher());
-  overlay.querySelector<HTMLInputElement>(".mini-app-search")?.addEventListener("input", (event) => {
-    miniAppSearchText = (event.currentTarget as HTMLInputElement).value.slice(0, 120);
-    void openMiniAppLauncher();
-    miniAppOverlay?.querySelector<HTMLInputElement>(".mini-app-search")?.focus();
-  });
-  overlay.querySelectorAll<HTMLButtonElement>(".mini-app-run").forEach((button) => {
-    button.addEventListener("click", () => {
-      openMiniAppByKey(button.dataset.appKey || "");
-    });
-  });
-  overlay.querySelector<HTMLButtonElement>(".mini-app-install-url")?.addEventListener("click", () => {
-    const draft = miniAppInstallDraftFromSearch(miniAppSearchText, globalMiniApps());
-    if (!draft) {
-      return;
-    }
-    installMiniAppFromConnector({
-      ...draft,
-      icon: "remote",
-      scope: "account",
-      open: true,
-      capabilities: []
-    });
-  });
-  overlay.querySelector<HTMLInputElement>(".mini-app-search")?.focus();
-}
-
-function closeMiniAppLauncher(): void {
-  miniAppOverlay?.remove();
-  miniAppOverlay = null;
-}
-
-function miniAppRowHtml(appItem: MiniAppDefinition): string {
+function appLauncherItem(appItem: MiniAppDefinition): LauncherItem {
   const tags = (appItem.tags || []).slice(0, 4).join(" #");
   const meta = [
     appItem.profileTitle || appItem.profileId || "",
@@ -1672,29 +1666,25 @@ function miniAppRowHtml(appItem: MiniAppDefinition): string {
     appItem.placement || "",
     tags ? `#${tags}` : ""
   ].filter(Boolean).join(" / ");
-  return `
-    <button class="quick-action-run mini-app-run" type="button" data-app-key="${escapeHtml(miniAppRecordKey(appItem))}">
-      <span class="quick-action-label">${icon(appItem.icon)}</span>
-      <span class="quick-action-copy">
-        <b>${escapeHtml(appItem.title)}</b>
-        <small>${escapeHtml(appItem.summary || appItem.id)}</small>
-        ${meta ? `<em class="mini-app-meta">${escapeHtml(meta)}</em>` : ""}
-      </span>
-    </button>
-  `;
+  return {
+    kind: "app",
+    key: miniAppRecordKey(appItem),
+    markHtml: icon(appItem.icon),
+    title: appItem.title,
+    summary: appItem.summary || appItem.id,
+    ...(meta ? { meta } : {})
+  };
 }
 
-function miniAppInstallDraftRowHtml(draft: MiniAppInstallDraft): string {
-  return `
-    <button class="quick-action-run mini-app-run mini-app-install-url" type="button">
-      <span class="quick-action-label">${icon("install")}</span>
-      <span class="quick-action-copy">
-        <b>${escapeHtml(draft.title)}</b>
-        <small>${escapeHtml(draft.summary)}</small>
-        <em class="mini-app-meta">${escapeHtml(`account / ${draft.placement}`)}</em>
-      </span>
-    </button>
-  `;
+function installDraftLauncherItem(draft: MiniAppInstallDraft): LauncherItem {
+  return {
+    kind: "install",
+    key: draft.url,
+    markHtml: icon("install"),
+    title: draft.title,
+    summary: draft.summary,
+    meta: `account / ${draft.placement}`
+  };
 }
 
 function miniAppInstallDraftFromSearch(query: string, existingApps: readonly MiniAppDefinition[]): MiniAppInstallDraft | null {
@@ -1759,7 +1749,7 @@ function openMiniAppByKey(appKey: string): void {
 }
 
 function openMiniAppRecord(appItem: MiniAppDefinition): void {
-  closeMiniAppLauncher();
+  closeActionMenu();
   closeChessPanel();
   miniAppSession = {
     app: appItem,
@@ -2013,6 +2003,9 @@ function publishMiniAppContext(): void {
   if (!frame?.contentWindow) {
     return;
   }
+  if (!miniAppFrameCanReceive(frame, miniAppSession)) {
+    return;
+  }
   const tunnel = loadTunnels().find((item) => item.id === selectedId) || null;
   const label = tunnel ? counterpartyLabel(tunnel) : "";
   const message = {
@@ -2051,6 +2044,17 @@ function publishMiniAppContext(): void {
 
 function miniAppTargetOrigin(session: MiniAppSession): string {
   return session.app.inlineHtml ? "*" : new URL(session.app.url, window.location.href).origin;
+}
+
+function miniAppFrameCanReceive(frame: HTMLIFrameElement, session: MiniAppSession): boolean {
+  if (session.app.inlineHtml) {
+    return true;
+  }
+  try {
+    return frame.contentWindow?.location.origin === miniAppTargetOrigin(session);
+  } catch {
+    return true;
+  }
 }
 
 function miniAppHasCapability(capability: string): boolean {
@@ -2120,6 +2124,9 @@ function postMiniAppEvent(type: string, detail: Record<string, unknown>): void {
   if (!frame?.contentWindow) {
     return;
   }
+  if (!miniAppFrameCanReceive(frame, miniAppSession)) {
+    return;
+  }
   frame.contentWindow.postMessage({
     schema: miniAppContextProtocol,
     nonce: miniAppSession.nonce,
@@ -2158,16 +2165,14 @@ function actionSearchNeedle(value: string): string {
     .trim();
 }
 
-function quickActionRowHtml(action: QuickAction): string {
-  return `
-    <button class="quick-action-run" type="button" data-action-id="${escapeHtml(action.id)}">
-      <span class="quick-action-label">${escapeHtml(action.label)}</span>
-      <span class="quick-action-copy">
-        <b>${escapeHtml(action.title)}</b>
-        <small>${escapeHtml(action.summary)}</small>
-      </span>
-    </button>
-  `;
+function actionLauncherItem(action: QuickAction): LauncherItem {
+  return {
+    kind: "action",
+    key: action.id,
+    markHtml: escapeHtml(action.label),
+    title: action.title,
+    summary: action.summary
+  };
 }
 
 function agentActionButtonHtml(action: QuickAction): string {
@@ -2658,6 +2663,9 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".mini-frame-dock")?.addEventListener("click", () => {
     restoreMiniApp();
   });
+  app.querySelector<HTMLIFrameElement>(".mini-frame")?.addEventListener("load", () => {
+    publishMiniAppContext();
+  });
   setupSplitter();
   applySelectedText();
   renderComposerAttachments();
@@ -2743,7 +2751,7 @@ function renderTiles(): void {
         },
         apps: () => {
           selectTunnel(id);
-          void openMiniAppLauncher();
+          openActionMenu();
         },
         chess: () => {
           selectTunnel(id);

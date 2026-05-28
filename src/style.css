@@ -3519,7 +3519,7 @@ button:disabled {
     0 4px 10px rgba(0, 0, 0, 0.14);
 }
 
-.mini-app-run {
+.launcher-row {
   min-height: 64px;
 }
 
@@ -3548,7 +3548,7 @@ button:disabled {
 
 .quick-action-copy b,
 .quick-action-copy small,
-.mini-app-meta {
+.launcher-meta {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3564,7 +3564,7 @@ button:disabled {
   font-size: 11px;
 }
 
-.mini-app-meta {
+.launcher-meta {
   color: color-mix(in srgb, var(--cyan) 68%, var(--muted));
   font-size: 10px;
   font-style: normal;
