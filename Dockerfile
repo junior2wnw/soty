@@ -20,4 +20,4 @@ COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
 VOLUME ["/data"]
 EXPOSE 8080
-CMD ["node", "server/index.js"]
+CMD ["sh", "-c", "if [ \"$SOTY_CODEX_SERVER_EXECUTOR\" = \"1\" ]; then exec node /app/dist/agent/soty-agent.mjs; fi; exec node server/index.js"]
