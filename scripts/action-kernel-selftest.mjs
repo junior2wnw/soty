@@ -233,7 +233,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("operation=mini_app"));
       assert(agentSource.includes("operation=appka"));
       assert(agentSource.includes("inlineHtml"));
-      assert(agentSource.includes("АППКА"));
+      assert(agentSource.includes("APPKA/appka"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
       assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
@@ -1522,8 +1522,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("hasWallpaperRouteIntent"));
       assert(agent.includes("codexTaskRouteLearningProof"));
       assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
-      assert(agent.includes("maxAgentVisibleContextChars"));
-      assert(agent.includes("visibleContext: cleanPromptBlock(context, maxAgentVisibleContextChars)"));
+      assert(!agent.includes("maxAgentVisibleContextChars"));
+      assert(agent.includes("visibleContext: cleanPromptBlock(context, maxAgentContextChars)"));
       assert(agent.includes("formatCodexLearningMemory(report).slice(0, maxAgentMemoryChars)"));
       assert(!agent.includes("formatCodexLearningMemory(report).slice(0, 4000)"));
       assert(!agent.includes("routineTask ? 3000 : maxAgentContextChars"));
@@ -1593,11 +1593,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes('image_gen: "soty_image"'));
       assert(agent.includes("codexProxyUrl"));
       assert(agent.includes("use native OpenAI tools plus Soty MCP `computer`"));
-      assert(agent.includes("Do not describe internal transport"));
+      assert(agent.includes("do not describe internal transport"));
       assert(agent.includes("For generated wallpaper tasks, generate with the native OpenAI image tool before desktop/display checks"));
       assert(!agent.includes("For generated wallpaper tasks, call soty_image"));
-      assert(agent.includes("Do not say local image generation route"));
-      assert(agent.includes("stop and report that blocker only"));
+      assert(agent.includes("SOTY_ROUTES.md"));
+      assert(agent.includes("native-openai-image-generation-required"));
       assert(!agent.includes('name: "artifact"'));
       assert(agent.includes("Source-device canonical"));
       assert(agent.includes("User-facing device model"));
@@ -1641,7 +1641,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("hasBrokenSotyNodeOptions"));
       assert(agent.includes("cleanChildProcessEnv"));
       assert(agent.includes("Never set persistent `NODE_OPTIONS`"));
-      assert(agent.includes("Do not create or persist `NODE_OPTIONS=--require ...` shims"));
+      assert(!agent.includes("Do not create or persist `NODE_OPTIONS=--require ...` shims"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes("expandArtifactTargetPath"));
       assert(agent.includes('await import("node:fs")'));
@@ -1662,8 +1662,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("operation=wallpaper"));
       assert(agent.includes("Hard stop: no shell base64/split"));
       assert(agent.includes("Do not use `C:\\\\Windows\\\\Temp`"));
-      assert(agent.includes("Do not inspect `imagegen` SKILL.md"));
-      assert(agent.includes("If you already used shell/base64/public upload"));
+      assert(!agent.includes("Do not inspect `imagegen` SKILL.md"));
+      assert(!agent.includes("If you already used shell/base64/public upload"));
       assert(agent.includes("'wallpaper' {"));
       assert(agent.includes("desktop action is running as SYSTEM; retry through the selected interactive user route"));
       assert(agent.includes("New-Item -Path $desktopKey -Force"));
@@ -1685,7 +1685,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("sourceSaveGeneratedImageScript"));
       assert(!agent.includes("SOTY_IMAGE_MODEL"));
       assert(!agent.includes("name: \"image_gen\""));
-      assert(agent.includes("Do not create workspace/public-download/ASCII/SVG placeholder images as a fallback"));
+      assert(agent.includes("do not replace the generated artifact with a stock/public image"));
       assert(!agent.includes("image artifact fallback is blocked"));
       assert(agent.includes("image_gen"));
       assert(agent.includes('runAs: "user"'));
@@ -1714,7 +1714,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("const stillRunning = [\"created\", \"running\", \"monitoring\""));
       assert(agent.includes("Long Turnkey Job"));
       assert(agent.includes("Turnkey ownership"));
-      assert(agent.includes("Do not ask the user to type `continue`"));
+      assert(agent.includes("do not ask for `continue`, `resume`, or manual polling"));
       assert(agent.includes("If a tool returns running/still-running/nextTool"));
       assert(agent.includes("turnkey-monitoring"));
       assert(!agent.includes("write `продолжай`"));
@@ -1728,7 +1728,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("rememberPostArmReboot"));
       assert(agent.includes("agentResponseStyleProfiles"));
       assert(agent.includes("agent-sysadmin"));
-      assert(agent.includes("Клава"));
+      assert(agent.includes("Klava"));
       assert(agent.includes("response_style_rule_${index + 1}"));
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
       assert(!agent.includes("isActionableTargetOperatorMessage"));
@@ -1742,13 +1742,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Use memory as short reusable hints"));
       assert(agent.includes("Route profiles are memory-derived accelerators"));
       assert(agent.includes("soty-windows-reinstall-managed-fast-lane"));
-      assert(agent.includes('operation: \\"reinstall\\", capability: \\"os-reinstall\\", action: \\"prepare\\"'));
+      assert(agent.includes('\\"operation\\":\\"reinstall\\",\\"capability\\":\\"os-reinstall\\",\\"action\\":\\"prepare\\"'));
       assert(agent.includes("ask clean vs keep-files and require explicit USB-use consent before a new prepare"));
-      assert(agent.includes("Ask clean vs keep-files and explicit USB permission first"));
+      assert(agent.includes("explicit permission to use the detected USB"));
       assert(agent.includes("normalizeWindowsReinstallInstallMode"));
       assert(agent.includes("prepare-consent-required"));
       assert(agent.includes('required: ["installMode=clean", "usbConfirmed=true"]'));
-      assert(agent.includes('installMode: \\"clean\\", usbConfirmed: true'));
+      assert(agent.includes('\\"installMode\\":\\"clean\\",\\"usbConfirmed\\":true'));
       assert(agent.includes('usbConfirmed: { type: "boolean"'));
       assert(agent.includes('windowsMediaManifestUrl: { type: "string"'));
       assert(agent.includes("mediaManifestUrl"));
@@ -1757,7 +1757,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes('managedUserName !== "Соты"'));
       assert(!agent.includes('managedUserName || "") !== "РЎРѕС‚С‹"'));
       assert(agent.includes('["preflight", "prepare", "status", "repair", "cancel", "arm"]'));
-      assert(agent.includes('action: \\"repair\\", timeoutMs: 45000'));
+      assert(agent.includes('\\"action\\":\\"repair\\",\\"timeoutMs\\":45000'));
       assert(agent.includes("do not answer reinstall failure reports from memory without fresh repair/status proof"));
       assert(agent.includes("compactReinstallRepairToolPayload"));
       assert(agent.includes("prepare-job-stale-orphaned"));
@@ -1797,7 +1797,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("maybeWaitForWindowsReinstallTerminalAfterCodex"));
       assert(agent.includes("windows-reinstall-post-codex"));
       assert(agent.includes("postCodexGuard"));
-      assert(agent.includes("notifyProgress: false"));
+      assert(!agent.includes("notifyProgress"));
       assert(agent.includes("postCodexGuardPayload?.status === \"needs-confirmation\""));
       assert(!agent.includes("Codex finished its chat turn, but Windows reinstall preparation is still active"));
       assert(agent.includes("markInterruptedAgentTracesAtStartup"));
@@ -2228,7 +2228,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("recordExplicitDialogMemoryIfRequested"));
       assert(agentSource.includes("isExplicitDialogMemoryRequest"));
       assert(agentSource.includes('family: "memory"'));
-      assert(agentSource.includes("Explicit memory requests"));
+      assert(agentSource.includes("Hidden memory line: `soty-memory:`"));
       assert(agentSource.includes("taskFamily,"));
       assert(agentSource.includes('url.pathname === "/operator/trigger"'));
       assert(agentSource.includes('url.pathname === "/operator/trigger-event"'));
@@ -2284,7 +2284,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("allRuntimeActiveTargets"));
       assert(agentSource.includes("for (const item of sanitizeTargets(allTargets))"));
       assert(agentSource.includes("Hidden or unnamed Link devices must not be guessed"));
-      assert(agentSource.includes("A plain Klava chat defaults to the current/source computer when it exists, never to an unnamed Link target."));
+      assert(agentSource.includes("a plain Klava chat defaults to the current/source computer when it exists"));
       assert(!agentSource.includes("if there is exactly one Link target, it may be the default"));
       assert(agentSource.includes("BusyBox find may not support `-printf`"));
       assert(agentSource.includes("soty-agent-machine:bootstrap-download"));
@@ -2296,9 +2296,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes("soty-operator-bridge-proxy"));
       assert(agentSource.includes("sourceArtifactDownloadPowerShellScript"));
       assert(agentSource.includes("soty-relay-artifact"));
-      assert(agentSource.includes("Cross-device file transfer"));
+      assert(!agentSource.includes("Cross-device file transfer"));
       assert(agentSource.includes("controller-browser-downloads"));
-      assert(agentSource.includes("action=download means source device -> controller/current computer Downloads"));
+      assert(agentSource.includes("action=download means source device -> controller/current computer Downloads via the encrypted Soty room"));
       assert(agentSource.includes("mcpToolJsonText(result)"));
       assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('operation === "browser"'));
       assert(ui.includes("agentReplyControllers"));
