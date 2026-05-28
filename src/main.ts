@@ -1500,6 +1500,7 @@ function miniAppFromSynced(appItem: SyncedMiniApp, tunnelId = ""): MiniAppDefini
     scope: appItem.scope,
     ...(tunnelId ? { tunnelId } : {}),
     ...(appItem.targetDeviceId ? { targetDeviceId: appItem.targetDeviceId } : {}),
+    ...(appItem.visibility ? { visibility: appItem.visibility } : {}),
     ...(appItem.revision ? { revision: appItem.revision } : {}),
     installedAt: appItem.installedAt,
     updatedAt: appItem.updatedAt
@@ -1525,6 +1526,7 @@ function toSyncedMiniApp(appItem: MiniAppDefinition): SyncedMiniApp {
     ...(appItem.width ? { width: appItem.width } : {}),
     capabilities: appItem.capabilities,
     scope,
+    ...(appItem.visibility ? { visibility: appItem.visibility } : {}),
     ...(scope === "device" && appItem.targetDeviceId ? { targetDeviceId: appItem.targetDeviceId } : {}),
     ...(appItem.revision ? { revision: appItem.revision } : {}),
     installedAt,
@@ -1592,6 +1594,7 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
       ...(layout !== "half" ? { layout } : {}),
       ...(height ? { height } : {}),
       ...(width ? { width } : {}),
+      ...(normalized.visibility ? { visibility: normalized.visibility } : {}),
       capabilities: plan.definition.capabilities,
       source: "agent",
       scope,
@@ -1663,6 +1666,7 @@ function appLauncherItem(appItem: MiniAppDefinition): LauncherItem {
   const meta = [
     appItem.profileTitle || appItem.profileId || "",
     miniAppScopeLabel(appItem),
+    miniAppVisibilityLabel(appItem),
     appItem.placement || "",
     tags ? `#${tags}` : ""
   ].filter(Boolean).join(" / ");
@@ -1770,6 +1774,20 @@ function miniAppScopeLabel(appItem: MiniAppDefinition): string {
     return tunnel ? `chat:${counterpartyLabel(tunnel)}` : "chat";
   }
   return scope;
+}
+
+function miniAppVisibilityLabel(appItem: MiniAppDefinition): string {
+  const visibility = appItem.visibility || (appItem.scope === "account" ? "private" : "granted-cells");
+  if (visibility === "private") {
+    return "me";
+  }
+  if (visibility === "granted-cells") {
+    return "granted";
+  }
+  if (visibility === "my-cells") {
+    return "my cells";
+  }
+  return "public";
 }
 
 function collapseMiniApp(): void {
@@ -5003,6 +5021,7 @@ async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
       readonly icon?: string;
       readonly height?: string;
       readonly scope?: string;
+      readonly visibility?: string;
       readonly targetDeviceId?: string;
       readonly revision?: string;
       readonly open?: boolean;
@@ -5650,6 +5669,7 @@ function runOperatorMiniAppInstall(message: {
   readonly width?: string;
   readonly display?: unknown;
   readonly scope?: string;
+  readonly visibility?: string;
   readonly targetDeviceId?: string;
   readonly revision?: string;
   readonly open?: boolean;
@@ -5704,6 +5724,7 @@ function operatorMiniAppPayload(message: {
   readonly width?: string;
   readonly display?: unknown;
   readonly scope?: string;
+  readonly visibility?: string;
   readonly targetDeviceId?: string;
   readonly revision?: string;
   readonly open?: boolean;
@@ -5727,6 +5748,7 @@ function operatorMiniAppPayload(message: {
     width: recordString(appRecord, "width") || message.width || "",
     display: isRecord(message.display) ? message.display : (isRecord(appRecord.display) ? appRecord.display : undefined),
     scope: message.scope || recordString(appRecord, "scope") || "chat",
+    visibility: message.visibility || recordString(appRecord, "visibility") || "",
     targetDeviceId: message.targetDeviceId || recordString(appRecord, "targetDeviceId") || "",
     revision: message.revision || recordString(appRecord, "revision") || "",
     open: message.open !== false,

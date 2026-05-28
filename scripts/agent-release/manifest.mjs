@@ -257,7 +257,7 @@ export function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRu
         entryTool: "computer",
         kind: "app-surface",
         phases: ["build", "serve", "install", "open", "update", "remove"],
-        proof: ["appId", "origin", "scope", "result"],
+        proof: ["appId", "origin", "scope", "visibility", "result"],
         promotion: "Agent-generated frontend helpers installed through the app-surface contract."
       },
       {

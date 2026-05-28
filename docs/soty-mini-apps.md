@@ -2,9 +2,10 @@
 
 Mini apps are small frontend bundles rendered inside the selected Soty chat.
 They are stored as a small app index: title, tags, optional profile, scope,
-placement, URL/inline bundle, display hints, and capability grants. The static
-public catalog is still gated off, but an attached Agent can install a safe app
-surface into the current local account, current chat, or selected device scope.
+visibility, placement, URL/inline bundle, display hints, and capability grants.
+The static public catalog is still gated off, but an attached Agent can install
+a safe app surface into the current local account, current chat, or selected
+device scope.
 
 Remote connection technology lives in TrustLink Kernel
 `docs/app-surfaces.md` (`junior2wnw/4-2-rf`). Soty is only the application
@@ -56,6 +57,7 @@ The default APPKA path for "сделай аппку" requests is:
   "profileTitle": "Work",
   "inlineHtml": "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>...</body></html>",
   "scope": "chat",
+  "visibility": "granted-cells",
   "layout": "half",
   "open": true,
   "capabilities": ["chat.append", "agent.invoke", "terminal.run"]
@@ -69,7 +71,7 @@ URL, then register it with `operation=mini_app` and `url`.
 Equivalent local CLI for an inline app:
 
 ```powershell
-node scripts/soty-agent.mjs ctl mini-app --scope=chat --layout=half --html-file=app.html --capabilities=chat.append,agent.invoke my-appka "My APPKA"
+node scripts/soty-agent.mjs ctl mini-app --scope=chat --visibility=granted-cells --layout=half --html-file=app.html --capabilities=chat.append,agent.invoke my-appka "My APPKA"
 ```
 
 Scopes:
@@ -84,6 +86,17 @@ Scopes:
 the Soty chat. `account` apps are stored in `localStorage` under
 `soty:mini-apps:v1`; other Soty tabs on the same browser profile pick them up
 through the storage event.
+
+Visibility:
+
+- `private`: for me.
+- `granted-cells`: cells that were given access.
+- `my-cells`: cells added by me.
+- `public`: everyone, including cells that do not know about me yet.
+
+Agents may set `visibility` during install/update. Missing visibility keeps the
+old scope behavior: account apps are local to me, and chat/device apps stay in
+their encrypted room/device context.
 
 ## Profiles And Search
 
@@ -122,6 +135,7 @@ apps for later enabling:
       "tags": ["crm", "orders"],
       "profileTitle": "Work",
       "url": "/mini-apps/my-tool/index.html",
+      "visibility": "private",
       "layout": "half",
       "height": "clamp(260px, 46vh, 560px)",
       "capabilities": ["chat.append", "agent.invoke", "terminal.run"]

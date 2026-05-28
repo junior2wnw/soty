@@ -186,6 +186,7 @@ export interface SyncedMiniApp {
   readonly width?: string;
   readonly capabilities: readonly string[];
   readonly scope: "chat" | "device";
+  readonly visibility?: "private" | "granted-cells" | "my-cells" | "public";
   readonly targetDeviceId?: string;
   readonly revision?: string;
   readonly installedAt: string;
@@ -2285,6 +2286,7 @@ function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
   const profileTitle = cleanMiniAppText(recordString(record, "profileTitle"), 80);
   const profileId = cleanMiniAppToken(recordString(record, "profileId") || profileTitle, 80);
   const placement = cleanMiniAppPlacement(recordString(record, "placement"));
+  const visibility = cleanMiniAppVisibility(recordString(record, "visibility"));
   return {
     id,
     title,
@@ -2301,11 +2303,29 @@ function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
     ...(cleanMiniAppCssSize(recordString(record, "width")) ? { width: cleanMiniAppCssSize(recordString(record, "width")) } : {}),
     capabilities,
     scope,
+    ...(visibility ? { visibility } : {}),
     ...(scope === "device" ? { targetDeviceId } : {}),
     ...(cleanMiniAppText(recordString(record, "revision"), 80) ? { revision: cleanMiniAppText(recordString(record, "revision"), 80) } : {}),
     installedAt,
     updatedAt
   };
+}
+
+function cleanMiniAppVisibility(value: string): "private" | "granted-cells" | "my-cells" | "public" | "" {
+  const clean = String(value || "").trim().toLowerCase().replace(/[\s_]+/gu, "-");
+  if (!clean) {
+    return "";
+  }
+  if (["public", "everyone", "all", "global", "world"].includes(clean)) {
+    return "public";
+  }
+  if (["my-cells", "cells", "added-cells", "contacts", "known-cells", "friends"].includes(clean)) {
+    return "my-cells";
+  }
+  if (["granted-cells", "granted", "access", "allowed", "trusted", "invited", "shared"].includes(clean)) {
+    return "granted-cells";
+  }
+  return "private";
 }
 
 function recordString(record: Record<string, unknown>, key: string): string {

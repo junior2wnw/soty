@@ -207,6 +207,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes('from "trustlink-kernel"'));
       assert(miniAppsSource.includes("resolveAppSurfaceUrl"));
       assert(miniAppsSource.includes("sanitizeMiniAppDefinition"));
+      assert(miniAppsSource.includes("MiniAppVisibility"));
       assert(miniAppsSource.includes("searchMiniApps"));
       assert(miniAppsSource.includes("miniAppRecordKey"));
       assert(main.includes("appSurfaceAllowedOrigin"));
@@ -238,6 +239,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("inlineHtml"));
       assert(agentSource.includes("APPKA/appka"));
       assert(agentSource.includes("title-first search"));
+      assert(agentSource.includes("visibility"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
       assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
@@ -246,6 +248,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("window.collapse"));
       assert(miniAppsDoc.includes("lower half of the dialog"));
       assert(miniAppsDoc.includes("Profiles And Search"));
+      assert(miniAppsDoc.includes("Visibility:"));
+      assert(miniAppsDoc.includes("granted-cells"));
       assert(miniAppsDoc.includes("Search ranks title matches first"));
       assert(miniAppsDoc.includes("window.resize"));
       assert(miniAppsDoc.includes("window.collapse"));
@@ -267,6 +271,7 @@ async function runScenarios({ relayUrl } = {}) {
           title: "Demo Tool",
           url: "/mini-apps/demo-tool/index.html",
           scope: "account",
+          visibility: "public",
           layout: "floating",
           height: "clamp(260px, 40svh, 520px)",
           width: "640px",
@@ -282,6 +287,7 @@ async function runScenarios({ relayUrl } = {}) {
           && message.appId === "demo-tool"
           && message.url === "/mini-apps/demo-tool/index.html"
           && message.scope === "account"
+          && message.visibility === "public"
           && message.layout === "floating"
           && message.height === "clamp(260px, 40svh, 520px)"
           && message.width === "640px"

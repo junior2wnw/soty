@@ -4037,6 +4037,7 @@ async function handleOperatorHttpMiniApp(request, response, headers) {
     width: app.width,
     display: app.display,
     scope: app.scope,
+    visibility: app.visibility,
     targetDeviceId: app.targetDeviceId,
     revision: app.revision,
     open: payload.open !== false,
@@ -4064,6 +4065,7 @@ function sanitizeMiniAppInstallPayload(payload) {
   const scope = ["account", "chat", "device"].includes(String(rawApp?.scope || payload?.scope || "").toLowerCase())
     ? String(rawApp?.scope || payload?.scope).toLowerCase()
     : "chat";
+  const visibility = normalizeMiniAppVisibility(rawApp?.visibility || payload?.visibility || "");
   const targetDeviceId = safeSourceText(rawApp?.targetDeviceId || payload?.targetDeviceId || "");
   const revision = cleanActionText(rawApp?.revision || payload?.revision || "", 80);
   const capabilities = Array.isArray(rawApp?.capabilities || payload?.capabilities)
@@ -4092,10 +4094,28 @@ function sanitizeMiniAppInstallPayload(payload) {
       ...(width ? { width } : {})
     },
     scope,
+    visibility,
     targetDeviceId,
     revision,
     capabilities
   };
+}
+
+function normalizeMiniAppVisibility(value) {
+  const clean = String(value || "").trim().toLowerCase().replace(/[\s_]+/gu, "-");
+  if (!clean) {
+    return "";
+  }
+  if (["public", "everyone", "all", "global", "world"].includes(clean)) {
+    return "public";
+  }
+  if (["my-cells", "cells", "added-cells", "contacts", "known-cells", "friends"].includes(clean)) {
+    return "my-cells";
+  }
+  if (["granted-cells", "granted", "access", "allowed", "trusted", "invited", "shared"].includes(clean)) {
+    return "granted-cells";
+  }
+  return "private";
 }
 
 function safeMiniAppTags(value) {
@@ -7610,7 +7630,7 @@ function sotyRuntimeHints() {
     "- Full remote access: `computer` shell/script/file/desktop routes are normal access to the selected device; managed capabilities are preferred routes, not barriers. For parallel console work use `computer` operation=terminal/action with detached=true, then job_status/job_stop/jobs.",
     "- Installed agent runtime: TrustLink Kernel `node_modules/trustlink-kernel/docs/agent-runtime.md` is the reusable contract for console, filesystem, process, service, package, browser, desktop, surface, app, api, job, artifact, os, transaction, and device adapters.",
     "- Transaction/app work: use transaction.prepare/preview before transaction.submit, require explicit confirmation for critical external side effects, and keep credentials/secrets in the approved local app or platform store.",
-    "- Mini-app kernel: mini apps are app surfaces in a global app index: title first, tags second, optional profile grouping, account/chat/device scope. TrustLink Kernel first, Soty adapter second. Use `node_modules/trustlink-kernel/docs/app-surfaces.md` plus `docs/soty-mini-apps.md` when relevant. For APPKA/appka use `computer` operation=appka or operation=mini_app with inlineHtml, scope=chat, layout=half, tags/profileTitle when useful, window.resize/window.collapse; Do not iframe arbitrary insecure LAN HTTP.",
+    "- Mini-app kernel: mini apps are app surfaces in a global app index: title first, tags second, optional profile grouping, account/chat/device scope, and visibility. TrustLink Kernel first, Soty adapter second. Use `node_modules/trustlink-kernel/docs/app-surfaces.md` plus `docs/soty-mini-apps.md` when relevant. For APPKA/appka use `computer` operation=appka or operation=mini_app with inlineHtml, scope=chat, layout=half, tags/profileTitle when useful, window.resize/window.collapse; Do not iframe arbitrary insecure LAN HTTP.",
     "- OpenAI tool plane: use native Codex/OpenAI built-ins for search, image generation, computer-use previews, code, shell, and patching when exposed. Soty MCP is the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`; do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove it.",
@@ -7797,7 +7817,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Use this route whenever the user asks to add, connect, debug, or generalize a Soty mini app, including apps hosted by domain, apps hosted on another server without a domain, or apps that must operate through a selected device/agent.",
     "",
-    "Principle: mini apps are frontend surfaces indexed by title, tags, profile, scope, and placement. TrustLink Kernel owns the reusable app-surface contract; Soty owns the adapter, selected chat/device context, agent invocation, terminal routing, file/artifact transfer, long jobs, and proof. Do not give mini apps relay secrets, raw device tokens, or direct authority over another user's computer.",
+    "Principle: mini apps are frontend surfaces indexed by title, tags, profile, scope, visibility, and placement. TrustLink Kernel owns the reusable app-surface contract; Soty owns the adapter, selected chat/device context, agent invocation, terminal routing, file/artifact transfer, long jobs, and proof. Do not give mini apps relay secrets, raw device tokens, or direct authority over another user's computer.",
     "",
     "Hosting modes:",
     "1. Inline APPKA: for a small generated tool, create one self-contained HTML document, no external CDN by default, and register it with inlineHtml. Soty stores it in the encrypted room state and renders it in a sandboxed srcdoc frame, so the same chat shows it from another device without a domain/server.",
@@ -8592,6 +8612,7 @@ function runMcpServer() {
             profileId: { type: "string", description: "Optional profile id where this app should live." },
             profileTitle: { type: "string", description: "Optional visible profile name for app grouping/search." },
             scope: { type: "string", description: "Mini app scope: account, chat, or device. Default chat for appka/mini_app." },
+            visibility: { type: "string", description: "Mini app visibility: private, granted-cells, my-cells, or public." },
             layout: { type: "string", description: "Mini app shell layout: half, compact, large, full, or floating. Default half opens in the lower half of the chat." },
             height: { type: "string", description: "Optional safe CSS height for the mini app frame." },
             width: { type: "string", description: "Optional safe CSS width for floating mini app frames." },
@@ -8922,6 +8943,7 @@ function runMcpServer() {
             height: { type: "string", description: "CSS height clamp for the frame." },
             width: { type: "string", description: "Optional CSS width for floating layout." },
             scope: { type: "string", description: "account, chat, or device. Default chat." },
+            visibility: { type: "string", description: "private, granted-cells, my-cells, or public." },
             targetDeviceId: { type: "string", description: "Optional selected device id for device scope." },
             revision: { type: "string", description: "Optional app revision." },
             capabilities: { type: "array", items: { type: "string" }, description: "Bridge grants such as chat.append, agent.invoke, terminal.run." },
@@ -9602,6 +9624,7 @@ function runMcpServer() {
       width: String(args.width || ""),
       display: args.display && typeof args.display === "object" && !Array.isArray(args.display) ? args.display : undefined,
       scope: String(args.scope || "chat"),
+      visibility: String(args.visibility || ""),
       targetDeviceId: String(args.targetDeviceId || ""),
       revision: String(args.revision || ""),
       capabilities: Array.isArray(args.capabilities)
@@ -13116,7 +13139,7 @@ async function runControlCli(args) {
       .split(/[,\s]+/u)
       .filter(Boolean);
     if (!appId || (!url && !inlineHtml)) {
-      process.stderr.write("sotyctl mini-app [--scope=account|chat|device] [--layout=half|compact|large|full|floating] [--open=false] [--html-file=file.html] <app-id> <title> [url] [capabilities]\n");
+      process.stderr.write("sotyctl mini-app [--scope=account|chat|device] [--visibility=private|granted-cells|my-cells|public] [--layout=half|compact|large|full|floating] [--open=false] [--html-file=file.html] <app-id> <title> [url] [capabilities]\n");
       process.exit(2);
     }
     const response = await fetch(`http://127.0.0.1:${port}/operator/mini-app`, {
@@ -13136,6 +13159,7 @@ async function runControlCli(args) {
         height: parsed.options.height || "",
         width: parsed.options.width || "",
         scope: parsed.options.scope || "chat",
+        visibility: parsed.options.visibility || "",
         targetDeviceId: parsed.options.targetDeviceId || "",
         revision: parsed.options.revision || "",
         capabilities,
@@ -13268,7 +13292,7 @@ async function runControlCli(args) {
     }
     process.exit(0);
   }
-  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | mini-app [--scope=account|chat|device] [--html-file=file.html] <app-id> <title> [url] [capabilities] | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
+  process.stderr.write("sotyctl health | list | toolkit describe|list|status|run|script | action list|status|run|script | run [--source-device=id] [--timeout=ms] <target> <command> | script [--source-device=id] [--timeout=ms] <target> <file> [shell] | install-machine <target> | machine-status <target> | access <target> | say [--fast|--slow] <target> <text> | agent-new | agent-message [--timeout=ms] [agent-tunnel-id] <text> | mini-app [--scope=account|chat|device] [--visibility=private|granted-cells|my-cells|public] [--html-file=file.html] <app-id> <title> [url] [capabilities] | read [target] | listen [target] | export [file] | memory sync|doctor|query|review [--json] [--limit=n] | import <file>\n");
   process.exit(2);
 }
 
@@ -13833,7 +13857,7 @@ function agentRuntimeStatus() {
       { family: "mouse", actions: ["move", "click"], risk: "high", proof: ["status", "result"] },
       { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
       { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
-      { family: "surface", actions: ["build", "serve", "install", "open", "update", "remove"], risk: "high", proof: ["appId", "origin", "scope", "result"] },
+      { family: "surface", actions: ["build", "serve", "install", "open", "update", "remove"], risk: "high", proof: ["appId", "origin", "scope", "visibility", "result"] },
       { family: "app", actions: ["discover", "launch", "focus", "connect", "read", "write", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
       { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
       { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },

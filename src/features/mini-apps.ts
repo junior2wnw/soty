@@ -3,6 +3,7 @@ import type { IconName } from "../icons";
 import { cleanNick } from "../trustlink";
 
 export type MiniAppScope = "account" | "chat" | "device";
+export type MiniAppVisibility = "private" | "granted-cells" | "my-cells" | "public";
 export type MiniAppPlacement = "inline" | "same-origin" | "remote-origin" | "device-local" | "kernel-proxy";
 export type MiniAppWindowLayout = "half" | "compact" | "large" | "full" | "floating";
 
@@ -23,6 +24,7 @@ export type MiniAppDefinition = {
   readonly capabilities: readonly string[];
   readonly source?: "manifest" | "agent" | "room";
   readonly scope?: MiniAppScope;
+  readonly visibility?: MiniAppVisibility;
   readonly targetDeviceId?: string;
   readonly tunnelId?: string;
   readonly revision?: string;
@@ -96,6 +98,20 @@ const iconNames = new Set<IconName>([
 export function normalizeMiniAppScope(value: string): MiniAppScope {
   const clean = value.trim().toLowerCase();
   return clean === "chat" || clean === "device" ? clean : "account";
+}
+
+export function normalizeMiniAppVisibility(value: string): MiniAppVisibility {
+  const clean = value.trim().toLowerCase().replace(/[\s_]+/gu, "-");
+  if (["public", "everyone", "all", "global", "world"].includes(clean)) {
+    return "public";
+  }
+  if (["my-cells", "cells", "added-cells", "contacts", "known-cells", "friends"].includes(clean)) {
+    return "my-cells";
+  }
+  if (["granted-cells", "granted", "access", "allowed", "trusted", "invited", "shared"].includes(clean)) {
+    return "granted-cells";
+  }
+  return "private";
 }
 
 export function normalizeMiniAppLayout(value: string): MiniAppWindowLayout {
@@ -175,6 +191,7 @@ export function sanitizeMiniAppDefinition(value: unknown, options: MiniAppSaniti
   const width = safeMiniAppCssSize(recordString(display, "width") || recordString(value, "width"));
   const tags = safeMiniAppTags(value.tags);
   const profile = miniAppProfile(value);
+  const visibility = miniAppVisibility(value);
   const capabilities = Array.isArray(value.capabilities)
     ? value.capabilities.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 80)).slice(0, 20)
     : [];
@@ -192,6 +209,7 @@ export function sanitizeMiniAppDefinition(value: unknown, options: MiniAppSaniti
     ...(layout !== "half" ? { layout } : {}),
     ...(height ? { height } : {}),
     ...(width ? { width } : {}),
+    ...(visibility ? { visibility } : {}),
     capabilities
   };
 }
@@ -347,6 +365,13 @@ function miniAppProfile(value: Record<string, unknown>): { readonly id: string; 
   return { id, title };
 }
 
+function miniAppVisibility(value: Record<string, unknown>): MiniAppVisibility | undefined {
+  const raw = recordString(value, "visibility")
+    || recordString(value, "share")
+    || recordString(value, "sharing");
+  return raw ? normalizeMiniAppVisibility(raw) : undefined;
+}
+
 function miniAppSearchScore(appItem: MiniAppDefinition, needle: string): number {
   const words = needle.split(" ").filter(Boolean);
   const title = miniAppSearchNeedle(appItem.title);
@@ -355,12 +380,14 @@ function miniAppSearchScore(appItem: MiniAppDefinition, needle: string): number 
   const summary = miniAppSearchNeedle(appItem.summary);
   const id = miniAppSearchNeedle(appItem.id);
   const url = miniAppSearchNeedle(appItem.url);
+  const visibility = miniAppSearchNeedle(appItem.visibility || "");
   let score = textMatchScore(title, needle, words, 8000);
   score += Math.max(...tags.map((tag) => textMatchScore(tag, needle, words, 3600)), 0);
   score += textMatchScore(profile, needle, words, 1600);
   score += textMatchScore(summary, needle, words, 900);
   score += textMatchScore(id, needle, words, 700);
   score += textMatchScore(url, needle, words, 180);
+  score += textMatchScore(visibility, needle, words, 120);
   return score;
 }
 
