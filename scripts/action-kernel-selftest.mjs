@@ -1522,7 +1522,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("hasWallpaperRouteIntent"));
       assert(agent.includes("codexTaskRouteLearningProof"));
       assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
-      assert(agent.includes("visibleContext: cleanPromptBlock(context, maxAgentContextChars)"));
+      assert(agent.includes("maxAgentVisibleContextChars"));
+      assert(agent.includes("visibleContext: cleanPromptBlock(context, maxAgentVisibleContextChars)"));
       assert(agent.includes("formatCodexLearningMemory(report).slice(0, maxAgentMemoryChars)"));
       assert(!agent.includes("formatCodexLearningMemory(report).slice(0, 4000)"));
       assert(!agent.includes("routineTask ? 3000 : maxAgentContextChars"));
@@ -1549,6 +1550,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(managed.includes("Test-PrepareChildProcessName"));
       assert(managed.includes("Test-PrepareJobMediaActive"));
       assert(managed.includes("AllowCommandLineUnavailableDownloadChild"));
+      assert(managed.includes("$hasDownloadProcess"));
+      assert(managed.includes("-not $hasDownloadProcess"));
+      assert(managed.includes("$Media.activeProcessCount -gt 0"));
       assert(agent.includes("sotyRuntimeHints"));
       assert(agent.includes("runAgentSourceWorkerLoop"));
       assert(agent.includes("direct-device-worker"));
@@ -1793,6 +1797,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("maybeWaitForWindowsReinstallTerminalAfterCodex"));
       assert(agent.includes("windows-reinstall-post-codex"));
       assert(agent.includes("postCodexGuard"));
+      assert(agent.includes("notifyProgress: false"));
+      assert(agent.includes("postCodexGuardPayload?.status === \"needs-confirmation\""));
+      assert(!agent.includes("Codex finished its chat turn, but Windows reinstall preparation is still active"));
       assert(agent.includes("markInterruptedAgentTracesAtStartup"));
       assert(agent.includes("agent.trace-interrupted-on-startup"));
       assert(agent.includes("const allTargets = sanitizeTargets(safe.operatorTargets)"));

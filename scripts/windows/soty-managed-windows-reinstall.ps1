@@ -557,8 +557,9 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
     return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; stalled = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null; spec = $mediaSpec }
   }
   $age = if ($null -ne $largest.updatedAgeSeconds) { [double] $largest.updatedAgeSeconds } else { $null }
-  $stalled = [bool]($largest.downloading -and $null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
-  $active = [bool]($largest.downloading -and -not $stalled -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
+  $hasDownloadProcess = @($downloadProcesses).Count -gt 0
+  $stalled = [bool]($largest.downloading -and -not $hasDownloadProcess -and $null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
+  $active = [bool]($largest.downloading -and ($hasDownloadProcess -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
   return [pscustomobject]@{
     found = $true
     path = [string] $largest.path
@@ -578,6 +579,9 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
 
 function Test-MediaStale($Media) {
   if (-not $Media -or $Media.downloading -ne $true) { return $false }
+  try {
+    if ([int] $Media.activeProcessCount -gt 0) { return $false }
+  } catch {}
   $age = $null
   try { $age = [double] $Media.updatedAgeSeconds } catch {}
   return ($null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)

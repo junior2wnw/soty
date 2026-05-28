@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "13830acdd93ec6b48c0b5b689580d3b3fd9ba516dfc203dfe395f2250abac231",
+  "sha256": "c7da7f77e316146ee47ec0a87ee83e13b8213e5f3808120b40c0839d662bcd60",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -506,8 +506,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
-            "bytes": 52468
+            "sha256": "505d7d771b1b4ffdae9ca43b1151757e4401f5fc91f0a9c691f74e80b9142902",
+            "bytes": 52607
           },
           {
             "name": "prepare",
@@ -586,8 +586,8 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
-        "bytes": 52468
+        "sha256": "505d7d771b1b4ffdae9ca43b1151757e4401f5fc91f0a9c691f74e80b9142902",
+        "bytes": 52607
       },
       {
         "name": "prepare",
@@ -882,8 +882,8 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
-            "bytes": 52468
+            "sha256": "505d7d771b1b4ffdae9ca43b1151757e4401f5fc91f0a9c691f74e80b9142902",
+            "bytes": 52607
           },
           {
             "name": "prepare",
@@ -978,8 +978,8 @@
           "scripts": [
             {
               "name": "managed",
-              "sha256": "36d32ae024a759fb779616bda30b7b0c4d81403118c7e6419785d570b0d264c0",
-              "bytes": 52468
+              "sha256": "505d7d771b1b4ffdae9ca43b1151757e4401f5fc91f0a9c691f74e80b9142902",
+              "bytes": 52607
             },
             {
               "name": "prepare",
