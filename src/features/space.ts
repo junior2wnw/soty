@@ -41,7 +41,7 @@ const modes: readonly {
   readonly ariaLabel: string;
   readonly icon: IconName;
 }[] = [
-  { id: "dialog", label: "Диалог", hint: "общий разговор", ariaLabel: "Диалог: все сообщения", icon: "send" },
+  { id: "dialog", label: "", hint: "общий разговор", ariaLabel: "Диалог: все сообщения", icon: "send" },
   { id: "wall", label: "", hint: "мои отмеченные", ariaLabel: "Шестиугольник: мои отмеченные", icon: "hexagon" },
   { id: "reputation", label: "", hint: "лайки", ariaLabel: "Сердце: лайки", icon: "heart" }
 ];

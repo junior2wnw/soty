@@ -1,6 +1,6 @@
 # Soty Mini Apps
 
-Mini apps are small frontend bundles rendered inside the selected Soty chat.
+Mini apps are small frontend bundles rendered inside the selected Soty cell.
 They are stored as a small app index: title, tags, optional profile, scope,
 visibility, placement, URL/inline bundle, display hints, and capability grants.
 The static public catalog is still gated off, but an attached Agent can install
@@ -10,7 +10,7 @@ device scope.
 Remote connection technology lives in TrustLink Kernel
 `docs/app-surfaces.md` (`junior2wnw/4-2-rf`). Soty is only the application
 adapter: it owns the manifest, account gating, CSP env wiring, and the visible
-chat panel.
+cell surface.
 
 ## Mobile Creation Status
 
@@ -43,8 +43,8 @@ The default APPKA path for "сделай аппку" requests is:
 1. Build one self-contained HTML document. Avoid external CDNs unless the user
    explicitly wants a hosted app.
 2. Register it through the computer plane with `inlineHtml` and `scope=chat`.
-3. Verify that the app appears in the selected chat's APPS launcher and opens
-   in the lower half of the dialog.
+3. Verify that the app appears on the selected cell's app shelf and opens in
+   the lower half of the cell.
 
 ```json
 {
@@ -98,11 +98,20 @@ Agents may set `visibility` during install/update. Missing visibility keeps the
 old scope behavior: account apps are local to me, and chat/device apps stay in
 their encrypted room/device context.
 
-The APPS launcher shows the current visibility on every app row and lets the
-user change it in place. Room app changes are written back to the encrypted room
-state; account app changes are written to the local app index.
+## Cell Surface And Gallery
 
-## Profiles And Search
+Mini apps are the first visible entity of a selected cell. The cell header shows
+a horizontal app shelf before chat, wall, and reputation controls. A cell may
+hold any number of apps; the shelf scrolls sideways and each tile opens the app
+directly. The first shelf button opens a gallery over every app known to the
+browser, so a user can browse apps across cells without using search as the
+primary path.
+
+Room apps stay in the encrypted room state and belong to that cell. Account apps
+stay in the local app index and can appear in any selected cell. Device apps stay
+room-synced but only appear when the selected/proven device matches.
+
+## Profiles And Find
 
 Every app may carry:
 
@@ -112,11 +121,11 @@ Every app may carry:
 - `placement`: derived by Soty from the app surface mode: `inline`,
   `same-origin`, `remote-origin`, `device-local`, or `kernel-proxy`.
 
-The APPS launcher is a global index over the selected chat, all known room apps,
-and local account apps. Search ranks title matches first, then tags, then
-profile, summary, id, and URL. A room app found through global search switches
-to its owning chat before opening, so users can keep many apps across many
-profiles without separate hard-coded launchers.
+The gallery is a global index over the selected chat, all known room apps, and
+local account apps. Find ranks title matches first, then tags, then profile,
+summary, id, and URL. A room app found through the gallery switches to its
+owning chat before opening, so users can keep many apps across many profiles
+without separate hard-coded launchers.
 
 ## Static Catalog
 

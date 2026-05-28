@@ -215,8 +215,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes("miniAppsRegistryKey"));
       assert(main.includes("roomMiniApps"));
       assert(main.includes("globalMiniApps"));
-      assert(main.includes("app-visibility-select"));
-      assert(main.includes("updateMiniAppVisibility"));
+      assert(main.includes("cell-app-shelf"));
+      assert(main.includes("openMiniAppGallery"));
+      assert(!main.includes("app-visibility-select"));
       assert(main.includes("miniAppInlineHtmlWithContext"));
       assert(main.includes("visibility: miniAppEffectiveVisibility"));
       assert(main.includes("runOperatorMiniAppInstall"));
@@ -241,7 +242,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("operation=appka"));
       assert(agentSource.includes("inlineHtml"));
       assert(agentSource.includes("APPKA/appka"));
-      assert(agentSource.includes("title-first search"));
+      assert(agentSource.includes("cell app shelf"));
       assert(agentSource.includes("visibility"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
@@ -249,12 +250,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("layout=half"));
       assert(agentSource.includes("window.resize"));
       assert(agentSource.includes("window.collapse"));
-      assert(miniAppsDoc.includes("lower half of the dialog"));
-      assert(miniAppsDoc.includes("Profiles And Search"));
+      assert(miniAppsDoc.includes("lower half of the cell"));
+      assert(miniAppsDoc.includes("Cell Surface And Gallery"));
       assert(miniAppsDoc.includes("Visibility:"));
       assert(miniAppsDoc.includes("granted-cells"));
-      assert(miniAppsDoc.includes("APPS launcher shows the current visibility"));
-      assert(miniAppsDoc.includes("Search ranks title matches first"));
+      assert(miniAppsDoc.includes("horizontal app shelf"));
+      assert(miniAppsDoc.includes("Find ranks title matches first"));
       assert(miniAppsDoc.includes("window.resize"));
       assert(miniAppsDoc.includes("window.collapse"));
       assert(miniAppsDoc.includes("There is no app close affordance"));

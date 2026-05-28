@@ -75,6 +75,7 @@ export type MiniAppSanitizeOptions = {
 const miniAppLayoutValues = ["half", "compact", "large", "full", "floating"] as const satisfies readonly MiniAppWindowLayout[];
 const iconNames = new Set<IconName>([
   "install",
+  "apps",
   "qr",
   "scan",
   "close",

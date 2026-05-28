@@ -9,7 +9,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { fetchFrontendQuickActions, mergeQuickActions, quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
-import { dedupeMiniApps, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, miniAppRecordKey, normalizeMiniAppLayout, normalizeMiniAppScope, normalizeMiniAppVisibility, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition, searchMiniApps } from "./features/mini-apps";
+import { dedupeMiniApps, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, miniAppRecordKey, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition, searchMiniApps } from "./features/mini-apps";
 import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppVisibility, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
 import { commonMessageDialogTarget, createMessageDialogLine, isMessageDialogLine, messageDialogVisibleForTarget, parseMessageDialogLine } from "./features/message-dialogs";
 import type { MessageDialogEntry, MessageDialogTarget } from "./features/message-dialogs";
@@ -102,14 +102,12 @@ type MiniAppInstallDraft = {
 };
 
 type LauncherItem = {
-  readonly kind: "action" | "app" | "install";
+  readonly kind: "action" | "install";
   readonly key: string;
   readonly markHtml: string;
   readonly title: string;
   readonly summary: string;
   readonly meta?: string;
-  readonly visibility?: MiniAppVisibility;
-  readonly visibilityEditable?: boolean;
 };
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -241,6 +239,7 @@ const joinHeartbeatIntervalMs = 8000;
 const joinStaleMs = 22_000;
 let qrOverlay: HTMLDivElement | null = null;
 let actionOverlay: HTMLDivElement | null = null;
+let miniAppGalleryOverlay: HTMLDivElement | null = null;
 let actionSearchText = "";
 let quickActionCatalog: readonly QuickAction[] = quickActions;
 let quickActionCatalogProbe: Promise<readonly QuickAction[]> | null = null;
@@ -1260,6 +1259,7 @@ function quickActionCatalogSignature(): string {
 
 function openActionMenu(): void {
   actionSearchText = "";
+  closeMiniAppGallery();
   openLauncher();
 }
 
@@ -1268,7 +1268,6 @@ function openLauncher(): void {
   closeActionMenu();
   const query = actionSearchText.trim();
   const items = launcherItems(query);
-  const appsCount = globalMiniApps().length;
   const comment = selectedId
     ? normalizeChatMessage(composer?.value || localDrafts.get(selectedId) || "")
     : "";
@@ -1279,12 +1278,12 @@ function openLauncher(): void {
       <header class="action-head">
         <span class="action-mark">${icon("check")}</span>
         <span>
-          <b>LAUNCH</b>
-          <small>${escapeHtml(counterpartyLabelForSelected())} / ${appsCount}</small>
+          <b>ACTION</b>
+          <small>${escapeHtml(counterpartyLabelForSelected())}</small>
         </span>
         <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
       </header>
-      <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="app, action, tag, url" />
+      <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="action or url" />
       ${comment ? `<div class="action-comment"><b>TEXT</b><span>${escapeHtml(comment.slice(0, 180))}</span></div>` : ""}
       <div class="action-list">
         ${items.map((item) => launcherRowHtml(item)).join("")}
@@ -1310,32 +1309,20 @@ function openLauncher(): void {
       runLauncherItem(button.dataset.kind || "", button.dataset.key || "");
     });
   });
-  overlay.querySelectorAll<HTMLSelectElement>(".app-visibility-select").forEach((select) => {
-    select.addEventListener("click", (event) => event.stopPropagation());
-    select.addEventListener("change", () => {
-      updateMiniAppVisibility(select.dataset.key || "", normalizeMiniAppVisibility(select.value));
-      openLauncher();
-    });
-  });
   overlay.querySelector<HTMLInputElement>(".action-search")?.focus();
 }
 
 function launcherItems(query: string): LauncherItem[] {
-  const indexedApps = globalMiniApps();
-  const installDraft = miniAppInstallDraftFromSearch(query, indexedApps);
+  const installDraft = miniAppInstallDraftFromSearch(query, globalMiniApps());
   return [
     ...(installDraft ? [installDraftLauncherItem(installDraft)] : []),
-    ...searchMiniApps(indexedApps, query).map(appLauncherItem),
     ...visibleQuickActions(query).map(actionLauncherItem)
   ];
 }
 
 function launcherRowHtml(item: LauncherItem): string {
-  const visibility = item.kind === "app" && item.visibility
-    ? miniAppVisibilitySelectHtml(item.key, item.visibility, item.visibilityEditable !== false)
-    : "";
   return `
-    <div class="launcher-entry${visibility ? " has-visibility" : ""}">
+    <div class="launcher-entry">
       <button class="quick-action-run launcher-row launcher-open" type="button" data-kind="${escapeHtml(item.kind)}" data-key="${escapeHtml(item.key)}">
         <span class="quick-action-label">${item.markHtml}</span>
         <span class="quick-action-copy">
@@ -1344,35 +1331,13 @@ function launcherRowHtml(item: LauncherItem): string {
           ${item.meta ? `<em class="launcher-meta">${escapeHtml(item.meta)}</em>` : ""}
         </span>
       </button>
-      ${visibility}
     </div>
-  `;
-}
-
-function miniAppVisibilitySelectHtml(appKey: string, value: MiniAppVisibility, editable: boolean): string {
-  const options: readonly { readonly value: MiniAppVisibility; readonly label: string }[] = [
-    { value: "private", label: "только я" },
-    { value: "granted-cells", label: "доступ" },
-    { value: "my-cells", label: "мои соты" },
-    { value: "public", label: "все" }
-  ];
-  return `
-    <label class="app-visibility-control" data-tooltip="Видимость">
-      <span>видно</span>
-      <select class="app-visibility-select" data-key="${escapeHtml(appKey)}" aria-label="Видимость аппки"${editable ? "" : " disabled"}>
-        ${options.map((option) => `<option value="${option.value}"${option.value === value ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-      </select>
-    </label>
   `;
 }
 
 function runLauncherItem(kind: string, key: string): void {
   if (kind === "action") {
     void runQuickAction(key);
-    return;
-  }
-  if (kind === "app") {
-    openMiniAppByKey(key);
     return;
   }
   if (kind === "install") {
@@ -1394,6 +1359,11 @@ function runLauncherItem(kind: string, key: string): void {
 function closeActionMenu(): void {
   actionOverlay?.remove();
   actionOverlay = null;
+}
+
+function closeMiniAppGallery(): void {
+  miniAppGalleryOverlay?.remove();
+  miniAppGalleryOverlay = null;
 }
 
 async function refreshMiniApps(_force = false): Promise<readonly MiniAppDefinition[]> {
@@ -1694,26 +1664,99 @@ function handleMiniAppRegistryChange(): void {
   renderDialogChrome();
 }
 
-function appLauncherItem(appItem: MiniAppDefinition): LauncherItem {
-  const tags = (appItem.tags || []).slice(0, 4).join(" #");
-  const visibility = miniAppEffectiveVisibility(appItem);
-  const meta = [
-    appItem.profileTitle || appItem.profileId || "",
-    miniAppScopeLabel(appItem),
-    miniAppVisibilityLabel(visibility),
-    appItem.placement || "",
-    tags ? `#${tags}` : ""
-  ].filter(Boolean).join(" / ");
-  return {
-    kind: "app",
-    key: miniAppRecordKey(appItem),
-    markHtml: icon(appItem.icon),
-    title: appItem.title,
-    summary: appItem.summary || appItem.id,
-    ...(meta ? { meta } : {}),
-    visibility,
-    visibilityEditable: appItem.source !== "manifest"
-  };
+function renderCellAppShelf(): void {
+  const shelf = app.querySelector<HTMLElement>(".cell-app-shelf");
+  if (!shelf) {
+    return;
+  }
+  const cellApps = cellShelfMiniApps();
+  const allCount = globalMiniApps().length;
+  shelf.innerHTML = `
+    <button class="cell-app-all" type="button" aria-label="все мини-аппы" data-tooltip="Все мини-аппы">
+      ${icon("apps")}
+      <small>${allCount}</small>
+    </button>
+    <div class="cell-app-strip" role="list">
+      ${cellApps.length > 0
+        ? cellApps.map((item) => cellAppTileHtml(item)).join("")
+        : `<button class="cell-app-empty" type="button" aria-label="добавить мини-апп" data-tooltip="Добавить мини-апп">${icon("install")}</button>`}
+    </div>
+  `;
+  shelf.querySelector<HTMLButtonElement>(".cell-app-all")?.addEventListener("click", openMiniAppGallery);
+  shelf.querySelector<HTMLButtonElement>(".cell-app-empty")?.addEventListener("click", openActionMenu);
+  shelf.querySelectorAll<HTMLButtonElement>("[data-mini-app-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openMiniAppByKey(button.dataset.miniAppKey || "");
+    });
+  });
+}
+
+function cellAppTileHtml(appItem: MiniAppDefinition): string {
+  const active = miniAppSession && sameMiniAppRecord(miniAppSession.app, appItem);
+  return `
+    <button class="cell-app-tile${active ? " is-active" : ""}" type="button" role="listitem" data-mini-app-key="${escapeHtml(miniAppRecordKey(appItem))}" aria-label="${escapeHtml(appItem.title)}" data-tooltip="${escapeHtml(appItem.title)}">
+      <span>${icon(appItem.icon)}</span>
+      <b>${escapeHtml(appItem.title)}</b>
+    </button>
+  `;
+}
+
+function openMiniAppGallery(): void {
+  closeActionMenu();
+  closeMiniAppGallery();
+  const items = sortedMiniApps(globalMiniApps());
+  const overlay = document.createElement("div");
+  overlay.className = "action-modal mini-app-gallery-modal";
+  overlay.innerHTML = `
+    <section class="action-sheet mini-app-gallery-sheet" role="dialog" aria-modal="true" aria-label="мини-аппы">
+      <header class="action-head">
+        <span class="action-mark">${icon("apps")}</span>
+        <span>
+          <b>APPS</b>
+          <small>${items.length}</small>
+        </span>
+        <button class="mini-app-gallery-close action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
+      </header>
+      <div class="mini-app-gallery-list">
+        ${items.map((item) => miniAppGalleryItemHtml(item)).join("")}
+      </div>
+      ${items.length === 0 ? `<button class="mini-app-gallery-empty" type="button" aria-label="добавить мини-апп" data-tooltip="Добавить мини-апп">${icon("install")}</button>` : ""}
+    </section>
+  `;
+  document.body.append(overlay);
+  miniAppGalleryOverlay = overlay;
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeMiniAppGallery();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>(".mini-app-gallery-close")?.addEventListener("click", closeMiniAppGallery);
+  overlay.querySelector<HTMLButtonElement>(".mini-app-gallery-empty")?.addEventListener("click", openActionMenu);
+  overlay.querySelectorAll<HTMLButtonElement>("[data-mini-app-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openMiniAppByKey(button.dataset.miniAppKey || "");
+    });
+  });
+}
+
+function miniAppGalleryItemHtml(appItem: MiniAppDefinition): string {
+  return `
+    <button class="mini-app-gallery-item" type="button" data-mini-app-key="${escapeHtml(miniAppRecordKey(appItem))}" aria-label="${escapeHtml(appItem.title)}">
+      <span>${icon(appItem.icon)}</span>
+      <b>${escapeHtml(appItem.title)}</b>
+    </button>
+  `;
+}
+
+function sortedMiniApps(apps: readonly MiniAppDefinition[]): MiniAppDefinition[] {
+  return searchMiniApps(apps, "");
+}
+
+function cellShelfMiniApps(): MiniAppDefinition[] {
+  return dedupeMiniApps([
+    ...sortedMiniApps(roomMiniAppsForSelected()),
+    ...sortedMiniApps(localMiniAppsForSelected())
+  ]);
 }
 
 function installDraftLauncherItem(draft: MiniAppInstallDraft): LauncherItem {
@@ -1790,6 +1833,7 @@ function openMiniAppByKey(appKey: string): void {
 
 function openMiniAppRecord(appItem: MiniAppDefinition): void {
   closeActionMenu();
+  closeMiniAppGallery();
   closeChessPanel();
   miniAppSession = {
     app: appItem,
@@ -1803,71 +1847,8 @@ function openMiniAppRecord(appItem: MiniAppDefinition): void {
   renderDialogChrome();
 }
 
-function miniAppScopeLabel(appItem: MiniAppDefinition): string {
-  const scope = appItem.scope || "account";
-  if (scope === "chat" && appItem.tunnelId && appItem.tunnelId !== selectedId) {
-    const tunnel = loadTunnels().find((item) => item.id === appItem.tunnelId);
-    return tunnel ? `chat:${counterpartyLabel(tunnel)}` : "chat";
-  }
-  return scope;
-}
-
 function miniAppEffectiveVisibility(appItem: MiniAppDefinition): MiniAppVisibility {
   return appItem.visibility || (appItem.scope === "account" ? "private" : "granted-cells");
-}
-
-function miniAppVisibilityLabel(visibility: MiniAppVisibility): string {
-  if (visibility === "private") {
-    return "me";
-  }
-  if (visibility === "granted-cells") {
-    return "granted";
-  }
-  if (visibility === "my-cells") {
-    return "my cells";
-  }
-  return "public";
-}
-
-function updateMiniAppVisibility(appKey: string, visibility: MiniAppVisibility): void {
-  const appItem = globalMiniApps().find((item) => miniAppRecordKey(item) === appKey);
-  if (!appItem || appItem.source === "manifest") {
-    return;
-  }
-  const updated: MiniAppDefinition = {
-    ...appItem,
-    visibility,
-    updatedAt: new Date().toISOString()
-  };
-  if (appItem.source === "room" || appItem.scope === "chat" || appItem.scope === "device") {
-    const tunnelId = appItem.tunnelId || selectedId;
-    if (!tunnelId) {
-      return;
-    }
-    const sync = syncs.get(tunnelId);
-    if (!sync) {
-      return;
-    }
-    sync.setMiniApp(toSyncedMiniApp(updated));
-    roomMiniApps.set(tunnelId, [
-      { ...updated, source: "room", tunnelId },
-      ...(roomMiniApps.get(tunnelId) ?? []).filter((item) => !sameMiniAppRecord(item, updated))
-    ]);
-  } else {
-    saveLocalMiniApps([
-      { ...updated, source: "agent" },
-      ...loadLocalMiniApps().filter((item) => !sameMiniAppRecord(item, updated))
-    ]);
-  }
-  if (miniAppSession && sameMiniAppRecord(miniAppSession.app, appItem)) {
-    miniAppSession = {
-      ...miniAppSession,
-      app: updated
-    };
-    publishMiniAppContext();
-  }
-  miniApps = currentMiniApps();
-  renderDialogChrome();
 }
 
 function collapseMiniApp(): void {
@@ -2618,7 +2599,10 @@ function renderApp(): void {
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">ссылка</button>
         </header>
-        <section class="space-rail" aria-label="пространство соты"></section>
+        <section class="cell-surface" aria-label="пространство соты">
+          <div class="cell-app-shelf" aria-label="мини-аппы"></div>
+          <section class="space-rail" aria-label="режимы соты"></section>
+        </section>
         <section class="editor retro-screen">
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
@@ -2850,7 +2834,7 @@ function renderTiles(): void {
         },
         apps: () => {
           selectTunnel(id);
-          openActionMenu();
+          openMiniAppGallery();
         },
         chess: () => {
           selectTunnel(id);
@@ -3918,7 +3902,6 @@ function renderDialogChrome(): void {
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
-  const appsButton = app.querySelector<HTMLButtonElement>(".apps-action");
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
   const availableMiniApps = globalMiniApps();
@@ -3983,10 +3966,7 @@ function renderDialogChrome(): void {
       remoteButton.dataset.tooltip = mode === "update" ? "Обновить Клаву" : "Подключить Клаву";
     }
   }
-  if (appsButton) {
-    appsButton.hidden = availableMiniApps.length === 0;
-    appsButton.classList.toggle("is-on", Boolean(miniAppSession));
-  }
+  renderCellAppShelf();
   publishMiniAppContext();
   renderSpace();
   updateComposerSpaceMode();
