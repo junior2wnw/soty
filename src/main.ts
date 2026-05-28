@@ -9,7 +9,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { fetchFrontendQuickActions, mergeQuickActions, quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
-import { dedupeMiniApps, isIconName, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition } from "./features/mini-apps";
+import { dedupeMiniApps, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, miniAppRecordKey, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition, searchMiniApps } from "./features/mini-apps";
 import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
 import { commonMessageDialogTarget, createMessageDialogLine, isMessageDialogLine, messageDialogVisibleForTarget, parseMessageDialogLine } from "./features/message-dialogs";
 import type { MessageDialogEntry, MessageDialogTarget } from "./features/message-dialogs";
@@ -93,6 +93,14 @@ interface RestoreResult {
   readonly texts: Map<string, string>;
 }
 
+type MiniAppInstallDraft = {
+  readonly id: string;
+  readonly title: string;
+  readonly url: string;
+  readonly summary: string;
+  readonly placement: string;
+};
+
 const root = document.querySelector<HTMLDivElement>("#app");
 if (!root) {
   throw new Error("App root missing");
@@ -156,6 +164,7 @@ let miniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
 let miniAppSession: MiniAppSession | null = null;
 let miniAppOverlay: HTMLDivElement | null = null;
+let miniAppSearchText = "";
 let openMessageDialog: OpenMessageDialog | null = null;
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
@@ -1305,6 +1314,14 @@ function currentMiniApps(): MiniAppDefinition[] {
   return miniApps;
 }
 
+function globalMiniApps(): MiniAppDefinition[] {
+  return dedupeMiniApps([
+    ...scopedMiniAppsForSelected(),
+    ...loadLocalMiniApps(),
+    ...Array.from(roomMiniApps.values()).flat()
+  ]);
+}
+
 function loadLocalMiniApps(): MiniAppDefinition[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(miniAppsRegistryKey) || "{}");
@@ -1371,8 +1388,7 @@ function saveLocalMiniApps(apps: readonly MiniAppDefinition[]): void {
     const keep = apps
       .filter((item) => item.source === "agent")
       .slice()
-      .sort((left, right) => String(right.updatedAt || right.installedAt || "").localeCompare(String(left.updatedAt || left.installedAt || "")))
-      .slice(0, 60);
+      .sort((left, right) => String(right.updatedAt || right.installedAt || "").localeCompare(String(left.updatedAt || left.installedAt || "")));
     localStorage.setItem(miniAppsRegistryKey, JSON.stringify({
       schema: "soty.mini-apps.local.v1",
       apps: keep
@@ -1413,7 +1429,7 @@ function roomMiniAppsForSelected(): MiniAppDefinition[] {
   });
 }
 
-function miniAppFromSynced(appItem: SyncedMiniApp): MiniAppDefinition | null {
+function miniAppFromSynced(appItem: SyncedMiniApp, tunnelId = ""): MiniAppDefinition | null {
   const definition = sanitizeMiniAppDefinition(appItem);
   if (!definition) {
     return null;
@@ -1422,6 +1438,7 @@ function miniAppFromSynced(appItem: SyncedMiniApp): MiniAppDefinition | null {
     ...definition,
     source: "room",
     scope: appItem.scope,
+    ...(tunnelId ? { tunnelId } : {}),
     ...(appItem.targetDeviceId ? { targetDeviceId: appItem.targetDeviceId } : {}),
     ...(appItem.revision ? { revision: appItem.revision } : {}),
     installedAt: appItem.installedAt,
@@ -1439,6 +1456,10 @@ function toSyncedMiniApp(appItem: MiniAppDefinition): SyncedMiniApp {
     ...(appItem.inlineHtml ? { inlineHtml: appItem.inlineHtml } : {}),
     summary: appItem.summary || appItem.id,
     icon: appItem.icon,
+    ...(appItem.tags?.length ? { tags: appItem.tags } : {}),
+    ...(appItem.profileId ? { profileId: appItem.profileId } : {}),
+    ...(appItem.profileTitle ? { profileTitle: appItem.profileTitle } : {}),
+    ...(appItem.placement ? { placement: appItem.placement } : {}),
     ...(appItem.layout && appItem.layout !== "half" ? { layout: appItem.layout } : {}),
     ...(appItem.height ? { height: appItem.height } : {}),
     ...(appItem.width ? { width: appItem.width } : {}),
@@ -1478,7 +1499,6 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
     if (plan.schema !== appSurfaceInstallSchema) {
       return { ok: false, error: "unsupported-mini-app-schema" };
     }
-    const iconName = recordString(source, "icon");
     const sourceDisplay = isRecord(source.display) ? source.display : source;
     const planDisplay = isRecord(plan.definition.display) ? plan.definition.display : {};
     const layout = normalizeMiniAppLayout(recordString(planDisplay, "layout") || recordString(sourceDisplay, "layout"));
@@ -1486,13 +1506,29 @@ function installMiniAppFromConnector(value: unknown): MiniAppInstallResult {
     const width = safeMiniAppCssSize(recordString(planDisplay, "width") || recordString(sourceDisplay, "width"));
     const scope = normalizeMiniAppScope(plan.scope);
     const now = new Date().toISOString();
+    const normalized = sanitizeMiniAppDefinition({
+      ...source,
+      id: plan.definition.id,
+      title: plan.definition.title,
+      url: plan.definition.url,
+      ...(plan.definition.inlineHtml ? { inlineHtml: plan.definition.inlineHtml } : {}),
+      summary: plan.definition.summary || recordString(source, "summary"),
+      capabilities: plan.definition.capabilities
+    }, { baseUrl: window.location.origin });
+    if (!normalized) {
+      return { ok: false, error: "invalid-mini-app-definition" };
+    }
     const appItem: MiniAppDefinition = {
       id: plan.definition.id,
       title: plan.definition.title,
       url: plan.definition.url,
       ...(plan.definition.inlineHtml ? { inlineHtml: plan.definition.inlineHtml } : {}),
       summary: plan.definition.summary || plan.definition.id,
-      icon: isIconName(iconName) ? iconName : "remote",
+      icon: normalized.icon,
+      ...(normalized.tags?.length ? { tags: normalized.tags } : {}),
+      ...(normalized.profileId ? { profileId: normalized.profileId } : {}),
+      ...(normalized.profileTitle ? { profileTitle: normalized.profileTitle } : {}),
+      placement: normalized.placement || plan.mode,
       ...(layout !== "half" ? { layout } : {}),
       ...(height ? { height } : {}),
       ...(width ? { width } : {}),
@@ -1552,20 +1588,22 @@ function connectorMiniAppRecord(value: unknown): Record<string, unknown> {
 
 function handleMiniAppRegistryChange(): void {
   miniApps = currentMiniApps();
-  if (miniAppSession && !miniApps.some((item) => item.id === miniAppSession?.app.id)) {
-    miniAppSession = null;
-    renderMiniAppPanel();
+  if (miniAppSession) {
+    const activeMiniAppKey = miniAppRecordKey(miniAppSession.app);
+    if (!globalMiniApps().some((item) => miniAppRecordKey(item) === activeMiniAppKey)) {
+      miniAppSession = null;
+      renderMiniAppPanel();
+    }
   }
   renderDialogChrome();
 }
 
 async function openMiniAppLauncher(): Promise<void> {
   closeMiniAppLauncher();
-  const apps = await refreshMiniApps(true);
-  if (apps.length === 0) {
-    renderDialogChrome();
-    return;
-  }
+  await refreshMiniApps(true);
+  const indexedApps = globalMiniApps();
+  const apps = searchMiniApps(indexedApps, miniAppSearchText);
+  const installDraft = miniAppInstallDraftFromSearch(miniAppSearchText, indexedApps);
   const overlay = document.createElement("div");
   overlay.className = "action-modal mini-launcher-modal";
   overlay.innerHTML = `
@@ -1573,15 +1611,18 @@ async function openMiniAppLauncher(): Promise<void> {
       <header class="action-head">
         <span class="action-mark">${icon("remote")}</span>
         <span>
-          <b>MINI APPS</b>
-          <small>${escapeHtml(counterpartyLabelForSelected())}</small>
+          <b>APPS</b>
+          <small>${escapeHtml(counterpartyLabelForSelected())} / ${indexedApps.length}</small>
         </span>
         <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Close">${icon("close")}</button>
       </header>
+      <input class="action-search mini-app-search" type="search" value="${escapeHtml(miniAppSearchText)}" placeholder="title, tag, profile, url" />
       <div class="action-list">
+        ${installDraft ? miniAppInstallDraftRowHtml(installDraft) : ""}
         ${apps.map((appItem) => miniAppRowHtml(appItem)).join("")}
       </div>
-      ${apps.length === 0 ? `<output class="action-empty">No apps</output>` : ""}
+      ${indexedApps.length === 0 && !installDraft ? `<output class="action-empty">No apps installed</output>` : ""}
+      ${indexedApps.length > 0 && apps.length === 0 ? `<output class="action-empty">No matches</output>` : ""}
     </section>
   `;
   document.body.append(overlay);
@@ -1592,11 +1633,30 @@ async function openMiniAppLauncher(): Promise<void> {
     }
   });
   overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", () => closeMiniAppLauncher());
+  overlay.querySelector<HTMLInputElement>(".mini-app-search")?.addEventListener("input", (event) => {
+    miniAppSearchText = (event.currentTarget as HTMLInputElement).value.slice(0, 120);
+    void openMiniAppLauncher();
+    miniAppOverlay?.querySelector<HTMLInputElement>(".mini-app-search")?.focus();
+  });
   overlay.querySelectorAll<HTMLButtonElement>(".mini-app-run").forEach((button) => {
     button.addEventListener("click", () => {
-      openMiniApp(button.dataset.appId || "");
+      openMiniAppByKey(button.dataset.appKey || "");
     });
   });
+  overlay.querySelector<HTMLButtonElement>(".mini-app-install-url")?.addEventListener("click", () => {
+    const draft = miniAppInstallDraftFromSearch(miniAppSearchText, globalMiniApps());
+    if (!draft) {
+      return;
+    }
+    installMiniAppFromConnector({
+      ...draft,
+      icon: "remote",
+      scope: "account",
+      open: true,
+      capabilities: []
+    });
+  });
+  overlay.querySelector<HTMLInputElement>(".mini-app-search")?.focus();
 }
 
 function closeMiniAppLauncher(): void {
@@ -1605,15 +1665,73 @@ function closeMiniAppLauncher(): void {
 }
 
 function miniAppRowHtml(appItem: MiniAppDefinition): string {
+  const tags = (appItem.tags || []).slice(0, 4).join(" #");
+  const meta = [
+    appItem.profileTitle || appItem.profileId || "",
+    miniAppScopeLabel(appItem),
+    appItem.placement || "",
+    tags ? `#${tags}` : ""
+  ].filter(Boolean).join(" / ");
   return `
-    <button class="quick-action-run mini-app-run" type="button" data-app-id="${escapeHtml(appItem.id)}">
+    <button class="quick-action-run mini-app-run" type="button" data-app-key="${escapeHtml(miniAppRecordKey(appItem))}">
       <span class="quick-action-label">${icon(appItem.icon)}</span>
       <span class="quick-action-copy">
         <b>${escapeHtml(appItem.title)}</b>
         <small>${escapeHtml(appItem.summary || appItem.id)}</small>
+        ${meta ? `<em class="mini-app-meta">${escapeHtml(meta)}</em>` : ""}
       </span>
     </button>
   `;
+}
+
+function miniAppInstallDraftRowHtml(draft: MiniAppInstallDraft): string {
+  return `
+    <button class="quick-action-run mini-app-run mini-app-install-url" type="button">
+      <span class="quick-action-label">${icon("install")}</span>
+      <span class="quick-action-copy">
+        <b>${escapeHtml(draft.title)}</b>
+        <small>${escapeHtml(draft.summary)}</small>
+        <em class="mini-app-meta">${escapeHtml(`account / ${draft.placement}`)}</em>
+      </span>
+    </button>
+  `;
+}
+
+function miniAppInstallDraftFromSearch(query: string, existingApps: readonly MiniAppDefinition[]): MiniAppInstallDraft | null {
+  const raw = query.trim();
+  if (!raw || /\s/u.test(raw)) {
+    return null;
+  }
+  let url: URL;
+  try {
+    url = new URL(raw, window.location.origin);
+  } catch {
+    return null;
+  }
+  const sameOrigin = url.origin === window.location.origin;
+  const loopback = url.protocol === "http:" && /^(?:localhost|127\.|0\.0\.0\.0|\[::1\])$/iu.test(url.hostname);
+  if (url.protocol !== "https:" && !sameOrigin && !loopback) {
+    return null;
+  }
+  if (existingApps.some((item) => item.url === url.href)) {
+    return null;
+  }
+  const host = url.hostname.replace(/^www\./iu, "") || "app";
+  return {
+    id: miniAppDraftId(url),
+    title: host.slice(0, 80),
+    url: url.href,
+    summary: url.origin,
+    placement: sameOrigin ? "same-origin" : loopback ? "device-local" : "remote-origin"
+  };
+}
+
+function miniAppDraftId(url: URL): string {
+  const raw = `${url.hostname}-${url.pathname}`.toLowerCase();
+  return raw
+    .replace(/[^a-z0-9._-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 80) || `app-${crypto.randomUUID().slice(0, 8)}`;
 }
 
 function openMiniApp(appId: string): void {
@@ -1621,6 +1739,26 @@ function openMiniApp(appId: string): void {
   if (!appItem) {
     return;
   }
+  openMiniAppRecord(appItem);
+}
+
+function openMiniAppByKey(appKey: string): void {
+  const appItem = globalMiniApps().find((item) => miniAppRecordKey(item) === appKey);
+  if (!appItem) {
+    return;
+  }
+  if (appItem.tunnelId && appItem.tunnelId !== selectedId) {
+    selectTunnel(appItem.tunnelId);
+    renderTiles();
+    applySelectedText(true);
+    renderComposerAttachments();
+    renderTerminal();
+    renderChess();
+  }
+  openMiniAppRecord(appItem);
+}
+
+function openMiniAppRecord(appItem: MiniAppDefinition): void {
   closeMiniAppLauncher();
   closeChessPanel();
   miniAppSession = {
@@ -1633,6 +1771,15 @@ function openMiniApp(appId: string): void {
   };
   renderMiniAppPanel();
   renderDialogChrome();
+}
+
+function miniAppScopeLabel(appItem: MiniAppDefinition): string {
+  const scope = appItem.scope || "account";
+  if (scope === "chat" && appItem.tunnelId && appItem.tunnelId !== selectedId) {
+    const tunnel = loadTunnels().find((item) => item.id === appItem.tunnelId);
+    return tunnel ? `chat:${counterpartyLabel(tunnel)}` : "chat";
+  }
+  return scope;
 }
 
 function collapseMiniApp(): void {
@@ -1872,6 +2019,14 @@ function publishMiniAppContext(): void {
     schema: miniAppContextProtocol,
     nonce: miniAppSession.nonce,
     appId: miniAppSession.app.id,
+    app: {
+      id: miniAppSession.app.id,
+      title: miniAppSession.app.title,
+      tags: miniAppSession.app.tags || [],
+      profileId: miniAppSession.app.profileId || "",
+      profileTitle: miniAppSession.app.profileTitle || "",
+      placement: miniAppSession.app.placement || ""
+    },
     device: device ? { id: device.id, nick: device.nick } : null,
     selected: tunnel ? {
       tunnelId: tunnel.id,
@@ -2562,7 +2717,7 @@ function renderTiles(): void {
       renderMiniAppPanel();
       const tunnel = loadTunnels().find((item) => item.id === id);
       const canClose = !tunnel || !isPermanentCell(tunnel);
-      const availableMiniApps = currentMiniApps();
+      const availableMiniApps = globalMiniApps();
       openCounterpartyMenu(x, y, {
         attach: () => {
           selectTunnel(id);
@@ -3659,10 +3814,13 @@ function renderDialogChrome(): void {
   const appsButton = app.querySelector<HTMLButtonElement>(".apps-action");
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
-  const availableMiniApps = currentMiniApps();
-  if (miniAppSession && !availableMiniApps.some((item) => item.id === miniAppSession?.app.id)) {
-    miniAppSession = null;
-    renderMiniAppPanel();
+  const availableMiniApps = globalMiniApps();
+  if (miniAppSession) {
+    const activeMiniAppKey = miniAppRecordKey(miniAppSession.app);
+    if (!availableMiniApps.some((item) => miniAppRecordKey(item) === activeMiniAppKey)) {
+      miniAppSession = null;
+      renderMiniAppPanel();
+    }
   }
   if (shell) {
     shell.style.setProperty("--peer-color", color);
@@ -3889,13 +4047,16 @@ function ensureSync(tunnel: TunnelRecord): void {
     },
     onMiniApps: (apps) => {
       roomMiniApps.set(tunnel.id, apps
-        .map(miniAppFromSynced)
+        .map((appItem) => miniAppFromSynced(appItem, tunnel.id))
         .filter((item): item is MiniAppDefinition => Boolean(item)));
       if (tunnel.id === selectedId) {
         miniApps = currentMiniApps();
-        if (miniAppSession && !miniApps.some((item) => item.id === miniAppSession?.app.id)) {
-          miniAppSession = null;
-          renderMiniAppPanel();
+        if (miniAppSession) {
+          const activeMiniAppKey = miniAppRecordKey(miniAppSession.app);
+          if (!miniApps.some((item) => miniAppRecordKey(item) === activeMiniAppKey)) {
+            miniAppSession = null;
+            renderMiniAppPanel();
+          }
         }
         renderDialogChrome();
       }
@@ -5472,6 +5633,10 @@ function runOperatorMiniAppInstall(message: {
   readonly html?: string;
   readonly summary?: string;
   readonly icon?: string;
+  readonly tags?: unknown;
+  readonly profileId?: string;
+  readonly profileTitle?: string;
+  readonly profile?: unknown;
   readonly layout?: string;
   readonly height?: string;
   readonly width?: string;
@@ -5522,6 +5687,10 @@ function operatorMiniAppPayload(message: {
   readonly html?: string;
   readonly summary?: string;
   readonly icon?: string;
+  readonly tags?: unknown;
+  readonly profileId?: string;
+  readonly profileTitle?: string;
+  readonly profile?: unknown;
   readonly layout?: string;
   readonly height?: string;
   readonly width?: string;
@@ -5541,6 +5710,10 @@ function operatorMiniAppPayload(message: {
     inlineHtml: recordString(appRecord, "inlineHtml") || recordString(appRecord, "html") || message.inlineHtml || message.html || "",
     summary: recordString(appRecord, "summary") || message.summary || "",
     icon: recordString(appRecord, "icon") || message.icon || "",
+    tags: Array.isArray(message.tags) || typeof message.tags === "string" ? message.tags : (Array.isArray(appRecord.tags) || typeof appRecord.tags === "string" ? appRecord.tags : []),
+    profileId: recordString(appRecord, "profileId") || message.profileId || "",
+    profileTitle: recordString(appRecord, "profileTitle") || message.profileTitle || "",
+    profile: isRecord(message.profile) || typeof message.profile === "string" ? message.profile : (isRecord(appRecord.profile) || typeof appRecord.profile === "string" ? appRecord.profile : undefined),
     layout: recordString(appRecord, "layout") || message.layout || "",
     height: recordString(appRecord, "height") || message.height || "",
     width: recordString(appRecord, "width") || message.width || "",

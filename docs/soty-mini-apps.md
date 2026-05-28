@@ -1,9 +1,10 @@
 # Soty Mini Apps
 
 Mini apps are small frontend bundles rendered inside the selected Soty chat.
-The static public catalog is still gated off, but an attached Agent can install
-a safe app surface into the current local account, current chat, or selected
-device scope.
+They are stored as a small app index: title, tags, optional profile, scope,
+placement, URL/inline bundle, display hints, and capability grants. The static
+public catalog is still gated off, but an attached Agent can install a safe app
+surface into the current local account, current chat, or selected device scope.
 
 Remote connection technology lives in TrustLink Kernel
 `docs/app-surfaces.md` (`junior2wnw/4-2-rf`). Soty is only the application
@@ -51,6 +52,8 @@ The default APPKA path for "сделай аппку" requests is:
   "title": "My APPKA",
   "summary": "Short label shown in Soty.",
   "icon": "remote",
+  "tags": ["crm", "orders"],
+  "profileTitle": "Work",
   "inlineHtml": "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>...</body></html>",
   "scope": "chat",
   "layout": "half",
@@ -82,6 +85,22 @@ the Soty chat. `account` apps are stored in `localStorage` under
 `soty:mini-apps:v1`; other Soty tabs on the same browser profile pick them up
 through the storage event.
 
+## Profiles And Search
+
+Every app may carry:
+
+- `profileId` / `profileTitle`: a user-facing group such as `Work`, `Shop`, or
+  a created persona/profile.
+- `tags`: short search terms.
+- `placement`: derived by Soty from the app surface mode: `inline`,
+  `same-origin`, `remote-origin`, `device-local`, or `kernel-proxy`.
+
+The APPS launcher is a global index over the selected chat, all known room apps,
+and local account apps. Search ranks title matches first, then tags, then
+profile, summary, id, and URL. A room app found through global search switches
+to its owning chat before opening, so users can keep many apps across many
+profiles without separate hard-coded launchers.
+
 ## Static Catalog
 
 The static manifest remains disabled for normal users. To maintain first-party
@@ -100,6 +119,8 @@ apps for later enabling:
       "title": "My Tool",
       "summary": "Short label shown in Soty.",
       "icon": "remote",
+      "tags": ["crm", "orders"],
+      "profileTitle": "Work",
       "url": "/mini-apps/my-tool/index.html",
       "layout": "half",
       "height": "clamp(260px, 46vh, 560px)",
@@ -109,10 +130,11 @@ apps for later enabling:
 }
 ```
 
-Same-origin apps work by default. Soty resolves mini-app URLs through
+Same-origin and HTTPS apps work by default. Soty resolves mini-app URLs through
 `trustlink-kernel` app-surface helpers. During development, loopback URLs such
 as `http://localhost:5174/` are accepted by the client and the server CSP allows
-localhost frames. For other trusted HTTPS origins, set `SOTY_MINI_APP_FRAME_SRC`.
+localhost frames. Use `SOTY_MINI_APP_FRAME_SRC` only for additional explicit
+frame sources beyond the default HTTPS and loopback policy.
 
 Do not give a mini app direct relay secrets or raw device authority. A mini app
 is a frontend; Soty owns identity, trust, selected chat/device context, agent

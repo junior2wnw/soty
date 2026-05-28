@@ -34,7 +34,7 @@ export function openCounterpartyMenu(
     <button type="button" data-action="knock" aria-label="knock" data-tooltip="Позвать">${icon("bell")}</button>
     <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote" data-tooltip="Доступ к устройству">${icon("remote")}</button>
     <button type="button" data-action="actions" aria-label="actions" data-tooltip="Задачи">${icon("check")}</button>
-    <button class="${state.hasMiniApps ? "" : "is-disabled"}" type="button" data-action="apps" aria-label="mini apps" data-tooltip="Мини-аппы" ${state.hasMiniApps ? "" : "disabled"}>${icon("upload")}</button>
+    <button class="${state.hasMiniApps ? "" : "is-empty"}" type="button" data-action="apps" aria-label="mini apps" data-tooltip="Мини-аппы">${icon("upload")}</button>
     <button type="button" data-action="chess" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}</button>
     ${state.needsAgentInstall ? `<button type="button" data-action="agentInstall" aria-label="download" data-tooltip="Установить или обновить Клаву">${icon("download")}</button>` : ""}
     ${state.canClose === false ? "" : `<button type="button" data-action="close" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}</button>`}

@@ -207,10 +207,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes('from "trustlink-kernel"'));
       assert(miniAppsSource.includes("resolveAppSurfaceUrl"));
       assert(miniAppsSource.includes("sanitizeMiniAppDefinition"));
+      assert(miniAppsSource.includes("searchMiniApps"));
+      assert(miniAppsSource.includes("miniAppRecordKey"));
       assert(main.includes("appSurfaceAllowedOrigin"));
       assert(main.includes("normalizeAppSurfaceInstallRequest"));
       assert(main.includes("miniAppsRegistryKey"));
       assert(main.includes("roomMiniApps"));
+      assert(main.includes("globalMiniApps"));
       assert(main.includes("miniAppInlineHtmlWithContext"));
       assert(main.includes("runOperatorMiniAppInstall"));
       assert(main.includes("window.resize"));
@@ -234,6 +237,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("operation=appka"));
       assert(agentSource.includes("inlineHtml"));
       assert(agentSource.includes("APPKA/appka"));
+      assert(agentSource.includes("title-first search"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));
       assert(agentSource.includes("Do not iframe arbitrary insecure LAN HTTP"));
@@ -241,6 +245,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("window.resize"));
       assert(agentSource.includes("window.collapse"));
       assert(miniAppsDoc.includes("lower half of the dialog"));
+      assert(miniAppsDoc.includes("Profiles And Search"));
+      assert(miniAppsDoc.includes("Search ranks title matches first"));
       assert(miniAppsDoc.includes("window.resize"));
       assert(miniAppsDoc.includes("window.collapse"));
       assert(miniAppsDoc.includes("There is no app close affordance"));
@@ -264,6 +270,8 @@ async function runScenarios({ relayUrl } = {}) {
           layout: "floating",
           height: "clamp(260px, 40svh, 520px)",
           width: "640px",
+          tags: ["demo", "crm"],
+          profileTitle: "Work",
           capabilities: ["chat.append"],
           open: true
         });
@@ -277,6 +285,8 @@ async function runScenarios({ relayUrl } = {}) {
           && message.layout === "floating"
           && message.height === "clamp(260px, 40svh, 520px)"
           && message.width === "640px"
+          && message.tags.includes("demo")
+          && message.profileTitle === "Work"
           && message.open === true
           && message.capabilities.includes("chat.append")
         ));

@@ -177,6 +177,10 @@ export interface SyncedMiniApp {
   readonly inlineHtml?: string;
   readonly summary: string;
   readonly icon: string;
+  readonly tags?: readonly string[];
+  readonly profileId?: string;
+  readonly profileTitle?: string;
+  readonly placement?: "inline" | "same-origin" | "remote-origin" | "device-local" | "kernel-proxy";
   readonly layout?: "half" | "compact" | "large" | "full" | "floating";
   readonly height?: string;
   readonly width?: string;
@@ -2246,7 +2250,7 @@ function cleanFileId(value: string): string {
 }
 
 function syncedMiniAppKey(app: SyncedMiniApp): string {
-  return `${app.scope}:${app.scope === "device" ? app.targetDeviceId || "" : ""}:${app.id}`;
+  return `${app.scope}:${app.scope === "device" ? app.targetDeviceId || "" : ""}:${app.profileId || ""}:${app.id}`;
 }
 
 function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
@@ -2277,6 +2281,10 @@ function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
       .filter((item, index, values) => /^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$/u.test(item) && values.indexOf(item) === index)
       .slice(0, 24)
     : [];
+  const tags = cleanMiniAppTags(record.tags);
+  const profileTitle = cleanMiniAppText(recordString(record, "profileTitle"), 80);
+  const profileId = cleanMiniAppToken(recordString(record, "profileId") || profileTitle, 80);
+  const placement = cleanMiniAppPlacement(recordString(record, "placement"));
   return {
     id,
     title,
@@ -2284,6 +2292,10 @@ function sanitizeSyncedMiniApp(value: unknown): SyncedMiniApp | null {
     ...(inlineHtml ? { inlineHtml } : {}),
     summary: cleanMiniAppText(recordString(record, "summary") || id, 180),
     icon: cleanMiniAppToken(recordString(record, "icon"), 40) || "remote",
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(profileId ? { profileId } : {}),
+    ...(profileTitle ? { profileTitle } : {}),
+    ...(placement ? { placement } : {}),
     ...(cleanMiniAppLayout(recordString(record, "layout")) !== "half" ? { layout: cleanMiniAppLayout(recordString(record, "layout")) } : {}),
     ...(cleanMiniAppCssSize(recordString(record, "height")) ? { height: cleanMiniAppCssSize(recordString(record, "height")) } : {}),
     ...(cleanMiniAppCssSize(recordString(record, "width")) ? { width: cleanMiniAppCssSize(recordString(record, "width")) } : {}),
@@ -2316,6 +2328,40 @@ function cleanMiniAppText(value: string, maxLength: number): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, maxLength);
+}
+
+function cleanMiniAppTags(value: unknown): readonly string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,#;\n]/u)
+      : [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of raw) {
+    const tag = cleanMiniAppText(String(item || "").replace(/^#+/u, ""), 48);
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(tag);
+    if (result.length >= 24) {
+      break;
+    }
+  }
+  return result;
+}
+
+function cleanMiniAppPlacement(value: string): "inline" | "same-origin" | "remote-origin" | "device-local" | "kernel-proxy" | "" {
+  const clean = String(value || "").trim().toLowerCase();
+  return clean === "inline"
+    || clean === "same-origin"
+    || clean === "remote-origin"
+    || clean === "device-local"
+    || clean === "kernel-proxy"
+    ? clean
+    : "";
 }
 
 function cleanMiniAppLayout(value: string): "half" | "compact" | "large" | "full" | "floating" {

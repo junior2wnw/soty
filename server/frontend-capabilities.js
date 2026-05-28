@@ -191,10 +191,13 @@ function miniAppActions(manifest) {
       title: cleanText(app.title || humanTitle(id), 100),
       label: labelFor(app.icon || app.title || id),
       summary: cleanText(app.summary || app.description || "Mini app surface.", 180),
-      tags: compactList([id, app.icon, ...stringList(app.capabilities, 12, 80)]),
+      tags: compactList([id, app.icon, app.profileId, app.profileTitle, ...stringList(app.tags, 24, 80), ...stringList(app.capabilities, 12, 80)]),
       runtime: {
         appId: id,
         url: stringValue(app.url, 240),
+        profileId: stringValue(app.profileId, 80),
+        profileTitle: stringValue(app.profileTitle, 100),
+        tags: stringList(app.tags, 24, 80),
         capabilities: stringList(app.capabilities, 12, 80)
       }
     });

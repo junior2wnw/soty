@@ -4029,6 +4029,9 @@ async function handleOperatorHttpMiniApp(request, response, headers) {
     inlineHtml: app.inlineHtml,
     summary: app.summary,
     icon: app.icon,
+    tags: app.tags,
+    profileId: app.profileId,
+    profileTitle: app.profileTitle,
     layout: app.layout,
     height: app.height,
     width: app.width,
@@ -4049,6 +4052,10 @@ function sanitizeMiniAppInstallPayload(payload) {
   const url = inlineHtml ? "about:srcdoc" : safeMiniAppUrlText(rawApp?.url || payload?.url || "");
   const summary = cleanActionText(rawApp?.summary || payload?.summary || "", 180);
   const icon = cleanActionToken(rawApp?.icon || payload?.icon || "remote", "remote");
+  const tags = safeMiniAppTags(rawApp?.tags || payload?.tags);
+  const profileSource = rawApp?.profile && typeof rawApp.profile === "object" && !Array.isArray(rawApp.profile) ? rawApp.profile : {};
+  const profileTitle = cleanActionText(rawApp?.profileTitle || payload?.profileTitle || profileSource.title || (typeof rawApp?.profile === "string" ? rawApp.profile : "") || "", 80);
+  const profileId = cleanActionToken(rawApp?.profileId || payload?.profileId || profileSource.id || profileTitle || "", "");
   const rawDisplay = rawApp?.display && typeof rawApp.display === "object" && !Array.isArray(rawApp.display) ? rawApp.display : {};
   const payloadDisplay = payload?.display && typeof payload.display === "object" && !Array.isArray(payload.display) ? payload.display : {};
   const layout = normalizeMiniAppLayout(rawDisplay.layout || payloadDisplay.layout || rawApp?.layout || payload?.layout || "");
@@ -4073,6 +4080,9 @@ function sanitizeMiniAppInstallPayload(payload) {
     inlineHtml,
     summary,
     icon,
+    tags,
+    profileId,
+    profileTitle,
     layout,
     height,
     width,
@@ -4086,6 +4096,29 @@ function sanitizeMiniAppInstallPayload(payload) {
     revision,
     capabilities
   };
+}
+
+function safeMiniAppTags(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,#;\n]/u)
+      : [];
+  const seen = new Set();
+  const tags = [];
+  for (const item of raw) {
+    const tag = cleanActionText(String(item || "").replace(/^#+/u, ""), 48);
+    const key = tag.toLowerCase();
+    if (!tag || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= 24) {
+      break;
+    }
+  }
+  return tags;
 }
 
 function safeMiniAppUrlText(value) {
@@ -7577,7 +7610,7 @@ function sotyRuntimeHints() {
     "- Full remote access: `computer` shell/script/file/desktop routes are normal access to the selected device; managed capabilities are preferred routes, not barriers. For parallel console work use `computer` operation=terminal/action with detached=true, then job_status/job_stop/jobs.",
     "- Installed agent runtime: TrustLink Kernel `node_modules/trustlink-kernel/docs/agent-runtime.md` is the reusable contract for console, filesystem, process, service, package, browser, desktop, surface, app, api, job, artifact, os, transaction, and device adapters.",
     "- Transaction/app work: use transaction.prepare/preview before transaction.submit, require explicit confirmation for critical external side effects, and keep credentials/secrets in the approved local app or platform store.",
-    "- Mini-app kernel: mini apps are frontend surfaces; TrustLink Kernel first, Soty adapter second. Use `node_modules/trustlink-kernel/docs/app-surfaces.md` plus `docs/soty-mini-apps.md` when relevant. For APPKA/appka use `computer` operation=appka or operation=mini_app with inlineHtml, scope=chat, layout=half, window.resize/window.collapse; Do not iframe arbitrary insecure LAN HTTP.",
+    "- Mini-app kernel: mini apps are app surfaces in a global app index: title first, tags second, optional profile grouping, account/chat/device scope. TrustLink Kernel first, Soty adapter second. Use `node_modules/trustlink-kernel/docs/app-surfaces.md` plus `docs/soty-mini-apps.md` when relevant. For APPKA/appka use `computer` operation=appka or operation=mini_app with inlineHtml, scope=chat, layout=half, tags/profileTitle when useful, window.resize/window.collapse; Do not iframe arbitrary insecure LAN HTTP.",
     "- OpenAI tool plane: use native Codex/OpenAI built-ins for search, image generation, computer-use previews, code, shell, and patching when exposed. Soty MCP is the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`; do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove it.",
@@ -7764,7 +7797,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Use this route whenever the user asks to add, connect, debug, or generalize a Soty mini app, including apps hosted by domain, apps hosted on another server without a domain, or apps that must operate through a selected device/agent.",
     "",
-    "Principle: mini apps are frontend surfaces. TrustLink Kernel owns the reusable app-surface contract; Soty owns the adapter, selected chat/device context, agent invocation, terminal routing, file/artifact transfer, long jobs, and proof. Do not give mini apps relay secrets, raw device tokens, or direct authority over another user's computer.",
+    "Principle: mini apps are frontend surfaces indexed by title, tags, profile, scope, and placement. TrustLink Kernel owns the reusable app-surface contract; Soty owns the adapter, selected chat/device context, agent invocation, terminal routing, file/artifact transfer, long jobs, and proof. Do not give mini apps relay secrets, raw device tokens, or direct authority over another user's computer.",
     "",
     "Hosting modes:",
     "1. Inline APPKA: for a small generated tool, create one self-contained HTML document, no external CDN by default, and register it with inlineHtml. Soty stores it in the encrypted room state and renders it in a sandboxed srcdoc frame, so the same chat shows it from another device without a domain/server.",
@@ -7776,9 +7809,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Mobile APPKA creation policy: OFF. A phone may be the controller, but build/deploy/serve must be delegated to a selected trusted device through the computer plane; keep the Soty server as relay/control plane, not a build host.",
     "",
-    "APPKA install/open rule: for generated inline helpers, call `computer` with `{ \"operation\": \"appka\", \"appId\": \"...\", \"title\": \"...\", \"inlineHtml\": \"<!doctype html>...\", \"scope\": \"chat\", \"layout\": \"half\", \"capabilities\": [\"chat.append\"] }`. The inline app is synced in the selected Soty room and opens in the lower half of the dialog immediately unless `open=false`; the app may later request `window.resize` with layout `compact`, `large`, `full`, or `floating` plus safe CSS height/width.",
+    "APPKA install/open rule: for generated inline helpers, call `computer` with `{ \"operation\": \"appka\", \"appId\": \"...\", \"title\": \"...\", \"tags\": [\"...\"], \"profileTitle\": \"...\", \"inlineHtml\": \"<!doctype html>...\", \"scope\": \"chat\", \"layout\": \"half\", \"capabilities\": [\"chat.append\"] }`. The inline app is synced in the selected Soty room and opens in the lower half of the dialog immediately unless `open=false`; the app may later request `window.resize` with layout `compact`, `large`, `full`, or `floating` plus safe CSS height/width.",
     "",
-    "URL install/open rule: after the frontend is available at a safe URL, call `computer` with `{ \"operation\": \"mini_app\", \"appId\": \"...\", \"title\": \"...\", \"url\": \"...\", \"scope\": \"chat\", \"layout\": \"half\", \"capabilities\": [\"chat.append\"] }`. Use `scope=account` only for local account-wide tools and `scope=device` only for a proven selected device. The app will appear in the APPS launcher and opens immediately unless `open=false`.",
+    "URL install/open rule: after the frontend is available at a safe URL, call `computer` with `{ \"operation\": \"mini_app\", \"appId\": \"...\", \"title\": \"...\", \"tags\": [\"...\"], \"profileTitle\": \"...\", \"url\": \"...\", \"scope\": \"chat\", \"layout\": \"half\", \"capabilities\": [\"chat.append\"] }`. Use `scope=account` only for local account-wide tools and `scope=device` only for a proven selected device. The app will appear in the APPS launcher and global search opens it immediately unless `open=false`.",
     "",
     "Repository source of truth: `node_modules/trustlink-kernel/docs/app-surfaces.md` for reusable technology and `docs/soty-mini-apps.md` for the Soty adapter. If an integration proves a better universal route, update TrustLink Kernel first, then the Soty adapter docs and selftests."
   ].join("\n");
@@ -8555,6 +8588,9 @@ function runMcpServer() {
             appId: { type: "string", description: "Mini app id for operation=mini_app/surface." },
             inlineHtml: { type: "string", description: "Self-contained inline HTML for operation=appka/mini_app when no domain/server is needed." },
             html: { type: "string", description: "Alias for inlineHtml." },
+            tags: { type: "array", items: { type: "string" }, description: "Search tags for the global app index. Title is still ranked first, tags second." },
+            profileId: { type: "string", description: "Optional profile id where this app should live." },
+            profileTitle: { type: "string", description: "Optional visible profile name for app grouping/search." },
             scope: { type: "string", description: "Mini app scope: account, chat, or device. Default chat for appka/mini_app." },
             layout: { type: "string", description: "Mini app shell layout: half, compact, large, full, or floating. Default half opens in the lower half of the chat." },
             height: { type: "string", description: "Optional safe CSS height for the mini app frame." },
@@ -8868,7 +8904,7 @@ function runMcpServer() {
       },
       {
         name: "soty_mini_app",
-        description: "Register and optionally open a generated mini app in the current Soty chat/account. For user requests like `сделай аппку`, prefer a self-contained inlineHtml bundle with scope=chat through the public `computer` tool operation=appka/mini_app.",
+        description: "Register and optionally open a generated mini app in the Soty app index: account/chat/device scope, optional profile, title-first search, tags-second search. For user requests like `сделай аппку`, prefer a self-contained inlineHtml bundle with scope=chat through the public `computer` tool operation=appka/mini_app.",
         inputSchema: {
           type: "object",
           properties: {
@@ -8879,6 +8915,9 @@ function runMcpServer() {
             html: { type: "string", description: "Alias for inlineHtml." },
             summary: { type: "string", description: "Short launcher summary." },
             icon: { type: "string", description: "Soty icon name. Default remote." },
+            tags: { type: "array", items: { type: "string" }, description: "Search tags for the global app index. Title is ranked first, tags second." },
+            profileId: { type: "string", description: "Optional profile id where this app should live." },
+            profileTitle: { type: "string", description: "Optional visible profile name for app grouping/search." },
             layout: { type: "string", description: "Shell-managed mini app window layout: half, compact, large, full, or floating. Default half opens in the lower half of the chat." },
             height: { type: "string", description: "CSS height clamp for the frame." },
             width: { type: "string", description: "Optional CSS width for floating layout." },
@@ -9553,6 +9592,11 @@ function runMcpServer() {
       inlineHtml,
       summary: String(args.summary || ""),
       icon: String(args.icon || "remote"),
+      tags: Array.isArray(args.tags)
+        ? args.tags
+        : String(args.tags || "").split(/[,\s#]+/u).filter(Boolean),
+      profileId: String(args.profileId || ""),
+      profileTitle: String(args.profileTitle || args.profile || ""),
       layout: normalizeMiniAppLayout(args.layout || args.display?.layout || ""),
       height: String(args.height || ""),
       width: String(args.width || ""),
@@ -13085,6 +13129,9 @@ async function runControlCli(args) {
         inlineHtml,
         summary: parsed.options.summary || "",
         icon: parsed.options.icon || "remote",
+        tags: (parsed.options.tags || "").split(/[,\s#]+/u).filter(Boolean),
+        profileId: parsed.options.profileId || parsed.options["profile-id"] || parsed.options.profile || "",
+        profileTitle: parsed.options.profileTitle || parsed.options["profile-title"] || parsed.options.profileName || parsed.options["profile-name"] || "",
         layout: parsed.options.layout || "half",
         height: parsed.options.height || "",
         width: parsed.options.width || "",

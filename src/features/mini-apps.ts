@@ -3,6 +3,7 @@ import type { IconName } from "../icons";
 import { cleanNick } from "../trustlink";
 
 export type MiniAppScope = "account" | "chat" | "device";
+export type MiniAppPlacement = "inline" | "same-origin" | "remote-origin" | "device-local" | "kernel-proxy";
 export type MiniAppWindowLayout = "half" | "compact" | "large" | "full" | "floating";
 
 export type MiniAppDefinition = {
@@ -12,6 +13,10 @@ export type MiniAppDefinition = {
   readonly inlineHtml?: string;
   readonly summary: string;
   readonly icon: IconName;
+  readonly tags?: readonly string[];
+  readonly profileId?: string;
+  readonly profileTitle?: string;
+  readonly placement?: MiniAppPlacement;
   readonly layout?: MiniAppWindowLayout;
   readonly height?: string;
   readonly width?: string;
@@ -158,24 +163,32 @@ export function sanitizeMiniAppDefinition(value: unknown, options: MiniAppSaniti
   const iconName = recordString(value, "icon");
   const iconValue = isIconName(iconName) ? iconName : "remote";
   const inlineHtml = safeMiniAppInlineHtml(recordString(value, "inlineHtml") || recordString(value, "html"));
-  const url = inlineHtml ? "about:srcdoc" : safeMiniAppUrl(recordString(value, "url"), options);
-  if (!id || !title || !url) {
+  const surface = inlineHtml
+    ? { url: "about:srcdoc", placement: "inline" as const }
+    : safeMiniAppSurface(recordString(value, "url"), options);
+  if (!id || !title || !surface.url) {
     return null;
   }
   const display = isRecord(value.display) ? value.display : value;
   const layout = normalizeMiniAppLayout(recordString(display, "layout") || recordString(value, "layout"));
   const height = safeMiniAppCssSize(recordString(display, "height") || recordString(value, "height"));
   const width = safeMiniAppCssSize(recordString(display, "width") || recordString(value, "width"));
+  const tags = safeMiniAppTags(value.tags);
+  const profile = miniAppProfile(value);
   const capabilities = Array.isArray(value.capabilities)
     ? value.capabilities.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 80)).slice(0, 20)
     : [];
   return {
     id,
     title,
-    url,
+    url: surface.url,
     ...(inlineHtml ? { inlineHtml } : {}),
     summary,
     icon: iconValue,
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(profile.id ? { profileId: profile.id } : {}),
+    ...(profile.title ? { profileTitle: profile.title } : {}),
+    placement: surface.placement,
     ...(layout !== "half" ? { layout } : {}),
     ...(height ? { height } : {}),
     ...(width ? { width } : {}),
@@ -210,20 +223,52 @@ export function sameMiniAppRecord(left: MiniAppDefinition, right: MiniAppDefinit
   return left.id === right.id
     && (left.scope || "account") === (right.scope || "account")
     && (left.tunnelId || "") === (right.tunnelId || "")
-    && (left.targetDeviceId || "") === (right.targetDeviceId || "");
+    && (left.targetDeviceId || "") === (right.targetDeviceId || "")
+    && (left.profileId || "") === (right.profileId || "");
+}
+
+export function miniAppRecordKey(app: MiniAppDefinition): string {
+  return [
+    app.scope || "account",
+    app.tunnelId || "",
+    app.targetDeviceId || "",
+    app.profileId || "",
+    app.id
+  ].join("\u001F");
 }
 
 export function dedupeMiniApps(apps: readonly MiniAppDefinition[]): MiniAppDefinition[] {
   const seen = new Set<string>();
   const result: MiniAppDefinition[] = [];
   for (const item of apps) {
-    if (!item.id || seen.has(item.id)) {
+    const key = miniAppRecordKey(item);
+    if (!item.id || seen.has(key)) {
       continue;
     }
-    seen.add(item.id);
+    seen.add(key);
     result.push(item);
   }
   return result;
+}
+
+export function searchMiniApps(apps: readonly MiniAppDefinition[], query: string): MiniAppDefinition[] {
+  const needle = miniAppSearchNeedle(query);
+  const indexed = dedupeMiniApps(apps);
+  if (!needle) {
+    return indexed.sort(miniAppDefaultSort);
+  }
+  return indexed
+    .map((appItem) => ({ appItem, score: miniAppSearchScore(appItem, needle) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || miniAppDefaultSort(left.appItem, right.appItem))
+    .map((item) => item.appItem);
+}
+
+export function miniAppSearchNeedle(value: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }
 
 export function isIconName(value: string): value is IconName {
@@ -231,6 +276,10 @@ export function isIconName(value: string): value is IconName {
 }
 
 export function safeMiniAppUrl(value: string, options: MiniAppSanitizeOptions = {}): string {
+  return safeMiniAppSurface(value, options).url;
+}
+
+function safeMiniAppSurface(value: string, options: MiniAppSanitizeOptions = {}): { readonly url: string; readonly placement: MiniAppPlacement } {
   try {
     const resolved = resolveAppSurfaceUrl(value, {
       baseUrl: options.baseUrl || globalThis.location?.origin || "https://xn--n1afe0b.online",
@@ -238,9 +287,9 @@ export function safeMiniAppUrl(value: string, options: MiniAppSanitizeOptions = 
       allowTrustedHttps: true,
       kernelIntentSchemes: ["soty:"]
     });
-    return resolved.requiresKernelProxy ? "" : resolved.url;
+    return resolved.requiresKernelProxy ? { url: "", placement: "kernel-proxy" } : { url: resolved.url, placement: resolved.mode };
   } catch {
-    return "";
+    return { url: "", placement: "remote-origin" };
   }
 }
 
@@ -261,4 +310,81 @@ function recordString(value: unknown, key: string): string {
   }
   const item = value[key];
   return typeof item === "string" ? item : "";
+}
+
+function safeMiniAppTags(value: unknown): readonly string[] {
+  const raw = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,#;\n]/u)
+      : [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const item of raw) {
+    const tag = cleanNick(String(item || ""))
+      .replace(/^#+/u, "")
+      .slice(0, 48);
+    const key = miniAppSearchNeedle(tag);
+    if (!tag || !key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    tags.push(tag);
+    if (tags.length >= 24) {
+      break;
+    }
+  }
+  return tags;
+}
+
+function miniAppProfile(value: Record<string, unknown>): { readonly id: string; readonly title: string } {
+  const profile = isRecord(value.profile) ? value.profile : {};
+  const rawTitle = recordString(value, "profileTitle")
+    || recordString(profile, "title")
+    || (typeof value.profile === "string" ? value.profile : "");
+  const title = cleanNick(rawTitle).slice(0, 80);
+  const id = normalizeAppSurfaceId(recordString(value, "profileId") || recordString(profile, "id") || title, 80);
+  return { id, title };
+}
+
+function miniAppSearchScore(appItem: MiniAppDefinition, needle: string): number {
+  const words = needle.split(" ").filter(Boolean);
+  const title = miniAppSearchNeedle(appItem.title);
+  const tags = (appItem.tags || []).map(miniAppSearchNeedle);
+  const profile = miniAppSearchNeedle(`${appItem.profileTitle || ""} ${appItem.profileId || ""}`);
+  const summary = miniAppSearchNeedle(appItem.summary);
+  const id = miniAppSearchNeedle(appItem.id);
+  const url = miniAppSearchNeedle(appItem.url);
+  let score = textMatchScore(title, needle, words, 8000);
+  score += Math.max(...tags.map((tag) => textMatchScore(tag, needle, words, 3600)), 0);
+  score += textMatchScore(profile, needle, words, 1600);
+  score += textMatchScore(summary, needle, words, 900);
+  score += textMatchScore(id, needle, words, 700);
+  score += textMatchScore(url, needle, words, 180);
+  return score;
+}
+
+function textMatchScore(text: string, needle: string, words: readonly string[], weight: number): number {
+  if (!text) {
+    return 0;
+  }
+  if (text === needle) {
+    return weight + 400;
+  }
+  if (text.startsWith(needle)) {
+    return weight + 240;
+  }
+  if (text.includes(needle)) {
+    return weight + 120;
+  }
+  return words.reduce((score, word) => score + (text.includes(word) ? Math.round(weight / 8) : 0), 0);
+}
+
+function miniAppDefaultSort(left: MiniAppDefinition, right: MiniAppDefinition): number {
+  const leftTime = Date.parse(left.updatedAt || left.installedAt || "");
+  const rightTime = Date.parse(right.updatedAt || right.installedAt || "");
+  if (Number.isFinite(leftTime) || Number.isFinite(rightTime)) {
+    return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  }
+  return left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
 }
