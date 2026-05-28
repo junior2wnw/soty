@@ -1753,9 +1753,15 @@ function sortedMiniApps(apps: readonly MiniAppDefinition[]): MiniAppDefinition[]
 }
 
 function cellShelfMiniApps(): MiniAppDefinition[] {
-  return dedupeMiniApps([
+  const scoped = [
     ...sortedMiniApps(roomMiniAppsForSelected()),
     ...sortedMiniApps(localMiniAppsForSelected())
+  ];
+  return dedupeMiniApps([
+    ...scoped,
+    ...sortedMiniApps(globalMiniApps()).filter((item) =>
+      !scoped.some((scopedItem) => sameMiniAppRecord(scopedItem, item))
+    )
   ]);
 }
 

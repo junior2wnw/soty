@@ -103,9 +103,15 @@ their encrypted room/device context.
 Mini apps are the first visible entity of a selected cell. The cell header shows
 a horizontal app shelf before chat, wall, and reputation controls. A cell may
 hold any number of apps; the shelf scrolls sideways and each tile opens the app
-directly. The first shelf button opens a gallery over every app known to the
-browser, so a user can browse apps across cells without using search as the
-primary path.
+directly. The shelf shows selected-cell apps first, then other known apps, so a
+user does not need to open search just to reach an already registered app. The
+first shelf button opens a gallery over every app known to the browser, so a
+user can browse apps across cells without using search as the primary path.
+
+Starting or hosting a web app is not enough: the app appears in Soty only after
+it is registered as a mini app through `operation=appka`, `operation=mini_app`,
+or `sotyctl mini-app`. That record binds the URL/inline HTML to the selected
+cell, account, or selected device.
 
 Room apps stay in the encrypted room state and belong to that cell. Account apps
 stay in the local app index and can appear in any selected cell. Device apps stay

@@ -216,6 +216,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes("roomMiniApps"));
       assert(main.includes("globalMiniApps"));
       assert(main.includes("cell-app-shelf"));
+      assert(main.includes("function cellShelfMiniApps()"));
+      assert(main.includes("...sortedMiniApps(globalMiniApps()).filter"));
       assert(main.includes("openMiniAppGallery"));
       assert(!main.includes("app-visibility-select"));
       assert(main.includes("miniAppInlineHtmlWithContext"));
