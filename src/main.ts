@@ -30,7 +30,7 @@ import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./f
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
-import { agentDialogLabel, containsAgentInvocationText, isOperatorHeaderText, stripAgentInvocationText } from "./features/agent-identity";
+import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import { installTooltips } from "./ui/tooltips";
@@ -163,6 +163,9 @@ const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
 const spaceModeKey = "soty:space-mode:v1";
+const agentModeKey = "soty:agent-mode:v1";
+const agentPrivateLogKey = "soty:agent-private-log:v1";
+const hiveDrawerKey = "soty:hive-drawer:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
@@ -214,6 +217,12 @@ type LiveDraftState = LiveDraft & {
   readonly color: string;
 };
 
+type AgentPrivateLine = {
+  readonly role: "user" | "agent";
+  readonly text: string;
+  readonly createdAt: string;
+};
+
 type OpenMessageDialog = {
   readonly chatId: string;
   readonly sourceId: string;
@@ -257,6 +266,9 @@ const operatorPending = new Map<string, string>();
 let operatorBridgeEpoch = 0;
 let terminalCollapsed = loadTerminalCollapsed();
 let spaceModes = loadSpaceModes();
+let agentModes = loadAgentModes();
+let agentPrivateLogs = loadAgentPrivateLogs();
+let hiveDrawerOpen = loadHiveDrawerOpen();
 type OperatorRemoteRun = {
   readonly commandId: string;
   readonly tunnelId: string;
@@ -372,6 +384,12 @@ async function boot(): Promise<void> {
     remoteEnabled = loadRemoteEnabled();
     remoteAccess = loadRemoteAccess();
     remoteGrantTargets = loadRemoteGrantTargets();
+    spaceModes = loadSpaceModes();
+    agentModes = loadAgentModes();
+    agentPrivateLogs = loadAgentPrivateLogs();
+    hiveDrawerOpen = loadHiveDrawerOpen();
+    localDrafts.clear();
+    pendingAttachments.clear();
     terminalOpenId = "";
     chessOpenId = "";
     rememberAppRuntime();
@@ -403,7 +421,8 @@ async function boot(): Promise<void> {
 
   device = await loadDevice();
   if (!device) {
-    renderNick();
+    device = await createDevice(selfCellLabel);
+    finishDeviceBoot();
     return;
   }
 
@@ -414,9 +433,7 @@ async function boot(): Promise<void> {
   }
 
   tunnels = loadTunnels();
-  if (tunnels.length === 0) {
-    tunnels = upsertTunnel(createTunnel());
-  }
+  ensurePermanentCells();
   selectedId = loadSelectedTunnelId() || tunnels[0]?.id || "";
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
@@ -660,10 +677,6 @@ function openInfoPage(): void {
   window.location.assign(infoPagePath);
 }
 
-function openPaymentPage(): void {
-  window.location.assign(paymentPagePath);
-}
-
 function renderInfoPage(): void {
   app.innerHTML = infoPageHtml(bareChatPath(), paymentPagePath);
 }
@@ -671,63 +684,6 @@ function renderInfoPage(): void {
 function renderPaymentPage(): void {
   app.innerHTML = paymentPageHtml(bareChatPath(), infoPagePath);
   bindPaymentPage();
-}
-
-function renderNick(): void {
-  app.innerHTML = `
-    <section class="nick-screen">
-      <div class="nick-panel">
-        <div class="nick-brand">
-          <span class="retro-brand-mark">S</span>
-          <span>
-            <b>Соты</b>
-            <small>личный рабочий контур</small>
-          </span>
-        </div>
-        <p class="nick-lead">Чат, файлы, Клава и подключенные устройства в одном месте. Доступ к управлению всегда включается отдельно.</p>
-        <div class="trust-strip" aria-label="границы доступа">
-          <span>${icon("shield")}Доступ выключен</span>
-          <span>${icon("check")}Клава ставится отдельно</span>
-          <span>${icon("heart")}Оплата после согласования</span>
-        </div>
-        <form class="nick-form">
-          <span>${icon("person")}</span>
-          <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
-          <button class="restore-button" type="button" aria-label="restore" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
-          <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
-          <input class="restore-file" type="file" accept="application/json,.json" />
-        </form>
-        <div class="nick-links">
-          <button class="nick-info" type="button">${icon("shield")}Инфа</button>
-          <button class="nick-payment" type="button">${icon("heart")}Оплата</button>
-        </div>
-      </div>
-    </section>
-  `;
-  const form = app.querySelector<HTMLFormElement>("form");
-  const input = app.querySelector<HTMLInputElement>("input[name='nick']");
-  const restoreButton = app.querySelector<HTMLButtonElement>(".restore-button");
-  const restoreFile = app.querySelector<HTMLInputElement>(".restore-file");
-  input?.focus();
-  void ensureOperatorBridge(true);
-  app.querySelector<HTMLButtonElement>(".nick-info")?.addEventListener("click", openInfoPage);
-  app.querySelector<HTMLButtonElement>(".nick-payment")?.addEventListener("click", openPaymentPage);
-  restoreButton?.addEventListener("click", () => {
-    restoreFile?.click();
-  });
-  restoreFile?.addEventListener("change", () => {
-    const file = restoreFile.files?.[0];
-    if (file) {
-      void restoreFromOperatorExportText(file.text(), input);
-    }
-    restoreFile.value = "";
-  });
-  form?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const nick = cleanNick(new FormData(form).get("nick")?.toString() || "");
-    device = await createDevice(nick);
-    finishDeviceBoot();
-  });
 }
 
 function bindPaymentPage(): void {
@@ -843,9 +799,7 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
     return;
   }
   tunnels = loadTunnels();
-  if (tunnels.length === 0) {
-    tunnels = upsertTunnel(createTunnel());
-  }
+  ensurePermanentCells();
   selectedId = loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
@@ -1180,6 +1134,138 @@ function saveSpaceModes(): void {
   } catch {
     // Space mode is local UI memory.
   }
+}
+
+function loadAgentModes(): Map<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(agentModeKey) || "{}");
+    if (!isRecord(parsed)) {
+      return new Map();
+    }
+    return new Map(Object.entries(parsed).map(([id, active]) => [id, active === true || active === "1"]));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveAgentModes(): void {
+  try {
+    localStorage.setItem(agentModeKey, JSON.stringify(Object.fromEntries(agentModes)));
+  } catch {
+    // Agent mode is local UI memory.
+  }
+}
+
+function selectedAgentMode(tunnelId = selectedId): boolean {
+  return Boolean(tunnelId && normalizeSpaceMode(spaceModes.get(tunnelId) || "dialog") === "dialog" && agentModes.get(tunnelId) === true);
+}
+
+function setSelectedAgentMode(active: boolean): void {
+  if (!selectedId) {
+    return;
+  }
+  if (active) {
+    spaceModes.set(selectedId, "dialog");
+    agentModes.set(selectedId, true);
+  } else {
+    agentModes.delete(selectedId);
+  }
+  saveSpaceModes();
+  saveAgentModes();
+  void syncs.get(selectedId)?.sendLiveDraft("");
+  renderSpace();
+  updateComposerSpaceMode();
+  renderDialogChrome();
+  renderAgentPrivatePanel();
+  renderTextPaint();
+  composer?.focus();
+}
+
+function loadAgentPrivateLogs(): Map<string, AgentPrivateLine[]> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(agentPrivateLogKey) || "{}");
+    if (!isRecord(parsed)) {
+      return new Map();
+    }
+    const result = new Map<string, AgentPrivateLine[]>();
+    for (const [id, value] of Object.entries(parsed)) {
+      const lines = Array.isArray(value)
+        ? value.map(sanitizeAgentPrivateLine).filter((line): line is AgentPrivateLine => Boolean(line)).slice(-80)
+        : [];
+      if (lines.length > 0) {
+        result.set(id, lines);
+      }
+    }
+    return result;
+  } catch {
+    return new Map();
+  }
+}
+
+function sanitizeAgentPrivateLine(value: unknown): AgentPrivateLine | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const role = value.role === "user" ? "user" : value.role === "agent" ? "agent" : null;
+  const text = normalizeChatMessage(recordString(value, "text")).slice(0, 12_000);
+  if (!role || !text) {
+    return null;
+  }
+  return {
+    role,
+    text,
+    createdAt: recordString(value, "createdAt").slice(0, 40) || new Date().toISOString()
+  };
+}
+
+function saveAgentPrivateLogs(): void {
+  try {
+    localStorage.setItem(agentPrivateLogKey, JSON.stringify(Object.fromEntries(agentPrivateLogs)));
+  } catch {
+    // Private agent transcript is local-only memory.
+  }
+}
+
+function appendAgentPrivateLine(tunnelId: string, role: AgentPrivateLine["role"], rawText: string): boolean {
+  const text = role === "agent" ? cleanAgentReplyText(rawText) : normalizeChatMessage(rawText);
+  if (!tunnelId || !text) {
+    return false;
+  }
+  const next = [
+    ...(agentPrivateLogs.get(tunnelId) ?? []),
+    { role, text: text.slice(0, 12_000), createdAt: new Date().toISOString() }
+  ].slice(-80);
+  agentPrivateLogs.set(tunnelId, next);
+  saveAgentPrivateLogs();
+  if (tunnelId === selectedId) {
+    renderAgentPrivatePanel();
+  }
+  return true;
+}
+
+function loadHiveDrawerOpen(): boolean {
+  try {
+    return localStorage.getItem(hiveDrawerKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveHiveDrawerOpen(): void {
+  try {
+    localStorage.setItem(hiveDrawerKey, hiveDrawerOpen ? "1" : "0");
+  } catch {
+    // Drawer state is cosmetic.
+  }
+}
+
+function setHiveDrawerOpen(open: boolean): void {
+  hiveDrawerOpen = open;
+  saveHiveDrawerOpen();
+  app.querySelector<HTMLElement>(".shell")?.classList.toggle("hive-open", hiveDrawerOpen);
+  const panel = app.querySelector<HTMLElement>(".hive-panel");
+  panel?.toggleAttribute("inert", !hiveDrawerOpen);
+  panel?.setAttribute("aria-hidden", hiveDrawerOpen ? "false" : "true");
 }
 
 function selectedSpaceMode(): SpaceMode {
@@ -2112,6 +2198,7 @@ function publishMiniAppContext(): void {
       label,
       color: safeColor(tunnel.color, label + tunnel.id),
       agent: isAgentTunnel(tunnel),
+      agentMode: selectedAgentMode(tunnel.id),
       remoteController: remoteAccess.has(tunnel.id),
       remoteHost: remoteEnabled.has(tunnel.id),
       syncState: syncStates.get(tunnel.id) || "connecting"
@@ -2171,7 +2258,7 @@ async function invokeAgentFromMiniApp(message: Record<string, unknown>): Promise
     appendUserMessageToDialog(selectedId, visible);
   }
   await sendAgentDialogMessage(selectedId, text, {
-    ...(isAgentTunnel(tunnel) ? {} : { explicitMention: true })
+    privateMode: !isAgentTunnel(tunnel)
   });
 }
 
@@ -2290,7 +2377,7 @@ async function runQuickAction(actionId: string): Promise<void> {
   appendUserMessageToDialog(tunnelId, visible);
   clearComposerDraftForTunnel(tunnelId);
   void sendAgentDialogMessage(tunnelId, agentTask, {
-    ...(isAgentTunnel(tunnel) ? {} : { explicitMention: true })
+    privateMode: !isAgentTunnel(tunnel)
   });
 }
 
@@ -2565,10 +2652,6 @@ function renderApp(): void {
     return;
   }
   tunnels = loadTunnels();
-  if (tunnels.length === 0) {
-    tunnels = upsertTunnel(createTunnel());
-    selectedId = tunnels[0]?.id || "";
-  }
   ensurePermanentCells();
   selectFirstSurface();
   normalizeSelectedTunnel();
@@ -2578,8 +2661,9 @@ function renderApp(): void {
 
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
-    <section class="shell retro-shell${bareChatMode ? " bare-chat-shell" : ""}">
-      <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}">
+    <section class="shell retro-shell${bareChatMode ? " bare-chat-shell" : ""}${hiveDrawerOpen ? " hive-open" : ""}">
+      <button class="hive-toggle retro-icon-button" type="button" aria-label="cells" data-tooltip="Cells">${icon("hexagon")}</button>
+      <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}" aria-hidden="${hiveDrawerOpen ? "false" : "true"}"${hiveDrawerOpen ? "" : " inert"}>
         <div class="retro-brand">
           <span class="retro-brand-mark">S</span>
           <span>
@@ -2601,6 +2685,7 @@ function renderApp(): void {
           <span class="dialog-live" aria-live="polite">
             <span class="writer-pop"></span>
           </span>
+          <button class="agent-mode-button retro-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">ссылка</button>
@@ -2613,6 +2698,7 @@ function renderApp(): void {
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
           </div>
+          <div class="agent-private-panel" hidden></div>
           <div class="line-gutter" aria-hidden="true"></div>
           <div class="line-meta" aria-hidden="true"></div>
           <textarea class="dialog-buffer" spellcheck="false" autocapitalize="sentences" aria-hidden="true" tabindex="-1"></textarea>
@@ -2690,8 +2776,14 @@ function renderApp(): void {
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
   }, { passive: true });
+  app.querySelector<HTMLButtonElement>(".hive-toggle")?.addEventListener("click", () => {
+    setHiveDrawerOpen(!hiveDrawerOpen);
+  });
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
+  });
+  app.querySelector<HTMLButtonElement>(".agent-mode-button")?.addEventListener("click", () => {
+    setSelectedAgentMode(!selectedAgentMode());
   });
   app.querySelector<HTMLButtonElement>(".info-open")?.addEventListener("click", openInfoPage);
   app.querySelector<HTMLButtonElement>(".access-open")?.addEventListener("click", () => {
@@ -2795,6 +2887,9 @@ function renderTiles(): void {
   })), {
     select: (id) => {
       selectTunnel(id);
+      if (window.matchMedia("(max-width: 980px)").matches) {
+        setHiveDrawerOpen(false);
+      }
       clearTunnelNotices(id);
       tunnels = markTunnel(id, false);
       renderTiles();
@@ -3365,7 +3460,7 @@ function closeRemoteMode(tunnelId: string): void {
 function sortedVisibleTunnels(): TunnelRecord[] {
   return loadTunnels()
     .map((tunnel, index) => ({ tunnel, index }))
-    .filter((item) => !item.tunnel.archived && hasCounterparty(item.tunnel))
+    .filter((item) => isSelectableCell(item.tunnel))
     .sort((a, b) => {
       const rank = permanentCellRank(b.tunnel) - permanentCellRank(a.tunnel);
       if (rank !== 0) {
@@ -3380,10 +3475,11 @@ function permanentCellRank(tunnel: TunnelRecord): number {
   if (isSelfTunnel(tunnel)) {
     return 2;
   }
-  if (isAgentTunnel(tunnel)) {
-    return 1;
-  }
   return 0;
+}
+
+function isSelectableCell(tunnel: TunnelRecord): boolean {
+  return !tunnel.archived && !isAgentTunnel(tunnel) && hasCounterparty(tunnel);
 }
 
 function normalizeSelectedTunnel(): void {
@@ -3392,7 +3488,7 @@ function normalizeSelectedTunnel(): void {
     selectedId = "";
     return;
   }
-  const visible = all.filter((tunnel) => !tunnel.archived && hasCounterparty(tunnel));
+  const visible = all.filter(isSelectableCell);
   const pool = visible.length > 0 ? visible : all;
   const stored = loadSelectedTunnelId();
   if (pool.some((tunnel) => tunnel.id === selectedId)) {
@@ -3431,7 +3527,7 @@ function selectTunnel(id: string): void {
 }
 
 function hasVisibleSelection(id = selectedId): boolean {
-  return Boolean(id && loadTunnels().some((tunnel) => !tunnel.archived && tunnel.id === id && hasCounterparty(tunnel)));
+  return Boolean(id && loadTunnels().some((tunnel) => tunnel.id === id && isSelectableCell(tunnel)));
 }
 
 function hasCounterparty(tunnel: TunnelRecord): boolean {
@@ -3532,13 +3628,6 @@ function permanentCellSpecs(now = new Date().toISOString()): readonly PermanentC
       score: 2_000_000,
       colorSeed: `self:${device?.id || now}`,
       match: isSelfTunnel
-    },
-    {
-      kind: "agent",
-      label: agentDialogLabel,
-      score: 1_900_000,
-      colorSeed: `agent:${device?.id || now}`,
-      match: isAgentTunnel
     }
   ];
 }
@@ -3613,7 +3702,7 @@ function ensurePermanentCells(): void {
     forgetDuplicateCells(duplicateIds);
   }
   if (!selectedId || !current.some((tunnel) => tunnel.id === selectedId && !tunnel.archived)) {
-    selectedId = current.find(isSelfTunnel)?.id || current.find(isAgentTunnel)?.id || current.find((tunnel) => !tunnel.archived)?.id || "";
+    selectedId = current.find(isSelfTunnel)?.id || current.find(isSelectableCell)?.id || current.find((tunnel) => !tunnel.archived && !isAgentTunnel(tunnel))?.id || "";
   }
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
@@ -3709,12 +3798,16 @@ function forgetDuplicateCells(ids: readonly string[]): void {
     clearLiveDraftState(id);
     clearPendingAgentRelayRepliesForTunnel(id);
     agentThinking.delete(id);
+    agentModes.delete(id);
+    agentPrivateLogs.delete(id);
     localDrafts.delete(id);
     pendingAttachments.delete(id);
     files.delete(id);
     fileNotices.delete(id);
     texts.delete(id);
   }
+  saveAgentModes();
+  saveAgentPrivateLogs();
   removeTextSnapshots(ids);
 }
 
@@ -3784,6 +3877,8 @@ function clearCurrentDialog(tunnelId: string): void {
   saveTextSnapshotNow(tunnelId, "");
   localDrafts.delete(tunnelId);
   pendingAttachments.delete(tunnelId);
+  agentPrivateLogs.delete(tunnelId);
+  saveAgentPrivateLogs();
   writerLines.delete(tunnelId);
   activeActivities.delete(tunnelId);
   activeActivityTicks.delete(tunnelId);
@@ -3906,10 +4001,14 @@ function renderDialogChrome(): void {
   const state = app.querySelector<HTMLElement>(".dialog-state");
   const id = app.querySelector<HTMLButtonElement>(".dialog-id");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
+  const appShell = app.querySelector<HTMLElement>(".shell");
+  const editor = app.querySelector<HTMLElement>(".editor");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
+  const agentButton = app.querySelector<HTMLButtonElement>(".agent-mode-button");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
+  const agentMode = Boolean(tunnel && selectedAgentMode(tunnel.id));
   const availableMiniApps = globalMiniApps();
   if (miniAppSession) {
     const activeMiniAppKey = miniAppRecordKey(miniAppSession.app);
@@ -3920,7 +4019,10 @@ function renderDialogChrome(): void {
   }
   if (shell) {
     shell.style.setProperty("--peer-color", color);
+    shell.classList.toggle("agent-mode-active", agentMode);
   }
+  appShell?.classList.toggle("agent-mode-active", agentMode);
+  editor?.classList.toggle("agent-mode-active", agentMode);
   if (avatar) {
     avatar.textContent = label ? initials(label) : "";
   }
@@ -3957,8 +4059,14 @@ function renderDialogChrome(): void {
     const stopping = selectedSpaceMode() === "dialog" && agentThinking.has(selectedId);
     sendButton.classList.toggle("is-stop", stopping);
     sendButton.setAttribute("aria-label", stopping ? "остановить" : "отправить");
-    sendButton.dataset.tooltip = stopping ? "Остановить" : "Отправить";
-    sendButton.innerHTML = icon(stopping ? "stop" : "send");
+    sendButton.dataset.tooltip = stopping ? "Остановить" : agentMode ? "Agent" : "Отправить";
+    sendButton.innerHTML = icon(stopping ? "stop" : agentMode ? "agent" : "send");
+  }
+  if (agentButton) {
+    agentButton.hidden = !tunnel || selectedSpaceMode() !== "dialog";
+    agentButton.classList.toggle("is-on", agentMode);
+    agentButton.setAttribute("aria-pressed", agentMode ? "true" : "false");
+    agentButton.dataset.tooltip = agentMode ? "Agent on" : "Agent";
   }
   if (remoteButton) {
     const needsAgent = mode !== "link";
@@ -3976,6 +4084,7 @@ function renderDialogChrome(): void {
   publishMiniAppContext();
   renderSpace();
   updateComposerSpaceMode();
+  renderAgentPrivatePanel();
 }
 
 function renderSpace(): void {
@@ -3994,6 +4103,29 @@ function renderSpace(): void {
       setSelectedSpaceMode(normalizeSpaceMode(button.dataset.spaceMode || "dialog"));
     });
   });
+}
+
+function renderAgentPrivatePanel(): void {
+  const panel = app.querySelector<HTMLDivElement>(".agent-private-panel");
+  if (!panel) {
+    return;
+  }
+  const active = selectedAgentMode();
+  panel.hidden = !active;
+  if (!active) {
+    panel.innerHTML = "";
+    return;
+  }
+  const lines = agentPrivateLogs.get(selectedId) ?? [];
+  panel.innerHTML = lines.length > 0
+    ? lines.map((line) => `
+      <article class="agent-private-line ${line.role}" title="${escapeHtml(clock(new Date(line.createdAt)))}">
+        <span>${icon(line.role === "agent" ? "agent" : "person")}</span>
+        <p>${line.text.split("\n").map((item) => item ? `<span>${linkifyChatLine(item)}</span>` : "<br>").join("")}</p>
+      </article>
+    `).join("")
+    : `<div class="agent-private-empty">${icon("agent")}</div>`;
+  panel.scrollTop = panel.scrollHeight;
 }
 
 function selectedSpaceModel(): SpaceModel | null {
@@ -4017,7 +4149,8 @@ function updateComposerSpaceMode(): void {
   const mode = selectedSpaceMode();
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const access = composerAccessFor(tunnel, mode);
-  composer.placeholder = access.placeholder;
+  const agentMode = Boolean(tunnel && selectedAgentMode(tunnel.id));
+  composer.placeholder = agentMode ? "" : access.placeholder;
   composer.disabled = !access.canCompose;
   const bar = app.querySelector<HTMLFormElement>(".composer-bar");
   if (bar) {
@@ -4025,9 +4158,10 @@ function updateComposerSpaceMode(): void {
     bar.dataset.spaceMode = mode;
     bar.classList.toggle("is-wall-mode", mode === "wall");
     bar.classList.toggle("is-reputation-mode", mode === "reputation");
+    bar.classList.toggle("is-agent-mode", agentMode);
     bar.classList.toggle("is-readonly-space", !access.canCompose);
   }
-  app.querySelector<HTMLButtonElement>(".composer-attach")?.toggleAttribute("disabled", !access.canCompose);
+  app.querySelector<HTMLButtonElement>(".composer-attach")?.toggleAttribute("disabled", !access.canCompose || agentMode);
   app.querySelector<HTMLButtonElement>(".send-button")?.toggleAttribute("disabled", !access.canCompose);
 }
 
@@ -4405,6 +4539,9 @@ function stageFiles(list?: FileList | null): void {
   if (!composerAccessFor(tunnel).canCompose) {
     return;
   }
+  if (selectedAgentMode(tunnelId)) {
+    return;
+  }
   const accepted = filesFrom(list);
   const oversized = oversizedFilesFrom(list);
   const current = pendingAttachments.get(tunnelId) ?? [];
@@ -4466,6 +4603,9 @@ async function sendPendingAttachments(tunnelId: string, sync: TunnelSync): Promi
 }
 
 function attachmentLimitForComposer(tunnelId: string): number {
+  if (selectedAgentMode(tunnelId)) {
+    return 0;
+  }
   return selectedSpaceMode() === "dialog" && isAgentTunnelId(tunnelId)
     ? agentAttachmentLimit
     : Number.POSITIVE_INFINITY;
@@ -4477,6 +4617,11 @@ function renderComposerAttachments(): void {
     return;
   }
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  if (selectedAgentMode()) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
   const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
   const pending = pendingAttachments.get(selectedId) ?? [];
   const notice = activeFileNotice(selectedId);
@@ -5314,7 +5459,7 @@ function agentDeviceNetworkContext(
     controllerDeviceNick: device?.nick || "",
     activeTunnelId: tunnelId || "",
     activeTunnelLabel: tunnel ? counterpartyLabel(tunnel) : "",
-    activeTunnelKind: tunnel && isAgentTunnel(tunnel) ? "agent" : "peer",
+    activeTunnelKind: tunnel && (isAgentTunnel(tunnel) || selectedAgentMode(tunnel.id)) ? "agent" : "peer",
     selectedTargetId: selectedTarget?.id || "",
     selectedTargetLabel: selectedTarget?.label || "",
     selectedTargetDeviceId,
@@ -5571,9 +5716,6 @@ async function runOperatorChat(message: {
   operatorChatQueues.set(tunnel.id, next);
   try {
     await next;
-    if (!isAgentTunnel(tunnel) && containsAgentInvocation(text)) {
-      void sendAgentDialogMessage(tunnel.id, text, { explicitMention: true });
-    }
     sendOperatorOutput(requestId, "sent\n", 0);
   } catch {
     sendOperatorOutput(requestId, "! chat", 500);
@@ -7195,6 +7337,16 @@ function rememberComposerDraft(): void {
   } else {
     localDrafts.delete(selectedId);
   }
+  if (selectedAgentMode(selectedId)) {
+    const pendingLiveDraftTimer = liveDraftSendTimers.get(selectedId);
+    if (pendingLiveDraftTimer) {
+      window.clearTimeout(pendingLiveDraftTimer);
+      liveDraftSendTimers.delete(selectedId);
+    }
+    void syncs.get(selectedId)?.sendLiveDraft("");
+    resizeComposer();
+    return;
+  }
   scheduleLiveDraft(selectedId, draft);
   resizeComposer();
 }
@@ -7254,6 +7406,26 @@ async function finalizeComposerDraft(): Promise<void> {
     stopAgentDialogReply(tunnelId);
     return;
   }
+  if (spaceMode === "dialog" && tunnel && selectedAgentMode(tunnelId)) {
+    if (!message) {
+      renderComposerAttachments();
+      return;
+    }
+    appendAgentPrivateLine(tunnelId, "user", message);
+    const pendingLiveDraftTimer = liveDraftSendTimers.get(tunnelId);
+    if (pendingLiveDraftTimer) {
+      window.clearTimeout(pendingLiveDraftTimer);
+      liveDraftSendTimers.delete(tunnelId);
+    }
+    void sync.sendLiveDraft("");
+    localDrafts.delete(tunnelId);
+    composer.value = "";
+    resizeComposer();
+    renderAgentPrivatePanel();
+    renderDialogChrome();
+    void sendAgentDialogMessage(tunnelId, message, { privateMode: true });
+    return;
+  }
   const sentFiles = await sendPendingAttachments(tunnelId, sync);
   if (!message && sentFiles.length === 0) {
     renderComposerAttachments();
@@ -7284,8 +7456,6 @@ async function finalizeComposerDraft(): Promise<void> {
   if (spaceMode === "dialog" && tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
     void sendAgentDialogMessage(tunnelId, agentMessage);
-  } else if (spaceMode === "dialog" && tunnel && containsAgentInvocation(message)) {
-    void sendAgentDialogMessage(tunnelId, agentMessage, { explicitMention: true });
   }
   localDrafts.delete(tunnelId);
   composer.value = "";
@@ -7329,15 +7499,6 @@ function messageWithAttachmentContext(message: string, sentFiles: readonly Recei
     "",
     "Use the room-file-transfer / artifact route to inspect or move these files when needed."
   ].join("\n");
-}
-
-function containsAgentInvocation(text: string): boolean {
-  return containsAgentInvocationText(text);
-}
-
-function stripAgentInvocation(text: string): string {
-  const body = normalizeChatMessage(text);
-  return stripAgentInvocationText(body);
 }
 
 function agentReplyStopToken(tunnelId: string): number {
@@ -7445,11 +7606,13 @@ function resumePendingAgentDialogReplies(): void {
 }
 
 function isAgentReplyTunnel(tunnel: TunnelRecord): boolean {
-  return isAgentTunnel(tunnel) || remoteAccess.has(tunnel.id);
+  return isAgentTunnel(tunnel) || remoteAccess.has(tunnel.id) || selectedAgentMode(tunnel.id);
 }
 
 async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Promise<void> {
   const tunnelId = pending.tunnelId;
+  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
+  const privateMode = Boolean(tunnel && !isAgentTunnel(tunnel) && selectedAgentMode(tunnel.id));
   const controller = new AbortController();
   agentReplyControllers.set(tunnelId, controller);
   setAgentThinking(tunnelId, true);
@@ -7464,10 +7627,10 @@ async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Pro
         return;
       }
       streamedMessages.push(streamed);
-      appendAgentChatMessage(tunnelId, streamed);
+      appendAgentOutput(tunnelId, streamed, privateMode);
     }, undefined, controller.signal);
     if (!controller.signal.aborted) {
-      finishAgentDialogReply(tunnelId, reply, streamedMessages);
+      finishAgentDialogReply(tunnelId, reply, streamedMessages, privateMode);
     }
   } finally {
     if (agentReplyControllers.get(tunnelId) === controller) {
@@ -7480,14 +7643,15 @@ async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Pro
 function sendAgentDialogMessage(
   tunnelId: string,
   text: string,
-  options: { readonly explicitMention?: boolean } = {}
+  options: { readonly privateMode?: boolean } = {}
 ): Promise<LocalAgentReply | null> {
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
-  if (!tunnel || (!agentTunnel && options.explicitMention !== true) || !text.trim()) {
+  const privateMode = options.privateMode === true;
+  if (!tunnel || (!agentTunnel && !privateMode) || !text.trim()) {
     return Promise.resolve(null);
   }
-  const taskText = options.explicitMention === true ? stripAgentInvocation(text) : text;
+  const taskText = text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const replyToken = agentReplyStopToken(tunnelId);
@@ -7505,7 +7669,7 @@ function sendAgentDialogMessage(
       try {
         if (agentTunnel) {
           await prepareAgentSourceForDialog(tunnelId, tunnel);
-        } else if (options.explicitMention === true) {
+        } else if (privateMode) {
           await preparePeerAgentInvocation(tunnelId);
         }
         if (controller.signal.aborted || agentReplyStopToken(tunnelId) !== replyToken) {
@@ -7518,7 +7682,7 @@ function sendAgentDialogMessage(
             return;
           }
           streamedMessages.push(streamed);
-          appendAgentChatMessage(tunnelId, streamed);
+          appendAgentOutput(tunnelId, streamed, privateMode);
         }, undefined, controller.signal);
       } finally {
         if (agentReplyControllers.get(tunnelId) === controller) {
@@ -7529,7 +7693,7 @@ function sendAgentDialogMessage(
       if (!reply || controller.signal.aborted || agentReplyStopToken(tunnelId) !== replyToken) {
         return cancelledAgentDialogReply();
       }
-      finishAgentDialogReply(tunnelId, reply, streamedMessages);
+      finishAgentDialogReply(tunnelId, reply, streamedMessages, privateMode);
       return reply;
     });
   agentReplyQueues.set(tunnelId, next);
@@ -7593,7 +7757,7 @@ async function preparePeerAgentInvocation(tunnelId: string): Promise<void> {
     return;
   }
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  if (!tunnel || isAgentTunnel(tunnel) || !remoteAccess.has(tunnelId)) {
+  if (!tunnel || isAgentTunnel(tunnel)) {
     return;
   }
   if (!terminalState.has(tunnelId)) {
@@ -7607,7 +7771,8 @@ async function preparePeerAgentInvocation(tunnelId: string): Promise<void> {
 function finishAgentDialogReply(
   tunnelId: string,
   reply: LocalAgentReply,
-  streamedMessages: readonly string[]
+  streamedMessages: readonly string[],
+  privateMode = false
 ): void {
   let finalReply = reply;
   let body = normalizeChatMessage(cleanAgentReplyText(reply.text));
@@ -7626,29 +7791,33 @@ function finishAgentDialogReply(
   if (shouldOfferAgentInstall(reply)) {
     markAgentDownloadNeeded();
   }
-  const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
+  const appended = appendAgentReplyMessages(tunnelId, finalReply, body, privateMode);
   if (!appended && !reply.ok && body) {
-    appendAgentChatMessage(tunnelId, userVisibleAgentFailureText(body));
+    appendAgentOutput(tunnelId, userVisibleAgentFailureText(body), privateMode);
     appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
   }
   playAgentDoneSound();
 }
 
-function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fallback: string): boolean {
+function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fallback: string, privateMode = false): boolean {
   const messages = (reply.messages ?? [])
     .map((message) => cleanAgentReplyText(message))
     .filter(Boolean);
   if (messages.length > 0) {
-    return appendAgentChatMessage(tunnelId, messages.join("\n\n"));
+    return appendAgentOutput(tunnelId, messages.join("\n\n"), privateMode);
   }
   if (reply.ok && fallback) {
-    return appendAgentChatMessage(tunnelId, fallback);
+    return appendAgentOutput(tunnelId, fallback, privateMode);
   }
   return false;
 }
 
 function userVisibleAgentFailureText(value: string): string {
   return cleanAgentReplyText(value) || "! agent: no reply";
+}
+
+function appendAgentOutput(tunnelId: string, rawText: string, privateMode: boolean): boolean {
+  return privateMode ? appendAgentPrivateLine(tunnelId, "agent", rawText) : appendAgentChatMessage(tunnelId, rawText);
 }
 
 function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {

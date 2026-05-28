@@ -247,7 +247,7 @@ The shell replies with:
 Supported app-to-shell messages are capability-gated per app:
 
 - `chat.append`: `{ text }` appends a visible message to the selected chat.
-- `agent.invoke`: `{ text, visibleText? }` sends a task to the agent in the selected chat.
+- `agent.invoke`: `{ text, visibleText? }` sends a private task to the agent with the selected cell chat as context. The agent reply is local-only unless the app also sends an explicit `chat.append`.
 - `terminal.run`: `{ command, timeoutMs?, runAs? }` runs through the selected remote console when control is ready.
 - `window.resize`: `{ layout, height?, width? }` requests a shell-managed size/layout.
 - `window.collapse`: collapses the mini app panel into its restore dock.

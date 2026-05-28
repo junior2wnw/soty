@@ -1,4 +1,4 @@
-export type IconName = "install" | "apps" | "qr" | "scan" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand" | "heart" | "hexagon";
+export type IconName = "install" | "apps" | "qr" | "scan" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand" | "heart" | "hexagon" | "mail" | "agent";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
@@ -22,7 +22,9 @@ const paths: Record<IconName, string> = {
   collapse: "M5 11h14v2H5v-2Zm4-6h6v2H9V5Zm0 12h6v2H9v-2Z",
   expand: "M5 11h14v2H5v-2Zm2-8h10v2H7V3Zm0 16h10v2H7v-2Z",
   heart: "M12 21.3 10.6 20C5.4 15.3 2 12.2 2 8.4 2 5.3 4.4 3 7.4 3c1.7 0 3.3.8 4.3 2.1C12.7 3.8 14.3 3 16 3c3 0 5.4 2.3 5.4 5.4 0 3.8-3.4 6.9-8.6 11.6L12 21.3Zm0-2.7.2-.2c4.8-4.3 7.2-6.5 7.2-10 0-1.9-1.4-3.4-3.4-3.4-1.5 0-3 .9-3.6 2.2h-1.8C10 5.9 8.5 5 7 5 5 5 3.6 6.5 3.6 8.4c0 3.5 2.4 5.7 7.2 10l1.2 1.1Z",
-  hexagon: "M7 3h10l5 9-5 9H7l-5-9 5-9Zm1.2 2L4.3 12l3.9 7h7.6l3.9-7-3.9-7H8.2Z"
+  hexagon: "M7 3h10l5 9-5 9H7l-5-9 5-9Zm1.2 2L4.3 12l3.9 7h7.6l3.9-7-3.9-7H8.2Z",
+  mail: "M4 5h16c1.1 0 2 .9 2 2v10c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V7c0-1.1.9-2 2-2Zm0 2v.4l8 5.1 8-5.1V7H4Zm0 2.7V17h16V9.7l-8 5.1-8-5.1Z",
+  agent: "M12 2a3 3 0 0 1 1 5.83V10h3.2c1 0 1.8.8 1.8 1.8V14h1.2a2.8 2.8 0 1 1 0 2H18v2.2c0 1-.8 1.8-1.8 1.8H7.8c-1 0-1.8-.8-1.8-1.8V16H4.8a2.8 2.8 0 1 1 0-2H6v-2.2c0-1 .8-1.8 1.8-1.8H11V7.83A3 3 0 0 1 12 2Zm-4 10v6h8v-6H8Zm2 2h1.5v1.5H10V14Zm2.5 0H14v1.5h-1.5V14Z"
 };
 
 export function icon(name: IconName): string {

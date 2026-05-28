@@ -41,7 +41,7 @@ const modes: readonly {
   readonly ariaLabel: string;
   readonly icon: IconName;
 }[] = [
-  { id: "dialog", label: "", hint: "общий разговор", ariaLabel: "Диалог: все сообщения", icon: "send" },
+  { id: "dialog", label: "", hint: "Почта", ariaLabel: "Почта", icon: "mail" },
   { id: "wall", label: "", hint: "мои отмеченные", ariaLabel: "Шестиугольник: мои отмеченные", icon: "hexagon" },
   { id: "reputation", label: "", hint: "лайки", ariaLabel: "Сердце: лайки", icon: "heart" }
 ];
@@ -115,7 +115,7 @@ export function spaceComposerAccess(mode: SpaceMode, label: string, ownSpace: bo
   if (mode === "reputation") {
     return { canCompose: false, entryKind: null, placeholder: "Сообщения с сердцем" };
   }
-  return { canCompose: true, entryKind: null, placeholder: "В общий диалог" };
+  return { canCompose: true, entryKind: null, placeholder: "Сообщение" };
 }
 
 export function renderSpaceRail(model: SpaceModel): string {

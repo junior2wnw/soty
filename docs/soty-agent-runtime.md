@@ -15,6 +15,10 @@ documents the Soty adapter.
   say "still waiting".
 - Specific programs should be connected as adapters, not as one-off command
   strings.
+- The Agent is a runtime connector, not a required visible frontend cell. The
+  UI may open private agent mode inside any selected cell; that mode passes the
+  cell chat as context, keeps user/agent turns local-only, and never depends on
+  a magic word in the shared chat.
 - Frontend actions are data, not hand-written mirrors. The server publishes
   `/api/frontend/capabilities` with normalized action descriptors derived from
   `/agent/manifest.json`, route profiles, automation toolkits, runtime
