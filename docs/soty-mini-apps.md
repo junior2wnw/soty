@@ -98,6 +98,10 @@ Agents may set `visibility` during install/update. Missing visibility keeps the
 old scope behavior: account apps are local to me, and chat/device apps stay in
 their encrypted room/device context.
 
+The APPS launcher shows the current visibility on every app row and lets the
+user change it in place. Room app changes are written back to the encrypted room
+state; account app changes are written to the local app index.
+
 ## Profiles And Search
 
 Every app may carry:
@@ -195,6 +199,15 @@ The shell replies with:
   schema: "soty.mini-app.context.v1",
   nonce,
   appId,
+  app: {
+    id,
+    title,
+    tags,
+    profileId,
+    profileTitle,
+    visibility,
+    placement
+  },
   device: { id, nick },
   selected: {
     tunnelId,

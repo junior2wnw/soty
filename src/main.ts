@@ -9,8 +9,8 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { fetchFrontendQuickActions, mergeQuickActions, quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
-import { dedupeMiniApps, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, miniAppRecordKey, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition, searchMiniApps } from "./features/mini-apps";
-import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
+import { dedupeMiniApps, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, miniAppRecordKey, normalizeMiniAppLayout, normalizeMiniAppScope, normalizeMiniAppVisibility, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition, searchMiniApps } from "./features/mini-apps";
+import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppVisibility, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
 import { commonMessageDialogTarget, createMessageDialogLine, isMessageDialogLine, messageDialogVisibleForTarget, parseMessageDialogLine } from "./features/message-dialogs";
 import type { MessageDialogEntry, MessageDialogTarget } from "./features/message-dialogs";
 import { colorFor, safeColor } from "./core/color";
@@ -108,6 +108,8 @@ type LauncherItem = {
   readonly title: string;
   readonly summary: string;
   readonly meta?: string;
+  readonly visibility?: MiniAppVisibility;
+  readonly visibilityEditable?: boolean;
 };
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -1303,9 +1305,16 @@ function openLauncher(): void {
     openLauncher();
     actionOverlay?.querySelector<HTMLInputElement>(".action-search")?.focus();
   });
-  overlay.querySelectorAll<HTMLButtonElement>(".launcher-row").forEach((button) => {
+  overlay.querySelectorAll<HTMLButtonElement>(".launcher-open").forEach((button) => {
     button.addEventListener("click", () => {
       runLauncherItem(button.dataset.kind || "", button.dataset.key || "");
+    });
+  });
+  overlay.querySelectorAll<HTMLSelectElement>(".app-visibility-select").forEach((select) => {
+    select.addEventListener("click", (event) => event.stopPropagation());
+    select.addEventListener("change", () => {
+      updateMiniAppVisibility(select.dataset.key || "", normalizeMiniAppVisibility(select.value));
+      openLauncher();
     });
   });
   overlay.querySelector<HTMLInputElement>(".action-search")?.focus();
@@ -1322,15 +1331,38 @@ function launcherItems(query: string): LauncherItem[] {
 }
 
 function launcherRowHtml(item: LauncherItem): string {
+  const visibility = item.kind === "app" && item.visibility
+    ? miniAppVisibilitySelectHtml(item.key, item.visibility, item.visibilityEditable !== false)
+    : "";
   return `
-    <button class="quick-action-run launcher-row" type="button" data-kind="${escapeHtml(item.kind)}" data-key="${escapeHtml(item.key)}">
-      <span class="quick-action-label">${item.markHtml}</span>
-      <span class="quick-action-copy">
-        <b>${escapeHtml(item.title)}</b>
-        <small>${escapeHtml(item.summary)}</small>
-        ${item.meta ? `<em class="launcher-meta">${escapeHtml(item.meta)}</em>` : ""}
-      </span>
-    </button>
+    <div class="launcher-entry${visibility ? " has-visibility" : ""}">
+      <button class="quick-action-run launcher-row launcher-open" type="button" data-kind="${escapeHtml(item.kind)}" data-key="${escapeHtml(item.key)}">
+        <span class="quick-action-label">${item.markHtml}</span>
+        <span class="quick-action-copy">
+          <b>${escapeHtml(item.title)}</b>
+          <small>${escapeHtml(item.summary)}</small>
+          ${item.meta ? `<em class="launcher-meta">${escapeHtml(item.meta)}</em>` : ""}
+        </span>
+      </button>
+      ${visibility}
+    </div>
+  `;
+}
+
+function miniAppVisibilitySelectHtml(appKey: string, value: MiniAppVisibility, editable: boolean): string {
+  const options: readonly { readonly value: MiniAppVisibility; readonly label: string }[] = [
+    { value: "private", label: "только я" },
+    { value: "granted-cells", label: "доступ" },
+    { value: "my-cells", label: "мои соты" },
+    { value: "public", label: "все" }
+  ];
+  return `
+    <label class="app-visibility-control" data-tooltip="Видимость">
+      <span>видно</span>
+      <select class="app-visibility-select" data-key="${escapeHtml(appKey)}" aria-label="Видимость аппки"${editable ? "" : " disabled"}>
+        ${options.map((option) => `<option value="${option.value}"${option.value === value ? " selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+      </select>
+    </label>
   `;
 }
 
@@ -1352,6 +1384,7 @@ function runLauncherItem(kind: string, key: string): void {
       ...draft,
       icon: "remote",
       scope: "account",
+      visibility: "private",
       open: true,
       capabilities: []
     });
@@ -1663,10 +1696,11 @@ function handleMiniAppRegistryChange(): void {
 
 function appLauncherItem(appItem: MiniAppDefinition): LauncherItem {
   const tags = (appItem.tags || []).slice(0, 4).join(" #");
+  const visibility = miniAppEffectiveVisibility(appItem);
   const meta = [
     appItem.profileTitle || appItem.profileId || "",
     miniAppScopeLabel(appItem),
-    miniAppVisibilityLabel(appItem),
+    miniAppVisibilityLabel(visibility),
     appItem.placement || "",
     tags ? `#${tags}` : ""
   ].filter(Boolean).join(" / ");
@@ -1676,7 +1710,9 @@ function appLauncherItem(appItem: MiniAppDefinition): LauncherItem {
     markHtml: icon(appItem.icon),
     title: appItem.title,
     summary: appItem.summary || appItem.id,
-    ...(meta ? { meta } : {})
+    ...(meta ? { meta } : {}),
+    visibility,
+    visibilityEditable: appItem.source !== "manifest"
   };
 }
 
@@ -1776,8 +1812,11 @@ function miniAppScopeLabel(appItem: MiniAppDefinition): string {
   return scope;
 }
 
-function miniAppVisibilityLabel(appItem: MiniAppDefinition): string {
-  const visibility = appItem.visibility || (appItem.scope === "account" ? "private" : "granted-cells");
+function miniAppEffectiveVisibility(appItem: MiniAppDefinition): MiniAppVisibility {
+  return appItem.visibility || (appItem.scope === "account" ? "private" : "granted-cells");
+}
+
+function miniAppVisibilityLabel(visibility: MiniAppVisibility): string {
   if (visibility === "private") {
     return "me";
   }
@@ -1788,6 +1827,47 @@ function miniAppVisibilityLabel(appItem: MiniAppDefinition): string {
     return "my cells";
   }
   return "public";
+}
+
+function updateMiniAppVisibility(appKey: string, visibility: MiniAppVisibility): void {
+  const appItem = globalMiniApps().find((item) => miniAppRecordKey(item) === appKey);
+  if (!appItem || appItem.source === "manifest") {
+    return;
+  }
+  const updated: MiniAppDefinition = {
+    ...appItem,
+    visibility,
+    updatedAt: new Date().toISOString()
+  };
+  if (appItem.source === "room" || appItem.scope === "chat" || appItem.scope === "device") {
+    const tunnelId = appItem.tunnelId || selectedId;
+    if (!tunnelId) {
+      return;
+    }
+    const sync = syncs.get(tunnelId);
+    if (!sync) {
+      return;
+    }
+    sync.setMiniApp(toSyncedMiniApp(updated));
+    roomMiniApps.set(tunnelId, [
+      { ...updated, source: "room", tunnelId },
+      ...(roomMiniApps.get(tunnelId) ?? []).filter((item) => !sameMiniAppRecord(item, updated))
+    ]);
+  } else {
+    saveLocalMiniApps([
+      { ...updated, source: "agent" },
+      ...loadLocalMiniApps().filter((item) => !sameMiniAppRecord(item, updated))
+    ]);
+  }
+  if (miniAppSession && sameMiniAppRecord(miniAppSession.app, appItem)) {
+    miniAppSession = {
+      ...miniAppSession,
+      app: updated
+    };
+    publishMiniAppContext();
+  }
+  miniApps = currentMiniApps();
+  renderDialogChrome();
 }
 
 function collapseMiniApp(): void {
@@ -2036,6 +2116,7 @@ function publishMiniAppContext(): void {
       tags: miniAppSession.app.tags || [],
       profileId: miniAppSession.app.profileId || "",
       profileTitle: miniAppSession.app.profileTitle || "",
+      visibility: miniAppEffectiveVisibility(miniAppSession.app),
       placement: miniAppSession.app.placement || ""
     },
     device: device ? { id: device.id, nick: device.nick } : null,

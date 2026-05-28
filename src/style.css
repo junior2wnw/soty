@@ -3500,6 +3500,17 @@ button:disabled {
   scrollbar-width: thin;
 }
 
+.launcher-entry {
+  min-width: 0;
+}
+
+.launcher-entry.has-visibility {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(124px, 158px);
+  gap: 6px;
+  align-items: stretch;
+}
+
 .quick-action-run {
   width: 100%;
   min-height: 54px;
@@ -3521,6 +3532,40 @@ button:disabled {
 
 .launcher-row {
   min-height: 64px;
+}
+
+.app-visibility-control {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid rgba(61, 81, 95, 0.92);
+  border-radius: 7px;
+  background: #0f171f;
+}
+
+.app-visibility-control span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.app-visibility-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid #2d4050;
+  border-radius: 6px;
+  background: #111b24;
+  color: var(--cream);
+  padding: 0 8px;
+  font: 11px "Cascadia Mono", Consolas, ui-monospace, monospace;
+  outline: none;
+}
+
+.app-visibility-select:focus {
+  border-color: var(--green);
 }
 
 .quick-action-run:hover,
@@ -3568,6 +3613,17 @@ button:disabled {
   color: color-mix(in srgb, var(--cyan) 68%, var(--muted));
   font-size: 10px;
   font-style: normal;
+}
+
+@media (max-width: 720px) {
+  .launcher-entry.has-visibility {
+    grid-template-columns: 1fr;
+  }
+
+  .app-visibility-control {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+  }
 }
 
 .action-empty {

@@ -215,7 +215,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes("miniAppsRegistryKey"));
       assert(main.includes("roomMiniApps"));
       assert(main.includes("globalMiniApps"));
+      assert(main.includes("app-visibility-select"));
+      assert(main.includes("updateMiniAppVisibility"));
       assert(main.includes("miniAppInlineHtmlWithContext"));
+      assert(main.includes("visibility: miniAppEffectiveVisibility"));
       assert(main.includes("runOperatorMiniAppInstall"));
       assert(main.includes("window.resize"));
       assert(main.includes("window.collapse"));
@@ -250,6 +253,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(miniAppsDoc.includes("Profiles And Search"));
       assert(miniAppsDoc.includes("Visibility:"));
       assert(miniAppsDoc.includes("granted-cells"));
+      assert(miniAppsDoc.includes("APPS launcher shows the current visibility"));
       assert(miniAppsDoc.includes("Search ranks title matches first"));
       assert(miniAppsDoc.includes("window.resize"));
       assert(miniAppsDoc.includes("window.collapse"));
