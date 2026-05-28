@@ -118,7 +118,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(catalog.actions.some((action) => action.id === "toolkit:computer-use-plane"));
       assert(catalog.actions.some((action) => action.id === "runtime:transaction"));
       assert(catalog.actions.some((action) => action.id === "computer:managed-windows-reinstall"));
-      assert(catalog.actions.every((action) => action.agentCard?.intent && action.agentCard.successProof?.length > 0));
+      assert(catalog.actions.every((action) => action.title && action.runtime && !("agentCard" in action)));
     }],
     ["agent triggers can be set, listed, emitted, and cancelled", async () => {
       const timeTrigger = await post("/operator/trigger", {
@@ -2210,13 +2210,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("machine-button"));
       assert(!ui.includes("canInstallMachineAgent"));
       assert(ui.includes("quickActions"));
-      assert(ui.includes("soty.action-intent-hint.v1"));
+      assert(ui.includes("soty.action-hint.v1"));
       assert(ui.includes("openCounterpartyMenu"));
       assert(ui.includes("actions: () =>"));
       assert(!ui.includes("quick-actions-action"));
       assert(ui.includes("Комментарий пользователя"));
-      assert(ui.includes("ACTION_INTENT_HINT"));
-      assert(ui.includes("not a fixed route or plan"));
+      assert(ui.includes("ACTION_HINT"));
+      assert(!ui.includes("ACTION_INTENT_HINT"));
+      assert(ui.includes("not a route or plan"));
       assert(ui.includes("appendUserMessageToDialog"));
       assert(!ui.includes("soty:scenarios"));
       assert(!ui.includes("scenarioInvocationPrompt"));
@@ -2311,8 +2312,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("agentReplyStopToken(tunnelId) !== replyToken"));
       assert(ui.includes("stopAgentDialogReply"));
       assert(ui.includes("bumpAgentReplyStopToken(tunnelId);"));
-      assert(ui.includes("restorePendingAgentDialogSelection"));
-      assert(ui.includes("if (hasVisibleSelection(selectedId)) {\n    return;\n  }\n  const stored = loadSelectedTunnelId();"));
+      assert(!ui.includes("restorePendingAgentDialogSelection"));
       assert(ui.includes("resumePendingAgentDialogReplies"));
       assert(ui.includes("isAgentReplyTunnel"));
       assert(ui.includes("finishAgentDialogReply"));

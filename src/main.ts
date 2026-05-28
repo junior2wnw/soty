@@ -401,7 +401,6 @@ async function boot(): Promise<void> {
     tunnels = upsertTunnel(createTunnel());
   }
   selectedId = loadSelectedTunnelId() || tunnels[0]?.id || "";
-  restorePendingAgentDialogSelection();
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
@@ -831,7 +830,6 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
     tunnels = upsertTunnel(createTunnel());
   }
   selectedId = loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
-  restorePendingAgentDialogSelection();
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
@@ -1990,7 +1988,7 @@ function visibleQuickActions(query: string): readonly QuickAction[] {
 
 function quickActionMatchScore(action: QuickAction, needle: string): number {
   const runtimeText = action.runtime ? Object.values(action.runtime).flat().join(" ") : "";
-  const haystack = actionSearchNeedle(`${action.title} ${action.summary} ${action.kind || ""} ${action.source || ""} ${action.tags.join(" ")} ${runtimeText} ${action.agentCard.intent}`);
+  const haystack = actionSearchNeedle(`${action.title} ${action.summary} ${action.kind || ""} ${action.source || ""} ${action.tags.join(" ")} ${runtimeText}`);
   if (haystack.includes(needle)) {
     return 1000 + needle.length;
   }
@@ -2058,18 +2056,12 @@ function quickActionVisibleMessage(action: QuickAction, comment: string): string
 }
 
 function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: TunnelRecord): string {
-  const card = {
-    schema: "soty.action-intent-hint.v1",
+  const hint = {
+    schema: "soty.action-hint.v1",
     id: action.id,
     title: action.title,
     source: action.source || "curated",
     kind: action.kind || "curated",
-    intent: action.agentCard.intent,
-    targetPolicy: action.agentCard.targetPolicy || "",
-    firstMoves: action.agentCard.firstMoves || [],
-    confirmBefore: action.agentCard.confirmBefore,
-    successProof: action.agentCard.successProof,
-    avoid: action.agentCard.avoid || [],
     runtime: action.runtime || {}
   };
   return [
@@ -2077,10 +2069,10 @@ function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: T
     `Комментарий пользователя: ${comment || "(нет)"}`,
     `Текущая сота: ${counterpartyLabel(tunnel)}`,
     "",
-    "ACTION_INTENT_HINT:",
-    JSON.stringify(card),
+    "ACTION_HINT:",
+    JSON.stringify(hint),
     "",
-    "Treat this as a lightweight user-intent hint, not a fixed route or plan. Build the route yourself from the current context, available tools, fresh proof, and on-demand route_profiles. Ask only for a real missing human input."
+    "Treat this as a lightweight action label, not a route or plan. Use current chat context, available tools, fresh proof, and on-demand capability discovery."
   ].join("\n");
 }
 
@@ -7160,24 +7152,6 @@ function ensureAgentDoneAudio(): AudioContext | null {
     return null;
   }
   return agentDoneAudio;
-}
-
-function restorePendingAgentDialogSelection(): void {
-  if (hasVisibleSelection(selectedId)) {
-    return;
-  }
-  const stored = loadSelectedTunnelId();
-  if (stored && hasVisibleSelection(stored)) {
-    selectedId = stored;
-    return;
-  }
-  const pending = loadPendingAgentRelayReplies()
-    .find((reply) => loadTunnels().some((tunnel) => tunnel.id === reply.tunnelId && isAgentReplyTunnel(tunnel)));
-  if (!pending) {
-    return;
-  }
-  selectedId = pending.tunnelId;
-  saveSelectedTunnelId(pending.tunnelId);
 }
 
 function resumePendingAgentDialogReplies(): void {

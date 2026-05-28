@@ -519,5 +519,5 @@ function storedFileAgeMsFromEnv() {
   const value = Number.parseInt(process.env.SOTY_FILE_CACHE_TTL_MS || "", 10);
   return Number.isSafeInteger(value) && value >= 60_000
     ? value
-    : 7 * 24 * 60 * 60_000;
+    : 24 * 60 * 60_000;
 }

@@ -95,14 +95,6 @@ function routeProfileActions(manifest) {
         entryTool: stringValue(profile.entryTool, 40),
         phases,
         proof
-      },
-      agentCard: {
-        intent: cleanText(profile.title || profile.family || id, 180),
-        targetPolicy: "Use the current selected Soty context unless the user explicitly names another target.",
-        firstMoves: route.length > 0 ? route : phases.map((phase) => `Run ${phase} with fresh proof.`),
-        confirmBefore: stringList(profile.confirmBefore || profile.doNot, 4, 140),
-        successProof: proof.length > 0 ? proof : ["fresh status", "result proof"],
-        avoid: stringList(profile.doNot, 6, 160)
       }
     });
   }).filter(Boolean);
@@ -134,14 +126,6 @@ function toolkitActions(manifest) {
         routeProfile: stringValue(toolkit.routeProfile, 120),
         phases,
         proof
-      },
-      agentCard: {
-        intent: promotion || `Use the ${name} toolkit.`,
-        targetPolicy: "Use the current selected Soty context unless the user explicitly names another target.",
-        firstMoves: phases.map((phase) => `Use toolkit phase: ${phase}.`),
-        confirmBefore: [],
-        successProof: proof.length > 0 ? proof : ["status", "result"],
-        avoid: []
       }
     });
   }).filter(Boolean);
@@ -171,14 +155,6 @@ function runtimeCapabilityActions(manifest) {
         risk,
         proof,
         requiresConfirmation: capability.requiresConfirmation === true
-      },
-      agentCard: {
-        intent: `Use the ${family} runtime capability.`,
-        targetPolicy: "Use the current selected Soty context unless the user explicitly names another target.",
-        firstMoves: actions.map((action) => `Discover whether ${family}.${action} applies here.`).slice(0, 4),
-        confirmBefore: capability.requiresConfirmation === true ? ["state-changing or irreversible operation"] : [],
-        successProof: proof.length > 0 ? proof : ["status", "result"],
-        avoid: []
       }
     });
   }).filter(Boolean);
@@ -197,14 +173,6 @@ function computerUseCapabilityActions(manifest) {
     runtime: {
       capability,
       entryTool: stringValue(manifest?.computerUsePlane?.entryTool, 40) || "computer"
-    },
-    agentCard: {
-      intent: `Use computer capability: ${capability}.`,
-      targetPolicy: "Use the current selected Soty context unless the user explicitly names another target.",
-      firstMoves: ["Discover the current runtime status.", "Invoke through the computer front door with fresh proof."],
-      confirmBefore: [],
-      successProof: ["status", "result"],
-      avoid: []
     }
   })).filter(Boolean);
 }
@@ -228,14 +196,6 @@ function miniAppActions(manifest) {
         appId: id,
         url: stringValue(app.url, 240),
         capabilities: stringList(app.capabilities, 12, 80)
-      },
-      agentCard: {
-        intent: `Open or use mini app: ${cleanText(app.title || id, 100)}.`,
-        targetPolicy: "Use the current selected Soty context unless the user explicitly names another target.",
-        firstMoves: ["Open the app surface if it is installed in this context.", "Use its declared capabilities as the contract."],
-        confirmBefore: [],
-        successProof: ["app surface opened", "capability result"],
-        avoid: []
       }
     });
   }).filter(Boolean);
@@ -249,24 +209,15 @@ function normalizeProvidedAction(value, source) {
   if (!id) {
     return null;
   }
-  const agentCard = isRecord(value.agentCard) ? value.agentCard : {};
   return normalizeAction({
     id: `provided:${id}`,
     source,
     kind: stringValue(value.kind, 60) || "provided",
     title: cleanText(value.title || humanTitle(id), 100),
     label: stringValue(value.label, 12) || labelFor(value.title || id),
-    summary: cleanText(value.summary || value.description || agentCard.intent, 180),
+    summary: cleanText(value.summary || value.description || value.intent, 180),
     tags: stringList(value.tags, 24, 80),
-    runtime: isRecord(value.runtime) ? value.runtime : {},
-    agentCard: {
-      intent: cleanText(agentCard.intent || value.intent || value.title || id, 220),
-      targetPolicy: cleanText(agentCard.targetPolicy || value.targetPolicy, 220),
-      firstMoves: stringList(agentCard.firstMoves || value.firstMoves, 8, 180),
-      confirmBefore: stringList(agentCard.confirmBefore || value.confirmBefore, 8, 160),
-      successProof: stringList(agentCard.successProof || value.successProof || value.proof, 8, 120),
-      avoid: stringList(agentCard.avoid || value.avoid, 8, 160)
-    }
+    runtime: isRecord(value.runtime) ? value.runtime : {}
   });
 }
 
@@ -276,7 +227,6 @@ function normalizeAction(action) {
   if (!id || !title) {
     return null;
   }
-  const agentCard = isRecord(action.agentCard) ? action.agentCard : {};
   return {
     schema: actionSchema,
     id,
@@ -286,15 +236,7 @@ function normalizeAction(action) {
     label: cleanText(action.label, 16) || labelFor(title),
     summary: cleanText(action.summary, 220),
     tags: stringList(action.tags, 32, 80),
-    runtime: publicObject(action.runtime),
-    agentCard: {
-      intent: cleanText(agentCard.intent || title, 260),
-      targetPolicy: cleanText(agentCard.targetPolicy, 260),
-      firstMoves: stringList(agentCard.firstMoves, 10, 220),
-      confirmBefore: stringList(agentCard.confirmBefore, 10, 180),
-      successProof: stringList(agentCard.successProof, 10, 140),
-      avoid: stringList(agentCard.avoid, 10, 180)
-    }
+    runtime: publicObject(action.runtime)
   };
 }
 
