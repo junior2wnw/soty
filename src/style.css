@@ -51,6 +51,21 @@ body {
     linear-gradient(180deg, #0d1217 0%, #080b0f 100%);
 }
 
+body.personal-space-mode {
+  overflow: auto;
+  color-scheme: light;
+  background: #f6f8fb;
+}
+
+body.personal-space-mode::before {
+  display: none;
+}
+
+body.personal-space-mode #app {
+  min-height: 100svh;
+  height: auto;
+}
+
 body::before {
   content: "";
   position: fixed;
@@ -103,6 +118,366 @@ svg {
   height: 24px;
   fill: currentColor;
   display: block;
+}
+
+.personal-space-shell {
+  --personal-accent: #78e08f;
+  position: relative;
+  min-height: 100svh;
+  overflow: hidden;
+  isolation: isolate;
+  color: #171717;
+  background:
+    linear-gradient(135deg, rgba(120, 224, 143, 0.16), transparent 34%),
+    linear-gradient(215deg, rgba(111, 213, 246, 0.18), transparent 38%),
+    linear-gradient(180deg, #f6f8fb 0%, #ffffff 56%, #eef4f7 100%);
+}
+
+.personal-orbit {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.64;
+  background:
+    linear-gradient(90deg, rgba(23, 23, 23, 0.045) 1px, transparent 1px),
+    linear-gradient(rgba(23, 23, 23, 0.04) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.92), transparent 82%);
+}
+
+.personal-topbar {
+  width: min(1120px, calc(100% - 32px));
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 auto;
+  padding: 14px 0;
+}
+
+.personal-brand,
+.personal-topbar a,
+.personal-topbar button {
+  color: #171717;
+  text-decoration: none;
+}
+
+.personal-brand {
+  font-weight: 850;
+  font-size: 20px;
+}
+
+.personal-topbar nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.personal-topbar nav a,
+.personal-topbar nav button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(23, 23, 23, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #242424;
+  font-size: 14px;
+  backdrop-filter: blur(18px);
+}
+
+.personal-topbar nav svg {
+  width: 18px;
+  height: 18px;
+}
+
+.personal-main {
+  width: min(1120px, calc(100% - 32px));
+  display: grid;
+  gap: 22px;
+  margin: 0 auto;
+  padding: 10px 0 64px;
+}
+
+.personal-hero {
+  min-height: calc(100svh - 148px);
+  display: grid;
+  grid-template-columns: minmax(132px, 240px) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(20px, 5vw, 62px);
+}
+
+.personal-avatar {
+  width: min(36vw, 230px);
+  min-width: 132px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 10px solid #171717;
+  border-radius: 40px;
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.48), transparent 40%),
+    var(--personal-accent);
+  color: #171717;
+  box-shadow: 0 28px 80px rgba(23, 23, 23, 0.16);
+  font-size: 72px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.personal-identity {
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.personal-identity > span,
+.personal-panel-copy span {
+  color: #5b6470;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.personal-identity h1 {
+  max-width: 820px;
+  margin: 0;
+  color: #111;
+  font-size: clamp(46px, 9vw, 116px);
+  line-height: 0.92;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
+}
+
+.personal-identity p {
+  max-width: 640px;
+  margin: 0;
+  color: #323840;
+  font-size: 20px;
+  line-height: 1.42;
+}
+
+.personal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.personal-primary,
+.personal-secondary,
+.personal-message-preview button {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font-weight: 800;
+}
+
+.personal-primary,
+.personal-message-preview button {
+  background: #171717;
+  color: #fff;
+}
+
+.personal-secondary {
+  border: 1px solid rgba(23, 23, 23, 0.14);
+  background: #fff;
+  color: #171717;
+}
+
+.personal-primary:hover,
+.personal-secondary:hover,
+.personal-message-preview button:hover,
+.personal-topbar nav button:hover,
+.personal-topbar nav a:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 32px rgba(23, 23, 23, 0.12);
+}
+
+.personal-primary svg,
+.personal-secondary svg,
+.personal-message-preview svg {
+  width: 19px;
+  height: 19px;
+}
+
+.personal-note {
+  max-width: 620px;
+  color: #66707b;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.personal-layerbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(23, 23, 23, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 16px 46px rgba(23, 23, 23, 0.08);
+  backdrop-filter: blur(20px);
+}
+
+.personal-layerbar button {
+  min-width: 0;
+  min-height: 42px;
+  border-radius: 16px;
+  background: transparent;
+  color: #4a535e;
+  font-size: 14px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.personal-layerbar button[aria-selected="true"] {
+  background: #171717;
+  color: #fff;
+}
+
+.personal-panels {
+  min-height: 420px;
+}
+
+.personal-panel {
+  display: none;
+  grid-template-columns: minmax(240px, 0.78fr) minmax(0, 1.22fr);
+  gap: clamp(18px, 4vw, 42px);
+  align-items: start;
+  padding: 44px 0 20px;
+}
+
+.personal-panel.is-active {
+  display: grid;
+  animation: personalPanelIn 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+@keyframes personalPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.personal-panel-copy {
+  display: grid;
+  gap: 12px;
+}
+
+.personal-panel-copy h2 {
+  margin: 0;
+  color: #111;
+  font-size: 34px;
+  line-height: 1.06;
+  letter-spacing: 0;
+}
+
+.personal-panel-copy p {
+  margin: 0;
+  color: #3f4650;
+  font-size: 16px;
+  line-height: 1.52;
+}
+
+.personal-contact-list,
+.personal-feed,
+.personal-reviews,
+.personal-spaces,
+.personal-message-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.personal-contact-list a,
+.personal-contact-list div,
+.personal-post,
+.personal-review,
+.personal-spaces a,
+.personal-message-preview div {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 18px;
+  border: 1px solid rgba(23, 23, 23, 0.1);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.74);
+  color: #171717;
+  text-decoration: none;
+  box-shadow: 0 12px 32px rgba(23, 23, 23, 0.06);
+}
+
+.personal-contact-list span,
+.personal-post small,
+.personal-spaces span,
+.personal-review b,
+.personal-message-preview b {
+  color: #68727e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.personal-contact-list b,
+.personal-post h3 {
+  margin: 0;
+  color: #111;
+  font-size: 20px;
+  line-height: 1.16;
+  overflow-wrap: anywhere;
+}
+
+.personal-post p,
+.personal-review p,
+.personal-spaces p,
+.personal-message-preview p {
+  margin: 0;
+  color: #3e4650;
+  font-size: 15px;
+  line-height: 1.48;
+}
+
+.personal-review div {
+  color: #e36e2d;
+  letter-spacing: 0;
+}
+
+.personal-spaces a.is-active {
+  border-color: rgba(23, 23, 23, 0.44);
+  background: color-mix(in srgb, var(--personal-accent), white 72%);
+}
+
+.personal-message-preview button {
+  justify-self: start;
+  margin-top: 6px;
+}
+
+.personal-loading {
+  min-height: 100svh;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.personal-loading span {
+  color: #66707b;
+}
+
+.personal-loading b {
+  color: #171717;
+  font-size: 28px;
 }
 
 .pair-screen {
@@ -4112,11 +4487,96 @@ button:disabled {
   .chat-bubble {
     max-width: 86%;
   }
+
+  .personal-hero,
+  .personal-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .personal-hero {
+    min-height: auto;
+    padding: 54px 0 24px;
+  }
+
+  .personal-avatar {
+    width: 156px;
+  }
 }
 
 @media (max-width: 680px) {
   body {
     overflow: auto;
+  }
+
+  .personal-topbar,
+  .personal-main {
+    width: min(100% - 20px, 1120px);
+  }
+
+  .personal-topbar {
+    align-items: flex-start;
+  }
+
+  .personal-topbar nav {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .personal-topbar nav a,
+  .personal-topbar nav button {
+    min-height: 34px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .personal-hero {
+    gap: 18px;
+    padding-top: 28px;
+  }
+
+  .personal-avatar {
+    width: 132px;
+    border-width: 7px;
+    border-radius: 28px;
+    font-size: 48px;
+  }
+
+  .personal-identity {
+    gap: 14px;
+  }
+
+  .personal-identity h1 {
+    font-size: 46px;
+    line-height: 0.96;
+  }
+
+  .personal-identity p {
+    font-size: 17px;
+  }
+
+  .personal-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .personal-layerbar {
+    grid-template-columns: repeat(5, minmax(56px, 1fr));
+    overflow-x: auto;
+    border-radius: 18px;
+  }
+
+  .personal-layerbar button {
+    min-height: 38px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .personal-panel {
+    padding-top: 28px;
+  }
+
+  .personal-panel-copy h2 {
+    font-size: 28px;
   }
 
   .shell {

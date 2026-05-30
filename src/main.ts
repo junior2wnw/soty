@@ -29,6 +29,8 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
+import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage } from "./features/personal-space";
+import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
@@ -78,6 +80,11 @@ type BarcodeDetectorLike = {
 };
 
 type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorLike;
+
+type BeforeInstallPromptEvent = Event & {
+  readonly userChoice: Promise<{ readonly outcome: "accepted" | "dismissed"; readonly platform: string }>;
+  prompt: () => Promise<void>;
+};
 
 interface OperatorExportPayload {
   readonly schema?: string;
@@ -321,9 +328,12 @@ const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
+let pendingInstallPrompt: BeforeInstallPromptEvent | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
+  pendingInstallPrompt = event as BeforeInstallPromptEvent;
+  window.dispatchEvent(new CustomEvent("soty-installpromptchange"));
 });
 
 window.addEventListener("message", (event) => {
@@ -337,8 +347,35 @@ window.addEventListener("storage", (event) => {
 });
 
 window.addEventListener("appinstalled", () => {
+  pendingInstallPrompt = null;
   rememberAppRuntime();
+  window.dispatchEvent(new CustomEvent("soty-installpromptchange"));
   void boot();
+});
+
+window.addEventListener("popstate", () => {
+  const route = personalSpaceRouteFromLocation();
+  if (route) {
+    showPersonalSpaceRoute(route);
+    return;
+  }
+  if (document.body.classList.contains("personal-space-mode")) {
+    void boot();
+  }
+});
+
+window.addEventListener("soty-personal-routechange", () => {
+  const route = personalSpaceRouteFromLocation();
+  if (route) {
+    showPersonalSpaceRoute(route);
+  }
+});
+
+window.addEventListener("soty-installpromptchange", () => {
+  const route = personalSpaceRouteFromLocation();
+  if (route && document.body.classList.contains("personal-space-mode")) {
+    showPersonalSpaceRoute(route);
+  }
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -373,6 +410,9 @@ void boot();
 
 async function boot(): Promise<void> {
   bareChatMode = requestedBareChatMode();
+  const personalRoute = personalSpaceRouteFromLocation();
+  setPersonalSpaceMode(Boolean(personalRoute));
+  applyPersonalSpaceManifest(personalRoute);
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
@@ -399,6 +439,11 @@ async function boot(): Promise<void> {
 
   await registerServiceWorker();
   startAppBundleWatcher(true);
+
+  if (personalRoute) {
+    showPersonalSpaceRoute(personalRoute);
+    return;
+  }
 
   const capturedJoin = captureJoinInviteFromLocation();
   if (capturedJoin) {
@@ -662,6 +707,54 @@ function requestedBareChatMode(): boolean {
 
 function bareChatPath(): string {
   return bareChatMode ? "/?pwa=1&bare=1" : "/?pwa=1";
+}
+
+function setPersonalSpaceMode(active: boolean): void {
+  document.body.classList.toggle("personal-space-mode", active);
+}
+
+function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
+  const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+  if (!manifest) {
+    return;
+  }
+  manifest.href = route ? personalSpaceManifestHref(route) : "/manifest.webmanifest";
+}
+
+function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
+  setPersonalSpaceMode(true);
+  applyPersonalSpaceManifest(route);
+  void renderPersonalSpacePage(app, {
+    route,
+    canInstall: () => Boolean(pendingInstallPrompt),
+    install: promptPersonalSpaceInstall,
+    openMessage: openPersonalSpaceMessage,
+    openRuntime: openPersonalSpaceRuntime
+  });
+}
+
+async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult> {
+  if (!pendingInstallPrompt) {
+    return {
+      ok: false,
+      message: "Если кнопка установки не появилась, откройте меню браузера и выберите добавление на экран. На iPhone это пункт Поделиться -> На экран Домой."
+    };
+  }
+  const promptEvent = pendingInstallPrompt;
+  pendingInstallPrompt = null;
+  await promptEvent.prompt();
+  const choice = await promptEvent.userChoice.catch(() => ({ outcome: "dismissed" as const, platform: "" }));
+  return choice.outcome === "accepted"
+    ? { ok: true, message: "Готово. Это пространство теперь ощущается как отдельное приложение." }
+    : { ok: false, message: "Установку можно повторить позже с этой же страницы." };
+}
+
+function openPersonalSpaceMessage(profile: PersonalSpaceProfile): void {
+  window.location.assign(profile.actions.messageUrl || bareChatPath());
+}
+
+function openPersonalSpaceRuntime(profile: PersonalSpaceProfile): void {
+  window.location.assign(profile.actions.runtimeUrl || bareChatPath());
 }
 
 function isInfoRoute(): boolean {

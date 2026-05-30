@@ -5,6 +5,7 @@ import { attachAgentRelay } from "./agent-relay.js";
 import { attachFrontendCapabilities } from "./frontend-capabilities.js";
 import { attachLegal } from "./legal.js";
 import { attachPayments } from "./payments.js";
+import { attachSpaces } from "./spaces.js";
 
 export function createHttpApp(distDir, { dataDir } = {}) {
   const app = express();
@@ -58,6 +59,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   app.get("/health", (_req, res) => res.json({ ok: true }));
   attachLegal(app);
   attachPayments(app);
+  attachSpaces(app);
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });
   attachFrontendCapabilities(app, { distDir });

@@ -1,0 +1,542 @@
+import { icon } from "../icons";
+
+export type PersonalSpaceRoute = {
+  readonly handle: string;
+  readonly slug: string;
+};
+
+export type PersonalSpaceInstallResult = {
+  readonly ok: boolean;
+  readonly message: string;
+};
+
+export type PersonalSpacePageOptions = {
+  readonly route: PersonalSpaceRoute;
+  readonly canInstall: () => boolean;
+  readonly install: () => Promise<PersonalSpaceInstallResult>;
+  readonly openMessage: (profile: PersonalSpaceProfile) => void;
+  readonly openRuntime: (profile: PersonalSpaceProfile) => void;
+};
+
+type PersonalSpaceContact = {
+  readonly label: string;
+  readonly value: string;
+  readonly href?: string;
+};
+
+type PersonalSpacePost = {
+  readonly id: string;
+  readonly title: string;
+  readonly text: string;
+  readonly meta: string;
+};
+
+type PersonalSpaceReview = {
+  readonly id: string;
+  readonly author: string;
+  readonly text: string;
+  readonly rating: number;
+};
+
+type PersonalSpaceLink = {
+  readonly slug: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly href: string;
+  readonly active: boolean;
+};
+
+export type PersonalSpaceProfile = {
+  readonly kind: "person" | "space";
+  readonly handle: string;
+  readonly slug: string;
+  readonly url: string;
+  readonly displayName: string;
+  readonly shortName: string;
+  readonly title: string;
+  readonly headline: string;
+  readonly about: string;
+  readonly accent: string;
+  readonly contacts: readonly PersonalSpaceContact[];
+  readonly posts: readonly PersonalSpacePost[];
+  readonly reviews: readonly PersonalSpaceReview[];
+  readonly spaces: readonly PersonalSpaceLink[];
+  readonly actions: {
+    readonly messageUrl: string;
+    readonly runtimeUrl: string;
+  };
+};
+
+const fallbackProfile: PersonalSpaceProfile = {
+  kind: "person",
+  handle: "guest",
+  slug: "",
+  url: "/@guest",
+  displayName: "Соты",
+  shortName: "Соты",
+  title: "личное пространство",
+  headline: "визитка, личное место и приватная сота в одном простом экране",
+  about: "Сначала QR открывает понятную карточку. Потом она растет в личное место, отзывы, сообщения и большое пространство.",
+  accent: "#78e08f",
+  contacts: [],
+  posts: [],
+  reviews: [],
+  spaces: [],
+  actions: {
+    messageUrl: "/?pwa=1&bare=1",
+    runtimeUrl: "/?pwa=1"
+  }
+};
+
+const layerLabels = [
+  ["card", "Визитка"],
+  ["personal", "Личное"],
+  ["reviews", "Отзывы"],
+  ["messages", "Сообщения"],
+  ["place", "Место"]
+] as const;
+
+type PersonalSpaceLayer = typeof layerLabels[number][0];
+
+export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
+  const parts = location.pathname.split("/").filter(Boolean);
+  const first = parts[0] || "";
+  if (!first.startsWith("@")) {
+    return null;
+  }
+  const handle = cleanRoutePart(first.slice(1));
+  if (!handle) {
+    return null;
+  }
+  return {
+    handle,
+    slug: cleanRoutePart(parts[1] || "")
+  };
+}
+
+export function personalSpaceManifestHref(route: PersonalSpaceRoute): string {
+  const handle = encodeURIComponent(route.handle);
+  return route.slug
+    ? `/manifest/space/${handle}/${encodeURIComponent(route.slug)}.json`
+    : `/manifest/space/${handle}.json`;
+}
+
+export async function renderPersonalSpacePage(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
+  root.innerHTML = renderLoading(options.route);
+  const profile = await loadPersonalSpaceProfile(options.route);
+  const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "card";
+  root.innerHTML = renderPage(profile, activeLayer, options.canInstall());
+  bindPersonalSpace(root, profile, options);
+}
+
+async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
+  const handle = encodeURIComponent(route.handle);
+  const url = route.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}`
+    : `/api/spaces/${handle}`;
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      return fallbackFor(route);
+    }
+    return normalizeProfile(await response.json(), route);
+  } catch {
+    return fallbackFor(route);
+  }
+}
+
+function renderLoading(route: PersonalSpaceRoute): string {
+  return `
+    <section class="personal-space-shell is-loading">
+      <div class="personal-orbit"></div>
+      <main class="personal-loading">
+        <span>@${escapeHtml(route.handle)}</span>
+        <b>Открываю пространство</b>
+      </main>
+    </section>
+  `;
+}
+
+function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean): string {
+  const initialsText = initials(profile.shortName || profile.displayName);
+  return `
+    <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
+      <div class="personal-orbit"></div>
+      <header class="personal-topbar">
+        <a href="/" class="personal-brand">соты</a>
+        <nav aria-label="пространство">
+          <a href="${escapeAttr(profile.url)}">${escapeHtml(profile.kind === "space" ? "пространство" : "профиль")}</a>
+          <button type="button" data-action="runtime">${icon("hexagon")} Сота</button>
+        </nav>
+      </header>
+      <main class="personal-main">
+        <section class="personal-hero" aria-label="визитная карточка">
+          <div class="personal-avatar" aria-hidden="true">${escapeHtml(initialsText)}</div>
+          <div class="personal-identity">
+            <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
+            <h1>${escapeHtml(profile.displayName)}</h1>
+            <p>${escapeHtml(profile.headline)}</p>
+            <div class="personal-actions">
+              <button class="personal-primary" type="button" data-action="message">${icon("mail")} Написать</button>
+              <button class="personal-secondary" type="button" data-action="install">${icon("install")} ${canInstall ? "Установить" : "Как установить"}</button>
+            </div>
+            <div class="personal-note" data-install-note>Личная страница открывается из QR как визитка, а дальше растет в пространство.</div>
+          </div>
+        </section>
+        <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
+          ${layerLabels.map(([id, label]) => `
+            <button type="button" role="tab" data-layer="${id}" aria-selected="${id === activeLayer ? "true" : "false"}">
+              ${escapeHtml(label)}
+            </button>
+          `).join("")}
+        </div>
+        <section class="personal-panels">
+          ${renderCardPanel(profile)}
+          ${renderPersonalPanel(profile)}
+          ${renderReviewsPanel(profile)}
+          ${renderMessagesPanel(profile)}
+          ${renderPlacePanel(profile)}
+        </section>
+      </main>
+    </section>
+  `;
+}
+
+function renderCardPanel(profile: PersonalSpaceProfile): string {
+  return `
+    <article class="personal-panel is-active" data-panel="card">
+      <div class="personal-panel-copy">
+        <span>первое касание</span>
+        <h2>Сначала просто понятно, кто перед тобой.</h2>
+        <p>${escapeHtml(profile.about)}</p>
+      </div>
+      <div class="personal-contact-list">
+        ${profile.contacts.map((contact) => `
+          ${contact.href ? `<a href="${escapeAttr(contact.href)}">` : "<div>"}
+            <span>${escapeHtml(contact.label)}</span>
+            <b>${escapeHtml(contact.value)}</b>
+          ${contact.href ? "</a>" : "</div>"}
+        `).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderPersonalPanel(profile: PersonalSpaceProfile): string {
+  return `
+    <article class="personal-panel" data-panel="personal">
+      <div class="personal-panel-copy">
+        <span>личное</span>
+        <h2>Записи появляются только когда человеку есть что показать.</h2>
+      </div>
+      <div class="personal-feed">
+        ${profile.posts.map((post) => `
+          <section class="personal-post">
+            <small>${escapeHtml(post.meta)}</small>
+            <h3>${escapeHtml(post.title)}</h3>
+            <p>${escapeHtml(post.text)}</p>
+          </section>
+        `).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderReviewsPanel(profile: PersonalSpaceProfile): string {
+  return `
+    <article class="personal-panel" data-panel="reviews">
+      <div class="personal-panel-copy">
+        <span>доверие</span>
+        <h2>Отзывы живут рядом с визиткой, а не где-то в чужом сервисе.</h2>
+      </div>
+      <div class="personal-reviews">
+        ${profile.reviews.map((review) => `
+          <section class="personal-review">
+            <div>${"★".repeat(Math.max(1, Math.min(5, review.rating)))}</div>
+            <p>${escapeHtml(review.text)}</p>
+            <b>${escapeHtml(review.author)}</b>
+          </section>
+        `).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function renderMessagesPanel(profile: PersonalSpaceProfile): string {
+  return `
+    <article class="personal-panel" data-panel="messages">
+      <div class="personal-panel-copy">
+        <span>личные сообщения</span>
+        <h2>Кнопка "Написать" открывает простую личку, а под ней уже работает сота.</h2>
+        <p>Файлы, доступы, агент и мини-приложения не торчат в визитке. Они появляются в диалоге, когда действительно нужны.</p>
+      </div>
+      <div class="personal-message-preview">
+        <div><b>${escapeHtml(profile.shortName)}</b><p>Здравствуйте. Чем могу помочь?</p></div>
+        <div><b>Вы</b><p>Хочу написать лично и при необходимости отправить файл.</p></div>
+        <button type="button" data-action="message">${icon("send")} Открыть сообщения</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderPlacePanel(profile: PersonalSpaceProfile): string {
+  return `
+    <article class="personal-panel" data-panel="place">
+      <div class="personal-panel-copy">
+        <span>большое место</span>
+        <h2>Из одной страницы можно вырастить магазин, клуб, сервис или команду.</h2>
+      </div>
+      <div class="personal-spaces">
+        ${profile.spaces.map((space) => `
+          <a href="${escapeAttr(space.href)}" data-space-link class="${space.active ? "is-active" : ""}">
+            <span>${escapeHtml(space.title)}</span>
+            <p>${escapeHtml(space.summary)}</p>
+          </a>
+        `).join("")}
+      </div>
+    </article>
+  `;
+}
+
+function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const layer = button.dataset.layer as PersonalSpaceLayer | undefined;
+      if (layer) {
+        setActiveLayer(root, layer);
+      }
+    });
+  });
+  root.querySelectorAll<HTMLElement>("[data-action='message']").forEach((node) => {
+    node.addEventListener("click", () => options.openMessage(profile));
+  });
+  root.querySelectorAll<HTMLElement>("[data-action='runtime']").forEach((node) => {
+    node.addEventListener("click", () => options.openRuntime(profile));
+  });
+  root.querySelectorAll<HTMLButtonElement>("[data-action='install']").forEach((button) => {
+    button.addEventListener("click", () => {
+      void installPersonalSpace(root, button, options);
+    });
+  });
+  root.querySelectorAll<HTMLAnchorElement>("[data-space-link]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      window.history.pushState({}, "", link.href);
+      window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+    });
+  });
+}
+
+function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
+  root.querySelector<HTMLElement>(".personal-space-shell")?.setAttribute("data-active-layer", layer);
+  root.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => {
+    button.setAttribute("aria-selected", button.dataset.layer === layer ? "true" : "false");
+  });
+  root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.panel === layer);
+  });
+}
+
+async function installPersonalSpace(root: HTMLElement, button: HTMLButtonElement, options: PersonalSpacePageOptions): Promise<void> {
+  const note = root.querySelector<HTMLElement>("[data-install-note]");
+  button.disabled = true;
+  const result = await options.install();
+  if (note) {
+    note.textContent = result.message;
+  }
+  button.disabled = false;
+}
+
+function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSpaceProfile {
+  const record = isRecord(value) ? value : {};
+  const actions = isRecord(record.actions) ? record.actions : {};
+  return {
+    kind: record.kind === "space" ? "space" : "person",
+    handle: cleanText(record.handle, 64) || route.handle,
+    slug: cleanText(record.slug, 64) || route.slug,
+    url: cleanUrlPath(record.url) || routeUrl(route),
+    displayName: cleanText(record.displayName, 100) || route.handle,
+    shortName: cleanText(record.shortName, 32) || route.handle,
+    title: cleanText(record.title, 80) || fallbackProfile.title,
+    headline: cleanText(record.headline, 180) || fallbackProfile.headline,
+    about: cleanText(record.about, 420) || fallbackProfile.about,
+    accent: cleanColor(record.accent) || fallbackProfile.accent,
+    contacts: list(record.contacts).map(normalizeContact).filter(isContact).slice(0, 6),
+    posts: list(record.posts).map(normalizePost).filter(isPost).slice(0, 8),
+    reviews: list(record.reviews).map(normalizeReview).filter(isReview).slice(0, 8),
+    spaces: list(record.spaces).map(normalizeSpaceLink).filter(isSpaceLink).slice(0, 12),
+    actions: {
+      messageUrl: cleanUrlPath(actions.messageUrl) || `/?pwa=1&bare=1&to=${encodeURIComponent(`@${route.handle}`)}`,
+      runtimeUrl: cleanUrlPath(actions.runtimeUrl) || "/?pwa=1"
+    }
+  };
+}
+
+function normalizeContact(value: unknown): PersonalSpaceContact | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const label = cleanText(value.label, 32);
+  const contactValue = cleanText(value.value, 120);
+  if (!label || !contactValue) {
+    return null;
+  }
+  return {
+    label,
+    value: contactValue,
+    ...(cleanUrlPath(value.href) ? { href: cleanUrlPath(value.href) } : {})
+  };
+}
+
+function normalizePost(value: unknown): PersonalSpacePost | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const title = cleanText(value.title, 120);
+  const text = cleanText(value.text, 420);
+  if (!title || !text) {
+    return null;
+  }
+  return {
+    id: cleanText(value.id, 80) || title,
+    title,
+    text,
+    meta: cleanText(value.meta, 80)
+  };
+}
+
+function normalizeReview(value: unknown): PersonalSpaceReview | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = cleanText(value.text, 320);
+  if (!text) {
+    return null;
+  }
+  return {
+    id: cleanText(value.id, 80) || text,
+    author: cleanText(value.author, 80) || "Гость",
+    text,
+    rating: Number.isFinite(value.rating) ? Number(value.rating) : 5
+  };
+}
+
+function normalizeSpaceLink(value: unknown): PersonalSpaceLink | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const slug = cleanText(value.slug, 64);
+  const title = cleanText(value.title, 80);
+  if (!slug || !title) {
+    return null;
+  }
+  return {
+    slug,
+    title,
+    summary: cleanText(value.summary, 140),
+    href: cleanUrlPath(value.href) || "#",
+    active: value.active === true
+  };
+}
+
+function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
+  return {
+    ...fallbackProfile,
+    handle: route.handle,
+    slug: route.slug,
+    url: routeUrl(route),
+    displayName: route.slug ? `${route.slug} · ${route.handle}` : route.handle,
+    shortName: route.slug || route.handle,
+    actions: {
+      messageUrl: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${route.handle}`)}`,
+      runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
+    }
+  };
+}
+
+function routeUrl(route: PersonalSpaceRoute): string {
+  return route.slug ? `/@${route.handle}/${route.slug}` : `/@${route.handle}`;
+}
+
+function cleanRoutePart(value: string): string {
+  try {
+    return decodeURIComponent(value)
+      .normalize("NFKC")
+      .replace(/^@/u, "")
+      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 64)
+      .toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function cleanText(value: unknown, max: number): string {
+  return String(typeof value === "string" || typeof value === "number" ? value : "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, max);
+}
+
+function cleanUrlPath(value: unknown): string {
+  const text = cleanText(value, 240);
+  if (!text) {
+    return "";
+  }
+  if (/^(?:\/|https?:\/\/)/u.test(text) && !/[<>"']/u.test(text)) {
+    return text;
+  }
+  return "";
+}
+
+function cleanColor(value: unknown): string {
+  const text = cleanText(value, 24);
+  return /^#[0-9a-f]{6}$/iu.test(text) ? text : "";
+}
+
+function list(value: unknown): readonly unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isContact(value: PersonalSpaceContact | null): value is PersonalSpaceContact {
+  return Boolean(value);
+}
+
+function isPost(value: PersonalSpacePost | null): value is PersonalSpacePost {
+  return Boolean(value);
+}
+
+function isReview(value: PersonalSpaceReview | null): value is PersonalSpaceReview {
+  return Boolean(value);
+}
+
+function isSpaceLink(value: PersonalSpaceLink | null): value is PersonalSpaceLink {
+  return Boolean(value);
+}
+
+function initials(value: string): string {
+  const parts = value.trim().split(/\s+/u).filter(Boolean);
+  const source = parts.length > 1 ? `${parts[0]?.[0] || ""}${parts[1]?.[0] || ""}` : value.slice(0, 2);
+  return source.toLocaleUpperCase("ru-RU") || "С";
+}
+
+function escapeAttr(value: string): string {
+  return escapeHtml(value).replace(/"/gu, "&quot;");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;")
+    .replace(/"/gu, "&quot;")
+    .replace(/'/gu, "&#39;");
+}
