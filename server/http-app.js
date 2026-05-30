@@ -3,6 +3,7 @@ import path from "node:path";
 import { attachAgentLearning } from "./agent-learning.js";
 import { attachAgentRelay } from "./agent-relay.js";
 import { attachFrontendCapabilities } from "./frontend-capabilities.js";
+import { attachLegal } from "./legal.js";
 import { attachPayments } from "./payments.js";
 
 export function createHttpApp(distDir, { dataDir } = {}) {
@@ -55,6 +56,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     next();
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  attachLegal(app);
   attachPayments(app);
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });

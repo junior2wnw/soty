@@ -20,6 +20,7 @@ import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendi
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
+import { bindLegalPage } from "./features/legal";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
@@ -679,6 +680,7 @@ function openInfoPage(): void {
 
 function renderInfoPage(): void {
   app.innerHTML = infoPageHtml(bareChatPath(), paymentPagePath);
+  void bindLegalPage(app);
 }
 
 function renderPaymentPage(): void {

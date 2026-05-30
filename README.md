@@ -76,6 +76,21 @@ The public payment page is `/pay`. It is provider-neutral: Soty shows the client
 Runtime environment:
 
 ```bash
+SOTY_LEGAL_FORM=self_employed # self_employed | ip | company | individual
+SOTY_LEGAL_EXECUTOR_NAME="ФИО или юридическое название"
+SOTY_LEGAL_INN=...
+SOTY_LEGAL_OGRN=... # для юрлица
+SOTY_LEGAL_OGRNIP=... # для ИП
+SOTY_LEGAL_ADDRESS="публичный адрес для претензий"
+SOTY_LEGAL_EMAIL=...
+SOTY_LEGAL_PHONE=...
+SOTY_LEGAL_TAX_REGIME="НПД / УСН / ОСН"
+SOTY_LEGAL_RKN_NOTICE_URL=https://pd.rkn.gov.ru/...
+SOTY_LEGAL_RKN_OPERATOR_NUMBER=...
+SOTY_LEGAL_DATA_REGION="Россия, регион и/или дата-центр"
+SOTY_LEGAL_PROCESSORS='[{"name":"ЮKassa","role":"платежи","country":"Россия"},{"name":"хостинг","role":"инфраструктура","country":"Россия"}]'
+SOTY_LEGAL_VERSION=1.0
+SOTY_LEGAL_EFFECTIVE_DATE=2026-05-29
 SOTY_PAYMENT_URL=https://...
 SOTY_PAYMENT_PROVIDER_LABEL=ЮKassa
 SOTY_PAYMENT_CONTACT_URL=https://...
@@ -83,7 +98,7 @@ SOTY_PAYMENT_CURRENCY=RUB
 SOTY_PAYMENT_PLANS='[{"id":"task","title":"Разовая задача","description":"Диагностика и настройка","amount":3000,"currency":"RUB"}]'
 ```
 
-If `SOTY_PAYMENT_URL` is absent, `/pay` stays usable as a manual agreement page and offers the contact link when `SOTY_PAYMENT_CONTACT_URL` is set.
+If `SOTY_PAYMENT_URL` is absent, `/pay` stays usable as a manual agreement page and offers the contact link when `SOTY_PAYMENT_CONTACT_URL` is set. If `SOTY_PAYMENT_URL` is present but required `SOTY_LEGAL_*` fields are incomplete, the server keeps payment redirects disabled and shows the legal checklist on `/info`.
 
 Before enabling payment acceptance in Russia, fill and verify the public legal surface on `/info`:
 

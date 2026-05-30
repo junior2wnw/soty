@@ -1,4 +1,5 @@
 import express from "express";
+import { isLegalPaymentReady } from "./legal.js";
 
 const defaultPaymentPlans = Object.freeze([
   {
@@ -67,22 +68,28 @@ export function attachPayments(app) {
 function publicPaymentConfig() {
   const paymentUrl = cleanExternalUrl(process.env.SOTY_PAYMENT_URL || "");
   const contactUrl = cleanExternalUrl(process.env.SOTY_PAYMENT_CONTACT_URL || "");
+  const legalReady = isLegalPaymentReady();
   const providerLabel = cleanHumanLabel(
     process.env.SOTY_PAYMENT_PROVIDER_LABEL
     || process.env.SOTY_PAYMENT_PROVIDER
     || (paymentUrl ? "платежный провайдер" : "оплата")
   );
   const currency = cleanCurrency(process.env.SOTY_PAYMENT_CURRENCY || "RUB");
+  const enabled = Boolean(paymentUrl) && legalReady;
 
   return {
-    enabled: Boolean(paymentUrl),
+    enabled,
+    paymentConfigured: Boolean(paymentUrl),
+    legalReady,
     providerLabel,
     paymentUrl,
     contactUrl,
     currency,
     plans: paymentPlans(currency),
     policy: {
-      text: "Сначала задача и ожидаемый результат, потом оплата через внешнюю защищенную страницу провайдера.",
+      text: enabled
+        ? "Сначала задача и ожидаемый результат, потом оплата через внешнюю защищенную страницу провайдера."
+        : "Оплата открывается после публикации реквизитов, оферты, политики ПДн и фискального маршрута.",
       refunds: "Если работа не началась или объем изменился, оплату можно отменить или согласовать заново."
     }
   };
