@@ -1,3 +1,4 @@
+import QRCode from "qrcode";
 import { icon } from "../icons";
 
 export type PersonalSpaceRoute = {
@@ -15,7 +16,7 @@ export type PersonalSpacePageOptions = {
   readonly canInstall: () => boolean;
   readonly install: () => Promise<PersonalSpaceInstallResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
-  readonly openMessage: (profile: PersonalSpaceProfile) => void;
+  readonly openMessage: (profile: PersonalSpaceProfile, fromHandle: string) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile) => void;
 };
 
@@ -102,6 +103,7 @@ const layerLabels = [
 ] as const;
 
 type PersonalSpaceLayer = typeof layerLabels[number][0];
+const localHandleKey = "soty:personal-handle:v1";
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
   const parts = location.pathname.split("/").filter(Boolean);
@@ -130,7 +132,8 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
   const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "card";
-  root.innerHTML = renderPage(profile, activeLayer, options.canInstall());
+  const localHandle = loadLocalHandle();
+  root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), localHandle);
   bindPersonalSpace(root, profile, options);
 }
 
@@ -189,7 +192,8 @@ function renderLoading(route: PersonalSpaceRoute): string {
   `;
 }
 
-function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean): string {
+function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean, localHandle: string): string {
+  const ownSpace = isOwnProfile(profile, localHandle);
   const initialsText = initials(profile.shortName || profile.displayName);
   const avatar = profile.photoUrl
     ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
@@ -200,26 +204,30 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
         <nav aria-label="пространство">
-          <a href="${escapeAttr(profile.url)}">${escapeHtml(profile.kind === "space" ? "пространство" : "профиль")}</a>
-          <button type="button" data-action="runtime">${icon("hexagon")} Сота</button>
+          <button type="button" data-action="self">${localHandle ? "Я" : "Создать Я"}</button>
         </nav>
       </header>
       <main class="personal-main">
         <section class="personal-hero" aria-label="визитная карточка">
-          <button class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" type="button" data-action="photo" aria-label="Сделать фото профиля">
+          ${ownSpace ? `<button class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" type="button" data-action="photo" aria-label="Сделать фото профиля">` : `<div class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" aria-hidden="true">`}
             ${avatar}
-            <span>${icon("scan")} Фото</span>
-          </button>
-          <input data-profile-photo type="file" accept="image/*" capture="user" hidden />
+            ${ownSpace ? `<span>${icon("scan")} Фото</span>` : ""}
+          ${ownSpace ? "</button>" : "</div>"}
+          ${ownSpace ? `<input data-profile-photo type="file" accept="image/*" capture="user" hidden />` : ""}
           <div class="personal-identity">
             <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(profile.headline)}</p>
             <div class="personal-actions">
-              <button class="personal-primary" type="button" data-action="message">${icon("mail")} Написать</button>
-              <button class="personal-secondary" type="button" data-action="install">${icon("install")} ${canInstall ? "Установить" : "Как установить"}</button>
+              ${ownSpace
+                ? `<button class="personal-primary" type="button" data-action="share">${icon("qr")} Поделиться</button>
+                   <button class="personal-secondary" type="button" data-action="install">${icon("install")} ${canInstall ? "Установить" : "Как установить"}</button>`
+                : `<button class="personal-primary" type="button" data-action="install">${icon("install")} Сохранить контакт</button>
+                   <button class="personal-secondary" type="button" data-action="message">${icon("mail")} Написать</button>`}
             </div>
-            <div class="personal-note" data-install-note>Личная страница открывается из QR как визитка, а дальше растет в пространство.</div>
+            <div class="personal-note" data-install-note>${ownSpace
+              ? "Поделитесь QR или ссылкой. Фото профиля станет иконкой PWA."
+              : "Сохраните контакт: страница станет отдельной PWA, а переписка останется рядом."}</div>
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
@@ -347,10 +355,42 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     });
   });
   root.querySelectorAll<HTMLElement>("[data-action='message']").forEach((node) => {
-    node.addEventListener("click", () => options.openMessage(profile));
+    node.addEventListener("click", () => {
+      const handle = loadLocalHandle();
+      if (handle) {
+        options.openMessage(profile, handle);
+        return;
+      }
+      showNicknameSheet(root, {
+        title: "Как вас подписать?",
+        description: "Только ник. Без анкеты.",
+        action: "Написать",
+        onDone: (nextHandle) => options.openMessage(profile, nextHandle)
+      });
+    });
   });
   root.querySelectorAll<HTMLElement>("[data-action='runtime']").forEach((node) => {
     node.addEventListener("click", () => options.openRuntime(profile));
+  });
+  root.querySelectorAll<HTMLElement>("[data-action='self']").forEach((node) => {
+    node.addEventListener("click", () => {
+      const handle = loadLocalHandle();
+      if (handle) {
+        openPersonalRoute(handle);
+        return;
+      }
+      showNicknameSheet(root, {
+        title: "Ваш ник",
+        description: "Он станет вашей ссылкой и QR.",
+        action: "Создать Я",
+        onDone: openPersonalRoute
+      });
+    });
+  });
+  root.querySelectorAll<HTMLElement>("[data-action='share']").forEach((node) => {
+    node.addEventListener("click", () => {
+      void showShareSheet(root, profile);
+    });
   });
   const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
   root.querySelector<HTMLElement>("[data-action='photo']")?.addEventListener("click", () => {
@@ -375,6 +415,109 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
     });
   });
+}
+
+function showNicknameSheet(
+  root: HTMLElement,
+  options: { readonly title: string; readonly description: string; readonly action: string; readonly onDone: (handle: string) => void }
+): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="${escapeAttr(options.title)}">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>${escapeHtml(options.title)}</h2>
+      <p>${escapeHtml(options.description)}</p>
+      <form data-nick-form>
+        <input name="handle" autocomplete="nickname" inputmode="text" maxlength="32" placeholder="например, anna" />
+        <button type="submit">${escapeHtml(options.action)}</button>
+      </form>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const input = overlay.querySelector<HTMLInputElement>("input[name='handle']");
+  input?.focus();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-nick-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const handle = cleanRoutePart(input?.value || "");
+    const error = overlay.querySelector<HTMLElement>("[data-error]");
+    if (!handle) {
+      if (error) {
+        error.textContent = "Введите короткий ник.";
+      }
+      return;
+    }
+    saveLocalHandle(handle);
+    overlay.remove();
+    options.onDone(handle);
+  });
+}
+
+async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile): Promise<void> {
+  closePersonalOverlay(root);
+  const shareUrl = new URL(profile.url, window.location.origin).toString();
+  const qr = await QRCode.toDataURL(shareUrl, {
+    margin: 1,
+    scale: 8,
+    color: {
+      dark: "#171717",
+      light: "#ffffff"
+    }
+  });
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-share-sheet" role="dialog" aria-modal="true" aria-label="Поделиться">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>Поделиться</h2>
+      <p>Покажите QR или отправьте ссылку.</p>
+      <img src="${escapeAttr(qr)}" alt="QR-код ${escapeAttr(profile.displayName)}" />
+      <div class="personal-share-actions">
+        <button type="button" data-copy>${icon("copy")} Скопировать</button>
+        <button type="button" data-native>${icon("send")} Отправить</button>
+      </div>
+      <small data-share-note>${escapeHtml(shareUrl)}</small>
+    </section>
+  `;
+  root.append(overlay);
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  overlay.querySelector<HTMLElement>("[data-copy]")?.addEventListener("click", () => {
+    void navigator.clipboard?.writeText(shareUrl).then(() => {
+      const note = overlay.querySelector<HTMLElement>("[data-share-note]");
+      if (note) {
+        note.textContent = "Ссылка скопирована.";
+      }
+    });
+  });
+  overlay.querySelector<HTMLElement>("[data-native]")?.addEventListener("click", () => {
+    if (navigator.share) {
+      void navigator.share({ title: profile.displayName, url: shareUrl }).catch(() => undefined);
+      return;
+    }
+    void navigator.clipboard?.writeText(shareUrl);
+  });
+}
+
+function closePersonalOverlay(root: HTMLElement): void {
+  root.querySelector(".personal-overlay")?.remove();
+}
+
+function openPersonalRoute(handle: string): void {
+  window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
+  window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
 }
 
 async function updateProfilePhoto(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
@@ -525,6 +668,26 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
       runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
     }
   };
+}
+
+function isOwnProfile(profile: PersonalSpaceProfile, localHandle: string): boolean {
+  return Boolean(localHandle) && profile.handle === localHandle;
+}
+
+function loadLocalHandle(): string {
+  try {
+    return cleanRoutePart(window.localStorage.getItem(localHandleKey) || "");
+  } catch {
+    return "";
+  }
+}
+
+function saveLocalHandle(handle: string): void {
+  try {
+    window.localStorage.setItem(localHandleKey, handle);
+  } catch {
+    // Local storage is a convenience only; the current action can continue.
+  }
 }
 
 function routeUrl(route: PersonalSpaceRoute): string {

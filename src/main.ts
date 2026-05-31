@@ -750,8 +750,14 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
     : { ok: false, message: "Установку можно повторить позже с этой же страницы." };
 }
 
-function openPersonalSpaceMessage(profile: PersonalSpaceProfile): void {
-  window.location.assign(profile.actions.messageUrl || bareChatPath());
+function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: string): void {
+  const target = profile.actions.messageUrl || bareChatPath();
+  const url = new URL(target, window.location.origin);
+  const handle = fromHandle.replace(/^@/u, "").trim();
+  if (handle) {
+    url.searchParams.set("from", `@${handle}`);
+  }
+  window.location.assign(`${url.pathname}${url.search}${url.hash}`);
 }
 
 function openPersonalSpaceRuntime(profile: PersonalSpaceProfile): void {
