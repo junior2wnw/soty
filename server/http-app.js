@@ -59,7 +59,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   app.get("/health", (_req, res) => res.json({ ok: true }));
   attachLegal(app);
   attachPayments(app);
-  attachSpaces(app);
+  attachSpaces(app, { dataDir });
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });
   attachFrontendCapabilities(app, { distDir });

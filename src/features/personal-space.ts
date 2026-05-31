@@ -14,6 +14,7 @@ export type PersonalSpacePageOptions = {
   readonly route: PersonalSpaceRoute;
   readonly canInstall: () => boolean;
   readonly install: () => Promise<PersonalSpaceInstallResult>;
+  readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly openMessage: (profile: PersonalSpaceProfile) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile) => void;
 };
@@ -53,6 +54,8 @@ export type PersonalSpaceProfile = {
   readonly url: string;
   readonly displayName: string;
   readonly shortName: string;
+  readonly accountName: string;
+  readonly photoUrl: string;
   readonly title: string;
   readonly headline: string;
   readonly about: string;
@@ -74,6 +77,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   url: "/@guest",
   displayName: "Соты",
   shortName: "Соты",
+  accountName: "Соты",
+  photoUrl: "",
   title: "личное пространство",
   headline: "визитка, личное место и приватная сота в одном простом экране",
   about: "Сначала QR открывает понятную карточку. Потом она растет в личное место, отзывы, сообщения и большое пространство.",
@@ -129,6 +134,30 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   bindPersonalSpace(root, profile, options);
 }
 
+export async function uploadPersonalSpacePhoto(route: PersonalSpaceRoute, file: File): Promise<string> {
+  const dataUrl = await fileToAvatarDataUrl(file);
+  const handle = encodeURIComponent(route.handle);
+  const url = route.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/photo`
+    : `/api/spaces/${handle}/photo`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({ dataUrl })
+  });
+  if (!response.ok) {
+    throw new Error("profile photo upload failed");
+  }
+  const payload = await response.json() as unknown;
+  if (!isRecord(payload) || payload.ok !== true) {
+    throw new Error("profile photo upload rejected");
+  }
+  return cleanUrlPath(payload.photoUrl);
+}
+
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
   const handle = encodeURIComponent(route.handle);
   const url = route.slug
@@ -162,6 +191,9 @@ function renderLoading(route: PersonalSpaceRoute): string {
 
 function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean): string {
   const initialsText = initials(profile.shortName || profile.displayName);
+  const avatar = profile.photoUrl
+    ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
+    : escapeHtml(initialsText);
   return `
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
       <div class="personal-orbit"></div>
@@ -174,7 +206,11 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
       </header>
       <main class="personal-main">
         <section class="personal-hero" aria-label="визитная карточка">
-          <div class="personal-avatar" aria-hidden="true">${escapeHtml(initialsText)}</div>
+          <button class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" type="button" data-action="photo" aria-label="Сделать фото профиля">
+            ${avatar}
+            <span>${icon("scan")} Фото</span>
+          </button>
+          <input data-profile-photo type="file" accept="image/*" capture="user" hidden />
           <div class="personal-identity">
             <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
             <h1>${escapeHtml(profile.displayName)}</h1>
@@ -316,6 +352,17 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   root.querySelectorAll<HTMLElement>("[data-action='runtime']").forEach((node) => {
     node.addEventListener("click", () => options.openRuntime(profile));
   });
+  const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
+  root.querySelector<HTMLElement>("[data-action='photo']")?.addEventListener("click", () => {
+    photoInput?.click();
+  });
+  photoInput?.addEventListener("change", () => {
+    const file = photoInput.files?.[0];
+    if (file) {
+      void updateProfilePhoto(root, file, options);
+    }
+    photoInput.value = "";
+  });
   root.querySelectorAll<HTMLButtonElement>("[data-action='install']").forEach((button) => {
     button.addEventListener("click", () => {
       void installPersonalSpace(root, button, options);
@@ -328,6 +375,25 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
     });
   });
+}
+
+async function updateProfilePhoto(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
+  const note = root.querySelector<HTMLElement>("[data-install-note]");
+  if (note) {
+    note.textContent = "Готовлю фото профиля...";
+  }
+  try {
+    await options.uploadPhoto(options.route, file);
+    await renderPersonalSpacePage(root, options);
+    const nextNote = root.querySelector<HTMLElement>("[data-install-note]");
+    if (nextNote) {
+      nextNote.textContent = "Фото сохранено. Оно станет иконкой PWA при установке или переустановке.";
+    }
+  } catch {
+    if (note) {
+      note.textContent = "Не получилось сохранить фото. Попробуйте другой снимок.";
+    }
+  }
 }
 
 function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
@@ -360,6 +426,8 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     url: cleanUrlPath(record.url) || routeUrl(route),
     displayName: cleanText(record.displayName, 100) || route.handle,
     shortName: cleanText(record.shortName, 32) || route.handle,
+    accountName: cleanText(record.accountName, 100) || cleanText(record.displayName, 100) || route.handle,
+    photoUrl: cleanUrlPath(record.photoUrl),
     title: cleanText(record.title, 80) || fallbackProfile.title,
     headline: cleanText(record.headline, 180) || fallbackProfile.headline,
     about: cleanText(record.about, 420) || fallbackProfile.about,
@@ -450,6 +518,8 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
     url: routeUrl(route),
     displayName: route.slug ? `${route.slug} · ${route.handle}` : route.handle,
     shortName: route.slug || route.handle,
+    accountName: route.handle,
+    photoUrl: "",
     actions: {
       messageUrl: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${route.handle}`)}`,
       runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
@@ -500,6 +570,42 @@ function cleanColor(value: unknown): string {
 
 function list(value: unknown): readonly unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+async function fileToAvatarDataUrl(file: File): Promise<string> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error("not an image");
+  }
+  const imageUrl = URL.createObjectURL(file);
+  try {
+    const image = await loadImage(imageUrl);
+    const canvas = document.createElement("canvas");
+    const size = 512;
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("canvas unavailable");
+    }
+    context.fillStyle = "#f6f8fb";
+    context.fillRect(0, 0, size, size);
+    const sourceSize = Math.min(image.naturalWidth || image.width, image.naturalHeight || image.height);
+    const sourceX = ((image.naturalWidth || image.width) - sourceSize) / 2;
+    const sourceY = ((image.naturalHeight || image.height) - sourceSize) / 2;
+    context.drawImage(image, sourceX, sourceY, sourceSize, sourceSize, 0, 0, size, size);
+    return canvas.toDataURL("image/jpeg", 0.88);
+  } finally {
+    URL.revokeObjectURL(imageUrl);
+  }
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("image load failed"));
+    image.src = url;
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

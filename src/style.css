@@ -214,6 +214,7 @@ svg {
   width: min(36vw, 230px);
   min-width: 132px;
   aspect-ratio: 1;
+  position: relative;
   display: grid;
   place-items: center;
   border: 10px solid #171717;
@@ -226,6 +227,47 @@ svg {
   font-size: 72px;
   font-weight: 900;
   line-height: 1;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.personal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.personal-avatar span {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  border-radius: 999px;
+  background: rgba(23, 23, 23, 0.9);
+  color: #fff;
+  box-shadow: 0 10px 24px rgba(23, 23, 23, 0.18);
+  transform: translateX(-50%);
+  font-size: 13px;
+  font-weight: 850;
+  opacity: 0;
+}
+
+.personal-avatar:hover span,
+.personal-avatar:focus-visible span {
+  opacity: 1;
+}
+
+.personal-avatar span svg {
+  width: 15px;
+  height: 15px;
+}
+
+.personal-avatar.has-photo {
+  background: #f6f8fb;
 }
 
 .personal-identity {
@@ -4539,6 +4581,13 @@ button:disabled {
     border-width: 7px;
     border-radius: 28px;
     font-size: 48px;
+  }
+
+  .personal-avatar span {
+    min-height: 30px;
+    bottom: 8px;
+    font-size: 12px;
+    opacity: 1;
   }
 
   .personal-identity {
