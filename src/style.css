@@ -66,6 +66,22 @@ body.personal-space-mode #app {
   height: auto;
 }
 
+body.self-start-mode {
+  overflow: auto;
+  color-scheme: light;
+  background:
+    linear-gradient(180deg, #fafafa 0%, #f2f5f1 100%);
+}
+
+body.self-start-mode::before {
+  display: none;
+}
+
+body.self-start-mode #app {
+  min-height: 100svh;
+  height: auto;
+}
+
 body::before {
   content: "";
   position: fixed;
@@ -118,6 +134,43 @@ svg {
   height: 24px;
   fill: currentColor;
   display: block;
+}
+
+.self-start-shell {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: #151515;
+}
+
+.self-start-form {
+  width: min(100%, 520px);
+}
+
+.self-start-input {
+  width: 100%;
+  min-height: 74px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid rgba(21, 21, 21, 0.18);
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: #151515;
+  font-size: 42px;
+  font-weight: 820;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.self-start-input::placeholder {
+  color: rgba(21, 21, 21, 0.32);
+}
+
+.self-start-input:focus {
+  border-color: #151515;
 }
 
 .personal-space-shell {
@@ -4671,6 +4724,15 @@ button:disabled {
 @media (max-width: 680px) {
   body {
     overflow: auto;
+  }
+
+  .self-start-shell {
+    padding: 18px;
+  }
+
+  .self-start-input {
+    min-height: 62px;
+    font-size: 34px;
   }
 
   .personal-topbar,

@@ -328,6 +328,7 @@ const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
+const selfStartHandleKey = "soty:personal-handle:v1";
 let pendingInstallPrompt: BeforeInstallPromptEvent | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
@@ -412,6 +413,7 @@ async function boot(): Promise<void> {
   bareChatMode = requestedBareChatMode();
   const personalRoute = personalSpaceRouteFromLocation();
   setPersonalSpaceMode(Boolean(personalRoute));
+  setSelfStartMode(false);
   applyPersonalSpaceManifest(personalRoute);
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
@@ -462,6 +464,11 @@ async function boot(): Promise<void> {
 
   if (paymentRoute) {
     renderPaymentPage();
+    return;
+  }
+
+  if (isSelfStartRoute()) {
+    renderSelfStartPage();
     return;
   }
 
@@ -713,6 +720,10 @@ function setPersonalSpaceMode(active: boolean): void {
   document.body.classList.toggle("personal-space-mode", active);
 }
 
+function setSelfStartMode(active: boolean): void {
+  document.body.classList.toggle("self-start-mode", active);
+}
+
 function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
   const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
   if (!manifest) {
@@ -722,6 +733,7 @@ function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
 }
 
 function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
+  setSelfStartMode(false);
   setPersonalSpaceMode(true);
   applyPersonalSpaceManifest(route);
   void renderPersonalSpacePage(app, {
@@ -762,6 +774,92 @@ function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: str
 
 function openPersonalSpaceRuntime(profile: PersonalSpaceProfile): void {
   window.location.assign(profile.actions.runtimeUrl || bareChatPath());
+}
+
+function isSelfStartRoute(location: Location = window.location): boolean {
+  const url = new URL(location.href);
+  if (url.pathname !== "/" && url.pathname !== "") {
+    return false;
+  }
+  return !shouldResetLocalState()
+    && !isInfoRoute()
+    && !isPaymentRoute()
+    && !url.searchParams.has("j")
+    && !url.searchParams.has("to")
+    && !url.searchParams.has("room")
+    && !url.searchParams.has("space")
+    && !url.searchParams.has("restore-local")
+    && url.searchParams.get("bare") !== "1"
+    && url.searchParams.get("view") !== "chat";
+}
+
+function renderSelfStartPage(): void {
+  setPersonalSpaceMode(false);
+  setSelfStartMode(true);
+  applyPersonalSpaceManifest(null);
+  const saved = loadSelfStartHandle();
+  app.innerHTML = `
+    <main class="self-start-shell" aria-label="создать страницу Я">
+      <form class="self-start-form">
+        <input
+          class="self-start-input"
+          name="handle"
+          autocomplete="nickname"
+          autocapitalize="none"
+          enterkeyhint="go"
+          inputmode="text"
+          maxlength="32"
+          aria-label="Ваш ник"
+          placeholder="назови себя"
+          value="${escapeHtml(saved)}"
+        />
+      </form>
+    </main>
+  `;
+  const input = app.querySelector<HTMLInputElement>(".self-start-input");
+  input?.focus();
+  input?.select();
+  app.querySelector<HTMLFormElement>(".self-start-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const handle = cleanSelfStartHandle(input?.value || "");
+    if (!handle) {
+      input?.focus();
+      return;
+    }
+    saveSelfStartHandle(handle);
+    window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
+    showPersonalSpaceRoute({ handle, slug: "" });
+  });
+}
+
+function loadSelfStartHandle(): string {
+  try {
+    return cleanSelfStartHandle(window.localStorage.getItem(selfStartHandleKey) || "");
+  } catch {
+    return "";
+  }
+}
+
+function saveSelfStartHandle(handle: string): void {
+  try {
+    window.localStorage.setItem(selfStartHandleKey, handle);
+  } catch {
+    // The page can still open even when local storage is unavailable.
+  }
+}
+
+function cleanSelfStartHandle(value: string): string {
+  try {
+    return decodeURIComponent(value)
+      .normalize("NFKC")
+      .replace(/^@/u, "")
+      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 64)
+      .toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 function isInfoRoute(): boolean {
