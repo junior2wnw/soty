@@ -539,11 +539,11 @@ button.personal-avatar {
   display: grid;
   gap: 14px;
   padding: 24px;
-  border: 1px solid rgba(23, 23, 23, 0.1);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.96);
-  color: #171717;
-  box-shadow: 0 34px 86px rgba(23, 23, 23, 0.2);
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: #fff;
+  color: #000;
+  box-shadow: 2px 2px 0 #000;
 }
 
 .personal-sheet h2,
@@ -560,7 +560,7 @@ button.personal-avatar {
 
 .personal-sheet p,
 .personal-sheet small {
-  color: #66707b;
+  color: #404040;
   line-height: 1.45;
 }
 
@@ -572,10 +572,10 @@ button.personal-avatar {
   right: 14px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(23, 23, 23, 0.1);
+  border: 1px solid #000;
   border-radius: 999px;
   background: #fff;
-  color: #171717;
+  color: #000;
 }
 
 .personal-sheet-close svg {
@@ -592,10 +592,10 @@ button.personal-avatar {
   width: 100%;
   min-height: 52px;
   padding: 0 16px;
-  border: 1px solid rgba(23, 23, 23, 0.14);
-  border-radius: 14px;
+  border: 1px solid #000;
+  border-radius: 8px;
   background: #fff;
-  color: #171717;
+  color: #000;
   font: inherit;
   font-weight: 760;
 }
@@ -604,12 +604,12 @@ button.personal-avatar {
   width: 100%;
   min-height: 112px;
   padding: 14px 16px;
-  border: 1px solid rgba(23, 23, 23, 0.14);
-  border-radius: 14px;
+  border: 1px solid #000;
+  border-radius: 8px;
   outline: 0;
   resize: vertical;
   background: #fff;
-  color: #171717;
+  color: #000;
   font: inherit;
   line-height: 1.35;
   -webkit-user-select: text;
@@ -624,8 +624,9 @@ button.personal-avatar {
   justify-content: center;
   gap: 8px;
   padding: 0 16px;
+  border: 1px solid #000;
   border-radius: 999px;
-  background: #171717;
+  background: #000;
   color: #fff;
   font-weight: 850;
 }
@@ -639,8 +640,8 @@ button.personal-avatar {
 .personal-share-sheet img {
   width: min(100%, 260px);
   justify-self: center;
-  border: 1px solid rgba(23, 23, 23, 0.12);
-  border-radius: 18px;
+  border: 1px solid #000;
+  border-radius: 8px;
   background: #fff;
 }
 
@@ -651,9 +652,15 @@ button.personal-avatar {
 }
 
 .personal-share-actions button:last-child {
-  border: 1px solid rgba(23, 23, 23, 0.14);
+  border: 1px solid #000;
   background: #fff;
-  color: #171717;
+  color: #000;
+}
+
+.personal-share-actions.is-secondary button {
+  min-height: 40px;
+  background: #fff;
+  color: #000;
 }
 
 .personal-share-sheet small {

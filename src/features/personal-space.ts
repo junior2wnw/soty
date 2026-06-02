@@ -117,7 +117,7 @@ type PersonalLayerDisplay = {
   readonly title: string;
   readonly icon: IconName;
 };
-type EntityActionId = "install" | "message" | "share" | "runtime";
+type EntityActionId = "install" | "message" | "review" | "share" | "runtime";
 type EntityActionSurface = "hero" | "reviews" | "messages" | "place";
 type EntityAction = {
   readonly id: EntityActionId;
@@ -226,12 +226,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
       <div class="personal-orbit"></div>
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
-        <nav aria-label="пространство">
-          ${ownSpace ? `
-            <button class="personal-icon-button" type="button" data-action="backup-import" aria-label="Импорт" data-tooltip="Импорт">${icon("upload")}</button>
-            <button class="personal-icon-button" type="button" data-action="backup-export" aria-label="Экспорт" data-tooltip="Экспорт">${icon("download")}</button>
-          ` : `<button type="button" data-action="self">${icon("person")} ${localHandle ? "Я" : "Создать"}</button>`}
-        </nav>
+        ${ownSpace ? "" : `<nav aria-label="пространство"><button type="button" data-action="self">${icon("person")} ${localHandle ? "Я" : "Создать"}</button></nav>`}
         ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
       </header>
       <main class="personal-main">
@@ -374,7 +369,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       title: "Сообщения",
       body: `
         <div class="personal-message-preview">
-          <div><b>${escapeHtml(profile.shortName)}</b><p>Личный чат и отзывы из сообщений.</p></div>
+          <div><b>${escapeHtml(profile.shortName)}</b><p>Личный чат с этой страницей.</p></div>
           ${messageAction ? renderEntityAction(messageAction) : ""}
         </div>
       `
@@ -431,7 +426,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
       ];
   }
   if (options.surface === "reviews") {
-    return options.ownSpace ? [] : [{ id: "message", label: "Отзыв", icon: "heart", tone: "primary" }];
+    return options.ownSpace ? [] : [{ id: "review", label: "Отзыв", icon: "heart", tone: "primary" }];
   }
   if (options.surface === "messages") {
     return [{ id: "message", label: options.ownSpace ? "Заметки" : "Написать", icon: "send", tone: "primary" }];
@@ -541,6 +536,20 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     });
     return;
   }
+  if (action === "review") {
+    const handle = loadLocalHandle();
+    if (handle) {
+      showReviewSheet(root, profile, handle, options);
+      return;
+    }
+    showNicknameSheet(root, {
+      title: "Как подписать?",
+      description: "Короткое имя для отзыва.",
+      action: "Отзыв",
+      onDone: (nextHandle) => showReviewSheet(root, profile, nextHandle, options)
+    });
+    return;
+  }
   if (action === "runtime") {
     options.openRuntime(profile);
     return;
@@ -560,7 +569,7 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (action === "share") {
-    void showShareSheet(root, profile);
+    void showShareSheet(root, profile, options);
     return;
   }
   if (action === "backup-export") {
@@ -635,9 +644,87 @@ function showNicknameSheet(
   });
 }
 
-async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile): Promise<void> {
+function showReviewSheet(root: HTMLElement, profile: PersonalSpaceProfile, author: string, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="Отзыв">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>Отзыв</h2>
+      <form data-review-form>
+        <textarea name="text" maxlength="320" required placeholder="Что важно?"></textarea>
+        <button type="submit">${icon("heart")} Сохранить</button>
+      </form>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
+  textarea?.focus();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-review-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = cleanText(textarea?.value || "", 320);
+    const error = overlay.querySelector<HTMLElement>("[data-error]");
+    const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+    if (!text) {
+      if (error) {
+        error.textContent = "Напишите пару слов.";
+      }
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+    }
+    void submitPersonalReview(profile, author, text)
+      .then(async () => {
+        overlay.remove();
+        await renderPersonalSpacePage(root, options);
+        setActiveLayer(root, "reviews");
+      })
+      .catch(() => {
+        if (error) {
+          error.textContent = "Не удалось сохранить.";
+        }
+        if (button) {
+          button.disabled = false;
+        }
+      });
+  });
+}
+
+async function submitPersonalReview(profile: PersonalSpaceProfile, author: string, text: string): Promise<void> {
+  const handle = encodeURIComponent(profile.handle);
+  const url = profile.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(profile.slug)}/reviews`
+    : `/api/spaces/${handle}/reviews`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({ author, text, rating: 5 })
+  });
+  if (!response.ok) {
+    throw new Error("review save failed");
+  }
+  const payload = await response.json() as unknown;
+  if (!isRecord(payload) || payload.ok !== true) {
+    throw new Error("review save rejected");
+  }
+}
+
+async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): Promise<void> {
   closePersonalOverlay(root);
   const shareUrl = new URL(profile.url, window.location.origin).toString();
+  const ownSpace = isOwnProfile(profile, loadLocalHandle());
   const qr = await QRCode.toDataURL(shareUrl, {
     margin: 1,
     scale: 8,
@@ -658,6 +745,12 @@ async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile):
         <button type="button" data-copy>${icon("copy")} Скопировать</button>
         <button type="button" data-native>${icon("send")} Отправить</button>
       </div>
+      ${ownSpace ? `
+      <div class="personal-share-actions is-secondary">
+        <button type="button" data-share-import>${icon("upload")} Импорт</button>
+        <button type="button" data-share-export>${icon("download")} Экспорт</button>
+      </div>
+      ` : ""}
       <small data-share-note>${escapeHtml(shareUrl)}</small>
     </section>
   `;
@@ -682,6 +775,17 @@ async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile):
       return;
     }
     void navigator.clipboard?.writeText(shareUrl);
+  });
+  overlay.querySelector<HTMLElement>("[data-share-import]")?.addEventListener("click", () => {
+    overlay.remove();
+    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
+  });
+  overlay.querySelector<HTMLElement>("[data-share-export]")?.addEventListener("click", () => {
+    options.exportBackup();
+    const note = overlay.querySelector<HTMLElement>("[data-share-note]");
+    if (note) {
+      note.textContent = "Экспорт готов.";
+    }
   });
 }
 
