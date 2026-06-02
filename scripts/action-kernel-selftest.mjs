@@ -2474,6 +2474,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentRelay.includes('"/api/agent/artifacts/:id"'));
       assert(ui.includes("!isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id)"));
       assert(ui.includes("access: true"));
+      assert(ui.includes("startRemoteHostSourceGrantControl"));
+      assert(ui.includes("refreshCurrentDeviceSourceGrant"));
+      assert(ui.includes("maybeRevokeCurrentDeviceSourceGrant"));
       assert(agentSource.includes("matchingAgentSourceTarget"));
       assert(agentSource.includes("return sourceDeviceRuntimeTarget(safe, sourceTargets);"));
       assert(!agentSource.includes("return sourceDeviceFallbackTarget(safe);\n  }\n  return null;"));

@@ -29,7 +29,7 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, uploadPersonalSpacePhoto } from "./features/personal-space";
+import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, submitPersonalSpaceReview, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
@@ -210,6 +210,9 @@ const agentButtonWatchHiddenMs = 60_000;
 const agentButtonInstallWatchMs = 10 * 60_000;
 let agentSourceGrantRefreshAt = 0;
 const agentSourceGrantRefreshMs = 30_000;
+let remoteHostSourceGrantTimer = 0;
+let remoteHostSourceGrantPolling = false;
+let remoteHostSourceGrantRefreshAt = 0;
 type WriterLine = {
   readonly nick: string;
   readonly deviceId: string;
@@ -741,6 +744,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     canInstall: () => Boolean(pendingInstallPrompt),
     install: promptPersonalSpaceInstall,
     uploadPhoto: uploadPersonalSpacePhoto,
+    submitReview: submitPersonalSpaceReview,
     openMessage: openPersonalSpaceMessage,
     openRuntime: openPersonalSpaceRuntime
   });
@@ -3055,6 +3059,7 @@ function renderApp(): void {
   renderMiniAppPanel();
   void ensureOperatorBridge(true);
   resumeAgentSourceControl();
+  resumeRemoteHostSourceGrantControl();
 }
 
 function renderTiles(): void {
@@ -3216,6 +3221,7 @@ async function enableRemoteGrant(id: string, requestedTargetDeviceId = ""): Prom
   remoteEnabled = setRemoteEnabled(id, true);
   remoteGrantTargets = setRemoteGrantTarget(id, targetDeviceId, true);
   syncs.get(id)?.grantRemote(true, targetDeviceId);
+  startRemoteHostSourceGrantControl();
   terminalOpenId = id;
   setTerminalState(id, "idle");
   renderTerminal();
@@ -3269,6 +3275,7 @@ async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
   renderTerminal();
   renderTiles();
   startAgentSourceControl(agentTunnelId);
+  startRemoteHostSourceGrantControl();
 }
 
 function resolveRemoteGrantTarget(tunnelId: string, requestedTargetDeviceId = ""): string {
@@ -3364,6 +3371,76 @@ function announceRemoteGrant(tunnelId: string, targetDeviceId = ""): void {
   }
   remoteGrantTargets = setRemoteGrantTarget(tunnelId, target, true);
   syncs.get(tunnelId)?.grantRemote(true, target);
+  startRemoteHostSourceGrantControl();
+}
+
+function resumeRemoteHostSourceGrantControl(): void {
+  if (remoteHostSourceGrantTunnels().length === 0) {
+    stopRemoteHostSourceGrantControl();
+    return;
+  }
+  startRemoteHostSourceGrantControl();
+}
+
+function startRemoteHostSourceGrantControl(): void {
+  window.clearTimeout(remoteHostSourceGrantTimer);
+  remoteHostSourceGrantTimer = window.setTimeout(() => void pollRemoteHostSourceGrant(), 0);
+}
+
+function stopRemoteHostSourceGrantControl(): void {
+  window.clearTimeout(remoteHostSourceGrantTimer);
+  remoteHostSourceGrantTimer = 0;
+  remoteHostSourceGrantPolling = false;
+  remoteHostSourceGrantRefreshAt = 0;
+}
+
+function remoteHostSourceGrantTunnels(): TunnelRecord[] {
+  return loadTunnels().filter((tunnel) => !tunnel.archived && remoteEnabled.has(tunnel.id));
+}
+
+async function pollRemoteHostSourceGrant(): Promise<void> {
+  if (remoteHostSourceGrantPolling || !device) {
+    return;
+  }
+  if (remoteHostSourceGrantTunnels().length === 0) {
+    stopRemoteHostSourceGrantControl();
+    return;
+  }
+  remoteHostSourceGrantPolling = true;
+  try {
+    const now = Date.now();
+    if (remoteHostSourceGrantRefreshAt <= now) {
+      remoteHostSourceGrantRefreshAt = now + agentSourceGrantRefreshMs;
+      const ok = await refreshCurrentDeviceSourceGrant();
+      if (!ok) {
+        remoteHostSourceGrantRefreshAt = now + 5000;
+      }
+    }
+  } finally {
+    remoteHostSourceGrantPolling = false;
+    if (device && remoteHostSourceGrantTunnels().length > 0) {
+      remoteHostSourceGrantTimer = window.setTimeout(() => void pollRemoteHostSourceGrant(), agentSourceGrantRefreshMs);
+    }
+  }
+}
+
+async function refreshCurrentDeviceSourceGrant(): Promise<boolean> {
+  if (!device) {
+    return false;
+  }
+  localAgent = await ensureAgentSourceCompanion();
+  if (!isAgentSourceCompanionReady(localAgent, device.id)) {
+    return false;
+  }
+  return await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500);
+}
+
+function maybeRevokeCurrentDeviceSourceGrant(): void {
+  if (!device || remoteHostSourceGrantTunnels().length > 0) {
+    return;
+  }
+  stopRemoteHostSourceGrantControl();
+  void grantAgentSourceAccess(device.id, device.nick, false);
 }
 
 async function refreshLocalAgent(): Promise<LocalAgentStatus> {
@@ -3638,9 +3715,9 @@ function closeRemoteMode(tunnelId: string): void {
     remoteGrantTargets = setRemoteGrantTarget(tunnelId, "", false);
     sync?.grantRemote(false, grantTarget);
     if (isAgentTunnelId(tunnelId) && device) {
-      void grantAgentSourceAccess(device.id, device.nick, false);
       stopAgentSourceControl(tunnelId);
     }
+    maybeRevokeCurrentDeviceSourceGrant();
   }
   if (hostDeviceId) {
     remoteAccess = setRemoteAccess(tunnelId, "", false);
@@ -4944,6 +5021,7 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
     if (!currentTarget || currentTarget === request.deviceId || currentTarget === "*") {
       remoteGrantTargets = setRemoteGrantTarget(tunnelId, request.deviceId, true);
       sync?.grantRemote(true, request.deviceId);
+      startRemoteHostSourceGrantControl();
       return;
     }
   }
@@ -4986,6 +5064,7 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
       remoteEnabled = setRemoteEnabled(tunnelId, true);
       remoteGrantTargets = setRemoteGrantTarget(tunnelId, request.deviceId, true);
       syncs.get(tunnelId)?.grantRemote(true, request.deviceId);
+      startRemoteHostSourceGrantControl();
       terminalOpenId = tunnelId;
       setTerminalState(tunnelId, "idle");
       overlay.remove();
@@ -5005,6 +5084,7 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
     remoteGrantTargets = setRemoteGrantTarget(tunnelId, "", false);
     syncs.get(tunnelId)?.grantRemote(false, "*");
+    maybeRevokeCurrentDeviceSourceGrant();
   }
   remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
   if (grant.enabled) {
@@ -7949,6 +8029,7 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
   publishOperatorTargets();
   await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500).catch(() => false);
   startAgentSourceControl(tunnelId);
+  startRemoteHostSourceGrantControl();
   publishOperatorTargets();
 }
 
