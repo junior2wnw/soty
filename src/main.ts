@@ -31,7 +31,7 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, uploadPersonalSpacePhoto } from "./features/personal-space";
+import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
@@ -874,6 +874,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     canNotify: shouldOfferNotifications,
     install: promptPersonalSpaceInstall,
     enableNotifications: promptPersonalSpaceNotifications,
+    updateProfile: updatePersonalSpaceProfile,
     uploadPhoto: uploadPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,

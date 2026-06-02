@@ -21,15 +21,19 @@ const defaultSpaces = Object.freeze([
 ]);
 
 export function attachSpaces(app, { dataDir } = {}) {
+  const metaStore = createMetaStore(dataDir);
   const photoStore = createPhotoStore(dataDir);
   const reviewStore = createReviewStore(dataDir);
   app.get("/api/spaces/:handle", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(photoStore, reviewStore, req.params.handle || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, reviewStore, req.params.handle || ""));
   });
   app.get("/api/spaces/:handle/:space", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(photoStore, reviewStore, req.params.handle || "", req.params.space || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, reviewStore, req.params.handle || "", req.params.space || ""));
+  });
+  app.post("/api/spaces/:handle/profile", express.json({ limit: "24kb" }), async (req, res) => {
+    await saveSpaceMeta(metaStore, req, res);
   });
   app.post("/api/spaces/:handle/photo", express.json({ limit: "3mb" }), async (req, res) => {
     await saveSpacePhoto(photoStore, req, res);
@@ -44,10 +48,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await saveSpaceReview(reviewStore, req, res);
   });
   app.get("/manifest/space/:handle.json", async (req, res) => {
-    await sendSpaceManifest(photoStore, reviewStore, res, req.params.handle || "");
+    await sendSpaceManifest(metaStore, photoStore, reviewStore, res, req.params.handle || "");
   });
   app.get("/manifest/space/:handle/:space.json", async (req, res) => {
-    await sendSpaceManifest(photoStore, reviewStore, res, req.params.handle || "", req.params.space || "");
+    await sendSpaceManifest(metaStore, photoStore, reviewStore, res, req.params.handle || "", req.params.space || "");
   });
   app.get("/photo/space/:handle.jpg", async (req, res) => {
     await sendSpacePhoto(photoStore, res, req.params.handle || "");
@@ -60,10 +64,11 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
 }
 
-async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace = "") {
+async function publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle, rawSpace = "") {
   const handle = cleanSlug(rawHandle) || "guest";
   const spaceSlug = cleanSlug(rawSpace);
-  const ownerName = titleFromSlug(handle);
+  const meta = await readSpaceMeta(metaStore, handle);
+  const ownerName = meta.displayName || titleFromSlug(handle);
   const activeSpace = spaceSlug ? spaceFor(spaceSlug) : null;
   const displayName = activeSpace ? `${activeSpace.title} · ${ownerName}` : ownerName;
   const accent = colorFor(handle, spaceSlug);
@@ -83,13 +88,14 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : "контакт, отзывы, связь и соты",
+      : meta.headline || meta.about || "контакт, отзывы, связь и соты",
     about: activeSpace
       ? `${activeSpace.title}: контакт, связь, отзывы и действия рядом.`
-      : `${ownerName}: универсальная страница для контакта, отзывов, связи и сот.`,
-    accent,
+      : meta.about || `${ownerName}: универсальная страница для контакта, отзывов, связи и сот.`,
+    accent: meta.accent || accent,
     contacts: [
       { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
+      ...meta.contact ? [meta.contact] : [],
       { label: "страница", value: url, href: url }
     ],
     posts: [
@@ -98,7 +104,7 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
         title: activeSpace ? activeSpace.title : ownerName,
         text: activeSpace
           ? "Описание, сообщения, отзывы и действия живут рядом."
-          : "QR открывает контакт, страницу и чат.",
+          : meta.about || "QR открывает контакт, страницу и чат.",
         meta: "Я"
       },
       {
@@ -121,8 +127,8 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
   };
 }
 
-async function sendSpaceManifest(photoStore, reviewStore, res, rawHandle, rawSpace = "") {
-  const profile = await publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace);
+async function sendSpaceManifest(metaStore, photoStore, reviewStore, res, rawHandle, rawSpace = "") {
+  const profile = await publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle, rawSpace);
   const appName = profile.accountName || profile.displayName;
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
@@ -150,6 +156,18 @@ async function sendSpaceManifest(photoStore, reviewStore, res, rawHandle, rawSpa
       }
     ]
   });
+}
+
+async function saveSpaceMeta(metaStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const meta = normalizeMetaBody(req.body);
+  if (!meta) {
+    res.status(400).json({ ok: false, error: "invalid_profile" });
+    return;
+  }
+  await writeSpaceMeta(metaStore, handle, meta);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, profile: meta });
 }
 
 async function saveSpacePhoto(photoStore, req, res) {
@@ -256,6 +274,12 @@ function cleanSlug(value) {
     .toLowerCase();
 }
 
+function createMetaStore(dataDir) {
+  return {
+    dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-meta")
+  };
+}
+
 function createPhotoStore(dataDir) {
   return {
     dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-photos")
@@ -268,6 +292,10 @@ function createReviewStore(dataDir) {
   };
 }
 
+function metaPath(metaStore, handle) {
+  return path.join(metaStore.dir, `${handle}.json`);
+}
+
 function photoPath(photoStore, handle) {
   return path.join(photoStore.dir, `${handle}.json`);
 }
@@ -275,6 +303,14 @@ function photoPath(photoStore, handle) {
 function reviewPath(reviewStore, handle, spaceSlug = "") {
   const suffix = spaceSlug ? `__${spaceSlug}` : "";
   return path.join(reviewStore.dir, `${handle}${suffix}.json`);
+}
+
+async function readSpaceMeta(metaStore, handle) {
+  try {
+    return normalizeStoredMeta(JSON.parse(await readFile(metaPath(metaStore, handle), "utf8"))) || {};
+  } catch {
+    return {};
+  }
 }
 
 async function readSpacePhoto(photoStore, handle) {
@@ -308,6 +344,11 @@ async function readSpaceReviews(reviewStore, handle, spaceSlug = "") {
   }
 }
 
+async function writeSpaceMeta(metaStore, handle, meta) {
+  await mkdir(metaStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(metaPath(metaStore, handle), JSON.stringify(meta, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
 async function writeSpacePhoto(photoStore, handle, photo) {
   await mkdir(photoStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(photoPath(photoStore, handle), JSON.stringify({
@@ -319,6 +360,80 @@ async function writeSpacePhoto(photoStore, handle, photo) {
 async function writeSpaceReviews(reviewStore, handle, spaceSlug, reviews) {
   await mkdir(reviewStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(reviewPath(reviewStore, handle, spaceSlug), JSON.stringify(reviews, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+function normalizeMetaBody(body) {
+  const displayName = cleanReviewText(body?.displayName, 100);
+  const about = cleanReviewText(body?.about, 420);
+  const contactText = cleanReviewText(body?.contact, 160);
+  const contact = normalizeContactMeta(contactText);
+  if (!displayName && !about && !contact) {
+    return null;
+  }
+  return {
+    ...(displayName ? { displayName, headline: about || "контакт, отзывы, связь и соты" } : {}),
+    ...(about ? { about, headline: about } : {}),
+    ...(contact ? { contact } : {})
+  };
+}
+
+function normalizeStoredMeta(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const displayName = cleanReviewText(record.displayName, 100);
+  const about = cleanReviewText(record.about, 420);
+  const headline = cleanReviewText(record.headline, 180);
+  const contact = normalizeContactMeta(record.contact);
+  return {
+    ...(displayName ? { displayName } : {}),
+    ...(about ? { about } : {}),
+    ...(headline ? { headline } : {}),
+    ...(contact ? { contact } : {})
+  };
+}
+
+function normalizeContactMeta(value) {
+  if (value && typeof value === "object") {
+    const label = cleanReviewText(value.label, 32) || "контакт";
+    const contactValue = cleanReviewText(value.value, 160);
+    if (!contactValue) {
+      return null;
+    }
+    const href = cleanContactHref(value.href || contactValue);
+    return {
+      label,
+      value: contactValue,
+      ...(href ? { href } : {})
+    };
+  }
+  const text = cleanReviewText(value, 160);
+  if (!text) {
+    return null;
+  }
+  const href = cleanContactHref(text);
+  return {
+    label: "контакт",
+    value: text,
+    ...(href ? { href } : {})
+  };
+}
+
+function cleanContactHref(value) {
+  const text = cleanReviewText(value, 240);
+  if (!text || /[<>"']/u.test(text)) {
+    return "";
+  }
+  if (/^mailto:[^\s@]+@[^\s@]+\.[^\s@]+$/iu.test(text)) {
+    return text;
+  }
+  if (/^https?:\/\//iu.test(text) || text.startsWith("/")) {
+    return text;
+  }
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(text)) {
+    return `mailto:${text}`;
+  }
+  return "";
 }
 
 function normalizePhotoBody(body) {

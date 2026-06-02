@@ -12,12 +12,19 @@ export type PersonalSpaceInstallResult = {
   readonly message: string;
 };
 
+export type PersonalSpaceProfileUpdate = {
+  readonly displayName: string;
+  readonly about: string;
+  readonly contact: string;
+};
+
 export type PersonalSpacePageOptions = {
   readonly route: PersonalSpaceRoute;
   readonly canInstall: () => boolean;
   readonly canNotify: () => boolean;
   readonly install: () => Promise<PersonalSpaceInstallResult>;
   readonly enableNotifications: () => Promise<PersonalSpaceInstallResult>;
+  readonly updateProfile: (route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate) => Promise<PersonalSpaceInstallResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
@@ -119,7 +126,7 @@ type PersonalLayerDisplay = {
   readonly title: string;
   readonly icon: IconName;
 };
-type EntityActionId = "install" | "message" | "notifications" | "review" | "share" | "runtime";
+type EntityActionId = "edit" | "install" | "message" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "hero" | "reviews" | "messages" | "place";
 type EntityAction = {
   readonly id: EntityActionId;
@@ -183,6 +190,25 @@ export async function uploadPersonalSpacePhoto(route: PersonalSpaceRoute, file: 
     throw new Error("profile photo upload rejected");
   }
   return cleanUrlPath(payload.photoUrl);
+}
+
+export async function updatePersonalSpaceProfile(route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate): Promise<PersonalSpaceInstallResult> {
+  const handle = encodeURIComponent(route.handle);
+  const response = await fetch(`/api/spaces/${handle}/profile`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify(update)
+  });
+  if (!response.ok) {
+    return { ok: false, message: "Не удалось сохранить." };
+  }
+  const payload = await response.json() as unknown;
+  return isRecord(payload) && payload.ok === true
+    ? { ok: true, message: "Сохранено." }
+    : { ok: false, message: "Не удалось сохранить." };
 }
 
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
@@ -307,7 +333,7 @@ function renderLayerPanel(
         <span>${escapeHtml(view.eyebrow)}</span>
         <h2>${escapeHtml(view.title)}</h2>
         ${view.text ? `<p>${escapeHtml(view.text)}</p>` : ""}
-        ${view.action ? renderEntityAction(view.action, "personal-panel-action") : ""}
+        ${view.action ? renderEntityAction(view.action, view.action.tone === "secondary" ? "personal-panel-action personal-secondary" : "personal-panel-action") : ""}
       </div>
       ${view.body}
     </article>
@@ -319,6 +345,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     return {
       eyebrow: "я",
       title: "Страница",
+      ...(ownSpace ? { action: { id: "edit", label: "Править", icon: "person", tone: "secondary" } as const } : {}),
       body: renderPanelList(
         "personal-feed",
         profile.posts.map((post) => `
@@ -392,6 +419,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     eyebrow: "контакт",
     title: "Контакт",
     text: personalSpaceCopy(profile.about, ownSpace),
+    ...(ownSpace ? { action: { id: "edit", label: "Править", icon: "person", tone: "secondary" } as const } : {}),
     body: `
       <div class="personal-contact-list">
         ${visibleContacts(profile, ownSpace).map((contact) => `
@@ -585,6 +613,10 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     void enablePersonalNotifications(root, node, options);
     return;
   }
+  if (action === "edit") {
+    showProfileSheet(root, profile, options);
+    return;
+  }
   if (action === "self") {
     const handle = loadLocalHandle();
     if (handle) {
@@ -644,6 +676,73 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
     return;
   }
   button.disabled = false;
+}
+
+function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const contact = visibleContacts(profile, true).find((item) => item.label === "контакт")?.value || "";
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="Править страницу">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>Страница</h2>
+      <form data-profile-form>
+        <input name="displayName" autocomplete="name" maxlength="100" aria-label="имя" placeholder="Имя или название" value="${escapeAttr(profile.displayName)}" />
+        <textarea name="about" maxlength="420" aria-label="о странице" placeholder="О себе, проекте или месте">${escapeHtml(profile.about)}</textarea>
+        <input name="contact" autocomplete="url" maxlength="160" aria-label="контакт" placeholder="Сайт, email или контакт" value="${escapeAttr(contact)}" />
+        <button type="submit">${icon("check")} Сохранить</button>
+      </form>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const nameInput = overlay.querySelector<HTMLInputElement>("input[name='displayName']");
+  const aboutInput = overlay.querySelector<HTMLTextAreaElement>("textarea[name='about']");
+  const contactInput = overlay.querySelector<HTMLInputElement>("input[name='contact']");
+  nameInput?.focus();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-profile-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+    const error = overlay.querySelector<HTMLElement>("[data-error]");
+    const update = {
+      displayName: cleanText(nameInput?.value || "", 100),
+      about: cleanText(aboutInput?.value || "", 420),
+      contact: cleanText(contactInput?.value || "", 160)
+    };
+    if (!update.displayName && !update.about && !update.contact) {
+      if (error) {
+        error.textContent = "Добавьте хотя бы одно поле.";
+      }
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+    }
+    void options.updateProfile(options.route, update)
+      .then(async (result) => {
+        if (!result.ok) {
+          throw new Error(result.message);
+        }
+        overlay.remove();
+        await renderPersonalSpacePage(root, options);
+        setActiveLayer(root, "card");
+      })
+      .catch((err) => {
+        if (error) {
+          error.textContent = err instanceof Error ? err.message : "Не удалось сохранить.";
+        }
+        if (button) {
+          button.disabled = false;
+        }
+      });
+  });
 }
 
 function showNicknameSheet(
