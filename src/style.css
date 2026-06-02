@@ -1548,6 +1548,138 @@ button.personal-avatar {
   min-height: 0;
 }
 
+.shell.simple-contact-shell {
+  --ink: #17211d;
+  --muted: #63756e;
+  --edge: #d6e0de;
+  --green: #159864;
+  --cyan: #0f6bff;
+  --amber: #b06b18;
+  --cream: #17211d;
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, #f7faf9 0%, #eef4f2 100%);
+}
+
+.shell.simple-contact-shell .dialog-shell {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  grid-template-rows: 58px auto minmax(0, 1fr);
+  gap: 8px;
+}
+
+.shell.simple-contact-shell .dialog-head {
+  grid-template-columns: 44px minmax(0, 1fr) 42px;
+  padding: 8px 10px;
+}
+
+.shell.simple-contact-shell .dialog-head,
+.shell.simple-contact-shell .editor,
+.shell.simple-contact-shell .space-card {
+  border-color: rgba(190, 205, 200, 0.86);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 12px 30px rgba(35, 52, 46, 0.08);
+}
+
+.shell.simple-contact-shell .dialog-avatar {
+  background: var(--cyan);
+  color: #ffffff;
+}
+
+.shell.simple-contact-shell .dialog-name {
+  color: #14201b;
+}
+
+.shell.simple-contact-shell .dialog-state {
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .dialog-id {
+  border-color: rgba(190, 205, 200, 0.94);
+  background: #ffffff;
+  color: var(--cyan);
+  box-shadow: none;
+}
+
+.shell.simple-contact-shell .dialog-live,
+.shell.simple-contact-shell .agent-mode-button,
+.shell.simple-contact-shell .clear-dialog-button,
+.shell.simple-contact-shell .access-open {
+  display: none;
+}
+
+.shell.simple-contact-shell .cell-surface {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+}
+
+.shell.simple-contact-shell .cell-app-shelf[data-empty="1"] {
+  display: none;
+}
+
+.shell.simple-contact-shell .space-rail {
+  width: min(100%, 336px);
+}
+
+.shell.simple-contact-shell .space-map button {
+  color: #596b64;
+  border-color: transparent;
+  background: transparent;
+}
+
+.shell.simple-contact-shell .space-map button:hover,
+.shell.simple-contact-shell .space-map button.is-active {
+  border-color: rgba(15, 107, 255, 0.28);
+  background: rgba(15, 107, 255, 0.08);
+  color: #0f3d91;
+}
+
+.shell.simple-contact-shell .chat-scroll {
+  background:
+    linear-gradient(180deg, rgba(15, 107, 255, 0.025), transparent 34%),
+    rgba(255, 255, 255, 0.34);
+}
+
+.shell.simple-contact-shell .space-empty {
+  border-color: rgba(190, 205, 200, 0.94);
+  background: #ffffff;
+  color: #566a63;
+}
+
+.shell.simple-contact-shell .composer-bar {
+  border-top-color: rgba(190, 205, 200, 0.86);
+  background: #ffffff;
+}
+
+.shell.simple-contact-shell .chat-composer {
+  border-color: rgba(190, 205, 200, 0.94);
+  background: #f8fbfa;
+  color: #17211d;
+  caret-color: var(--cyan);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .chat-composer:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px rgba(15, 107, 255, 0.10);
+}
+
+.shell.simple-contact-shell .composer-attach {
+  border-color: rgba(21, 152, 100, 0.24);
+  background: rgba(21, 152, 100, 0.08);
+  color: var(--green);
+  box-shadow: none;
+}
+
+.shell.simple-contact-shell .send-button {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: #ffffff;
+  box-shadow: none;
+}
+
 .hive-panel,
 .dialog-shell {
   min-width: 0;
@@ -2076,14 +2208,23 @@ button:disabled {
 
 .dialog-id {
   appearance: none;
-  min-width: 92px;
-  padding: 8px 9px;
+  width: 42px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 1px solid #3d515f;
+  border-radius: 8px;
   background: #0b1015;
   color: var(--amber);
   cursor: pointer;
   text-align: center;
   transition: border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.dialog-id svg {
+  width: 18px;
+  height: 18px;
 }
 
 .dialog-id:hover,
@@ -5089,14 +5230,19 @@ button:disabled {
     grid-template-columns: 40px minmax(0, 1fr) 40px 40px 40px minmax(76px, auto);
   }
 
+  .shell.simple-contact-shell .dialog-head {
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+  }
+
   .dialog-avatar {
     width: 40px;
     height: 36px;
   }
 
   .dialog-id {
-    min-width: 76px;
-    padding: 7px 7px;
+    width: 40px;
+    height: 36px;
+    min-width: 0;
     font-size: 10px;
   }
 

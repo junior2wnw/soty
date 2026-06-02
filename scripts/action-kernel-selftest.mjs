@@ -2390,7 +2390,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("enabledIds.some((id) => id !== canonical.id)"));
       assert(ui.includes("clearCurrentDialog(active.id);\n    renderApp();\n    return;"));
       assert(ui.includes('class="dialog-id" type="button"'));
-      assert(ui.includes("copySelectedDialogLink"));
+      assert(ui.includes("shareSelectedDialogLink"));
+      assert(ui.includes("publicContactUrlForTunnel"));
       assert(ui.includes("selectedDialogCode"));
       assert(!ui.includes("LIVE TUNNELS"));
       assert(!ui.includes("AGENT READY"));

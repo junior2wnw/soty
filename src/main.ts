@@ -763,6 +763,14 @@ function contactHandleFromTunnel(tunnel: TunnelRecord): string {
   return cleanContactHandle(peers.get(tunnel.id) || tunnel.label || "");
 }
 
+function publicContactUrlForTunnel(tunnel: TunnelRecord): string {
+  if (isPermanentCell(tunnel) || isAgentTunnel(tunnel) || !hasCounterparty(tunnel)) {
+    return "";
+  }
+  const handle = contactHandleFromTunnel(tunnel);
+  return handle ? new URL(`/@${encodeURIComponent(handle)}`, window.location.origin).href : "";
+}
+
 function ensureRequestedContactTunnel(): string {
   const handle = requestedContactHandle();
   if (!device || !handle) {
@@ -2129,6 +2137,7 @@ function renderCellAppShelf(): void {
   }
   const cellApps = cellShelfMiniApps();
   const allCount = globalMiniApps().length;
+  shelf.dataset.empty = cellApps.length > 0 ? "0" : "1";
   shelf.innerHTML = `
     <button class="cell-app-all" type="button" aria-label="все мини-аппы" data-tooltip="Все мини-аппы">
       ${icon("apps")}
@@ -3060,7 +3069,7 @@ function renderApp(): void {
           <button class="agent-mode-button retro-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
-          <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">ссылка</button>
+          <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">${icon("copy")}</button>
         </header>
         <section class="cell-surface" aria-label="пространство соты">
           <div class="cell-app-shelf" aria-label="мини-аппы"></div>
@@ -3165,7 +3174,7 @@ function renderApp(): void {
     startFreshDialog();
   });
   app.querySelector<HTMLButtonElement>(".dialog-id")?.addEventListener("click", () => {
-    void copySelectedDialogLink();
+    void shareSelectedDialogLink();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -3928,6 +3937,16 @@ function isSelectableCell(tunnel: TunnelRecord): boolean {
   return !tunnel.archived && !isAgentTunnel(tunnel) && hasCounterparty(tunnel);
 }
 
+function isSimpleContactSurface(tunnel: TunnelRecord): boolean {
+  return bareChatMode
+    && !isPermanentCell(tunnel)
+    && !isAgentTunnel(tunnel)
+    && hasCounterparty(tunnel)
+    && !selectedAgentMode(tunnel.id)
+    && !remoteAccess.has(tunnel.id)
+    && !remoteEnabled.has(tunnel.id);
+}
+
 function normalizeSelectedTunnel(): void {
   const all = loadTunnels();
   if (all.length === 0) {
@@ -4455,6 +4474,8 @@ function renderDialogChrome(): void {
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
   const agentMode = Boolean(tunnel && selectedAgentMode(tunnel.id));
+  const simpleContactSurface = Boolean(tunnel && isSimpleContactSurface(tunnel));
+  const publicContactUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
   const availableMiniApps = globalMiniApps();
   if (miniAppSession) {
     const activeMiniAppKey = miniAppRecordKey(miniAppSession.app);
@@ -4466,9 +4487,12 @@ function renderDialogChrome(): void {
   if (shell) {
     shell.style.setProperty("--peer-color", color);
     shell.classList.toggle("agent-mode-active", agentMode);
+    shell.classList.toggle("simple-contact-surface", simpleContactSurface);
   }
   appShell?.classList.toggle("agent-mode-active", agentMode);
+  appShell?.classList.toggle("simple-contact-shell", simpleContactSurface);
   editor?.classList.toggle("agent-mode-active", agentMode);
+  editor?.classList.toggle("simple-contact-surface", simpleContactSurface);
   if (avatar) {
     avatar.textContent = label ? initials(label) : "";
   }
@@ -4494,11 +4518,12 @@ function renderDialogChrome(): void {
   }
   if (id) {
     const code = selectedDialogCode();
-    id.textContent = code ? "ссылка" : "";
-    id.disabled = !code;
-    id.setAttribute("aria-label", code ? "скопировать ссылку чата" : "сота не выбрана");
+    const canShare = Boolean(publicContactUrl || code);
+    id.innerHTML = canShare ? icon(publicContactUrl ? "qr" : "copy") : "";
+    id.disabled = !canShare;
+    id.setAttribute("aria-label", publicContactUrl ? "поделиться контактом" : code ? "скопировать ссылку чата" : "сота не выбрана");
     if (id.dataset.copied !== "1") {
-      id.dataset.tooltip = code ? `Скопировать ссылку · ${code}` : "Сота не выбрана";
+      id.dataset.tooltip = publicContactUrl ? "Поделиться контактом" : code ? `Скопировать ссылку · ${code}` : "Сота не выбрана";
     }
   }
   if (sendButton) {
@@ -10056,28 +10081,52 @@ async function selectedDialogLink(): Promise<string> {
   if (!tunnel) {
     return "";
   }
+  const publicUrl = publicContactUrlForTunnel(tunnel);
+  if (publicUrl) {
+    return publicUrl;
+  }
   const url = new URL(await inviteUrl(tunnel, device));
   url.searchParams.set("bare", "1");
   return url.href;
 }
 
-async function copySelectedDialogLink(): Promise<void> {
+async function shareSelectedDialogLink(): Promise<void> {
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const link = await selectedDialogLink();
   if (!link) {
     return;
   }
-  await copyText(link);
+  const publicUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
+  let copied = false;
+  if (publicUrl && "share" in navigator) {
+    try {
+      await navigator.share({
+        title: tunnel ? counterpartyLabel(tunnel) : "соты",
+        url: link
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      await copyText(link);
+      copied = true;
+    }
+  } else {
+    await copyText(link);
+    copied = true;
+  }
   const id = app.querySelector<HTMLButtonElement>(".dialog-id");
   if (!id) {
     return;
   }
   id.dataset.copied = "1";
-  id.dataset.tooltip = "Ссылка скопирована";
+  id.dataset.tooltip = copied ? "Ссылка скопирована" : "Готово";
   window.setTimeout(() => {
     if (id.dataset.copied === "1") {
       delete id.dataset.copied;
       const code = selectedDialogCode();
-      id.dataset.tooltip = code ? `Скопировать ссылку · ${code}` : "Диалог не выбран";
+      const contactUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
+      id.dataset.tooltip = contactUrl ? "Поделиться контактом" : code ? `Скопировать ссылку · ${code}` : "Диалог не выбран";
     }
   }, 1200);
 }
@@ -10220,9 +10269,10 @@ function wait(ms: number): Promise<void> {
 }
 
 function initials(value: string): string {
-  const parts = cleanNick(value).split(" ").filter(Boolean);
+  const clean = cleanNick(value).replace(/^@/u, "").trim();
+  const parts = clean.split(" ").filter(Boolean);
   const letters = parts.length > 1
     ? `${parts[0]?.[0] ?? ""}${parts[1]?.[0] ?? ""}`
-    : cleanNick(value).slice(0, 2);
-  return letters || ".";
+    : clean.slice(0, 2);
+  return (letters || ".").toUpperCase();
 }
