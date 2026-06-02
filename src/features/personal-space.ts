@@ -111,6 +111,12 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
+type PersonalLayerDisplay = {
+  readonly id: PersonalSpaceLayer;
+  readonly label: string;
+  readonly title: string;
+  readonly icon: IconName;
+};
 const localHandleKey = "soty:personal-handle:v1";
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -230,8 +236,8 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           <div class="personal-identity">
             <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
             <h1>${escapeHtml(profile.displayName)}</h1>
-            <p>${escapeHtml(profile.headline)}</p>
-            ${renderQuickContacts(profile)}
+            <p>${escapeHtml(personalSpaceCopy(profile.headline, ownSpace))}</p>
+            ${renderQuickContacts(profile, ownSpace)}
             <div class="personal-actions">
               ${ownSpace
                 ? `<button class="personal-primary" type="button" data-action="share">${icon("qr")} Поделиться</button>
@@ -246,12 +252,15 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
-          ${layers.map(({ id, icon: iconName, label, title }) => `
-            <button type="button" role="tab" data-layer="${id}" aria-label="${escapeAttr(title)}" title="${escapeAttr(title)}" aria-selected="${id === activeLayer ? "true" : "false"}">
-              ${icon(iconName)}
-              ${escapeHtml(label)}
+          ${layers.map((layer) => {
+            const display = layerDisplay(layer, ownSpace);
+            return `
+            <button type="button" role="tab" data-layer="${display.id}" aria-label="${escapeAttr(display.title)}" title="${escapeAttr(display.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
+              ${icon(display.icon)}
+              ${escapeHtml(display.label)}
             </button>
-          `).join("")}
+          `;
+          }).join("")}
         </div>
         <section class="personal-panels">
           ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer)).join("")}
@@ -261,8 +270,8 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
   `;
 }
 
-function renderQuickContacts(profile: PersonalSpaceProfile): string {
-  const contacts = profile.contacts.slice(0, 3);
+function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  const contacts = visibleContacts(profile, ownSpace).slice(0, 3);
   if (contacts.length === 0) {
     return "";
   }
@@ -323,7 +332,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           <section class="personal-post">
             <small>${escapeHtml(post.meta)}</small>
             <h3>${escapeHtml(post.title)}</h3>
-            <p>${escapeHtml(post.text)}</p>
+            <p>${escapeHtml(personalSpaceCopy(post.text, ownSpace))}</p>
           </section>
         `),
         "hexagon",
@@ -351,6 +360,18 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     };
   }
   if (layer === "messages") {
+    if (ownSpace) {
+      return {
+        eyebrow: "заметки",
+        title: "Быстрые мысли.",
+        body: `
+          <div class="personal-message-preview">
+            <div><b>${escapeHtml(profile.shortName)}</b><p>Свое место для заметок.</p></div>
+            <button type="button" data-action="message">${icon("send")} Открыть</button>
+          </div>
+        `
+      };
+    }
     return {
       eyebrow: "чат",
       title: "Личные сообщения.",
@@ -384,10 +405,10 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   return {
     eyebrow: "контакт",
     title: "Кто это и как связаться.",
-    text: profile.about,
+    text: personalSpaceCopy(profile.about, ownSpace),
     body: `
       <div class="personal-contact-list">
-        ${profile.contacts.map((contact) => `
+        ${visibleContacts(profile, ownSpace).map((contact) => `
           ${contact.href ? `<a href="${escapeAttr(contact.href)}">` : "<div>"}
             <span>${escapeHtml(contact.label)}</span>
             <b>${escapeHtml(contact.value)}</b>
@@ -396,6 +417,30 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       </div>
     `
   };
+}
+
+function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
+  return ownSpace && layer.id === "messages"
+    ? { ...layer, label: "Заметки", title: "Заметки" }
+    : layer;
+}
+
+function visibleContacts(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalSpaceContact[] {
+  return ownSpace
+    ? profile.contacts.filter((contact) => contact.label !== "чат")
+    : profile.contacts;
+}
+
+function personalSpaceCopy(text: string, ownSpace: boolean): string {
+  if (!ownSpace) {
+    return text;
+  }
+  return text
+    .replaceAll("сообщений", "заметок")
+    .replaceAll("сообщения", "заметки")
+    .replaceAll("сообщение", "заметку")
+    .replaceAll("Чат", "Заметки")
+    .replaceAll("чат", "заметки");
 }
 
 function renderPanelList(className: string, items: readonly string[], emptyIcon: IconName, emptyText: string): string {

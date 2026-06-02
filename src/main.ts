@@ -22,6 +22,8 @@ import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
 import { bindLegalPage } from "./features/legal";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
+import { clearAttentionNotices, notificationPermissionNote, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications } from "./features/notifications";
+import type { AttentionNotice } from "./features/notifications";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
@@ -246,8 +248,6 @@ type OpenMessageDialog = {
 const writerLines = new Map<string, Map<number, WriterLine>>();
 const activeActivities = new Map<string, WriterActivity>();
 const activeActivityTicks = new Map<string, number>();
-const activeNoticeKeys = new Set<string>();
-const lastTypingNoticeAt = new Map<string, number>();
 const joinPrompts = new Set<string>();
 let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
@@ -307,10 +307,6 @@ type SotyFileStreamState = {
   readonly delivery: string;
   readonly sourceCommandId: string;
   sent: number;
-};
-type AttentionNotice = {
-  readonly title: string;
-  readonly body?: string;
 };
 const sotyFileLineBuffers = new Map<string, string>();
 const sotyFileStreams = new Map<string, SotyFileStreamState>();
@@ -3074,6 +3070,7 @@ function renderApp(): void {
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">${icon("copy")}</button>
+          <button class="dialog-notify retro-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
         </header>
         <section class="cell-surface" aria-label="пространство соты">
           <div class="cell-app-shelf" aria-label="мини-аппы"></div>
@@ -3179,6 +3176,9 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".dialog-id")?.addEventListener("click", () => {
     void shareSelectedDialogLink();
+  });
+  app.querySelector<HTMLButtonElement>(".dialog-notify")?.addEventListener("click", () => {
+    void enableSelectedNotifications();
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
@@ -4465,10 +4465,12 @@ function renderDialogChrome(): void {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const label = tunnel ? counterpartyLabel(tunnel) : "";
   const color = tunnel ? safeColor(tunnel.color, label + tunnel.id) : "#67e8f9";
+  const head = app.querySelector<HTMLElement>(".dialog-head");
   const avatar = app.querySelector<HTMLElement>(".dialog-avatar");
   const name = app.querySelector<HTMLElement>(".dialog-name");
   const state = app.querySelector<HTMLElement>(".dialog-state");
   const id = app.querySelector<HTMLButtonElement>(".dialog-id");
+  const notifyButton = app.querySelector<HTMLButtonElement>(".dialog-notify");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const appShell = app.querySelector<HTMLElement>(".shell");
   const editor = app.querySelector<HTMLElement>(".editor");
@@ -4497,6 +4499,13 @@ function renderDialogChrome(): void {
   appShell?.classList.toggle("simple-contact-shell", simpleContactSurface);
   editor?.classList.toggle("agent-mode-active", agentMode);
   editor?.classList.toggle("simple-contact-surface", simpleContactSurface);
+  const offerNotifications = simpleContactSurface && shouldOfferNotifications();
+  head?.classList.toggle("has-notification-offer", offerNotifications);
+  if (notifyButton) {
+    notifyButton.hidden = !offerNotifications;
+    notifyButton.setAttribute("aria-label", "включить оповещения");
+    notifyButton.dataset.tooltip = "Оповещения";
+  }
   if (avatar) {
     avatar.textContent = label ? initials(label) : "";
   }
@@ -4562,6 +4571,11 @@ function renderDialogChrome(): void {
   renderAgentPrivatePanel();
 }
 
+async function enableSelectedNotifications(): Promise<void> {
+  await requestNotificationPermission();
+  renderDialogChrome();
+}
+
 function renderSpace(): void {
   const rail = app.querySelector<HTMLDivElement>(".space-rail");
   if (!rail) {
@@ -4613,7 +4627,8 @@ function selectedSpaceModel(): SpaceModel | null {
   return {
     id: tunnel.id,
     color,
-    mode: selectedSpaceMode()
+    mode: selectedSpaceMode(),
+    ownSpace: isOwnSpace(tunnel)
   };
 }
 
@@ -7254,86 +7269,24 @@ function tunnelHasNotice(tunnelId: string): boolean {
   return loadTunnels().some((tunnel) => tunnel.id === tunnelId && tunnel.unread);
 }
 
-async function requestNotificationPermission(): Promise<NotificationPermission | "unsupported"> {
-  if (!("Notification" in window)) {
-    return "unsupported";
-  }
-  if (Notification.permission !== "default") {
-    return Notification.permission;
-  }
-  try {
-    return await Notification.requestPermission();
-  } catch {
-    return Notification.permission;
-  }
-}
-
-function notificationPermissionNote(permission: NotificationPermission | "unsupported"): string {
-  if (permission === "granted") {
-    return " Оповещения включены.";
-  }
-  if (permission === "denied") {
-    return " Оповещения можно включить в настройках браузера.";
-  }
-  return "";
-}
-
-async function showSystemAttentionNotice(tunnelId: string, notice: AttentionNotice): Promise<void> {
-  if (!("Notification" in window) || Notification.permission !== "granted") {
-    return;
-  }
-  const title = cleanNick(notice.title) || "соты";
-  const options: NotificationOptions = {
-    body: notice.body || "Новое событие",
-    icon: "/icon.svg",
-    badge: "/icon.svg",
-    tag: `soty:${tunnelId}`,
-    data: { url: notificationUrlForTunnel(tunnelId) }
-  };
-  try {
-    const registration = "serviceWorker" in navigator
-      ? await navigator.serviceWorker.ready
-      : null;
-    if (registration?.showNotification) {
-      await registration.showNotification(title, options);
-      return;
-    }
-  } catch {
-    // Fall through to the page-level notification API.
-  }
-  try {
-    new Notification(title, options);
-  } catch {
-    // Some browsers only allow ServiceWorkerRegistration.showNotification.
-  }
-}
-
 function notificationUrlForTunnel(tunnelId: string): string {
   const base = bareChatMode ? "/?pwa=1&bare=1" : "/?pwa=1";
   return `${base}&chat=${encodeURIComponent(tunnelId)}`;
 }
 
 function vibrateHiddenOnce(reason: string, tunnelId: string, hadNotice: boolean, notice?: AttentionNotice): void {
-  if (document.visibilityState !== "hidden" || hadNotice) {
-    return;
-  }
-  const key = `${tunnelId}:${reason}`;
-  if (activeNoticeKeys.has(key)) {
-    return;
-  }
-  activeNoticeKeys.add(key);
-  navigator.vibrate?.([45, 70, 45]);
-  if (notice) {
-    void showSystemAttentionNotice(tunnelId, notice);
-  }
+  notifyHiddenOnce({
+    reason,
+    tunnelId,
+    hadNotice,
+    hidden: document.visibilityState === "hidden",
+    url: notificationUrlForTunnel(tunnelId),
+    notice
+  });
 }
 
 function clearTunnelNotices(tunnelId: string): void {
-  for (const key of [...activeNoticeKeys]) {
-    if (key.startsWith(`${tunnelId}:`)) {
-      activeNoticeKeys.delete(key);
-    }
-  }
+  clearAttentionNotices(tunnelId);
 }
 
 function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNotice: boolean): void {
@@ -7345,12 +7298,9 @@ function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNoti
     return;
   }
   const key = `${tunnelId}:${writer}`;
-  const now = Date.now();
-  const last = lastTypingNoticeAt.get(key) || 0;
-  if (now - last < 60_000) {
+  if (!shouldNotifyTyping(key)) {
     return;
   }
-  lastTypingNoticeAt.set(key, now);
   vibrateHiddenOnce(`typing:${writer}`, tunnelId, hadNotice, {
     title: cleanNick(activity.nick) || counterpartyLabelForTunnelId(tunnelId) || "соты",
     body: "Пишет сообщение"

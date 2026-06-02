@@ -18,6 +18,7 @@ export interface SpaceModel {
   readonly id: string;
   readonly color: string;
   readonly mode: SpaceMode;
+  readonly ownSpace?: boolean;
 }
 
 export interface SpaceComposerAccess {
@@ -115,22 +116,31 @@ export function spaceComposerAccess(mode: SpaceMode, label: string, ownSpace: bo
   if (mode === "reputation") {
     return { canCompose: false, entryKind: null, placeholder: "Отзывы из сообщений" };
   }
-  return { canCompose: true, entryKind: null, placeholder: "Сообщение" };
+  return { canCompose: true, entryKind: null, placeholder: ownSpace ? "Заметка" : "Сообщение" };
 }
 
 export function renderSpaceRail(model: SpaceModel): string {
   return `
     <div class="space-card" data-mode="${model.mode}" style="--space-color:${escapeAttr(model.color)}">
       <div class="space-map" role="tablist" aria-label="раздел соты">
-        ${modes.map((mode) => `
-          <button class="${[mode.id === model.mode ? "is-active" : "", mode.label ? "" : "is-symbol"].filter(Boolean).join(" ")}" type="button" data-space-mode="${mode.id}" role="tab" aria-selected="${mode.id === model.mode ? "true" : "false"}" aria-label="${escapeAttr(mode.ariaLabel)}" data-tooltip="${escapeAttr(mode.hint)}">
-            ${icon(mode.icon)}
-            ${mode.label ? `<b>${escapeHtml(mode.label)}</b>` : ""}
+        ${modes.map((mode) => {
+          const display = modeDisplay(mode, model.ownSpace === true);
+          return `
+          <button class="${[mode.id === model.mode ? "is-active" : "", display.label ? "" : "is-symbol"].filter(Boolean).join(" ")}" type="button" data-space-mode="${mode.id}" role="tab" aria-selected="${mode.id === model.mode ? "true" : "false"}" aria-label="${escapeAttr(display.ariaLabel)}" data-tooltip="${escapeAttr(display.hint)}">
+            ${icon(display.icon)}
+            ${display.label ? `<b>${escapeHtml(display.label)}</b>` : ""}
           </button>
-        `).join("")}
+        `;
+        }).join("")}
       </div>
     </div>
   `;
+}
+
+function modeDisplay(mode: typeof modes[number], ownSpace: boolean): typeof modes[number] {
+  return ownSpace && mode.id === "dialog"
+    ? { ...mode, label: "Заметки", hint: "Заметки", ariaLabel: "Заметки" }
+    : mode;
 }
 
 export function renderSpaceEntryBubble(entry: SpaceEntry, mine: boolean): string {

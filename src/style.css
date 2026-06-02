@@ -1609,6 +1609,10 @@ button.personal-avatar {
   padding: 8px 10px;
 }
 
+.shell.simple-contact-shell .dialog-head.has-notification-offer {
+  grid-template-columns: 44px minmax(0, 1fr) 42px 42px;
+}
+
 .shell.simple-contact-shell .dialog-head,
 .shell.simple-contact-shell .editor,
 .shell.simple-contact-shell .space-card {
@@ -1632,11 +1636,16 @@ button.personal-avatar {
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
-.shell.simple-contact-shell .dialog-id {
+.shell.simple-contact-shell .dialog-id,
+.shell.simple-contact-shell .dialog-notify {
   border-color: rgba(190, 205, 200, 0.94);
   background: #ffffff;
   color: var(--cyan);
   box-shadow: none;
+}
+
+.shell.simple-contact-shell .dialog-notify {
+  color: var(--green);
 }
 
 .shell.simple-contact-shell .dialog-live,
@@ -2005,7 +2014,8 @@ button.personal-avatar {
 
 .retro-brand small,
 .dialog-state,
-.dialog-id {
+.dialog-id,
+.dialog-notify {
   color: var(--muted);
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
   font-size: 11px;
@@ -2414,7 +2424,8 @@ button:disabled {
   font-size: 10px;
 }
 
-.dialog-id {
+.dialog-id,
+.dialog-notify {
   appearance: none;
   width: 42px;
   height: 40px;
@@ -2430,20 +2441,24 @@ button:disabled {
   transition: border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 }
 
-.dialog-id svg {
+.dialog-id svg,
+.dialog-notify svg {
   width: 18px;
   height: 18px;
 }
 
 .dialog-id:hover,
-.dialog-id:focus-visible {
+.dialog-id:focus-visible,
+.dialog-notify:hover,
+.dialog-notify:focus-visible {
   border-color: rgba(103, 232, 249, 0.72);
   color: var(--cyan);
   box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.12), 0 0 18px rgba(103, 232, 249, 0.14);
   outline: none;
 }
 
-.dialog-id:active {
+.dialog-id:active,
+.dialog-notify:active {
   transform: translateY(1px);
 }
 
@@ -2453,7 +2468,8 @@ button:disabled {
   box-shadow: 0 0 18px rgba(68, 255, 154, 0.16);
 }
 
-.dialog-id:disabled {
+.dialog-id:disabled,
+.dialog-notify:disabled {
   cursor: default;
   opacity: 0.58;
   transform: none;
@@ -5451,12 +5467,17 @@ button:disabled {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
   }
 
+  .shell.simple-contact-shell .dialog-head.has-notification-offer {
+    grid-template-columns: 40px minmax(0, 1fr) 40px 40px;
+  }
+
   .dialog-avatar {
     width: 40px;
     height: 36px;
   }
 
-  .dialog-id {
+  .dialog-id,
+  .dialog-notify {
     width: 40px;
     height: 36px;
     min-width: 0;
