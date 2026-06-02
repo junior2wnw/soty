@@ -21,6 +21,26 @@ self.addEventListener("message", (event) => {
   }
 });
 
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const targetUrl = new URL(event.notification.data?.url || "/?pwa=1", self.location.origin).href;
+  event.waitUntil((async () => {
+    const windows = await clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of windows) {
+      const url = new URL(client.url);
+      if (url.origin !== self.location.origin) {
+        continue;
+      }
+      if ("navigate" in client) {
+        await client.navigate(targetUrl);
+      }
+      await client.focus();
+      return;
+    }
+    await clients.openWindow(targetUrl);
+  })());
+});
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") {

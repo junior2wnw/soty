@@ -308,6 +308,10 @@ type SotyFileStreamState = {
   readonly sourceCommandId: string;
   sent: number;
 };
+type AttentionNotice = {
+  readonly title: string;
+  readonly body?: string;
+};
 const sotyFileLineBuffers = new Map<string, string>();
 const sotyFileStreams = new Map<string, SotyFileStreamState>();
 const operatorBridgeProtocol = "soty.operator-bridge.v2";
@@ -490,7 +494,7 @@ async function boot(): Promise<void> {
 
   tunnels = loadTunnels();
   ensurePermanentCells();
-  selectedId = loadSelectedTunnelId() || tunnels[0]?.id || "";
+  selectedId = requestedChatTunnelId(tunnels) || loadSelectedTunnelId() || tunnels[0]?.id || "";
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
@@ -719,6 +723,15 @@ function bareChatPath(): string {
   return bareChatMode ? "/?pwa=1&bare=1" : "/?pwa=1";
 }
 
+function requestedChatTunnelId(items: readonly TunnelRecord[] = loadTunnels()): string {
+  try {
+    const raw = new URL(window.location.href).searchParams.get("chat") || "";
+    return items.some((item) => item.id === raw) ? raw : "";
+  } catch {
+    return "";
+  }
+}
+
 function setPersonalSpaceMode(active: boolean): void {
   document.body.classList.toggle("personal-space-mode", active);
 }
@@ -828,9 +841,6 @@ function renderSelfStartPage(): void {
   `;
   const input = app.querySelector<HTMLInputElement>(".self-start-input");
   const backupInput = app.querySelector<HTMLInputElement>("[data-backup-import]");
-  if (!saved) {
-    input?.focus();
-  }
   app.querySelector<HTMLElement>("[data-action='backup-export']")?.addEventListener("click", exportSotyBackup);
   app.querySelector<HTMLElement>("[data-action='backup-import']")?.addEventListener("click", () => backupInput?.click());
   backupInput?.addEventListener("change", () => {
@@ -1046,7 +1056,7 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
   }
   tunnels = loadTunnels();
   ensurePermanentCells();
-  selectedId = loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
+  selectedId = requestedChatTunnelId(tunnels) || loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
@@ -3164,6 +3174,7 @@ function renderTiles(): void {
         },
         knock: () => {
           selectTunnel(id);
+          requestNotificationPermission();
           syncs.get(id)?.sendKnock("*");
           tunnels = touchTunnel(id);
           renderTiles();
@@ -4573,7 +4584,12 @@ function ensureSync(tunnel: TunnelRecord): void {
       const next = [file, ...(files.get(tunnel.id) ?? []).filter((item) => item.id !== file.id)];
       files.set(tunnel.id, next);
       if (file.historical !== true) {
+        const hadNotice = tunnelHasNotice(tunnel.id);
         maybeAutoDownloadReceivedFile(tunnel.id, file);
+        vibrateHiddenOnce(`file:${file.id}`, tunnel.id, hadNotice, {
+          title: cleanNick(file.nick) || counterpartyLabel(tunnel),
+          body: file.name ? `Файл: ${file.name}` : "Файл"
+        });
         tunnels = tunnel.id === selectedId ? touchTunnel(tunnel.id) : markTunnel(tunnel.id, true);
       }
       if (tunnel.id === selectedId) {
@@ -5046,7 +5062,11 @@ function applyKnock(tunnelId: string, knock: NoticeKnock): void {
     return;
   }
   const hadNotice = tunnelHasNotice(tunnelId);
-  vibrateHiddenOnce(`knock:${knock.deviceId || knock.nick}`, tunnelId, hadNotice);
+  const title = cleanNick(knock.nick) || counterpartyLabelForTunnelId(tunnelId) || "соты";
+  vibrateHiddenOnce(`knock:${knock.deviceId || knock.nick}`, tunnelId, hadNotice, {
+    title,
+    body: "Позвали в чат"
+  });
   tunnels = document.visibilityState === "hidden" || tunnelId !== selectedId
     ? markTunnel(tunnelId, true)
     : touchTunnel(tunnelId);
@@ -7089,7 +7109,49 @@ function tunnelHasNotice(tunnelId: string): boolean {
   return loadTunnels().some((tunnel) => tunnel.id === tunnelId && tunnel.unread);
 }
 
-function vibrateHiddenOnce(reason: string, tunnelId: string, hadNotice: boolean): void {
+function requestNotificationPermission(): void {
+  if (!("Notification" in window) || Notification.permission !== "default") {
+    return;
+  }
+  void Notification.requestPermission().catch(() => undefined);
+}
+
+async function showSystemAttentionNotice(tunnelId: string, notice: AttentionNotice): Promise<void> {
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    return;
+  }
+  const title = cleanNick(notice.title) || "соты";
+  const options: NotificationOptions = {
+    body: notice.body || "Новое событие",
+    icon: "/icon.svg",
+    badge: "/icon.svg",
+    tag: `soty:${tunnelId}`,
+    data: { url: notificationUrlForTunnel(tunnelId) }
+  };
+  try {
+    const registration = "serviceWorker" in navigator
+      ? await navigator.serviceWorker.ready
+      : null;
+    if (registration?.showNotification) {
+      await registration.showNotification(title, options);
+      return;
+    }
+  } catch {
+    // Fall through to the page-level notification API.
+  }
+  try {
+    new Notification(title, options);
+  } catch {
+    // Some browsers only allow ServiceWorkerRegistration.showNotification.
+  }
+}
+
+function notificationUrlForTunnel(tunnelId: string): string {
+  const base = bareChatMode ? "/?pwa=1&bare=1" : "/?pwa=1";
+  return `${base}&chat=${encodeURIComponent(tunnelId)}`;
+}
+
+function vibrateHiddenOnce(reason: string, tunnelId: string, hadNotice: boolean, notice?: AttentionNotice): void {
   if (document.visibilityState !== "hidden" || hadNotice) {
     return;
   }
@@ -7099,6 +7161,9 @@ function vibrateHiddenOnce(reason: string, tunnelId: string, hadNotice: boolean)
   }
   activeNoticeKeys.add(key);
   navigator.vibrate?.([45, 70, 45]);
+  if (notice) {
+    void showSystemAttentionNotice(tunnelId, notice);
+  }
 }
 
 function clearTunnelNotices(tunnelId: string): void {
@@ -7124,7 +7189,10 @@ function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNoti
     return;
   }
   lastTypingNoticeAt.set(key, now);
-  vibrateHiddenOnce(`typing:${writer}`, tunnelId, hadNotice);
+  vibrateHiddenOnce(`typing:${writer}`, tunnelId, hadNotice, {
+    title: cleanNick(activity.nick) || counterpartyLabelForTunnelId(tunnelId) || "соты",
+    body: "Пишет сообщение"
+  });
 }
 
 function startAgentSourceControl(tunnelId: string): void {
