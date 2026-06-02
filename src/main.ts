@@ -941,22 +941,26 @@ function renderSelfStartPage(): void {
   app.innerHTML = `
     <main class="self-start-shell" aria-label="создать страницу">
       <form class="self-start-form">
-        <input
-          class="self-start-input"
-          name="handle"
-          autocomplete="nickname"
-          autocapitalize="none"
-          enterkeyhint="go"
-          inputmode="text"
-          maxlength="32"
-          aria-label="Имя страницы"
-          placeholder="имя"
-          value="${escapeHtml(saved)}"
-        />
+        <label class="self-start-field">
+          <span aria-hidden="true">@</span>
+          <input
+            class="self-start-input"
+            name="handle"
+            autocomplete="nickname"
+            autocapitalize="none"
+            enterkeyhint="go"
+            inputmode="text"
+            maxlength="32"
+            aria-label="Имя страницы"
+            placeholder="имя"
+            value="${escapeHtml(saved)}"
+          />
+          <button type="submit" aria-label="Открыть Я" data-tooltip="Открыть Я">${icon("check")}</button>
+        </label>
       </form>
       <div class="self-start-tools" aria-label="импорт и экспорт">
-        <button type="button" data-action="backup-import">${icon("upload")} Импорт</button>
-        <button type="button" data-action="backup-export">${icon("download")} Экспорт</button>
+        <button type="button" data-action="backup-import" aria-label="Импорт" data-tooltip="Импорт">${icon("upload")}</button>
+        <button type="button" data-action="backup-export" aria-label="Экспорт" data-tooltip="Экспорт">${icon("download")}</button>
         <input data-backup-import type="file" accept="application/json,.json" hidden />
       </div>
     </main>

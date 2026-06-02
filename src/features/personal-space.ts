@@ -213,8 +213,8 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
         <a href="/" class="personal-brand">соты</a>
         <nav aria-label="пространство">
           ${ownSpace ? `
-            <button type="button" data-action="backup-import">${icon("upload")} Импорт</button>
-            <button type="button" data-action="backup-export">${icon("download")} Экспорт</button>
+            <button class="personal-icon-button" type="button" data-action="backup-import" aria-label="Импорт" data-tooltip="Импорт">${icon("upload")}</button>
+            <button class="personal-icon-button" type="button" data-action="backup-export" aria-label="Экспорт" data-tooltip="Экспорт">${icon("download")}</button>
           ` : ""}
           <button type="button" data-action="self">${localHandle ? "Я" : "Создать Я"}</button>
         </nav>

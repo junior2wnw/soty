@@ -147,57 +147,74 @@ svg {
 }
 
 .self-start-form {
-  width: min(100%, 520px);
+  width: min(100%, 760px);
+}
+
+.self-start-field {
+  width: 100%;
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 2px solid rgba(21, 21, 21, 0.18);
+  color: #151515;
+}
+
+.self-start-field:focus-within {
+  border-color: #151515;
+}
+
+.self-start-field > span {
+  color: rgba(21, 21, 21, 0.38);
+  font-size: 34px;
+  font-weight: 820;
+  line-height: 1;
 }
 
 .self-start-input {
   width: 100%;
+  min-width: 0;
   min-height: 74px;
   padding: 0;
   border: 0;
-  border-bottom: 2px solid rgba(21, 21, 21, 0.18);
   border-radius: 0;
   outline: 0;
+  box-shadow: none;
   background: transparent;
   color: #151515;
-  font-size: 42px;
+  font-size: 36px;
   font-weight: 820;
   line-height: 1.1;
   letter-spacing: 0;
-  text-align: center;
-}
-
-.self-start-input::placeholder {
-  color: rgba(21, 21, 21, 0.32);
+  text-align: left;
 }
 
 .self-start-input:focus {
-  border-color: #151515;
+  outline: 0;
+  box-shadow: none;
 }
 
-.self-start-tools {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+.self-start-input:placeholder-shown {
+  text-align: center;
 }
 
+.self-start-field button,
 .self-start-tools button {
-  min-height: 38px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 0 12px;
   border: 1px solid rgba(21, 21, 21, 0.12);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
   color: rgba(21, 21, 21, 0.78);
-  font-size: 14px;
-  font-weight: 780;
   backdrop-filter: blur(16px);
 }
 
+.self-start-field button:hover,
 .self-start-tools button:hover {
   transform: translateY(-1px);
   border-color: rgba(21, 21, 21, 0.24);
@@ -205,9 +222,21 @@ svg {
   box-shadow: 0 12px 28px rgba(21, 21, 21, 0.08);
 }
 
+.self-start-field button svg,
 .self-start-tools svg {
   width: 17px;
   height: 17px;
+}
+
+.self-start-input::placeholder {
+  color: rgba(21, 21, 21, 0.32);
+}
+
+.self-start-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .personal-space-shell {
@@ -282,6 +311,13 @@ svg {
 .personal-topbar nav svg {
   width: 18px;
   height: 18px;
+}
+
+.personal-topbar nav .personal-icon-button {
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+  justify-content: center;
 }
 
 .personal-main {
@@ -5188,9 +5224,18 @@ button:disabled {
     padding: 18px;
   }
 
+  .self-start-field {
+    min-height: 64px;
+    gap: 6px;
+  }
+
+  .self-start-field > span {
+    font-size: 28px;
+  }
+
   .self-start-input {
     min-height: 62px;
-    font-size: 34px;
+    font-size: 30px;
   }
 
   .personal-topbar,
