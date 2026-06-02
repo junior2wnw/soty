@@ -871,7 +871,9 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
   void renderPersonalSpacePage(app, {
     route,
     canInstall: () => Boolean(pendingInstallPrompt),
+    canNotify: shouldOfferNotifications,
     install: promptPersonalSpaceInstall,
+    enableNotifications: promptPersonalSpaceNotifications,
     uploadPhoto: uploadPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
@@ -896,6 +898,20 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
   return choice.outcome === "accepted"
     ? { ok: true, message: `Готово. Это пространство теперь ощущается как отдельное приложение.${notificationPermissionNote(permission)}` }
     : { ok: false, message: "Установку можно повторить позже с этой же страницы." };
+}
+
+async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallResult> {
+  const permission = await requestNotificationPermission();
+  if (permission === "granted") {
+    return { ok: true, message: "Оповещения включены." };
+  }
+  if (permission === "denied") {
+    return { ok: false, message: "Включите в настройках браузера." };
+  }
+  if (permission === "unsupported") {
+    return { ok: false, message: "Браузер не поддерживает оповещения." };
+  }
+  return { ok: false, message: "Оповещения не включены." };
 }
 
 function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: string): void {

@@ -484,13 +484,14 @@ button.personal-avatar {
 }
 
 .personal-primary,
-.personal-message-preview button,
+.personal-message-preview button.personal-primary,
 .personal-panel-action {
   background: #000;
   color: #fff;
 }
 
-.personal-secondary {
+.personal-secondary,
+.personal-message-preview button.personal-secondary {
   background: #fff;
   color: #000;
 }
@@ -791,7 +792,8 @@ button.personal-avatar {
 .personal-post,
 .personal-review,
 .personal-spaces a,
-.personal-message-preview div,
+.personal-spaces button,
+.personal-message-copy,
 .personal-empty {
   min-width: 0;
   display: grid;
@@ -803,6 +805,11 @@ button.personal-avatar {
   color: #000;
   text-decoration: none;
   box-shadow: none;
+}
+
+.personal-spaces button {
+  width: 100%;
+  text-align: left;
 }
 
 .personal-empty {
@@ -858,9 +865,22 @@ button.personal-avatar {
   background: #f1f1f1;
 }
 
+.personal-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+}
+
 .personal-message-preview button {
   justify-self: start;
-  margin-top: 6px;
+}
+
+.personal-message-preview small {
+  min-height: 18px;
+  color: #404040;
+  font-size: 13px;
+  font-weight: 760;
 }
 
 .personal-loading {

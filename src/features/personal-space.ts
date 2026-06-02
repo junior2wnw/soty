@@ -15,7 +15,9 @@ export type PersonalSpaceInstallResult = {
 export type PersonalSpacePageOptions = {
   readonly route: PersonalSpaceRoute;
   readonly canInstall: () => boolean;
+  readonly canNotify: () => boolean;
   readonly install: () => Promise<PersonalSpaceInstallResult>;
+  readonly enableNotifications: () => Promise<PersonalSpaceInstallResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
@@ -117,7 +119,7 @@ type PersonalLayerDisplay = {
   readonly title: string;
   readonly icon: IconName;
 };
-type EntityActionId = "install" | "message" | "review" | "share" | "runtime";
+type EntityActionId = "install" | "message" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "hero" | "reviews" | "messages" | "place";
 type EntityAction = {
   readonly id: EntityActionId;
@@ -155,7 +157,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const profile = await loadPersonalSpaceProfile(options.route);
   const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "card";
   const localHandle = loadLocalHandle();
-  root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), localHandle);
+  root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
   bindPersonalSpace(root, profile, options);
 }
 
@@ -214,7 +216,7 @@ function renderLoading(route: PersonalSpaceRoute): string {
   `;
 }
 
-function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean, localHandle: string): string {
+function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean, canNotify: boolean, localHandle: string): string {
   const ownSpace = isOwnProfile(profile, localHandle);
   const initialsText = initials(profile.shortName || profile.displayName);
   const avatar = profile.photoUrl
@@ -259,7 +261,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           }).join("")}
         </div>
         <section class="personal-panels">
-          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer)).join("")}
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canNotify)).join("")}
         </section>
       </main>
     </section>
@@ -295,9 +297,10 @@ function renderLayerPanel(
   profile: PersonalSpaceProfile,
   layer: PersonalSpaceLayer,
   ownSpace: boolean,
-  activeLayer: PersonalSpaceLayer
+  activeLayer: PersonalSpaceLayer,
+  canNotify: boolean
 ): string {
-  const view = panelView(profile, layer, ownSpace);
+  const view = panelView(profile, layer, ownSpace, canNotify);
   return `
     <article class="personal-panel${layer === activeLayer ? " is-active" : ""}" data-panel="${layer}">
       <div class="personal-panel-copy">
@@ -311,7 +314,7 @@ function renderLayerPanel(
   `;
 }
 
-function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean): PersonalPanelView {
+function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean, canNotify: boolean): PersonalPanelView {
   if (layer === "personal") {
     return {
       eyebrow: "я",
@@ -351,15 +354,16 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     };
   }
   if (layer === "messages") {
-    const [messageAction] = entityActionsFor({ surface: "messages", ownSpace, canInstall: false });
+    const messageActions = entityActionsFor({ surface: "messages", ownSpace, canInstall: false, canNotify });
     if (ownSpace) {
       return {
         eyebrow: "заметки",
         title: "Заметки",
         body: `
           <div class="personal-message-preview">
-            <div><b>${escapeHtml(profile.shortName)}</b><p>Личное, быстрое, рядом.</p></div>
-            ${messageAction ? renderEntityAction(messageAction) : ""}
+            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личное, быстрое, рядом.</p></div>
+            ${renderInlineEntityActions(messageActions)}
+            <small data-action-note></small>
           </div>
         `
       };
@@ -369,30 +373,19 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       title: "Сообщения",
       body: `
         <div class="personal-message-preview">
-          <div><b>${escapeHtml(profile.shortName)}</b><p>Личный чат с этой страницей.</p></div>
-          ${messageAction ? renderEntityAction(messageAction) : ""}
+          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личный чат с этой страницей.</p></div>
+          ${renderInlineEntityActions(messageActions)}
+          <small data-action-note></small>
         </div>
       `
     };
   }
   if (layer === "place") {
-    const [runtimeAction] = entityActionsFor({ surface: "place", ownSpace, canInstall: false });
     return {
       eyebrow: "соты",
       title: "Соты",
-      text: "Агент, мини-аппы, доступы и другие возможности.",
-      ...(runtimeAction ? { action: runtimeAction } : {}),
-      body: renderPanelList(
-        "personal-spaces",
-        profile.spaces.map((space) => `
-          <a href="${escapeAttr(space.href)}" data-space-link class="${space.active ? "is-active" : ""}">
-            <span>${escapeHtml(space.title)}</span>
-            <p>${escapeHtml(space.summary)}</p>
-          </a>
-        `),
-        "hexagon",
-        "Здесь появятся пространства."
-      )
+      text: "Агент, приложения, доступы и ваши пространства.",
+      body: renderSpaceModules(profile)
     };
   }
   return {
@@ -412,7 +405,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   };
 }
 
-function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean }): readonly EntityAction[] {
+function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
   if (options.surface === "hero") {
     return options.ownSpace
       ? [
@@ -429,7 +422,10 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
     return options.ownSpace ? [] : [{ id: "review", label: "Отзыв", icon: "heart", tone: "primary" }];
   }
   if (options.surface === "messages") {
-    return [{ id: "message", label: options.ownSpace ? "Заметки" : "Написать", icon: "send", tone: "primary" }];
+    return [
+      { id: "message", label: options.ownSpace ? "Заметки" : "Написать", icon: "send", tone: "primary" },
+      ...(!options.ownSpace && options.canNotify ? [{ id: "notifications", label: "Оповещения", icon: "bell", tone: "secondary" } as const] : [])
+    ];
   }
   return [{ id: "runtime", label: "Открыть", icon: "hexagon", tone: "primary" }];
 }
@@ -441,9 +437,40 @@ function renderEntityActions(actions: readonly EntityAction[]): string {
   return `<div class="personal-actions">${actions.map((action) => renderEntityAction(action)).join("")}</div>`;
 }
 
+function renderInlineEntityActions(actions: readonly EntityAction[]): string {
+  if (actions.length === 0) {
+    return "";
+  }
+  return `<div class="personal-message-actions">${actions.map((action) => renderEntityAction(action)).join("")}</div>`;
+}
+
 function renderEntityAction(action: EntityAction, className?: string): string {
   const buttonClass = className || (action.tone === "secondary" ? "personal-secondary" : "personal-primary");
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
+}
+
+function renderSpaceModules(profile: PersonalSpaceProfile): string {
+  const coreModules = [
+    { title: "Агент", summary: "помощь и действия" },
+    { title: "Приложения", summary: "инструменты внутри пространства" },
+    { title: "Доступ", summary: "устройства и права" }
+  ];
+  return `
+    <div class="personal-spaces">
+      ${coreModules.map((module) => `
+        <button type="button" data-action="runtime">
+          <span>${escapeHtml(module.title)}</span>
+          <p>${escapeHtml(module.summary)}</p>
+        </button>
+      `).join("")}
+      ${profile.spaces.map((space) => `
+        <a href="${escapeAttr(space.href)}" data-space-link class="${space.active ? "is-active" : ""}">
+          <span>${escapeHtml(space.title)}</span>
+          <p>${escapeHtml(space.summary)}</p>
+        </a>
+      `).join("")}
+    </div>
+  `;
 }
 
 function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
@@ -554,6 +581,10 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     options.openRuntime(profile);
     return;
   }
+  if (action === "notifications" && node instanceof HTMLButtonElement) {
+    void enablePersonalNotifications(root, node, options);
+    return;
+  }
   if (action === "self") {
     const handle = loadLocalHandle();
     if (handle) {
@@ -598,6 +629,21 @@ async function importPersonalBackup(root: HTMLElement, file: File, options: Pers
   if (note) {
     note.textContent = result.message;
   }
+}
+
+async function enablePersonalNotifications(root: HTMLElement, button: HTMLButtonElement, options: PersonalSpacePageOptions): Promise<void> {
+  const note = button.closest<HTMLElement>(".personal-message-preview")?.querySelector<HTMLElement>("[data-action-note]")
+    || root.querySelector<HTMLElement>("[data-install-note]");
+  button.disabled = true;
+  const result = await options.enableNotifications();
+  if (note) {
+    note.textContent = result.message;
+  }
+  if (result.ok) {
+    button.textContent = "Включено";
+    return;
+  }
+  button.disabled = false;
 }
 
 function showNicknameSheet(
