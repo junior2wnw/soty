@@ -117,6 +117,14 @@ type PersonalLayerDisplay = {
   readonly title: string;
   readonly icon: IconName;
 };
+type EntityActionId = "install" | "message" | "share" | "runtime";
+type EntityActionSurface = "hero" | "reviews" | "messages" | "place";
+type EntityAction = {
+  readonly id: EntityActionId;
+  readonly label: string;
+  readonly icon: IconName;
+  readonly tone: "primary" | "secondary";
+};
 const localHandleKey = "soty:personal-handle:v1";
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -212,6 +220,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
   const avatar = profile.photoUrl
     ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
     : escapeHtml(initialsText);
+  const heroActions = entityActionsFor({ surface: "hero", ownSpace, canInstall });
   return `
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
       <div class="personal-orbit"></div>
@@ -238,14 +247,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(personalSpaceCopy(profile.headline, ownSpace))}</p>
             ${renderQuickContacts(profile, ownSpace)}
-            <div class="personal-actions">
-              ${ownSpace
-                ? `<button class="personal-primary" type="button" data-action="share">${icon("qr")} Поделиться</button>
-                   <button class="personal-secondary" type="button" data-action="install">${icon("install")} ${canInstall ? "Установить" : "Как установить"}</button>`
-                : `<button class="personal-primary" type="button" data-action="install">${icon("install")} Сохранить контакт</button>
-                   <button class="personal-secondary" type="button" data-action="message">${icon("mail")} Написать</button>
-                   <button class="personal-secondary" type="button" data-action="share">${icon("qr")} Поделиться</button>`}
-            </div>
+            ${renderEntityActions(heroActions)}
             <div class="personal-note" data-install-note>${ownSpace
               ? "Имя и фото станут PWA."
               : "Сохранится как отдельный контакт."}</div>
@@ -287,17 +289,11 @@ function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): 
   `;
 }
 
-type PersonalPanelAction = {
-  readonly action: "message" | "runtime";
-  readonly label: string;
-  readonly icon: IconName;
-};
-
 type PersonalPanelView = {
   readonly eyebrow: string;
   readonly title: string;
   readonly text?: string;
-  readonly action?: PersonalPanelAction;
+  readonly action?: EntityAction;
   readonly body: string;
 };
 
@@ -314,7 +310,7 @@ function renderLayerPanel(
         <span>${escapeHtml(view.eyebrow)}</span>
         <h2>${escapeHtml(view.title)}</h2>
         ${view.text ? `<p>${escapeHtml(view.text)}</p>` : ""}
-        ${view.action ? `<button class="personal-panel-action" type="button" data-action="${view.action.action}">${icon(view.action.icon)} ${escapeHtml(view.action.label)}</button>` : ""}
+        ${view.action ? renderEntityAction(view.action, "personal-panel-action") : ""}
       </div>
       ${view.body}
     </article>
@@ -341,10 +337,11 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     };
   }
   if (layer === "reviews") {
+    const [reviewAction] = entityActionsFor({ surface: "reviews", ownSpace, canInstall: false });
     return {
       eyebrow: "отзывы",
       title: "Доверие из сообщений.",
-      ...(!ownSpace ? { action: { action: "message", label: "Оставить отзыв", icon: "heart" } as const } : {}),
+      ...(reviewAction ? { action: reviewAction } : {}),
       body: renderPanelList(
         "personal-reviews",
         profile.reviews.map((review) => `
@@ -355,11 +352,12 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           </section>
         `),
         "heart",
-        ownSpace ? "Отзывы появятся здесь." : "Напишите в чат."
+        ownSpace ? "Отзывы появятся здесь." : "Напишите сообщение."
       )
     };
   }
   if (layer === "messages") {
+    const [messageAction] = entityActionsFor({ surface: "messages", ownSpace, canInstall: false });
     if (ownSpace) {
       return {
         eyebrow: "заметки",
@@ -367,7 +365,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
         body: `
           <div class="personal-message-preview">
             <div><b>${escapeHtml(profile.shortName)}</b><p>Свое место для заметок.</p></div>
-            <button type="button" data-action="message">${icon("send")} Открыть</button>
+            ${messageAction ? renderEntityAction(messageAction) : ""}
           </div>
         `
       };
@@ -377,18 +375,19 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       title: "Личные сообщения.",
       body: `
         <div class="personal-message-preview">
-          <div><b>${escapeHtml(profile.shortName)}</b><p>${escapeHtml(`Личный чат с ${profile.shortName}.`)}</p></div>
-          <button type="button" data-action="message">${icon("send")} Написать</button>
+          <div><b>${escapeHtml(profile.shortName)}</b><p>${escapeHtml(`Связь с ${profile.shortName}.`)}</p></div>
+          ${messageAction ? renderEntityAction(messageAction) : ""}
         </div>
       `
     };
   }
   if (layer === "place") {
+    const [runtimeAction] = entityActionsFor({ surface: "place", ownSpace, canInstall: false });
     return {
       eyebrow: "место",
       title: "Можно вырасти.",
       text: "Проект, компания, устройство, команда, тема.",
-      action: { action: "runtime", label: "Открыть соты", icon: "hexagon" },
+      ...(runtimeAction ? { action: runtimeAction } : {}),
       body: renderPanelList(
         "personal-spaces",
         profile.spaces.map((space) => `
@@ -417,6 +416,40 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       </div>
     `
   };
+}
+
+function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean }): readonly EntityAction[] {
+  if (options.surface === "hero") {
+    return options.ownSpace
+      ? [
+        { id: "share", label: "Поделиться", icon: "qr", tone: "primary" },
+        { id: "install", label: options.canInstall ? "Установить" : "Как установить", icon: "install", tone: "secondary" }
+      ]
+      : [
+        { id: "install", label: "Сохранить контакт", icon: "install", tone: "primary" },
+        { id: "message", label: "Написать", icon: "mail", tone: "secondary" },
+        { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
+      ];
+  }
+  if (options.surface === "reviews") {
+    return options.ownSpace ? [] : [{ id: "message", label: "Оставить отзыв", icon: "heart", tone: "primary" }];
+  }
+  if (options.surface === "messages") {
+    return [{ id: "message", label: options.ownSpace ? "Открыть" : "Написать", icon: "send", tone: "primary" }];
+  }
+  return [{ id: "runtime", label: "Открыть соты", icon: "hexagon", tone: "primary" }];
+}
+
+function renderEntityActions(actions: readonly EntityAction[]): string {
+  if (actions.length === 0) {
+    return "";
+  }
+  return `<div class="personal-actions">${actions.map((action) => renderEntityAction(action)).join("")}</div>`;
+}
+
+function renderEntityAction(action: EntityAction, className?: string): string {
+  const buttonClass = className || (action.tone === "secondary" ? "personal-secondary" : "personal-primary");
+  return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
 function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
@@ -452,59 +485,30 @@ function renderPanelList(className: string, items: readonly string[], emptyIcon:
 }
 
 function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
-  root.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const layer = button.dataset.layer as PersonalSpaceLayer | undefined;
+  const shell = root.querySelector<HTMLElement>(".personal-space-shell");
+  const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
+  const backupInput = root.querySelector<HTMLInputElement>("[data-backup-import]");
+  shell?.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
+    if (layerButton && shell.contains(layerButton)) {
+      const layer = layerButton.dataset.layer as PersonalSpaceLayer | undefined;
       if (layer) {
         setActiveLayer(root, layer);
       }
-    });
-  });
-  root.querySelectorAll<HTMLElement>("[data-action='message']").forEach((node) => {
-    node.addEventListener("click", () => {
-      const handle = loadLocalHandle();
-      if (handle) {
-        options.openMessage(profile, handle);
-        return;
-      }
-      showNicknameSheet(root, {
-        title: "Как подписать?",
-        description: "Короткое имя для чата.",
-        action: "Написать",
-        onDone: (nextHandle) => options.openMessage(profile, nextHandle)
-      });
-    });
-  });
-  root.querySelectorAll<HTMLElement>("[data-action='runtime']").forEach((node) => {
-    node.addEventListener("click", () => options.openRuntime(profile));
-  });
-  root.querySelectorAll<HTMLElement>("[data-action='self']").forEach((node) => {
-    node.addEventListener("click", () => {
-      const handle = loadLocalHandle();
-      if (handle) {
-        openPersonalRoute(handle);
-        return;
-      }
-      showNicknameSheet(root, {
-        title: "Имя страницы",
-        description: "Оно станет ссылкой и QR.",
-        action: "Создать Я",
-        onDone: openPersonalRoute
-      });
-    });
-  });
-  root.querySelectorAll<HTMLElement>("[data-action='share']").forEach((node) => {
-    node.addEventListener("click", () => {
-      void showShareSheet(root, profile);
-    });
-  });
-  const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
-  const backupInput = root.querySelector<HTMLInputElement>("[data-backup-import]");
-  root.querySelectorAll<HTMLElement>("[data-action='backup-export']").forEach((node) => {
-    node.addEventListener("click", () => options.exportBackup());
-  });
-  root.querySelectorAll<HTMLElement>("[data-action='backup-import']").forEach((node) => {
-    node.addEventListener("click", () => backupInput?.click());
+      return;
+    }
+    const spaceLink = target?.closest<HTMLAnchorElement>("[data-space-link]");
+    if (spaceLink && shell.contains(spaceLink)) {
+      event.preventDefault();
+      window.history.pushState({}, "", spaceLink.href);
+      window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+      return;
+    }
+    const actionNode = target?.closest<HTMLElement>("[data-action]");
+    if (actionNode && shell.contains(actionNode)) {
+      handleEntityAction(root, actionNode, profile, options);
+    }
   });
   backupInput?.addEventListener("change", () => {
     const file = backupInput.files?.[0];
@@ -513,9 +517,6 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     }
     backupInput.value = "";
   });
-  root.querySelector<HTMLElement>("[data-action='photo']")?.addEventListener("click", () => {
-    photoInput?.click();
-  });
   photoInput?.addEventListener("change", () => {
     const file = photoInput.files?.[0];
     if (file) {
@@ -523,18 +524,61 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     }
     photoInput.value = "";
   });
-  root.querySelectorAll<HTMLButtonElement>("[data-action='install']").forEach((button) => {
-    button.addEventListener("click", () => {
-      void installPersonalSpace(root, button, options);
+}
+
+function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  const action = node.dataset.action;
+  if (action === "message") {
+    const handle = loadLocalHandle();
+    if (handle) {
+      options.openMessage(profile, handle);
+      return;
+    }
+    showNicknameSheet(root, {
+      title: "Как подписать?",
+      description: "Короткое имя для сообщений.",
+      action: "Написать",
+      onDone: (nextHandle) => options.openMessage(profile, nextHandle)
     });
-  });
-  root.querySelectorAll<HTMLAnchorElement>("[data-space-link]").forEach((link) => {
-    link.addEventListener("click", (event) => {
-      event.preventDefault();
-      window.history.pushState({}, "", link.href);
-      window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+    return;
+  }
+  if (action === "runtime") {
+    options.openRuntime(profile);
+    return;
+  }
+  if (action === "self") {
+    const handle = loadLocalHandle();
+    if (handle) {
+      openPersonalRoute(handle);
+      return;
+    }
+    showNicknameSheet(root, {
+      title: "Имя страницы",
+      description: "Оно станет ссылкой и QR.",
+      action: "Создать Я",
+      onDone: openPersonalRoute
     });
-  });
+    return;
+  }
+  if (action === "share") {
+    void showShareSheet(root, profile);
+    return;
+  }
+  if (action === "backup-export") {
+    options.exportBackup();
+    return;
+  }
+  if (action === "backup-import") {
+    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
+    return;
+  }
+  if (action === "photo") {
+    root.querySelector<HTMLInputElement>("[data-profile-photo]")?.click();
+    return;
+  }
+  if (action === "install" && node instanceof HTMLButtonElement) {
+    void installPersonalSpace(root, node, options);
+  }
 }
 
 async function importPersonalBackup(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
