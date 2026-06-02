@@ -1820,6 +1820,10 @@ button.personal-avatar {
   display: none;
 }
 
+.shell.simple-contact-shell .dialog-buffer {
+  display: none;
+}
+
 .shell.simple-contact-shell .chat-bubble.is-space-entry {
   align-self: stretch;
   max-width: none;
