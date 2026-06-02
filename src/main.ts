@@ -29,7 +29,7 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, submitPersonalSpaceReview, uploadPersonalSpacePhoto } from "./features/personal-space";
+import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
@@ -744,7 +744,8 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     canInstall: () => Boolean(pendingInstallPrompt),
     install: promptPersonalSpaceInstall,
     uploadPhoto: uploadPersonalSpacePhoto,
-    submitReview: submitPersonalSpaceReview,
+    exportBackup: exportSotyBackup,
+    importBackup: importSotyBackupFile,
     openMessage: openPersonalSpaceMessage,
     openRuntime: openPersonalSpaceRuntime
   });
@@ -803,7 +804,7 @@ function renderSelfStartPage(): void {
   applyPersonalSpaceManifest(null);
   const saved = loadSelfStartHandle();
   app.innerHTML = `
-    <main class="self-start-shell" aria-label="создать страницу Я">
+    <main class="self-start-shell" aria-label="создать страницу">
       <form class="self-start-form">
         <input
           class="self-start-input"
@@ -813,16 +814,32 @@ function renderSelfStartPage(): void {
           enterkeyhint="go"
           inputmode="text"
           maxlength="32"
-          aria-label="Ваш ник"
-          placeholder="назови себя"
+          aria-label="Имя страницы"
+          placeholder="имя"
           value="${escapeHtml(saved)}"
         />
       </form>
+      <div class="self-start-tools" aria-label="импорт и экспорт">
+        <button type="button" data-action="backup-import">${icon("upload")} Импорт</button>
+        <button type="button" data-action="backup-export">${icon("download")} Экспорт</button>
+        <input data-backup-import type="file" accept="application/json,.json" hidden />
+      </div>
     </main>
   `;
   const input = app.querySelector<HTMLInputElement>(".self-start-input");
-  input?.focus();
-  input?.select();
+  const backupInput = app.querySelector<HTMLInputElement>("[data-backup-import]");
+  if (!saved) {
+    input?.focus();
+  }
+  app.querySelector<HTMLElement>("[data-action='backup-export']")?.addEventListener("click", exportSotyBackup);
+  app.querySelector<HTMLElement>("[data-action='backup-import']")?.addEventListener("click", () => backupInput?.click());
+  backupInput?.addEventListener("change", () => {
+    const file = backupInput.files?.[0];
+    if (file) {
+      void importSotyBackupFile(file, input);
+    }
+    backupInput.value = "";
+  });
   app.querySelector<HTMLFormElement>(".self-start-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const handle = cleanSelfStartHandle(input?.value || "");
@@ -834,6 +851,31 @@ function renderSelfStartPage(): void {
     window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
     showPersonalSpaceRoute({ handle, slug: "" });
   });
+}
+
+function exportSotyBackup(): void {
+  const text = buildOperatorExport();
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+  link.href = url;
+  link.download = `soty-${stamp}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function importSotyBackupFile(file: File, nickInput?: HTMLInputElement | null): Promise<PersonalSpaceInstallResult> {
+  const restored = await restoreFromOperatorExportText(file.text(), nickInput);
+  if (!restored) {
+    return { ok: false, message: "Не получилось импортировать." };
+  }
+  return {
+    ok: true,
+    message: restored.count > 0 ? `Импортировано: ${restored.count}.` : "Импортировано."
+  };
 }
 
 function loadSelfStartHandle(): string {
@@ -2876,7 +2918,7 @@ function renderApp(): void {
           </span>
         </div>
         <button class="info-open retro-icon-button" type="button" aria-label="инфа" data-tooltip="Инфа и безопасность">${icon("shield")}</button>
-        <button class="qr-open retro-icon-button" type="button" aria-label="подключить" data-tooltip="Подключить человека или устройство">${icon("qr")}</button>
+        <button class="qr-open retro-icon-button" type="button" aria-label="подключить" data-tooltip="Подключить контакт или устройство">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
       <main class="dialog-shell">
@@ -9185,7 +9227,7 @@ function renderBubbleMarkButton(
   marked: boolean
 ): string {
   const own = kind === "wall";
-  const label = own ? "В мою соту" : "Лайк";
+  const label = own ? "В Я" : "В отзыв";
   return `
     <button class="bubble-mark ${own ? "is-hex" : "is-heart"}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
       ${icon(own ? "hexagon" : "heart")}
@@ -9267,9 +9309,9 @@ function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | u
   if (mode === "wall") {
     void label;
     void own;
-    text = "Нажми шестиугольник на своем сообщении";
+    text = "Отметь сообщение в Я";
   } else if (mode === "reputation") {
-    text = "Нажми сердце возле сообщения";
+    text = "Отметь сообщение в отзывы";
   } else if (tunnel && isAgentTunnel(tunnel)) {
     text = "Попроси Клаву сделать задачу";
   } else if (tunnel && isSelfTunnel(tunnel)) {

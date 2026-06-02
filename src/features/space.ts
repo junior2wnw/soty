@@ -41,9 +41,9 @@ const modes: readonly {
   readonly ariaLabel: string;
   readonly icon: IconName;
 }[] = [
-  { id: "dialog", label: "", hint: "Почта", ariaLabel: "Почта", icon: "mail" },
-  { id: "wall", label: "", hint: "мои отмеченные", ariaLabel: "Шестиугольник: мои отмеченные", icon: "hexagon" },
-  { id: "reputation", label: "", hint: "лайки", ariaLabel: "Сердце: лайки", icon: "heart" }
+  { id: "dialog", label: "Чат", hint: "Чат", ariaLabel: "Чат", icon: "mail" },
+  { id: "wall", label: "Я", hint: "В Я", ariaLabel: "Я: страница", icon: "hexagon" },
+  { id: "reputation", label: "Отзывы", hint: "В отзывы", ariaLabel: "Отзывы", icon: "heart" }
 ];
 
 const prefixByKind: Record<SpaceEntryKind, string> = {
@@ -110,10 +110,10 @@ export function spaceComposerAccess(mode: SpaceMode, label: string, ownSpace: bo
   if (mode === "wall") {
     void label;
     void ownSpace;
-    return { canCompose: false, entryKind: null, placeholder: "Сообщения с шестиугольником" };
+    return { canCompose: false, entryKind: null, placeholder: "Отмеченное в Я" };
   }
   if (mode === "reputation") {
-    return { canCompose: false, entryKind: null, placeholder: "Сообщения с сердцем" };
+    return { canCompose: false, entryKind: null, placeholder: "Отзывы из сообщений" };
   }
   return { canCompose: true, entryKind: null, placeholder: "Сообщение" };
 }
@@ -173,7 +173,7 @@ function entryPrefixForLine(line: string, kind: SpaceEntryKind): string {
 
 function entryLabel(kind: SpaceEntryKind, mine: boolean): string {
   if (kind === "wall") {
-    return "Сота";
+    return "Я";
   }
   if (kind === "wall-comment") {
     return "Комментарий";
@@ -181,7 +181,7 @@ function entryLabel(kind: SpaceEntryKind, mine: boolean): string {
   if (kind === "reputation-comment") {
     return "Комментарий";
   }
-  return mine ? "Лайк" : "Лайк";
+  return mine ? "Отзыв" : "Отзыв";
 }
 
 function shortDate(value: string): string {

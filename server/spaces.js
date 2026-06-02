@@ -11,12 +11,12 @@ const defaultSpaces = Object.freeze([
   {
     slug: "home",
     title: "Дом",
-    summary: "личные заметки, близкие, планы"
+    summary: "заметки, планы, окружение"
   },
   {
     slug: "club",
     title: "Клуб",
-    summary: "люди вокруг темы"
+    summary: "сообщество вокруг темы"
   }
 ]);
 
@@ -72,7 +72,7 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
   const reviews = await readSpaceReviews(reviewStore, handle, activeSpace?.slug || "");
   return {
     schema: "soty.personal-space.v1",
-    kind: activeSpace ? "space" : "person",
+    kind: activeSpace ? "space" : "entity",
     handle,
     slug: activeSpace?.slug || "",
     url,
@@ -80,13 +80,13 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
     shortName: activeSpace?.title || ownerName,
     accountName: ownerName,
     photoUrl: photo ? `/photo/space/${encodeURIComponent(handle)}.jpg?v=${photo.version}` : "",
-    title: activeSpace ? "пространство" : "личное пространство",
+    title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : "визитка, личное место и приватная сота в одном простом экране",
+      : "визитка, отзывы, сообщения и сота в одном простом экране",
     about: activeSpace
-      ? `Здесь ${ownerName} собирает людей, сообщения, отзывы и полезные действия вокруг темы "${activeSpace.title}".`
-      : `${ownerName} может начать с простой визитки, а потом раскрыть страницу в личное пространство, отзывы, сообщения и большое место.`,
+      ? `Здесь ${ownerName} собирает сообщения, отзывы и полезные действия вокруг темы "${activeSpace.title}".`
+      : `${ownerName}: карточка, страница, отзывы, сообщения и большое место в одном контуре.`,
     accent,
     contacts: [
       { label: "сообщение", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
@@ -99,13 +99,13 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
         title: activeSpace ? "Что здесь происходит" : "Первое впечатление",
         text: activeSpace
           ? "Короткое описание, закрепленные материалы, заявки и сообщения живут рядом, без ощущения технического пульта."
-          : "Человек открывает QR и сразу видит понятную карточку: кто перед ним, чем полезен, как написать и где оставить отзыв.",
+          : "QR открывает понятную карточку: что это, чем полезно и как написать.",
         meta: "сегодня"
       },
       {
         id: "grow",
-        title: "Рост без перегруза",
-        text: "Сначала визитка. Потом записи. Потом отзывы. Потом личка. Потом полноценное место для людей, задач и мини-приложений.",
+        title: "Один жест",
+        text: "Важное сообщение попадает в Я. Сообщение извне становится отзывом.",
         meta: "маршрут"
       }
     ],
@@ -235,7 +235,7 @@ function spaceFor(slug) {
   return {
     slug,
     title: titleFromSlug(slug),
-    summary: "личное большое место"
+    summary: "большое место"
   };
 }
 

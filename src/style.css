@@ -140,6 +140,8 @@ svg {
   min-height: 100svh;
   display: grid;
   place-items: center;
+  align-content: center;
+  gap: 22px;
   padding: 24px;
   color: #151515;
 }
@@ -171,6 +173,41 @@ svg {
 
 .self-start-input:focus {
   border-color: #151515;
+}
+
+.self-start-tools {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.self-start-tools button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(21, 21, 21, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: rgba(21, 21, 21, 0.78);
+  font-size: 14px;
+  font-weight: 780;
+  backdrop-filter: blur(16px);
+}
+
+.self-start-tools button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(21, 21, 21, 0.24);
+  color: #151515;
+  box-shadow: 0 12px 28px rgba(21, 21, 21, 0.08);
+}
+
+.self-start-tools svg {
+  width: 17px;
+  height: 17px;
 }
 
 .personal-space-shell {
@@ -2232,7 +2269,7 @@ button:disabled {
 
 .space-rail {
   min-width: 0;
-  width: 150px;
+  width: 336px;
 }
 
 .space-card {
@@ -2252,7 +2289,7 @@ button:disabled {
 .space-map {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(38px, 1fr));
+  grid-template-columns: minmax(74px, 0.9fr) minmax(58px, 0.72fr) minmax(116px, 1.28fr);
   gap: 4px;
   padding: 0;
   border: 0;
@@ -2263,10 +2300,10 @@ button:disabled {
   min-width: 0;
   height: 34px;
   display: grid;
-  grid-template-columns: 18px;
+  grid-template-columns: 17px minmax(0, auto);
   place-content: center;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   padding: 0 7px;
   border: 1px solid transparent;
   border-radius: 5px;
@@ -2277,8 +2314,8 @@ button:disabled {
 }
 
 .space-map button svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
 }
 
 .space-map button b {
@@ -2291,13 +2328,13 @@ button:disabled {
 }
 
 .space-map button.is-symbol {
-  grid-template-columns: 18px;
+  grid-template-columns: 17px;
   color: var(--cream);
 }
 
 .space-map button.is-symbol svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
 }
 
 .space-map button:hover,

@@ -17,7 +17,8 @@ export type PersonalSpacePageOptions = {
   readonly canInstall: () => boolean;
   readonly install: () => Promise<PersonalSpaceInstallResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
-  readonly submitReview: (route: PersonalSpaceRoute, review: PersonalSpaceReviewDraft) => Promise<void>;
+  readonly exportBackup: () => void;
+  readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
   readonly openMessage: (profile: PersonalSpaceProfile, fromHandle: string) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile) => void;
 };
@@ -42,12 +43,6 @@ type PersonalSpaceReview = {
   readonly rating: number;
 };
 
-export type PersonalSpaceReviewDraft = {
-  readonly author: string;
-  readonly text: string;
-  readonly rating: number;
-};
-
 type PersonalSpaceLink = {
   readonly slug: string;
   readonly title: string;
@@ -57,7 +52,7 @@ type PersonalSpaceLink = {
 };
 
 export type PersonalSpaceProfile = {
-  readonly kind: "person" | "space";
+  readonly kind: "entity" | "space";
   readonly handle: string;
   readonly slug: string;
   readonly url: string;
@@ -80,7 +75,7 @@ export type PersonalSpaceProfile = {
 };
 
 const fallbackProfile: PersonalSpaceProfile = {
-  kind: "person",
+  kind: "entity",
   handle: "guest",
   slug: "",
   url: "/@guest",
@@ -88,9 +83,9 @@ const fallbackProfile: PersonalSpaceProfile = {
   shortName: "Соты",
   accountName: "Соты",
   photoUrl: "",
-  title: "личное пространство",
-  headline: "визитка, личное место и приватная сота в одном простом экране",
-  about: "Сначала QR открывает понятную карточку. Потом она растет в личное место, отзывы, сообщения и большое пространство.",
+  title: "страница",
+  headline: "визитка, отзывы, сообщения и сота в одном простом экране",
+  about: "Сначала QR открывает понятную карточку. Потом страница растет в Я, отзывы, сообщения и большое пространство.",
   accent: "#78e08f",
   contacts: [],
   posts: [],
@@ -103,9 +98,9 @@ const fallbackProfile: PersonalSpaceProfile = {
 };
 
 const layers = [
-  { id: "card", label: "Кто", title: "Визитка", icon: "person" },
-  { id: "personal", label: "Я", title: "Личное", icon: "heart" },
-  { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "check" },
+  { id: "card", label: "Главное", title: "Карточка", icon: "qr" },
+  { id: "personal", label: "Я", title: "Страница", icon: "hexagon" },
+  { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "heart" },
   { id: "messages", label: "Чат", title: "Сообщения", icon: "mail" },
   { id: "place", label: "Место", title: "Место", icon: "hexagon" }
 ] as const satisfies readonly {
@@ -174,28 +169,6 @@ export async function uploadPersonalSpacePhoto(route: PersonalSpaceRoute, file: 
   return cleanUrlPath(payload.photoUrl);
 }
 
-export async function submitPersonalSpaceReview(route: PersonalSpaceRoute, review: PersonalSpaceReviewDraft): Promise<void> {
-  const handle = encodeURIComponent(route.handle);
-  const url = route.slug
-    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/reviews`
-    : `/api/spaces/${handle}/reviews`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify(review)
-  });
-  if (!response.ok) {
-    throw new Error("profile review submit failed");
-  }
-  const payload = await response.json() as unknown;
-  if (!isRecord(payload) || payload.ok !== true) {
-    throw new Error("profile review submit rejected");
-  }
-}
-
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
   const handle = encodeURIComponent(route.handle);
   const url = route.slug
@@ -239,12 +212,17 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
         <nav aria-label="пространство">
+          ${ownSpace ? `
+            <button type="button" data-action="backup-import">${icon("upload")} Импорт</button>
+            <button type="button" data-action="backup-export">${icon("download")} Экспорт</button>
+          ` : ""}
           <button type="button" data-action="self">${localHandle ? "Я" : "Создать Я"}</button>
         </nav>
+        ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
       </header>
       <main class="personal-main">
         <section class="personal-hero" aria-label="визитная карточка">
-          ${ownSpace ? `<button class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" type="button" data-action="photo" aria-label="Сделать фото профиля">` : `<div class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" aria-hidden="true">`}
+          ${ownSpace ? `<button class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" type="button" data-action="photo" aria-label="Сделать фото страницы">` : `<div class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" aria-hidden="true">`}
             ${avatar}
             ${ownSpace ? `<span>${icon("scan")} Фото</span>` : ""}
           ${ownSpace ? "</button>" : "</div>"}
@@ -259,11 +237,12 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
                 ? `<button class="personal-primary" type="button" data-action="share">${icon("qr")} Поделиться</button>
                    <button class="personal-secondary" type="button" data-action="install">${icon("install")} ${canInstall ? "Установить" : "Как установить"}</button>`
                 : `<button class="personal-primary" type="button" data-action="install">${icon("install")} Сохранить контакт</button>
-                   <button class="personal-secondary" type="button" data-action="message">${icon("mail")} Написать</button>`}
+                   <button class="personal-secondary" type="button" data-action="message">${icon("mail")} Написать</button>
+                   <button class="personal-secondary" type="button" data-action="share">${icon("qr")} Поделиться</button>`}
             </div>
             <div class="personal-note" data-install-note>${ownSpace
-              ? "Поделитесь QR или ссылкой. Фото профиля станет иконкой PWA."
-              : "Сохраните контакт: страница станет отдельной PWA, а переписка останется рядом."}</div>
+              ? "Поделитесь QR или ссылкой. Фото станет иконкой PWA."
+              : "Сохраните контакт: страница станет отдельной PWA, а чат останется рядом."}</div>
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
@@ -308,7 +287,7 @@ function renderCardPanel(profile: PersonalSpaceProfile): string {
     <article class="personal-panel is-active" data-panel="card">
       <div class="personal-panel-copy">
         <span>первое касание</span>
-        <h2>Сначала просто понятно, кто перед тобой.</h2>
+        <h2>Сначала понятно, что это и как связаться.</h2>
         <p>${escapeHtml(profile.about)}</p>
       </div>
       <div class="personal-contact-list">
@@ -327,8 +306,8 @@ function renderPersonalPanel(profile: PersonalSpaceProfile): string {
   return `
     <article class="personal-panel" data-panel="personal">
       <div class="personal-panel-copy">
-        <span>личное</span>
-        <h2>Здесь остается то, чем человек хочет поделиться.</h2>
+        <span>страница</span>
+        <h2>Важные сообщения становятся страницей.</h2>
       </div>
       <div class="personal-feed">
         ${profile.posts.length ? profile.posts.map((post) => `
@@ -337,7 +316,7 @@ function renderPersonalPanel(profile: PersonalSpaceProfile): string {
             <h3>${escapeHtml(post.title)}</h3>
             <p>${escapeHtml(post.text)}</p>
           </section>
-        `).join("") : `<section class="personal-empty">${icon("heart")} <span>Пока пусто.</span></section>`}
+        `).join("") : `<section class="personal-empty">${icon("hexagon")} <span>Пока пусто.</span></section>`}
       </div>
     </article>
   `;
@@ -348,8 +327,8 @@ function renderReviewsPanel(profile: PersonalSpaceProfile, ownSpace: boolean): s
     <article class="personal-panel" data-panel="reviews">
       <div class="personal-panel-copy">
         <span>доверие</span>
-        <h2>Отзывы рядом с человеком.</h2>
-        ${ownSpace ? "" : `<button class="personal-panel-action" type="button" data-action="review">${icon("check")} Оставить отзыв</button>`}
+        <h2>Сообщения извне становятся отзывами.</h2>
+        ${ownSpace ? "" : `<button class="personal-panel-action" type="button" data-action="message">${icon("mail")} Написать</button>`}
       </div>
       <div class="personal-reviews">
         ${profile.reviews.length ? profile.reviews.map((review) => `
@@ -358,7 +337,7 @@ function renderReviewsPanel(profile: PersonalSpaceProfile, ownSpace: boolean): s
             <p>${escapeHtml(review.text)}</p>
             <b>${escapeHtml(review.author)}</b>
           </section>
-        `).join("") : `<section class="personal-empty">${icon("check")} <span>${ownSpace ? "Отзывы появятся здесь." : "Станьте первым."}</span></section>`}
+        `).join("") : `<section class="personal-empty">${icon("heart")} <span>${ownSpace ? "Отзывы появятся здесь." : "Сначала напишите."}</span></section>`}
       </div>
     </article>
   `;
@@ -368,12 +347,12 @@ function renderMessagesPanel(profile: PersonalSpaceProfile): string {
   return `
     <article class="personal-panel" data-panel="messages">
       <div class="personal-panel-copy">
-        <span>личные сообщения</span>
-        <h2>Сначала обычная личка. Потом сота, если нужно.</h2>
+        <span>сообщения</span>
+        <h2>Сначала простой чат. Потом сота, если нужно.</h2>
       </div>
       <div class="personal-message-preview">
         <div><b>${escapeHtml(profile.shortName)}</b><p>Здравствуйте. Чем могу помочь?</p></div>
-        <div><b>Вы</b><p>Хочу написать лично и при необходимости отправить файл.</p></div>
+        <div><b>Вы</b><p>Хочу написать и при необходимости отправить файл.</p></div>
         <button type="button" data-action="message">${icon("send")} Открыть сообщения</button>
       </div>
     </article>
@@ -385,7 +364,7 @@ function renderPlacePanel(profile: PersonalSpaceProfile): string {
     <article class="personal-panel" data-panel="place">
       <div class="personal-panel-copy">
         <span>большое место</span>
-        <h2>Страница может стать работой, домом, клубом или командой.</h2>
+        <h2>Страница может стать проектом, компанией, устройством, местом или командой.</h2>
         <button class="personal-panel-action" type="button" data-action="runtime">${icon("hexagon")} Открыть соты</button>
       </div>
       <div class="personal-spaces">
@@ -417,8 +396,8 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
         return;
       }
       showNicknameSheet(root, {
-        title: "Как вас подписать?",
-        description: "Только ник. Без анкеты.",
+        title: "Как подписать?",
+        description: "Короткое имя для чата.",
         action: "Написать",
         onDone: (nextHandle) => options.openMessage(profile, nextHandle)
       });
@@ -426,21 +405,6 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   });
   root.querySelectorAll<HTMLElement>("[data-action='runtime']").forEach((node) => {
     node.addEventListener("click", () => options.openRuntime(profile));
-  });
-  root.querySelectorAll<HTMLElement>("[data-action='review']").forEach((node) => {
-    node.addEventListener("click", () => {
-      const handle = loadLocalHandle();
-      if (handle) {
-        showReviewSheet(root, profile, options, handle);
-        return;
-      }
-      showNicknameSheet(root, {
-        title: "Как вас подписать?",
-        description: "Только ник. Без анкеты.",
-        action: "Дальше",
-        onDone: (nextHandle) => showReviewSheet(root, profile, options, nextHandle)
-      });
-    });
   });
   root.querySelectorAll<HTMLElement>("[data-action='self']").forEach((node) => {
     node.addEventListener("click", () => {
@@ -450,8 +414,8 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
         return;
       }
       showNicknameSheet(root, {
-        title: "Ваш ник",
-        description: "Он станет вашей ссылкой и QR.",
+        title: "Имя страницы",
+        description: "Оно станет ссылкой и QR.",
         action: "Создать Я",
         onDone: openPersonalRoute
       });
@@ -463,6 +427,20 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     });
   });
   const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
+  const backupInput = root.querySelector<HTMLInputElement>("[data-backup-import]");
+  root.querySelectorAll<HTMLElement>("[data-action='backup-export']").forEach((node) => {
+    node.addEventListener("click", () => options.exportBackup());
+  });
+  root.querySelectorAll<HTMLElement>("[data-action='backup-import']").forEach((node) => {
+    node.addEventListener("click", () => backupInput?.click());
+  });
+  backupInput?.addEventListener("change", () => {
+    const file = backupInput.files?.[0];
+    if (file) {
+      void importPersonalBackup(root, file, options);
+    }
+    backupInput.value = "";
+  });
   root.querySelector<HTMLElement>("[data-action='photo']")?.addEventListener("click", () => {
     photoInput?.click();
   });
@@ -487,76 +465,15 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   });
 }
 
-function showReviewSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions, author: string): void {
-  closePersonalOverlay(root);
-  const overlay = document.createElement("div");
-  overlay.className = "personal-overlay";
-  overlay.innerHTML = `
-    <section class="personal-sheet personal-review-sheet" role="dialog" aria-modal="true" aria-label="Оставить отзыв">
-      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
-      <h2>Отзыв</h2>
-      <p>${escapeHtml(profile.displayName)}</p>
-      <form data-review-form>
-        <textarea name="text" maxlength="320" rows="4" placeholder="коротко и по делу"></textarea>
-        <label class="personal-rating-field">
-          <span data-rating-value>★★★★★</span>
-          <input name="rating" type="range" min="1" max="5" value="5" step="1" />
-        </label>
-        <button type="submit">${icon("check")} Готово</button>
-      </form>
-      <small data-error></small>
-    </section>
-  `;
-  root.append(overlay);
-  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
-  const rating = overlay.querySelector<HTMLInputElement>("input[name='rating']");
-  const ratingValue = overlay.querySelector<HTMLElement>("[data-rating-value]");
-  const setRatingText = () => {
-    if (ratingValue) {
-      ratingValue.textContent = "★★★★★".slice(0, Math.max(1, Math.min(5, Number(rating?.value || 5))));
-    }
-  };
-  textarea?.focus();
-  setRatingText();
-  rating?.addEventListener("input", setRatingText);
-  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      overlay.remove();
-    }
-  });
-  overlay.querySelector<HTMLFormElement>("[data-review-form]")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const text = cleanText(textarea?.value || "", 320);
-    const error = overlay.querySelector<HTMLElement>("[data-error]");
-    if (text.length < 2) {
-      if (error) {
-        error.textContent = "Напишите пару слов.";
-      }
-      textarea?.focus();
-      return;
-    }
-    const submit = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
-    if (submit) {
-      submit.disabled = true;
-    }
-    void options.submitReview(options.route, {
-      author: cleanRoutePart(author) || "гость",
-      text,
-      rating: Math.max(1, Math.min(5, Number(rating?.value || 5)))
-    }).then(async () => {
-      overlay.remove();
-      await renderPersonalSpacePage(root, options);
-      setActiveLayer(root, "reviews");
-    }).catch(() => {
-      if (error) {
-        error.textContent = "Не получилось сохранить отзыв.";
-      }
-      if (submit) {
-        submit.disabled = false;
-      }
-    });
-  });
+async function importPersonalBackup(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
+  const note = root.querySelector<HTMLElement>("[data-install-note]");
+  if (note) {
+    note.textContent = "Импортирую...";
+  }
+  const result = await options.importBackup(file);
+  if (note) {
+    note.textContent = result.message;
+  }
 }
 
 function showNicknameSheet(
@@ -665,7 +582,7 @@ function openPersonalRoute(handle: string): void {
 async function updateProfilePhoto(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
   const note = root.querySelector<HTMLElement>("[data-install-note]");
   if (note) {
-    note.textContent = "Готовлю фото профиля...";
+    note.textContent = "Готовлю фото страницы...";
   }
   try {
     await options.uploadPhoto(options.route, file);
@@ -705,7 +622,7 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
   const record = isRecord(value) ? value : {};
   const actions = isRecord(record.actions) ? record.actions : {};
   return {
-    kind: record.kind === "space" ? "space" : "person",
+    kind: record.kind === "space" ? "space" : "entity",
     handle: cleanText(record.handle, 64) || route.handle,
     slug: cleanText(record.slug, 64) || route.slug,
     url: cleanUrlPath(record.url) || routeUrl(route),
