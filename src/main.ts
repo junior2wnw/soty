@@ -494,7 +494,9 @@ async function boot(): Promise<void> {
 
   tunnels = loadTunnels();
   ensurePermanentCells();
-  selectedId = requestedChatTunnelId(tunnels) || loadSelectedTunnelId() || tunnels[0]?.id || "";
+  const requestedContactId = ensureRequestedContactTunnel();
+  tunnels = loadTunnels();
+  selectedId = requestedChatTunnelId(tunnels) || requestedContactId || loadSelectedTunnelId() || tunnels[0]?.id || "";
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
@@ -729,6 +731,116 @@ function requestedChatTunnelId(items: readonly TunnelRecord[] = loadTunnels()): 
     return items.some((item) => item.id === raw) ? raw : "";
   } catch {
     return "";
+  }
+}
+
+function requestedContactHandle(location: Location = window.location): string {
+  try {
+    const url = new URL(location.href);
+    return cleanContactHandle(url.searchParams.get("to") || url.searchParams.get("contact") || "");
+  } catch {
+    return "";
+  }
+}
+
+function requestedSenderHandle(location: Location = window.location): string {
+  try {
+    return cleanContactHandle(new URL(location.href).searchParams.get("from") || "");
+  } catch {
+    return "";
+  }
+}
+
+function cleanContactHandle(value: string): string {
+  return cleanSelfStartHandle(value).slice(0, 32);
+}
+
+function contactTunnelLabel(handle: string): string {
+  return handle ? `@${handle}` : "";
+}
+
+function contactHandleFromTunnel(tunnel: TunnelRecord): string {
+  return cleanContactHandle(peers.get(tunnel.id) || tunnel.label || "");
+}
+
+function ensureRequestedContactTunnel(): string {
+  const handle = requestedContactHandle();
+  if (!device || !handle) {
+    return "";
+  }
+
+  const senderHandle = requestedSenderHandle();
+  if (senderHandle) {
+    saveSelfStartHandle(senderHandle);
+  }
+
+  const ownHandle = loadSelfStartHandle();
+  if (ownHandle && ownHandle === handle) {
+    const self = loadTunnels().find((tunnel) => !tunnel.archived && isSelfTunnel(tunnel));
+    if (self) {
+      selectedId = self.id;
+      saveSelectedTunnelId(self.id);
+      consumeRequestedContactParams();
+      return self.id;
+    }
+  }
+
+  const current = loadTunnels();
+  const existing = current.find((tunnel) => !isPermanentCell(tunnel) && contactHandleFromTunnel(tunnel) === handle);
+  if (existing) {
+    const now = new Date().toISOString();
+    let selected: TunnelRecord | null = null;
+    const next = current.map((tunnel) => {
+      if (tunnel.id !== existing.id) {
+        return tunnel;
+      }
+      selected = {
+        ...tunnel,
+        label: contactTunnelLabel(handle),
+        counterparty: true,
+        archived: false,
+        unread: false,
+        color: tunnel.color || colorFor(`contact:${handle}`),
+        updatedAt: now,
+        lastActionAt: now
+      };
+      return selected;
+    });
+    saveTunnels(next);
+    tunnels = next;
+    selectedId = existing.id;
+    saveSelectedTunnelId(existing.id);
+    if (selected) {
+      ensureSync(selected);
+    }
+    consumeRequestedContactParams();
+    return existing.id;
+  }
+
+  const fresh = addCell({
+    label: contactTunnelLabel(handle),
+    counterparty: true,
+    colorSeed: `contact:${handle}`
+  }, { select: true });
+  if (!fresh) {
+    return "";
+  }
+  consumeRequestedContactParams();
+  return fresh.id;
+}
+
+function consumeRequestedContactParams(): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("to") && !url.searchParams.has("contact") && !url.searchParams.has("from")) {
+      return;
+    }
+    url.searchParams.delete("to");
+    url.searchParams.delete("contact");
+    url.searchParams.delete("from");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // Deep links remain usable even when History API state cannot be updated.
   }
 }
 
@@ -1058,7 +1170,9 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
   }
   tunnels = loadTunnels();
   ensurePermanentCells();
-  selectedId = requestedChatTunnelId(tunnels) || loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
+  const requestedContactId = ensureRequestedContactTunnel();
+  tunnels = loadTunnels();
+  selectedId = requestedChatTunnelId(tunnels) || requestedContactId || loadSelectedTunnelId() || selectedId || tunnels[0]?.id || "";
   if (selectedId) {
     saveSelectedTunnelId(selectedId);
   }
