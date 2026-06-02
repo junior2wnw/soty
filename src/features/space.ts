@@ -27,6 +27,15 @@ export interface SpaceComposerAccess {
   readonly placeholder: string;
 }
 
+export interface SpaceMarkDisplay {
+  readonly role: "self" | "review";
+  readonly icon: IconName;
+  readonly className: string;
+  readonly actionLabel: string;
+  readonly activeLabel: string;
+  readonly entryLabel: string;
+}
+
 export const spaceWallPrefix = "SOTY_SPACE_WALL:";
 export const spaceWallCommentPrefix = "SOTY_SPACE_WALL_COMMENT:";
 export const spaceReputationPrefix = "SOTY_SPACE_REPUTATION:";
@@ -76,6 +85,38 @@ export function makeSpaceEntryLine(kind: SpaceEntryKind, entry: Omit<SpaceEntry,
     text: cleanSpaceText(entry.text, 1200),
     createdAt: new Date().toISOString()
   })}`;
+}
+
+export function spaceEntryKindForMessage(local: boolean): SpaceEntryKind {
+  return local ? "wall" : "reputation";
+}
+
+export function normalizeSpaceEntryKind(value: string): SpaceEntryKind | null {
+  if (value === "wall" || value === "reputation") {
+    return value;
+  }
+  return null;
+}
+
+export function spaceMarkDisplay(kind: SpaceEntryKind): SpaceMarkDisplay {
+  if (kind === "wall" || kind === "wall-comment") {
+    return {
+      role: "self",
+      icon: "hexagon",
+      className: "is-hex",
+      actionLabel: "Сохранить в Я",
+      activeLabel: "В Я",
+      entryLabel: "Я"
+    };
+  }
+  return {
+    role: "review",
+    icon: "heart",
+    className: "is-heart",
+    actionLabel: "Сохранить как отзыв",
+    activeLabel: "Отзыв сохранен",
+    entryLabel: "Отзыв"
+  };
 }
 
 export function parseSpaceEntryLine(line: string): SpaceEntry | null {
@@ -143,10 +184,11 @@ function modeDisplay(mode: typeof modes[number], ownSpace: boolean): typeof mode
     : mode;
 }
 
-export function renderSpaceEntryBubble(entry: SpaceEntry, mine: boolean): string {
-  const label = entryLabel(entry.kind, mine);
+export function renderSpaceEntryBubble(entry: SpaceEntry): string {
+  const label = entryLabel(entry.kind);
+  const display = spaceMarkDisplay(entry.kind);
   return `
-    <div class="space-entry-bubble" data-kind="${entry.kind}">
+    <div class="space-entry-bubble" data-kind="${entry.kind}" data-role="${display.role}">
       <span>${escapeHtml(label)}</span>
       <b>${escapeHtml(entry.author)}</b>
       <small>${escapeHtml(shortDate(entry.createdAt))}</small>
@@ -181,17 +223,14 @@ function entryPrefixForLine(line: string, kind: SpaceEntryKind): string {
   return prefixByKind[kind];
 }
 
-function entryLabel(kind: SpaceEntryKind, mine: boolean): string {
-  if (kind === "wall") {
-    return "Я";
-  }
+function entryLabel(kind: SpaceEntryKind): string {
   if (kind === "wall-comment") {
     return "Комментарий";
   }
   if (kind === "reputation-comment") {
     return "Комментарий";
   }
-  return mine ? "Отзыв" : "Отзыв";
+  return spaceMarkDisplay(kind).entryLabel;
 }
 
 function shortDate(value: string): string {

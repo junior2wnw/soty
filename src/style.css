@@ -1886,6 +1886,11 @@ button.personal-avatar {
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
+.shell.simple-contact-shell .space-entry-bubble[data-role="review"] span {
+  border-color: rgba(216, 47, 111, 0.24);
+  color: #d82f6f;
+}
+
 .shell.simple-contact-shell .space-entry-bubble b,
 .shell.simple-contact-shell .space-entry-bubble small,
 .shell.simple-contact-shell .chat-bubble .space-entry-bubble p {
@@ -2936,6 +2941,11 @@ button:disabled {
   font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
   font-size: 10px;
   font-weight: 900;
+}
+
+.space-entry-bubble[data-role="review"] span {
+  border-color: color-mix(in srgb, #ff6b9a 68%, var(--edge));
+  color: #ffd5e1;
 }
 
 .space-entry-bubble b,

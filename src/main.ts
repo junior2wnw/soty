@@ -25,7 +25,7 @@ import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl
 import { clearAttentionNotices, notificationPermissionNote, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications } from "./features/notifications";
 import type { AttentionNotice } from "./features/notifications";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
-import { makeSpaceEntryLine, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess } from "./features/space";
+import { makeSpaceEntryLine, normalizeSpaceEntryKind, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess, spaceEntryKindForMessage, spaceMarkDisplay } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
 import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } from "./features/trust-ui";
 import type { AccessPanelRow } from "./features/trust-ui";
@@ -9111,7 +9111,7 @@ function renderTextPaint(): void {
     }
     const live = active && index === activeLine ? active : null;
     const sourceId = spaceMessageSourceId(selectedId, index, line);
-    const markKind: SpaceEntryKind = speaker.side === "local" ? "wall" : "reputation";
+    const markKind = spaceEntryKindForMessage(speaker.side === "local");
     const current = bubbles[bubbles.length - 1];
     if (
       groupKey
@@ -9203,7 +9203,7 @@ function renderTextPaint(): void {
   }
   textPaint.innerHTML = visibleBubbles.map((bubble) => {
     const body = bubble.entry
-      ? renderSpaceEntryBubble(bubble.entry, bubble.side === "local")
+      ? renderSpaceEntryBubble(bubble.entry)
       : bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
       : bubble.lines
@@ -9406,11 +9406,11 @@ function renderBubbleMarkButton(
   text: string,
   marked: boolean
 ): string {
-  const own = kind === "wall";
-  const label = own ? "Сохранить в Я" : "Сохранить как отзыв";
+  const display = spaceMarkDisplay(kind);
+  const label = marked ? display.activeLabel : display.actionLabel;
   return `
-    <button class="bubble-mark ${own ? "is-hex" : "is-heart"}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
-      ${icon(own ? "hexagon" : "heart")}
+    <button class="bubble-mark ${display.className}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-mark-role="${display.role}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
+      ${icon(display.icon)}
     </button>
   `;
 }
@@ -9455,14 +9455,10 @@ function markDialogMessage(button: HTMLButtonElement): void {
   sync.setText(next);
   saveTextSnapshotNow(selectedId, next);
   button.classList.add("is-marked");
+  const display = spaceMarkDisplay(kind);
+  button.setAttribute("aria-label", display.activeLabel);
+  button.dataset.tooltip = display.activeLabel;
   renderTextPaint();
-}
-
-function normalizeSpaceEntryKind(value: string): SpaceEntryKind | null {
-  if (value === "wall" || value === "reputation") {
-    return value;
-  }
-  return null;
 }
 
 function spaceMessageSourceId(tunnelId: string, lineIndex: number, text: string): string {
