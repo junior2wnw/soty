@@ -84,8 +84,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   accountName: "Соты",
   photoUrl: "",
   title: "страница",
-  headline: "визитка, отзывы, сообщения и сота в одном простом экране",
-  about: "Сначала QR открывает понятную карточку. Потом страница растет в Я, отзывы, сообщения и большое пространство.",
+  headline: "контакт, отзывы, сообщения и пространство",
+  about: "Карточка открывает контакт. Сообщения становятся страницей, отзывами и большим местом.",
   accent: "#78e08f",
   contacts: [],
   posts: [],
@@ -98,7 +98,7 @@ const fallbackProfile: PersonalSpaceProfile = {
 };
 
 const layers = [
-  { id: "card", label: "Главное", title: "Карточка", icon: "qr" },
+  { id: "card", label: "Контакт", title: "Карточка", icon: "qr" },
   { id: "personal", label: "Я", title: "Страница", icon: "hexagon" },
   { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "heart" },
   { id: "messages", label: "Чат", title: "Сообщения", icon: "mail" },
@@ -241,8 +241,8 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
                    <button class="personal-secondary" type="button" data-action="share">${icon("qr")} Поделиться</button>`}
             </div>
             <div class="personal-note" data-install-note>${ownSpace
-              ? "Поделитесь QR или ссылкой. Фото станет иконкой PWA."
-              : "Сохраните контакт: страница станет отдельной PWA, а чат останется рядом."}</div>
+              ? "Имя и фото станут PWA."
+              : "Сохранится как отдельный контакт."}</div>
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
@@ -254,11 +254,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           `).join("")}
         </div>
         <section class="personal-panels">
-          ${renderCardPanel(profile)}
-          ${renderPersonalPanel(profile)}
-          ${renderReviewsPanel(profile, ownSpace)}
-          ${renderMessagesPanel(profile)}
-          ${renderPlacePanel(profile)}
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer)).join("")}
         </section>
       </main>
     </section>
@@ -282,14 +278,114 @@ function renderQuickContacts(profile: PersonalSpaceProfile): string {
   `;
 }
 
-function renderCardPanel(profile: PersonalSpaceProfile): string {
+type PersonalPanelAction = {
+  readonly action: "message" | "runtime";
+  readonly label: string;
+  readonly icon: IconName;
+};
+
+type PersonalPanelView = {
+  readonly eyebrow: string;
+  readonly title: string;
+  readonly text?: string;
+  readonly action?: PersonalPanelAction;
+  readonly body: string;
+};
+
+function renderLayerPanel(
+  profile: PersonalSpaceProfile,
+  layer: PersonalSpaceLayer,
+  ownSpace: boolean,
+  activeLayer: PersonalSpaceLayer
+): string {
+  const view = panelView(profile, layer, ownSpace);
   return `
-    <article class="personal-panel is-active" data-panel="card">
+    <article class="personal-panel${layer === activeLayer ? " is-active" : ""}" data-panel="${layer}">
       <div class="personal-panel-copy">
-        <span>первое касание</span>
-        <h2>Сначала понятно, что это и как связаться.</h2>
-        <p>${escapeHtml(profile.about)}</p>
+        <span>${escapeHtml(view.eyebrow)}</span>
+        <h2>${escapeHtml(view.title)}</h2>
+        ${view.text ? `<p>${escapeHtml(view.text)}</p>` : ""}
+        ${view.action ? `<button class="personal-panel-action" type="button" data-action="${view.action.action}">${icon(view.action.icon)} ${escapeHtml(view.action.label)}</button>` : ""}
       </div>
+      ${view.body}
+    </article>
+  `;
+}
+
+function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean): PersonalPanelView {
+  if (layer === "personal") {
+    return {
+      eyebrow: "я",
+      title: "Сохраненное важное.",
+      body: renderPanelList(
+        "personal-feed",
+        profile.posts.map((post) => `
+          <section class="personal-post">
+            <small>${escapeHtml(post.meta)}</small>
+            <h3>${escapeHtml(post.title)}</h3>
+            <p>${escapeHtml(post.text)}</p>
+          </section>
+        `),
+        "hexagon",
+        "Пока пусто."
+      )
+    };
+  }
+  if (layer === "reviews") {
+    return {
+      eyebrow: "отзывы",
+      title: "Доверие из сообщений.",
+      ...(!ownSpace ? { action: { action: "message", label: "Оставить отзыв", icon: "heart" } as const } : {}),
+      body: renderPanelList(
+        "personal-reviews",
+        profile.reviews.map((review) => `
+          <section class="personal-review">
+            <div>${"★".repeat(Math.max(1, Math.min(5, review.rating)))}</div>
+            <p>${escapeHtml(review.text)}</p>
+            <b>${escapeHtml(review.author)}</b>
+          </section>
+        `),
+        "heart",
+        ownSpace ? "Отзывы появятся здесь." : "Напишите в чат."
+      )
+    };
+  }
+  if (layer === "messages") {
+    return {
+      eyebrow: "чат",
+      title: "Личные сообщения.",
+      body: `
+        <div class="personal-message-preview">
+          <div><b>${escapeHtml(profile.shortName)}</b><p>${escapeHtml(`Личный чат с ${profile.shortName}.`)}</p></div>
+          <button type="button" data-action="message">${icon("send")} Написать</button>
+        </div>
+      `
+    };
+  }
+  if (layer === "place") {
+    return {
+      eyebrow: "место",
+      title: "Можно вырасти.",
+      text: "Проект, компания, устройство, команда, тема.",
+      action: { action: "runtime", label: "Открыть соты", icon: "hexagon" },
+      body: renderPanelList(
+        "personal-spaces",
+        profile.spaces.map((space) => `
+          <a href="${escapeAttr(space.href)}" data-space-link class="${space.active ? "is-active" : ""}">
+            <span>${escapeHtml(space.title)}</span>
+            <p>${escapeHtml(space.summary)}</p>
+          </a>
+        `),
+        "hexagon",
+        "Появится позже."
+      )
+    };
+  }
+  return {
+    eyebrow: "контакт",
+    title: "Кто это и как связаться.",
+    text: profile.about,
+    body: `
       <div class="personal-contact-list">
         ${profile.contacts.map((contact) => `
           ${contact.href ? `<a href="${escapeAttr(contact.href)}">` : "<div>"}
@@ -298,84 +394,15 @@ function renderCardPanel(profile: PersonalSpaceProfile): string {
           ${contact.href ? "</a>" : "</div>"}
         `).join("")}
       </div>
-    </article>
-  `;
+    `
+  };
 }
 
-function renderPersonalPanel(profile: PersonalSpaceProfile): string {
+function renderPanelList(className: string, items: readonly string[], emptyIcon: IconName, emptyText: string): string {
   return `
-    <article class="personal-panel" data-panel="personal">
-      <div class="personal-panel-copy">
-        <span>страница</span>
-        <h2>Важные сообщения становятся страницей.</h2>
-      </div>
-      <div class="personal-feed">
-        ${profile.posts.length ? profile.posts.map((post) => `
-          <section class="personal-post">
-            <small>${escapeHtml(post.meta)}</small>
-            <h3>${escapeHtml(post.title)}</h3>
-            <p>${escapeHtml(post.text)}</p>
-          </section>
-        `).join("") : `<section class="personal-empty">${icon("hexagon")} <span>Пока пусто.</span></section>`}
-      </div>
-    </article>
-  `;
-}
-
-function renderReviewsPanel(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  return `
-    <article class="personal-panel" data-panel="reviews">
-      <div class="personal-panel-copy">
-        <span>доверие</span>
-        <h2>Сообщения извне становятся отзывами.</h2>
-        ${ownSpace ? "" : `<button class="personal-panel-action" type="button" data-action="message">${icon("mail")} Написать</button>`}
-      </div>
-      <div class="personal-reviews">
-        ${profile.reviews.length ? profile.reviews.map((review) => `
-          <section class="personal-review">
-            <div>${"★".repeat(Math.max(1, Math.min(5, review.rating)))}</div>
-            <p>${escapeHtml(review.text)}</p>
-            <b>${escapeHtml(review.author)}</b>
-          </section>
-        `).join("") : `<section class="personal-empty">${icon("heart")} <span>${ownSpace ? "Отзывы появятся здесь." : "Сначала напишите."}</span></section>`}
-      </div>
-    </article>
-  `;
-}
-
-function renderMessagesPanel(profile: PersonalSpaceProfile): string {
-  return `
-    <article class="personal-panel" data-panel="messages">
-      <div class="personal-panel-copy">
-        <span>сообщения</span>
-        <h2>Сначала простой чат. Потом сота, если нужно.</h2>
-      </div>
-      <div class="personal-message-preview">
-        <div><b>${escapeHtml(profile.shortName)}</b><p>Здравствуйте. Чем могу помочь?</p></div>
-        <div><b>Вы</b><p>Хочу написать и при необходимости отправить файл.</p></div>
-        <button type="button" data-action="message">${icon("send")} Открыть сообщения</button>
-      </div>
-    </article>
-  `;
-}
-
-function renderPlacePanel(profile: PersonalSpaceProfile): string {
-  return `
-    <article class="personal-panel" data-panel="place">
-      <div class="personal-panel-copy">
-        <span>большое место</span>
-        <h2>Страница может стать проектом, компанией, устройством, местом или командой.</h2>
-        <button class="personal-panel-action" type="button" data-action="runtime">${icon("hexagon")} Открыть соты</button>
-      </div>
-      <div class="personal-spaces">
-        ${profile.spaces.length ? profile.spaces.map((space) => `
-          <a href="${escapeAttr(space.href)}" data-space-link class="${space.active ? "is-active" : ""}">
-            <span>${escapeHtml(space.title)}</span>
-            <p>${escapeHtml(space.summary)}</p>
-          </a>
-        `).join("") : `<section class="personal-empty">${icon("hexagon")} <span>Большое место появится позже.</span></section>`}
-      </div>
-    </article>
+    <div class="${className}">
+      ${items.length ? items.join("") : `<section class="personal-empty">${icon(emptyIcon)} <span>${escapeHtml(emptyText)}</span></section>`}
+    </div>
   `;
 }
 

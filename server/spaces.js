@@ -83,30 +83,29 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : "визитка, отзывы, сообщения и сота в одном простом экране",
+      : "контакт, отзывы, сообщения и пространство",
     about: activeSpace
-      ? `Здесь ${ownerName} собирает сообщения, отзывы и полезные действия вокруг темы "${activeSpace.title}".`
-      : `${ownerName}: карточка, страница, отзывы, сообщения и большое место в одном контуре.`,
+      ? `${activeSpace.title}: контакт, сообщения, отзывы и действия рядом.`
+      : `${ownerName}: контакт, отзывы, сообщения и место в одном контуре.`,
     accent,
     contacts: [
-      { label: "сообщение", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
-      { label: "страница", value: url, href: url },
-      { label: "контакт", value: `hello-${handle}@soty.local` }
+      { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
+      { label: "ссылка", value: url, href: url }
     ],
     posts: [
       {
         id: "hello",
-        title: activeSpace ? "Что здесь происходит" : "Первое впечатление",
+        title: activeSpace ? activeSpace.title : ownerName,
         text: activeSpace
-          ? "Короткое описание, закрепленные материалы, заявки и сообщения живут рядом, без ощущения технического пульта."
-          : "QR открывает понятную карточку: что это, чем полезно и как написать.",
-        meta: "сегодня"
+          ? "Описание, сообщения, отзывы и действия живут рядом."
+          : "QR открывает контакт, страницу и чат.",
+        meta: "Я"
       },
       {
         id: "grow",
-        title: "Один жест",
-        text: "Важное сообщение попадает в Я. Сообщение извне становится отзывом.",
-        meta: "маршрут"
+        title: "Из сообщений",
+        text: "Свое можно сохранить в Я. Чужое можно сохранить как отзыв.",
+        meta: "Отзывы"
       }
     ],
     reviews,

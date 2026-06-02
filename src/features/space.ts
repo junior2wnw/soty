@@ -42,8 +42,8 @@ const modes: readonly {
   readonly icon: IconName;
 }[] = [
   { id: "dialog", label: "Чат", hint: "Чат", ariaLabel: "Чат", icon: "mail" },
-  { id: "wall", label: "Я", hint: "В Я", ariaLabel: "Я: страница", icon: "hexagon" },
-  { id: "reputation", label: "Отзывы", hint: "В отзывы", ariaLabel: "Отзывы", icon: "heart" }
+  { id: "wall", label: "Я", hint: "Я", ariaLabel: "Я: страница", icon: "hexagon" },
+  { id: "reputation", label: "Отзывы", hint: "Отзывы", ariaLabel: "Отзывы", icon: "heart" }
 ];
 
 const prefixByKind: Record<SpaceEntryKind, string> = {

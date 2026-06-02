@@ -761,7 +761,7 @@ button.personal-avatar {
   gap: 7px;
   padding: 18px;
   border: 1px solid rgba(23, 23, 23, 0.1);
-  border-radius: 20px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.74);
   color: #171717;
   text-decoration: none;
@@ -1678,6 +1678,174 @@ button.personal-avatar {
   background: var(--cyan);
   color: #ffffff;
   box-shadow: none;
+}
+
+.shell.simple-contact-shell .chat-stream {
+  gap: 8px;
+}
+
+.shell.simple-contact-shell .chat-bubble {
+  max-width: min(62ch, 82%);
+  padding: 10px 42px 20px 14px;
+  border-color: rgba(190, 205, 200, 0.94);
+  border-radius: 18px;
+  background: #ffffff;
+  color: #17211d;
+  box-shadow: 0 8px 22px rgba(35, 52, 46, 0.08);
+}
+
+.shell.simple-contact-shell .chat-bubble:hover {
+  border-color: rgba(15, 107, 255, 0.22);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(35, 52, 46, 0.12);
+}
+
+.shell.simple-contact-shell .chat-bubble.local {
+  align-self: flex-end;
+  margin-left: 52px;
+  margin-right: 28px;
+  border-color: #0f6bff;
+  background: #0f6bff;
+  color: #ffffff;
+}
+
+.shell.simple-contact-shell .chat-bubble.remote {
+  align-self: flex-start;
+  margin-left: 28px;
+  margin-right: 52px;
+}
+
+.shell.simple-contact-shell .chat-bubble p {
+  color: inherit;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 15px;
+}
+
+.shell.simple-contact-shell .chat-bubble p a {
+  color: inherit;
+}
+
+.shell.simple-contact-shell .bubble-time {
+  color: currentColor;
+  opacity: 0.58;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .bubble-avatar {
+  top: 9px;
+  background: #ffffff;
+  color: #0f6bff;
+  clip-path: none;
+  border-radius: 999px;
+  box-shadow: 0 6px 14px rgba(35, 52, 46, 0.12);
+}
+
+.shell.simple-contact-shell .chat-bubble.remote .bubble-avatar {
+  left: -28px;
+}
+
+.shell.simple-contact-shell .chat-bubble.local .bubble-avatar {
+  right: -28px;
+  left: auto;
+}
+
+.shell.simple-contact-shell .bubble-mark {
+  opacity: 1;
+  background: rgba(238, 244, 242, 0.92);
+  color: #596b64;
+}
+
+.shell.simple-contact-shell .chat-bubble.local .bubble-mark {
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.shell.simple-contact-shell .bubble-mark:hover,
+.shell.simple-contact-shell .bubble-mark.is-marked {
+  background: #ffffff;
+  color: #0f6bff;
+  transform: translateY(-1px) scale(1.03);
+}
+
+.shell.simple-contact-shell .bubble-mark.is-heart:hover,
+.shell.simple-contact-shell .bubble-mark.is-heart.is-marked {
+  color: #d82f6f;
+}
+
+.shell.simple-contact-shell .bubble-mark.is-hex:hover,
+.shell.simple-contact-shell .bubble-mark.is-hex.is-marked {
+  color: #159864;
+}
+
+.shell.simple-contact-shell .message-dialog-peek {
+  border-color: rgba(190, 205, 200, 0.94);
+  background: rgba(255, 255, 255, 0.78);
+  color: #566a63;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .message-dialog-peek b {
+  background: rgba(15, 107, 255, 0.1);
+  color: #0f6bff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .message-dialog-panel {
+  border-color: rgba(190, 205, 200, 0.94);
+  background: #ffffff;
+}
+
+.shell.simple-contact-shell .message-dialog-panel header span,
+.shell.simple-contact-shell .message-dialog-reply span,
+.shell.simple-contact-shell .message-dialog-form textarea {
+  color: #17211d;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .message-dialog-reply b {
+  color: #0f6bff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .message-dialog-close,
+.shell.simple-contact-shell .message-dialog-form button {
+  border-color: rgba(15, 107, 255, 0.18);
+  background: rgba(15, 107, 255, 0.08);
+  color: #0f6bff;
+}
+
+.shell.simple-contact-shell .line-gutter,
+.shell.simple-contact-shell .line-meta,
+.shell.simple-contact-shell .live-chip {
+  display: none;
+}
+
+.shell.simple-contact-shell .chat-bubble.is-space-entry {
+  align-self: stretch;
+  max-width: none;
+  margin-right: 0;
+  margin-left: 0;
+  border-color: rgba(21, 152, 100, 0.24);
+  background: #ffffff;
+  color: #17211d;
+  box-shadow: 0 8px 22px rgba(35, 52, 46, 0.08);
+}
+
+.shell.simple-contact-shell .space-entry-bubble span {
+  border-color: rgba(21, 152, 100, 0.28);
+  color: #159864;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .space-entry-bubble b,
+.shell.simple-contact-shell .space-entry-bubble small,
+.shell.simple-contact-shell .chat-bubble .space-entry-bubble p {
+  color: #17211d;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.shell.simple-contact-shell .space-entry-bubble small {
+  opacity: 0.56;
 }
 
 .hive-panel,

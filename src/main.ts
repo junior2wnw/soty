@@ -9453,7 +9453,7 @@ function renderBubbleMarkButton(
   marked: boolean
 ): string {
   const own = kind === "wall";
-  const label = own ? "В Я" : "В отзыв";
+  const label = own ? "Сохранить в Я" : "Сохранить как отзыв";
   return `
     <button class="bubble-mark ${own ? "is-hex" : "is-heart"}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
       ${icon(own ? "hexagon" : "heart")}
@@ -9535,9 +9535,9 @@ function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | u
   if (mode === "wall") {
     void label;
     void own;
-    text = "Отметь сообщение в Я";
+    text = "Сохраненное в Я";
   } else if (mode === "reputation") {
-    text = "Отметь сообщение в отзывы";
+    text = "Отзывы из чата";
   } else if (tunnel && isAgentTunnel(tunnel)) {
     text = "Попроси Клаву сделать задачу";
   } else if (tunnel && isSelfTunnel(tunnel)) {
