@@ -54,7 +54,7 @@ body {
 body.personal-space-mode {
   overflow: auto;
   color-scheme: light;
-  background: #f6f8fb;
+  background: #cacaca;
 }
 
 body.personal-space-mode::before {
@@ -69,8 +69,7 @@ body.personal-space-mode #app {
 body.self-start-mode {
   overflow: auto;
   color-scheme: light;
-  background:
-    linear-gradient(180deg, #fafafa 0%, #f2f5f1 100%);
+  background: #cacaca;
 }
 
 body.self-start-mode::before {
@@ -240,32 +239,29 @@ svg {
 }
 
 .personal-space-shell {
-  --personal-accent: #78e08f;
+  --personal-accent: #f1f1f1;
   position: relative;
   min-height: 100svh;
   overflow: hidden;
   isolation: isolate;
   color: #171717;
-  background:
-    linear-gradient(135deg, rgba(120, 224, 143, 0.16), transparent 34%),
-    linear-gradient(215deg, rgba(111, 213, 246, 0.18), transparent 38%),
-    linear-gradient(180deg, #f6f8fb 0%, #ffffff 56%, #eef4f7 100%);
+  background: #cacaca;
 }
 
 .personal-orbit {
   position: fixed;
   inset: 0;
   z-index: -1;
-  opacity: 0.64;
+  opacity: 0.16;
   background:
-    linear-gradient(90deg, rgba(23, 23, 23, 0.045) 1px, transparent 1px),
-    linear-gradient(rgba(23, 23, 23, 0.04) 1px, transparent 1px);
-  background-size: 42px 42px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.92), transparent 82%);
+    linear-gradient(90deg, #000 1px, transparent 1px),
+    linear-gradient(#000 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.78), transparent 86%);
 }
 
 .personal-topbar {
-  width: min(1120px, calc(100% - 32px));
+  width: min(1200px, calc(100% - 32px));
   min-height: 64px;
   display: flex;
   align-items: center;
@@ -300,12 +296,12 @@ svg {
   align-items: center;
   gap: 7px;
   padding: 0 12px;
-  border: 1px solid rgba(23, 23, 23, 0.12);
+  border: 1px solid #000;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  color: #242424;
+  background: #ffffff;
+  color: #000;
   font-size: 14px;
-  backdrop-filter: blur(18px);
+  font-weight: 800;
 }
 
 .personal-topbar nav svg {
@@ -321,36 +317,36 @@ svg {
 }
 
 .personal-main {
-  width: min(1120px, calc(100% - 32px));
+  width: min(1200px, calc(100% - 32px));
   display: grid;
-  gap: 22px;
+  gap: 16px;
   margin: 0 auto;
-  padding: 10px 0 64px;
+  padding: 0 0 48px;
 }
 
 .personal-hero {
-  min-height: calc(100svh - 148px);
+  min-height: clamp(360px, calc(100svh - 132px), 560px);
   display: grid;
   grid-template-columns: minmax(132px, 240px) minmax(0, 1fr);
   align-items: center;
-  gap: clamp(20px, 5vw, 62px);
+  gap: clamp(20px, 5vw, 56px);
 }
 
 .personal-avatar {
-  width: min(36vw, 230px);
+  width: min(32vw, 220px);
   min-width: 132px;
   aspect-ratio: 1;
   position: relative;
   display: grid;
   place-items: center;
-  border: 10px solid #171717;
-  border-radius: 40px;
+  border: 1px solid #000;
+  border-radius: 12px;
   background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.48), transparent 40%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.34), transparent 40%),
     var(--personal-accent);
-  color: #171717;
-  box-shadow: 0 28px 80px rgba(23, 23, 23, 0.16);
-  font-size: 72px;
+  color: #000;
+  box-shadow: none;
+  font-size: 68px;
   font-weight: 900;
   line-height: 1;
   overflow: hidden;
@@ -376,9 +372,9 @@ button.personal-avatar {
   gap: 6px;
   padding: 0 11px;
   border-radius: 999px;
-  background: rgba(23, 23, 23, 0.9);
+  background: #000;
   color: #fff;
-  box-shadow: 0 10px 24px rgba(23, 23, 23, 0.18);
+  box-shadow: none;
   transform: translateX(-50%);
   font-size: 13px;
   font-weight: 850;
@@ -396,18 +392,18 @@ button.personal-avatar {
 }
 
 .personal-avatar.has-photo {
-  background: #f6f8fb;
+  background: #ffffff;
 }
 
 .personal-identity {
   min-width: 0;
   display: grid;
-  gap: 18px;
+  gap: 14px;
 }
 
 .personal-identity > span,
 .personal-panel-copy span {
-  color: #5b6470;
+  color: #404040;
   font-size: 14px;
   font-weight: 750;
 }
@@ -415,19 +411,19 @@ button.personal-avatar {
 .personal-identity h1 {
   max-width: 820px;
   margin: 0;
-  color: #111;
-  font-size: clamp(46px, 9vw, 116px);
-  line-height: 0.92;
+  color: #000;
+  font-size: clamp(48px, 8vw, 104px);
+  line-height: 0.96;
   letter-spacing: 0;
   overflow-wrap: anywhere;
 }
 
 .personal-identity p {
-  max-width: 640px;
+  max-width: 600px;
   margin: 0;
-  color: #323840;
-  font-size: 20px;
-  line-height: 1.42;
+  color: #171717;
+  font-size: 18px;
+  line-height: 1.38;
 }
 
 .personal-quick-contacts {
@@ -445,13 +441,12 @@ button.personal-avatar {
   align-content: center;
   gap: 3px;
   padding: 9px 13px;
-  border: 1px solid rgba(23, 23, 23, 0.1);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.7);
-  color: #171717;
+  border: 1px solid #000;
+  border-radius: 0;
+  background: #ffffff;
+  color: #000;
   text-decoration: none;
-  box-shadow: 0 10px 26px rgba(23, 23, 23, 0.055);
-  backdrop-filter: blur(16px);
+  box-shadow: none;
 }
 
 .personal-quick-contacts small {
@@ -483,6 +478,7 @@ button.personal-avatar {
   justify-content: center;
   gap: 9px;
   padding: 0 18px;
+  border: 1px solid #000;
   border-radius: 999px;
   font-weight: 800;
 }
@@ -490,14 +486,13 @@ button.personal-avatar {
 .personal-primary,
 .personal-message-preview button,
 .personal-panel-action {
-  background: #171717;
+  background: #000;
   color: #fff;
 }
 
 .personal-secondary {
-  border: 1px solid rgba(23, 23, 23, 0.14);
   background: #fff;
-  color: #171717;
+  color: #000;
 }
 
 .personal-primary:hover,
@@ -508,7 +503,7 @@ button.personal-avatar {
 .personal-topbar nav button:hover,
 .personal-topbar nav a:hover {
   transform: translateY(-1px);
-  box-shadow: 0 14px 32px rgba(23, 23, 23, 0.12);
+  box-shadow: 2px 2px 0 #000;
 }
 
 .personal-primary svg,
@@ -521,7 +516,7 @@ button.personal-avatar {
 
 .personal-note {
   max-width: 620px;
-  color: #66707b;
+  color: #404040;
   font-size: 14px;
   line-height: 1.45;
 }
@@ -685,17 +680,16 @@ button.personal-avatar {
 
 .personal-layerbar {
   position: sticky;
-  top: 0;
+  top: 8px;
   z-index: 4;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid rgba(23, 23, 23, 0.1);
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 16px 46px rgba(23, 23, 23, 0.08);
-  backdrop-filter: blur(20px);
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #000;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: none;
 }
 
 .personal-layerbar button {
@@ -707,7 +701,7 @@ button.personal-avatar {
   gap: 7px;
   border-radius: 16px;
   background: transparent;
-  color: #4a535e;
+  color: #000;
   font-size: 14px;
   font-weight: 800;
   white-space: nowrap;
@@ -719,12 +713,12 @@ button.personal-avatar {
 }
 
 .personal-layerbar button[aria-selected="true"] {
-  background: #171717;
+  background: #000;
   color: #fff;
 }
 
 .personal-panels {
-  min-height: 420px;
+  min-height: 320px;
 }
 
 .personal-panel {
@@ -732,7 +726,7 @@ button.personal-avatar {
   grid-template-columns: minmax(240px, 0.78fr) minmax(0, 1.22fr);
   gap: clamp(18px, 4vw, 42px);
   align-items: start;
-  padding: 44px 0 20px;
+  padding: 30px 0 20px;
 }
 
 .personal-panel.is-active {
@@ -763,15 +757,15 @@ button.personal-avatar {
 
 .personal-panel-copy h2 {
   margin: 0;
-  color: #111;
-  font-size: 34px;
+  color: #000;
+  font-size: 30px;
   line-height: 1.06;
   letter-spacing: 0;
 }
 
 .personal-panel-copy p {
   margin: 0;
-  color: #3f4650;
+  color: #171717;
   font-size: 16px;
   line-height: 1.52;
 }
@@ -796,26 +790,26 @@ button.personal-avatar {
   display: grid;
   gap: 7px;
   padding: 18px;
-  border: 1px solid rgba(23, 23, 23, 0.1);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.74);
-  color: #171717;
+  border: 1px solid #000;
+  border-radius: 0;
+  background: #ffffff;
+  color: #000;
   text-decoration: none;
-  box-shadow: 0 12px 32px rgba(23, 23, 23, 0.06);
+  box-shadow: none;
 }
 
 .personal-empty {
   min-height: 118px;
   place-items: center;
   text-align: center;
-  color: #65717d;
+  color: #404040;
   font-weight: 820;
 }
 
 .personal-empty svg {
   width: 28px;
   height: 28px;
-  color: #171717;
+  color: #000;
 }
 
 .personal-contact-list span,
@@ -823,7 +817,7 @@ button.personal-avatar {
 .personal-spaces span,
 .personal-review b,
 .personal-message-preview b {
-  color: #68727e;
+  color: #404040;
   font-size: 13px;
   font-weight: 800;
 }
@@ -831,7 +825,7 @@ button.personal-avatar {
 .personal-contact-list b,
 .personal-post h3 {
   margin: 0;
-  color: #111;
+  color: #000;
   font-size: 20px;
   line-height: 1.16;
   overflow-wrap: anywhere;
@@ -842,19 +836,19 @@ button.personal-avatar {
 .personal-spaces p,
 .personal-message-preview p {
   margin: 0;
-  color: #3e4650;
+  color: #171717;
   font-size: 15px;
   line-height: 1.48;
 }
 
 .personal-review div {
-  color: #e36e2d;
+  color: #000;
   letter-spacing: 0;
 }
 
 .personal-spaces a.is-active {
-  border-color: rgba(23, 23, 23, 0.44);
-  background: color-mix(in srgb, var(--personal-accent), white 72%);
+  border-color: #000;
+  background: #f1f1f1;
 }
 
 .personal-message-preview button {
@@ -1585,23 +1579,22 @@ button.personal-avatar {
 }
 
 .shell.simple-contact-shell {
-  --ink: #17211d;
-  --muted: #63756e;
-  --edge: #d6e0de;
-  --green: #159864;
-  --cyan: #0f6bff;
-  --amber: #b06b18;
-  --cream: #17211d;
+  --ink: #000000;
+  --muted: #616161;
+  --edge: #000000;
+  --green: #000000;
+  --cyan: #000000;
+  --amber: #404040;
+  --cream: #000000;
   color: var(--ink);
-  background:
-    linear-gradient(180deg, #f7faf9 0%, #eef4f2 100%);
+  background: #cacaca;
 }
 
 .shell.simple-contact-shell .dialog-shell {
   width: min(100%, 760px);
   margin: 0 auto;
   grid-template-rows: 58px auto minmax(0, 1fr);
-  gap: 8px;
+  gap: 6px;
 }
 
 .shell.simple-contact-shell .dialog-head {
@@ -1616,20 +1609,18 @@ button.personal-avatar {
 .shell.simple-contact-shell .dialog-head,
 .shell.simple-contact-shell .editor,
 .shell.simple-contact-shell .space-card {
-  border-color: rgba(190, 205, 200, 0.86);
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    0 12px 30px rgba(35, 52, 46, 0.08);
+  border-color: #000;
+  background: #ffffff;
+  box-shadow: none;
 }
 
 .shell.simple-contact-shell .dialog-avatar {
-  background: var(--cyan);
+  background: #000;
   color: #ffffff;
 }
 
 .shell.simple-contact-shell .dialog-name {
-  color: #14201b;
+  color: #000;
 }
 
 .shell.simple-contact-shell .dialog-state {
@@ -1638,9 +1629,9 @@ button.personal-avatar {
 
 .shell.simple-contact-shell .dialog-id,
 .shell.simple-contact-shell .dialog-notify {
-  border-color: rgba(190, 205, 200, 0.94);
+  border-color: #000;
   background: #ffffff;
-  color: var(--cyan);
+  color: #000;
   box-shadow: none;
 }
 
@@ -1669,52 +1660,50 @@ button.personal-avatar {
 }
 
 .shell.simple-contact-shell .space-map button {
-  color: #596b64;
+  color: #000;
   border-color: transparent;
   background: transparent;
 }
 
 .shell.simple-contact-shell .space-map button:hover,
 .shell.simple-contact-shell .space-map button.is-active {
-  border-color: rgba(15, 107, 255, 0.28);
-  background: rgba(15, 107, 255, 0.08);
-  color: #0f3d91;
+  border-color: #000;
+  background: #000;
+  color: #fff;
 }
 
 .shell.simple-contact-shell .chat-scroll {
-  background:
-    linear-gradient(180deg, rgba(15, 107, 255, 0.025), transparent 34%),
-    rgba(255, 255, 255, 0.34);
+  background: #f1f1f1;
 }
 
 .shell.simple-contact-shell .space-empty {
-  border-color: rgba(190, 205, 200, 0.94);
+  border-color: #000;
   background: #ffffff;
-  color: #566a63;
+  color: #404040;
 }
 
 .shell.simple-contact-shell .composer-bar {
-  border-top-color: rgba(190, 205, 200, 0.86);
+  border-top-color: #000;
   background: #ffffff;
 }
 
 .shell.simple-contact-shell .chat-composer {
-  border-color: rgba(190, 205, 200, 0.94);
-  background: #f8fbfa;
-  color: #17211d;
+  border-color: #000;
+  background: #ffffff;
+  color: #000;
   caret-color: var(--cyan);
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 .shell.simple-contact-shell .chat-composer:focus {
   border-color: var(--cyan);
-  box-shadow: 0 0 0 3px rgba(15, 107, 255, 0.10);
+  box-shadow: 2px 2px 0 #000;
 }
 
 .shell.simple-contact-shell .composer-attach {
-  border-color: rgba(21, 152, 100, 0.24);
-  background: rgba(21, 152, 100, 0.08);
-  color: var(--green);
+  border-color: #000;
+  background: #ffffff;
+  color: #000;
   box-shadow: none;
 }
 
@@ -1732,25 +1721,25 @@ button.personal-avatar {
 .shell.simple-contact-shell .chat-bubble {
   max-width: min(62ch, 82%);
   padding: 10px 42px 20px 14px;
-  border-color: rgba(190, 205, 200, 0.94);
-  border-radius: 18px;
+  border-color: #000;
+  border-radius: 8px;
   background: #ffffff;
-  color: #17211d;
-  box-shadow: 0 8px 22px rgba(35, 52, 46, 0.08);
+  color: #000;
+  box-shadow: none;
 }
 
 .shell.simple-contact-shell .chat-bubble:hover {
-  border-color: rgba(15, 107, 255, 0.22);
+  border-color: #000;
   transform: translateY(-1px);
-  box-shadow: 0 12px 28px rgba(35, 52, 46, 0.12);
+  box-shadow: 2px 2px 0 #000;
 }
 
 .shell.simple-contact-shell .chat-bubble.local {
   align-self: flex-end;
   margin-left: 52px;
   margin-right: 28px;
-  border-color: #0f6bff;
-  background: #0f6bff;
+  border-color: #000;
+  background: #000;
   color: #ffffff;
 }
 
@@ -1779,10 +1768,11 @@ button.personal-avatar {
 .shell.simple-contact-shell .bubble-avatar {
   top: 9px;
   background: #ffffff;
-  color: #0f6bff;
+  color: #000;
   clip-path: none;
   border-radius: 999px;
-  box-shadow: 0 6px 14px rgba(35, 52, 46, 0.12);
+  border: 1px solid #000;
+  box-shadow: none;
 }
 
 .shell.simple-contact-shell .chat-bubble.remote .bubble-avatar {
@@ -1796,67 +1786,67 @@ button.personal-avatar {
 
 .shell.simple-contact-shell .bubble-mark {
   opacity: 1;
-  background: rgba(238, 244, 242, 0.92);
-  color: #596b64;
+  background: #ffffff;
+  color: #000;
 }
 
 .shell.simple-contact-shell .chat-bubble.local .bubble-mark {
-  background: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.76);
 }
 
 .shell.simple-contact-shell .bubble-mark:hover,
 .shell.simple-contact-shell .bubble-mark.is-marked {
   background: #ffffff;
-  color: #0f6bff;
+  color: #000;
   transform: translateY(-1px) scale(1.03);
 }
 
 .shell.simple-contact-shell .bubble-mark.is-heart:hover,
 .shell.simple-contact-shell .bubble-mark.is-heart.is-marked {
-  color: #d82f6f;
+  color: #000;
 }
 
 .shell.simple-contact-shell .bubble-mark.is-hex:hover,
 .shell.simple-contact-shell .bubble-mark.is-hex.is-marked {
-  color: #159864;
+  color: #000;
 }
 
 .shell.simple-contact-shell .message-dialog-peek {
-  border-color: rgba(190, 205, 200, 0.94);
-  background: rgba(255, 255, 255, 0.78);
-  color: #566a63;
+  border-color: #000;
+  background: #ffffff;
+  color: #404040;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 .shell.simple-contact-shell .message-dialog-peek b {
-  background: rgba(15, 107, 255, 0.1);
-  color: #0f6bff;
+  background: #f1f1f1;
+  color: #000;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 .shell.simple-contact-shell .message-dialog-panel {
-  border-color: rgba(190, 205, 200, 0.94);
+  border-color: #000;
   background: #ffffff;
 }
 
 .shell.simple-contact-shell .message-dialog-panel header span,
 .shell.simple-contact-shell .message-dialog-reply span,
 .shell.simple-contact-shell .message-dialog-form textarea {
-  color: #17211d;
+  color: #000;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 .shell.simple-contact-shell .message-dialog-reply b {
-  color: #0f6bff;
+  color: #000;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 .shell.simple-contact-shell .message-dialog-close,
 .shell.simple-contact-shell .message-dialog-form button {
-  border-color: rgba(15, 107, 255, 0.18);
-  background: rgba(15, 107, 255, 0.08);
-  color: #0f6bff;
+  border-color: #000;
+  background: #ffffff;
+  color: #000;
 }
 
 .shell.simple-contact-shell .line-gutter,
@@ -1874,27 +1864,27 @@ button.personal-avatar {
   max-width: none;
   margin-right: 0;
   margin-left: 0;
-  border-color: rgba(21, 152, 100, 0.24);
+  border-color: #000;
   background: #ffffff;
-  color: #17211d;
-  box-shadow: 0 8px 22px rgba(35, 52, 46, 0.08);
+  color: #000;
+  box-shadow: none;
 }
 
 .shell.simple-contact-shell .space-entry-bubble span {
-  border-color: rgba(21, 152, 100, 0.28);
-  color: #159864;
+  border-color: #000;
+  color: #000;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 .shell.simple-contact-shell .space-entry-bubble[data-role="review"] span {
-  border-color: rgba(216, 47, 111, 0.24);
-  color: #d82f6f;
+  border-color: #000;
+  color: #000;
 }
 
 .shell.simple-contact-shell .space-entry-bubble b,
 .shell.simple-contact-shell .space-entry-bubble small,
 .shell.simple-contact-shell .chat-bubble .space-entry-bubble p {
-  color: #17211d;
+  color: #000;
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
@@ -5266,7 +5256,7 @@ button:disabled {
 
   .personal-topbar,
   .personal-main {
-    width: min(100% - 20px, 1120px);
+    width: min(100% - 20px, 1200px);
   }
 
   .personal-topbar {
@@ -5292,8 +5282,8 @@ button:disabled {
 
   .personal-avatar {
     width: 132px;
-    border-width: 7px;
-    border-radius: 28px;
+    border-width: 1px;
+    border-radius: 12px;
     font-size: 48px;
   }
 
@@ -5352,7 +5342,7 @@ button:disabled {
   .personal-layerbar {
     grid-template-columns: repeat(5, minmax(56px, 1fr));
     overflow-x: auto;
-    border-radius: 18px;
+    border-radius: 16px;
   }
 
   .personal-layerbar button {

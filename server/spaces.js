@@ -83,14 +83,14 @@ async function publicSpaceProfile(photoStore, reviewStore, rawHandle, rawSpace =
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : "контакт, отзывы, сообщения и пространство",
+      : "контакт, отзывы, связь и соты",
     about: activeSpace
-      ? `${activeSpace.title}: контакт, сообщения, отзывы и действия рядом.`
-      : `${ownerName}: контакт, отзывы, сообщения и место в одном контуре.`,
+      ? `${activeSpace.title}: контакт, связь, отзывы и действия рядом.`
+      : `${ownerName}: универсальная страница для контакта, отзывов, связи и сот.`,
     accent,
     contacts: [
       { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
-      { label: "ссылка", value: url, href: url }
+      { label: "страница", value: url, href: url }
     ],
     posts: [
       {
@@ -137,8 +137,8 @@ async function sendSpaceManifest(photoStore, reviewStore, res, rawHandle, rawSpa
     launch_handler: {
       client_mode: "navigate-existing"
     },
-    background_color: "#f6f8fb",
-    theme_color: profile.accent,
+    background_color: "#cacaca",
+    theme_color: "#000000",
     icons: [
       {
         src: profile.photoUrl || (profile.slug

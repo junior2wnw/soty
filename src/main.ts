@@ -934,6 +934,11 @@ function renderSelfStartPage(): void {
   setSelfStartMode(true);
   applyPersonalSpaceManifest(null);
   const saved = loadSelfStartHandle();
+  if (saved) {
+    window.history.replaceState({}, "", `/@${encodeURIComponent(saved)}`);
+    showPersonalSpaceRoute({ handle: saved, slug: "" });
+    return;
+  }
   app.innerHTML = `
     <main class="self-start-shell" aria-label="создать страницу">
       <form class="self-start-form">

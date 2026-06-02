@@ -84,9 +84,9 @@ const fallbackProfile: PersonalSpaceProfile = {
   accountName: "Соты",
   photoUrl: "",
   title: "страница",
-  headline: "контакт, отзывы, сообщения и пространство",
-  about: "Карточка открывает контакт. Сообщения становятся страницей, отзывами и большим местом.",
-  accent: "#78e08f",
+  headline: "контакт, отзывы, связь и соты",
+  about: "Универсальная страница для человека, проекта, компании, устройства или любой другой сущности.",
+  accent: "#f1f1f1",
   contacts: [],
   posts: [],
   reviews: [],
@@ -98,11 +98,11 @@ const fallbackProfile: PersonalSpaceProfile = {
 };
 
 const layers = [
-  { id: "card", label: "Контакт", title: "Карточка", icon: "qr" },
+  { id: "card", label: "Контакт", title: "Контакт", icon: "person" },
   { id: "personal", label: "Я", title: "Страница", icon: "hexagon" },
   { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "heart" },
-  { id: "messages", label: "Чат", title: "Сообщения", icon: "mail" },
-  { id: "place", label: "Место", title: "Место", icon: "hexagon" }
+  { id: "messages", label: "Связь", title: "Связь", icon: "mail" },
+  { id: "place", label: "Соты", title: "Соты", icon: "hexagon" }
 ] as const satisfies readonly {
   readonly id: string;
   readonly label: string;
@@ -230,8 +230,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           ${ownSpace ? `
             <button class="personal-icon-button" type="button" data-action="backup-import" aria-label="Импорт" data-tooltip="Импорт">${icon("upload")}</button>
             <button class="personal-icon-button" type="button" data-action="backup-export" aria-label="Экспорт" data-tooltip="Экспорт">${icon("download")}</button>
-          ` : ""}
-          <button type="button" data-action="self">${localHandle ? "Я" : "Создать Я"}</button>
+          ` : `<button type="button" data-action="self">${icon("person")} ${localHandle ? "Я" : "Создать"}</button>`}
         </nav>
         ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
       </header>
@@ -249,8 +248,8 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             ${renderQuickContacts(profile, ownSpace)}
             ${renderEntityActions(heroActions)}
             <div class="personal-note" data-install-note>${ownSpace
-              ? "Имя и фото станут PWA."
-              : "Сохранится как отдельный контакт."}</div>
+              ? "Фото станет иконкой PWA."
+              : "Можно сохранить как PWA-контакт."}</div>
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
@@ -321,7 +320,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   if (layer === "personal") {
     return {
       eyebrow: "я",
-      title: "Сохраненное важное.",
+      title: "Страница",
       body: renderPanelList(
         "personal-feed",
         profile.posts.map((post) => `
@@ -332,7 +331,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           </section>
         `),
         "hexagon",
-        "Пока пусто."
+        ownSpace ? "Сохраняйте сюда важное." : "Пока пусто."
       )
     };
   }
@@ -340,7 +339,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     const [reviewAction] = entityActionsFor({ surface: "reviews", ownSpace, canInstall: false });
     return {
       eyebrow: "отзывы",
-      title: "Доверие из сообщений.",
+      title: "Отзывы",
       ...(reviewAction ? { action: reviewAction } : {}),
       body: renderPanelList(
         "personal-reviews",
@@ -352,7 +351,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           </section>
         `),
         "heart",
-        ownSpace ? "Отзывы появятся здесь." : "Напишите сообщение."
+        ownSpace ? "Отзывы появятся здесь." : "Пока нет отзывов."
       )
     };
   }
@@ -361,21 +360,21 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     if (ownSpace) {
       return {
         eyebrow: "заметки",
-        title: "Быстрые мысли.",
+        title: "Заметки",
         body: `
           <div class="personal-message-preview">
-            <div><b>${escapeHtml(profile.shortName)}</b><p>Свое место для заметок.</p></div>
+            <div><b>${escapeHtml(profile.shortName)}</b><p>Личное, быстрое, рядом.</p></div>
             ${messageAction ? renderEntityAction(messageAction) : ""}
           </div>
         `
       };
     }
     return {
-      eyebrow: "чат",
-      title: "Личные сообщения.",
+      eyebrow: "связь",
+      title: "Сообщения",
       body: `
         <div class="personal-message-preview">
-          <div><b>${escapeHtml(profile.shortName)}</b><p>${escapeHtml(`Связь с ${profile.shortName}.`)}</p></div>
+          <div><b>${escapeHtml(profile.shortName)}</b><p>Личный чат и отзывы из сообщений.</p></div>
           ${messageAction ? renderEntityAction(messageAction) : ""}
         </div>
       `
@@ -384,9 +383,9 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   if (layer === "place") {
     const [runtimeAction] = entityActionsFor({ surface: "place", ownSpace, canInstall: false });
     return {
-      eyebrow: "место",
-      title: "Можно вырасти.",
-      text: "Проект, компания, устройство, команда, тема.",
+      eyebrow: "соты",
+      title: "Соты",
+      text: "Агент, мини-аппы, доступы и другие возможности.",
       ...(runtimeAction ? { action: runtimeAction } : {}),
       body: renderPanelList(
         "personal-spaces",
@@ -397,13 +396,13 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           </a>
         `),
         "hexagon",
-        "Появится позже."
+        "Здесь появятся пространства."
       )
     };
   }
   return {
     eyebrow: "контакт",
-    title: "Кто это и как связаться.",
+    title: "Контакт",
     text: personalSpaceCopy(profile.about, ownSpace),
     body: `
       <div class="personal-contact-list">
@@ -432,12 +431,12 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
       ];
   }
   if (options.surface === "reviews") {
-    return options.ownSpace ? [] : [{ id: "message", label: "Оставить отзыв", icon: "heart", tone: "primary" }];
+    return options.ownSpace ? [] : [{ id: "message", label: "Отзыв", icon: "heart", tone: "primary" }];
   }
   if (options.surface === "messages") {
-    return [{ id: "message", label: options.ownSpace ? "Открыть" : "Написать", icon: "send", tone: "primary" }];
+    return [{ id: "message", label: options.ownSpace ? "Заметки" : "Написать", icon: "send", tone: "primary" }];
   }
-  return [{ id: "runtime", label: "Открыть соты", icon: "hexagon", tone: "primary" }];
+  return [{ id: "runtime", label: "Открыть", icon: "hexagon", tone: "primary" }];
 }
 
 function renderEntityActions(actions: readonly EntityAction[]): string {
