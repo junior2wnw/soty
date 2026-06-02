@@ -766,17 +766,19 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
 
 async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult> {
   if (!pendingInstallPrompt) {
+    const permission = await requestNotificationPermission();
     return {
       ok: false,
-      message: "Если кнопка установки не появилась, откройте меню браузера и выберите добавление на экран. На iPhone это пункт Поделиться -> На экран Домой."
+      message: `Если кнопка установки не появилась, откройте меню браузера и выберите добавление на экран. На iPhone это пункт Поделиться -> На экран Домой.${notificationPermissionNote(permission)}`
     };
   }
   const promptEvent = pendingInstallPrompt;
   pendingInstallPrompt = null;
   await promptEvent.prompt();
   const choice = await promptEvent.userChoice.catch(() => ({ outcome: "dismissed" as const, platform: "" }));
+  const permission = choice.outcome === "accepted" ? await requestNotificationPermission() : "default";
   return choice.outcome === "accepted"
-    ? { ok: true, message: "Готово. Это пространство теперь ощущается как отдельное приложение." }
+    ? { ok: true, message: `Готово. Это пространство теперь ощущается как отдельное приложение.${notificationPermissionNote(permission)}` }
     : { ok: false, message: "Установку можно повторить позже с этой же страницы." };
 }
 
@@ -3174,7 +3176,7 @@ function renderTiles(): void {
         },
         knock: () => {
           selectTunnel(id);
-          requestNotificationPermission();
+          void requestNotificationPermission();
           syncs.get(id)?.sendKnock("*");
           tunnels = touchTunnel(id);
           renderTiles();
@@ -7109,11 +7111,28 @@ function tunnelHasNotice(tunnelId: string): boolean {
   return loadTunnels().some((tunnel) => tunnel.id === tunnelId && tunnel.unread);
 }
 
-function requestNotificationPermission(): void {
-  if (!("Notification" in window) || Notification.permission !== "default") {
-    return;
+async function requestNotificationPermission(): Promise<NotificationPermission | "unsupported"> {
+  if (!("Notification" in window)) {
+    return "unsupported";
   }
-  void Notification.requestPermission().catch(() => undefined);
+  if (Notification.permission !== "default") {
+    return Notification.permission;
+  }
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return Notification.permission;
+  }
+}
+
+function notificationPermissionNote(permission: NotificationPermission | "unsupported"): string {
+  if (permission === "granted") {
+    return " Оповещения включены.";
+  }
+  if (permission === "denied") {
+    return " Оповещения можно включить в настройках браузера.";
+  }
+  return "";
 }
 
 async function showSystemAttentionNotice(tunnelId: string, notice: AttentionNotice): Promise<void> {
