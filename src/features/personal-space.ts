@@ -157,6 +157,7 @@ type PersonalModuleGroup = {
 };
 const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
+const profileCachePrefix = "soty:personal-profile:v1:";
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -198,22 +199,31 @@ export async function uploadPersonalSpacePhoto(route: PersonalSpaceRoute, file: 
   const url = route.slug
     ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/photo`
     : `/api/spaces/${handle}/photo`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify({ dataUrl })
-  });
-  if (!response.ok) {
-    throw new Error("profile photo upload failed");
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ dataUrl })
+    });
+    if (!response.ok) {
+      saveCachedPersonalProfile(applyLocalProfilePhoto(route, dataUrl));
+      return dataUrl;
+    }
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || payload.ok !== true) {
+      saveCachedPersonalProfile(applyLocalProfilePhoto(route, dataUrl));
+      return dataUrl;
+    }
+    const photoUrl = cleanUrlPath(payload.photoUrl) || dataUrl;
+    saveCachedPersonalProfile(applyLocalProfilePhoto(route, photoUrl));
+    return photoUrl;
+  } catch {
+    saveCachedPersonalProfile(applyLocalProfilePhoto(route, dataUrl));
+    return dataUrl;
   }
-  const payload = await response.json() as unknown;
-  if (!isRecord(payload) || payload.ok !== true) {
-    throw new Error("profile photo upload rejected");
-  }
-  return cleanUrlPath(payload.photoUrl);
 }
 
 export function cleanPersonalHandle(value: string): string {
@@ -249,41 +259,51 @@ export function savePersonalHandle(handle: string): void {
 }
 
 export async function updatePersonalSpaceProfile(route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate): Promise<PersonalSpaceInstallResult> {
+  saveCachedPersonalProfile(applyLocalProfileUpdate(route, update));
   const handle = encodeURIComponent(route.handle);
-  const response = await fetch(`/api/spaces/${handle}/profile`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify(update)
-  });
-  if (!response.ok) {
-    return { ok: false, message: "Не удалось сохранить." };
+  try {
+    const response = await fetch(`/api/spaces/${handle}/profile`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(update)
+    });
+    if (!response.ok) {
+      return { ok: true, message: "Сохранено в браузере." };
+    }
+    const payload = await response.json() as unknown;
+    return isRecord(payload) && payload.ok === true
+      ? { ok: true, message: "Сохранено." }
+      : { ok: true, message: "Сохранено в браузере." };
+  } catch {
+    return { ok: true, message: "Сохранено в браузере." };
   }
-  const payload = await response.json() as unknown;
-  return isRecord(payload) && payload.ok === true
-    ? { ok: true, message: "Сохранено." }
-    : { ok: false, message: "Не удалось сохранить." };
 }
 
 export async function savePersonalSpacePost(route: PersonalSpaceRoute, draft: PersonalSpacePostDraft): Promise<PersonalSpaceInstallResult> {
+  saveCachedPersonalProfile(applyLocalPost(route, draft));
   const handle = encodeURIComponent(route.handle);
-  const response = await fetch(`/api/spaces/${handle}/posts`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify(draft)
-  });
-  if (!response.ok) {
-    return { ok: false, message: "Не удалось сохранить." };
+  try {
+    const response = await fetch(`/api/spaces/${handle}/posts`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(draft)
+    });
+    if (!response.ok) {
+      return { ok: true, message: "Сохранено в браузере." };
+    }
+    const payload = await response.json() as unknown;
+    return isRecord(payload) && payload.ok === true
+      ? { ok: true, message: "Сохранено." }
+      : { ok: true, message: "Сохранено в браузере." };
+  } catch {
+    return { ok: true, message: "Сохранено в браузере." };
   }
-  const payload = await response.json() as unknown;
-  return isRecord(payload) && payload.ok === true
-    ? { ok: true, message: "Сохранено." }
-    : { ok: false, message: "Не удалось сохранить." };
 }
 
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
@@ -291,18 +311,150 @@ async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<Pers
   const url = route.slug
     ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}`
     : `/api/spaces/${handle}`;
+  const cached = loadCachedPersonalProfile(route);
+  if (cached) {
+    void refreshPersonalSpaceProfile(route, url);
+    return cached;
+  }
+  const fetched = await fetchPersonalSpaceProfile(route, url);
+  if (fetched) {
+    return fetched;
+  }
+  const fallback = fallbackFor(route);
+  if (route.handle === loadLocalHandle()) {
+    saveCachedPersonalProfile(fallback);
+  }
+  return fallback;
+}
+
+async function refreshPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<void> {
+  await fetchPersonalSpaceProfile(route, url);
+}
+
+async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<PersonalSpaceProfile | null> {
   try {
     const response = await fetch(url, {
       cache: "no-store",
       headers: { Accept: "application/json" }
     });
     if (!response.ok) {
-      return fallbackFor(route);
+      return null;
     }
-    return normalizeProfile(await response.json(), route);
+    const profile = normalizeProfile(await response.json(), route);
+    saveCachedPersonalProfile(profile);
+    return profile;
   } catch {
-    return fallbackFor(route);
+    return null;
   }
+}
+
+function loadCachedPersonalProfile(route: PersonalSpaceRoute): PersonalSpaceProfile | null {
+  try {
+    const text = window.localStorage.getItem(profileCacheKey(route));
+    if (!text) {
+      return null;
+    }
+    const profile = normalizeProfile(JSON.parse(text) as unknown, route);
+    return profile.handle === route.handle && profile.slug === route.slug ? profile : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedPersonalProfile(profile: PersonalSpaceProfile): void {
+  try {
+    window.localStorage.setItem(profileCacheKey(profile), JSON.stringify(profile));
+  } catch {
+    // Local storage only improves continuity; failing to cache must not block the page.
+  }
+}
+
+function profileCacheKey(route: PersonalSpaceRoute): string {
+  return `${profileCachePrefix}${routeUrl(route)}`;
+}
+
+function localBaseProfile(route: PersonalSpaceRoute): PersonalSpaceProfile {
+  return loadCachedPersonalProfile(route) || fallbackFor(route);
+}
+
+function applyLocalProfileUpdate(route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate): PersonalSpaceProfile {
+  const profile = localBaseProfile(route);
+  const displayName = cleanText(update.displayName, 100) || profile.displayName;
+  const about = cleanText(update.about, 420) || profile.about;
+  const contact = cleanText(update.contact, 160);
+  const contacts = contact
+    ? [
+        { label: "контакт", value: contact, ...(contactHref(contact) ? { href: contactHref(contact) } : {}) },
+        ...profile.contacts.filter((item) => item.label !== "контакт")
+      ].slice(0, 6)
+    : profile.contacts.filter((item) => item.label !== "контакт");
+  return {
+    ...profile,
+    displayName,
+    shortName: displayName,
+    accountName: displayName,
+    about,
+    contacts
+  };
+}
+
+function applyLocalProfilePhoto(route: PersonalSpaceRoute, photoUrl: string): PersonalSpaceProfile {
+  return {
+    ...localBaseProfile(route),
+    photoUrl
+  };
+}
+
+function applyLocalPost(route: PersonalSpaceRoute, draft: PersonalSpacePostDraft): PersonalSpaceProfile {
+  const profile = localBaseProfile(route);
+  const text = cleanText(draft.text, 420);
+  if (!text) {
+    return profile;
+  }
+  const post = {
+    id: localItemId("post"),
+    title: text.slice(0, 72),
+    text,
+    meta: localMeta()
+  };
+  return {
+    ...profile,
+    posts: [post, ...profile.posts].slice(0, 8)
+  };
+}
+
+function applyLocalReview(profile: PersonalSpaceProfile, author: string, text: string): PersonalSpaceProfile {
+  const review = {
+    id: localItemId("review"),
+    author: cleanText(author, 80) || "Гость",
+    text: cleanText(text, 320),
+    rating: 5
+  };
+  if (!review.text) {
+    return profile;
+  }
+  return {
+    ...profile,
+    reviews: [review, ...profile.reviews].slice(0, 8)
+  };
+}
+
+function contactHref(value: string): string {
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value)) {
+    return `mailto:${value}`;
+  }
+  if (/^https?:\/\//iu.test(value)) {
+    return value;
+  }
+  return "";
+}
+
+function localItemId(kind: string): string {
+  return `${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function localMeta(): string {
+  return new Date().toLocaleDateString("ru-RU", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function renderLoading(route: PersonalSpaceRoute): string {
@@ -1087,24 +1239,29 @@ function showReviewSheet(root: HTMLElement, profile: PersonalSpaceProfile, autho
 }
 
 async function submitPersonalReview(profile: PersonalSpaceProfile, author: string, text: string): Promise<void> {
+  saveCachedPersonalProfile(applyLocalReview(profile, author, text));
   const handle = encodeURIComponent(profile.handle);
   const url = profile.slug
     ? `/api/spaces/${handle}/${encodeURIComponent(profile.slug)}/reviews`
     : `/api/spaces/${handle}/reviews`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json"
-    },
-    body: JSON.stringify({ author, text, rating: 5 })
-  });
-  if (!response.ok) {
-    throw new Error("review save failed");
-  }
-  const payload = await response.json() as unknown;
-  if (!isRecord(payload) || payload.ok !== true) {
-    throw new Error("review save rejected");
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ author, text, rating: 5 })
+    });
+    if (!response.ok) {
+      return;
+    }
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || payload.ok !== true) {
+      return;
+    }
+  } catch {
+    return;
   }
 }
 
@@ -1187,7 +1344,7 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     displayName: cleanText(record.displayName, 100) || route.handle,
     shortName: cleanText(record.shortName, 32) || route.handle,
     accountName: cleanText(record.accountName, 100) || cleanText(record.displayName, 100) || route.handle,
-    photoUrl: cleanUrlPath(record.photoUrl),
+    photoUrl: cleanProfilePhotoUrl(record.photoUrl),
     title: cleanText(record.title, 80) || fallbackProfile.title,
     headline: cleanText(record.headline, 180) || fallbackProfile.headline,
     about: cleanText(record.about, 420) || fallbackProfile.about,
@@ -1337,7 +1494,24 @@ function cleanUrlPath(value: unknown): string {
   if (!text) {
     return "";
   }
+  if (/^(?:\/|https?:\/\/|mailto:|tel:)/u.test(text) && !/[<>"']/u.test(text)) {
+    return text;
+  }
+  return "";
+}
+
+function cleanProfilePhotoUrl(value: unknown): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) {
+    return "";
+  }
   if (/^(?:\/|https?:\/\/)/u.test(text) && !/[<>"']/u.test(text)) {
+    return text.slice(0, 240);
+  }
+  if (
+    text.length < 900000
+    && /^data:image\/(?:png|jpe?g|webp);base64,[a-z0-9+/=]+$/iu.test(text)
+  ) {
     return text;
   }
   return "";
