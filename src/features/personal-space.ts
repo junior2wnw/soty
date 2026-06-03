@@ -222,6 +222,12 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
+type PersonalLayerDisplay = {
+  readonly id: PersonalSpaceLayer;
+  readonly label: string;
+  readonly title: string;
+  readonly icon: IconName;
+};
 type EntityActionId = "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "card" | "personal" | "reviews" | "messages" | "place";
 type EntityAction = {
@@ -823,8 +829,19 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <div class="personal-note" data-install-note></div>
           </div>
         </section>
-        <section class="personal-panels personal-unified" aria-label="инфо-карта">
-          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify, localHandle, true)).join("")}
+        <div class="personal-layerbar" role="tablist" aria-label="слои инфо-карты">
+          ${layers.map((display) => {
+            const view = layerDisplay(display, ownSpace);
+            return `
+            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
+              ${icon(view.icon)}
+              <span>${escapeHtml(view.label)}</span>
+            </button>
+          `;
+          }).join("")}
+        </div>
+        <section class="personal-panels" aria-label="инфо-карта">
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify, localHandle)).join("")}
         </section>
       </main>
     </section>
@@ -881,12 +898,11 @@ function renderLayerPanel(
   activeLayer: PersonalSpaceLayer,
   canInstall: boolean,
   canNotify: boolean,
-  localHandle: string,
-  displayAll = false
+  localHandle: string
 ): string {
   const view = panelView(profile, layer, ownSpace, canInstall, canNotify, localHandle);
   return `
-    <article class="personal-panel${layer === activeLayer || displayAll ? " is-active" : ""}" data-panel="${layer}">
+    <article class="personal-panel${layer === activeLayer ? " is-active" : ""}" data-panel="${layer}">
       <div class="personal-panel-copy">
         <span>${escapeHtml(view.eyebrow)}</span>
         <h2>${escapeHtml(view.title)}</h2>
@@ -1127,6 +1143,13 @@ function renderPersonalModuleGroup(group: PersonalModuleGroup): string {
   `;
 }
 
+function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
+  if (!ownSpace && layer.id === "personal") {
+    return { ...layer, label: "Страница", title: "Страница" };
+  }
+  return layer;
+}
+
 function renderPersonalModule(module: PersonalModule): string {
   return `
     <button type="button" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" data-module-layout="${escapeAttr(module.layout || "")}" class="${[module.active ? "is-active" : "", module.priority ? "is-priority" : ""].filter(Boolean).join(" ")}">
@@ -1227,25 +1250,6 @@ function requestedActiveLayer(): PersonalSpaceLayer | null {
   }
 }
 
-function rememberActiveLayer(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer): void {
-  try {
-    const url = new URL(window.location.href);
-    const currentRoute = routeUrl(profile);
-    if (url.pathname !== currentRoute) {
-      return;
-    }
-    const defaultLayer = profile.slug ? "place" : "card";
-    if (layer === defaultLayer) {
-      url.searchParams.delete("layer");
-    } else {
-      url.searchParams.set("layer", layer);
-    }
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-  } catch {
-    // Layer memory is navigation polish; the page still works without it.
-  }
-}
-
 function renderPanelList(className: string, items: readonly string[], emptyIcon: IconName, emptyText: string): string {
   return `
     <div class="${className}">
@@ -1265,7 +1269,6 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       const layer = layerButton.dataset.layer || "";
       if (isPersonalLayer(layer)) {
         setActiveLayer(root, layer);
-        rememberActiveLayer(profile, layer);
       }
       return;
     }
@@ -2433,14 +2436,6 @@ function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
   root.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => {
     button.setAttribute("aria-selected", button.dataset.layer === layer ? "true" : "false");
   });
-  const unified = root.querySelector<HTMLElement>(".personal-panels.personal-unified");
-  if (unified) {
-    root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
-      panel.classList.add("is-active");
-    });
-    unified.querySelector<HTMLElement>(`[data-panel="${layer}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
-    return;
-  }
   root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.panel === layer);
   });
