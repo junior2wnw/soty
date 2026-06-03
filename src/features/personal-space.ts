@@ -316,11 +316,12 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
     : escapeHtml(initialsText);
   const heroActions = entityActionsFor({ surface: "hero", ownSpace, canInstall });
   const heroText = heroLine(profile, ownSpace);
+  const topbarActions = renderTopbarActions(ownSpace, localHandle);
   return `
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
-        ${!ownSpace && localHandle ? `<nav aria-label="пространство"><button type="button" data-action="self">${icon("person")} Я</button></nav>` : ""}
+        ${topbarActions}
         ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
       </header>
       <main class="personal-main">
@@ -358,6 +359,17 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
       </main>
     </section>
   `;
+}
+
+function renderTopbarActions(ownSpace: boolean, localHandle: string): string {
+  if (ownSpace) {
+    return "";
+  }
+  const actions = [
+    `<button class="personal-icon-button" type="button" data-action="share" aria-label="Поделиться" title="Поделиться">${icon("qr")}</button>`,
+    ...(localHandle ? [`<button type="button" data-action="self">${icon("person")} <span>Я</span></button>`] : [])
+  ];
+  return `<nav aria-label="пространство">${actions.join("")}</nav>`;
 }
 
 function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): string {
@@ -526,8 +538,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
     }
     return [
       ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" } as const] : []),
-      { id: "message", label: "Написать", icon: "mail", tone: options.canInstall ? "secondary" : "primary" },
-      { id: "share", label: "QR", icon: "qr", tone: "secondary" }
+      { id: "message", label: "Написать", icon: "mail", tone: options.canInstall ? "secondary" : "primary" }
     ];
   }
   if (options.surface === "reviews") {
