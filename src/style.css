@@ -5171,6 +5171,86 @@ button:disabled {
   right: -10px;
 }
 
+.link-share-sheet {
+  width: min(92vw, 420px);
+  aspect-ratio: auto;
+  gap: 14px;
+  padding: 22px;
+  border-color: #000;
+  background: #ffffff;
+  color: #000;
+  box-shadow: 2px 2px 0 #000;
+}
+
+.link-share-sheet canvas {
+  width: min(72vw, 300px) !important;
+  height: min(72vw, 300px) !important;
+}
+
+.link-share-caption {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  text-align: center;
+}
+
+.link-share-caption b {
+  color: #000;
+  font-size: 22px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.link-share-caption small {
+  color: #404040;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.link-share-actions {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.qr-modal .link-share-sheet button {
+  position: static;
+  width: auto;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #000;
+  color: #fff;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  box-shadow: none;
+}
+
+.qr-modal .link-share-sheet button[hidden] {
+  display: none;
+}
+
+.qr-modal .link-share-sheet .link-share-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.link-share-actions.is-single {
+  grid-template-columns: 1fr;
+}
+
 @keyframes blink {
   50% {
     opacity: 0.34;

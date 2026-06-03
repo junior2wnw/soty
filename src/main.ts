@@ -10103,29 +10103,21 @@ async function selectedDialogLink(): Promise<string> {
 
 async function shareSelectedDialogLink(): Promise<void> {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const publicUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
+  if (publicUrl) {
+    await showLinkShareSheet({
+      title: tunnel ? counterpartyLabel(tunnel) : "Контакт",
+      url: publicUrl
+    });
+    return;
+  }
   const link = await selectedDialogLink();
   if (!link) {
     return;
   }
-  const publicUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
   let copied = false;
-  if (publicUrl && "share" in navigator) {
-    try {
-      await navigator.share({
-        title: tunnel ? counterpartyLabel(tunnel) : "соты",
-        url: link
-      });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        return;
-      }
-      await copyText(link);
-      copied = true;
-    }
-  } else {
-    await copyText(link);
-    copied = true;
-  }
+  await copyText(link);
+  copied = true;
   const id = app.querySelector<HTMLButtonElement>(".dialog-id");
   if (!id) {
     return;
@@ -10140,6 +10132,69 @@ async function shareSelectedDialogLink(): Promise<void> {
       id.dataset.tooltip = contactUrl ? "Поделиться контактом" : code ? `Скопировать ссылку · ${code}` : "Диалог не выбран";
     }
   }, 1200);
+}
+
+async function showLinkShareSheet(options: { readonly title: string; readonly url: string }): Promise<void> {
+  closeQrOverlay();
+  const supportsNativeShare = "share" in navigator;
+  const overlay = document.createElement("div");
+  overlay.className = "qr-modal link-share-modal";
+  overlay.innerHTML = `
+    <div class="qr-sheet link-share-sheet" role="dialog" aria-label="Поделиться">
+      <button class="icon-button link-share-close" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
+      <canvas aria-label="QR"></canvas>
+      <div class="link-share-caption">
+        <b>${escapeHtml(options.title)}</b>
+        <small>${escapeHtml(shortShareUrl(options.url))}</small>
+      </div>
+      <div class="link-share-actions${supportsNativeShare ? "" : " is-single"}">
+        <button class="icon-button link-share-copy" type="button">${icon("copy")}<span>Копировать</span></button>
+        <button class="icon-button link-share-native" type="button"${supportsNativeShare ? "" : " hidden"}>${icon("send")}<span>Отправить</span></button>
+      </div>
+    </div>
+  `;
+  document.body.append(overlay);
+  qrOverlay = overlay;
+  qrMode = "manual";
+  const canvas = overlay.querySelector<HTMLCanvasElement>("canvas");
+  if (canvas) {
+    await QRCode.toCanvas(canvas, options.url, {
+      margin: 1,
+      scale: 8,
+      color: {
+        dark: "#000000",
+        light: "#ffffff"
+      }
+    });
+  }
+  overlay.querySelector<HTMLElement>(".link-share-close")?.addEventListener("click", () => closeQrOverlay());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      closeQrOverlay();
+    }
+  });
+  overlay.querySelector<HTMLElement>(".link-share-copy")?.addEventListener("click", () => {
+    void copyText(options.url).then(() => {
+      const note = overlay.querySelector<HTMLElement>(".link-share-caption small");
+      if (note) {
+        note.textContent = "Скопировано";
+      }
+    });
+  });
+  overlay.querySelector<HTMLElement>(".link-share-native")?.addEventListener("click", () => {
+    if (navigator.share) {
+      void navigator.share({ title: options.title, url: options.url }).catch(() => undefined);
+    }
+  });
+}
+
+function shortShareUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.host}${url.pathname}`;
+  } catch {
+    return value;
+  }
 }
 
 function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
