@@ -1103,11 +1103,18 @@ function isPersonalLayer(value: string): value is PersonalSpaceLayer {
 async function installPersonalSpace(root: HTMLElement, button: HTMLButtonElement, options: PersonalSpacePageOptions): Promise<void> {
   const note = root.querySelector<HTMLElement>("[data-install-note]");
   button.disabled = true;
-  const result = await options.install();
-  if (note) {
-    note.textContent = result.message;
+  try {
+    const result = await options.install();
+    if (note) {
+      note.textContent = result.message;
+    }
+  } catch {
+    if (note) {
+      note.textContent = "Можно повторить позже.";
+    }
+  } finally {
+    button.disabled = false;
   }
-  button.disabled = false;
 }
 
 function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSpaceProfile {
