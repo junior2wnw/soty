@@ -589,9 +589,8 @@ function renderPersonalModule(module: PersonalModule): string {
 }
 
 function visibleContacts(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalSpaceContact[] {
-  return ownSpace
-    ? profile.contacts.filter((contact) => contact.label !== "чат")
-    : profile.contacts;
+  void ownSpace;
+  return profile.contacts.filter((contact) => !internalContactLabels.has(contact.label));
 }
 
 function personalSpaceCopy(text: string, ownSpace: boolean): string {
