@@ -28,6 +28,7 @@ export function attachSpaces(app, { dataDir } = {}) {
   const postStore = createPostStore(dataDir);
   const reviewStore = createReviewStore(dataDir);
   const reactionStore = createReactionStore(dataDir);
+  const messageStore = createMessageStore(dataDir);
   const moduleStore = createModuleStore(dataDir);
   const ownerStore = createOwnerStore(dataDir);
   app.get("/api/spaces/:handle", async (req, res) => {
@@ -61,6 +62,18 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
   app.post("/api/spaces/:handle/:space/reviews", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceReview(reviewStore, req, res);
+  });
+  app.post("/api/spaces/:handle/messages", express.json({ limit: "24kb" }), async (req, res) => {
+    await saveSpaceMessage(messageStore, req, res);
+  });
+  app.post("/api/spaces/:handle/:space/messages", express.json({ limit: "24kb" }), async (req, res) => {
+    await saveSpaceMessage(messageStore, req, res);
+  });
+  app.post("/api/spaces/:handle/messages/inbox", express.json({ limit: "24kb" }), async (req, res) => {
+    await sendSpaceInbox(messageStore, ownerStore, req, res);
+  });
+  app.post("/api/spaces/:handle/:space/messages/inbox", express.json({ limit: "24kb" }), async (req, res) => {
+    await sendSpaceInbox(messageStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/reactions", express.json({ limit: "8kb" }), async (req, res) => {
     await saveSpaceReaction(reactionStore, req, res);
@@ -291,6 +304,43 @@ async function saveSpaceReview(reviewStore, req, res) {
   res.json({ ok: true, review: next[0] });
 }
 
+async function saveSpaceMessage(messageStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const spaceSlug = cleanSlug(req.params.space || "");
+  const message = normalizeMessageBody(req.body);
+  if (!message) {
+    res.status(400).json({ ok: false, error: "invalid_message" });
+    return;
+  }
+  const entries = await readSpaceMessages(messageStore, handle, spaceSlug);
+  const next = [{
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    author: message.author,
+    text: message.text,
+    clientId: message.clientId,
+    createdAt: new Date().toISOString()
+  }, ...entries].slice(0, 200);
+  await writeSpaceMessages(messageStore, handle, spaceSlug, next);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, message: publicMessage(next[0]) });
+}
+
+async function sendSpaceInbox(messageStore, ownerStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const spaceSlug = cleanSlug(req.params.space || "");
+  const data = ownerActionData(req.body);
+  if (!await authorizeSpaceOwner(ownerStore, req, res, "messages", data)) {
+    return;
+  }
+  const limit = safeInboxLimit(data?.limit);
+  const messages = (await readSpaceMessages(messageStore, handle, spaceSlug))
+    .slice(0, limit)
+    .map(publicMessage)
+    .filter(Boolean);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, messages });
+}
+
 async function saveSpaceReaction(reactionStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
   const spaceSlug = cleanSlug(req.params.space || "");
@@ -408,6 +458,12 @@ function createReactionStore(dataDir) {
   };
 }
 
+function createMessageStore(dataDir) {
+  return {
+    dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-messages")
+  };
+}
+
 function createModuleStore(dataDir) {
   return {
     dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-modules")
@@ -440,6 +496,11 @@ function reviewPath(reviewStore, handle, spaceSlug = "") {
 function reactionPath(reactionStore, handle, spaceSlug = "") {
   const suffix = spaceSlug ? `__${spaceSlug}` : "";
   return path.join(reactionStore.dir, `${handle}${suffix}.json`);
+}
+
+function messagePath(messageStore, handle, spaceSlug = "") {
+  const suffix = spaceSlug ? `__${spaceSlug}` : "";
+  return path.join(messageStore.dir, `${handle}${suffix}.json`);
 }
 
 function modulePath(moduleStore, handle, spaceSlug = "") {
@@ -514,6 +575,18 @@ async function readSpaceReactions(reactionStore, handle, spaceSlug = "") {
   return publicReactionStats(await readSpaceReactionRecord(reactionStore, handle, spaceSlug));
 }
 
+async function readSpaceMessages(messageStore, handle, spaceSlug = "") {
+  try {
+    const records = JSON.parse(await readFile(messagePath(messageStore, handle, spaceSlug), "utf8"));
+    if (!Array.isArray(records)) {
+      return [];
+    }
+    return records.map(normalizeStoredMessage).filter(Boolean).slice(0, 200);
+  } catch {
+    return [];
+  }
+}
+
 async function readSpaceModules(moduleStore, handle, spaceSlug = "") {
   try {
     const records = JSON.parse(await readFile(modulePath(moduleStore, handle, spaceSlug), "utf8"));
@@ -560,6 +633,11 @@ async function writeSpaceReviews(reviewStore, handle, spaceSlug, reviews) {
 async function writeSpaceReactionRecord(reactionStore, handle, spaceSlug, reactions) {
   await mkdir(reactionStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(reactionPath(reactionStore, handle, spaceSlug), JSON.stringify(reactions, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+async function writeSpaceMessages(messageStore, handle, spaceSlug, messages) {
+  await mkdir(messageStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(messagePath(messageStore, handle, spaceSlug), JSON.stringify(messages, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
 async function writeSpaceModules(moduleStore, handle, spaceSlug, modules) {
@@ -716,7 +794,7 @@ function normalizeOwnerPublicJwk(value) {
 
 function cleanOwnerAction(value) {
   const action = cleanReviewText(value, 24);
-  return action === "profile" || action === "post" || action === "photo" || action === "module" ? action : "";
+  return action === "profile" || action === "post" || action === "photo" || action === "module" || action === "messages" ? action : "";
 }
 
 function cleanOwnerDeviceId(value) {
@@ -989,6 +1067,52 @@ function normalizeReviewBody(body) {
   };
 }
 
+function normalizeMessageBody(body) {
+  const text = cleanReviewText(body?.text, 420);
+  const clientId = cleanMessageClientId(body?.clientId);
+  if (text.length < 1 || !clientId) {
+    return null;
+  }
+  return {
+    author: cleanReviewText(body?.author, 80) || "guest",
+    text,
+    clientId
+  };
+}
+
+function normalizeStoredMessage(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const message = normalizeMessageBody(record);
+  if (!message) {
+    return null;
+  }
+  return {
+    id: cleanReviewText(record.id, 80) || message.text,
+    ...message,
+    createdAt: cleanReviewText(record.createdAt, 40) || new Date(0).toISOString()
+  };
+}
+
+function publicMessage(record) {
+  const message = normalizeStoredMessage(record);
+  if (!message) {
+    return null;
+  }
+  return {
+    id: message.id,
+    author: message.author,
+    text: message.text,
+    createdAt: message.createdAt
+  };
+}
+
+function safeInboxLimit(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? Math.max(1, Math.min(50, number)) : 30;
+}
+
 function normalizeStoredReview(record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -1055,6 +1179,11 @@ function cleanRating(value) {
 function cleanReactionClientId(value) {
   const text = cleanReviewText(value, 80);
   return /^rc_[a-z0-9_-]{8,76}$/iu.test(text) ? text : "";
+}
+
+function cleanMessageClientId(value) {
+  const text = cleanReviewText(value, 80);
+  return /^mc_[a-z0-9_-]{8,76}$/iu.test(text) ? text : "";
 }
 
 function cleanVersion(value) {

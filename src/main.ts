@@ -35,7 +35,7 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { cleanPersonalHandle, loadPersonalHandle, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
+import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
 import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
@@ -1016,6 +1016,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     updateProfile: updateSignedPersonalSpaceProfile,
     savePost: saveSignedPersonalSpacePost,
     saveModule: saveSignedPersonalSpaceModule,
+    loadInbox: loadSignedPersonalSpaceInbox,
     askAgent: askPersonalSpaceAgent,
     uploadPhoto: uploadSignedPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
@@ -1036,6 +1037,11 @@ async function saveSignedPersonalSpacePost(route: PersonalSpaceRoute, draft: Per
 
 async function saveSignedPersonalSpaceModule(route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft): Promise<PersonalSpaceInstallResult> {
   return savePersonalSpaceModule(route, draft, await createPersonalOwnerProof(route, "module", draft));
+}
+
+async function loadSignedPersonalSpaceInbox(route: PersonalSpaceRoute) {
+  const request = { limit: 50 };
+  return loadPersonalSpaceInbox(route, request, await createPersonalOwnerProof(route, "messages", request));
 }
 
 async function askPersonalSpaceAgent(profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest): Promise<PersonalSpaceAgentResult> {

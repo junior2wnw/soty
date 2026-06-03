@@ -762,6 +762,13 @@ button.personal-avatar {
   min-height: 160px;
 }
 
+.personal-panels.personal-unified {
+  min-height: 0;
+  display: grid;
+  gap: clamp(22px, 4vw, 48px);
+  padding: 4px 0 24px;
+}
+
 .personal-panel {
   display: none;
   grid-template-columns: minmax(150px, 0.32fr) minmax(0, 1.68fr);
@@ -773,6 +780,18 @@ button.personal-avatar {
 .personal-panel.is-active {
   display: grid;
   animation: personalPanelIn 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.personal-panels.personal-unified .personal-panel {
+  display: grid;
+  padding: clamp(18px, 3vw, 32px) 0 0;
+  border-top: 1px solid #000;
+  animation: none;
+}
+
+.personal-panels.personal-unified .personal-panel:first-child {
+  padding-top: 10px;
+  border-top: 0;
 }
 
 @keyframes personalPanelIn {
@@ -1025,6 +1044,49 @@ button.personal-avatar {
   color: #404040;
   font-size: 13px;
   font-weight: 760;
+}
+
+.personal-inbox {
+  display: grid;
+  gap: 8px;
+}
+
+.personal-inbox h3 {
+  margin: 0;
+  padding-bottom: 7px;
+  border-bottom: 1px solid #000;
+  color: #000;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.personal-inbox-list {
+  display: grid;
+  gap: 0;
+}
+
+.personal-inbox-item {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 10px 0;
+  border-top: 1px solid #000;
+}
+
+.personal-inbox-item span,
+.personal-inbox-item time {
+  color: #616161;
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.personal-inbox-item p {
+  margin: 0;
+  color: #000;
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .personal-message-sheet {

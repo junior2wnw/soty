@@ -25,6 +25,23 @@ export type PersonalSpacePostDraft = {
   readonly text: string;
 };
 
+export type PersonalSpaceMessageDraft = {
+  readonly author: string;
+  readonly text: string;
+  readonly clientId: string;
+};
+
+export type PersonalSpaceInboxRequest = {
+  readonly limit: number;
+};
+
+export type PersonalSpaceInboxMessage = {
+  readonly id: string;
+  readonly author: string;
+  readonly text: string;
+  readonly createdAt: string;
+};
+
 export type PersonalSpaceAgentRequest = {
   readonly text: string;
   readonly intent: "miniapp" | "page";
@@ -36,7 +53,7 @@ export type PersonalSpaceAgentResult = {
   readonly reply: string;
 };
 
-export type PersonalOwnerAction = "profile" | "post" | "photo" | "module";
+export type PersonalOwnerAction = "profile" | "post" | "photo" | "module" | "messages";
 
 export type PersonalOwnerActionPayload = {
   readonly v: 1;
@@ -67,6 +84,7 @@ export type PersonalSpacePageOptions = {
   readonly updateProfile: (route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate) => Promise<PersonalSpaceInstallResult>;
   readonly savePost: (route: PersonalSpaceRoute, draft: PersonalSpacePostDraft) => Promise<PersonalSpaceInstallResult>;
   readonly saveModule: (route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft) => Promise<PersonalSpaceInstallResult>;
+  readonly loadInbox: (route: PersonalSpaceRoute) => Promise<readonly PersonalSpaceInboxMessage[]>;
   readonly askAgent: (profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest) => Promise<PersonalSpaceAgentResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
@@ -204,12 +222,6 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
-type PersonalLayerDisplay = {
-  readonly id: PersonalSpaceLayer;
-  readonly label: string;
-  readonly title: string;
-  readonly icon: IconName;
-};
 type EntityActionId = "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "card" | "personal" | "reviews" | "messages" | "place";
 type EntityAction = {
@@ -239,6 +251,7 @@ const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
 const profileCachePrefix = "soty:personal-profile:v1:";
 const personalThreadPrefix = "soty:personal-thread:v1:";
+const personalMessageClientKey = "soty:personal-message-client:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
 const personalReactionClientKey = "soty:personal-reaction-client:v1";
 const internalContactLabels = new Set(["чат", "страница"]);
@@ -437,6 +450,73 @@ export async function savePersonalSpaceModule(
       : { ok: true, message: "Сохранено в браузере." };
   } catch {
     return { ok: true, message: "Сохранено в браузере." };
+  }
+}
+
+export async function loadPersonalSpaceInbox(
+  route: PersonalSpaceRoute,
+  request: PersonalSpaceInboxRequest,
+  owner?: PersonalOwnerProof | null
+): Promise<readonly PersonalSpaceInboxMessage[]> {
+  if (!owner) {
+    return [];
+  }
+  const handle = encodeURIComponent(route.handle);
+  const url = route.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/messages/inbox`
+    : `/api/spaces/${handle}/messages/inbox`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ data: request, owner })
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || payload.ok !== true) {
+      return [];
+    }
+    return list(payload.messages).map(normalizeInboxMessage).filter(isInboxMessage).slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
+async function sendPersonalSpaceMessage(profile: PersonalSpaceProfile, draft: PersonalSpaceMessageDraft): Promise<PersonalSpaceInstallResult> {
+  const author = cleanText(draft.author, 80) || "guest";
+  const text = cleanText(draft.text, 420);
+  const clientId = cleanMessageClientId(draft.clientId);
+  if (!text || !clientId) {
+    return { ok: false, message: "Напишите пару слов." };
+  }
+  const handle = encodeURIComponent(profile.handle);
+  const url = profile.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(profile.slug)}/messages`
+    : `/api/spaces/${handle}/messages`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ author, text, clientId })
+    });
+    if (!response.ok) {
+      return { ok: false, message: "Не получилось отправить." };
+    }
+    const payload = await response.json() as unknown;
+    return isRecord(payload) && payload.ok === true
+      ? { ok: true, message: "Отправлено." }
+      : { ok: false, message: "Не получилось отправить." };
+  } catch {
+    return { ok: false, message: "Не получилось отправить." };
   }
 }
 
@@ -743,19 +823,8 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <div class="personal-note" data-install-note></div>
           </div>
         </section>
-        <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
-          ${layers.map((display) => {
-            const view = layerDisplay(display, ownSpace);
-            return `
-            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
-              ${icon(view.icon)}
-              <span>${escapeHtml(view.label)}</span>
-            </button>
-          `;
-          }).join("")}
-        </div>
-        <section class="personal-panels">
-          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify, localHandle)).join("")}
+        <section class="personal-panels personal-unified" aria-label="инфо-карта">
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify, localHandle, true)).join("")}
         </section>
       </main>
     </section>
@@ -812,11 +881,12 @@ function renderLayerPanel(
   activeLayer: PersonalSpaceLayer,
   canInstall: boolean,
   canNotify: boolean,
-  localHandle: string
+  localHandle: string,
+  displayAll = false
 ): string {
   const view = panelView(profile, layer, ownSpace, canInstall, canNotify, localHandle);
   return `
-    <article class="personal-panel${layer === activeLayer ? " is-active" : ""}" data-panel="${layer}">
+    <article class="personal-panel${layer === activeLayer || displayAll ? " is-active" : ""}" data-panel="${layer}">
       <div class="personal-panel-copy">
         <span>${escapeHtml(view.eyebrow)}</span>
         <h2>${escapeHtml(view.title)}</h2>
@@ -924,9 +994,21 @@ function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, 
         <b>${escapeHtml(ownSpace ? profile.shortName : profile.displayName)}</b>
         <p>${escapeHtml(ownSpace ? "Личные заметки в этой карточке." : "Личная переписка по этой карточке.")}</p>
       </div>
+      ${ownSpace ? renderOwnerInboxShell() : ""}
       ${renderThreadLines(lines, ownSpace, true)}
       <small data-action-note></small>
     </div>
+  `;
+}
+
+function renderOwnerInboxShell(): string {
+  return `
+    <section class="personal-inbox" data-personal-inbox aria-label="Входящие">
+      <h3>Входящие</h3>
+      <div class="personal-inbox-list">
+        <section class="personal-empty">${icon("mail")} <span>Проверяю...</span></section>
+      </div>
+    </section>
   `;
 }
 
@@ -953,8 +1035,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   }
   if (options.surface === "messages") {
     return [
-      { id: "message", label: options.ownSpace ? "Заметка" : "Написать", icon: options.ownSpace ? "hexagon" : "send", tone: "primary" },
-      ...(!options.ownSpace && options.canNotify ? [{ id: "notifications", label: "Оповещения", icon: "bell", tone: "secondary" } as const] : [])
+      { id: "message", label: options.ownSpace ? "Заметка" : "Написать", icon: options.ownSpace ? "hexagon" : "send", tone: "primary" }
     ];
   }
   return [{ id: "runtime", label: "Открыть", icon: "hexagon", tone: "primary" }];
@@ -1027,20 +1108,11 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean):
       target: "data"
     }]
     : [];
-  const priorityModules = ownSpace ? [...runtimeById("agent"), addModule] : [];
-  const utilityModules = ownSpace
-    ? [
-      ...runtimeById("apps"),
-      ...runtimeById("actions"),
-      ...dataModules,
-      ...runtimeModules.filter((module) => !["agent", "apps", "actions"].includes(module.id))
-    ]
-    : [];
+  const priorityModules = ownSpace ? [...runtimeById("agent"), addModule, ...dataModules] : [];
   return [
     ...(priorityModules.length ? [{ title: "Главное", modules: priorityModules, priority: true }] : []),
     ...(customModules.length ? [{ title: "Модули", modules: customModules }] : []),
-    ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : []),
-    ...(utilityModules.length ? [{ title: "Еще", modules: utilityModules }] : [])
+    ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : [])
   ];
 }
 
@@ -1053,13 +1125,6 @@ function renderPersonalModuleGroup(group: PersonalModuleGroup): string {
       </div>
     </section>
   `;
-}
-
-function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
-  if (!ownSpace && layer.id === "personal") {
-    return { ...layer, label: "Страница", title: "Страница" };
-  }
-  return layer;
 }
 
 function renderPersonalModule(module: PersonalModule): string {
@@ -1228,6 +1293,9 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     }
     photoInput.value = "";
   });
+  if (isRenderedOwnSpace(root)) {
+    void hydrateOwnerInbox(root, options);
+  }
 }
 
 function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
@@ -1489,13 +1557,36 @@ function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, auth
   });
   overlay.querySelector<HTMLFormElement>("[data-message-form]")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    void submitPersonalMessage();
+  });
+  async function submitPersonalMessage(): Promise<void> {
     const text = cleanText(textarea?.value || "", 420);
     const error = overlay.querySelector<HTMLElement>("[data-error]");
+    const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
     if (!text) {
       if (error) {
         error.textContent = "Напишите пару слов.";
       }
       return;
+    }
+    if (button) {
+      button.disabled = true;
+    }
+    if (!ownSpace) {
+      const result = await sendPersonalSpaceMessage(profile, {
+        author: actor,
+        text,
+        clientId: personalMessageClientId()
+      });
+      if (!result.ok) {
+        if (error) {
+          error.textContent = result.message;
+        }
+        if (button) {
+          button.disabled = false;
+        }
+        return;
+      }
     }
     lines = appendPersonalThreadLine(profile, actor, text);
     const thread = overlay.querySelector<HTMLElement>("[data-personal-thread]");
@@ -1508,9 +1599,12 @@ function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, auth
       textarea.focus();
     }
     if (error) {
-      error.textContent = "";
+      error.textContent = ownSpace ? "" : "Отправлено.";
     }
-  });
+    if (button) {
+      button.disabled = false;
+    }
+  }
 }
 
 function renderThreadLines(lines: readonly PersonalThreadLine[], ownSpace: boolean, compact: boolean): string {
@@ -1519,6 +1613,31 @@ function renderThreadLines(lines: readonly PersonalThreadLine[], ownSpace: boole
       ${renderThreadLineItems(lines, ownSpace)}
     </div>
   `;
+}
+
+async function hydrateOwnerInbox(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
+  const inbox = root.querySelector<HTMLElement>("[data-personal-inbox] .personal-inbox-list");
+  if (!inbox) {
+    return;
+  }
+  const messages = await options.loadInbox(options.route);
+  if (!inbox.isConnected) {
+    return;
+  }
+  inbox.innerHTML = renderInboxItems(messages);
+}
+
+function renderInboxItems(messages: readonly PersonalSpaceInboxMessage[]): string {
+  if (messages.length === 0) {
+    return `<section class="personal-empty">${icon("mail")} <span>Сообщений пока нет.</span></section>`;
+  }
+  return messages.slice(0, 8).map((message) => `
+    <article class="personal-inbox-item">
+      <span>${escapeHtml(message.author)}</span>
+      <p>${escapeHtml(message.text)}</p>
+      <time>${escapeHtml(threadTime(message.createdAt))}</time>
+    </article>
+  `).join("");
 }
 
 function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: boolean): string {
@@ -1566,6 +1685,27 @@ function savePersonalThread(profile: PersonalSpaceProfile, author: string, lines
 
 function personalThreadKey(profile: PersonalSpaceProfile, author: string): string {
   return `${personalThreadPrefix}${routeUrl(profile)}:${cleanRoutePart(author) || "guest"}`;
+}
+
+function personalMessageClientId(): string {
+  try {
+    const stored = cleanMessageClientId(window.localStorage.getItem(personalMessageClientKey) || "");
+    if (stored) {
+      return stored;
+    }
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    const id = `mc_${Array.from(bytes, (byte) => byte.toString(36).padStart(2, "0")).join("").slice(0, 48)}`;
+    window.localStorage.setItem(personalMessageClientKey, id);
+    return id;
+  } catch {
+    return `mc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  }
+}
+
+function cleanMessageClientId(value: string): string {
+  const text = cleanText(value, 80);
+  return /^mc_[a-z0-9_-]{8,76}$/iu.test(text) ? text : "";
 }
 
 function reactionCountForDisplay(profile: PersonalSpaceProfile): number {
@@ -1639,6 +1779,26 @@ function normalizeThreadLine(value: unknown): PersonalThreadLine | null {
     createdAt: cleanText(value.createdAt, 40) || new Date().toISOString(),
     mine: value.mine !== false
   };
+}
+
+function normalizeInboxMessage(value: unknown): PersonalSpaceInboxMessage | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = cleanText(value.text, 420);
+  if (!text) {
+    return null;
+  }
+  return {
+    id: cleanText(value.id, 80) || localItemId("message"),
+    author: cleanText(value.author, 80) || "guest",
+    text,
+    createdAt: cleanText(value.createdAt, 40) || new Date().toISOString()
+  };
+}
+
+function isInboxMessage(value: PersonalSpaceInboxMessage | null): value is PersonalSpaceInboxMessage {
+  return Boolean(value);
 }
 
 function isThreadLine(value: PersonalThreadLine | null): value is PersonalThreadLine {
@@ -2273,6 +2433,14 @@ function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
   root.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => {
     button.setAttribute("aria-selected", button.dataset.layer === layer ? "true" : "false");
   });
+  const unified = root.querySelector<HTMLElement>(".personal-panels.personal-unified");
+  if (unified) {
+    root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
+      panel.classList.add("is-active");
+    });
+    unified.querySelector<HTMLElement>(`[data-panel="${layer}"]`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    return;
+  }
   root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.panel === layer);
   });
