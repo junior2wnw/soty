@@ -332,6 +332,7 @@ const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
 const selfStartHandleKey = "soty:personal-handle:v1";
+const reservedLegacySelfHandles = new Set([".", cleanSelfStartHandle(selfCellLabel), "soty", "соты"]);
 let pendingInstallPrompt: BeforeInstallPromptEvent | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
@@ -471,7 +472,7 @@ async function boot(): Promise<void> {
   }
 
   if (isSelfStartRoute()) {
-    renderSelfStartPage();
+    await renderSelfStartPage();
     return;
   }
 
@@ -947,11 +948,11 @@ function isSelfStartRoute(location: Location = window.location): boolean {
     && url.searchParams.get("view") !== "chat";
 }
 
-function renderSelfStartPage(): void {
+async function renderSelfStartPage(): Promise<void> {
   setPersonalSpaceMode(false);
   setSelfStartMode(true);
   applyPersonalSpaceManifest(null);
-  const saved = loadSelfStartHandle();
+  const saved = await loadSelfStartHandleOrLegacyDevice();
   if (saved) {
     window.history.replaceState({}, "", `/@${encodeURIComponent(saved)}`);
     showPersonalSpaceRoute({ handle: saved, slug: "" });
@@ -1039,6 +1040,29 @@ function loadSelfStartHandle(): string {
   } catch {
     return "";
   }
+}
+
+async function loadSelfStartHandleOrLegacyDevice(): Promise<string> {
+  const saved = loadSelfStartHandle();
+  if (saved) {
+    return saved;
+  }
+  try {
+    const currentDevice = device ?? await loadDevice();
+    const handle = legacySelfStartHandleFromNick(currentDevice?.nick || "");
+    if (handle) {
+      saveSelfStartHandle(handle);
+      return handle;
+    }
+  } catch {
+    // Old profiles without readable IndexedDB should still get the simple start field.
+  }
+  return "";
+}
+
+function legacySelfStartHandleFromNick(value: string): string {
+  const handle = cleanSelfStartHandle(value);
+  return handle && !reservedLegacySelfHandles.has(handle) ? handle : "";
 }
 
 function saveSelfStartHandle(handle: string): void {
