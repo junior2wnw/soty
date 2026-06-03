@@ -35,6 +35,7 @@ export type PersonalSpacePageOptions = {
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
   readonly applyManifest: (profile: PersonalSpaceProfile) => void;
+  readonly isOwned: (profile: PersonalSpaceProfile) => boolean | Promise<boolean>;
   readonly openRuntime: (profile: PersonalSpaceProfile, target?: string) => void;
 };
 
@@ -219,7 +220,8 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   options.applyManifest(profile);
   const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
-  root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
+  const ownSpace = await options.isOwned(profile);
+  root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle, ownSpace);
   bindPersonalSpace(root, profile, options);
 }
 
@@ -570,15 +572,14 @@ function renderLoading(route: PersonalSpaceRoute): string {
   `;
 }
 
-function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean, canNotify: boolean, localHandle: string): string {
-  const ownSpace = isOwnProfile(profile, localHandle);
+function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean, canNotify: boolean, localHandle: string, ownSpace: boolean): string {
   const initialsText = initials(profile.shortName || profile.displayName);
   const avatar = profile.photoUrl
     ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
     : escapeHtml(initialsText);
   const heroText = heroLine(profile, ownSpace);
   return `
-    <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}" data-route="${escapeAttr(profile.url)}">
+    <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}" data-owned="${ownSpace ? "true" : "false"}" data-route="${escapeAttr(profile.url)}">
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
         ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
@@ -1197,7 +1198,7 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
 function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, author: string, options: PersonalSpacePageOptions): void {
   closePersonalOverlay(root);
   const actor = cleanRoutePart(author) || "guest";
-  const ownSpace = isOwnProfile(profile, actor);
+  const ownSpace = isRenderedOwnSpace(root);
   let lines = loadPersonalThread(profile, actor);
   const overlay = document.createElement("div");
   overlay.className = "personal-overlay";
@@ -1903,16 +1904,16 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
   };
 }
 
-function isOwnProfile(profile: PersonalSpaceProfile, localHandle: string): boolean {
-  return Boolean(localHandle) && profile.handle === localHandle;
-}
-
 function loadLocalHandle(): string {
   return loadPersonalHandle();
 }
 
 function saveLocalHandle(handle: string): void {
   savePersonalHandle(handle);
+}
+
+function isRenderedOwnSpace(root: HTMLElement): boolean {
+  return root.querySelector<HTMLElement>(".personal-space-shell")?.dataset.owned === "true";
 }
 
 function readStoredHandle(key: string): string {

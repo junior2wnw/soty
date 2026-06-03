@@ -106,6 +106,14 @@ interface RestoreResult {
   readonly texts: Map<string, string>;
 }
 
+type PersonalOwnerRecord = {
+  readonly handle: string;
+  readonly deviceId: string;
+  readonly publicJwk?: JsonWebKey;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
 type MiniAppInstallDraft = {
   readonly id: string;
   readonly title: string;
@@ -336,6 +344,7 @@ const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
 const reservedLegacySelfHandles = new Set([".", cleanSelfStartHandle(selfCellLabel), "soty", "соты"]);
+const personalOwnerPrefix = "soty:personal-owner:v1:";
 let pendingInstallPrompt: BeforeInstallPromptEvent | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
@@ -1007,6 +1016,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
     applyManifest: applyPersonalProfileManifest,
+    isOwned: isPersonalProfileOwned,
     openRuntime: openPersonalSpaceRuntime
   });
 }
@@ -1127,6 +1137,7 @@ async function renderSelfStartPage(): Promise<void> {
     showPersonalSpaceRoute({ handle: saved, slug: "" });
     return;
   }
+  const suggestedHandle = loadPersonalHandle();
   setPersonalSpaceMode(false);
   setSelfStartMode(true);
   applyPersonalSpaceManifest(null);
@@ -1145,7 +1156,7 @@ async function renderSelfStartPage(): Promise<void> {
             maxlength="32"
             aria-label="Имя страницы"
             placeholder="имя"
-            value="${escapeHtml(saved)}"
+            value="${escapeHtml(suggestedHandle)}"
           />
           <button type="submit" aria-label="Открыть Я" data-tooltip="Открыть Я">${icon("check")}</button>
         </label>
@@ -1160,9 +1171,7 @@ async function renderSelfStartPage(): Promise<void> {
       input?.focus();
       return;
     }
-    saveSelfStartHandle(handle);
-    window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
-    showPersonalSpaceRoute({ handle, slug: "" });
+    void openCreatedSelfStartHandle(handle, input);
   });
 }
 
@@ -1192,25 +1201,42 @@ async function importSotyBackupFile(file: File, nickInput?: HTMLInputElement | n
 }
 
 function loadSelfStartHandle(): string {
-  return loadPersonalHandle();
+  return loadOwnedPersonalHandleForDevice(device?.id || "");
 }
 
 async function loadSelfStartHandleOrLegacyDevice(): Promise<string> {
-  const saved = loadSelfStartHandle();
-  if (saved) {
-    return saved;
-  }
   try {
     const currentDevice = device ?? await loadDevice();
-    const handle = legacySelfStartHandleFromNick(currentDevice?.nick || "");
-    if (handle) {
-      saveSelfStartHandle(handle);
-      return handle;
+    if (currentDevice && !device) {
+      device = currentDevice;
+    }
+    const owned = loadOwnedPersonalHandleForDevice(currentDevice?.id || "");
+    if (owned) {
+      return owned;
+    }
+    const legacyHandle = legacySelfStartHandleFromNick(currentDevice?.nick || "");
+    if (legacyHandle && !hasAnyPersonalOwnerRecord()) {
+      const migrated = await bindPersonalOwner(legacyHandle, { replace: false });
+      if (migrated) {
+        saveSelfStartHandle(migrated);
+        return migrated;
+      }
     }
   } catch {
     // Old profiles without readable IndexedDB should still get the simple start field.
   }
   return "";
+}
+
+async function openCreatedSelfStartHandle(handle: string, input?: HTMLInputElement | null): Promise<void> {
+  const owned = await bindPersonalOwner(handle, { replace: true });
+  if (!owned) {
+    input?.focus();
+    return;
+  }
+  saveSelfStartHandle(owned);
+  window.history.pushState({}, "", `/@${encodeURIComponent(owned)}`);
+  showPersonalSpaceRoute({ handle: owned, slug: "" });
 }
 
 function legacySelfStartHandleFromNick(value: string): string {
@@ -1224,6 +1250,132 @@ function saveSelfStartHandle(handle: string): void {
 
 function cleanSelfStartHandle(value: string): string {
   return cleanPersonalHandle(value);
+}
+
+async function isPersonalProfileOwned(profile: PersonalSpaceProfile): Promise<boolean> {
+  const handle = cleanSelfStartHandle(profile.handle);
+  if (!handle) {
+    return false;
+  }
+  try {
+    const currentDevice = device ?? await loadDevice();
+    if (currentDevice && !device) {
+      device = currentDevice;
+    }
+    const owner = loadPersonalOwnerRecord(handle);
+    return Boolean(currentDevice && owner && owner.deviceId === currentDevice.id);
+  } catch {
+    return false;
+  }
+}
+
+async function bindPersonalOwner(handle: string, options: { readonly replace: boolean }): Promise<string> {
+  const clean = cleanSelfStartHandle(handle);
+  if (!clean) {
+    return "";
+  }
+  const currentDevice = await loadOrCreatePersonalDevice(clean);
+  const existing = loadPersonalOwnerRecord(clean);
+  if (existing && existing.deviceId !== currentDevice.id && !options.replace) {
+    return "";
+  }
+  const now = new Date().toISOString();
+  savePersonalOwnerRecord({
+    handle: clean,
+    deviceId: currentDevice.id,
+    publicJwk: currentDevice.publicJwk,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now
+  });
+  return clean;
+}
+
+async function loadOrCreatePersonalDevice(handle: string): Promise<DeviceRecord> {
+  const currentDevice = device ?? await loadDevice();
+  if (currentDevice) {
+    device = currentDevice;
+    return currentDevice;
+  }
+  device = await createDevice(cleanNick(handle || selfCellLabel));
+  return device;
+}
+
+function loadOwnedPersonalHandleForDevice(deviceId: string): string {
+  if (!deviceId) {
+    return "";
+  }
+  const records = loadPersonalOwnerRecords()
+    .filter((record) => record.deviceId === deviceId)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return records[0]?.handle || "";
+}
+
+function hasAnyPersonalOwnerRecord(): boolean {
+  return loadPersonalOwnerRecords().length > 0;
+}
+
+function loadPersonalOwnerRecords(): readonly PersonalOwnerRecord[] {
+  const records: PersonalOwnerRecord[] = [];
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index) || "";
+      if (!key.startsWith(personalOwnerPrefix)) {
+        continue;
+      }
+      const record = loadPersonalOwnerRecord(cleanSelfStartHandle(key.slice(personalOwnerPrefix.length)));
+      if (record) {
+        records.push(record);
+      }
+    }
+  } catch {
+    // Ownership only controls local UI affordances; blocked storage means visitor mode.
+  }
+  return records;
+}
+
+function loadPersonalOwnerRecord(handle: string): PersonalOwnerRecord | null {
+  const clean = cleanSelfStartHandle(handle);
+  if (!clean) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(personalOwnerKey(clean)) || "null");
+    return normalizePersonalOwnerRecord(parsed, clean);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePersonalOwnerRecord(value: unknown, fallbackHandle: string): PersonalOwnerRecord | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const handle = cleanSelfStartHandle(recordString(value, "handle") || fallbackHandle);
+  const deviceId = recordString(value, "deviceId").slice(0, 120);
+  if (!handle || !deviceId) {
+    return null;
+  }
+  const createdAt = recordString(value, "createdAt") || new Date(0).toISOString();
+  const updatedAt = recordString(value, "updatedAt") || createdAt;
+  return {
+    handle,
+    deviceId,
+    ...(isRecord(value.publicJwk) ? { publicJwk: value.publicJwk as JsonWebKey } : {}),
+    createdAt,
+    updatedAt
+  };
+}
+
+function savePersonalOwnerRecord(record: PersonalOwnerRecord): void {
+  try {
+    localStorage.setItem(personalOwnerKey(record.handle), JSON.stringify(record));
+  } catch {
+    // Without storage the page still opens, just without owner-only controls.
+  }
+}
+
+function personalOwnerKey(handle: string): string {
+  return `${personalOwnerPrefix}${cleanSelfStartHandle(handle)}`;
 }
 
 function isInfoRoute(): boolean {
@@ -1412,10 +1564,11 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
     device = await createDevice(cleanNick(payload.device?.nick || "Soty"));
   }
   const restoredHandle = restoredSelfStartHandle(payload);
+  restorePortableLocalStorage(payload.localStorage);
   if (restoredHandle) {
     saveSelfStartHandle(restoredHandle);
+    await bindPersonalOwner(restoredHandle, { replace: true });
   }
-  restorePortableLocalStorage(payload.localStorage);
 
   const restored = restoredTunnelsFromPayload(payload);
   if (restored.tunnels.length > 0) {
@@ -1461,6 +1614,7 @@ function isRestorableLocalStorageKey(key: string): boolean {
     || key === "soty:self-start-handle:v1"
     || key === "soty:handle:v1"
     || key.startsWith("soty:personal-profile:v1:")
+    || key.startsWith(personalOwnerPrefix)
     || key.startsWith("soty:personal-thread:v1:");
 }
 
