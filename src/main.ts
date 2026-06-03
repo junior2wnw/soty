@@ -939,7 +939,7 @@ function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: str
   const ownHandle = cleanContactHandle(fromHandle);
   const targetHandle = cleanContactHandle(profile.handle);
   if (ownHandle && targetHandle && ownHandle === targetHandle) {
-    window.location.assign("/?pwa=1&bare=1");
+    window.location.assign(personalSpaceLayerPath({ handle: targetHandle, slug: profile.slug }, "personal"));
     return;
   }
   const target = profile.actions.messageUrl || bareChatPath();
@@ -1006,11 +1006,16 @@ function isSelfStartRoute(location: Location = window.location): boolean {
     && !url.searchParams.has("j")
     && !url.searchParams.has("to")
     && !url.searchParams.has("room")
+    && !url.searchParams.has("chat")
     && !url.searchParams.has("space")
     && !url.searchParams.has("module")
-    && !url.searchParams.has("restore-local")
-    && url.searchParams.get("bare") !== "1"
-    && url.searchParams.get("view") !== "chat";
+    && !url.searchParams.has("restore-local");
+}
+
+function personalSpaceLayerPath(route: PersonalSpaceRoute, layer: string): string {
+  const url = new URL(route.slug ? `/@${encodeURIComponent(route.handle)}/${encodeURIComponent(route.slug)}` : `/@${encodeURIComponent(route.handle)}`, window.location.origin);
+  url.searchParams.set("layer", layer);
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 async function renderSelfStartPage(): Promise<void> {

@@ -187,7 +187,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const previousLayer = previousActiveLayer(root, routeUrl(options.route));
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
-  const activeLayer: PersonalSpaceLayer = previousLayer || (options.route.slug ? "place" : "card");
+  const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
   bindPersonalSpace(root, profile, options);
@@ -672,7 +672,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   }
   if (options.surface === "messages") {
     return [
-      { id: "message", label: options.ownSpace ? "Открыть" : "Написать", icon: options.ownSpace ? "mail" : "send", tone: "primary" },
+      { id: options.ownSpace ? "note" : "message", label: options.ownSpace ? "Заметка" : "Написать", icon: options.ownSpace ? "hexagon" : "send", tone: "primary" },
       ...(!options.ownSpace && options.canNotify ? [{ id: "notifications", label: "Оповещения", icon: "bell", tone: "secondary" } as const] : [])
     ];
   }
@@ -811,6 +811,34 @@ function previousActiveLayer(root: HTMLElement, routeUrl: string): PersonalSpace
   return isPersonalLayer(layer) ? layer : null;
 }
 
+function requestedActiveLayer(): PersonalSpaceLayer | null {
+  try {
+    const layer = new URL(window.location.href).searchParams.get("layer") || "";
+    return isPersonalLayer(layer) ? layer : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberActiveLayer(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer): void {
+  try {
+    const url = new URL(window.location.href);
+    const currentRoute = routeUrl(profile);
+    if (url.pathname !== currentRoute) {
+      return;
+    }
+    const defaultLayer = profile.slug ? "place" : "card";
+    if (layer === defaultLayer) {
+      url.searchParams.delete("layer");
+    } else {
+      url.searchParams.set("layer", layer);
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // Layer memory is navigation polish; the page still works without it.
+  }
+}
+
 function renderPanelList(className: string, items: readonly string[], emptyIcon: IconName, emptyText: string): string {
   return `
     <div class="${className}">
@@ -830,6 +858,7 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       const layer = layerButton.dataset.layer || "";
       if (isPersonalLayer(layer)) {
         setActiveLayer(root, layer);
+        rememberActiveLayer(profile, layer);
       }
       return;
     }
