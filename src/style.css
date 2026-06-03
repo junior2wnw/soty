@@ -6063,7 +6063,7 @@ button:disabled {
 
   .personal-main {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
     gap: 10px;
     padding: 0 0 10px;
   }
@@ -6092,7 +6092,7 @@ button:disabled {
 
   .personal-layerbar {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
     height: auto;
     min-height: 48px;
     grid-template-columns: repeat(5, minmax(72px, 1fr));
@@ -6114,7 +6114,8 @@ button:disabled {
 
   .personal-panels {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
+    min-height: 0;
   }
 
   .personal-panel {
@@ -6167,15 +6168,16 @@ button:disabled {
   }
 
   .personal-hero {
-    gap: 18px;
-    padding-top: 18px;
+    max-height: 26svh;
+    gap: 14px;
+    padding-top: 12px;
   }
 
   .personal-avatar {
-    width: 120px;
+    width: 96px;
     border-width: 1px;
     border-radius: 12px;
-    font-size: 48px;
+    font-size: 40px;
   }
 
   .personal-avatar span {
@@ -6186,16 +6188,16 @@ button:disabled {
   }
 
   .personal-identity {
-    gap: 14px;
+    gap: 9px;
   }
 
   .personal-identity h1 {
-    font-size: 36px;
+    font-size: 32px;
     line-height: 1;
   }
 
   .personal-identity p {
-    font-size: 16px;
+    font-size: 15px;
   }
 
   .personal-actions {
@@ -6272,7 +6274,7 @@ button:disabled {
   }
 
   .personal-panel {
-    padding-top: 28px;
+    padding-top: 14px;
   }
 
   .personal-panel-action {
