@@ -23,17 +23,21 @@ const defaultSpaces = Object.freeze([
 export function attachSpaces(app, { dataDir } = {}) {
   const metaStore = createMetaStore(dataDir);
   const photoStore = createPhotoStore(dataDir);
+  const postStore = createPostStore(dataDir);
   const reviewStore = createReviewStore(dataDir);
   app.get("/api/spaces/:handle", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, reviewStore, req.params.handle || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, req.params.handle || ""));
   });
   app.get("/api/spaces/:handle/:space", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, reviewStore, req.params.handle || "", req.params.space || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, req.params.handle || "", req.params.space || ""));
   });
   app.post("/api/spaces/:handle/profile", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceMeta(metaStore, req, res);
+  });
+  app.post("/api/spaces/:handle/posts", express.json({ limit: "24kb" }), async (req, res) => {
+    await saveSpacePost(postStore, req, res);
   });
   app.post("/api/spaces/:handle/photo", express.json({ limit: "3mb" }), async (req, res) => {
     await saveSpacePhoto(photoStore, req, res);
@@ -48,10 +52,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await saveSpaceReview(reviewStore, req, res);
   });
   app.get("/manifest/space/:handle.json", async (req, res) => {
-    await sendSpaceManifest(metaStore, photoStore, reviewStore, res, req.params.handle || "");
+    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, req.params.handle || "");
   });
   app.get("/manifest/space/:handle/:space.json", async (req, res) => {
-    await sendSpaceManifest(metaStore, photoStore, reviewStore, res, req.params.handle || "", req.params.space || "");
+    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, req.params.handle || "", req.params.space || "");
   });
   app.get("/photo/space/:handle.jpg", async (req, res) => {
     await sendSpacePhoto(photoStore, res, req.params.handle || "");
@@ -64,7 +68,7 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
 }
 
-async function publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle, rawSpace = "") {
+async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, rawHandle, rawSpace = "") {
   const handle = cleanSlug(rawHandle) || "guest";
   const spaceSlug = cleanSlug(rawSpace);
   const meta = await readSpaceMeta(metaStore, handle);
@@ -74,6 +78,7 @@ async function publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle,
   const accent = colorFor(handle, spaceSlug);
   const url = activeSpace ? `/@${handle}/${activeSpace.slug}` : `/@${handle}`;
   const photo = await readSpacePhoto(photoStore, handle);
+  const storedPosts = activeSpace ? [] : await readSpacePosts(postStore, handle);
   const reviews = await readSpaceReviews(reviewStore, handle, activeSpace?.slug || "");
   return {
     schema: "soty.personal-space.v1",
@@ -98,7 +103,7 @@ async function publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle,
       ...meta.contact ? [meta.contact] : [],
       { label: "страница", value: url, href: url }
     ],
-    posts: [
+    posts: storedPosts.length ? storedPosts : [
       {
         id: "hello",
         title: activeSpace ? activeSpace.title : ownerName,
@@ -127,8 +132,8 @@ async function publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle,
   };
 }
 
-async function sendSpaceManifest(metaStore, photoStore, reviewStore, res, rawHandle, rawSpace = "") {
-  const profile = await publicSpaceProfile(metaStore, photoStore, reviewStore, rawHandle, rawSpace);
+async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, rawHandle, rawSpace = "") {
+  const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, rawHandle, rawSpace);
   const appName = profile.accountName || profile.displayName;
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
@@ -156,6 +161,26 @@ async function sendSpaceManifest(metaStore, photoStore, reviewStore, res, rawHan
       }
     ]
   });
+}
+
+async function saveSpacePost(postStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const post = normalizePostBody(req.body);
+  if (!post) {
+    res.status(400).json({ ok: false, error: "invalid_post" });
+    return;
+  }
+  const entries = await readSpacePosts(postStore, handle);
+  const next = [{
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    title: post.title,
+    text: post.text,
+    meta: "Я",
+    createdAt: new Date().toISOString()
+  }, ...entries].slice(0, 50);
+  await writeSpacePosts(postStore, handle, next);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, post: next[0] });
 }
 
 async function saveSpaceMeta(metaStore, req, res) {
@@ -286,6 +311,12 @@ function createPhotoStore(dataDir) {
   };
 }
 
+function createPostStore(dataDir) {
+  return {
+    dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-posts")
+  };
+}
+
 function createReviewStore(dataDir) {
   return {
     dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-reviews")
@@ -298,6 +329,10 @@ function metaPath(metaStore, handle) {
 
 function photoPath(photoStore, handle) {
   return path.join(photoStore.dir, `${handle}.json`);
+}
+
+function postPath(postStore, handle) {
+  return path.join(postStore.dir, `${handle}.json`);
 }
 
 function reviewPath(reviewStore, handle, spaceSlug = "") {
@@ -332,6 +367,18 @@ async function readSpacePhoto(photoStore, handle) {
   }
 }
 
+async function readSpacePosts(postStore, handle) {
+  try {
+    const records = JSON.parse(await readFile(postPath(postStore, handle), "utf8"));
+    if (!Array.isArray(records)) {
+      return [];
+    }
+    return records.map(normalizeStoredPost).filter(Boolean).slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
 async function readSpaceReviews(reviewStore, handle, spaceSlug = "") {
   try {
     const records = JSON.parse(await readFile(reviewPath(reviewStore, handle, spaceSlug), "utf8"));
@@ -357,9 +404,44 @@ async function writeSpacePhoto(photoStore, handle, photo) {
   }), { encoding: "utf8", mode: 0o600 });
 }
 
+async function writeSpacePosts(postStore, handle, posts) {
+  await mkdir(postStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(postPath(postStore, handle), JSON.stringify(posts, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
 async function writeSpaceReviews(reviewStore, handle, spaceSlug, reviews) {
   await mkdir(reviewStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(reviewPath(reviewStore, handle, spaceSlug), JSON.stringify(reviews, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+function normalizePostBody(body) {
+  const text = cleanReviewText(body?.text, 420);
+  if (text.length < 2) {
+    return null;
+  }
+  const title = cleanReviewText(body?.title, 120) || titleFromPostText(text);
+  return { title, text };
+}
+
+function normalizeStoredPost(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const text = cleanReviewText(record.text, 420);
+  if (!text) {
+    return null;
+  }
+  return {
+    id: cleanReviewText(record.id, 80) || text,
+    title: cleanReviewText(record.title, 120) || titleFromPostText(text),
+    text,
+    meta: cleanReviewText(record.meta, 80) || "Я",
+    createdAt: cleanReviewText(record.createdAt, 40)
+  };
+}
+
+function titleFromPostText(text) {
+  return cleanReviewText(text, 54).replace(/[.!?…,:;]+$/u, "") || "Запись";
 }
 
 function normalizeMetaBody(body) {
