@@ -895,7 +895,10 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
   }
   const promptEvent = pendingInstallPrompt;
   pendingInstallPrompt = null;
-  await promptEvent.prompt();
+  await Promise.race([
+    promptEvent.prompt(),
+    wait(1500)
+  ]).catch(() => undefined);
   const choice = await Promise.race([
     promptEvent.userChoice,
     wait(12_000).then(() => ({ outcome: "dismissed" as const, platform: "" }))
