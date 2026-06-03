@@ -98,8 +98,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   accountName: "Соты",
   photoUrl: "",
   title: "страница",
-  headline: "контакт, записи, отзывы, связь",
-  about: "Контакт, записи, отзывы, связь.",
+  headline: "визитка, записи, отзывы, связь",
+  about: "Пока без описания.",
   accent: "#f1f1f1",
   contacts: [],
   posts: [],
@@ -112,11 +112,11 @@ const fallbackProfile: PersonalSpaceProfile = {
 };
 
 const layers = [
-  { id: "card", label: "Контакт", title: "Контакт", icon: "person" },
+  { id: "card", label: "Визитка", title: "Визитка", icon: "person" },
   { id: "personal", label: "Я", title: "Страница", icon: "hexagon" },
   { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "heart" },
   { id: "messages", label: "Связь", title: "Связь", icon: "mail" },
-  { id: "place", label: "Модули", title: "Модули", icon: "apps" }
+  { id: "place", label: "Место", title: "Место", icon: "apps" }
 ] as const satisfies readonly {
   readonly id: string;
   readonly label: string;
@@ -182,7 +182,7 @@ export function personalSpaceManifestHref(route: PersonalSpaceRoute): string {
 export async function renderPersonalSpacePage(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
-  const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "personal";
+  const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "card";
   const localHandle = loadLocalHandle();
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
   bindPersonalSpace(root, profile, options);
@@ -291,7 +291,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
-        ${ownSpace ? "" : `<nav aria-label="пространство"><button type="button" data-action="self">${icon("person")} ${localHandle ? "Я" : "Создать"}</button></nav>`}
+        ${!ownSpace && localHandle ? `<nav aria-label="пространство"><button type="button" data-action="self">${icon("person")} Я</button></nav>` : ""}
         ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
       </header>
       <main class="personal-main">
@@ -380,8 +380,8 @@ function renderLayerPanel(
 function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean, canNotify: boolean): PersonalPanelView {
   if (layer === "personal") {
     return {
-      eyebrow: ownSpace ? "я" : "страница",
-      title: ownSpace ? "Записи" : "Страница",
+      eyebrow: ownSpace ? "личное" : "я",
+      title: ownSpace ? "Записи" : "Записи",
       ...(ownSpace ? { action: { id: "note", label: "Записать", icon: "hexagon", tone: "primary" } as const } : {}),
       body: renderPanelList(
         "personal-feed",
@@ -447,26 +447,31 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   if (layer === "place") {
     return {
       eyebrow: "место",
-      title: "Модули",
+      title: "Место",
       body: renderSpaceModules(profile, ownSpace)
     };
   }
   return {
-    eyebrow: "контакт",
-    title: "О странице",
+    eyebrow: "визитка",
+    title: "Обо мне",
     text: personalSpaceCopy(profile.about, ownSpace),
     ...(ownSpace ? { action: { id: "edit", label: "Править", icon: "person", tone: "secondary" } as const } : {}),
-    body: `
-      <div class="personal-contact-list">
-        ${visibleContacts(profile, ownSpace).map((contact) => `
-          ${contact.href ? `<a href="${escapeAttr(contact.href)}">` : "<div>"}
-            <span>${escapeHtml(contact.label)}</span>
-            <b>${escapeHtml(contact.value)}</b>
-          ${contact.href ? "</a>" : "</div>"}
-        `).join("")}
-      </div>
-    `
+    body: renderContactList(profile, ownSpace)
   };
+}
+
+function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  return renderPanelList(
+    "personal-contact-list",
+    visibleContacts(profile, ownSpace).map((contact) => `
+      ${contact.href ? `<a href="${escapeAttr(contact.href)}">` : "<div>"}
+        <span>${escapeHtml(contact.label)}</span>
+        <b>${escapeHtml(contact.value)}</b>
+      ${contact.href ? "</a>" : "</div>"}
+    `),
+    "person",
+    ownSpace ? "Добавьте контакт." : "Контактов нет."
+  );
 }
 
 function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
@@ -675,8 +680,8 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
       return;
     }
     showNicknameSheet(root, {
-      title: "Как подписать?",
-      description: "Короткое имя для сообщений.",
+      title: "Ваше имя",
+      description: "",
       action: "Написать",
       onDone: (nextHandle) => options.openMessage(profile, nextHandle)
     });
@@ -689,9 +694,9 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
       return;
     }
     showNicknameSheet(root, {
-      title: "Как подписать?",
-      description: "Короткое имя для отзыва.",
-      action: "Отзыв",
+      title: "Ваше имя",
+      description: "",
+      action: "Оставить",
       onDone: (nextHandle) => showReviewSheet(root, profile, nextHandle, options)
     });
     return;
@@ -720,8 +725,8 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     }
     showNicknameSheet(root, {
       title: "Имя страницы",
-      description: "Оно станет ссылкой и QR.",
-      action: "Создать Я",
+      description: "",
+      action: "Открыть",
       onDone: openPersonalRoute
     });
     return;
@@ -909,7 +914,7 @@ function showNicknameSheet(
     <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="${escapeAttr(options.title)}">
       <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
       <h2>${escapeHtml(options.title)}</h2>
-      <p>${escapeHtml(options.description)}</p>
+      ${options.description ? `<p>${escapeHtml(options.description)}</p>` : ""}
       <form data-nick-form>
         <input name="handle" autocomplete="nickname" inputmode="text" maxlength="32" placeholder="например, anna" />
         <button type="submit">${escapeHtml(options.action)}</button>
@@ -1072,7 +1077,7 @@ async function updateProfilePhoto(root: HTMLElement, file: File, options: Person
     await renderPersonalSpacePage(root, options);
     const nextNote = root.querySelector<HTMLElement>("[data-install-note]");
     if (nextNote) {
-      nextNote.textContent = "Фото сохранено. Оно станет иконкой PWA при установке или переустановке.";
+      nextNote.textContent = "Фото сохранено.";
     }
   } catch {
     if (note) {

@@ -23,7 +23,7 @@ import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
 import { bindLegalPage } from "./features/legal";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
-import { clearAttentionNotices, notificationPermissionNote, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications } from "./features/notifications";
+import { clearAttentionNotices, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications } from "./features/notifications";
 import type { AttentionNotice } from "./features/notifications";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceEntryKind, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess, spaceEntryKindForMessage, spaceMarkDisplay } from "./features/space";
@@ -888,20 +888,18 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
 
 async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult> {
   if (!pendingInstallPrompt) {
-    const permission = await requestNotificationPermission();
     return {
       ok: false,
-      message: `Если кнопка установки не появилась, откройте меню браузера и выберите добавление на экран. На iPhone это пункт Поделиться -> На экран Домой.${notificationPermissionNote(permission)}`
+      message: "Меню браузера -> На экран."
     };
   }
   const promptEvent = pendingInstallPrompt;
   pendingInstallPrompt = null;
   await promptEvent.prompt();
   const choice = await promptEvent.userChoice.catch(() => ({ outcome: "dismissed" as const, platform: "" }));
-  const permission = choice.outcome === "accepted" ? await requestNotificationPermission() : "default";
   return choice.outcome === "accepted"
-    ? { ok: true, message: `Готово. Это пространство теперь ощущается как отдельное приложение.${notificationPermissionNote(permission)}` }
-    : { ok: false, message: "Установку можно повторить позже с этой же страницы." };
+    ? { ok: true, message: "Готово." }
+    : { ok: false, message: "Можно повторить позже." };
 }
 
 async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallResult> {
@@ -950,15 +948,15 @@ function isSelfStartRoute(location: Location = window.location): boolean {
 }
 
 async function renderSelfStartPage(): Promise<void> {
-  setPersonalSpaceMode(false);
-  setSelfStartMode(true);
-  applyPersonalSpaceManifest(null);
   const saved = await loadSelfStartHandleOrLegacyDevice();
   if (saved) {
     window.history.replaceState({}, "", `/@${encodeURIComponent(saved)}`);
     showPersonalSpaceRoute({ handle: saved, slug: "" });
     return;
   }
+  setPersonalSpaceMode(false);
+  setSelfStartMode(true);
+  applyPersonalSpaceManifest(null);
   app.innerHTML = `
     <main class="self-start-shell" aria-label="создать страницу">
       <form class="self-start-form">

@@ -93,10 +93,10 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : meta.headline || meta.about || "контакт, записи, отзывы, связь",
+      : meta.headline || meta.about || "визитка, записи, отзывы, связь",
     about: activeSpace
       ? `${activeSpace.title}: связь, отзывы, действия.`
-      : meta.about || `${ownerName}: контакт, записи, отзывы, связь.`,
+      : meta.about || "Пока без описания.",
     accent: meta.accent || accent,
     contacts: [
       { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
@@ -451,7 +451,7 @@ function normalizeMetaBody(body) {
     return null;
   }
   return {
-    ...(displayName ? { displayName, headline: about || "контакт, записи, отзывы, связь" } : {}),
+    ...(displayName ? { displayName, headline: about || "визитка, записи, отзывы, связь" } : {}),
     ...(about ? { about, headline: about } : {}),
     ...(contact ? { contact } : {})
   };
