@@ -472,16 +472,17 @@ function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): st
 
 function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
   if (options.surface === "hero") {
-    return options.ownSpace
-      ? [
+    if (options.ownSpace) {
+      return [
         { id: "share", label: "QR", icon: "qr", tone: "primary" },
-        { id: "install", label: "Сохранить", icon: "install", tone: "secondary" }
-      ]
-      : [
-        { id: "install", label: "Сохранить", icon: "install", tone: "primary" },
-        { id: "message", label: "Написать", icon: "mail", tone: "secondary" },
-        { id: "share", label: "QR", icon: "qr", tone: "secondary" }
+        ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "secondary" } as const] : [])
       ];
+    }
+    return [
+      ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" } as const] : []),
+      { id: "message", label: "Написать", icon: "mail", tone: options.canInstall ? "secondary" : "primary" },
+      { id: "share", label: "QR", icon: "qr", tone: "secondary" }
+    ];
   }
   if (options.surface === "reviews") {
     return options.ownSpace ? [] : [{ id: "review", label: "Отзыв", icon: "heart", tone: "primary" }];
