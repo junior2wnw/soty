@@ -745,6 +745,11 @@ button.personal-avatar {
   gap: 10px;
 }
 
+.personal-spaces {
+  grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
+  gap: 0 18px;
+}
+
 .personal-contact-list a,
 .personal-contact-list div,
 .personal-post,
@@ -771,6 +776,7 @@ button.personal-avatar {
   grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
   gap: 2px 12px;
+  min-height: 64px;
 }
 
 .personal-spaces button {

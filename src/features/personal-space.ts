@@ -1,5 +1,6 @@
 import { icon } from "../icons";
 import type { IconName } from "../icons";
+import { runtimeModuleDefinitions } from "./runtime-modules";
 import { showLinkShareSheet } from "./share-sheet";
 
 export type PersonalSpaceRoute = {
@@ -34,7 +35,7 @@ export type PersonalSpacePageOptions = {
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
   readonly openMessage: (profile: PersonalSpaceProfile, fromHandle: string) => void;
-  readonly openRuntime: (profile: PersonalSpaceProfile) => void;
+  readonly openRuntime: (profile: PersonalSpaceProfile, target?: string) => void;
 };
 
 type PersonalSpaceContact = {
@@ -150,11 +151,6 @@ type PersonalModule = {
 };
 const localHandleKey = "soty:personal-handle:v1";
 const internalContactLabels = new Set(["чат", "страница"]);
-const runtimeModules = [
-  { id: "agent", title: "Агент", summary: "помощник", icon: "agent", kind: "runtime", target: "agent" },
-  { id: "apps", title: "Приложения", summary: "инструменты", icon: "apps", kind: "runtime", target: "apps" },
-  { id: "access", title: "Доступ", summary: "устройства", icon: "shield", kind: "runtime", target: "access" }
-] as const satisfies readonly PersonalModule[];
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
   const parts = location.pathname.split("/").filter(Boolean);
@@ -380,7 +376,7 @@ function renderLayerPanel(
 function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean, canNotify: boolean): PersonalPanelView {
   if (layer === "personal") {
     return {
-      eyebrow: ownSpace ? "личное" : "я",
+      eyebrow: ownSpace ? "личное" : "страница",
       title: ownSpace ? "Записи" : "Записи",
       ...(ownSpace ? { action: { id: "note", label: "Записать", icon: "hexagon", tone: "primary" } as const } : {}),
       body: renderPanelList(
@@ -425,7 +421,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
         title: "Заметки",
         body: `
           <div class="personal-message-preview">
-            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личные записи.</p></div>
+            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Заметки для себя.</p></div>
             ${renderInlineEntityActions(messageActions)}
             <small data-action-note></small>
           </div>
@@ -434,10 +430,10 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     }
     return {
       eyebrow: "связь",
-      title: "Сообщения",
+      title: "Связь",
       body: `
         <div class="personal-message-preview">
-          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личный чат.</p></div>
+          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Чат.</p></div>
           ${renderInlineEntityActions(messageActions)}
           <small data-action-note></small>
         </div>
@@ -448,12 +444,12 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     return {
       eyebrow: "место",
       title: "Место",
-      body: renderSpaceModules(profile, ownSpace)
+      body: renderSpaceModules(profile)
     };
   }
   return {
     eyebrow: "визитка",
-    title: "Обо мне",
+    title: "О странице",
     text: personalSpaceCopy(profile.about, ownSpace),
     ...(ownSpace ? { action: { id: "edit", label: "Править", icon: "person", tone: "secondary" } as const } : {}),
     body: renderContactList(profile, ownSpace)
@@ -518,8 +514,8 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  const modules = personalModules(profile, ownSpace);
+function renderSpaceModules(profile: PersonalSpaceProfile): string {
+  const modules = personalModules(profile);
   return `
     <div class="personal-spaces">
       ${modules.map(renderPersonalModule).join("")}
@@ -527,10 +523,12 @@ function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): s
   `;
 }
 
-function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModule[] {
+function personalModules(profile: PersonalSpaceProfile): readonly PersonalModule[] {
   return [
-    ...layers.map((layer) => personalLayerModule(layer, ownSpace)),
-    ...runtimeModules,
+    ...runtimeModuleDefinitions.map((module) => ({
+      ...module,
+      kind: "runtime" as const
+    })),
     ...profile.spaces.map((space) => ({
       id: `space:${space.slug}`,
       title: space.title,
@@ -544,38 +542,13 @@ function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): read
 }
 
 function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
+  if (!ownSpace && layer.id === "personal") {
+    return { ...layer, label: "Страница", title: "Страница" };
+  }
   if (ownSpace && layer.id === "messages") {
     return { ...layer, label: "Заметки", title: "Заметки" };
   }
   return layer;
-}
-
-function personalLayerModule(layer: typeof layers[number], ownSpace: boolean): PersonalModule {
-  const display = layerDisplay(layer, ownSpace);
-  return {
-    id: display.id,
-    title: display.title,
-    summary: layerModuleSummary(display.id, ownSpace),
-    icon: display.icon,
-    kind: "layer",
-    target: display.id
-  };
-}
-
-function layerModuleSummary(layer: PersonalSpaceLayer, ownSpace: boolean): string {
-  if (layer === "card") {
-    return "визитка";
-  }
-  if (layer === "personal") {
-    return ownSpace ? "записи" : "публикации";
-  }
-  if (layer === "reviews") {
-    return "репутация";
-  }
-  if (layer === "messages") {
-    return ownSpace ? "личное" : "сообщения";
-  }
-  return "расширения";
 }
 
 function renderPersonalModule(module: PersonalModule): string {
@@ -666,7 +639,7 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (kind === "runtime") {
-    options.openRuntime(profile);
+    options.openRuntime(profile, target);
   }
 }
 

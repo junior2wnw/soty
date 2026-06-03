@@ -34,6 +34,8 @@ import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./f
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
+import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
+import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
@@ -499,6 +501,7 @@ async function boot(): Promise<void> {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
+  openRequestedRuntimeModule();
   void refreshQuickActionCatalog(true).then(() => renderTerminal());
   startAgentButtonWatcher(true);
   resumePendingAgentDialogReplies();
@@ -932,8 +935,49 @@ function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: str
   window.location.assign(`${url.pathname}${url.search}${url.hash}`);
 }
 
-function openPersonalSpaceRuntime(profile: PersonalSpaceProfile): void {
-  window.location.assign(profile.actions.runtimeUrl || bareChatPath());
+function openPersonalSpaceRuntime(profile: PersonalSpaceProfile, target = ""): void {
+  const url = new URL(profile.actions.runtimeUrl || bareChatPath(), window.location.origin);
+  const moduleTarget = runtimeModuleTargetFromString(target);
+  if (moduleTarget) {
+    url.searchParams.set("module", moduleTarget);
+    if (runtimeModuleUsesEntity(moduleTarget) && profile.handle) {
+      url.searchParams.set("to", `@${profile.handle}`);
+    }
+  }
+  window.location.assign(`${url.pathname}${url.search}${url.hash}`);
+}
+
+function requestedRuntimeModule(location: Location = window.location): RuntimeModuleTarget | "" {
+  try {
+    return runtimeModuleTargetFromString(new URL(location.href).searchParams.get("module") || "");
+  } catch {
+    return "";
+  }
+}
+
+function consumeRequestedRuntimeModule(): RuntimeModuleTarget | "" {
+  const target = requestedRuntimeModule();
+  if (!target) {
+    return "";
+  }
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("module");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // The module can still open even if the URL cannot be cleaned.
+  }
+  return target;
+}
+
+function openRequestedRuntimeModule(): void {
+  const target = consumeRequestedRuntimeModule();
+  if (!target) {
+    return;
+  }
+  window.setTimeout(() => {
+    void openRuntimeModule(target);
+  }, 0);
 }
 
 function isSelfStartRoute(location: Location = window.location): boolean {
@@ -948,6 +992,7 @@ function isSelfStartRoute(location: Location = window.location): boolean {
     && !url.searchParams.has("to")
     && !url.searchParams.has("room")
     && !url.searchParams.has("space")
+    && !url.searchParams.has("module")
     && !url.searchParams.has("restore-local")
     && url.searchParams.get("bare") !== "1"
     && url.searchParams.get("view") !== "chat";
@@ -1250,6 +1295,7 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
     }
   }
   renderApp();
+  openRequestedRuntimeModule();
   applyRestoredTextSnapshots(restoredTexts);
   startAgentButtonWatcher(true);
   resumePendingAgentDialogReplies();
@@ -1779,6 +1825,31 @@ function openActionMenu(): void {
   actionSearchText = "";
   closeMiniAppGallery();
   openLauncher();
+}
+
+async function openRuntimeModule(target: RuntimeModuleTarget): Promise<void> {
+  const handlers: Record<RuntimeModuleTarget, () => void | Promise<void>> = {
+    agent: () => {
+      setSelectedAgentMode(true);
+    },
+    apps: () => {
+      openMiniAppGallery();
+    },
+    actions: () => {
+      openActionMenu();
+    },
+    access: () => {
+      showAccessPanel();
+    },
+    qr: () => {
+      void showQr();
+    },
+    files: () => {
+      fileInput?.click();
+    },
+    chess: () => openChessForSelected(true)
+  };
+  await handlers[target]();
 }
 
 function openLauncher(): void {
@@ -6830,7 +6901,7 @@ function activeChessTunnelId(): string {
   return chessOpenId && chessOpenId === selectedId ? chessOpenId : "";
 }
 
-async function openChessForSelected(): Promise<void> {
+async function openChessForSelected(forceOpen = false): Promise<void> {
   if (!selectedId) {
     return;
   }
@@ -6838,6 +6909,9 @@ async function openChessForSelected(): Promise<void> {
     collapseMiniApp();
   }
   if (activeChessTunnelId() === selectedId) {
+    if (forceOpen) {
+      return;
+    }
     closeChessPanel();
     return;
   }
