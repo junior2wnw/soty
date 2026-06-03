@@ -9237,7 +9237,7 @@ function renderTextPaint(): void {
     }
     const live = active && index === activeLine ? active : null;
     const sourceId = spaceMessageSourceId(selectedId, index, line);
-    const markKind = spaceEntryKindForMessage(speaker.side === "local");
+    const markKind = spaceEntryKindForMessage(speaker.side === "local", isOwnSpace(tunnel));
     const current = bubbles[bubbles.length - 1];
     if (
       groupKey
@@ -9327,9 +9327,10 @@ function renderTextPaint(): void {
     textPaint.innerHTML = renderEmptySpacePrompt(spaceMode, tunnel);
     return;
   }
+  const ownSpace = isOwnSpace(tunnel);
   textPaint.innerHTML = visibleBubbles.map((bubble) => {
     const body = bubble.entry
-      ? renderSpaceEntryBubble(bubble.entry)
+      ? renderSpaceEntryBubble(bubble.entry, ownSpace)
       : bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
       : bubble.lines
@@ -9344,7 +9345,7 @@ function renderTextPaint(): void {
       ? `<span class="bubble-avatar" aria-hidden="true">${escapeHtml(initials(bubble.nick))}</span>`
       : "";
     const action = bubble.markKind && bubble.sourceLine >= 0 && !bubble.entry
-      ? renderBubbleMarkButton(bubble.markKind, bubble.sourceLine, bubble.sourceId, bubble.nick, bubble.sourceText, bubble.marked)
+      ? renderBubbleMarkButton(bubble.markKind, bubble.sourceLine, bubble.sourceId, bubble.nick, bubble.sourceText, bubble.marked, ownSpace)
       : "";
     const entries = bubble.sourceId ? messageDialogs.get(bubble.sourceId) ?? [] : [];
     const messageDialog = bubble.sourceId && !bubble.entry
@@ -9530,12 +9531,13 @@ function renderBubbleMarkButton(
   sourceId: string,
   author: string,
   text: string,
-  marked: boolean
+  marked: boolean,
+  ownSpace: boolean
 ): string {
-  const display = spaceMarkDisplay(kind);
+  const display = spaceMarkDisplay(kind, ownSpace);
   const label = marked ? display.activeLabel : display.actionLabel;
   return `
-    <button class="bubble-mark ${display.className}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-mark-role="${display.role}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
+    <button class="bubble-mark ${display.className}${marked ? " is-marked" : ""}" type="button" data-mark-kind="${kind}" data-mark-role="${display.role}" data-owner-space="${ownSpace ? "1" : "0"}" data-line-index="${lineIndex}" data-source-id="${escapeHtml(sourceId)}" data-author="${escapeHtml(author)}" data-text="${escapeHtml(text)}" aria-label="${escapeHtml(label)}" data-tooltip="${escapeHtml(label)}">
       ${icon(display.icon)}
     </button>
   `;
@@ -9549,6 +9551,7 @@ function markDialogMessage(button: HTMLButtonElement): void {
   if (!kind) {
     return;
   }
+  const ownSpace = button.dataset.ownerSpace === "1";
   const current = texts.get(selectedId) ?? textarea.value;
   const lines = current.endsWith("\n") ? current.slice(0, -1).split("\n") : current.split("\n");
   const lineIndex = Number(button.dataset.lineIndex || "-1");
@@ -9560,7 +9563,10 @@ function markDialogMessage(button: HTMLButtonElement): void {
   const sourceId = button.dataset.sourceId || spaceMessageSourceId(selectedId, lineIndex, text);
   const existing = markedSourceIds(lines);
   if (existing.has(sourceId) || existing.has(spaceFallbackMarkerId(kind, text))) {
+    const display = spaceMarkDisplay(kind, ownSpace);
     button.classList.add("is-marked");
+    button.setAttribute("aria-label", display.activeLabel);
+    button.dataset.tooltip = display.activeLabel;
     return;
   }
   const sync = syncs.get(selectedId);
@@ -9582,14 +9588,14 @@ function markDialogMessage(button: HTMLButtonElement): void {
   saveTextSnapshotNow(selectedId, next);
   syncMarkedSpaceEntryToProfile(kind, text, author);
   button.classList.add("is-marked");
-  const display = spaceMarkDisplay(kind);
+  const display = spaceMarkDisplay(kind, ownSpace);
   button.setAttribute("aria-label", display.activeLabel);
   button.dataset.tooltip = display.activeLabel;
   renderTextPaint();
 }
 
 function syncMarkedSpaceEntryToProfile(kind: SpaceEntryKind, text: string, author: string): void {
-  const handle = loadSelfStartHandle();
+  const handle = selectedSpaceOwnerHandle();
   if (!handle) {
     return;
   }
@@ -9607,7 +9613,7 @@ async function savePersonalSpaceReviewFromMark(handle: string, author: string, t
       Accept: "application/json"
     },
     body: JSON.stringify({
-      author: cleanNick(author) || contactAuthorForMark() || "Гость",
+      author: cleanNick(author) || loadSelfStartHandle() || cleanNick(device?.nick || "") || "Гость",
       text,
       rating: 5
     })
@@ -9617,12 +9623,18 @@ async function savePersonalSpaceReviewFromMark(handle: string, author: string, t
   }
 }
 
-function contactAuthorForMark(): string {
-  if (!selectedId) {
+function selectedSpaceOwnerHandle(): string {
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  if (!tunnel) {
     return "";
   }
-  const tunnel = loadTunnels().find((item) => item.id === selectedId);
-  return tunnel ? contactHandleFromTunnel(tunnel) : "";
+  if (isSelfTunnel(tunnel)) {
+    return loadSelfStartHandle();
+  }
+  if (isAgentTunnel(tunnel)) {
+    return "";
+  }
+  return contactHandleFromTunnel(tunnel);
 }
 
 function spaceMessageSourceId(tunnelId: string, lineIndex: number, text: string): string {
@@ -9643,13 +9655,10 @@ function hashShort(value: string): string {
 }
 
 function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | undefined): string {
-  const label = tunnel ? counterpartyLabel(tunnel) : "сота";
   const own = isOwnSpace(tunnel);
   let text = "Напиши первое сообщение";
   if (mode === "wall") {
-    void label;
-    void own;
-    text = "Сохраненное в Я";
+    text = own ? "Сохраненное в Я" : "Страница из сообщений";
   } else if (mode === "reputation") {
     text = "Отзывы из чата";
   } else if (tunnel && isAgentTunnel(tunnel)) {

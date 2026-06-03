@@ -87,8 +87,9 @@ export function makeSpaceEntryLine(kind: SpaceEntryKind, entry: Omit<SpaceEntry,
   })}`;
 }
 
-export function spaceEntryKindForMessage(local: boolean): SpaceEntryKind {
-  return local ? "wall" : "reputation";
+export function spaceEntryKindForMessage(local: boolean, ownSpace: boolean): SpaceEntryKind {
+  const ownerMessage = ownSpace ? local : !local;
+  return ownerMessage ? "wall" : "reputation";
 }
 
 export function normalizeSpaceEntryKind(value: string): SpaceEntryKind | null {
@@ -98,8 +99,18 @@ export function normalizeSpaceEntryKind(value: string): SpaceEntryKind | null {
   return null;
 }
 
-export function spaceMarkDisplay(kind: SpaceEntryKind): SpaceMarkDisplay {
+export function spaceMarkDisplay(kind: SpaceEntryKind, ownSpace = true): SpaceMarkDisplay {
   if (kind === "wall" || kind === "wall-comment") {
+    if (!ownSpace) {
+      return {
+        role: "self",
+        icon: "hexagon",
+        className: "is-hex",
+        actionLabel: "На страницу",
+        activeLabel: "На странице",
+        entryLabel: "Страница"
+      };
+    }
     return {
       role: "self",
       icon: "hexagon",
@@ -151,8 +162,7 @@ export function parseSpaceEntryLine(line: string): SpaceEntry | null {
 export function spaceComposerAccess(mode: SpaceMode, label: string, ownSpace: boolean): SpaceComposerAccess {
   if (mode === "wall") {
     void label;
-    void ownSpace;
-    return { canCompose: false, entryKind: null, placeholder: "Отмеченное в Я" };
+    return { canCompose: false, entryKind: null, placeholder: ownSpace ? "Отмеченное в Я" : "Страница" };
   }
   if (mode === "reputation") {
     return { canCompose: false, entryKind: null, placeholder: "Отзывы из сообщений" };
@@ -179,14 +189,17 @@ export function renderSpaceRail(model: SpaceModel): string {
 }
 
 function modeDisplay(mode: typeof modes[number], ownSpace: boolean): typeof modes[number] {
+  if (!ownSpace && mode.id === "wall") {
+    return { ...mode, label: "Страница", hint: "Страница", ariaLabel: "Страница" };
+  }
   return ownSpace && mode.id === "dialog"
     ? { ...mode, label: "Заметки", hint: "Заметки", ariaLabel: "Заметки" }
     : mode;
 }
 
-export function renderSpaceEntryBubble(entry: SpaceEntry): string {
-  const label = entryLabel(entry.kind);
-  const display = spaceMarkDisplay(entry.kind);
+export function renderSpaceEntryBubble(entry: SpaceEntry, ownSpace = true): string {
+  const label = entryLabel(entry.kind, ownSpace);
+  const display = spaceMarkDisplay(entry.kind, ownSpace);
   return `
     <div class="space-entry-bubble" data-kind="${entry.kind}" data-role="${display.role}">
       <span>${escapeHtml(label)}</span>
@@ -223,14 +236,14 @@ function entryPrefixForLine(line: string, kind: SpaceEntryKind): string {
   return prefixByKind[kind];
 }
 
-function entryLabel(kind: SpaceEntryKind): string {
+function entryLabel(kind: SpaceEntryKind, ownSpace: boolean): string {
   if (kind === "wall-comment") {
     return "Комментарий";
   }
   if (kind === "reputation-comment") {
     return "Комментарий";
   }
-  return spaceMarkDisplay(kind).entryLabel;
+  return spaceMarkDisplay(kind, ownSpace).entryLabel;
 }
 
 function shortDate(value: string): string {
