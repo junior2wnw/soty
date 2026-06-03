@@ -1980,7 +1980,8 @@ function restorePortableLocalStorage(snapshot?: Readonly<Record<string, unknown>
       continue;
     }
     try {
-      localStorage.setItem(key, value.slice(0, 1_000_000));
+      const maxLength = key.startsWith("soty:personal-files:v1:") ? 5_000_000 : 1_000_000;
+      localStorage.setItem(key, value.slice(0, maxLength));
     } catch {
       // Import should restore as much as possible without failing the whole backup.
     }
@@ -1992,6 +1993,7 @@ function isRestorableLocalStorageKey(key: string): boolean {
     || key === "soty:self-start-handle:v1"
     || key === "soty:handle:v1"
     || key.startsWith("soty:personal-profile:v1:")
+    || key.startsWith("soty:personal-files:v1:")
     || key.startsWith(personalOwnerPrefix)
     || key.startsWith("soty:personal-thread:v1:");
 }

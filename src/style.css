@@ -1378,6 +1378,108 @@ button.personal-avatar {
   justify-items: start;
 }
 
+.personal-files-sheet {
+  width: min(100%, 560px);
+  justify-items: start;
+}
+
+.personal-files-sheet .personal-empty {
+  width: 100%;
+}
+
+.personal-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.personal-file-actions button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font-weight: 820;
+}
+
+.personal-file-actions button:hover,
+.personal-file-actions button:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 2px 2px 0 #000;
+}
+
+.personal-file-actions svg {
+  width: 17px;
+  height: 17px;
+}
+
+.personal-file-list {
+  width: 100%;
+  display: grid;
+  gap: 0;
+}
+
+.personal-file-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid #000;
+}
+
+.personal-file-item a {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 3px 10px;
+  color: #000;
+  text-decoration: none;
+}
+
+.personal-file-item a svg {
+  grid-row: 1 / span 2;
+  width: 19px;
+  height: 19px;
+}
+
+.personal-file-item span {
+  min-width: 0;
+  color: #000;
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.personal-file-item p {
+  margin: 0;
+  color: #616161;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.personal-file-item button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+}
+
+.personal-file-item button svg {
+  width: 15px;
+  height: 15px;
+}
+
 .personal-agent-sheet {
   width: min(100%, 520px);
   justify-items: start;

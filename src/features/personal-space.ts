@@ -162,6 +162,15 @@ type PersonalThreadLine = {
   readonly mine: boolean;
 };
 
+type PersonalFileItem = {
+  readonly id: string;
+  readonly name: string;
+  readonly type: string;
+  readonly size: number;
+  readonly createdAt: string;
+  readonly dataUrl: string;
+};
+
 export type PersonalSpaceProfile = {
   readonly kind: "entity" | "space";
   readonly handle: string;
@@ -267,11 +276,14 @@ const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
 const profileCachePrefix = "soty:personal-profile:v1:";
 const personalChessPrefix = "soty:personal-chess:v1:";
+const personalFilesPrefix = "soty:personal-files:v1:";
 const personalThreadPrefix = "soty:personal-thread:v1:";
 const personalMessageClientKey = "soty:personal-message-client:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
 const personalReactionClientKey = "soty:personal-reaction-client:v1";
 let personalLayerKeysBound = false;
+const personalFileLimit = 8;
+const personalFileMaxBytes = 900_000;
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -2453,6 +2465,10 @@ function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile
     showPersonalChessSheet(root, profile);
     return;
   }
+  if (target === "files") {
+    showPersonalFilesSheet(root, profile);
+    return;
+  }
   const module = runtimeModuleDefinitions.find((item) => item.target === target);
   if (!module) {
     options.openRuntime(profile, target);
@@ -2477,6 +2493,219 @@ function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile
     if (event.target === overlay) {
       overlay.remove();
     }
+  });
+}
+
+function showPersonalFilesSheet(root: HTMLElement, profile: PersonalSpaceProfile): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  const files = loadPersonalFiles(profile);
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-files-sheet" role="dialog" aria-modal="true" aria-label="Файлы">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div class="personal-module-mark">${icon("clip")}</div>
+      <h2>Файлы</h2>
+      <p>Локально для этой карточки.</p>
+      <input type="file" multiple hidden data-personal-files-input />
+      <div class="personal-file-actions">
+        <button type="button" data-personal-files-add>${icon("clip")} <span>Добавить</span></button>
+        <button type="button" data-personal-files-clear${files.length ? "" : " hidden"}>${icon("close")} <span>Очистить</span></button>
+      </div>
+      <div class="personal-file-list" data-personal-files-list>
+        ${renderPersonalFiles(files)}
+      </div>
+      <small data-personal-files-note></small>
+    </section>
+  `;
+  root.append(overlay);
+  const close = () => overlay.remove();
+  const render = () => {
+    const list = overlay.querySelector<HTMLElement>("[data-personal-files-list]");
+    if (list) {
+      list.innerHTML = renderPersonalFiles(loadPersonalFiles(profile));
+    }
+    const clear = overlay.querySelector<HTMLButtonElement>("[data-personal-files-clear]");
+    clear?.toggleAttribute("hidden", loadPersonalFiles(profile).length === 0);
+  };
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    const remove = target?.closest<HTMLButtonElement>("[data-personal-file-remove]");
+    if (remove && overlay.contains(remove)) {
+      removePersonalFile(profile, remove.dataset.personalFileRemove || "");
+      render();
+    }
+  });
+  const input = overlay.querySelector<HTMLInputElement>("[data-personal-files-input]");
+  const note = overlay.querySelector<HTMLElement>("[data-personal-files-note]");
+  overlay.querySelector<HTMLButtonElement>("[data-personal-files-add]")?.addEventListener("click", () => input?.click());
+  overlay.querySelector<HTMLButtonElement>("[data-personal-files-clear]")?.addEventListener("click", () => {
+    savePersonalFiles(profile, []);
+    if (note) {
+      note.textContent = "Очищено.";
+    }
+    render();
+  });
+  input?.addEventListener("change", () => {
+    const selected = Array.from(input.files || []);
+    input.value = "";
+    if (selected.length === 0) {
+      return;
+    }
+    void addPersonalFiles(profile, selected).then((result) => {
+      if (note) {
+        note.textContent = result.skipped > 0
+          ? `Добавлено: ${result.added}. Не подошло: ${result.skipped}.`
+          : result.added > 0
+            ? `Добавлено: ${result.added}.`
+            : "Файл слишком большой.";
+      }
+      render();
+    });
+  });
+}
+
+function renderPersonalFiles(files: readonly PersonalFileItem[]): string {
+  if (files.length === 0) {
+    return `<section class="personal-empty">${icon("clip")} <span>Файлов пока нет.</span></section>`;
+  }
+  return files.map((file) => `
+    <article class="personal-file-item">
+      <a href="${escapeAttr(file.dataUrl)}" download="${escapeAttr(file.name)}">
+        ${icon("clip")}
+        <span>${escapeHtml(file.name)}</span>
+        <p>${escapeHtml(personalFileMeta(file))}</p>
+      </a>
+      <button type="button" data-personal-file-remove="${escapeAttr(file.id)}" aria-label="Удалить">${icon("close")}</button>
+    </article>
+  `).join("");
+}
+
+async function addPersonalFiles(profile: PersonalSpaceProfile, selected: readonly File[]): Promise<{ readonly added: number; readonly skipped: number }> {
+  const current = loadPersonalFiles(profile);
+  const next: PersonalFileItem[] = [];
+  let skipped = 0;
+  for (let index = 0; index < selected.length; index += 1) {
+    const file = selected[index];
+    if (!file) {
+      skipped += 1;
+      continue;
+    }
+    if (file.size <= 0 || file.size > personalFileMaxBytes) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      next.push({
+        id: localItemId("file"),
+        name: cleanText(file.name, 120) || "file",
+        type: cleanText(file.type || "file", 80) || "file",
+        size: file.size,
+        createdAt: new Date().toISOString(),
+        dataUrl: await fileToDataUrl(file)
+      });
+    } catch {
+      skipped += 1;
+    }
+    if (next.length + current.length >= personalFileLimit) {
+      skipped += Math.max(0, selected.length - index - 1);
+      break;
+    }
+  }
+  savePersonalFiles(profile, [...next, ...current].slice(0, personalFileLimit));
+  return { added: next.length, skipped };
+}
+
+function loadPersonalFiles(profile: PersonalSpaceProfile): readonly PersonalFileItem[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(personalFilesKey(profile)) || "[]") as unknown;
+    return list(parsed).map(normalizePersonalFile).filter(isPersonalFile).slice(0, personalFileLimit);
+  } catch {
+    return [];
+  }
+}
+
+function savePersonalFiles(profile: PersonalSpaceProfile, files: readonly PersonalFileItem[]): void {
+  try {
+    window.localStorage.setItem(personalFilesKey(profile), JSON.stringify(files.slice(0, personalFileLimit)));
+  } catch {
+    // Local file shelf is best-effort; storage pressure should not block the card UI.
+  }
+}
+
+function removePersonalFile(profile: PersonalSpaceProfile, id: string): void {
+  const clean = cleanText(id, 80);
+  if (!clean) {
+    return;
+  }
+  savePersonalFiles(profile, loadPersonalFiles(profile).filter((file) => file.id !== clean));
+}
+
+function normalizePersonalFile(value: unknown): PersonalFileItem | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = cleanText(value.id, 80);
+  const name = cleanText(value.name, 120);
+  const type = cleanText(value.type, 80) || "file";
+  const size = Number(value.size);
+  const createdAt = cleanText(value.createdAt, 40);
+  const dataUrl = cleanPersonalFileDataUrl(value.dataUrl);
+  if (!id || !name || !Number.isFinite(size) || size < 0 || size > personalFileMaxBytes || !createdAt || !dataUrl) {
+    return null;
+  }
+  return { id, name, type, size: Math.round(size), createdAt, dataUrl };
+}
+
+function isPersonalFile(value: PersonalFileItem | null): value is PersonalFileItem {
+  return value !== null;
+}
+
+function cleanPersonalFileDataUrl(value: unknown): string {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (text.length > 1_400_000) {
+    return "";
+  }
+  return /^data:[a-z0-9.+/-]{1,100};base64,[a-z0-9+/=]+$/iu.test(text) ? text : "";
+}
+
+function personalFilesKey(profile: PersonalSpaceProfile): string {
+  return `${personalFilesPrefix}${routeUrl(profile)}`;
+}
+
+function personalFileMeta(file: PersonalFileItem): string {
+  return `${personalFileSize(file.size)} · ${threadTime(file.createdAt)}`;
+}
+
+function personalFileSize(size: number): string {
+  if (size >= 1_000_000) {
+    return `${(size / 1_000_000).toFixed(1)} MB`;
+  }
+  if (size >= 1000) {
+    return `${Math.round(size / 1000)} KB`;
+  }
+  return `${Math.max(0, Math.round(size))} B`;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const dataUrl = cleanPersonalFileDataUrl(result);
+      if (!dataUrl) {
+        reject(new Error("invalid file data"));
+        return;
+      }
+      resolve(dataUrl);
+    });
+    reader.addEventListener("error", () => reject(reader.error || new Error("file read failed")));
+    reader.readAsDataURL(file);
   });
 }
 
