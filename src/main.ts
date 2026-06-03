@@ -3,7 +3,10 @@ import jsQR from "jsqr";
 import {
   appSurfaceAllowedOrigin,
   appSurfaceInstallSchema,
-  normalizeAppSurfaceInstallRequest
+  normalizeAppSurfaceInstallRequest,
+  stableJson,
+  toBase64Url,
+  utf8
 } from "trustlink-kernel";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, SyncedWriterLine, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
@@ -33,7 +36,7 @@ import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { cleanPersonalHandle, loadPersonalHandle, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
-import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
+import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceInstallResult, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
 import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
@@ -1010,15 +1013,82 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     canNotify: shouldOfferNotifications,
     install: promptPersonalSpaceInstall,
     enableNotifications: promptPersonalSpaceNotifications,
-    updateProfile: updatePersonalSpaceProfile,
-    savePost: savePersonalSpacePost,
-    uploadPhoto: uploadPersonalSpacePhoto,
+    updateProfile: updateSignedPersonalSpaceProfile,
+    savePost: saveSignedPersonalSpacePost,
+    uploadPhoto: uploadSignedPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
     applyManifest: applyPersonalProfileManifest,
     isOwned: isPersonalProfileOwned,
     openRuntime: openPersonalSpaceRuntime
   });
+}
+
+async function updateSignedPersonalSpaceProfile(route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate): Promise<PersonalSpaceInstallResult> {
+  return updatePersonalSpaceProfile(route, update, await createPersonalOwnerProof(route, "profile", update));
+}
+
+async function saveSignedPersonalSpacePost(route: PersonalSpaceRoute, draft: PersonalSpacePostDraft): Promise<PersonalSpaceInstallResult> {
+  return savePersonalSpacePost(route, draft, await createPersonalOwnerProof(route, "post", draft));
+}
+
+async function uploadSignedPersonalSpacePhoto(route: PersonalSpaceRoute, file: File): Promise<string> {
+  return uploadPersonalSpacePhoto(route, file, (data) => createPersonalOwnerProof(route, "photo", data));
+}
+
+async function createPersonalOwnerProof(route: PersonalSpaceRoute, action: PersonalOwnerAction, data: unknown): Promise<PersonalOwnerProof | null> {
+  const handle = cleanSelfStartHandle(route.handle);
+  if (!handle) {
+    return null;
+  }
+  try {
+    const currentDevice = device ?? await loadDevice();
+    const owner = loadPersonalOwnerRecord(handle);
+    if (!currentDevice || !owner || owner.deviceId !== currentDevice.id) {
+      return null;
+    }
+    if (!device) {
+      device = currentDevice;
+    }
+    const payload = {
+      v: 1,
+      kind: "soty.personal-space.owner-action",
+      action,
+      handle,
+      slug: cleanSelfStartHandle(route.slug),
+      bodyHash: await personalOwnerBodyHash(data),
+      deviceId: currentDevice.id,
+      publicJwk: currentDevice.publicJwk,
+      createdAt: new Date().toISOString(),
+      nonce: randomOwnerNonce()
+    } as const satisfies PersonalOwnerProof["payload"];
+    const signature = await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      currentDevice.privateKey,
+      bytesBuffer(utf8(stableJson(payload)))
+    );
+    return {
+      payload,
+      signature: toBase64Url(new Uint8Array(signature))
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function personalOwnerBodyHash(data: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytesBuffer(utf8(stableJson(data))));
+  return toBase64Url(new Uint8Array(digest));
+}
+
+function randomOwnerNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return toBase64Url(bytes);
+}
+
+function bytesBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult> {
@@ -1212,14 +1282,19 @@ async function loadSelfStartHandleOrLegacyDevice(): Promise<string> {
     }
     const owned = loadOwnedPersonalHandleForDevice(currentDevice?.id || "");
     if (owned) {
-      return owned;
+      if (await personalHandleMatchesServerOwner(owned, currentDevice?.id || "")) {
+        return owned;
+      }
+      removePersonalOwnerRecord(owned);
     }
     const legacyHandle = legacySelfStartHandleFromNick(currentDevice?.nick || "");
     if (legacyHandle && !hasAnyPersonalOwnerRecord()) {
-      const migrated = await bindPersonalOwner(legacyHandle, { replace: false });
-      if (migrated) {
-        saveSelfStartHandle(migrated);
-        return migrated;
+      if (await personalHandleMatchesServerOwner(legacyHandle, currentDevice?.id || "")) {
+        const migrated = await bindPersonalOwner(legacyHandle, { replace: false });
+        if (migrated) {
+          saveSelfStartHandle(migrated);
+          return migrated;
+        }
       }
     }
   } catch {
@@ -1229,6 +1304,14 @@ async function loadSelfStartHandleOrLegacyDevice(): Promise<string> {
 }
 
 async function openCreatedSelfStartHandle(handle: string, input?: HTMLInputElement | null): Promise<void> {
+  const currentDevice = await loadOrCreatePersonalDevice(handle);
+  const serverOwnerDeviceId = await fetchPersonalOwnerDeviceId(handle);
+  if (serverOwnerDeviceId && serverOwnerDeviceId !== currentDevice.id) {
+    savePersonalHandle(handle);
+    window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
+    showPersonalSpaceRoute({ handle, slug: "" });
+    return;
+  }
   const owned = await bindPersonalOwner(handle, { replace: true });
   if (!owned) {
     input?.focus();
@@ -1263,7 +1346,14 @@ async function isPersonalProfileOwned(profile: PersonalSpaceProfile): Promise<bo
       device = currentDevice;
     }
     const owner = loadPersonalOwnerRecord(handle);
-    return Boolean(currentDevice && owner && owner.deviceId === currentDevice.id);
+    if (!currentDevice || !owner || owner.deviceId !== currentDevice.id) {
+      return false;
+    }
+    if (profile.ownerDeviceId && profile.ownerDeviceId !== currentDevice.id) {
+      removePersonalOwnerRecord(handle);
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }
@@ -1374,8 +1464,46 @@ function savePersonalOwnerRecord(record: PersonalOwnerRecord): void {
   }
 }
 
+function removePersonalOwnerRecord(handle: string): void {
+  try {
+    localStorage.removeItem(personalOwnerKey(handle));
+  } catch {
+    // Storage cleanup is best effort; server ownership still decides rendered controls.
+  }
+}
+
 function personalOwnerKey(handle: string): string {
   return `${personalOwnerPrefix}${cleanSelfStartHandle(handle)}`;
+}
+
+async function personalHandleMatchesServerOwner(handle: string, deviceId: string): Promise<boolean> {
+  const serverOwnerDeviceId = await fetchPersonalOwnerDeviceId(handle);
+  return !serverOwnerDeviceId || serverOwnerDeviceId === deviceId;
+}
+
+async function fetchPersonalOwnerDeviceId(handle: string): Promise<string> {
+  const clean = cleanSelfStartHandle(handle);
+  if (!clean) {
+    return "";
+  }
+  try {
+    const response = await fetch(`/api/spaces/${encodeURIComponent(clean)}`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      return "";
+    }
+    const payload = await response.json() as unknown;
+    return isRecord(payload) ? cleanOwnerDeviceId(payload.ownerDeviceId) : "";
+  } catch {
+    return "";
+  }
+}
+
+function cleanOwnerDeviceId(value: unknown): string {
+  const text = String(typeof value === "string" || typeof value === "number" ? value : "").trim().slice(0, 120);
+  return /^dev_[A-Za-z0-9_-]{16,80}$/u.test(text) ? text : "";
 }
 
 function isInfoRoute(): boolean {

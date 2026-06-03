@@ -1,6 +1,8 @@
 import express from "express";
+import { webcrypto } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { stableJson } from "trustlink-kernel";
 
 const defaultSpaces = Object.freeze([
   {
@@ -25,25 +27,26 @@ export function attachSpaces(app, { dataDir } = {}) {
   const photoStore = createPhotoStore(dataDir);
   const postStore = createPostStore(dataDir);
   const reviewStore = createReviewStore(dataDir);
+  const ownerStore = createOwnerStore(dataDir);
   app.get("/api/spaces/:handle", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, req.params.handle || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, req.params.handle || ""));
   });
   app.get("/api/spaces/:handle/:space", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, req.params.handle || "", req.params.space || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, req.params.handle || "", req.params.space || ""));
   });
   app.post("/api/spaces/:handle/profile", express.json({ limit: "24kb" }), async (req, res) => {
-    await saveSpaceMeta(metaStore, req, res);
+    await saveSpaceMeta(metaStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/posts", express.json({ limit: "24kb" }), async (req, res) => {
-    await saveSpacePost(postStore, req, res);
+    await saveSpacePost(postStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/photo", express.json({ limit: "3mb" }), async (req, res) => {
-    await saveSpacePhoto(photoStore, req, res);
+    await saveSpacePhoto(photoStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/:space/photo", express.json({ limit: "3mb" }), async (req, res) => {
-    await saveSpacePhoto(photoStore, req, res);
+    await saveSpacePhoto(photoStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/reviews", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceReview(reviewStore, req, res);
@@ -52,10 +55,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await saveSpaceReview(reviewStore, req, res);
   });
   app.get("/manifest/space/:handle.json", async (req, res) => {
-    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, req.params.handle || "");
+    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, ownerStore, res, req.params.handle || "");
   });
   app.get("/manifest/space/:handle/:space.json", async (req, res) => {
-    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, req.params.handle || "", req.params.space || "");
+    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, ownerStore, res, req.params.handle || "", req.params.space || "");
   });
   app.get("/photo/space/:handle.jpg", async (req, res) => {
     await sendSpacePhoto(photoStore, res, req.params.handle || "");
@@ -68,10 +71,11 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
 }
 
-async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, rawHandle, rawSpace = "") {
+async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, rawHandle, rawSpace = "") {
   const handle = cleanSlug(rawHandle) || "guest";
   const spaceSlug = cleanSlug(rawSpace);
   const meta = await readSpaceMeta(metaStore, handle);
+  const owner = await readSpaceOwner(ownerStore, handle);
   const ownerName = meta.displayName || titleFromSlug(handle);
   const activeSpace = spaceSlug ? spaceFor(spaceSlug) : null;
   const displayName = activeSpace ? `${activeSpace.title} · ${ownerName}` : ownerName;
@@ -85,6 +89,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     handle,
     slug: activeSpace?.slug || "",
     url,
+    ownerDeviceId: owner?.deviceId || "",
     displayName,
     shortName: activeSpace?.title || ownerName,
     accountName: ownerName,
@@ -116,8 +121,8 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
   };
 }
 
-async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, rawHandle, rawSpace = "") {
-  const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, rawHandle, rawSpace);
+async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, ownerStore, res, rawHandle, rawSpace = "") {
+  const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, rawHandle, rawSpace);
   const appName = manifestAppName(profile);
   const iconSrc = profile.photoUrl || (profile.slug
     ? `/icon/space/${encodeURIComponent(profile.handle)}/${encodeURIComponent(profile.slug)}.svg`
@@ -160,11 +165,15 @@ function manifestShortName(value) {
   return chars.slice(0, 18).join("") || "Соты";
 }
 
-async function saveSpacePost(postStore, req, res) {
+async function saveSpacePost(postStore, ownerStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
-  const post = normalizePostBody(req.body);
+  const data = ownerActionData(req.body);
+  const post = normalizePostBody(data);
   if (!post) {
     res.status(400).json({ ok: false, error: "invalid_post" });
+    return;
+  }
+  if (!await authorizeSpaceOwner(ownerStore, req, res, "post", data)) {
     return;
   }
   const entries = await readSpacePosts(postStore, handle);
@@ -180,11 +189,15 @@ async function saveSpacePost(postStore, req, res) {
   res.json({ ok: true, post: next[0] });
 }
 
-async function saveSpaceMeta(metaStore, req, res) {
+async function saveSpaceMeta(metaStore, ownerStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
-  const meta = normalizeMetaBody(req.body);
+  const data = ownerActionData(req.body);
+  const meta = normalizeMetaBody(data);
   if (!meta) {
     res.status(400).json({ ok: false, error: "invalid_profile" });
+    return;
+  }
+  if (!await authorizeSpaceOwner(ownerStore, req, res, "profile", data)) {
     return;
   }
   await writeSpaceMeta(metaStore, handle, meta);
@@ -192,11 +205,15 @@ async function saveSpaceMeta(metaStore, req, res) {
   res.json({ ok: true, profile: meta });
 }
 
-async function saveSpacePhoto(photoStore, req, res) {
+async function saveSpacePhoto(photoStore, ownerStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
-  const photo = normalizePhotoBody(req.body);
+  const data = ownerActionData(req.body);
+  const photo = normalizePhotoBody(data);
   if (!photo) {
     res.status(400).json({ ok: false, error: "invalid_photo" });
+    return;
+  }
+  if (!await authorizeSpaceOwner(ownerStore, req, res, "photo", data)) {
     return;
   }
   await writeSpacePhoto(photoStore, handle, photo);
@@ -320,6 +337,12 @@ function createReviewStore(dataDir) {
   };
 }
 
+function createOwnerStore(dataDir) {
+  return {
+    dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-owners")
+  };
+}
+
 function metaPath(metaStore, handle) {
   return path.join(metaStore.dir, `${handle}.json`);
 }
@@ -335,6 +358,10 @@ function postPath(postStore, handle) {
 function reviewPath(reviewStore, handle, spaceSlug = "") {
   const suffix = spaceSlug ? `__${spaceSlug}` : "";
   return path.join(reviewStore.dir, `${handle}${suffix}.json`);
+}
+
+function ownerPath(ownerStore, handle) {
+  return path.join(ownerStore.dir, `${handle}.json`);
 }
 
 async function readSpaceMeta(metaStore, handle) {
@@ -388,6 +415,14 @@ async function readSpaceReviews(reviewStore, handle, spaceSlug = "") {
   }
 }
 
+async function readSpaceOwner(ownerStore, handle) {
+  try {
+    return normalizeStoredOwner(JSON.parse(await readFile(ownerPath(ownerStore, handle), "utf8")));
+  } catch {
+    return null;
+  }
+}
+
 async function writeSpaceMeta(metaStore, handle, meta) {
   await mkdir(metaStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(metaPath(metaStore, handle), JSON.stringify(meta, null, 2), { encoding: "utf8", mode: 0o600 });
@@ -409,6 +444,192 @@ async function writeSpacePosts(postStore, handle, posts) {
 async function writeSpaceReviews(reviewStore, handle, spaceSlug, reviews) {
   await mkdir(reviewStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(reviewPath(reviewStore, handle, spaceSlug), JSON.stringify(reviews, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+async function writeSpaceOwner(ownerStore, owner) {
+  await mkdir(ownerStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(ownerPath(ownerStore, owner.handle), JSON.stringify(owner, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+function ownerActionData(body) {
+  return isPlainRecord(body?.data) ? body.data : body;
+}
+
+async function authorizeSpaceOwner(ownerStore, req, res, action, data) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const slug = cleanSlug(req.params.space || "");
+  const result = await verifyOwnerProof(req.body?.owner, { action, handle, slug, data });
+  if (!result.ok) {
+    res.status(401).json({ ok: false, error: result.error || "owner_signature_required" });
+    return false;
+  }
+  const stored = await readSpaceOwner(ownerStore, handle);
+  if (stored && (stored.deviceId !== result.owner.deviceId || stableJson(stored.publicJwk) !== stableJson(result.owner.publicJwk))) {
+    res.status(403).json({ ok: false, error: "space_owned_by_another_device" });
+    return false;
+  }
+  const now = new Date().toISOString();
+  await writeSpaceOwner(ownerStore, {
+    handle,
+    deviceId: result.owner.deviceId,
+    publicJwk: result.owner.publicJwk,
+    createdAt: stored?.createdAt || now,
+    updatedAt: now
+  });
+  return true;
+}
+
+async function verifyOwnerProof(proof, expected) {
+  if (!isPlainRecord(proof) || !isPlainRecord(proof.payload) || typeof proof.signature !== "string") {
+    return { ok: false, error: "owner_signature_required" };
+  }
+  const payload = proof.payload;
+  if (payload.v !== 1 || payload.kind !== "soty.personal-space.owner-action") {
+    return { ok: false, error: "invalid_owner_payload" };
+  }
+  const action = cleanOwnerAction(payload.action);
+  const handle = cleanSlug(payload.handle || "");
+  const slug = cleanSlug(payload.slug || "");
+  if (action !== expected.action || handle !== expected.handle || slug !== expected.slug) {
+    return { ok: false, error: "owner_route_mismatch" };
+  }
+  const publicJwk = normalizeOwnerPublicJwk(payload.publicJwk);
+  if (!publicJwk) {
+    return { ok: false, error: "invalid_owner_key" };
+  }
+  const deviceId = cleanOwnerDeviceId(payload.deviceId);
+  const derivedDeviceId = await deriveOwnerDeviceId(publicJwk);
+  if (!deviceId || deviceId !== derivedDeviceId) {
+    return { ok: false, error: "owner_device_mismatch" };
+  }
+  if (cleanOwnerHash(payload.bodyHash) !== await ownerBodyHash(expected.data)) {
+    return { ok: false, error: "owner_body_mismatch" };
+  }
+  if (!isFreshOwnerTimestamp(payload.createdAt)) {
+    return { ok: false, error: "stale_owner_signature" };
+  }
+  const ok = await verifyOwnerSignature(publicJwk, payload, proof.signature);
+  return ok
+    ? { ok: true, owner: { deviceId, publicJwk } }
+    : { ok: false, error: "invalid_owner_signature" };
+}
+
+async function verifyOwnerSignature(publicJwk, payload, signature) {
+  try {
+    const key = await webcrypto.subtle.importKey(
+      "jwk",
+      publicJwk,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"]
+    );
+    return await webcrypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      key,
+      base64UrlBytes(signature),
+      utf8Bytes(stableJson(payload))
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function deriveOwnerDeviceId(publicJwk) {
+  const digest = await webcrypto.subtle.digest("SHA-256", utf8Bytes(stableJson(publicJwk)));
+  return `dev_${base64UrlString(new Uint8Array(digest)).slice(0, 32)}`;
+}
+
+async function ownerBodyHash(data) {
+  const digest = await webcrypto.subtle.digest("SHA-256", utf8Bytes(stableJson(data)));
+  return base64UrlString(new Uint8Array(digest));
+}
+
+function isFreshOwnerTimestamp(value) {
+  const time = Date.parse(String(value || ""));
+  if (!Number.isFinite(time)) {
+    return false;
+  }
+  const ageMs = Math.abs(Date.now() - time);
+  return ageMs <= 24 * 60 * 60 * 1000;
+}
+
+function normalizeStoredOwner(record) {
+  if (!isPlainRecord(record)) {
+    return null;
+  }
+  const handle = cleanSlug(record.handle || "");
+  const deviceId = cleanOwnerDeviceId(record.deviceId);
+  const publicJwk = normalizeOwnerPublicJwk(record.publicJwk);
+  if (!handle || !deviceId || !publicJwk) {
+    return null;
+  }
+  return {
+    handle,
+    deviceId,
+    publicJwk,
+    createdAt: cleanReviewText(record.createdAt, 40) || new Date(0).toISOString(),
+    updatedAt: cleanReviewText(record.updatedAt, 40) || new Date(0).toISOString()
+  };
+}
+
+function normalizeOwnerPublicJwk(value) {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const kty = cleanReviewText(value.kty, 16);
+  const crv = cleanReviewText(value.crv, 16);
+  const x = cleanBase64Url(value.x, 120);
+  const y = cleanBase64Url(value.y, 120);
+  if (kty !== "EC" || crv !== "P-256" || !x || !y) {
+    return null;
+  }
+  return {
+    kty,
+    crv,
+    x,
+    y,
+    ext: value.ext === true,
+    key_ops: Array.isArray(value.key_ops) ? value.key_ops.filter((item) => typeof item === "string").slice(0, 4) : undefined
+  };
+}
+
+function cleanOwnerAction(value) {
+  const action = cleanReviewText(value, 24);
+  return action === "profile" || action === "post" || action === "photo" ? action : "";
+}
+
+function cleanOwnerDeviceId(value) {
+  const text = String(value || "").trim();
+  return /^dev_[A-Za-z0-9_-]{16,80}$/u.test(text) ? text.slice(0, 120) : "";
+}
+
+function cleanOwnerHash(value) {
+  return cleanBase64Url(value, 128);
+}
+
+function cleanBase64Url(value, max) {
+  const text = String(value || "").trim().slice(0, max);
+  return /^[A-Za-z0-9_-]+$/u.test(text) ? text : "";
+}
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function base64UrlBytes(value) {
+  try {
+    return Buffer.from(String(value || ""), "base64url");
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+function base64UrlString(bytes) {
+  return Buffer.from(bytes).toString("base64url");
+}
+
+function utf8Bytes(value) {
+  return Buffer.from(String(value), "utf8");
 }
 
 function normalizePostBody(body) {

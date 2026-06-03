@@ -23,6 +23,28 @@ export type PersonalSpacePostDraft = {
   readonly text: string;
 };
 
+export type PersonalOwnerAction = "profile" | "post" | "photo";
+
+export type PersonalOwnerActionPayload = {
+  readonly v: 1;
+  readonly kind: "soty.personal-space.owner-action";
+  readonly action: PersonalOwnerAction;
+  readonly handle: string;
+  readonly slug: string;
+  readonly bodyHash: string;
+  readonly deviceId: string;
+  readonly publicJwk: JsonWebKey;
+  readonly createdAt: string;
+  readonly nonce: string;
+};
+
+export type PersonalOwnerProof = {
+  readonly payload: PersonalOwnerActionPayload;
+  readonly signature: string;
+};
+
+export type PersonalOwnerProofFactory<TData> = (data: TData) => Promise<PersonalOwnerProof | null>;
+
 export type PersonalSpacePageOptions = {
   readonly route: PersonalSpaceRoute;
   readonly canInstall: () => boolean;
@@ -97,6 +119,7 @@ export type PersonalSpaceProfile = {
   readonly handle: string;
   readonly slug: string;
   readonly url: string;
+  readonly ownerDeviceId: string;
   readonly displayName: string;
   readonly shortName: string;
   readonly accountName: string;
@@ -121,6 +144,7 @@ const fallbackProfile: PersonalSpaceProfile = {
   handle: "guest",
   slug: "",
   url: "/@guest",
+  ownerDeviceId: "",
   displayName: "Соты",
   shortName: "Соты",
   accountName: "Соты",
@@ -225,8 +249,14 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   bindPersonalSpace(root, profile, options);
 }
 
-export async function uploadPersonalSpacePhoto(route: PersonalSpaceRoute, file: File): Promise<string> {
+export async function uploadPersonalSpacePhoto(
+  route: PersonalSpaceRoute,
+  file: File,
+  ownerProofForData?: PersonalOwnerProofFactory<{ readonly dataUrl: string }>
+): Promise<string> {
   const dataUrl = await fileToAvatarDataUrl(file);
+  const data = { dataUrl };
+  const owner = await ownerProofForData?.(data) ?? null;
   const handle = encodeURIComponent(route.handle);
   const url = route.slug
     ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/photo`
@@ -238,7 +268,7 @@ export async function uploadPersonalSpacePhoto(route: PersonalSpaceRoute, file: 
         "Content-Type": "application/json",
         Accept: "application/json"
       },
-      body: JSON.stringify({ dataUrl })
+      body: JSON.stringify(owner ? { data, owner } : data)
     });
     if (!response.ok) {
       saveCachedPersonalProfile(applyLocalProfilePhoto(route, dataUrl));
@@ -290,7 +320,11 @@ export function savePersonalHandle(handle: string): void {
   }
 }
 
-export async function updatePersonalSpaceProfile(route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate): Promise<PersonalSpaceInstallResult> {
+export async function updatePersonalSpaceProfile(
+  route: PersonalSpaceRoute,
+  update: PersonalSpaceProfileUpdate,
+  owner?: PersonalOwnerProof | null
+): Promise<PersonalSpaceInstallResult> {
   saveCachedPersonalProfile(applyLocalProfileUpdate(route, update));
   const handle = encodeURIComponent(route.handle);
   try {
@@ -300,7 +334,7 @@ export async function updatePersonalSpaceProfile(route: PersonalSpaceRoute, upda
         "Content-Type": "application/json",
         Accept: "application/json"
       },
-      body: JSON.stringify(update)
+      body: JSON.stringify(owner ? { data: update, owner } : update)
     });
     if (!response.ok) {
       return { ok: true, message: "Сохранено в браузере." };
@@ -314,7 +348,11 @@ export async function updatePersonalSpaceProfile(route: PersonalSpaceRoute, upda
   }
 }
 
-export async function savePersonalSpacePost(route: PersonalSpaceRoute, draft: PersonalSpacePostDraft): Promise<PersonalSpaceInstallResult> {
+export async function savePersonalSpacePost(
+  route: PersonalSpaceRoute,
+  draft: PersonalSpacePostDraft,
+  owner?: PersonalOwnerProof | null
+): Promise<PersonalSpaceInstallResult> {
   saveCachedPersonalProfile(applyLocalPost(route, draft));
   const handle = encodeURIComponent(route.handle);
   try {
@@ -324,7 +362,7 @@ export async function savePersonalSpacePost(route: PersonalSpaceRoute, draft: Pe
         "Content-Type": "application/json",
         Accept: "application/json"
       },
-      body: JSON.stringify(draft)
+      body: JSON.stringify(owner ? { data: draft, owner } : draft)
     });
     if (!response.ok) {
       return { ok: true, message: "Сохранено в браузере." };
@@ -428,6 +466,7 @@ function mergeLocalProfile(route: PersonalSpaceRoute, fetched: PersonalSpaceProf
     : fetched.headline;
   return {
     ...fetched,
+    ownerDeviceId: fetched.ownerDeviceId || cached.ownerDeviceId,
     displayName,
     shortName: displayName,
     accountName: displayName,
@@ -1782,6 +1821,7 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     handle: cleanText(record.handle, 64) || route.handle,
     slug: cleanText(record.slug, 64) || route.slug,
     url: cleanUrlPath(record.url) || routeUrl(route),
+    ownerDeviceId: cleanOwnerDeviceId(record.ownerDeviceId),
     displayName: cleanText(record.displayName, 100) || route.handle,
     shortName: cleanText(record.shortName, 32) || route.handle,
     accountName: cleanText(record.accountName, 100) || cleanText(record.displayName, 100) || route.handle,
@@ -1893,6 +1933,7 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
     handle: route.handle,
     slug: route.slug,
     url: routeUrl(route),
+    ownerDeviceId: "",
     displayName: route.slug ? `${route.slug} · ${route.handle}` : route.handle,
     shortName: route.slug || route.handle,
     accountName: route.handle,
@@ -1947,6 +1988,11 @@ function cleanText(value: unknown, max: number): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, max);
+}
+
+function cleanOwnerDeviceId(value: unknown): string {
+  const text = cleanText(value, 120);
+  return /^dev_[A-Za-z0-9_-]{16,80}$/u.test(text) ? text : "";
 }
 
 function cleanUrlPath(value: unknown): string {
