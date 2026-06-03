@@ -645,6 +645,13 @@ button.personal-avatar {
   font-weight: 820;
 }
 
+.personal-data-actions button:hover,
+.personal-data-actions button:focus-visible {
+  outline: 0;
+  transform: translateY(-1px);
+  box-shadow: 2px 2px 0 #000;
+}
+
 .personal-data-actions svg {
   width: 17px;
   height: 17px;

@@ -145,7 +145,7 @@ type PersonalModule = {
   readonly title: string;
   readonly summary: string;
   readonly icon: IconName;
-  readonly kind: "runtime" | "space";
+  readonly kind: "action" | "runtime" | "space";
   readonly target: string;
   readonly active?: boolean;
   readonly priority?: boolean;
@@ -471,7 +471,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     return {
       eyebrow: "место",
       title: "Место",
-      body: renderSpaceModules(profile)
+      body: renderSpaceModules(profile, ownSpace)
     };
   }
   return {
@@ -539,8 +539,8 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderSpaceModules(profile: PersonalSpaceProfile): string {
-  const groups = personalModuleGroups(profile);
+function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  const groups = personalModuleGroups(profile, ownSpace);
   return `
     <div class="personal-spaces">
       ${groups.map(renderPersonalModuleGroup).join("")}
@@ -548,7 +548,7 @@ function renderSpaceModules(profile: PersonalSpaceProfile): string {
   `;
 }
 
-function personalModuleGroups(profile: PersonalSpaceProfile): readonly PersonalModuleGroup[] {
+function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModuleGroup[] {
   const runtimeModules: readonly PersonalModule[] = runtimeModuleDefinitions.map((module) => ({
     ...module,
     kind: "runtime" as const,
@@ -563,10 +563,20 @@ function personalModuleGroups(profile: PersonalSpaceProfile): readonly PersonalM
     target: space.href,
     active: space.active
   }));
+  const dataModules: readonly PersonalModule[] = ownSpace
+    ? [{
+      id: "data",
+      title: "Данные",
+      summary: "импорт / экспорт",
+      icon: "download" as const,
+      kind: "action" as const,
+      target: "data"
+    }]
+    : [];
   const priorityOrder = ["agent", "actions", "apps"];
   const priorityModules = priorityOrder
     .flatMap((id) => runtimeModules.filter((module) => module.id === id));
-  const utilityModules = runtimeModules.filter((module) => !module.priority);
+  const utilityModules = [...dataModules, ...runtimeModules.filter((module) => !module.priority)];
   return [
     { title: "Главное", modules: priorityModules, priority: true },
     ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : []),
@@ -673,7 +683,7 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     }
     const moduleNode = target?.closest<HTMLElement>("[data-module-kind]");
     if (moduleNode && shell.contains(moduleNode)) {
-      openPersonalModule(moduleNode, profile, options);
+      openPersonalModule(root, moduleNode, profile, options);
       return;
     }
     const actionNode = target?.closest<HTMLElement>("[data-action]");
@@ -697,9 +707,13 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   });
 }
 
-function openPersonalModule(node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
   const kind = node.dataset.moduleKind;
   const target = node.dataset.moduleTarget || "";
+  if (kind === "action" && target === "data") {
+    showDataSheet(root, options);
+    return;
+  }
   if (kind === "space" && target) {
     window.history.pushState({}, "", target);
     window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
@@ -771,15 +785,7 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (action === "share") {
-    void showShareSheet(root, profile, options);
-    return;
-  }
-  if (action === "backup-export") {
-    options.exportBackup();
-    return;
-  }
-  if (action === "backup-import") {
-    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
+    void showShareSheet(root, profile);
     return;
   }
   if (action === "photo") {
@@ -792,7 +798,8 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
 }
 
 async function importPersonalBackup(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
-  const note = root.querySelector<HTMLElement>("[data-install-note]");
+  const note = root.querySelector<HTMLElement>("[data-data-note]")
+    || root.querySelector<HTMLElement>("[data-install-note]");
   if (note) {
     note.textContent = "Импортирую...";
   }
@@ -890,10 +897,6 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
         <input name="contact" autocomplete="url" maxlength="160" aria-label="контакт" placeholder="Сайт, email или контакт" value="${escapeAttr(contact)}" />
         <button type="submit">${icon("check")} Сохранить</button>
       </form>
-      <div class="personal-data-actions" aria-label="данные">
-        <button type="button" data-profile-backup-import>${icon("upload")} <span>Импорт</span></button>
-        <button type="button" data-profile-backup-export>${icon("download")} <span>Экспорт</span></button>
-      </div>
       <small data-error></small>
     </section>
   `;
@@ -903,12 +906,6 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
   const contactInput = overlay.querySelector<HTMLInputElement>("input[name='contact']");
   nameInput?.focus();
   overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
-  overlay.querySelector<HTMLButtonElement>("[data-profile-backup-import]")?.addEventListener("click", () => {
-    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
-  });
-  overlay.querySelector<HTMLButtonElement>("[data-profile-backup-export]")?.addEventListener("click", () => {
-    options.exportBackup();
-  });
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay) {
       overlay.remove();
@@ -949,6 +946,40 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
           button.disabled = false;
         }
       });
+  });
+}
+
+function showDataSheet(root: HTMLElement, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="Данные">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>Данные</h2>
+      <div class="personal-data-actions" aria-label="импорт и экспорт">
+        <button type="button" data-backup-import-sheet>${icon("upload")} <span>Импорт</span></button>
+        <button type="button" data-backup-export-sheet>${icon("download")} <span>Экспорт</span></button>
+      </div>
+      <small data-data-note></small>
+    </section>
+  `;
+  root.append(overlay);
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.querySelector<HTMLButtonElement>("[data-backup-import-sheet]")?.addEventListener("click", () => {
+    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
+  });
+  overlay.querySelector<HTMLButtonElement>("[data-backup-export-sheet]")?.addEventListener("click", () => {
+    options.exportBackup();
+    const note = overlay.querySelector<HTMLElement>("[data-data-note]");
+    if (note) {
+      note.textContent = "Экспорт готов.";
+    }
+  });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
   });
 }
 
@@ -1073,37 +1104,12 @@ async function submitPersonalReview(profile: PersonalSpaceProfile, author: strin
   }
 }
 
-async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): Promise<void> {
+async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile): Promise<void> {
   closePersonalOverlay(root);
   const shareUrl = new URL(profile.url, window.location.origin).toString();
-  const ownSpace = isOwnProfile(profile, loadLocalHandle());
   await showLinkShareSheet({
     title: profile.displayName,
-    url: shareUrl,
-    actions: ownSpace
-      ? [
-        {
-          id: "import",
-          label: "Импорт",
-          icon: "upload",
-          tone: "secondary",
-          closeOnClick: true,
-          run: () => {
-            root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
-          }
-        },
-        {
-          id: "export",
-          label: "Экспорт",
-          icon: "download",
-          tone: "secondary",
-          run: () => {
-            options.exportBackup();
-            return "Экспорт готов";
-          }
-        }
-      ]
-      : []
+    url: shareUrl
   });
 }
 
