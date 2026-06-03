@@ -51,7 +51,7 @@ const modes: readonly {
   readonly ariaLabel: string;
   readonly icon: IconName;
 }[] = [
-  { id: "dialog", label: "Чат", hint: "Чат", ariaLabel: "Чат", icon: "mail" },
+  { id: "dialog", label: "Связь", hint: "Связь", ariaLabel: "Связь", icon: "mail" },
   { id: "wall", label: "Я", hint: "Я", ariaLabel: "Я: страница", icon: "hexagon" },
   { id: "reputation", label: "Отзывы", hint: "Отзывы", ariaLabel: "Отзывы", icon: "heart" }
 ];
@@ -115,7 +115,7 @@ export function spaceMarkDisplay(kind: SpaceEntryKind, ownSpace = true): SpaceMa
       role: "self",
       icon: "hexagon",
       className: "is-hex",
-      actionLabel: "Сохранить в Я",
+      actionLabel: "В Я",
       activeLabel: "В Я",
       entryLabel: "Я"
     };
@@ -124,8 +124,8 @@ export function spaceMarkDisplay(kind: SpaceEntryKind, ownSpace = true): SpaceMa
     role: "review",
     icon: "heart",
     className: "is-heart",
-    actionLabel: "Сохранить как отзыв",
-    activeLabel: "Отзыв сохранен",
+    actionLabel: "Отзыв",
+    activeLabel: "Отзыв",
     entryLabel: "Отзыв"
   };
 }
@@ -162,12 +162,25 @@ export function parseSpaceEntryLine(line: string): SpaceEntry | null {
 export function spaceComposerAccess(mode: SpaceMode, label: string, ownSpace: boolean): SpaceComposerAccess {
   if (mode === "wall") {
     void label;
-    return { canCompose: false, entryKind: null, placeholder: ownSpace ? "Отмеченное в Я" : "Страница" };
+    return { canCompose: false, entryKind: null, placeholder: ownSpace ? "Я" : "Страница" };
   }
   if (mode === "reputation") {
-    return { canCompose: false, entryKind: null, placeholder: "Отзывы из сообщений" };
+    return { canCompose: false, entryKind: null, placeholder: "Отзывы" };
   }
   return { canCompose: true, entryKind: null, placeholder: ownSpace ? "Заметка" : "Сообщение" };
+}
+
+export function spaceEmptyPrompt(mode: SpaceMode, options: { readonly ownSpace: boolean; readonly agentSpace?: boolean }): string {
+  if (mode === "wall") {
+    return options.ownSpace ? "Пока пусто." : "Пока нет записей.";
+  }
+  if (mode === "reputation") {
+    return "Пока нет отзывов.";
+  }
+  if (options.agentSpace) {
+    return "Задача для Клавы.";
+  }
+  return options.ownSpace ? "Пока нет заметок." : "Пока нет сообщений.";
 }
 
 export function renderSpaceRail(model: SpaceModel): string {

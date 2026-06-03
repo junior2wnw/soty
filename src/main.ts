@@ -26,7 +26,7 @@ import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl
 import { clearAttentionNotices, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications } from "./features/notifications";
 import type { AttentionNotice } from "./features/notifications";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
-import { makeSpaceEntryLine, normalizeSpaceEntryKind, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess, spaceEntryKindForMessage, spaceMarkDisplay } from "./features/space";
+import { makeSpaceEntryLine, normalizeSpaceEntryKind, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess, spaceEmptyPrompt, spaceEntryKindForMessage, spaceMarkDisplay } from "./features/space";
 import type { SpaceComposerAccess, SpaceEntry, SpaceEntryKind, SpaceMode, SpaceModel } from "./features/space";
 import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } from "./features/trust-ui";
 import type { AccessPanelRow } from "./features/trust-ui";
@@ -9647,17 +9647,10 @@ function hashShort(value: string): string {
 }
 
 function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | undefined): string {
-  const own = isOwnSpace(tunnel);
-  let text = "Напиши первое сообщение";
-  if (mode === "wall") {
-    text = own ? "Сохраненное в Я" : "Страница из сообщений";
-  } else if (mode === "reputation") {
-    text = "Отзывы из чата";
-  } else if (tunnel && isAgentTunnel(tunnel)) {
-    text = "Попроси Клаву сделать задачу";
-  } else if (tunnel && isSelfTunnel(tunnel)) {
-    text = "Место для быстрых мыслей";
-  }
+  const text = spaceEmptyPrompt(mode, {
+    ownSpace: isOwnSpace(tunnel),
+    agentSpace: Boolean(tunnel && isAgentTunnel(tunnel))
+  });
   return `<div class="space-empty">${escapeHtml(text)}</div>`;
 }
 
