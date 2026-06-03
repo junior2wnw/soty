@@ -96,6 +96,10 @@ type PersonalSpaceReview = {
   readonly rating: number;
 };
 
+type PersonalSpaceReactions = {
+  readonly likes: number;
+};
+
 type PersonalSpaceLink = {
   readonly slug: string;
   readonly title: string;
@@ -151,6 +155,7 @@ export type PersonalSpaceProfile = {
   readonly contacts: readonly PersonalSpaceContact[];
   readonly posts: readonly PersonalSpacePost[];
   readonly reviews: readonly PersonalSpaceReview[];
+  readonly reactions: PersonalSpaceReactions;
   readonly spaces: readonly PersonalSpaceLink[];
   readonly modules: readonly PersonalSpaceCardModule[];
   readonly actions: {
@@ -176,6 +181,7 @@ const fallbackProfile: PersonalSpaceProfile = {
   contacts: [],
   posts: [],
   reviews: [],
+  reactions: { likes: 0 },
   spaces: [],
   modules: [],
   actions: {
@@ -233,6 +239,8 @@ const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
 const profileCachePrefix = "soty:personal-profile:v1:";
 const personalThreadPrefix = "soty:personal-thread:v1:";
+const personalReactionPrefix = "soty:personal-reaction:v1:";
+const personalReactionClientKey = "soty:personal-reaction-client:v1";
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -432,6 +440,34 @@ export async function savePersonalSpaceModule(
   }
 }
 
+async function savePersonalReaction(profile: PersonalSpaceProfile): Promise<PersonalSpaceReactions> {
+  const clientId = personalReactionClientId();
+  const handle = encodeURIComponent(profile.handle);
+  const url = profile.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(profile.slug)}/reactions`
+    : `/api/spaces/${handle}/reactions`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ type: "like", clientId })
+    });
+    if (!response.ok) {
+      return profile.reactions;
+    }
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || payload.ok !== true) {
+      return profile.reactions;
+    }
+    return normalizeReactions(payload.reactions);
+  } catch {
+    return profile.reactions;
+  }
+}
+
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
   const handle = encodeURIComponent(route.handle);
   const url = route.slug
@@ -532,6 +568,7 @@ function mergeLocalProfile(route: PersonalSpaceRoute, fetched: PersonalSpaceProf
     contacts: mergeByKey(fetched.contacts, cached.contacts, contactKey).slice(0, 6),
     posts: mergeByKey(fetched.posts, cached.posts, (post) => post.id).slice(0, 8),
     reviews: mergeByKey(fetched.reviews, cached.reviews, (review) => review.id).slice(0, 8),
+    reactions: { likes: Math.max(fetched.reactions.likes, cached.reactions.likes) },
     modules: mergeByKey(fetched.modules, cached.modules, (module) => module.id).slice(0, 16)
   };
 }
@@ -595,6 +632,15 @@ function applyLocalReview(profile: PersonalSpaceProfile, author: string, text: s
   return {
     ...profile,
     reviews: [review, ...profile.reviews].slice(0, 8)
+  };
+}
+
+function applyLocalReaction(profile: PersonalSpaceProfile): PersonalSpaceProfile {
+  return {
+    ...profile,
+    reactions: {
+      likes: Math.max(0, profile.reactions.likes) + 1
+    }
   };
 }
 
@@ -692,6 +738,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(heroText)}</p>
+            ${renderReactionPulse(profile, ownSpace)}
             ${renderQuickContacts(profile, ownSpace)}
             <div class="personal-note" data-install-note></div>
           </div>
@@ -712,6 +759,22 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
         </section>
       </main>
     </section>
+  `;
+}
+
+function renderReactionPulse(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  const liked = hasLocalReaction(profile);
+  const likes = reactionCountForDisplay(profile);
+  if (ownSpace) {
+    return likes > 0
+      ? `<div class="personal-reaction is-static" aria-label="Нравится ${likes}">${icon("heart")} <span>${escapeHtml(formatReactionCount(likes))}</span></div>`
+      : "";
+  }
+  return `
+    <button class="personal-reaction${liked ? " is-liked" : ""}" type="button" data-action="react" aria-pressed="${liked ? "true" : "false"}" aria-label="${liked ? "Уже нравится" : "Нравится"}">
+      ${icon("heart")}
+      <span>${escapeHtml(likes > 0 ? formatReactionCount(likes) : "Нравится")}</span>
+    </button>
   `;
 }
 
@@ -1259,6 +1322,10 @@ function showPersonalMiniAppSheet(
 
 function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
   const action = node.dataset.action;
+  if (action === "react" && node instanceof HTMLButtonElement) {
+    void reactToPersonalSpace(root, node, profile);
+    return;
+  }
   if (action === "message") {
     const handle = loadLocalHandle();
     if (handle) {
@@ -1328,6 +1395,36 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
   if (action === "install" && node instanceof HTMLButtonElement) {
     void installPersonalSpace(root, node, options);
   }
+}
+
+async function reactToPersonalSpace(root: HTMLElement, button: HTMLButtonElement, profile: PersonalSpaceProfile): Promise<void> {
+  if (hasLocalReaction(profile)) {
+    updateReactionButton(button, reactionCountForDisplay(profile), true);
+    return;
+  }
+  const nextProfile = applyLocalReaction(profile);
+  markLocalReaction(profile);
+  saveCachedPersonalProfile(nextProfile);
+  updateReactionButton(button, reactionCountForDisplay(nextProfile), true);
+  const reactions = await savePersonalReaction(nextProfile);
+  const syncedProfile = {
+    ...nextProfile,
+    reactions: {
+      likes: Math.max(reactionCountForDisplay(nextProfile), reactions.likes)
+    }
+  };
+  saveCachedPersonalProfile(syncedProfile);
+  const currentButton = root.querySelector<HTMLButtonElement>("[data-action='react']");
+  if (currentButton) {
+    updateReactionButton(currentButton, reactionCountForDisplay(syncedProfile), true);
+  }
+}
+
+function updateReactionButton(button: HTMLButtonElement, likes: number, liked: boolean): void {
+  button.classList.toggle("is-liked", liked);
+  button.setAttribute("aria-pressed", liked ? "true" : "false");
+  button.setAttribute("aria-label", liked ? "Уже нравится" : "Нравится");
+  button.innerHTML = `${icon("heart")} <span>${escapeHtml(formatReactionCount(likes))}</span>`;
 }
 
 async function importPersonalBackup(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {
@@ -1469,6 +1566,62 @@ function savePersonalThread(profile: PersonalSpaceProfile, author: string, lines
 
 function personalThreadKey(profile: PersonalSpaceProfile, author: string): string {
   return `${personalThreadPrefix}${routeUrl(profile)}:${cleanRoutePart(author) || "guest"}`;
+}
+
+function reactionCountForDisplay(profile: PersonalSpaceProfile): number {
+  return Math.max(0, profile.reactions.likes, hasLocalReaction(profile) ? 1 : 0);
+}
+
+function formatReactionCount(value: number): string {
+  const count = Math.max(0, Math.round(value));
+  if (count < 1000) {
+    return String(count);
+  }
+  if (count < 1_000_000) {
+    return `${Math.floor(count / 100) / 10}k`;
+  }
+  return `${Math.floor(count / 100_000) / 10}m`;
+}
+
+function hasLocalReaction(profile: PersonalSpaceProfile): boolean {
+  try {
+    return window.localStorage.getItem(personalReactionKey(profile)) === "like";
+  } catch {
+    return false;
+  }
+}
+
+function markLocalReaction(profile: PersonalSpaceProfile): void {
+  try {
+    window.localStorage.setItem(personalReactionKey(profile), "like");
+  } catch {
+    // A reaction still feels instant even if storage is unavailable.
+  }
+}
+
+function personalReactionKey(profile: PersonalSpaceProfile): string {
+  return `${personalReactionPrefix}${routeUrl(profile)}`;
+}
+
+function personalReactionClientId(): string {
+  try {
+    const stored = cleanReactionClientId(window.localStorage.getItem(personalReactionClientKey) || "");
+    if (stored) {
+      return stored;
+    }
+    const bytes = new Uint8Array(18);
+    crypto.getRandomValues(bytes);
+    const id = `rc_${Array.from(bytes, (byte) => byte.toString(36).padStart(2, "0")).join("").slice(0, 48)}`;
+    window.localStorage.setItem(personalReactionClientKey, id);
+    return id;
+  } catch {
+    return `rc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  }
+}
+
+function cleanReactionClientId(value: string): string {
+  const text = cleanText(value, 80);
+  return /^rc_[a-z0-9_-]{8,76}$/iu.test(text) ? text : "";
 }
 
 function normalizeThreadLine(value: unknown): PersonalThreadLine | null {
@@ -2166,6 +2319,7 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     contacts: list(record.contacts).map(normalizeContact).filter(isContact).slice(0, 6),
     posts: list(record.posts).map(normalizePost).filter(isPost).slice(0, 8),
     reviews: list(record.reviews).map(normalizeReview).filter(isReview).slice(0, 8),
+    reactions: normalizeReactions(record.reactions),
     spaces: list(record.spaces).map(normalizeSpaceLink).filter(isSpaceLink).slice(0, 12),
     modules: list(record.modules).map(normalizeCardModule).filter(isCardModule).slice(0, 16),
     actions: {
@@ -2221,6 +2375,14 @@ function normalizeReview(value: unknown): PersonalSpaceReview | null {
     author: cleanText(value.author, 80) || "Гость",
     text,
     rating: Number.isFinite(value.rating) ? Number(value.rating) : 5
+  };
+}
+
+function normalizeReactions(value: unknown): PersonalSpaceReactions {
+  const record = isRecord(value) ? value : {};
+  const likes = Number(record.likes);
+  return {
+    likes: Number.isFinite(likes) ? Math.max(0, Math.round(likes)) : 0
   };
 }
 

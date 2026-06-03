@@ -438,6 +438,36 @@ button.personal-avatar {
   overflow-wrap: anywhere;
 }
 
+.personal-reaction {
+  justify-self: start;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.personal-reaction svg {
+  width: 16px;
+  height: 16px;
+}
+
+.personal-reaction.is-liked {
+  background: #000;
+  color: #fff;
+}
+
+.personal-reaction.is-static {
+  pointer-events: none;
+}
+
 .personal-actions {
   display: flex;
   flex-wrap: wrap;
@@ -484,6 +514,7 @@ button.personal-avatar {
 .personal-secondary:hover,
 .personal-message-preview button:hover,
 .personal-panel-action:hover,
+.personal-reaction:hover,
 .personal-quick-contacts a:hover,
 .personal-topbar nav button:hover,
 .personal-topbar nav a:hover {
