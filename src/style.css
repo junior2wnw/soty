@@ -305,15 +305,15 @@ svg {
 }
 
 .personal-main {
-  width: min(1200px, calc(100% - 32px));
+  width: min(1120px, calc(100% - 32px));
   display: grid;
-  gap: 16px;
+  gap: 14px;
   margin: 0 auto;
   padding: 0 0 48px;
 }
 
 .personal-hero {
-  min-height: clamp(360px, calc(100svh - 132px), 560px);
+  min-height: clamp(280px, 42svh, 420px);
   display: grid;
   grid-template-columns: minmax(132px, 240px) minmax(0, 1fr);
   align-items: center;
@@ -424,14 +424,15 @@ button.personal-avatar {
 .personal-quick-contacts a,
 .personal-quick-contacts span {
   min-width: min(100%, 150px);
-  min-height: 56px;
+  min-height: 44px;
   display: grid;
   align-content: center;
   gap: 3px;
-  padding: 9px 13px;
-  border: 1px solid #000;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid #000;
   border-radius: 0;
-  background: #ffffff;
+  background: transparent;
   color: #000;
   text-decoration: none;
   box-shadow: none;
@@ -453,14 +454,14 @@ button.personal-avatar {
 .personal-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .personal-primary,
 .personal-secondary,
 .personal-message-preview button,
 .personal-panel-action {
-  min-height: 48px;
+  min-height: 46px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -685,9 +686,9 @@ button.personal-avatar {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 4px;
-  padding: 4px;
+  padding: 3px;
   border: 1px solid #000;
-  border-radius: 16px;
+  border-radius: 999px;
   background: #ffffff;
   box-shadow: none;
 }
@@ -699,10 +700,10 @@ button.personal-avatar {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border-radius: 16px;
+  border-radius: 999px;
   background: transparent;
   color: #000;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   white-space: nowrap;
 }
@@ -718,15 +719,15 @@ button.personal-avatar {
 }
 
 .personal-panels {
-  min-height: 320px;
+  min-height: 220px;
 }
 
 .personal-panel {
   display: none;
-  grid-template-columns: minmax(240px, 0.78fr) minmax(0, 1.22fr);
-  gap: clamp(18px, 4vw, 42px);
+  grid-template-columns: minmax(180px, 0.52fr) minmax(0, 1.48fr);
+  gap: clamp(18px, 4vw, 48px);
   align-items: start;
-  padding: 30px 0 20px;
+  padding: 24px 0 40px;
 }
 
 .personal-panel.is-active {
@@ -790,10 +791,11 @@ button.personal-avatar {
   min-width: 0;
   display: grid;
   gap: 7px;
-  padding: 18px;
-  border: 1px solid #000;
+  padding: 14px 0;
+  border: 0;
+  border-top: 1px solid #000;
   border-radius: 0;
-  background: #ffffff;
+  background: transparent;
   color: #000;
   text-decoration: none;
   box-shadow: none;
@@ -818,8 +820,12 @@ button.personal-avatar {
 }
 
 .personal-empty {
-  min-height: 118px;
+  min-height: 92px;
   place-items: center;
+  padding: 18px;
+  border: 0;
+  border-top: 1px solid #000;
+  background: transparent;
   text-align: center;
   color: #404040;
   font-weight: 820;
@@ -876,6 +882,14 @@ button.personal-avatar {
 .personal-spaces .is-active {
   border-color: #000;
   background: #f1f1f1;
+}
+
+.personal-contact-list a:hover,
+.personal-spaces a:hover,
+.personal-spaces button:hover,
+.personal-post:hover,
+.personal-review:hover {
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .personal-message-actions {

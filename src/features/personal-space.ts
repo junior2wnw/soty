@@ -116,7 +116,7 @@ const layers = [
   { id: "personal", label: "Я", title: "Страница", icon: "hexagon" },
   { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "heart" },
   { id: "messages", label: "Связь", title: "Связь", icon: "mail" },
-  { id: "place", label: "Соты", title: "Соты", icon: "hexagon" }
+  { id: "place", label: "Модули", title: "Модули", icon: "apps" }
 ] as const satisfies readonly {
   readonly id: string;
   readonly label: string;
@@ -125,6 +125,12 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
+type PersonalLayerDisplay = {
+  readonly id: PersonalSpaceLayer;
+  readonly label: string;
+  readonly title: string;
+  readonly icon: IconName;
+};
 type EntityActionId = "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "hero" | "reviews" | "messages" | "place";
 type EntityAction = {
@@ -143,6 +149,12 @@ type PersonalModule = {
   readonly active?: boolean;
 };
 const localHandleKey = "soty:personal-handle:v1";
+const internalContactLabels = new Set(["чат", "страница"]);
+const runtimeModules = [
+  { id: "agent", title: "Агент", summary: "помощник", icon: "agent", kind: "runtime", target: "agent" },
+  { id: "apps", title: "Приложения", summary: "инструменты", icon: "apps", kind: "runtime", target: "apps" },
+  { id: "access", title: "Доступ", summary: "устройства", icon: "shield", kind: "runtime", target: "access" }
+] as const satisfies readonly PersonalModule[];
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
   const parts = location.pathname.split("/").filter(Boolean);
@@ -170,7 +182,7 @@ export function personalSpaceManifestHref(route: PersonalSpaceRoute): string {
 export async function renderPersonalSpacePage(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
-  const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "card";
+  const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "personal";
   const localHandle = loadLocalHandle();
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
   bindPersonalSpace(root, profile, options);
@@ -300,10 +312,11 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
           ${layers.map((display) => {
+            const view = layerDisplay(display, ownSpace);
             return `
-            <button type="button" role="tab" data-layer="${display.id}" aria-label="${escapeAttr(display.title)}" title="${escapeAttr(display.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
-              ${icon(display.icon)}
-              ${escapeHtml(display.label)}
+            <button type="button" role="tab" data-layer="${display.id}" aria-label="${escapeAttr(view.title)}" title="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
+              ${icon(view.icon)}
+              ${escapeHtml(view.label)}
             </button>
           `;
           }).join("")}
@@ -317,7 +330,9 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
 }
 
 function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  const contacts = visibleContacts(profile, ownSpace).slice(0, 3);
+  const contacts = visibleContacts(profile, ownSpace)
+    .filter((contact) => !internalContactLabels.has(contact.label))
+    .slice(0, 2);
   if (contacts.length === 0) {
     return "";
   }
@@ -365,8 +380,8 @@ function renderLayerPanel(
 function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean, canNotify: boolean): PersonalPanelView {
   if (layer === "personal") {
     return {
-      eyebrow: "я",
-      title: "Страница",
+      eyebrow: ownSpace ? "я" : "страница",
+      title: ownSpace ? "Записи" : "Страница",
       ...(ownSpace ? { action: { id: "note", label: "Записать", icon: "hexagon", tone: "primary" } as const } : {}),
       body: renderPanelList(
         "personal-feed",
@@ -378,7 +393,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           </section>
         `),
         "hexagon",
-        "Пока пусто."
+        ownSpace ? "Пока пусто." : "Пока нет записей."
       )
     };
   }
@@ -406,11 +421,11 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     const messageActions = entityActionsFor({ surface: "messages", ownSpace, canInstall: false, canNotify });
     if (ownSpace) {
       return {
-        eyebrow: "связь",
-        title: "Связь",
+        eyebrow: "заметки",
+        title: "Заметки",
         body: `
           <div class="personal-message-preview">
-            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>На странице.</p></div>
+            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личные записи.</p></div>
             ${renderInlineEntityActions(messageActions)}
             <small data-action-note></small>
           </div>
@@ -431,15 +446,14 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   }
   if (layer === "place") {
     return {
-      eyebrow: "соты",
-      title: "Соты",
-      text: "Модули страницы.",
+      eyebrow: "место",
+      title: "Модули",
       body: renderSpaceModules(profile, ownSpace)
     };
   }
   return {
     eyebrow: "контакт",
-    title: "Контакт",
+    title: "О странице",
     text: personalSpaceCopy(profile.about, ownSpace),
     ...(ownSpace ? { action: { id: "edit", label: "Править", icon: "person", tone: "secondary" } as const } : {}),
     body: `
@@ -459,13 +473,13 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   if (options.surface === "hero") {
     return options.ownSpace
       ? [
-        { id: "share", label: "Поделиться", icon: "qr", tone: "primary" },
-        { id: "install", label: options.canInstall ? "Установить" : "Как установить", icon: "install", tone: "secondary" }
+        { id: "share", label: "QR", icon: "qr", tone: "primary" },
+        { id: "install", label: "Сохранить", icon: "install", tone: "secondary" }
       ]
       : [
         { id: "install", label: "Сохранить", icon: "install", tone: "primary" },
         { id: "message", label: "Написать", icon: "mail", tone: "secondary" },
-        { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
+        { id: "share", label: "QR", icon: "qr", tone: "secondary" }
       ];
   }
   if (options.surface === "reviews") {
@@ -510,13 +524,8 @@ function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): s
 
 function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModule[] {
   return [
-    { id: "card", title: "Контакт", summary: "визитка", icon: "person", kind: "layer", target: "card" },
-    { id: "personal", title: "Страница", summary: ownSpace ? "записи" : "публикации", icon: "hexagon", kind: "layer", target: "personal" },
-    { id: "reviews", title: "Отзывы", summary: "репутация", icon: "heart", kind: "layer", target: "reviews" },
-    { id: "messages", title: "Связь", summary: ownSpace ? "записи" : "сообщения", icon: "mail", kind: "layer", target: "messages" },
-    { id: "agent", title: "Агент", summary: "действия", icon: "agent", kind: "runtime", target: "agent" },
-    { id: "apps", title: "Приложения", summary: "инструменты", icon: "apps", kind: "runtime", target: "apps" },
-    { id: "access", title: "Доступ", summary: "устройства", icon: "shield", kind: "runtime", target: "access" },
+    ...layers.map((layer) => personalLayerModule(layer, ownSpace)),
+    ...runtimeModules,
     ...profile.spaces.map((space) => ({
       id: `space:${space.slug}`,
       title: space.title,
@@ -527,6 +536,41 @@ function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): read
       active: space.active
     }))
   ];
+}
+
+function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
+  if (ownSpace && layer.id === "messages") {
+    return { ...layer, label: "Заметки", title: "Заметки" };
+  }
+  return layer;
+}
+
+function personalLayerModule(layer: typeof layers[number], ownSpace: boolean): PersonalModule {
+  const display = layerDisplay(layer, ownSpace);
+  return {
+    id: display.id,
+    title: display.title,
+    summary: layerModuleSummary(display.id, ownSpace),
+    icon: display.icon,
+    kind: "layer",
+    target: display.id
+  };
+}
+
+function layerModuleSummary(layer: PersonalSpaceLayer, ownSpace: boolean): string {
+  if (layer === "card") {
+    return "визитка";
+  }
+  if (layer === "personal") {
+    return ownSpace ? "записи" : "публикации";
+  }
+  if (layer === "reviews") {
+    return "репутация";
+  }
+  if (layer === "messages") {
+    return ownSpace ? "личное" : "сообщения";
+  }
+  return "расширения";
 }
 
 function renderPersonalModule(module: PersonalModule): string {
