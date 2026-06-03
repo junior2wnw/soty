@@ -887,6 +887,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}" data-owned="${ownSpace ? "true" : "false"}" data-route="${escapeAttr(profile.url)}">
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
+        ${renderTopActions(ownSpace, canInstall)}
         ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
       </header>
       <main class="personal-main">
@@ -956,6 +957,22 @@ function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): 
         ${contact.href ? "</a>" : "</span>"}
       `).join("")}
     </div>
+  `;
+}
+
+function renderTopActions(ownSpace: boolean, canInstall: boolean): string {
+  const actions: readonly EntityAction[] = ownSpace
+    ? [{ id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }]
+    : canInstall
+      ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" }]
+      : [];
+  if (actions.length === 0) {
+    return "";
+  }
+  return `
+    <nav class="personal-top-actions" aria-label="действия карточки">
+      ${actions.map((action) => renderEntityAction(action)).join("")}
+    </nav>
   `;
 }
 
@@ -1109,14 +1126,12 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   if (options.surface === "card") {
     if (options.ownSpace) {
       return [
-        { id: "share", label: "Поделиться", icon: "qr", tone: "primary" },
         ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "secondary" } as const] : []),
         { id: "edit", label: "Править", icon: "person", tone: "secondary" }
       ];
     }
     return [
-      ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" } as const] : []),
-      { id: "message", label: "Написать", icon: "mail", tone: options.canInstall ? "secondary" : "primary" },
+      { id: "message", label: "Написать", icon: "mail", tone: "primary" },
       { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
     ];
   }

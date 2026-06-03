@@ -267,6 +267,10 @@ svg {
   gap: 8px;
 }
 
+.personal-top-actions {
+  margin-left: auto;
+}
+
 .personal-topbar nav a,
 .personal-topbar nav button {
   min-height: 38px;
