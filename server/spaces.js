@@ -144,7 +144,7 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
       src: iconSrc,
       sizes,
       type: iconType,
-      purpose: "any maskable"
+      purpose: "any"
     }))
   });
 }
