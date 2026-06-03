@@ -1383,6 +1383,50 @@ button.personal-avatar {
   justify-items: start;
 }
 
+.personal-actions-sheet {
+  width: min(100%, 560px);
+  justify-items: start;
+}
+
+.personal-actions-sheet form {
+  width: 100%;
+}
+
+.personal-command-presets {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.personal-command-presets button {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: #fff;
+  color: #000;
+  font-size: 13px;
+  font-weight: 850;
+  text-align: left;
+}
+
+.personal-command-presets button:hover,
+.personal-command-presets button:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 2px 2px 0 #000;
+}
+
+.personal-command-presets svg {
+  width: 18px;
+  height: 18px;
+}
+
 .personal-files-sheet .personal-empty {
   width: 100%;
 }

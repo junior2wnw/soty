@@ -2341,31 +2341,18 @@ function showAgentSheet(root: HTMLElement, profile: PersonalSpaceProfile, option
       replyBox.textContent = "Думаю...";
     }
     try {
-      const result = await options.askAgent(profile, {
-        text,
-        intent: intentInput?.value === "page" ? "page" : "miniapp"
-      });
-      const visibleReply = replyWithoutCardModule(result.reply) || result.message;
-      if (replyBox) {
-        replyBox.textContent = visibleReply;
-      }
-      if (!result.ok) {
-        return;
-      }
-      const draft = agentModuleDraftFromReply(result.reply);
-      if (!draft) {
-        return;
-      }
-      const saved = await options.saveModule(options.route, draft);
-      if (!saved.ok) {
-        if (error) {
-          error.textContent = saved.message;
-        }
-        return;
-      }
-      overlay.remove();
-      await renderPersonalSpacePage(root, options);
-      setActiveLayer(root, "place");
+      await runPersonalAgentCommand(
+        root,
+        profile,
+        options,
+        {
+          text,
+          intent: intentInput?.value === "page" ? "page" : "miniapp"
+        },
+        replyBox,
+        error,
+        overlay
+      );
     } catch {
       if (replyBox) {
         replyBox.textContent = "ИИ сейчас недоступен.";
@@ -2452,6 +2439,144 @@ function replyWithoutCardModule(reply: string): string {
     .trim();
 }
 
+async function runPersonalAgentCommand(
+  root: HTMLElement,
+  profile: PersonalSpaceProfile,
+  options: PersonalSpacePageOptions,
+  request: PersonalSpaceAgentRequest,
+  replyBox: HTMLElement | null,
+  error: HTMLElement | null,
+  overlay: HTMLElement
+): Promise<void> {
+  if (error) {
+    error.textContent = "";
+  }
+  if (replyBox) {
+    replyBox.hidden = false;
+    replyBox.textContent = "Думаю...";
+  }
+  try {
+    const result = await options.askAgent(profile, request);
+    const visibleReply = replyWithoutCardModule(result.reply) || result.message;
+    if (replyBox) {
+      replyBox.textContent = visibleReply;
+    }
+    if (!result.ok) {
+      return;
+    }
+    const draft = agentModuleDraftFromReply(result.reply);
+    if (!draft) {
+      return;
+    }
+    const saved = await options.saveModule(options.route, draft);
+    if (!saved.ok) {
+      if (error) {
+        error.textContent = saved.message;
+      }
+      return;
+    }
+    overlay.remove();
+    await renderPersonalSpacePage(root, options);
+    setActiveLayer(root, "place");
+  } catch {
+    if (replyBox) {
+      replyBox.textContent = "ИИ сейчас недоступен.";
+    }
+    if (error) {
+      error.textContent = "Можно повторить позже.";
+    }
+  }
+}
+
+function showPersonalActionsSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-actions-sheet" role="dialog" aria-modal="true" aria-label="Команды">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div class="personal-module-mark">${icon("check")}</div>
+      <h2>Команды</h2>
+      <p>${escapeHtml(profile.displayName)}</p>
+      <div class="personal-command-presets" aria-label="быстрые команды">
+        <button type="button" data-command-intent="miniapp" data-command-text="Создай простой mini-app для этой карточки.">${icon("apps")} <span>Mini-app</span></button>
+        <button type="button" data-command-intent="page" data-command-text="Добавь полезную ссылку для этой карточки.">${icon("qr")} <span>Ссылка</span></button>
+        <button type="button" data-command-intent="miniapp" data-command-text="Создай небольшой инструмент для этой карточки.">${icon("check")} <span>Инструмент</span></button>
+      </div>
+      <form data-command-form>
+        <select name="intent" aria-label="тип команды">
+          <option value="miniapp">Mini-app</option>
+          <option value="page">Страница</option>
+        </select>
+        <textarea name="text" maxlength="720" required placeholder="Что сделать?"></textarea>
+        <button type="submit">${icon("check")} Выполнить</button>
+      </form>
+      <div class="personal-agent-reply" data-command-reply hidden></div>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
+  const intentInput = overlay.querySelector<HTMLSelectElement>("select[name='intent']");
+  const submitButton = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+  const replyBox = overlay.querySelector<HTMLElement>("[data-command-reply]");
+  const error = overlay.querySelector<HTMLElement>("[data-error]");
+  const close = () => overlay.remove();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+      return;
+    }
+    const preset = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("[data-command-text]") : null;
+    if (preset && overlay.contains(preset)) {
+      if (intentInput) {
+        intentInput.value = preset.dataset.commandIntent === "page" ? "page" : "miniapp";
+      }
+      if (textarea) {
+        textarea.value = preset.dataset.commandText || "";
+        textarea.focus();
+      }
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-command-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void runCommandFromSheet();
+  });
+  textarea?.focus();
+
+  async function runCommandFromSheet(): Promise<void> {
+    const text = cleanText(textarea?.value || "", 720);
+    if (!text) {
+      if (error) {
+        error.textContent = "Напишите короткую команду.";
+      }
+      return;
+    }
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+    try {
+      await runPersonalAgentCommand(
+        root,
+        profile,
+        options,
+        {
+          text,
+          intent: intentInput?.value === "page" ? "page" : "miniapp"
+        },
+        replyBox,
+        error,
+        overlay
+      );
+    } finally {
+      if (submitButton && overlay.isConnected) {
+        submitButton.disabled = false;
+      }
+    }
+  }
+}
+
 function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile, target: string, options: PersonalSpacePageOptions): void {
   if (target === "access") {
     showTrustedAccessSheet(root, profile, options);
@@ -2459,6 +2584,10 @@ function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile
   }
   if (target === "apps") {
     showCardAppsSheet(root, profile, options);
+    return;
+  }
+  if (target === "actions") {
+    showPersonalActionsSheet(root, profile, options);
     return;
   }
   if (target === "chess") {
