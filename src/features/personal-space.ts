@@ -133,6 +133,15 @@ type EntityAction = {
   readonly icon: IconName;
   readonly tone: "primary" | "secondary";
 };
+type PersonalModule = {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly icon: IconName;
+  readonly kind: "layer" | "runtime" | "space";
+  readonly target: string;
+  readonly active?: boolean;
+};
 const localHandleKey = "soty:personal-handle:v1";
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -425,7 +434,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       eyebrow: "соты",
       title: "Соты",
       text: "Модули страницы.",
-      body: renderSpaceModules(profile)
+      body: renderSpaceModules(profile, ownSpace)
     };
   }
   return {
@@ -490,27 +499,43 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderSpaceModules(profile: PersonalSpaceProfile): string {
-  const coreModules = [
-    { title: "Агент", summary: "помощь" },
-    { title: "Приложения", summary: "инструменты" },
-    { title: "Доступ", summary: "устройства" }
-  ];
+function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  const modules = personalModules(profile, ownSpace);
   return `
     <div class="personal-spaces">
-      ${coreModules.map((module) => `
-        <button type="button" data-action="runtime">
-          <span>${escapeHtml(module.title)}</span>
-          <p>${escapeHtml(module.summary)}</p>
-        </button>
-      `).join("")}
-      ${profile.spaces.map((space) => `
-        <a href="${escapeAttr(space.href)}" data-space-link class="${space.active ? "is-active" : ""}">
-          <span>${escapeHtml(space.title)}</span>
-          <p>${escapeHtml(space.summary)}</p>
-        </a>
-      `).join("")}
+      ${modules.map(renderPersonalModule).join("")}
     </div>
+  `;
+}
+
+function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModule[] {
+  return [
+    { id: "card", title: "Контакт", summary: "визитка", icon: "person", kind: "layer", target: "card" },
+    { id: "personal", title: "Страница", summary: ownSpace ? "записи" : "публикации", icon: "hexagon", kind: "layer", target: "personal" },
+    { id: "reviews", title: "Отзывы", summary: "репутация", icon: "heart", kind: "layer", target: "reviews" },
+    { id: "messages", title: "Связь", summary: ownSpace ? "записи" : "сообщения", icon: "mail", kind: "layer", target: "messages" },
+    { id: "agent", title: "Агент", summary: "действия", icon: "agent", kind: "runtime", target: "agent" },
+    { id: "apps", title: "Приложения", summary: "инструменты", icon: "apps", kind: "runtime", target: "apps" },
+    { id: "access", title: "Доступ", summary: "устройства", icon: "shield", kind: "runtime", target: "access" },
+    ...profile.spaces.map((space) => ({
+      id: `space:${space.slug}`,
+      title: space.title,
+      summary: space.summary,
+      icon: "hexagon" as const,
+      kind: "space" as const,
+      target: space.href,
+      active: space.active
+    }))
+  ];
+}
+
+function renderPersonalModule(module: PersonalModule): string {
+  return `
+    <button type="button" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" class="${module.active ? "is-active" : ""}">
+      ${icon(module.icon)}
+      <span>${escapeHtml(module.title)}</span>
+      <p>${escapeHtml(module.summary)}</p>
+    </button>
   `;
 }
 
@@ -548,17 +573,15 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     const target = event.target instanceof Element ? event.target : null;
     const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
     if (layerButton && shell.contains(layerButton)) {
-      const layer = layerButton.dataset.layer as PersonalSpaceLayer | undefined;
-      if (layer) {
+      const layer = layerButton.dataset.layer || "";
+      if (isPersonalLayer(layer)) {
         setActiveLayer(root, layer);
       }
       return;
     }
-    const spaceLink = target?.closest<HTMLAnchorElement>("[data-space-link]");
-    if (spaceLink && shell.contains(spaceLink)) {
-      event.preventDefault();
-      window.history.pushState({}, "", spaceLink.href);
-      window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+    const moduleNode = target?.closest<HTMLElement>("[data-module-kind]");
+    if (moduleNode && shell.contains(moduleNode)) {
+      openPersonalModule(root, moduleNode, profile, options);
       return;
     }
     const actionNode = target?.closest<HTMLElement>("[data-action]");
@@ -580,6 +603,23 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     }
     photoInput.value = "";
   });
+}
+
+function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  const kind = node.dataset.moduleKind;
+  const target = node.dataset.moduleTarget || "";
+  if (kind === "layer" && isPersonalLayer(target)) {
+    setActiveLayer(root, target);
+    return;
+  }
+  if (kind === "space" && target) {
+    window.history.pushState({}, "", target);
+    window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+    return;
+  }
+  if (kind === "runtime") {
+    options.openRuntime(profile);
+  }
 }
 
 function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
@@ -1039,6 +1079,10 @@ function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
   root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.panel === layer);
   });
+}
+
+function isPersonalLayer(value: string): value is PersonalSpaceLayer {
+  return layers.some((layer) => layer.id === value);
 }
 
 async function installPersonalSpace(root: HTMLElement, button: HTMLButtonElement, options: PersonalSpacePageOptions): Promise<void> {

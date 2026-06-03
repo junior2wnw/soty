@@ -799,9 +799,22 @@ button.personal-avatar {
   box-shadow: none;
 }
 
+.personal-spaces a,
+.personal-spaces button {
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 12px;
+}
+
 .personal-spaces button {
   width: 100%;
   text-align: left;
+}
+
+.personal-spaces svg {
+  grid-row: 1 / span 2;
+  width: 20px;
+  height: 20px;
 }
 
 .personal-empty {
@@ -828,6 +841,14 @@ button.personal-avatar {
   font-weight: 800;
 }
 
+.personal-spaces span {
+  grid-column: 2;
+}
+
+.personal-spaces p {
+  grid-column: 2;
+}
+
 .personal-contact-list b,
 .personal-post h3 {
   margin: 0;
@@ -852,7 +873,7 @@ button.personal-avatar {
   letter-spacing: 0;
 }
 
-.personal-spaces a.is-active {
+.personal-spaces .is-active {
   border-color: #000;
   background: #f1f1f1;
 }
