@@ -271,6 +271,7 @@ const personalThreadPrefix = "soty:personal-thread:v1:";
 const personalMessageClientKey = "soty:personal-message-client:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
 const personalReactionClientKey = "soty:personal-reaction-client:v1";
+let personalLayerKeysBound = false;
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -1353,6 +1354,7 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   const shell = root.querySelector<HTMLElement>(".personal-space-shell");
   const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
   const backupInput = root.querySelector<HTMLInputElement>("[data-backup-import]");
+  bindPersonalLayerKeys();
   shell?.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
@@ -1372,37 +1374,6 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     if (actionNode && shell.contains(actionNode)) {
       handleEntityAction(root, actionNode, profile, options);
     }
-  });
-  shell?.addEventListener("keydown", (event) => {
-    const target = event.target instanceof HTMLElement ? event.target : null;
-    const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
-    if (!layerButton || !shell.contains(layerButton)) {
-      return;
-    }
-    const currentLayer = layerButton.dataset.layer || "";
-    const currentIndex = layers.findIndex((layer) => layer.id === currentLayer);
-    if (currentIndex < 0) {
-      return;
-    }
-    let nextIndex = currentIndex;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = (currentIndex + 1) % layers.length;
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = (currentIndex - 1 + layers.length) % layers.length;
-    } else if (event.key === "Home") {
-      nextIndex = 0;
-    } else if (event.key === "End") {
-      nextIndex = layers.length - 1;
-    } else {
-      return;
-    }
-    event.preventDefault();
-    const nextLayer = layers[nextIndex]?.id;
-    if (!nextLayer) {
-      return;
-    }
-    setActiveLayer(root, nextLayer);
-    shell.querySelector<HTMLButtonElement>(`[data-layer="${nextLayer}"]`)?.focus();
   });
   backupInput?.addEventListener("change", () => {
     const file = backupInput.files?.[0];
@@ -3063,6 +3034,73 @@ function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
     panel.hidden = !active;
     panel.setAttribute("aria-hidden", active ? "false" : "true");
   });
+}
+
+function bindPersonalLayerKeys(): void {
+  if (personalLayerKeysBound) {
+    return;
+  }
+  personalLayerKeysBound = true;
+  window.addEventListener("keydown", (event) => {
+    const root = document.querySelector<HTMLElement>("#app");
+    const shell = root?.querySelector<HTMLElement>(".personal-space-shell");
+    if (!root || !shell) {
+      return;
+    }
+    switchPersonalLayerByKey(root, shell, event);
+  });
+}
+
+function switchPersonalLayerByKey(root: HTMLElement, shell: HTMLElement, event: KeyboardEvent): void {
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || root.querySelector(".personal-overlay") || isPersonalShortcutTargetLocked(target)) {
+    return;
+  }
+  const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
+  const scopedToLayerbar = Boolean(layerButton && shell.contains(layerButton));
+  const currentLayer = scopedToLayerbar
+    ? layerButton?.dataset.layer || ""
+    : shell.dataset.activeLayer || "";
+  const nextLayer = nextPersonalLayer(currentLayer, event.key, scopedToLayerbar);
+  if (!nextLayer) {
+    return;
+  }
+  event.preventDefault();
+  setActiveLayer(root, nextLayer);
+  if (scopedToLayerbar) {
+    shell.querySelector<HTMLButtonElement>(`[data-layer="${nextLayer}"]`)?.focus();
+  }
+}
+
+function nextPersonalLayer(currentLayer: string, key: string, scopedToLayerbar: boolean): PersonalSpaceLayer | null {
+  const directIndex = /^[1-5]$/u.test(key) ? Number(key) - 1 : -1;
+  if (directIndex >= 0) {
+    return layers[directIndex]?.id || null;
+  }
+  const currentIndex = layers.findIndex((layer) => layer.id === currentLayer);
+  if (currentIndex < 0) {
+    return null;
+  }
+  if (key === "ArrowRight" || key === "PageDown" || (scopedToLayerbar && key === "ArrowDown")) {
+    return layers[(currentIndex + 1) % layers.length]?.id || null;
+  }
+  if (key === "ArrowLeft" || key === "PageUp" || (scopedToLayerbar && key === "ArrowUp")) {
+    return layers[(currentIndex - 1 + layers.length) % layers.length]?.id || null;
+  }
+  if (scopedToLayerbar && key === "Home") {
+    return layers[0]?.id || null;
+  }
+  if (scopedToLayerbar && key === "End") {
+    return layers[layers.length - 1]?.id || null;
+  }
+  return null;
+}
+
+function isPersonalShortcutTargetLocked(target: HTMLElement | null): boolean {
+  if (!target) {
+    return false;
+  }
+  return target.closest("input, textarea, select, [contenteditable='true']") !== null;
 }
 
 function isPersonalLayer(value: string): value is PersonalSpaceLayer {

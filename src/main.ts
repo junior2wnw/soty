@@ -879,6 +879,7 @@ function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
     return;
   }
   setManifestHref(manifest, route ? personalSpaceManifestHref(route) : "/manifest.webmanifest", true);
+  applyPersonalRouteHead(route);
 }
 
 function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
@@ -886,6 +887,7 @@ function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
   if (!manifest) {
     return;
   }
+  applyPersonalProfileHead(profile);
   try {
     const blob = new Blob([JSON.stringify(personalProfileManifest(profile))], {
       type: "application/manifest+json"
@@ -927,7 +929,7 @@ function revokePersonalManifestObjectUrl(): void {
 }
 
 function personalProfileManifest(profile: PersonalSpaceProfile): Record<string, unknown> {
-  const name = cleanManifestText(profile.slug ? profile.displayName : profile.accountName || profile.displayName || profile.handle, 96) || "соты";
+  const name = personalProfileAppName(profile);
   const startUrl = profile.url || (profile.slug ? `/@${profile.handle}/${profile.slug}` : `/@${profile.handle}`);
   const absoluteStartUrl = absoluteManifestUrl(startUrl);
   return {
@@ -947,6 +949,73 @@ function personalProfileManifest(profile: PersonalSpaceProfile): Record<string, 
   };
 }
 
+function applyPersonalRouteHead(route: PersonalSpaceRoute | null): void {
+  if (!route) {
+    document.title = "соты.online";
+    setHeadMeta("theme-color", "#090b0f");
+    setHeadMeta("apple-mobile-web-app-title", "соты");
+    setHeadLink("icon", "/icon.svg", "image/svg+xml");
+    setHeadLink("apple-touch-icon", "/icon.svg", "image/svg+xml");
+    return;
+  }
+  const name = titleFromPersonalRoute(route);
+  const iconSrc = fallbackPersonalIconSrcFor(route.handle, route.slug);
+  document.title = name;
+  setHeadMeta("theme-color", "#000000");
+  setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
+  setHeadLink("icon", iconSrc, "image/svg+xml");
+  setHeadLink("apple-touch-icon", iconSrc, "image/svg+xml");
+}
+
+function applyPersonalProfileHead(profile: PersonalSpaceProfile): void {
+  const name = personalProfileAppName(profile);
+  const icons = personalManifestIcons(profile);
+  const icon = icons[0];
+  const iconSrc = icon?.src || absoluteManifestUrl(fallbackPersonalIconSrc(profile));
+  const iconType = typeof icon?.type === "string" ? icon.type : manifestIconType(iconSrc);
+  document.title = name;
+  setHeadMeta("theme-color", "#000000");
+  setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
+  setHeadLink("icon", iconSrc, iconType);
+  setHeadLink("apple-touch-icon", iconSrc, iconType);
+}
+
+function personalProfileAppName(profile: PersonalSpaceProfile): string {
+  return cleanManifestText(profile.slug ? profile.displayName : profile.accountName || profile.displayName || profile.handle, 96) || "соты";
+}
+
+function titleFromPersonalRoute(route: PersonalSpaceRoute): string {
+  return titleFromManifestPart(route.slug || route.handle) || "соты";
+}
+
+function titleFromManifestPart(value: string): string {
+  const text = cleanManifestText(value.replace(/[-_.]+/gu, " "), 96);
+  return text.replace(/^\p{Ll}/u, (char) => char.toLocaleUpperCase("ru-RU"));
+}
+
+function setHeadMeta(name: string, content: string): void {
+  const meta = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`) || document.createElement("meta");
+  meta.name = name;
+  meta.content = content;
+  if (!meta.isConnected) {
+    document.head.append(meta);
+  }
+}
+
+function setHeadLink(rel: string, href: string, type = ""): void {
+  const link = document.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`) || document.createElement("link");
+  link.rel = rel;
+  link.href = href;
+  if (type) {
+    link.type = type;
+  } else {
+    link.removeAttribute("type");
+  }
+  if (!link.isConnected) {
+    document.head.append(link);
+  }
+}
+
 function personalManifestIcons(profile: PersonalSpaceProfile): readonly Record<string, string>[] {
   const photo = cleanManifestIconSrc(profile.photoUrl);
   const src = absoluteManifestUrl(photo || fallbackPersonalIconSrc(profile));
@@ -961,9 +1030,13 @@ function personalManifestIcons(profile: PersonalSpaceProfile): readonly Record<s
 }
 
 function fallbackPersonalIconSrc(profile: PersonalSpaceProfile): string {
-  const handle = encodeURIComponent(profile.handle);
-  return profile.slug
-    ? `/icon/space/${handle}/${encodeURIComponent(profile.slug)}.svg`
+  return fallbackPersonalIconSrcFor(profile.handle, profile.slug);
+}
+
+function fallbackPersonalIconSrcFor(handleValue: string, slugValue = ""): string {
+  const handle = encodeURIComponent(handleValue);
+  return slugValue
+    ? `/icon/space/${handle}/${encodeURIComponent(slugValue)}.svg`
     : `/icon/space/${handle}.svg`;
 }
 

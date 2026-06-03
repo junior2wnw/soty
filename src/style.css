@@ -52,7 +52,7 @@ body {
 }
 
 body.personal-space-mode {
-  overflow: auto;
+  overflow: hidden;
   color-scheme: light;
   background: #cacaca;
 }
@@ -63,7 +63,7 @@ body.personal-space-mode::before {
 
 body.personal-space-mode #app {
   min-height: 100svh;
-  height: auto;
+  height: 100svh;
 }
 
 body.self-start-mode {
@@ -228,7 +228,10 @@ svg {
 .personal-space-shell {
   --personal-accent: #f1f1f1;
   position: relative;
+  height: 100svh;
   min-height: 100svh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   isolation: isolate;
   color: #171717;
@@ -293,18 +296,31 @@ svg {
 
 .personal-main {
   width: min(1200px, calc(100% - 32px));
+  min-height: 0;
+  height: 100%;
   display: grid;
-  gap: 14px;
+  grid-template-columns: minmax(240px, 0.72fr) 72px minmax(0, 1.56fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 16px;
   margin: 0 auto;
-  padding: 4px 0 36px;
+  padding: 4px 0 18px;
+  overflow: hidden;
 }
 
 .personal-hero {
-  min-height: clamp(164px, 24svh, 248px);
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  height: 100%;
   display: grid;
-  grid-template-columns: minmax(92px, 136px) minmax(0, 1fr);
-  align-items: center;
-  gap: clamp(14px, 3vw, 28px);
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  align-items: start;
+  justify-items: start;
+  gap: 18px;
+  padding: 18px 0;
+  overflow: auto;
+  scrollbar-width: thin;
 }
 
 .personal-avatar {
@@ -926,29 +942,32 @@ button.personal-avatar {
 }
 
 .personal-layerbar {
-  position: sticky;
-  top: 0;
+  grid-column: 2;
+  grid-row: 1;
   z-index: 4;
+  min-height: 0;
+  height: 100%;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: repeat(5, minmax(0, 1fr));
   gap: 0;
   padding: 0;
-  border: 0;
-  border-top: 1px solid #000;
-  border-bottom: 1px solid #000;
-  border-radius: 0;
+  border: 1px solid #000;
+  border-radius: 16px;
   background: #cacaca;
   box-shadow: none;
+  overflow: hidden;
 }
 
 .personal-layerbar button {
   min-width: 0;
-  min-height: 46px;
+  min-height: 0;
   display: inline-flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 3px;
+  border-bottom: 1px solid #000;
   border-radius: 0;
   background: transparent;
   color: #000;
@@ -956,6 +975,10 @@ button.personal-avatar {
   font-weight: 800;
   line-height: 1.05;
   white-space: nowrap;
+}
+
+.personal-layerbar button:last-child {
+  border-bottom: 0;
 }
 
 .personal-layerbar svg {
@@ -970,15 +993,23 @@ button.personal-avatar {
 }
 
 .personal-panels {
-  min-height: 160px;
+  grid-column: 3;
+  grid-row: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .personal-panel {
   display: none;
+  min-height: 0;
+  height: 100%;
   grid-template-columns: minmax(150px, 0.32fr) minmax(0, 1.68fr);
   gap: clamp(16px, 2.6vw, 28px);
   align-items: start;
-  padding: 8px 0 28px;
+  align-content: start;
+  padding: 18px 0;
+  overflow: auto;
+  scrollbar-width: thin;
 }
 
 .personal-panel.is-active {
@@ -5884,18 +5915,64 @@ button:disabled {
     max-width: 86%;
   }
 
+  .personal-main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 0 0 10px;
+  }
+
   .personal-hero,
   .personal-panel {
     grid-template-columns: 1fr;
   }
 
   .personal-hero {
+    grid-column: 1;
+    grid-row: 1;
     min-height: auto;
-    padding: 28px 0 18px;
+    height: auto;
+    max-height: 30svh;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    align-content: start;
+    gap: 16px;
+    padding: 14px 0 8px;
   }
 
   .personal-avatar {
     width: 128px;
+  }
+
+  .personal-layerbar {
+    grid-column: 1;
+    grid-row: 3;
+    height: auto;
+    min-height: 48px;
+    grid-template-columns: repeat(5, minmax(72px, 1fr));
+    grid-template-rows: minmax(0, 1fr);
+    border-radius: 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .personal-layerbar button {
+    min-height: 48px;
+    border-right: 1px solid #000;
+    border-bottom: 0;
+  }
+
+  .personal-layerbar button:last-child {
+    border-right: 0;
+  }
+
+  .personal-panels {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .personal-panel {
+    padding: 12px 0 8px;
   }
 }
 
@@ -6031,12 +6108,15 @@ button:disabled {
 
   .personal-layerbar {
     grid-template-columns: repeat(5, minmax(62px, 1fr));
+    grid-template-rows: minmax(0, 1fr);
     overflow-x: auto;
   }
 
   .personal-layerbar button {
     min-height: 46px;
     padding: 0 6px;
+    border-right: 1px solid #000;
+    border-bottom: 0;
     font-size: 11px;
   }
 

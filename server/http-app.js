@@ -85,17 +85,14 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   });
   app.get("*", async (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
-    const manifestHref = personalRouteManifestHref(req.path);
-    if (!manifestHref) {
+    const cardHead = personalRouteHead(req.path);
+    if (!cardHead) {
       res.sendFile(path.join(distDir, "index.html"));
       return;
     }
     try {
       const html = await readFile(path.join(distDir, "index.html"), "utf8");
-      res.type("html").send(html.replace(
-        /<link rel="manifest" href="\/manifest\.webmanifest"\s*\/?>/u,
-        `<link rel="manifest" href="${manifestHref}" />`
-      ));
+      res.type("html").send(applyPersonalRouteHead(html, cardHead));
     } catch (error) {
       next(error);
     }
@@ -103,20 +100,74 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   return app;
 }
 
-function personalRouteManifestHref(pathname) {
+function personalRouteHead(pathname) {
   const parts = String(pathname || "").split("/").filter(Boolean);
   const first = parts[0] || "";
   if (!first.startsWith("@")) {
-    return "";
+    return null;
   }
   const handle = cleanPersonalRoutePart(safeDecodeURIComponent(first.slice(1)));
   const slug = cleanPersonalRoutePart(safeDecodeURIComponent(parts[1] || ""));
   if (!handle || parts.length > 2) {
-    return "";
+    return null;
   }
-  return slug
-    ? `/manifest/space/${encodeURIComponent(handle)}/${encodeURIComponent(slug)}.json`
-    : `/manifest/space/${encodeURIComponent(handle)}.json`;
+  const encodedHandle = encodeURIComponent(handle);
+  const encodedSlug = encodeURIComponent(slug);
+  return {
+    title: titleFromRoutePart(slug || handle),
+    manifestHref: slug
+      ? `/manifest/space/${encodedHandle}/${encodedSlug}.json`
+      : `/manifest/space/${encodedHandle}.json`,
+    iconHref: slug
+      ? `/icon/space/${encodedHandle}/${encodedSlug}.svg`
+      : `/icon/space/${encodedHandle}.svg`
+  };
+}
+
+function applyPersonalRouteHead(html, head) {
+  const title = escapeHtml(head.title || "soty.online");
+  const titleAttr = escapeAttr(head.title || "soty.online");
+  const iconHref = escapeAttr(head.iconHref);
+  return ensureHeadTag(
+    ensureHeadTag(
+      html
+        .replace(/<link rel="manifest" href="\/manifest\.webmanifest"\s*\/?>/u, `<link rel="manifest" href="${escapeAttr(head.manifestHref)}" />`)
+        .replace(/<title>.*?<\/title>/su, `<title>${title}</title>`)
+        .replace(/<meta name="theme-color" content="[^"]*"\s*\/?>/u, '<meta name="theme-color" content="#000000" />')
+        .replace(/<link rel="icon" href="[^"]*"[^>]*>/u, `<link rel="icon" href="${iconHref}" type="image/svg+xml" />`),
+      /<meta name="apple-mobile-web-app-title" content="[^"]*"\s*\/?>/u,
+      `<meta name="apple-mobile-web-app-title" content="${titleAttr}" />`
+    ),
+    /<link rel="apple-touch-icon" href="[^"]*"[^>]*>/u,
+    `<link rel="apple-touch-icon" href="${iconHref}" type="image/svg+xml" />`
+  );
+}
+
+function ensureHeadTag(html, pattern, tag) {
+  if (pattern.test(html)) {
+    return html.replace(pattern, tag);
+  }
+  return html.replace("</head>", `    ${tag}\n  </head>`);
+}
+
+function titleFromRoutePart(value) {
+  const text = String(value || "")
+    .replace(/[-_.]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 96);
+  return text.replace(/^\p{Ll}/u, (char) => char.toLocaleUpperCase("ru-RU")) || "soty.online";
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;");
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/"/gu, "&quot;");
 }
 
 function cleanPersonalRoutePart(value) {
