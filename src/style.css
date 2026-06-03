@@ -577,7 +577,8 @@ button.personal-avatar {
   gap: 10px;
 }
 
-.personal-sheet input {
+.personal-sheet input,
+.personal-sheet select {
   width: 100%;
   min-height: 52px;
   padding: 0 16px;
@@ -587,6 +588,13 @@ button.personal-avatar {
   color: #000;
   font: inherit;
   font-weight: 760;
+}
+
+.personal-sheet select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, #000 50%) calc(100% - 18px) 50% / 7px 7px no-repeat,
+    #fff;
 }
 
 .personal-sheet textarea {
@@ -915,11 +923,22 @@ button.personal-avatar {
   grid-column: 2;
 }
 
+.personal-spaces small {
+  grid-column: 2;
+  color: #616161;
+  font-size: 12px;
+  font-weight: 820;
+}
+
 .personal-spaces button.is-priority p {
   grid-column: 1;
   color: #404040;
   font-size: 13px;
   line-height: 1.25;
+}
+
+.personal-spaces button.is-priority small {
+  grid-column: 1;
 }
 
 .personal-contact-list b,
@@ -975,6 +994,26 @@ button.personal-avatar {
   color: #404040;
   font-size: 13px;
   font-weight: 760;
+}
+
+.personal-module-sheet {
+  justify-items: start;
+}
+
+.personal-module-mark {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: #f1f1f1;
+  color: #000;
+}
+
+.personal-module-mark svg {
+  width: 24px;
+  height: 24px;
 }
 
 .personal-loading {
