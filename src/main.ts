@@ -9477,11 +9477,49 @@ function markDialogMessage(button: HTMLButtonElement): void {
   texts.set(selectedId, next);
   sync.setText(next);
   saveTextSnapshotNow(selectedId, next);
+  syncMarkedSpaceEntryToProfile(kind, text, author);
   button.classList.add("is-marked");
   const display = spaceMarkDisplay(kind);
   button.setAttribute("aria-label", display.activeLabel);
   button.dataset.tooltip = display.activeLabel;
   renderTextPaint();
+}
+
+function syncMarkedSpaceEntryToProfile(kind: SpaceEntryKind, text: string, author: string): void {
+  const handle = loadSelfStartHandle();
+  if (!handle) {
+    return;
+  }
+  const job = spaceMarkDisplay(kind).role === "self"
+    ? savePersonalSpacePost({ handle, slug: "" }, { text })
+    : savePersonalSpaceReviewFromMark(handle, author, text);
+  void job.catch(() => undefined);
+}
+
+async function savePersonalSpaceReviewFromMark(handle: string, author: string, text: string): Promise<void> {
+  const response = await fetch(`/api/spaces/${encodeURIComponent(handle)}/reviews`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    body: JSON.stringify({
+      author: cleanNick(author) || contactAuthorForMark() || "Гость",
+      text,
+      rating: 5
+    })
+  });
+  if (!response.ok) {
+    throw new Error("personal review mark rejected");
+  }
+}
+
+function contactAuthorForMark(): string {
+  if (!selectedId) {
+    return "";
+  }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  return tunnel ? contactHandleFromTunnel(tunnel) : "";
 }
 
 function spaceMessageSourceId(tunnelId: string, lineIndex: number, text: string): string {
