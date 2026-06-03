@@ -25,6 +25,17 @@ export type PersonalSpacePostDraft = {
   readonly text: string;
 };
 
+export type PersonalSpaceAgentRequest = {
+  readonly text: string;
+  readonly intent: "miniapp" | "page";
+};
+
+export type PersonalSpaceAgentResult = {
+  readonly ok: boolean;
+  readonly message: string;
+  readonly reply: string;
+};
+
 export type PersonalOwnerAction = "profile" | "post" | "photo" | "module";
 
 export type PersonalOwnerActionPayload = {
@@ -56,6 +67,7 @@ export type PersonalSpacePageOptions = {
   readonly updateProfile: (route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate) => Promise<PersonalSpaceInstallResult>;
   readonly savePost: (route: PersonalSpaceRoute, draft: PersonalSpacePostDraft) => Promise<PersonalSpaceInstallResult>;
   readonly saveModule: (route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft) => Promise<PersonalSpaceInstallResult>;
+  readonly askAgent: (profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest) => Promise<PersonalSpaceAgentResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
@@ -910,8 +922,9 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean):
   const runtimeModules: readonly PersonalModule[] = runtimeModuleDefinitions.map((module) => ({
     ...module,
     kind: "runtime" as const,
-    priority: module.id === "agent" || module.id === "actions" || module.id === "apps"
+    priority: module.id === "agent"
   }));
+  const runtimeById = (id: string): PersonalModule[] => runtimeModules.filter((module) => module.id === id);
   const customModules: readonly PersonalModule[] = profile.modules
     .filter((module) => ownSpace || module.visibility === "public")
     .map((module) => ({
@@ -951,16 +964,20 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean):
       target: "data"
     }]
     : [];
-  const priorityOrder = ["agent", "actions", "apps"];
-  const priorityModules = priorityOrder
-    .flatMap((id) => runtimeModules.filter((module) => module.id === id));
-  const utilityModules = [...dataModules, ...runtimeModules.filter((module) => !module.priority)];
-  const moduleItems = ownSpace ? [...customModules, addModule] : customModules;
+  const priorityModules = ownSpace ? [...runtimeById("agent"), addModule] : [];
+  const utilityModules = ownSpace
+    ? [
+      ...runtimeById("apps"),
+      ...runtimeById("actions"),
+      ...dataModules,
+      ...runtimeModules.filter((module) => !["agent", "apps", "actions"].includes(module.id))
+    ]
+    : [];
   return [
-    { title: "Главное", modules: priorityModules, priority: true },
-    ...(moduleItems.length ? [{ title: "Модули", modules: moduleItems }] : []),
+    ...(priorityModules.length ? [{ title: "Главное", modules: priorityModules, priority: true }] : []),
+    ...(customModules.length ? [{ title: "Модули", modules: customModules }] : []),
     ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : []),
-    { title: "Еще", modules: utilityModules }
+    ...(utilityModules.length ? [{ title: "Еще", modules: utilityModules }] : [])
   ];
 }
 
@@ -1182,6 +1199,10 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
   }
   if (kind === "runtime" && target === "qr") {
     void showShareSheet(root, profile);
+    return;
+  }
+  if (kind === "runtime" && target === "agent") {
+    showAgentSheet(root, profile, options);
     return;
   }
   if (kind === "runtime") {
@@ -1744,6 +1765,163 @@ function showModuleSheet(root: HTMLElement, options: PersonalSpacePageOptions): 
     await renderPersonalSpacePage(root, options);
     setActiveLayer(root, "place");
   }
+}
+
+function showAgentSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-agent-sheet" role="dialog" aria-modal="true" aria-label="ИИ">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div class="personal-module-mark">${icon("agent")}</div>
+      <h2>ИИ</h2>
+      <form data-agent-form>
+        <select name="intent" aria-label="тип задачи">
+          <option value="miniapp">Mini-app</option>
+          <option value="page">Страница</option>
+        </select>
+        <textarea name="text" maxlength="720" required placeholder="Что сделать для этой карточки?"></textarea>
+        <button type="submit">${icon("check")} Сделать</button>
+      </form>
+      <div class="personal-agent-reply" data-agent-reply hidden></div>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
+  const intentInput = overlay.querySelector<HTMLSelectElement>("select[name='intent']");
+  const submitButton = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+  const replyBox = overlay.querySelector<HTMLElement>("[data-agent-reply]");
+  const error = overlay.querySelector<HTMLElement>("[data-error]");
+  textarea?.focus();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-agent-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void askAgentFromSheet();
+  });
+
+  async function askAgentFromSheet(): Promise<void> {
+    const text = cleanText(textarea?.value || "", 720);
+    if (!text) {
+      if (error) {
+        error.textContent = "Напишите короткую задачу.";
+      }
+      return;
+    }
+    if (submitButton) {
+      submitButton.disabled = true;
+    }
+    if (error) {
+      error.textContent = "";
+    }
+    if (replyBox) {
+      replyBox.hidden = false;
+      replyBox.textContent = "Думаю...";
+    }
+    try {
+      const result = await options.askAgent(profile, {
+        text,
+        intent: intentInput?.value === "page" ? "page" : "miniapp"
+      });
+      const visibleReply = replyWithoutCardModule(result.reply) || result.message;
+      if (replyBox) {
+        replyBox.textContent = visibleReply;
+      }
+      if (!result.ok) {
+        return;
+      }
+      const draft = agentModuleDraftFromReply(result.reply);
+      if (!draft) {
+        return;
+      }
+      const saved = await options.saveModule(options.route, draft);
+      if (!saved.ok) {
+        if (error) {
+          error.textContent = saved.message;
+        }
+        return;
+      }
+      overlay.remove();
+      await renderPersonalSpacePage(root, options);
+      setActiveLayer(root, "place");
+    } catch {
+      if (replyBox) {
+        replyBox.textContent = "ИИ сейчас недоступен.";
+      }
+      if (error) {
+        error.textContent = "Можно повторить позже.";
+      }
+    } finally {
+      if (submitButton && overlay.isConnected) {
+        submitButton.disabled = false;
+      }
+    }
+  }
+}
+
+function agentModuleDraftFromReply(reply: string): PersonalSpaceModuleDraft | null {
+  const json = cardModuleJsonFromReply(reply);
+  if (!json) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) {
+    return null;
+  }
+  const kind: PersonalSpaceCardModuleKind = parsed.kind === "link" ? "link" : "miniapp";
+  const title = cleanText(parsed.title || parsed.name, 80);
+  const summary = cleanText(parsed.summary || parsed.description, 140);
+  const rawHref = typeof parsed.href === "string"
+    ? parsed.href
+    : typeof parsed.url === "string"
+      ? parsed.url
+      : typeof parsed.target === "string"
+        ? parsed.target
+        : "";
+  const href = kind === "miniapp"
+    ? safeMiniAppUrl(rawHref, { baseUrl: window.location.href })
+    : cleanUrlPath(rawHref);
+  if (!title || !href || (kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
+    return null;
+  }
+  return {
+    kind,
+    title,
+    summary,
+    href,
+    visibility: parsed.visibility === "trusted" ? "trusted" : "public",
+    ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(cleanText(parsed.layout, 24) || "large") } : {})
+  };
+}
+
+function cardModuleJsonFromReply(reply: string): string {
+  for (const line of reply.split(/\r?\n/u)) {
+    const text = line.trim().replace(/^`+/u, "").replace(/`+$/u, "");
+    const match = text.match(/^SOTY_CARD_MODULE:\s*(\{.*\})$/u);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return "";
+}
+
+function replyWithoutCardModule(reply: string): string {
+  return reply
+    .split(/\r?\n/u)
+    .filter((line) => !line.trim().replace(/^`+/u, "").startsWith("SOTY_CARD_MODULE:"))
+    .join("\n")
+    .trim();
 }
 
 function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile, target: string, options: PersonalSpacePageOptions): void {

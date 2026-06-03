@@ -36,7 +36,7 @@ import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { cleanPersonalHandle, loadPersonalHandle, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
-import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceInstallResult, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
+import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
 import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
@@ -1016,6 +1016,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     updateProfile: updateSignedPersonalSpaceProfile,
     savePost: saveSignedPersonalSpacePost,
     saveModule: saveSignedPersonalSpaceModule,
+    askAgent: askPersonalSpaceAgent,
     uploadPhoto: uploadSignedPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
@@ -1035,6 +1036,108 @@ async function saveSignedPersonalSpacePost(route: PersonalSpaceRoute, draft: Per
 
 async function saveSignedPersonalSpaceModule(route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft): Promise<PersonalSpaceInstallResult> {
   return savePersonalSpaceModule(route, draft, await createPersonalOwnerProof(route, "module", draft));
+}
+
+async function askPersonalSpaceAgent(profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest): Promise<PersonalSpaceAgentResult> {
+  const taskText = personalSpaceAgentTask(profile, request);
+  const source = await personalSpaceAgentSource(profile);
+  const reply = await askLocalAgentReply(taskText, "", source, 2 * 60 * 60_000);
+  const body = personalSpaceAgentReplyText(reply);
+  if (!reply.ok) {
+    const message = personalSpaceAgentFailureText(body || reply.text);
+    return {
+      ok: false,
+      message,
+      reply: message
+    };
+  }
+  return {
+    ok: true,
+    message: "Готово.",
+    reply: body || "Готово."
+  };
+}
+
+async function personalSpaceAgentSource(profile: PersonalSpaceProfile): Promise<LocalAgentRequestSource> {
+  const currentDevice = device ?? await loadDevice().catch(() => null);
+  if (!device && currentDevice) {
+    device = currentDevice;
+  }
+  const targets = operatorTargets();
+  const deviceNetwork = agentDeviceNetworkContext("", null, targets);
+  const label = personalSpaceAgentLabel(profile);
+  return {
+    tunnelId: `card:${profile.handle}${profile.slug ? `/${profile.slug}` : ""}`,
+    tunnelLabel: label,
+    deviceId: currentDevice?.id || "",
+    deviceNick: currentDevice?.nick || "",
+    localAgent,
+    appOrigin: window.location.origin,
+    operatorTargets: targets,
+    deviceNetwork: {
+      ...deviceNetwork,
+      activeTunnelLabel: label,
+      capabilities: [
+        ...deviceNetwork.capabilities,
+        "info-card-context",
+        "card-module-install",
+        "external-url-mini-app-modules"
+      ]
+    }
+  };
+}
+
+function personalSpaceAgentTask(profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest): string {
+  const cardUrl = new URL(profile.url, window.location.origin).toString();
+  const moduleLine = request.intent === "page"
+    ? 'SOTY_CARD_MODULE:{"kind":"link","title":"...","summary":"...","href":"https://...","visibility":"public"}'
+    : 'SOTY_CARD_MODULE:{"kind":"miniapp","title":"...","summary":"...","href":"https://...","visibility":"public","layout":"large"}';
+  const lines = [
+    "Ты работаешь внутри инфо-карты Soty, а не в старом интерфейсе сот.",
+    "Отвечай кратко по-русски, без лишних кнопок, без маркетинга и без длинных инструкций.",
+    "Карточка должна ощущаться как визитка, личное пространство, отзывы, личные сообщения и расширяемые модули.",
+    "Если задача требует mini-app, модуль должен быть внешним URL. Нельзя использовать этот origin Soty, /mini-apps или встроенный сервер Soty как хостинг mini-app.",
+    "Если готов внешний URL mini-app или полезной страницы, последней отдельной строкой верни строго один JSON-модуль с выбранным kind.",
+    "Формат последней строки:",
+    moduleLine,
+    "Если URL не готов, не выдумывай его. Ответь, какой один следующий шаг нужен.",
+    "",
+    "Контекст карточки:",
+    `Ссылка: ${cardUrl}`,
+    `Ник: @${profile.handle}${profile.slug ? `/${profile.slug}` : ""}`,
+    `Название: ${profile.displayName}`,
+    `Описание: ${profile.about || "не указано"}`,
+    `Тип задачи: ${request.intent === "page" ? "страница/ссылка" : "mini-app"}`,
+    "",
+    "Задача владельца:",
+    request.text
+  ];
+  return lines.join("\n");
+}
+
+function personalSpaceAgentLabel(profile: PersonalSpaceProfile): string {
+  return `@${profile.handle}${profile.slug ? `/${profile.slug}` : ""}`;
+}
+
+function personalSpaceAgentReplyText(reply: LocalAgentReply): string {
+  const seen = new Set<string>();
+  const parts = [...(reply.messages ?? []), reply.text]
+    .map((message) => normalizeChatMessage(cleanAgentReplyText(message)))
+    .filter((message) => {
+      if (!message || seen.has(message)) {
+        return false;
+      }
+      seen.add(message);
+      return true;
+    });
+  return parts.join("\n\n").trim();
+}
+
+function personalSpaceAgentFailureText(value: string): string {
+  const message = userVisibleAgentFailureText(value);
+  return /agent-relay|agent bridge|could not reach relay|relay-not-connected/iu.test(message)
+    ? "ИИ пока не подключен."
+    : message;
 }
 
 async function uploadSignedPersonalSpacePhoto(route: PersonalSpaceRoute, file: File): Promise<string> {

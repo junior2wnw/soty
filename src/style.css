@@ -1062,6 +1062,30 @@ button.personal-avatar {
   justify-items: start;
 }
 
+.personal-agent-sheet {
+  width: min(100%, 520px);
+  justify-items: start;
+}
+
+.personal-agent-sheet form {
+  width: 100%;
+}
+
+.personal-agent-reply {
+  width: 100%;
+  max-height: min(34svh, 240px);
+  overflow: auto;
+  padding: 12px 0 0;
+  border-top: 1px solid #000;
+  color: #171717;
+  font-size: 15px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .personal-module-mark {
   width: 48px;
   height: 48px;
