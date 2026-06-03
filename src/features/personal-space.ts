@@ -1,9 +1,12 @@
 import { icon } from "../icons";
 import type { IconName } from "../icons";
+import { applyChessMove, boardSquares, chessFromSnapshot, chooseAgentMove, createChessSnapshot, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices } from "./chess";
+import type { ChessSnapshot } from "./chess";
 import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safeMiniAppUrl } from "./mini-apps";
 import type { MiniAppWindowLayout } from "./mini-apps";
 import { runtimeModuleDefinitions, runtimeModuleTargetFromString } from "./runtime-modules";
 import { showLinkShareSheet } from "./share-sheet";
+import type { Color, PieceSymbol, Square } from "chess.js";
 
 export type PersonalSpaceRoute = {
   readonly handle: string;
@@ -256,6 +259,7 @@ type PersonalModuleGroup = {
 const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
 const profileCachePrefix = "soty:personal-profile:v1:";
+const personalChessPrefix = "soty:personal-chess:v1:";
 const personalThreadPrefix = "soty:personal-thread:v1:";
 const personalMessageClientKey = "soty:personal-message-client:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
@@ -2342,6 +2346,10 @@ function replyWithoutCardModule(reply: string): string {
 }
 
 function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile, target: string, options: PersonalSpacePageOptions): void {
+  if (target === "chess") {
+    showPersonalChessSheet(root, profile);
+    return;
+  }
   const module = runtimeModuleDefinitions.find((item) => item.target === target);
   if (!module) {
     options.openRuntime(profile, target);
@@ -2367,6 +2375,279 @@ function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile
       overlay.remove();
     }
   });
+}
+
+function showPersonalChessSheet(root: HTMLElement, profile: PersonalSpaceProfile): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  let snapshot = loadPersonalChessSnapshot(profile);
+  let selected: Square | "" = "";
+  let orientation: Color = "w";
+  let promotion: { readonly from: Square; readonly to: Square; readonly choices: readonly PieceSymbol[] } | null = null;
+  let pendingAgent = false;
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-chess-sheet" role="dialog" aria-modal="true" aria-label="Шахматы">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div data-personal-chess></div>
+    </section>
+  `;
+  root.append(overlay);
+  const shell = overlay.querySelector<HTMLElement>("[data-personal-chess]");
+  const save = () => savePersonalChessSnapshot(profile, snapshot);
+  const render = () => {
+    if (shell) {
+      shell.innerHTML = renderPersonalChess(snapshot, selected, orientation, promotion, pendingAgent);
+    }
+  };
+  const queueAgentMove = () => {
+    if (!isAgentTurn(snapshot) || pendingAgent || snapshot.result) {
+      return;
+    }
+    pendingAgent = true;
+    render();
+    window.setTimeout(() => {
+      if (!overlay.isConnected) {
+        return;
+      }
+      const agentMove = chooseAgentMove(snapshot);
+      pendingAgent = false;
+      if (agentMove) {
+        const applied = applyChessMove(snapshot, agentMove.from, agentMove.to, agentMove.promotion ?? "q");
+        if (applied) {
+          snapshot = applied.snapshot;
+          save();
+        }
+      }
+      render();
+    }, 180);
+  };
+  render();
+  queueAgentMove();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) {
+      return;
+    }
+    if (target.closest("[data-chess-new]")) {
+      snapshot = createPersonalChessSnapshot(profile);
+      selected = "";
+      promotion = null;
+      pendingAgent = false;
+      save();
+      render();
+      return;
+    }
+    if (target.closest("[data-chess-flip]")) {
+      orientation = orientation === "w" ? "b" : "w";
+      render();
+      return;
+    }
+    const promotionNode = target.closest<HTMLButtonElement>("[data-promotion]");
+    if (promotionNode && promotion) {
+      const piece = personalChessPromotionPiece(promotionNode.dataset.promotion || "");
+      if (!piece) {
+        return;
+      }
+      const applied = applyChessMove(snapshot, promotion.from, promotion.to, piece);
+      if (applied) {
+        snapshot = applied.snapshot;
+        selected = "";
+        promotion = null;
+        save();
+        render();
+        queueAgentMove();
+      }
+      return;
+    }
+    const squareNode = target.closest<HTMLButtonElement>("[data-square]");
+    if (!squareNode || pendingAgent || snapshot.result) {
+      return;
+    }
+    const squareValue = squareNode.dataset.square || "";
+    if (!isSquare(squareValue)) {
+      return;
+    }
+    const game = chessFromSnapshot(snapshot);
+    if (selected) {
+      if (selected === squareValue) {
+        selected = "";
+        promotion = null;
+        render();
+        return;
+      }
+      const choices = promotionChoices(snapshot, selected, squareValue);
+      if (choices.length > 0) {
+        promotion = { from: selected, to: squareValue, choices };
+        render();
+        return;
+      }
+      const applied = applyChessMove(snapshot, selected, squareValue);
+      if (applied) {
+        snapshot = applied.snapshot;
+        selected = "";
+        promotion = null;
+        save();
+        render();
+        queueAgentMove();
+        return;
+      }
+    }
+    const piece = game.get(squareValue);
+    if (!piece || piece.color !== game.turn() || isAgentTurn(snapshot)) {
+      return;
+    }
+    selected = squareValue;
+    promotion = null;
+    render();
+  });
+}
+
+function renderPersonalChess(
+  snapshot: ChessSnapshot,
+  selected: Square | "",
+  orientation: Color,
+  promotion: { readonly from: Square; readonly to: Square; readonly choices: readonly PieceSymbol[] } | null,
+  pendingAgent: boolean
+): string {
+  const game = chessFromSnapshot(snapshot);
+  const legalMoves = selected && !snapshot.result ? legalMovesForSquare(snapshot, selected) : [];
+  const legalTargets = new Set(legalMoves.map((move) => move.to));
+  const captureTargets = new Set(legalMoves.filter((move) => Boolean(move.captured)).map((move) => move.to));
+  const status = personalChessStatus(snapshot, pendingAgent);
+  const moves = snapshot.history.slice(-10);
+  return `
+    <div class="personal-chess-head">
+      <div class="personal-module-mark">${icon("chess")}</div>
+      <div>
+        <h2>Шахматы</h2>
+        <p>${escapeHtml(status)}</p>
+      </div>
+      <div class="personal-chess-actions" aria-label="шахматы">
+        <button type="button" data-chess-flip aria-label="Развернуть доску" title="Развернуть доску">${icon("refresh")}</button>
+        <button type="button" data-chess-new aria-label="Новая партия" title="Новая партия">${icon("check")}</button>
+      </div>
+    </div>
+    <div class="personal-chess-layout">
+      <div class="personal-chess-board" aria-label="шахматная доска">
+        ${boardSquares(orientation).map((square) => {
+          const piece = game.get(square);
+          const classes = [
+            "personal-chess-square",
+            personalChessSquareTone(square),
+            selected === square ? "is-selected" : "",
+            snapshot.lastMove?.from === square || snapshot.lastMove?.to === square ? "is-last" : "",
+            legalTargets.has(square) ? "is-legal" : "",
+            captureTargets.has(square) ? "is-capture" : ""
+          ].filter(Boolean).join(" ");
+          return `<button type="button" class="${classes}" data-square="${square}" aria-label="${escapeAttr(personalChessSquareLabel(square, piece?.color, piece?.type))}"${pendingAgent || Boolean(snapshot.result) ? " disabled" : ""}>${pieceGlyph(piece)}</button>`;
+        }).join("")}
+      </div>
+      <aside class="personal-chess-desk">
+        <b>${escapeHtml(personalChessTurn(snapshot, pendingAgent))}</b>
+        <div class="personal-chess-moves" aria-label="последние ходы">
+          ${moves.length ? moves.map((move) => `<span>${escapeHtml(move)}</span>`).join("") : `<small>Новая партия.</small>`}
+        </div>
+        ${promotion ? `
+          <div class="personal-chess-promotion" aria-label="превращение пешки">
+            ${promotion.choices.map((piece) => `<button type="button" data-promotion="${piece}">${escapeHtml(personalChessPieceName(piece))}</button>`).join("")}
+          </div>
+        ` : ""}
+      </aside>
+    </div>
+  `;
+}
+
+function createPersonalChessSnapshot(profile: PersonalSpaceProfile): ChessSnapshot {
+  return createChessSnapshot({
+    mode: "agent",
+    localNick: loadLocalHandle() || "Я",
+    opponentNick: profile.shortName || profile.displayName || "Гений"
+  });
+}
+
+function loadPersonalChessSnapshot(profile: PersonalSpaceProfile): ChessSnapshot {
+  const fallback = {
+    mode: "agent" as const,
+    localNick: loadLocalHandle() || "Я",
+    opponentNick: profile.shortName || profile.displayName || "Гений"
+  };
+  try {
+    const raw = window.localStorage.getItem(personalChessKey(profile));
+    return raw ? normalizeChessSnapshot(JSON.parse(raw) as unknown, fallback) : createChessSnapshot(fallback);
+  } catch {
+    return createChessSnapshot(fallback);
+  }
+}
+
+function savePersonalChessSnapshot(profile: PersonalSpaceProfile, snapshot: ChessSnapshot): void {
+  try {
+    window.localStorage.setItem(personalChessKey(profile), JSON.stringify(snapshot));
+  } catch {
+    // Local chess state must not block the module UI.
+  }
+}
+
+function personalChessKey(profile: PersonalSpaceProfile): string {
+  return `${personalChessPrefix}${routeUrl(profile)}`;
+}
+
+function personalChessStatus(snapshot: ChessSnapshot, pendingAgent: boolean): string {
+  if (snapshot.result === "white") {
+    return "Белые выиграли.";
+  }
+  if (snapshot.result === "black") {
+    return "Чёрные выиграли.";
+  }
+  if (snapshot.result === "draw") {
+    return snapshot.resultReason || "Ничья.";
+  }
+  if (pendingAgent || isAgentTurn(snapshot)) {
+    return "Гений думает.";
+  }
+  const game = chessFromSnapshot(snapshot);
+  return game.isCheck() ? "Шах. Ваш ход." : "Ваш ход.";
+}
+
+function personalChessTurn(snapshot: ChessSnapshot, pendingAgent: boolean): string {
+  if (snapshot.result) {
+    return personalChessStatus(snapshot, pendingAgent);
+  }
+  return pendingAgent || isAgentTurn(snapshot) ? "Ход соперника" : "Ваш ход";
+}
+
+function personalChessSquareTone(square: Square): "light" | "dark" {
+  const file = square.charCodeAt(0) - 97;
+  const rank = Number(square[1]);
+  return (file + rank) % 2 === 0 ? "dark" : "light";
+}
+
+function personalChessSquareLabel(square: Square, color?: Color, piece?: PieceSymbol): string {
+  if (!color || !piece) {
+    return square;
+  }
+  return `${square} ${color === "w" ? "белые" : "чёрные"} ${personalChessPieceName(piece)}`;
+}
+
+function personalChessPieceName(piece: PieceSymbol): string {
+  const names: Record<PieceSymbol, string> = {
+    p: "пешка",
+    n: "конь",
+    b: "слон",
+    r: "ладья",
+    q: "ферзь",
+    k: "король"
+  };
+  return names[piece];
+}
+
+function personalChessPromotionPiece(value: string): PieceSymbol | "" {
+  return value === "q" || value === "r" || value === "b" || value === "n" ? value : "";
 }
 
 function showNicknameSheet(
