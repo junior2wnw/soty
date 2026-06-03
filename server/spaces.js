@@ -22,6 +22,8 @@ const defaultSpaces = Object.freeze([
   }
 ]);
 
+const runtimeModuleTargets = new Set(["apps", "actions", "access", "qr", "files", "chess"]);
+
 export function attachSpaces(app, { dataDir } = {}) {
   const metaStore = createMetaStore(dataDir);
   const photoStore = createPhotoStore(dataDir);
@@ -862,7 +864,9 @@ function normalizeModuleBody(body) {
   const title = cleanReviewText(body?.title, 80);
   const href = kind === "miniapp"
     ? cleanMiniAppHref(body?.href || body?.target)
-    : cleanModuleHref(body?.href || body?.target);
+    : kind === "runtime"
+      ? cleanRuntimeModuleTarget(body?.href || body?.target)
+      : cleanModuleHref(body?.href || body?.target);
   if (!title || !href) {
     return null;
   }
@@ -892,11 +896,17 @@ function normalizeStoredModule(record) {
 }
 
 function moduleKey(module) {
-  return `${module.kind}:${module.href}:${module.title}`.toLowerCase();
+  return `${module.kind}:${module.href}`.toLowerCase();
 }
 
 function cleanModuleKind(value) {
-  return cleanReviewText(value, 24) === "miniapp" ? "miniapp" : "link";
+  const kind = cleanReviewText(value, 24);
+  return kind === "miniapp" || kind === "runtime" ? kind : "link";
+}
+
+function cleanRuntimeModuleTarget(value) {
+  const target = cleanReviewText(value, 40);
+  return runtimeModuleTargets.has(target) ? target : "";
 }
 
 function cleanModuleHref(value) {

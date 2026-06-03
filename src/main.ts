@@ -1098,14 +1098,17 @@ function personalSpaceAgentTask(profile: PersonalSpaceProfile, request: Personal
   const moduleLine = request.intent === "page"
     ? 'SOTY_CARD_MODULE:{"kind":"link","title":"...","summary":"...","href":"https://...","visibility":"public"}'
     : 'SOTY_CARD_MODULE:{"kind":"miniapp","title":"...","summary":"...","href":"https://...","visibility":"public","layout":"large"}';
+  const runtimeModuleLine = 'SOTY_CARD_MODULE:{"kind":"runtime","title":"Шахматы","summary":"игра","href":"chess","visibility":"public"}';
   const lines = [
     "Ты работаешь внутри инфо-карты Soty, а не в старом интерфейсе сот.",
     "Отвечай кратко по-русски, без лишних кнопок, без маркетинга и без длинных инструкций.",
     "Карточка должна ощущаться как визитка, личное пространство, отзывы, личные сообщения и расширяемые модули.",
     "Если задача требует mini-app, модуль должен быть внешним URL. Нельзя использовать этот origin Soty, /mini-apps или встроенный сервер Soty как хостинг mini-app.",
     "Если готов внешний URL mini-app или полезной страницы, последней отдельной строкой верни строго один JSON-модуль с выбранным kind.",
+    "Если подходит встроенная возможность сот, верни kind runtime. Доступные href: apps, actions, access, qr, files, chess.",
     "Формат последней строки:",
     moduleLine,
+    runtimeModuleLine,
     "Если URL не готов, не выдумывай его. Ответь, какой один следующий шаг нужен.",
     "",
     "Контекст карточки:",
