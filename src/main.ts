@@ -465,6 +465,17 @@ async function boot(): Promise<void> {
     return;
   }
 
+  const contactRoute = personalContactRouteFromLocation();
+  if (contactRoute) {
+    const senderHandle = requestedSenderHandle();
+    if (senderHandle) {
+      savePersonalHandle(senderHandle);
+    }
+    window.history.replaceState({}, "", personalContactCardPath(contactRoute));
+    showPersonalSpaceRoute(contactRoute);
+    return;
+  }
+
   const capturedJoin = captureJoinInviteFromLocation();
   if (capturedJoin) {
     window.history.replaceState({}, "", bareChatPath());
@@ -761,6 +772,33 @@ function requestedSenderHandle(location: Location = window.location): string {
   } catch {
     return "";
   }
+}
+
+function personalContactRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
+  const url = new URL(location.href);
+  if (url.pathname !== "/" && url.pathname !== "") {
+    return null;
+  }
+  const handle = requestedContactHandle(location);
+  if (!handle || hasLegacyRuntimeSearch(url)) {
+    return null;
+  }
+  return { handle, slug: "" };
+}
+
+function hasLegacyRuntimeSearch(url: URL): boolean {
+  return url.searchParams.has("j")
+    || url.searchParams.has("room")
+    || url.searchParams.has("chat")
+    || url.searchParams.has("space")
+    || url.searchParams.has("module")
+    || url.searchParams.has("restore-local")
+    || url.searchParams.has("reset-local");
+}
+
+function personalContactCardPath(route: PersonalSpaceRoute): string {
+  const handle = encodeURIComponent(route.handle);
+  return `/@${handle}?layer=messages`;
 }
 
 function cleanContactHandle(value: string): string {

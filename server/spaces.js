@@ -137,7 +137,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
       : meta.about || "Описание не указано.",
     accent: meta.accent || "#f1f1f1",
     contacts: [
-      { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
+      { label: "чат", value: `@${handle}`, href: `${url}?layer=messages` },
       ...meta.contact ? [meta.contact] : [],
       { label: "страница", value: url, href: url }
     ],
@@ -153,7 +153,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     })),
     modules,
     actions: {
-      messageUrl: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}`,
+      messageUrl: `${url}?layer=messages`,
       runtimeUrl: `/?pwa=1&space=${encodeURIComponent(url)}`
     }
   };

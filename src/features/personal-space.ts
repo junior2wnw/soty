@@ -213,7 +213,7 @@ const fallbackProfile: PersonalSpaceProfile = {
   spaces: [],
   modules: [],
   actions: {
-    messageUrl: "/?pwa=1&bare=1",
+    messageUrl: "/@guest?layer=messages",
     runtimeUrl: "/?pwa=1"
   }
 };
@@ -3150,7 +3150,7 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     spaces: list(record.spaces).map(normalizeSpaceLink).filter(isSpaceLink).slice(0, 12),
     modules: list(record.modules).map(normalizeCardModule).filter(isCardModule).slice(0, 16),
     actions: {
-      messageUrl: cleanUrlPath(actions.messageUrl) || `/?pwa=1&bare=1&to=${encodeURIComponent(`@${route.handle}`)}`,
+      messageUrl: cleanUrlPath(actions.messageUrl) || personalMessageUrl(route),
       runtimeUrl: cleanUrlPath(actions.runtimeUrl) || "/?pwa=1"
     }
   };
@@ -3282,10 +3282,14 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
     accountName: route.handle,
     photoUrl: "",
     actions: {
-      messageUrl: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${route.handle}`)}`,
+      messageUrl: personalMessageUrl(route),
       runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
     }
   };
+}
+
+function personalMessageUrl(route: PersonalSpaceRoute): string {
+  return `${routeUrl(route)}?layer=messages`;
 }
 
 function loadLocalHandle(): string {
