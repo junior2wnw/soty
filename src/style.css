@@ -794,6 +794,11 @@ button.personal-avatar {
   gap: 0 18px;
 }
 
+.personal-module-group.is-priority .personal-module-grid {
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+}
+
 .personal-contact-list a,
 .personal-contact-list div,
 .personal-post,
@@ -828,10 +833,27 @@ button.personal-avatar {
   text-align: left;
 }
 
+.personal-spaces button.is-priority {
+  min-height: 86px;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: start;
+  gap: 7px;
+  padding: 12px 10px;
+  border: 1px solid #000;
+  background: #ffffff;
+}
+
 .personal-spaces svg {
   grid-row: 1 / span 2;
   width: 20px;
   height: 20px;
+}
+
+.personal-spaces button.is-priority svg {
+  grid-row: auto;
+  width: 24px;
+  height: 24px;
 }
 
 .personal-empty {
@@ -868,8 +890,21 @@ button.personal-avatar {
   grid-column: 2;
 }
 
+.personal-spaces button.is-priority span {
+  grid-column: 1;
+  color: #000;
+  font-size: 15px;
+}
+
 .personal-spaces p {
   grid-column: 2;
+}
+
+.personal-spaces button.is-priority p {
+  grid-column: 1;
+  color: #404040;
+  font-size: 13px;
+  line-height: 1.25;
 }
 
 .personal-contact-list b,

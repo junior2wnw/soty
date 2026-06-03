@@ -148,10 +148,12 @@ type PersonalModule = {
   readonly kind: "runtime" | "space";
   readonly target: string;
   readonly active?: boolean;
+  readonly priority?: boolean;
 };
 type PersonalModuleGroup = {
   readonly title: string;
   readonly modules: readonly PersonalModule[];
+  readonly priority?: boolean;
 };
 type PersonalTopbarAction = {
   readonly id: string;
@@ -582,7 +584,8 @@ function renderSpaceModules(profile: PersonalSpaceProfile): string {
 function personalModuleGroups(profile: PersonalSpaceProfile): readonly PersonalModuleGroup[] {
   const runtimeModules: readonly PersonalModule[] = runtimeModuleDefinitions.map((module) => ({
     ...module,
-    kind: "runtime" as const
+    kind: "runtime" as const,
+    priority: module.id === "agent" || module.id === "actions" || module.id === "apps"
   }));
   const childSpaces: readonly PersonalModule[] = profile.spaces.map((space) => ({
     id: `space:${space.slug}`,
@@ -593,15 +596,20 @@ function personalModuleGroups(profile: PersonalSpaceProfile): readonly PersonalM
     target: space.href,
     active: space.active
   }));
+  const priorityOrder = ["agent", "actions", "apps"];
+  const priorityModules = priorityOrder
+    .flatMap((id) => runtimeModules.filter((module) => module.id === id));
+  const utilityModules = runtimeModules.filter((module) => !module.priority);
   return [
-    { title: "Функции", modules: runtimeModules },
-    ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : [])
+    { title: "Главное", modules: priorityModules, priority: true },
+    ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : []),
+    { title: "Еще", modules: utilityModules }
   ];
 }
 
 function renderPersonalModuleGroup(group: PersonalModuleGroup): string {
   return `
-    <section class="personal-module-group" aria-label="${escapeAttr(group.title)}">
+    <section class="personal-module-group${group.priority ? " is-priority" : ""}" aria-label="${escapeAttr(group.title)}">
       <h3>${escapeHtml(group.title)}</h3>
       <div class="personal-module-grid">
         ${group.modules.map(renderPersonalModule).join("")}
@@ -619,7 +627,7 @@ function layerDisplay(layer: typeof layers[number], ownSpace: boolean): Personal
 
 function renderPersonalModule(module: PersonalModule): string {
   return `
-    <button type="button" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" class="${module.active ? "is-active" : ""}">
+    <button type="button" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" class="${[module.active ? "is-active" : "", module.priority ? "is-priority" : ""].filter(Boolean).join(" ")}">
       ${icon(module.icon)}
       <span>${escapeHtml(module.title)}</span>
       <p>${escapeHtml(module.summary)}</p>
