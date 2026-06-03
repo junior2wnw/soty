@@ -5,6 +5,7 @@ import type { ChessSnapshot } from "./chess";
 import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safeMiniAppInlineHtml, safeMiniAppUrl } from "./mini-apps";
 import type { MiniAppWindowLayout } from "./mini-apps";
 import { runtimeModuleDefinitions, runtimeModuleTargetFromString } from "./runtime-modules";
+import type { RuntimeModuleTarget } from "./runtime-modules";
 import { showLinkShareSheet } from "./share-sheet";
 import type { Color, PieceSymbol, Square } from "chess.js";
 
@@ -314,11 +315,12 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
   options.applyManifest(profile);
-  const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || previousLayer || (options.route.slug ? "place" : "card");
+  const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || (requestedRuntimeModule() ? "place" : null) || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   const ownSpace = await options.isOwned(profile);
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle, ownSpace);
   bindPersonalSpace(root, profile, options);
+  openRequestedPersonalRuntimeModule(root, profile, options);
 }
 
 export async function uploadPersonalSpacePhoto(
@@ -1354,6 +1356,35 @@ function requestedActiveLayer(): PersonalSpaceLayer | null {
   }
 }
 
+function requestedRuntimeModule(): RuntimeModuleTarget | "" {
+  try {
+    return runtimeModuleTargetFromString(new URL(window.location.href).searchParams.get("module") || "");
+  } catch {
+    return "";
+  }
+}
+
+function openRequestedPersonalRuntimeModule(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  const target = requestedRuntimeModule();
+  if (!target) {
+    return;
+  }
+  setActiveLayer(root, "place");
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("module");
+    if (!url.searchParams.has("layer")) {
+      url.searchParams.set("layer", "place");
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // The module can still open even if the URL cannot be cleaned.
+  }
+  window.setTimeout(() => {
+    openPersonalRuntimeModule(root, profile, target, options);
+  }, 0);
+}
+
 function renderPanelList(className: string, items: readonly string[], emptyIcon: IconName, emptyText: string): string {
   return `
     <div class="${className}">
@@ -1439,17 +1470,21 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
     }
     return;
   }
-  if (kind === "runtime" && target === "qr") {
+  if (kind === "runtime") {
+    openPersonalRuntimeModule(root, profile, target, options);
+  }
+}
+
+function openPersonalRuntimeModule(root: HTMLElement, profile: PersonalSpaceProfile, target: string, options: PersonalSpacePageOptions): void {
+  if (target === "qr") {
     void showShareSheet(root, profile);
     return;
   }
-  if (kind === "runtime" && target === "agent") {
+  if (target === "agent") {
     showAgentSheet(root, profile, options);
     return;
   }
-  if (kind === "runtime") {
-    showRuntimeModuleSheet(root, profile, target, options);
-  }
+  showRuntimeModuleSheet(root, profile, target, options);
 }
 
 function showPersonalMiniAppSheet(

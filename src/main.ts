@@ -465,6 +465,21 @@ async function boot(): Promise<void> {
     return;
   }
 
+  if (isPersonalRuntimeModuleStartRoute()) {
+    const moduleRoute = await personalRuntimeModuleRouteFromLocation();
+    if (moduleRoute) {
+      const senderHandle = requestedSenderHandle();
+      if (senderHandle) {
+        savePersonalHandle(senderHandle);
+      }
+      window.history.replaceState({}, "", personalRuntimeModuleCardPath(moduleRoute));
+      showPersonalSpaceRoute(moduleRoute);
+      return;
+    }
+    await renderSelfStartPage();
+    return;
+  }
+
   const contactRoute = personalContactRouteFromLocation();
   if (contactRoute) {
     const senderHandle = requestedSenderHandle();
@@ -786,12 +801,32 @@ function personalContactRouteFromLocation(location: Location = window.location):
   return { handle, slug: "" };
 }
 
+function isPersonalRuntimeModuleStartRoute(location: Location = window.location): boolean {
+  const url = new URL(location.href);
+  return (url.pathname === "/" || url.pathname === "")
+    && Boolean(requestedRuntimeModule(location))
+    && !hasHardLegacyRuntimeSearch(url);
+}
+
+async function personalRuntimeModuleRouteFromLocation(location: Location = window.location): Promise<PersonalSpaceRoute | null> {
+  if (!isPersonalRuntimeModuleStartRoute(location)) {
+    return null;
+  }
+  const contactHandle = requestedContactHandle(location);
+  const handle = contactHandle || await loadSelfStartHandleOrLegacyDevice();
+  return handle ? { handle, slug: "" } : null;
+}
+
 function hasLegacyRuntimeSearch(url: URL): boolean {
+  return hasHardLegacyRuntimeSearch(url)
+    || url.searchParams.has("module");
+}
+
+function hasHardLegacyRuntimeSearch(url: URL): boolean {
   return url.searchParams.has("j")
     || url.searchParams.has("room")
     || url.searchParams.has("chat")
     || url.searchParams.has("space")
-    || url.searchParams.has("module")
     || url.searchParams.has("restore-local")
     || url.searchParams.has("reset-local");
 }
@@ -799,6 +834,15 @@ function hasLegacyRuntimeSearch(url: URL): boolean {
 function personalContactCardPath(route: PersonalSpaceRoute): string {
   const handle = encodeURIComponent(route.handle);
   return `/@${handle}?layer=messages`;
+}
+
+function personalRuntimeModuleCardPath(route: PersonalSpaceRoute, target: RuntimeModuleTarget | "" = requestedRuntimeModule()): string {
+  const handle = encodeURIComponent(route.handle);
+  const path = route.slug
+    ? `/@${handle}/${encodeURIComponent(route.slug)}`
+    : `/@${handle}`;
+  const moduleTarget = target ? `&module=${encodeURIComponent(target)}` : "";
+  return `${path}?layer=place${moduleTarget}`;
 }
 
 function cleanContactHandle(value: string): string {
@@ -1453,7 +1497,7 @@ function isSelfStartRoute(location: Location = window.location): boolean {
 async function renderSelfStartPage(): Promise<void> {
   const saved = await loadSelfStartHandleOrLegacyDevice();
   if (saved) {
-    window.history.replaceState({}, "", `/@${encodeURIComponent(saved)}`);
+    window.history.replaceState({}, "", selfStartPersonalPath(saved));
     showPersonalSpaceRoute({ handle: saved, slug: "" });
     return;
   }
@@ -1558,7 +1602,7 @@ async function openCreatedSelfStartHandle(handle: string, input?: HTMLInputEleme
   const serverOwnerDeviceId = await fetchPersonalOwnerDeviceId(handle);
   if (serverOwnerDeviceId && serverOwnerDeviceId !== currentDevice.id) {
     savePersonalHandle(handle);
-    window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
+    window.history.pushState({}, "", selfStartPersonalPath(handle));
     showPersonalSpaceRoute({ handle, slug: "" });
     return;
   }
@@ -1568,8 +1612,15 @@ async function openCreatedSelfStartHandle(handle: string, input?: HTMLInputEleme
     return;
   }
   saveSelfStartHandle(owned);
-  window.history.pushState({}, "", `/@${encodeURIComponent(owned)}`);
+  window.history.pushState({}, "", selfStartPersonalPath(owned));
   showPersonalSpaceRoute({ handle: owned, slug: "" });
+}
+
+function selfStartPersonalPath(handle: string): string {
+  const moduleTarget = requestedRuntimeModule();
+  return moduleTarget
+    ? personalRuntimeModuleCardPath({ handle, slug: "" }, moduleTarget)
+    : `/@${encodeURIComponent(handle)}`;
 }
 
 function legacySelfStartHandleFromNick(value: string): string {
