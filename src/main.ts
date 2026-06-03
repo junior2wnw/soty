@@ -367,9 +367,8 @@ window.addEventListener("storage", (event) => {
 });
 
 window.addEventListener("appinstalled", () => {
-  pendingInstallPrompt = null;
+  clearPendingInstallPrompt();
   rememberAppRuntime();
-  window.dispatchEvent(new CustomEvent("soty-installpromptchange"));
   void boot();
 });
 
@@ -879,7 +878,7 @@ function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
   if (!manifest) {
     return;
   }
-  manifest.href = route ? personalSpaceManifestHref(route) : "/manifest.webmanifest";
+  setManifestHref(manifest, route ? personalSpaceManifestHref(route) : "/manifest.webmanifest", true);
 }
 
 function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
@@ -894,10 +893,29 @@ function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
     const nextHref = URL.createObjectURL(blob);
     revokePersonalManifestObjectUrl();
     personalManifestObjectUrl = nextHref;
-    manifest.href = nextHref;
+    setManifestHref(manifest, nextHref, false);
   } catch {
-    manifest.href = personalSpaceManifestHref({ handle: profile.handle, slug: profile.slug });
+    setManifestHref(manifest, personalSpaceManifestHref({ handle: profile.handle, slug: profile.slug }), false);
   }
+}
+
+function setManifestHref(manifest: HTMLLinkElement, href: string, resetPrompt: boolean): void {
+  const nextHref = absoluteManifestUrl(href);
+  if (manifest.href === nextHref) {
+    return;
+  }
+  manifest.href = nextHref;
+  if (resetPrompt) {
+    clearPendingInstallPrompt();
+  }
+}
+
+function clearPendingInstallPrompt(): void {
+  if (!pendingInstallPrompt) {
+    return;
+  }
+  pendingInstallPrompt = null;
+  window.dispatchEvent(new CustomEvent("soty-installpromptchange"));
 }
 
 function revokePersonalManifestObjectUrl(): void {
@@ -1006,7 +1024,7 @@ function cleanManifestText(value: string, max: number): string {
 function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
   setSelfStartMode(false);
   setPersonalSpaceMode(true);
-  applyPersonalSpaceManifest(null);
+  applyPersonalSpaceManifest(route);
   void renderPersonalSpacePage(app, {
     route,
     canInstall: shouldShowPersonalSpaceInstallAction,

@@ -1,4 +1,5 @@
 import express from "express";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { attachAgentLearning } from "./agent-learning.js";
 import { attachAgentRelay } from "./agent-relay.js";
@@ -82,9 +83,60 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   app.use("/mini-apps", (_req, res) => {
     res.status(404).json({ ok: false, error: "mini_app_asset_not_found" });
   });
-  app.get("*", (_req, res) => {
+  app.get("*", async (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
-    res.sendFile(path.join(distDir, "index.html"));
+    const manifestHref = personalRouteManifestHref(req.path);
+    if (!manifestHref) {
+      res.sendFile(path.join(distDir, "index.html"));
+      return;
+    }
+    try {
+      const html = await readFile(path.join(distDir, "index.html"), "utf8");
+      res.type("html").send(html.replace(
+        /<link rel="manifest" href="\/manifest\.webmanifest"\s*\/?>/u,
+        `<link rel="manifest" href="${manifestHref}" />`
+      ));
+    } catch (error) {
+      next(error);
+    }
   });
   return app;
+}
+
+function personalRouteManifestHref(pathname) {
+  const parts = String(pathname || "").split("/").filter(Boolean);
+  const first = parts[0] || "";
+  if (!first.startsWith("@")) {
+    return "";
+  }
+  const handle = cleanPersonalRoutePart(safeDecodeURIComponent(first.slice(1)));
+  const slug = cleanPersonalRoutePart(safeDecodeURIComponent(parts[1] || ""));
+  if (!handle || parts.length > 2) {
+    return "";
+  }
+  return slug
+    ? `/manifest/space/${encodeURIComponent(handle)}/${encodeURIComponent(slug)}.json`
+    : `/manifest/space/${encodeURIComponent(handle)}.json`;
+}
+
+function cleanPersonalRoutePart(value) {
+  try {
+    return String(value || "")
+      .normalize("NFKC")
+      .replace(/^@/u, "")
+      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 64)
+      .toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
 }
