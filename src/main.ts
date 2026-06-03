@@ -874,7 +874,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
   applyPersonalSpaceManifest(route);
   void renderPersonalSpacePage(app, {
     route,
-    canInstall: () => Boolean(pendingInstallPrompt),
+    canInstall: shouldShowPersonalSpaceInstallAction,
     canNotify: shouldOfferNotifications,
     install: promptPersonalSpaceInstall,
     enableNotifications: promptPersonalSpaceNotifications,
@@ -908,6 +908,17 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
   return choice.outcome === "accepted"
     ? { ok: true, message: "Готово." }
     : { ok: false, message: "Можно повторить позже." };
+}
+
+function shouldShowPersonalSpaceInstallAction(): boolean {
+  return Boolean(pendingInstallPrompt) || !isStandaloneDisplay();
+}
+
+function isStandaloneDisplay(): boolean {
+  const standaloneNavigator = navigator as Navigator & { readonly standalone?: boolean };
+  return standaloneNavigator.standalone === true
+    || window.matchMedia?.("(display-mode: standalone)").matches === true
+    || window.matchMedia?.("(display-mode: fullscreen)").matches === true;
 }
 
 async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallResult> {

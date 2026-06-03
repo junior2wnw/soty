@@ -645,6 +645,32 @@ button.personal-avatar {
   height: 18px;
 }
 
+.personal-data-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.personal-data-actions button {
+  min-width: 0;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #f1f1f1;
+  color: #000;
+  font-weight: 820;
+}
+
+.personal-data-actions svg {
+  width: 17px;
+  height: 17px;
+}
+
 .personal-rating-field {
   display: grid;
   gap: 9px;

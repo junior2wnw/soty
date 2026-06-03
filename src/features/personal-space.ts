@@ -153,6 +153,12 @@ type PersonalModuleGroup = {
   readonly title: string;
   readonly modules: readonly PersonalModule[];
 };
+type PersonalTopbarAction = {
+  readonly id: string;
+  readonly label: string;
+  readonly icon: IconName;
+  readonly text?: string;
+};
 const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
 const internalContactLabels = new Set(["чат", "страница"]);
@@ -320,7 +326,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
     : escapeHtml(initialsText);
   const heroActions = entityActionsFor({ surface: "hero", ownSpace, canInstall });
   const heroText = heroLine(profile, ownSpace);
-  const topbarActions = renderTopbarActions(ownSpace, localHandle);
+  const topbarActions = renderTopbarActions(ownSpace, localHandle, canInstall);
   return `
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
       <header class="personal-topbar">
@@ -365,15 +371,31 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
   `;
 }
 
-function renderTopbarActions(ownSpace: boolean, localHandle: string): string {
-  if (ownSpace) {
+function renderTopbarActions(ownSpace: boolean, localHandle: string, canInstall: boolean): string {
+  const actions: readonly PersonalTopbarAction[] = ownSpace
+    ? [
+      { id: "share", label: "Поделиться", icon: "qr" },
+      ...(canInstall ? [{ id: "install", label: "Сохранить", icon: "install" } as const] : []),
+      { id: "edit", label: "Править", icon: "person" }
+    ]
+    : [
+      { id: "share", label: "Поделиться", icon: "qr" },
+      ...(localHandle ? [{ id: "self", label: "Я", icon: "person", text: "Я" } as const] : [])
+    ];
+  if (actions.length === 0) {
     return "";
   }
-  const actions = [
-    `<button class="personal-icon-button" type="button" data-action="share" aria-label="Поделиться" title="Поделиться">${icon("qr")}</button>`,
-    ...(localHandle ? [`<button type="button" data-action="self">${icon("person")} <span>Я</span></button>`] : [])
-  ];
-  return `<nav aria-label="пространство">${actions.join("")}</nav>`;
+  return `<nav aria-label="пространство">${actions.map(renderTopbarAction).join("")}</nav>`;
+}
+
+function renderTopbarAction(action: PersonalTopbarAction): string {
+  const buttonClass = action.text ? "" : " class=\"personal-icon-button\"";
+  return `
+    <button${buttonClass} type="button" data-action="${escapeAttr(action.id)}" aria-label="${escapeAttr(action.label)}" title="${escapeAttr(action.label)}">
+      ${icon(action.icon)}
+      ${action.text ? `<span>${escapeHtml(action.text)}</span>` : ""}
+    </button>
+  `;
 }
 
 function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): string {
@@ -513,7 +535,6 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     eyebrow: "визитка",
     title: "Обо мне",
     text: cardText(profile, ownSpace),
-    ...(ownSpace ? { action: { id: "edit", label: "Править", icon: "person", tone: "secondary" } as const } : {}),
     body: renderContactList(profile, ownSpace)
   };
 }
@@ -535,10 +556,7 @@ function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): st
 function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
   if (options.surface === "hero") {
     if (options.ownSpace) {
-      return [
-        { id: "share", label: "QR", icon: "qr", tone: "primary" },
-        ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "secondary" } as const] : [])
-      ];
+      return [];
     }
     return [
       ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" } as const] : []),
@@ -950,6 +968,10 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
         <input name="contact" autocomplete="url" maxlength="160" aria-label="контакт" placeholder="Сайт, email или контакт" value="${escapeAttr(contact)}" />
         <button type="submit">${icon("check")} Сохранить</button>
       </form>
+      <div class="personal-data-actions" aria-label="данные">
+        <button type="button" data-profile-backup-import>${icon("upload")} <span>Импорт</span></button>
+        <button type="button" data-profile-backup-export>${icon("download")} <span>Экспорт</span></button>
+      </div>
       <small data-error></small>
     </section>
   `;
@@ -959,6 +981,12 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
   const contactInput = overlay.querySelector<HTMLInputElement>("input[name='contact']");
   nameInput?.focus();
   overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.querySelector<HTMLButtonElement>("[data-profile-backup-import]")?.addEventListener("click", () => {
+    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
+  });
+  overlay.querySelector<HTMLButtonElement>("[data-profile-backup-export]")?.addEventListener("click", () => {
+    options.exportBackup();
+  });
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay) {
       overlay.remove();
