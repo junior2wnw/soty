@@ -1078,6 +1078,53 @@ button.personal-avatar {
   height: 24px;
 }
 
+.personal-mini-app-overlay {
+  align-items: center;
+}
+
+.personal-mini-app-sheet {
+  width: min(100%, 980px);
+  max-height: calc(100svh - 28px);
+  gap: 12px;
+  padding: 18px;
+}
+
+.personal-mini-app-sheet h2 {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding-right: 48px;
+  font-size: 20px;
+}
+
+.personal-mini-app-sheet[data-mini-app-layout="compact"] {
+  width: min(100%, 560px);
+}
+
+.personal-mini-app-sheet[data-mini-app-layout="full"] {
+  width: min(100%, 1180px);
+  min-height: calc(100svh - 28px);
+}
+
+.personal-mini-app-frame {
+  width: var(--mini-app-width, 100%);
+  max-width: 100%;
+  min-height: 220px;
+  height: var(--mini-app-height, clamp(320px, 68svh, 760px));
+  border: 1px solid #000;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f1f1f1;
+}
+
+.personal-mini-app-frame iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  background: #fff;
+}
+
 .personal-loading {
   min-height: 100svh;
   display: grid;
@@ -5645,6 +5692,16 @@ button:disabled {
 
   .personal-sheet {
     padding: 22px 18px 18px;
+  }
+
+  .personal-mini-app-sheet {
+    width: 100%;
+    min-height: calc(100svh - 20px);
+    padding: 16px 12px 12px;
+  }
+
+  .personal-mini-app-frame {
+    height: calc(100svh - 116px);
   }
 
   .personal-layerbar {

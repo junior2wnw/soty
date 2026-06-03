@@ -27,20 +27,27 @@ export function attachSpaces(app, { dataDir } = {}) {
   const photoStore = createPhotoStore(dataDir);
   const postStore = createPostStore(dataDir);
   const reviewStore = createReviewStore(dataDir);
+  const moduleStore = createModuleStore(dataDir);
   const ownerStore = createOwnerStore(dataDir);
   app.get("/api/spaces/:handle", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, req.params.handle || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, req.params.handle || ""));
   });
   app.get("/api/spaces/:handle/:space", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, req.params.handle || "", req.params.space || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, req.params.handle || "", req.params.space || ""));
   });
   app.post("/api/spaces/:handle/profile", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceMeta(metaStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/posts", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpacePost(postStore, ownerStore, req, res);
+  });
+  app.post("/api/spaces/:handle/modules", express.json({ limit: "32kb" }), async (req, res) => {
+    await saveSpaceModule(moduleStore, ownerStore, req, res);
+  });
+  app.post("/api/spaces/:handle/:space/modules", express.json({ limit: "32kb" }), async (req, res) => {
+    await saveSpaceModule(moduleStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/photo", express.json({ limit: "3mb" }), async (req, res) => {
     await saveSpacePhoto(photoStore, ownerStore, req, res);
@@ -55,10 +62,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await saveSpaceReview(reviewStore, req, res);
   });
   app.get("/manifest/space/:handle.json", async (req, res) => {
-    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, ownerStore, res, req.params.handle || "");
+    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, res, req.params.handle || "");
   });
   app.get("/manifest/space/:handle/:space.json", async (req, res) => {
-    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, ownerStore, res, req.params.handle || "", req.params.space || "");
+    await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, res, req.params.handle || "", req.params.space || "");
   });
   app.get("/photo/space/:handle.jpg", async (req, res) => {
     await sendSpacePhoto(photoStore, res, req.params.handle || "");
@@ -71,7 +78,7 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
 }
 
-async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, rawHandle, rawSpace = "") {
+async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, rawHandle, rawSpace = "") {
   const handle = cleanSlug(rawHandle) || "guest";
   const spaceSlug = cleanSlug(rawSpace);
   const meta = await readSpaceMeta(metaStore, handle);
@@ -83,6 +90,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
   const photo = await readSpacePhoto(photoStore, handle);
   const storedPosts = activeSpace ? [] : await readSpacePosts(postStore, handle);
   const reviews = await readSpaceReviews(reviewStore, handle, activeSpace?.slug || "");
+  const modules = await readSpaceModules(moduleStore, handle, activeSpace?.slug || "");
   return {
     schema: "soty.personal-space.v1",
     kind: activeSpace ? "space" : "entity",
@@ -114,6 +122,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
       href: `/@${handle}/${space.slug}`,
       active: space.slug === activeSpace?.slug
     })),
+    modules,
     actions: {
       messageUrl: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}`,
       runtimeUrl: `/?pwa=1&space=${encodeURIComponent(url)}`
@@ -121,8 +130,8 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
   };
 }
 
-async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, ownerStore, res, rawHandle, rawSpace = "") {
-  const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, ownerStore, rawHandle, rawSpace);
+async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, res, rawHandle, rawSpace = "") {
+  const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, moduleStore, ownerStore, rawHandle, rawSpace);
   const appName = manifestAppName(profile);
   const iconSrc = profile.photoUrl || (profile.slug
     ? `/icon/space/${encodeURIComponent(profile.handle)}/${encodeURIComponent(profile.slug)}.svg`
@@ -187,6 +196,33 @@ async function saveSpacePost(postStore, ownerStore, req, res) {
   await writeSpacePosts(postStore, handle, next);
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, post: next[0] });
+}
+
+async function saveSpaceModule(moduleStore, ownerStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const spaceSlug = cleanSlug(req.params.space || "");
+  const data = ownerActionData(req.body);
+  const module = normalizeModuleBody(data);
+  if (!module) {
+    const serverHostedMiniApp = isServerHostedMiniAppBody(data);
+    res.status(400).json({
+      ok: false,
+      error: serverHostedMiniApp ? "server_hosted_mini_apps_disabled" : "invalid_module"
+    });
+    return;
+  }
+  if (!await authorizeSpaceOwner(ownerStore, req, res, "module", data)) {
+    return;
+  }
+  const entries = await readSpaceModules(moduleStore, handle, spaceSlug);
+  const next = [{
+    id: `module-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    ...module,
+    createdAt: new Date().toISOString()
+  }, ...entries.filter((entry) => moduleKey(entry) !== moduleKey(module))].slice(0, 50);
+  await writeSpaceModules(moduleStore, handle, spaceSlug, next);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, module: next[0] });
 }
 
 async function saveSpaceMeta(metaStore, ownerStore, req, res) {
@@ -337,6 +373,12 @@ function createReviewStore(dataDir) {
   };
 }
 
+function createModuleStore(dataDir) {
+  return {
+    dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-modules")
+  };
+}
+
 function createOwnerStore(dataDir) {
   return {
     dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-owners")
@@ -358,6 +400,11 @@ function postPath(postStore, handle) {
 function reviewPath(reviewStore, handle, spaceSlug = "") {
   const suffix = spaceSlug ? `__${spaceSlug}` : "";
   return path.join(reviewStore.dir, `${handle}${suffix}.json`);
+}
+
+function modulePath(moduleStore, handle, spaceSlug = "") {
+  const suffix = spaceSlug ? `__${spaceSlug}` : "";
+  return path.join(moduleStore.dir, `${handle}${suffix}.json`);
 }
 
 function ownerPath(ownerStore, handle) {
@@ -415,6 +462,18 @@ async function readSpaceReviews(reviewStore, handle, spaceSlug = "") {
   }
 }
 
+async function readSpaceModules(moduleStore, handle, spaceSlug = "") {
+  try {
+    const records = JSON.parse(await readFile(modulePath(moduleStore, handle, spaceSlug), "utf8"));
+    if (!Array.isArray(records)) {
+      return [];
+    }
+    return records.map(normalizeStoredModule).filter(Boolean).slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
 async function readSpaceOwner(ownerStore, handle) {
   try {
     return normalizeStoredOwner(JSON.parse(await readFile(ownerPath(ownerStore, handle), "utf8")));
@@ -444,6 +503,11 @@ async function writeSpacePosts(postStore, handle, posts) {
 async function writeSpaceReviews(reviewStore, handle, spaceSlug, reviews) {
   await mkdir(reviewStore.dir, { recursive: true, mode: 0o700 });
   await writeFile(reviewPath(reviewStore, handle, spaceSlug), JSON.stringify(reviews, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+async function writeSpaceModules(moduleStore, handle, spaceSlug, modules) {
+  await mkdir(moduleStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(modulePath(moduleStore, handle, spaceSlug), JSON.stringify(modules, null, 2), { encoding: "utf8", mode: 0o600 });
 }
 
 async function writeSpaceOwner(ownerStore, owner) {
@@ -595,7 +659,7 @@ function normalizeOwnerPublicJwk(value) {
 
 function cleanOwnerAction(value) {
   const action = cleanReviewText(value, 24);
-  return action === "profile" || action === "post" || action === "photo" ? action : "";
+  return action === "profile" || action === "post" || action === "photo" || action === "module" ? action : "";
 }
 
 function cleanOwnerDeviceId(value) {
@@ -656,6 +720,113 @@ function normalizeStoredPost(record) {
     meta: cleanReviewText(record.meta, 80) || "Я",
     createdAt: cleanReviewText(record.createdAt, 40)
   };
+}
+
+function normalizeModuleBody(body) {
+  const kind = cleanModuleKind(body?.kind);
+  const title = cleanReviewText(body?.title, 80);
+  const href = kind === "miniapp"
+    ? cleanMiniAppHref(body?.href || body?.target)
+    : cleanModuleHref(body?.href || body?.target);
+  if (!title || !href) {
+    return null;
+  }
+  return {
+    kind,
+    title,
+    summary: cleanReviewText(body?.summary, 140),
+    href,
+    visibility: body?.visibility === "trusted" ? "trusted" : "public",
+    ...(kind === "miniapp" ? { layout: cleanMiniAppLayout(body?.layout) } : {})
+  };
+}
+
+function normalizeStoredModule(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const module = normalizeModuleBody(record);
+  if (!module) {
+    return null;
+  }
+  return {
+    id: cleanReviewText(record.id, 80) || moduleKey(module),
+    ...module,
+    createdAt: cleanReviewText(record.createdAt, 40)
+  };
+}
+
+function moduleKey(module) {
+  return `${module.kind}:${module.href}:${module.title}`.toLowerCase();
+}
+
+function cleanModuleKind(value) {
+  return cleanReviewText(value, 24) === "miniapp" ? "miniapp" : "link";
+}
+
+function cleanModuleHref(value) {
+  const text = cleanReviewText(value, 360);
+  if (!text || /[<>"']/u.test(text)) {
+    return "";
+  }
+  if (/^(?:\/|https?:\/\/|mailto:|tel:)/iu.test(text)) {
+    return text;
+  }
+  return "";
+}
+
+function cleanMiniAppHref(value) {
+  const text = cleanReviewText(value, 500);
+  if (!text || /[\s<>"']/u.test(text) || isServerHostedMiniAppUrl(text)) {
+    return "";
+  }
+  try {
+    const url = new URL(text);
+    if (url.protocol === "https:") {
+      return url.toString().slice(0, 500);
+    }
+    if (url.protocol === "http:" && isLoopbackHost(url.hostname)) {
+      return url.toString().slice(0, 500);
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+function isServerHostedMiniAppBody(body) {
+  return cleanModuleKind(body?.kind) === "miniapp" && isServerHostedMiniAppUrl(body?.href || body?.target);
+}
+
+function isServerHostedMiniAppUrl(value) {
+  const text = cleanReviewText(value, 500);
+  if (!text) {
+    return false;
+  }
+  if (text.startsWith("/") && !text.startsWith("//")) {
+    return true;
+  }
+  try {
+    const url = new URL(text);
+    const host = url.hostname.toLowerCase();
+    // Mini-app hosting under Soty is intentionally disabled for now; generated apps must live outside this web origin.
+    return host === "xn--n1afe0b.online";
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHost(value) {
+  const host = String(value || "").toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+function cleanMiniAppLayout(value) {
+  const layout = cleanReviewText(value, 24).toLowerCase().replace(/_/gu, "-");
+  if (layout === "compact" || layout === "large" || layout === "full" || layout === "floating") {
+    return layout;
+  }
+  return "half";
 }
 
 function titleFromPostText(text) {

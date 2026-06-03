@@ -35,8 +35,8 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { cleanPersonalHandle, loadPersonalHandle, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
-import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceInstallResult, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
+import { cleanPersonalHandle, loadPersonalHandle, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
+import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceInstallResult, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
 import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
@@ -1015,6 +1015,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     enableNotifications: promptPersonalSpaceNotifications,
     updateProfile: updateSignedPersonalSpaceProfile,
     savePost: saveSignedPersonalSpacePost,
+    saveModule: saveSignedPersonalSpaceModule,
     uploadPhoto: uploadSignedPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
@@ -1030,6 +1031,10 @@ async function updateSignedPersonalSpaceProfile(route: PersonalSpaceRoute, updat
 
 async function saveSignedPersonalSpacePost(route: PersonalSpaceRoute, draft: PersonalSpacePostDraft): Promise<PersonalSpaceInstallResult> {
   return savePersonalSpacePost(route, draft, await createPersonalOwnerProof(route, "post", draft));
+}
+
+async function saveSignedPersonalSpaceModule(route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft): Promise<PersonalSpaceInstallResult> {
+  return savePersonalSpaceModule(route, draft, await createPersonalOwnerProof(route, "module", draft));
 }
 
 async function uploadSignedPersonalSpacePhoto(route: PersonalSpaceRoute, file: File): Promise<string> {
