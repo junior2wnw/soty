@@ -35,11 +35,11 @@ export function attachSpaces(app, { dataDir } = {}) {
   const ownerStore = createOwnerStore(dataDir);
   app.get("/api/spaces/:handle", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, req.params.handle || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, req.params.handle || "", "", req.query?.viewer || ""));
   });
   app.get("/api/spaces/:handle/:space", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, req.params.handle || "", req.params.space || ""));
+    res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, req.params.handle || "", req.params.space || "", req.query?.viewer || ""));
   });
   app.post("/api/spaces/:handle/profile", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceMeta(metaStore, ownerStore, req, res);
@@ -100,9 +100,10 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
 }
 
-async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, rawHandle, rawSpace = "") {
+async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, rawHandle, rawSpace = "", rawViewer = "") {
   const handle = cleanSlug(rawHandle) || "guest";
   const spaceSlug = cleanSlug(rawSpace);
+  const viewer = cleanSlug(rawViewer);
   const meta = await readSpaceMeta(metaStore, handle);
   const owner = await readSpaceOwner(ownerStore, handle);
   const ownerName = meta.displayName || titleFromSlug(handle);
@@ -113,7 +114,9 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
   const storedPosts = activeSpace ? [] : await readSpacePosts(postStore, handle);
   const reviews = await readSpaceReviews(reviewStore, handle, activeSpace?.slug || "");
   const reactions = await readSpaceReactions(reactionStore, handle, activeSpace?.slug || "");
-  const modules = await readSpaceModules(moduleStore, handle, activeSpace?.slug || "");
+  const trustedHandles = cleanTrustedHandles(meta.trustedHandles);
+  const trustedViewer = Boolean(viewer && (viewer === handle || trustedHandles.includes(viewer)));
+  const modules = visibleSpaceModules(await readSpaceModules(moduleStore, handle, activeSpace?.slug || ""), trustedViewer);
   return {
     schema: "soty.personal-space.v1",
     kind: activeSpace ? "space" : "entity",
@@ -141,6 +144,8 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     posts: storedPosts,
     reviews,
     reactions,
+    trustedViewer,
+    trustedHandles: viewer === handle ? trustedHandles : [],
     spaces: defaultSpaces.map((space) => ({
       ...space,
       href: `/@${handle}/${space.slug}`,
@@ -601,6 +606,10 @@ async function readSpaceModules(moduleStore, handle, spaceSlug = "") {
   }
 }
 
+function visibleSpaceModules(modules, trustedViewer) {
+  return modules.filter((module) => module.visibility === "public" || trustedViewer);
+}
+
 async function readSpaceOwner(ownerStore, handle) {
   try {
     return normalizeStoredOwner(JSON.parse(await readFile(ownerPath(ownerStore, handle), "utf8")));
@@ -983,13 +992,17 @@ function normalizeMetaBody(body) {
   const about = cleanReviewText(body?.about, 420);
   const contactText = cleanReviewText(body?.contact, 160);
   const contact = normalizeContactMeta(contactText);
-  if (!displayName && !about && !contact) {
+  const trustedHandles = Array.isArray(body?.trustedHandles) || typeof body?.trustedHandles === "string"
+    ? cleanTrustedHandles(body.trustedHandles)
+    : null;
+  if (!displayName && !about && !contact && trustedHandles === null) {
     return null;
   }
   return {
     ...(displayName ? { displayName, headline: about || "визитка, записи, отзывы, связь" } : {}),
     ...(about ? { about, headline: about } : {}),
-    ...(contact ? { contact } : {})
+    ...(contact ? { contact } : {}),
+    ...(trustedHandles !== null ? { trustedHandles } : {})
   };
 }
 
@@ -1001,12 +1014,36 @@ function normalizeStoredMeta(record) {
   const about = cleanReviewText(record.about, 420);
   const headline = cleanReviewText(record.headline, 180);
   const contact = normalizeContactMeta(record.contact);
+  const trustedHandles = cleanTrustedHandles(record.trustedHandles);
   return {
     ...(displayName ? { displayName } : {}),
     ...(about ? { about } : {}),
     ...(headline ? { headline } : {}),
-    ...(contact ? { contact } : {})
+    ...(contact ? { contact } : {}),
+    ...(trustedHandles.length ? { trustedHandles } : {})
   };
+}
+
+function cleanTrustedHandles(value) {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[\s,;]+/u)
+      : [];
+  const seen = new Set();
+  const result = [];
+  for (const item of source) {
+    const handle = cleanSlug(item);
+    if (!handle || seen.has(handle)) {
+      continue;
+    }
+    seen.add(handle);
+    result.push(handle);
+    if (result.length >= 50) {
+      break;
+    }
+  }
+  return result;
 }
 
 function normalizeContactMeta(value) {

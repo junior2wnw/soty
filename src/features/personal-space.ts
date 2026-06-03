@@ -22,6 +22,7 @@ export type PersonalSpaceProfileUpdate = {
   readonly displayName: string;
   readonly about: string;
   readonly contact: string;
+  readonly trustedHandles?: readonly string[];
 };
 
 export type PersonalSpacePostDraft = {
@@ -177,6 +178,8 @@ export type PersonalSpaceProfile = {
   readonly posts: readonly PersonalSpacePost[];
   readonly reviews: readonly PersonalSpaceReview[];
   readonly reactions: PersonalSpaceReactions;
+  readonly trustedViewer: boolean;
+  readonly trustedHandles: readonly string[];
   readonly spaces: readonly PersonalSpaceLink[];
   readonly modules: readonly PersonalSpaceCardModule[];
   readonly actions: {
@@ -203,6 +206,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   posts: [],
   reviews: [],
   reactions: { likes: 0 },
+  trustedViewer: false,
+  trustedHandles: [],
   spaces: [],
   modules: [],
   actions: {
@@ -559,16 +564,15 @@ async function savePersonalReaction(profile: PersonalSpaceProfile): Promise<Pers
 }
 
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
-  const handle = encodeURIComponent(route.handle);
-  const url = route.slug
-    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}`
-    : `/api/spaces/${handle}`;
+  const viewer = loadLocalHandle();
+  const url = personalProfileApiUrl(route, viewer);
+  const cacheProfile = !viewer || viewer === route.handle;
   const cached = loadCachedPersonalProfile(route);
-  if (cached) {
-    void refreshPersonalSpaceProfile(route, url);
+  if (cached && cacheProfile) {
+    void refreshPersonalSpaceProfile(route, url, cacheProfile);
     return cached;
   }
-  const fetched = await fetchPersonalSpaceProfile(route, url);
+  const fetched = await fetchPersonalSpaceProfile(route, url, cacheProfile);
   if (fetched) {
     return fetched;
   }
@@ -579,11 +583,20 @@ async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<Pers
   return fallback;
 }
 
-async function refreshPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<void> {
-  await fetchPersonalSpaceProfile(route, url);
+function personalProfileApiUrl(route: PersonalSpaceRoute, viewer = ""): string {
+  const handle = encodeURIComponent(route.handle);
+  const path = route.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}`
+    : `/api/spaces/${handle}`;
+  const cleanViewer = cleanRoutePart(viewer);
+  return cleanViewer ? `${path}?viewer=${encodeURIComponent(cleanViewer)}` : path;
 }
 
-async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<PersonalSpaceProfile | null> {
+async function refreshPersonalSpaceProfile(route: PersonalSpaceRoute, url: string, cacheProfile: boolean): Promise<void> {
+  await fetchPersonalSpaceProfile(route, url, cacheProfile);
+}
+
+async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string, cacheProfile = true): Promise<PersonalSpaceProfile | null> {
   try {
     const response = await fetch(url, {
       cache: "no-store",
@@ -593,7 +606,9 @@ async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string)
       return null;
     }
     const profile = mergeLocalProfile(route, normalizeProfile(await response.json(), route));
-    saveCachedPersonalProfile(profile);
+    if (cacheProfile) {
+      saveCachedPersonalProfile(profile);
+    }
     return profile;
   } catch {
     return null;
@@ -659,6 +674,8 @@ function mergeLocalProfile(route: PersonalSpaceRoute, fetched: PersonalSpaceProf
     posts: mergeByKey(fetched.posts, cached.posts, (post) => post.id).slice(0, 8),
     reviews: mergeByKey(fetched.reviews, cached.reviews, (review) => review.id).slice(0, 8),
     reactions: { likes: Math.max(fetched.reactions.likes, cached.reactions.likes) },
+    trustedViewer: fetched.trustedViewer || cached.trustedViewer,
+    trustedHandles: fetched.trustedHandles.length ? fetched.trustedHandles : cached.trustedHandles,
     modules: mergeByKey(fetched.modules, cached.modules, cardModuleKey).slice(0, 16)
   };
 }
@@ -668,6 +685,7 @@ function applyLocalProfileUpdate(route: PersonalSpaceRoute, update: PersonalSpac
   const displayName = cleanText(update.displayName, 100) || profile.displayName;
   const about = cleanText(update.about, 420) || profile.about;
   const contact = cleanText(update.contact, 160);
+  const trustedHandles = update.trustedHandles ? normalizeTrustedHandles(update.trustedHandles) : profile.trustedHandles;
   const contacts = contact
     ? [
         { label: "контакт", value: contact, ...(contactHref(contact) ? { href: contactHref(contact) } : {}) },
@@ -680,6 +698,7 @@ function applyLocalProfileUpdate(route: PersonalSpaceRoute, update: PersonalSpac
     shortName: displayName,
     accountName: displayName,
     about,
+    trustedHandles,
     contacts
   };
 }
@@ -776,6 +795,34 @@ function contactKey(contact: PersonalSpaceContact): string {
   return `${contact.label}:${contact.value}:${contact.href || ""}`;
 }
 
+function normalizeTrustedHandles(value: unknown): readonly string[] {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[\s,;]+/u)
+      : [];
+  const seen = new Set<string>();
+  const handles: string[] = [];
+  for (const item of source) {
+    const handle = cleanRoutePart(String(item || ""));
+    if (!handle || seen.has(handle)) {
+      continue;
+    }
+    seen.add(handle);
+    handles.push(handle);
+    if (handles.length >= 50) {
+      break;
+    }
+  }
+  return handles;
+}
+
+function contactValueForProfile(profile: PersonalSpaceProfile): string {
+  return visibleContacts(profile, true)
+    .find((item) => !internalContactLabels.has(item.label) && item.value !== profile.url && !item.value.startsWith("@"))
+    ?.value || "";
+}
+
 function cardModuleKey(module: PersonalSpaceCardModule): string {
   return `${module.kind}:${module.href}`.toLowerCase();
 }
@@ -841,7 +888,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           ${layers.map((display) => {
             const view = layerDisplay(display, ownSpace);
             return `
-            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
+            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}" aria-controls="personal-panel-${display.id}" tabindex="${display.id === activeLayer ? "0" : "-1"}">
               ${icon(view.icon)}
               <span>${escapeHtml(view.label)}</span>
             </button>
@@ -909,8 +956,9 @@ function renderLayerPanel(
   localHandle: string
 ): string {
   const view = panelView(profile, layer, ownSpace, canInstall, canNotify, localHandle);
+  const active = layer === activeLayer;
   return `
-    <article class="personal-panel${layer === activeLayer ? " is-active" : ""}" data-panel="${layer}">
+    <article id="personal-panel-${layer}" class="personal-panel${active ? " is-active" : ""}" data-panel="${layer}" role="tabpanel" aria-hidden="${active ? "false" : "true"}"${active ? "" : " hidden"}>
       <div class="personal-panel-copy">
         <span>${escapeHtml(view.eyebrow)}</span>
         <h2>${escapeHtml(view.title)}</h2>
@@ -983,7 +1031,7 @@ function panelView(
     return {
       eyebrow: "место",
       title: "Место",
-      body: renderSpaceModules(profile, ownSpace)
+      body: renderSpaceModules(profile, ownSpace, localHandle)
     };
   }
   return {
@@ -1077,8 +1125,8 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  const groups = personalModuleGroups(profile, ownSpace);
+function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): string {
+  const groups = personalModuleGroups(profile, ownSpace, localHandle);
   return `
     <div class="personal-spaces">
       ${groups.map(renderPersonalModuleGroup).join("")}
@@ -1086,7 +1134,7 @@ function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): s
   `;
 }
 
-function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModuleGroup[] {
+function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): readonly PersonalModuleGroup[] {
   const runtimeModules: readonly PersonalModule[] = runtimeModuleDefinitions.map((module) => ({
     ...module,
     kind: "runtime" as const,
@@ -1094,7 +1142,7 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean):
   }));
   const runtimeById = (id: string): PersonalModule[] => runtimeModules.filter((module) => module.id === id);
   const customModules: readonly PersonalModule[] = profile.modules
-    .filter((module) => ownSpace || module.visibility === "public")
+    .filter((module) => canSeePersonalModule(module, profile, ownSpace, localHandle))
     .map(cardModuleToPersonalModule);
   const addModule: PersonalModule = {
     id: "module:add",
@@ -1123,7 +1171,7 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean):
       target: "data"
     }]
     : [];
-  const priorityModules = ownSpace ? [...runtimeById("agent"), addModule, ...dataModules] : [];
+  const priorityModules = ownSpace ? [...runtimeById("agent"), addModule, ...runtimeById("access"), ...dataModules] : [];
   return [
     ...(priorityModules.length ? [{ title: "Главное", modules: priorityModules, priority: true }] : []),
     ...(customModules.length ? [{ title: "Модули", modules: customModules }] : []),
@@ -1140,6 +1188,19 @@ function renderPersonalModuleGroup(group: PersonalModuleGroup): string {
       </div>
     </section>
   `;
+}
+
+function canSeePersonalModule(
+  module: PersonalSpaceCardModule,
+  profile: PersonalSpaceProfile,
+  ownSpace: boolean,
+  localHandle: string
+): boolean {
+  if (ownSpace || module.visibility === "public") {
+    return true;
+  }
+  const handle = cleanRoutePart(localHandle);
+  return Boolean(handle && (profile.trustedViewer || profile.trustedHandles.includes(handle)));
 }
 
 function cardModuleToPersonalModule(module: PersonalSpaceCardModule): PersonalModule {
@@ -1305,6 +1366,37 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     if (actionNode && shell.contains(actionNode)) {
       handleEntityAction(root, actionNode, profile, options);
     }
+  });
+  shell?.addEventListener("keydown", (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
+    if (!layerButton || !shell.contains(layerButton)) {
+      return;
+    }
+    const currentLayer = layerButton.dataset.layer || "";
+    const currentIndex = layers.findIndex((layer) => layer.id === currentLayer);
+    if (currentIndex < 0) {
+      return;
+    }
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (currentIndex + 1) % layers.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (currentIndex - 1 + layers.length) % layers.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = layers.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    const nextLayer = layers[nextIndex]?.id;
+    if (!nextLayer) {
+      return;
+    }
+    setActiveLayer(root, nextLayer);
+    shell.querySelector<HTMLButtonElement>(`[data-layer="${nextLayer}"]`)?.focus();
   });
   backupInput?.addEventListener("change", () => {
     const file = backupInput.files?.[0];
@@ -1934,7 +2026,8 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
     const update = {
       displayName: cleanText(nameInput?.value || "", 100),
       about: cleanText(aboutInput?.value || "", 420),
-      contact: cleanText(contactInput?.value || "", 160)
+      contact: cleanText(contactInput?.value || "", 160),
+      trustedHandles: profile.trustedHandles
     };
     if (!update.displayName && !update.about && !update.contact) {
       if (error) {
@@ -2346,6 +2439,10 @@ function replyWithoutCardModule(reply: string): string {
 }
 
 function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile, target: string, options: PersonalSpacePageOptions): void {
+  if (target === "access") {
+    showTrustedAccessSheet(root, profile, options);
+    return;
+  }
   if (target === "chess") {
     showPersonalChessSheet(root, profile);
     return;
@@ -2374,6 +2471,76 @@ function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile
     if (event.target === overlay) {
       overlay.remove();
     }
+  });
+}
+
+function showTrustedAccessSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const ownSpace = isRenderedOwnSpace(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  const localHandle = loadLocalHandle();
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-access-sheet" role="dialog" aria-modal="true" aria-label="Доступ">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div class="personal-module-mark">${icon("shield")}</div>
+      <h2>Доступ</h2>
+      ${ownSpace ? `
+        <p>Кто видит модули «По списку».</p>
+        <form data-access-form>
+          <textarea name="handles" maxlength="520" aria-label="ники" placeholder="anna, team, device-1">${escapeHtml(profile.trustedHandles.join(", "))}</textarea>
+          <button type="submit">${icon("check")} Сохранить</button>
+        </form>
+        <small data-error></small>
+      ` : `
+        <p>${escapeHtml(profile.trustedViewer ? "Вы в списке этой карточки." : localHandle ? "Доступ по списку закрыт." : "Для доступа нужен ваш ник.")}</p>
+      `}
+    </section>
+  `;
+  root.append(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+    }
+  });
+  if (!ownSpace) {
+    return;
+  }
+  const input = overlay.querySelector<HTMLTextAreaElement>("textarea[name='handles']");
+  input?.focus();
+  overlay.querySelector<HTMLFormElement>("[data-access-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+    const error = overlay.querySelector<HTMLElement>("[data-error]");
+    const trustedHandles = normalizeTrustedHandles(input?.value || "");
+    const update: PersonalSpaceProfileUpdate = {
+      displayName: profile.displayName,
+      about: profile.about,
+      contact: contactValueForProfile(profile),
+      trustedHandles
+    };
+    if (button) {
+      button.disabled = true;
+    }
+    void options.updateProfile(options.route, update)
+      .then(async (result) => {
+        if (!result.ok) {
+          throw new Error(result.message);
+        }
+        overlay.remove();
+        await renderPersonalSpacePage(root, options);
+        setActiveLayer(root, "place");
+      })
+      .catch((err) => {
+        if (error) {
+          error.textContent = err instanceof Error ? err.message : "Не удалось сохранить.";
+        }
+        if (button) {
+          button.disabled = false;
+        }
+      });
   });
 }
 
@@ -2816,10 +2983,15 @@ async function updateProfilePhoto(root: HTMLElement, file: File, options: Person
 function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
   root.querySelector<HTMLElement>(".personal-space-shell")?.setAttribute("data-active-layer", layer);
   root.querySelectorAll<HTMLButtonElement>("[data-layer]").forEach((button) => {
-    button.setAttribute("aria-selected", button.dataset.layer === layer ? "true" : "false");
+    const active = button.dataset.layer === layer;
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
   });
   root.querySelectorAll<HTMLElement>("[data-panel]").forEach((panel) => {
-    panel.classList.toggle("is-active", panel.dataset.panel === layer);
+    const active = panel.dataset.panel === layer;
+    panel.classList.toggle("is-active", active);
+    panel.hidden = !active;
+    panel.setAttribute("aria-hidden", active ? "false" : "true");
   });
 }
 
@@ -2865,6 +3037,8 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     posts: list(record.posts).map(normalizePost).filter(isPost).slice(0, 8),
     reviews: list(record.reviews).map(normalizeReview).filter(isReview).slice(0, 8),
     reactions: normalizeReactions(record.reactions),
+    trustedViewer: record.trustedViewer === true,
+    trustedHandles: normalizeTrustedHandles(record.trustedHandles),
     spaces: list(record.spaces).map(normalizeSpaceLink).filter(isSpaceLink).slice(0, 12),
     modules: list(record.modules).map(normalizeCardModule).filter(isCardModule).slice(0, 16),
     actions: {
