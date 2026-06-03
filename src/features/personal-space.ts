@@ -145,9 +145,13 @@ type PersonalModule = {
   readonly title: string;
   readonly summary: string;
   readonly icon: IconName;
-  readonly kind: "layer" | "runtime" | "space";
+  readonly kind: "runtime" | "space";
   readonly target: string;
   readonly active?: boolean;
+};
+type PersonalModuleGroup = {
+  readonly title: string;
+  readonly modules: readonly PersonalModule[];
 };
 const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
@@ -501,8 +505,8 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   if (layer === "place") {
     return {
       eyebrow: "место",
-      title: "Ещё",
-      body: renderSpaceModules(profile, ownSpace)
+      title: "Место",
+      body: renderSpaceModules(profile)
     };
   }
   return {
@@ -572,58 +576,44 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  const modules = personalModules(profile, ownSpace);
+function renderSpaceModules(profile: PersonalSpaceProfile): string {
+  const groups = personalModuleGroups(profile);
   return `
     <div class="personal-spaces">
-      ${modules.map(renderPersonalModule).join("")}
+      ${groups.map(renderPersonalModuleGroup).join("")}
     </div>
   `;
 }
 
-function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModule[] {
+function personalModuleGroups(profile: PersonalSpaceProfile): readonly PersonalModuleGroup[] {
+  const runtimeModules: readonly PersonalModule[] = runtimeModuleDefinitions.map((module) => ({
+    ...module,
+    kind: "runtime" as const
+  }));
+  const childSpaces: readonly PersonalModule[] = profile.spaces.map((space) => ({
+    id: `space:${space.slug}`,
+    title: space.title,
+    summary: space.summary,
+    icon: "hexagon" as const,
+    kind: "space" as const,
+    target: space.href,
+    active: space.active
+  }));
   return [
-    ...layers.filter((layer) => layer.id !== "place").map((layer) => {
-      const display = layerDisplay(layer, ownSpace);
-      return {
-        id: `layer:${layer.id}`,
-        title: display.label,
-        summary: layerModuleSummary(layer.id, ownSpace),
-        icon: display.icon,
-        kind: "layer" as const,
-        target: layer.id
-      };
-    }),
-    ...runtimeModuleDefinitions.map((module) => ({
-      ...module,
-      kind: "runtime" as const
-    })),
-    ...profile.spaces.map((space) => ({
-      id: `space:${space.slug}`,
-      title: space.title,
-      summary: space.summary,
-      icon: "hexagon" as const,
-      kind: "space" as const,
-      target: space.href,
-      active: space.active
-    }))
+    { title: "Функции", modules: runtimeModules },
+    ...(childSpaces.length ? [{ title: "Пространства", modules: childSpaces }] : [])
   ];
 }
 
-function layerModuleSummary(layer: PersonalSpaceLayer, ownSpace: boolean): string {
-  if (layer === "card") {
-    return "о себе";
-  }
-  if (layer === "personal") {
-    return ownSpace ? "записи" : "страница";
-  }
-  if (layer === "reviews") {
-    return "отзывы";
-  }
-  if (layer === "messages") {
-    return ownSpace ? "заметки" : "чат";
-  }
-  return "модули";
+function renderPersonalModuleGroup(group: PersonalModuleGroup): string {
+  return `
+    <section class="personal-module-group" aria-label="${escapeAttr(group.title)}">
+      <h3>${escapeHtml(group.title)}</h3>
+      <div class="personal-module-grid">
+        ${group.modules.map(renderPersonalModule).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
@@ -705,7 +695,7 @@ function layerSignal(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, o
     return ownSpace ? "себе" : "лично";
   }
   const count = runtimeModuleDefinitions.length + profile.spaces.length;
-  return countLabel(count, "модуль", "модуля", "модулей");
+  return countLabel(count, "функция", "функции", "функций");
 }
 
 function countLabel(count: number, one: string, few: string, many: string): string {
@@ -743,7 +733,7 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     }
     const moduleNode = target?.closest<HTMLElement>("[data-module-kind]");
     if (moduleNode && shell.contains(moduleNode)) {
-      openPersonalModule(root, moduleNode, profile, options);
+      openPersonalModule(moduleNode, profile, options);
       return;
     }
     const actionNode = target?.closest<HTMLElement>("[data-action]");
@@ -767,13 +757,9 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   });
 }
 
-function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+function openPersonalModule(node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
   const kind = node.dataset.moduleKind;
   const target = node.dataset.moduleTarget || "";
-  if (kind === "layer" && isPersonalLayer(target)) {
-    setActiveLayer(root, target);
-    return;
-  }
   if (kind === "space" && target) {
     window.history.pushState({}, "", target);
     window.dispatchEvent(new CustomEvent("soty-personal-routechange"));

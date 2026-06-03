@@ -780,6 +780,29 @@ button.personal-avatar {
 }
 
 .personal-spaces {
+  grid-template-columns: 1fr;
+  gap: clamp(18px, 2vw, 24px);
+}
+
+.personal-module-group {
+  min-width: 0;
+  display: grid;
+  gap: 0;
+}
+
+.personal-module-group h3 {
+  margin: 0;
+  padding: 0 0 8px;
+  border-bottom: 1px solid #000;
+  color: #000;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+.personal-module-grid {
+  display: grid;
   grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
   gap: 0 18px;
 }
