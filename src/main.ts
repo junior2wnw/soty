@@ -883,7 +883,6 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     uploadPhoto: uploadPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
-    openMessage: openPersonalSpaceMessage,
     openRuntime: openPersonalSpaceRuntime
   });
 }
@@ -933,21 +932,6 @@ async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallR
     return { ok: false, message: "Браузер не поддерживает оповещения." };
   }
   return { ok: false, message: "Оповещения не включены." };
-}
-
-function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: string): void {
-  const ownHandle = cleanContactHandle(fromHandle);
-  const targetHandle = cleanContactHandle(profile.handle);
-  if (ownHandle && targetHandle && ownHandle === targetHandle) {
-    window.location.assign(personalSpaceLayerPath({ handle: targetHandle, slug: profile.slug }, "personal"));
-    return;
-  }
-  const target = profile.actions.messageUrl || bareChatPath();
-  const url = new URL(target, window.location.origin);
-  if (ownHandle) {
-    url.searchParams.set("from", `@${ownHandle}`);
-  }
-  window.location.assign(`${url.pathname}${url.search}${url.hash}`);
 }
 
 function openPersonalSpaceRuntime(profile: PersonalSpaceProfile, target = ""): void {
@@ -1010,12 +994,6 @@ function isSelfStartRoute(location: Location = window.location): boolean {
     && !url.searchParams.has("space")
     && !url.searchParams.has("module")
     && !url.searchParams.has("restore-local");
-}
-
-function personalSpaceLayerPath(route: PersonalSpaceRoute, layer: string): string {
-  const url = new URL(route.slug ? `/@${encodeURIComponent(route.handle)}/${encodeURIComponent(route.slug)}` : `/@${encodeURIComponent(route.handle)}`, window.location.origin);
-  url.searchParams.set("layer", layer);
-  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 async function renderSelfStartPage(): Promise<void> {
@@ -1313,6 +1291,7 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   if (restoredHandle) {
     saveSelfStartHandle(restoredHandle);
   }
+  restorePortableLocalStorage(payload.localStorage);
 
   const restored = restoredTunnelsFromPayload(payload);
   if (restored.tunnels.length > 0) {
@@ -1335,6 +1314,30 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
     count: restored.tunnels.length,
     texts: restored.texts
   };
+}
+
+function restorePortableLocalStorage(snapshot?: Readonly<Record<string, unknown>>): void {
+  if (!snapshot) {
+    return;
+  }
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (!isRestorableLocalStorageKey(key) || typeof value !== "string") {
+      continue;
+    }
+    try {
+      localStorage.setItem(key, value.slice(0, 1_000_000));
+    } catch {
+      // Import should restore as much as possible without failing the whole backup.
+    }
+  }
+}
+
+function isRestorableLocalStorageKey(key: string): boolean {
+  return key === "soty:personal-handle:v1"
+    || key === "soty:self-start-handle:v1"
+    || key === "soty:handle:v1"
+    || key.startsWith("soty:personal-profile:v1:")
+    || key.startsWith("soty:personal-thread:v1:");
 }
 
 function restoredSelfStartHandle(payload: OperatorExportPayload): string {

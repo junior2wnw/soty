@@ -34,7 +34,6 @@ export type PersonalSpacePageOptions = {
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
-  readonly openMessage: (profile: PersonalSpaceProfile, fromHandle: string) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile, target?: string) => void;
 };
 
@@ -81,6 +80,14 @@ type PersonalSpaceModuleDraft = {
   readonly summary: string;
   readonly href: string;
   readonly visibility: PersonalModuleVisibility;
+};
+
+type PersonalThreadLine = {
+  readonly id: string;
+  readonly author: string;
+  readonly text: string;
+  readonly createdAt: string;
+  readonly mine: boolean;
 };
 
 export type PersonalSpaceProfile = {
@@ -178,6 +185,7 @@ type PersonalModuleGroup = {
 const localHandleKey = "soty:personal-handle:v1";
 const legacyLocalHandleKeys = ["soty:self-start-handle:v1", "soty:handle:v1"];
 const profileCachePrefix = "soty:personal-profile:v1:";
+const personalThreadPrefix = "soty:personal-thread:v1:";
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -597,7 +605,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           }).join("")}
         </div>
         <section class="personal-panels">
-          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify)).join("")}
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify, localHandle)).join("")}
         </section>
       </main>
     </section>
@@ -637,9 +645,10 @@ function renderLayerPanel(
   ownSpace: boolean,
   activeLayer: PersonalSpaceLayer,
   canInstall: boolean,
-  canNotify: boolean
+  canNotify: boolean,
+  localHandle: string
 ): string {
-  const view = panelView(profile, layer, ownSpace, canInstall, canNotify);
+  const view = panelView(profile, layer, ownSpace, canInstall, canNotify, localHandle);
   return `
     <article class="personal-panel${layer === activeLayer ? " is-active" : ""}" data-panel="${layer}">
       <div class="personal-panel-copy">
@@ -653,7 +662,14 @@ function renderLayerPanel(
   `;
 }
 
-function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean, canInstall: boolean, canNotify: boolean): PersonalPanelView {
+function panelView(
+  profile: PersonalSpaceProfile,
+  layer: PersonalSpaceLayer,
+  ownSpace: boolean,
+  canInstall: boolean,
+  canNotify: boolean,
+  localHandle: string
+): PersonalPanelView {
   if (layer === "personal") {
     const actions = entityActionsFor({ surface: "personal", ownSpace, canInstall: false });
     return {
@@ -698,14 +714,9 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     const actions = entityActionsFor({ surface: "messages", ownSpace, canInstall: false, canNotify });
     return {
       eyebrow: "связь",
-      title: "Связь",
+      title: ownSpace ? "Заметки" : "Связь",
       ...(actions.length ? { actions } : {}),
-      body: `
-        <div class="personal-message-preview">
-          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>${ownSpace ? "Диалоги и заметки." : "Сообщения напрямую."}</p></div>
-          <small data-action-note></small>
-        </div>
-      `
+      body: renderMessagePreview(profile, ownSpace, localHandle)
     };
   }
   if (layer === "place") {
@@ -738,6 +749,21 @@ function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): st
   );
 }
 
+function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): string {
+  const actor = cleanRoutePart(localHandle || profile.handle) || "guest";
+  const lines = loadPersonalThread(profile, actor).slice(-3);
+  return `
+    <div class="personal-message-preview">
+      <div class="personal-message-copy">
+        <b>${escapeHtml(ownSpace ? profile.shortName : profile.displayName)}</b>
+        <p>${escapeHtml(ownSpace ? "Личные заметки в этой карточке." : "Личная переписка по этой карточке.")}</p>
+      </div>
+      ${renderThreadLines(lines, ownSpace, true)}
+      <small data-action-note></small>
+    </div>
+  `;
+}
+
 function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
   if (options.surface === "card") {
     if (options.ownSpace) {
@@ -761,7 +787,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   }
   if (options.surface === "messages") {
     return [
-      { id: options.ownSpace ? "note" : "message", label: options.ownSpace ? "Заметка" : "Написать", icon: options.ownSpace ? "hexagon" : "send", tone: "primary" },
+      { id: "message", label: options.ownSpace ? "Заметка" : "Написать", icon: options.ownSpace ? "hexagon" : "send", tone: "primary" },
       ...(!options.ownSpace && options.canNotify ? [{ id: "notifications", label: "Оповещения", icon: "bell", tone: "secondary" } as const] : [])
     ];
   }
@@ -1039,14 +1065,14 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
   if (action === "message") {
     const handle = loadLocalHandle();
     if (handle) {
-      options.openMessage(profile, handle);
+      showMessageSheet(root, profile, handle, options);
       return;
     }
     showNicknameSheet(root, {
       title: "Ваше имя",
       description: "",
       action: "Написать",
-      onDone: (nextHandle) => options.openMessage(profile, nextHandle)
+      onDone: (nextHandle) => showMessageSheet(root, profile, nextHandle, options)
     });
     return;
   }
@@ -1132,6 +1158,149 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
     return;
   }
   button.disabled = false;
+}
+
+function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, author: string, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const actor = cleanRoutePart(author) || "guest";
+  const ownSpace = isOwnProfile(profile, actor);
+  let lines = loadPersonalThread(profile, actor);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-message-sheet" role="dialog" aria-modal="true" aria-label="${escapeAttr(ownSpace ? "Заметки" : "Связь")}">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>${escapeHtml(ownSpace ? "Заметки" : profile.shortName)}</h2>
+      <p>${escapeHtml(ownSpace ? "Только для себя." : "Личная связь.")}</p>
+      ${renderThreadLines(lines, ownSpace, false)}
+      <form data-message-form>
+        <textarea name="text" maxlength="420" required placeholder="${escapeAttr(ownSpace ? "Короткая заметка" : "Сообщение")}"></textarea>
+        <button type="submit">${icon("send")} ${escapeHtml(ownSpace ? "Записать" : "Отправить")}</button>
+      </form>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
+  textarea?.focus();
+  const close = () => {
+    overlay.remove();
+    void renderPersonalSpacePage(root, options).then(() => setActiveLayer(root, "messages"));
+  };
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-message-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = cleanText(textarea?.value || "", 420);
+    const error = overlay.querySelector<HTMLElement>("[data-error]");
+    if (!text) {
+      if (error) {
+        error.textContent = "Напишите пару слов.";
+      }
+      return;
+    }
+    lines = appendPersonalThreadLine(profile, actor, text);
+    const thread = overlay.querySelector<HTMLElement>("[data-personal-thread]");
+    if (thread) {
+      thread.innerHTML = renderThreadLineItems(lines, ownSpace);
+      thread.scrollTop = thread.scrollHeight;
+    }
+    if (textarea) {
+      textarea.value = "";
+      textarea.focus();
+    }
+    if (error) {
+      error.textContent = "";
+    }
+  });
+}
+
+function renderThreadLines(lines: readonly PersonalThreadLine[], ownSpace: boolean, compact: boolean): string {
+  return `
+    <div class="personal-thread${compact ? " is-compact" : ""}" data-personal-thread>
+      ${renderThreadLineItems(lines, ownSpace)}
+    </div>
+  `;
+}
+
+function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: boolean): string {
+  if (lines.length === 0) {
+    return `<section class="personal-empty personal-thread-empty">${icon(ownSpace ? "hexagon" : "mail")} <span>${escapeHtml(ownSpace ? "Заметок пока нет." : "Переписка начнется здесь.")}</span></section>`;
+  }
+  return lines.map((line) => `
+    <article class="personal-thread-line${line.mine ? " is-mine" : ""}">
+      <span>${escapeHtml(line.author)}</span>
+      <p>${escapeHtml(line.text)}</p>
+      <time>${escapeHtml(threadTime(line.createdAt))}</time>
+    </article>
+  `).join("");
+}
+
+function appendPersonalThreadLine(profile: PersonalSpaceProfile, author: string, text: string): readonly PersonalThreadLine[] {
+  const line = {
+    id: localItemId("message"),
+    author: cleanText(author, 80) || "guest",
+    text: cleanText(text, 420),
+    createdAt: new Date().toISOString(),
+    mine: true
+  };
+  const next = [...loadPersonalThread(profile, author), line].filter((item) => item.text).slice(-80);
+  savePersonalThread(profile, author, next);
+  return next;
+}
+
+function loadPersonalThread(profile: PersonalSpaceProfile, author: string): readonly PersonalThreadLine[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(personalThreadKey(profile, author)) || "[]") as unknown;
+    return list(parsed).map(normalizeThreadLine).filter(isThreadLine).slice(-80);
+  } catch {
+    return [];
+  }
+}
+
+function savePersonalThread(profile: PersonalSpaceProfile, author: string, lines: readonly PersonalThreadLine[]): void {
+  try {
+    window.localStorage.setItem(personalThreadKey(profile, author), JSON.stringify(lines));
+  } catch {
+    // Local-first continuity is helpful, but a blocked storage write must not trap the user.
+  }
+}
+
+function personalThreadKey(profile: PersonalSpaceProfile, author: string): string {
+  return `${personalThreadPrefix}${routeUrl(profile)}:${cleanRoutePart(author) || "guest"}`;
+}
+
+function normalizeThreadLine(value: unknown): PersonalThreadLine | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const text = cleanText(value.text, 420);
+  if (!text) {
+    return null;
+  }
+  return {
+    id: cleanText(value.id, 80) || localItemId("message"),
+    author: cleanText(value.author, 80) || "guest",
+    text,
+    createdAt: cleanText(value.createdAt, 40) || new Date().toISOString(),
+    mine: value.mine !== false
+  };
+}
+
+function isThreadLine(value: PersonalThreadLine | null): value is PersonalThreadLine {
+  return Boolean(value);
+}
+
+function threadTime(value: string): string {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString("ru-RU", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 function showPostSheet(root: HTMLElement, options: PersonalSpacePageOptions): void {

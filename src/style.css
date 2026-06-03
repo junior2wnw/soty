@@ -996,6 +996,68 @@ button.personal-avatar {
   font-weight: 760;
 }
 
+.personal-message-sheet {
+  width: min(100%, 520px);
+}
+
+.personal-thread {
+  max-height: min(34svh, 260px);
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.personal-thread.is-compact {
+  max-height: none;
+  overflow: visible;
+}
+
+.personal-thread-line {
+  width: fit-content;
+  max-width: min(86%, 420px);
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  justify-self: start;
+  padding: 9px 11px;
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: #f1f1f1;
+  color: #000;
+}
+
+.personal-thread-line.is-mine {
+  justify-self: end;
+  background: #ffffff;
+}
+
+.personal-thread-line span,
+.personal-thread-line time {
+  color: #616161;
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.personal-thread-line p {
+  margin: 0;
+  color: #000;
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.personal-thread-line time {
+  justify-self: end;
+}
+
+.personal-thread-empty {
+  min-height: 48px;
+}
+
 .personal-module-sheet {
   justify-items: start;
 }

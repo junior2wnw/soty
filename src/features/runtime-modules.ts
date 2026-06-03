@@ -12,7 +12,7 @@ export type RuntimeModuleDefinition = {
 };
 
 export const runtimeModuleDefinitions = [
-  { id: "agent", title: "Клава", summary: "помощник", icon: "agent", target: "agent", entityScoped: true },
+  { id: "agent", title: "ИИ", summary: "команды", icon: "agent", target: "agent", entityScoped: true },
   { id: "apps", title: "Приложения", summary: "сервисы", icon: "apps", target: "apps", entityScoped: true },
   { id: "actions", title: "Действия", summary: "задачи", icon: "check", target: "actions", entityScoped: true },
   { id: "access", title: "Доступ", summary: "права", icon: "shield", target: "access", entityScoped: true },
