@@ -1,6 +1,6 @@
-import QRCode from "qrcode";
 import { icon } from "../icons";
 import type { IconName } from "../icons";
+import { showLinkShareSheet } from "./share-sheet";
 
 export type PersonalSpaceRoute = {
   readonly handle: string;
@@ -1023,67 +1023,33 @@ async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile, 
   closePersonalOverlay(root);
   const shareUrl = new URL(profile.url, window.location.origin).toString();
   const ownSpace = isOwnProfile(profile, loadLocalHandle());
-  const qr = await QRCode.toDataURL(shareUrl, {
-    margin: 1,
-    scale: 8,
-    color: {
-      dark: "#171717",
-      light: "#ffffff"
-    }
-  });
-  const overlay = document.createElement("div");
-  overlay.className = "personal-overlay";
-  overlay.innerHTML = `
-    <section class="personal-sheet personal-share-sheet" role="dialog" aria-modal="true" aria-label="Поделиться">
-      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
-      <h2>Поделиться</h2>
-      <p>QR или ссылка.</p>
-      <img src="${escapeAttr(qr)}" alt="QR-код ${escapeAttr(profile.displayName)}" />
-      <div class="personal-share-actions">
-        <button type="button" data-copy>${icon("copy")} Скопировать</button>
-        <button type="button" data-native>${icon("send")} Отправить</button>
-      </div>
-      ${ownSpace ? `
-      <div class="personal-share-actions is-secondary">
-        <button type="button" data-share-import>${icon("upload")} Импорт</button>
-        <button type="button" data-share-export>${icon("download")} Экспорт</button>
-      </div>
-      ` : ""}
-      <small data-share-note>${escapeHtml(shareUrl)}</small>
-    </section>
-  `;
-  root.append(overlay);
-  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      overlay.remove();
-    }
-  });
-  overlay.querySelector<HTMLElement>("[data-copy]")?.addEventListener("click", () => {
-    void navigator.clipboard?.writeText(shareUrl).then(() => {
-      const note = overlay.querySelector<HTMLElement>("[data-share-note]");
-      if (note) {
-        note.textContent = "Ссылка скопирована.";
-      }
-    });
-  });
-  overlay.querySelector<HTMLElement>("[data-native]")?.addEventListener("click", () => {
-    if (navigator.share) {
-      void navigator.share({ title: profile.displayName, url: shareUrl }).catch(() => undefined);
-      return;
-    }
-    void navigator.clipboard?.writeText(shareUrl);
-  });
-  overlay.querySelector<HTMLElement>("[data-share-import]")?.addEventListener("click", () => {
-    overlay.remove();
-    root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
-  });
-  overlay.querySelector<HTMLElement>("[data-share-export]")?.addEventListener("click", () => {
-    options.exportBackup();
-    const note = overlay.querySelector<HTMLElement>("[data-share-note]");
-    if (note) {
-      note.textContent = "Экспорт готов.";
-    }
+  await showLinkShareSheet({
+    title: profile.displayName,
+    url: shareUrl,
+    actions: ownSpace
+      ? [
+        {
+          id: "import",
+          label: "Импорт",
+          icon: "upload",
+          tone: "secondary",
+          closeOnClick: true,
+          run: () => {
+            root.querySelector<HTMLInputElement>("[data-backup-import]")?.click();
+          }
+        },
+        {
+          id: "export",
+          label: "Экспорт",
+          icon: "download",
+          tone: "secondary",
+          run: () => {
+            options.exportBackup();
+            return "Экспорт готов";
+          }
+        }
+      ]
+      : []
   });
 }
 

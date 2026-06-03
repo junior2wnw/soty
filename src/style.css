@@ -610,8 +610,7 @@ button.personal-avatar {
   user-select: text;
 }
 
-.personal-sheet form button,
-.personal-share-actions button {
+.personal-sheet form button {
   min-height: 48px;
   display: inline-flex;
   align-items: center;
@@ -625,40 +624,9 @@ button.personal-avatar {
   font-weight: 850;
 }
 
-.personal-sheet form button svg,
-.personal-share-actions svg {
+.personal-sheet form button svg {
   width: 18px;
   height: 18px;
-}
-
-.personal-share-sheet img {
-  width: min(100%, 260px);
-  justify-self: center;
-  border: 1px solid #000;
-  border-radius: 8px;
-  background: #fff;
-}
-
-.personal-share-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.personal-share-actions button:last-child {
-  border: 1px solid #000;
-  background: #fff;
-  color: #000;
-}
-
-.personal-share-actions.is-secondary button {
-  min-height: 40px;
-  background: #fff;
-  color: #000;
-}
-
-.personal-share-sheet small {
-  overflow-wrap: anywhere;
 }
 
 .personal-rating-field {
@@ -5251,6 +5219,16 @@ button:disabled {
   grid-template-columns: 1fr;
 }
 
+.link-share-actions.is-secondary {
+  margin-top: -4px;
+}
+
+.qr-modal .link-share-sheet .link-share-actions.is-secondary button {
+  min-height: 40px;
+  background: #fff;
+  color: #000;
+}
+
 @keyframes blink {
   50% {
     opacity: 0.34;
@@ -5467,10 +5445,6 @@ button:disabled {
 
   .personal-sheet {
     padding: 22px 18px 18px;
-  }
-
-  .personal-share-actions {
-    grid-template-columns: 1fr;
   }
 
   .personal-layerbar {

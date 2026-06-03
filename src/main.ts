@@ -9,6 +9,7 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { fetchFrontendQuickActions, mergeQuickActions, quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
+import { copyText, showLinkShareSheet } from "./features/share-sheet";
 import { dedupeMiniApps, miniAppDefaultHeight, miniAppDefaultWidth, miniAppLayouts, miniAppRecordKey, normalizeMiniAppLayout, normalizeMiniAppScope, safeMiniAppCssSize, sameMiniAppRecord, sanitizeLocalMiniAppDefinition, sanitizeMiniAppDefinition, searchMiniApps } from "./features/mini-apps";
 import type { FileBundleAttachment, FileBundleMarker, MiniAppDefinition, MiniAppInstallResult, MiniAppSession, MiniAppVisibility, MiniAppWindowLayout, PendingAttachment } from "./features/mini-apps";
 import { commonMessageDialogTarget, createMessageDialogLine, isMessageDialogLine, messageDialogVisibleForTarget, parseMessageDialogLine } from "./features/message-dialogs";
@@ -10084,26 +10085,6 @@ function resetQrResetGesture(): void {
   qrResetTimer = 0;
 }
 
-async function copyText(value: string): Promise<void> {
-  if (!value) {
-    return;
-  }
-  try {
-    await navigator.clipboard.writeText(value);
-    return;
-  } catch {
-    const input = document.createElement("textarea");
-    input.value = value;
-    input.style.position = "fixed";
-    input.style.opacity = "0";
-    document.body.append(input);
-    input.focus();
-    input.select();
-    document.execCommand("copy");
-    input.remove();
-  }
-}
-
 function selectedDialogCode(): string {
   return selectedId ? selectedId.slice(0, 8).toUpperCase() : "";
 }
@@ -10129,10 +10110,19 @@ async function shareSelectedDialogLink(): Promise<void> {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const publicUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
   if (publicUrl) {
-    await showLinkShareSheet({
+    closeQrOverlay();
+    const overlay = await showLinkShareSheet({
       title: tunnel ? counterpartyLabel(tunnel) : "Контакт",
-      url: publicUrl
+      url: publicUrl,
+      onClose: (closed) => {
+        if (qrOverlay === closed) {
+          qrOverlay = null;
+          qrMode = null;
+        }
+      }
     });
+    qrOverlay = overlay;
+    qrMode = "manual";
     return;
   }
   const link = await selectedDialogLink();
@@ -10156,69 +10146,6 @@ async function shareSelectedDialogLink(): Promise<void> {
       id.dataset.tooltip = contactUrl ? "Поделиться контактом" : code ? `Скопировать ссылку · ${code}` : "Диалог не выбран";
     }
   }, 1200);
-}
-
-async function showLinkShareSheet(options: { readonly title: string; readonly url: string }): Promise<void> {
-  closeQrOverlay();
-  const supportsNativeShare = "share" in navigator;
-  const overlay = document.createElement("div");
-  overlay.className = "qr-modal link-share-modal";
-  overlay.innerHTML = `
-    <div class="qr-sheet link-share-sheet" role="dialog" aria-label="Поделиться">
-      <button class="icon-button link-share-close" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
-      <canvas aria-label="QR"></canvas>
-      <div class="link-share-caption">
-        <b>${escapeHtml(options.title)}</b>
-        <small>${escapeHtml(shortShareUrl(options.url))}</small>
-      </div>
-      <div class="link-share-actions${supportsNativeShare ? "" : " is-single"}">
-        <button class="icon-button link-share-copy" type="button">${icon("copy")}<span>Копировать</span></button>
-        <button class="icon-button link-share-native" type="button"${supportsNativeShare ? "" : " hidden"}>${icon("send")}<span>Отправить</span></button>
-      </div>
-    </div>
-  `;
-  document.body.append(overlay);
-  qrOverlay = overlay;
-  qrMode = "manual";
-  const canvas = overlay.querySelector<HTMLCanvasElement>("canvas");
-  if (canvas) {
-    await QRCode.toCanvas(canvas, options.url, {
-      margin: 1,
-      scale: 8,
-      color: {
-        dark: "#000000",
-        light: "#ffffff"
-      }
-    });
-  }
-  overlay.querySelector<HTMLElement>(".link-share-close")?.addEventListener("click", () => closeQrOverlay());
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      closeQrOverlay();
-    }
-  });
-  overlay.querySelector<HTMLElement>(".link-share-copy")?.addEventListener("click", () => {
-    void copyText(options.url).then(() => {
-      const note = overlay.querySelector<HTMLElement>(".link-share-caption small");
-      if (note) {
-        note.textContent = "Скопировано";
-      }
-    });
-  });
-  overlay.querySelector<HTMLElement>(".link-share-native")?.addEventListener("click", () => {
-    if (navigator.share) {
-      void navigator.share({ title: options.title, url: options.url }).catch(() => undefined);
-    }
-  });
-}
-
-function shortShareUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    return `${url.host}${url.pathname}`;
-  } catch {
-    return value;
-  }
 }
 
 function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
