@@ -719,6 +719,10 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
     window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
     return;
   }
+  if (kind === "runtime" && target === "qr") {
+    void showShareSheet(root, profile);
+    return;
+  }
   if (kind === "runtime") {
     options.openRuntime(profile, target);
   }
