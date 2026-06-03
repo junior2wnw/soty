@@ -444,7 +444,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     return {
       eyebrow: "место",
       title: "Место",
-      body: renderSpaceModules(profile)
+      body: renderSpaceModules(profile, ownSpace)
     };
   }
   return {
@@ -514,8 +514,8 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderSpaceModules(profile: PersonalSpaceProfile): string {
-  const modules = personalModules(profile);
+function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  const modules = personalModules(profile, ownSpace);
   return `
     <div class="personal-spaces">
       ${modules.map(renderPersonalModule).join("")}
@@ -523,8 +523,19 @@ function renderSpaceModules(profile: PersonalSpaceProfile): string {
   `;
 }
 
-function personalModules(profile: PersonalSpaceProfile): readonly PersonalModule[] {
+function personalModules(profile: PersonalSpaceProfile, ownSpace: boolean): readonly PersonalModule[] {
   return [
+    ...layers.filter((layer) => layer.id !== "place").map((layer) => {
+      const display = layerDisplay(layer, ownSpace);
+      return {
+        id: `layer:${layer.id}`,
+        title: display.label,
+        summary: layerModuleSummary(layer.id, ownSpace),
+        icon: display.icon,
+        kind: "layer" as const,
+        target: layer.id
+      };
+    }),
     ...runtimeModuleDefinitions.map((module) => ({
       ...module,
       kind: "runtime" as const
@@ -539,6 +550,22 @@ function personalModules(profile: PersonalSpaceProfile): readonly PersonalModule
       active: space.active
     }))
   ];
+}
+
+function layerModuleSummary(layer: PersonalSpaceLayer, ownSpace: boolean): string {
+  if (layer === "card") {
+    return "контакты";
+  }
+  if (layer === "personal") {
+    return ownSpace ? "записи" : "публикации";
+  }
+  if (layer === "reviews") {
+    return "мнения";
+  }
+  if (layer === "messages") {
+    return ownSpace ? "себе" : "чат";
+  }
+  return "модули";
 }
 
 function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
