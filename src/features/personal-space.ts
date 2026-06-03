@@ -34,6 +34,7 @@ export type PersonalSpacePageOptions = {
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
+  readonly applyManifest: (profile: PersonalSpaceProfile) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile, target?: string) => void;
 };
 
@@ -215,6 +216,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const previousLayer = previousActiveLayer(root, routeUrl(options.route));
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
+  options.applyManifest(profile);
   const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
@@ -410,7 +412,10 @@ function mergeLocalProfile(route: PersonalSpaceRoute, fetched: PersonalSpaceProf
   if (!cached) {
     return fetched;
   }
-  const displayName = fetched.displayName === route.handle && cached.displayName !== route.handle
+  const defaultDisplayName = defaultPersonalDisplayName(route);
+  const fetchedUsesDefaultName = fetched.displayName === route.handle || fetched.displayName === defaultDisplayName;
+  const cachedUsesDefaultName = cached.displayName === route.handle || cached.displayName === defaultDisplayName;
+  const displayName = fetchedUsesDefaultName && !cachedUsesDefaultName
     ? cached.displayName
     : fetched.displayName;
   const about = isDefaultPersonalText(fetched.about) && !isDefaultPersonalText(cached.about)
@@ -941,6 +946,35 @@ function isDefaultPersonalText(value: string): boolean {
     || text === "описание не указано."
     || text === "пока без описания."
     || text === "контактная страница.";
+}
+
+function defaultPersonalDisplayName(route: PersonalSpaceRoute): string {
+  const ownerName = titleFromRoutePart(route.handle);
+  if (!route.slug) {
+    return ownerName;
+  }
+  return `${defaultSpaceTitle(route.slug)} · ${ownerName}`;
+}
+
+function defaultSpaceTitle(slug: string): string {
+  if (slug === "work") {
+    return "Работа";
+  }
+  if (slug === "home") {
+    return "Дом";
+  }
+  if (slug === "club") {
+    return "Клуб";
+  }
+  return titleFromRoutePart(slug);
+}
+
+function titleFromRoutePart(value: string): string {
+  return value
+    .replace(/[-_.]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/^\p{Ll}/u, (char) => char.toLocaleUpperCase("ru-RU")) || "Соты";
 }
 
 function previousActiveLayer(root: HTMLElement, routeUrl: string): PersonalSpaceLayer | null {

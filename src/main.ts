@@ -330,6 +330,7 @@ let appBundleReloading = false;
 let appBundleWatchTimer = 0;
 let sameDeviceWindowSyncStarted = false;
 let sameDeviceWindowSyncTimer = 0;
+let personalManifestObjectUrl = "";
 const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
@@ -861,11 +862,133 @@ function setSelfStartMode(active: boolean): void {
 }
 
 function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
+  revokePersonalManifestObjectUrl();
   const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
   if (!manifest) {
     return;
   }
   manifest.href = route ? personalSpaceManifestHref(route) : "/manifest.webmanifest";
+}
+
+function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
+  const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+  if (!manifest) {
+    return;
+  }
+  try {
+    const blob = new Blob([JSON.stringify(personalProfileManifest(profile))], {
+      type: "application/manifest+json"
+    });
+    const nextHref = URL.createObjectURL(blob);
+    revokePersonalManifestObjectUrl();
+    personalManifestObjectUrl = nextHref;
+    manifest.href = nextHref;
+  } catch {
+    manifest.href = personalSpaceManifestHref({ handle: profile.handle, slug: profile.slug });
+  }
+}
+
+function revokePersonalManifestObjectUrl(): void {
+  if (!personalManifestObjectUrl) {
+    return;
+  }
+  URL.revokeObjectURL(personalManifestObjectUrl);
+  personalManifestObjectUrl = "";
+}
+
+function personalProfileManifest(profile: PersonalSpaceProfile): Record<string, unknown> {
+  const name = cleanManifestText(profile.slug ? profile.displayName : profile.accountName || profile.displayName || profile.handle, 96) || "соты";
+  const startUrl = profile.url || (profile.slug ? `/@${profile.handle}/${profile.slug}` : `/@${profile.handle}`);
+  const absoluteStartUrl = absoluteManifestUrl(startUrl);
+  return {
+    name,
+    short_name: manifestShortName(name),
+    description: cleanManifestText(profile.slug ? profile.displayName : profile.headline || profile.about, 180) || name,
+    id: absoluteStartUrl,
+    start_url: absoluteStartUrl,
+    scope: absoluteManifestUrl("/"),
+    display: "standalone",
+    launch_handler: {
+      client_mode: "navigate-existing"
+    },
+    background_color: "#cacaca",
+    theme_color: "#000000",
+    icons: personalManifestIcons(profile)
+  };
+}
+
+function personalManifestIcons(profile: PersonalSpaceProfile): readonly Record<string, string>[] {
+  const photo = cleanManifestIconSrc(profile.photoUrl);
+  const src = absoluteManifestUrl(photo || fallbackPersonalIconSrc(profile));
+  const type = manifestIconType(src);
+  const sizes = photo ? ["192x192", "512x512"] : ["any"];
+  return sizes.map((size) => ({
+    src,
+    sizes: size,
+    ...(type ? { type } : {}),
+    purpose: "any"
+  }));
+}
+
+function fallbackPersonalIconSrc(profile: PersonalSpaceProfile): string {
+  const handle = encodeURIComponent(profile.handle);
+  return profile.slug
+    ? `/icon/space/${handle}/${encodeURIComponent(profile.slug)}.svg`
+    : `/icon/space/${handle}.svg`;
+}
+
+function cleanManifestIconSrc(value: string): string {
+  const text = value.trim();
+  if (!text || /[<>"']/u.test(text)) {
+    return "";
+  }
+  if (/^(?:\/|https?:\/\/)/iu.test(text)) {
+    return text.slice(0, 900_000);
+  }
+  if (/^data:image\/(?:png|jpe?g|webp);base64,[a-z0-9+/=]+$/iu.test(text)) {
+    return text.slice(0, 900_000);
+  }
+  return "";
+}
+
+function manifestIconType(src: string): string {
+  const dataMatch = src.match(/^data:(image\/(?:png|jpe?g|webp));base64,/iu);
+  if (dataMatch?.[1]) {
+    return dataMatch[1].toLowerCase();
+  }
+  if (/\.svg(?:\?|$)/iu.test(src)) {
+    return "image/svg+xml";
+  }
+  if (/\.webp(?:\?|$)/iu.test(src)) {
+    return "image/webp";
+  }
+  if (/\.(?:jpe?g)(?:\?|$)/iu.test(src) || src.startsWith("/photo/space/")) {
+    return "image/jpeg";
+  }
+  if (/\.png(?:\?|$)/iu.test(src)) {
+    return "image/png";
+  }
+  return "";
+}
+
+function absoluteManifestUrl(value: string): string {
+  if (value.startsWith("data:")) {
+    return value;
+  }
+  try {
+    return new URL(value, window.location.origin).href;
+  } catch {
+    return new URL("/", window.location.origin).href;
+  }
+}
+
+function manifestShortName(value: string): string {
+  const chars = Array.from(cleanManifestText(value, 96));
+  return chars.slice(0, 18).join("") || "соты";
+}
+
+function cleanManifestText(value: string, max: number): string {
+  return value.replace(/\s+/gu, " ").trim().slice(0, max);
 }
 
 function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
@@ -883,6 +1006,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     uploadPhoto: uploadPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
     importBackup: importSotyBackupFile,
+    applyManifest: applyPersonalProfileManifest,
     openRuntime: openPersonalSpaceRuntime
   });
 }

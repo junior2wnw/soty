@@ -32,7 +32,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
       "font-src 'self'",
       `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ws://127.0.0.1:49424 ws://localhost:49424${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
       `frame-src 'self' https: http://127.0.0.1:* http://localhost:*${miniAppFrameSrc ? ` ${miniAppFrameSrc}` : ""}`,
-      "manifest-src 'self'",
+      "manifest-src 'self' blob:",
       "worker-src 'self'",
       `frame-ancestors ${miniAppAsset ? "'self'" : "'none'"}`,
       "form-action 'self'"
