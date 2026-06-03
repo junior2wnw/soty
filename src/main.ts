@@ -1097,17 +1097,21 @@ function personalSpaceAgentTask(profile: PersonalSpaceProfile, request: Personal
   const cardUrl = new URL(profile.url, window.location.origin).toString();
   const moduleLine = request.intent === "page"
     ? 'SOTY_CARD_MODULE:{"kind":"link","title":"...","summary":"...","href":"https://...","visibility":"public"}'
-    : 'SOTY_CARD_MODULE:{"kind":"miniapp","title":"...","summary":"...","href":"https://...","visibility":"public","layout":"large"}';
+    : 'SOTY_CARD_MODULE:{"kind":"miniapp","title":"...","summary":"...","href":"about:srcdoc","inlineHtml":"<!doctype html>...","visibility":"public","layout":"large"}';
+  const hostedMiniAppLine = 'SOTY_CARD_MODULE:{"kind":"miniapp","title":"...","summary":"...","href":"https://...","visibility":"public","layout":"large"}';
   const runtimeModuleLine = 'SOTY_CARD_MODULE:{"kind":"runtime","title":"Шахматы","summary":"игра","href":"chess","visibility":"public"}';
   const lines = [
     "Ты работаешь внутри инфо-карты Soty, а не в старом интерфейсе сот.",
     "Отвечай кратко по-русски, без лишних кнопок, без маркетинга и без длинных инструкций.",
     "Карточка должна ощущаться как визитка, личное пространство, отзывы, личные сообщения и расширяемые модули.",
-    "Если задача требует mini-app, модуль должен быть внешним URL. Нельзя использовать этот origin Soty, /mini-apps или встроенный сервер Soty как хостинг mini-app.",
+    "Если задача требует mini-app, можно вернуть inlineHtml или готовый внешний/локальный URL. Нельзя использовать этот origin Soty, /mini-apps или встроенный сервер Soty как хостинг mini-app.",
     "Если готов внешний URL mini-app или полезной страницы, последней отдельной строкой верни строго один JSON-модуль с выбранным kind.",
     "Если подходит встроенная возможность сот, верни kind runtime. Доступные href: apps, actions, access, qr, files, chess.",
     "Формат последней строки:",
+    "For mini-app tasks, prefer one small self-contained inlineHtml document. No CDN, no external secrets, no direct relay/device authority. Keep it under 240000 chars.",
+    "If a real external or loopback mini-app URL already exists, use href instead. Never use this Soty origin, /mini-apps, or the built-in Soty server as mini-app hosting.",
     moduleLine,
+    hostedMiniAppLine,
     runtimeModuleLine,
     "Если URL не готов, не выдумывай его. Ответь, какой один следующий шаг нужен.",
     "",

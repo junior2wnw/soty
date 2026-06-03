@@ -2,7 +2,7 @@ import { icon } from "../icons";
 import type { IconName } from "../icons";
 import { applyChessMove, boardSquares, chessFromSnapshot, chooseAgentMove, createChessSnapshot, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices } from "./chess";
 import type { ChessSnapshot } from "./chess";
-import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safeMiniAppUrl } from "./mini-apps";
+import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safeMiniAppInlineHtml, safeMiniAppUrl } from "./mini-apps";
 import type { MiniAppWindowLayout } from "./mini-apps";
 import { runtimeModuleDefinitions, runtimeModuleTargetFromString } from "./runtime-modules";
 import { showLinkShareSheet } from "./share-sheet";
@@ -141,6 +141,7 @@ type PersonalSpaceCardModule = {
   readonly href: string;
   readonly visibility: PersonalModuleVisibility;
   readonly layout?: MiniAppWindowLayout;
+  readonly inlineHtml?: string;
 };
 
 export type PersonalSpaceModuleDraft = {
@@ -150,6 +151,7 @@ export type PersonalSpaceModuleDraft = {
   readonly href: string;
   readonly visibility: PersonalModuleVisibility;
   readonly layout?: MiniAppWindowLayout;
+  readonly inlineHtml?: string;
 };
 
 type PersonalThreadLine = {
@@ -766,7 +768,8 @@ function applyLocalModule(route: PersonalSpaceRoute, draft: PersonalSpaceModuleD
     summary: draft.summary,
     href: draft.href,
     visibility: draft.visibility,
-    layout: draft.layout
+    layout: draft.layout,
+    inlineHtml: draft.inlineHtml
   });
   if (!module) {
     return profile;
@@ -824,6 +827,9 @@ function contactValueForProfile(profile: PersonalSpaceProfile): string {
 }
 
 function cardModuleKey(module: PersonalSpaceCardModule): string {
+  if (module.kind === "miniapp" && module.inlineHtml) {
+    return `${module.kind}:inline:${module.title}`.toLowerCase();
+  }
   return `${module.kind}:${module.href}`.toLowerCase();
 }
 
@@ -1237,7 +1243,7 @@ function layerDisplay(layer: typeof layers[number], ownSpace: boolean): Personal
 
 function renderPersonalModule(module: PersonalModule): string {
   return `
-    <button type="button" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" data-module-layout="${escapeAttr(module.layout || "")}" class="${[module.active ? "is-active" : "", module.priority ? "is-priority" : ""].filter(Boolean).join(" ")}">
+    <button type="button" data-module-id="${escapeAttr(module.id)}" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" data-module-layout="${escapeAttr(module.layout || "")}" class="${[module.active ? "is-active" : "", module.priority ? "is-priority" : ""].filter(Boolean).join(" ")}">
       ${icon(module.icon)}
       <span>${escapeHtml(module.title)}</span>
       <p>${escapeHtml(module.summary)}</p>
@@ -1434,10 +1440,13 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (kind === "miniapp") {
+    const moduleId = (node.dataset.moduleId || "").replace(/^custom:/u, "");
+    const record = profile.modules.find((module) => module.id === moduleId);
     showPersonalMiniAppSheet(root, {
       title: node.querySelector("span")?.textContent || "Mini-app",
       target,
-      layout: normalizeMiniAppLayout(node.dataset.moduleLayout || "large")
+      layout: normalizeMiniAppLayout(node.dataset.moduleLayout || "large"),
+      inlineHtml: record?.inlineHtml || ""
     });
     return;
   }
@@ -1462,11 +1471,12 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
 
 function showPersonalMiniAppSheet(
   root: HTMLElement,
-  module: { readonly title: string; readonly target: string; readonly layout: MiniAppWindowLayout }
+  module: { readonly title: string; readonly target: string; readonly layout: MiniAppWindowLayout; readonly inlineHtml?: string }
 ): void {
   closePersonalOverlay(root);
+  const inlineHtml = safeMiniAppInlineHtml(module.inlineHtml || "");
   const url = safeMiniAppUrl(module.target, { baseUrl: window.location.href });
-  if (!url || isServerHostedMiniAppUrl(url)) {
+  if (!inlineHtml && (!url || isServerHostedMiniAppUrl(url))) {
     const overlay = document.createElement("div");
     overlay.className = "personal-overlay";
     overlay.innerHTML = `
@@ -1489,12 +1499,15 @@ function showPersonalMiniAppSheet(
   overlay.className = "personal-overlay personal-mini-app-overlay";
   const height = miniAppDefaultHeight(module.layout);
   const width = miniAppDefaultWidth(module.layout);
+  const frame = inlineHtml
+    ? `<iframe title="${escapeAttr(module.title)}" srcdoc="${escapeAttr(inlineHtml)}" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"></iframe>`
+    : `<iframe title="${escapeAttr(module.title)}" src="${escapeAttr(url)}" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"></iframe>`;
   overlay.innerHTML = `
     <section class="personal-sheet personal-mini-app-sheet" data-mini-app-layout="${escapeAttr(module.layout)}" role="dialog" aria-modal="true" aria-label="${escapeAttr(module.title)}">
       <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
       <h2>${escapeHtml(module.title)}</h2>
       <div class="personal-mini-app-frame" style="--mini-app-height:${escapeAttr(height)};--mini-app-width:${escapeAttr(width)}">
-        <iframe title="${escapeAttr(module.title)}" src="${escapeAttr(url)}" loading="lazy" referrerpolicy="no-referrer" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-same-origin"></iframe>
+        ${frame}
       </div>
     </section>
   `;
@@ -2116,6 +2129,7 @@ function showModuleSheet(root: HTMLElement, options: PersonalSpacePageOptions): 
         <input name="title" maxlength="80" required placeholder="Название" />
         <input name="summary" maxlength="140" placeholder="Коротко" />
         <input name="href" autocomplete="url" maxlength="360" required placeholder="URL" />
+        <textarea name="inlineHtml" maxlength="240000" placeholder="HTML mini-app, если нет URL"></textarea>
         <select name="layout" aria-label="размер">
           <option value="large">Большой</option>
           <option value="half">Средний</option>
@@ -2137,6 +2151,7 @@ function showModuleSheet(root: HTMLElement, options: PersonalSpacePageOptions): 
   const titleInput = overlay.querySelector<HTMLInputElement>("input[name='title']");
   const summaryInput = overlay.querySelector<HTMLInputElement>("input[name='summary']");
   const hrefInput = overlay.querySelector<HTMLInputElement>("input[name='href']");
+  const inlineHtmlInput = overlay.querySelector<HTMLTextAreaElement>("textarea[name='inlineHtml']");
   const layoutInput = overlay.querySelector<HTMLSelectElement>("select[name='layout']");
   const visibilityInput = overlay.querySelector<HTMLSelectElement>("select[name='visibility']");
   const submitButton = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
@@ -2150,10 +2165,13 @@ function showModuleSheet(root: HTMLElement, options: PersonalSpacePageOptions): 
     if (layoutInput) {
       layoutInput.hidden = !miniApp;
     }
+    if (inlineHtmlInput) {
+      inlineHtmlInput.hidden = !miniApp;
+    }
     if (hrefInput) {
       hrefInput.hidden = kind === "runtime";
-      hrefInput.required = kind !== "runtime";
-      hrefInput.placeholder = miniApp ? "https://... / http://127.0.0.1:..." : "https://... / /...";
+      hrefInput.required = kind === "link";
+      hrefInput.placeholder = miniApp ? "https://... / http://127.0.0.1:... / или HTML ниже" : "https://... / /...";
     }
   };
   syncModuleKind();
@@ -2202,15 +2220,18 @@ function showModuleSheet(root: HTMLElement, options: PersonalSpacePageOptions): 
       }
       return;
     }
+    const inlineHtml = kind === "miniapp" ? safeMiniAppInlineHtml(inlineHtmlInput?.value || "") : "";
     const href = kind === "miniapp"
-      ? safeMiniAppUrl(hrefInput?.value || "", { baseUrl: window.location.href })
+      ? inlineHtml
+        ? "about:srcdoc"
+        : safeMiniAppUrl(hrefInput?.value || "", { baseUrl: window.location.href })
       : kind === "runtime"
         ? cleanRuntimeModuleTarget(runtimeInput?.value || "")
         : cleanUrlPath(hrefInput?.value || "");
-    if (!href || (kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
+    if (!href || (!inlineHtml && kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
       if (error) {
         error.textContent = kind === "miniapp"
-          ? "Mini-app разместите вне сот."
+          ? "Добавьте внешний URL, локальный URL или HTML mini-app."
           : kind === "runtime"
             ? "Выберите возможность."
             : "Добавьте ссылку.";
@@ -2223,7 +2244,8 @@ function showModuleSheet(root: HTMLElement, options: PersonalSpacePageOptions): 
       summary: cleanText(summaryInput?.value || "", 140),
       href,
       visibility: visibilityInput?.value === "trusted" ? "trusted" as const : "public" as const,
-      ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(layoutInput?.value || "large") } : {})
+      ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(layoutInput?.value || "large") } : {}),
+      ...(inlineHtml ? { inlineHtml } : {})
     };
     if (submitButton) {
       submitButton.disabled = true;
@@ -2398,15 +2420,23 @@ function agentModuleDraftFromReply(reply: string): PersonalSpaceModuleDraft | nu
       : typeof parsed.target === "string"
         ? parsed.target
         : "";
+  const rawInlineHtml = typeof parsed.inlineHtml === "string"
+    ? parsed.inlineHtml
+    : typeof parsed.html === "string"
+      ? parsed.html
+      : "";
+  const inlineHtml = kind === "miniapp" ? safeMiniAppInlineHtml(rawInlineHtml) : "";
   const href = kind === "miniapp"
-    ? safeMiniAppUrl(rawHref, { baseUrl: window.location.href })
+    ? inlineHtml
+      ? "about:srcdoc"
+      : safeMiniAppUrl(rawHref, { baseUrl: window.location.href })
     : kind === "runtime"
       ? cleanRuntimeModuleTarget(rawHref)
       : cleanUrlPath(rawHref);
   const runtime = kind === "runtime" ? runtimeModuleDefinitions.find((module) => module.target === href) : null;
   const title = cleanText(parsed.title || parsed.name, 80) || runtime?.title || "";
   const summary = cleanText(parsed.summary || parsed.description, 140) || runtime?.summary || "";
-  if (!title || !href || (kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
+  if (!title || !href || (!inlineHtml && kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
     return null;
   }
   return {
@@ -2415,7 +2445,8 @@ function agentModuleDraftFromReply(reply: string): PersonalSpaceModuleDraft | nu
     summary,
     href,
     visibility: parsed.visibility === "trusted" ? "trusted" : "public",
-    ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(cleanText(parsed.layout, 24) || "large") } : {})
+    ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(cleanText(parsed.layout, 24) || "large") } : {}),
+    ...(inlineHtml ? { inlineHtml } : {})
   };
 }
 
@@ -2441,6 +2472,10 @@ function replyWithoutCardModule(reply: string): string {
 function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile, target: string, options: PersonalSpacePageOptions): void {
   if (target === "access") {
     showTrustedAccessSheet(root, profile, options);
+    return;
+  }
+  if (target === "apps") {
+    showCardAppsSheet(root, profile, options);
     return;
   }
   if (target === "chess") {
@@ -2470,6 +2505,41 @@ function showRuntimeModuleSheet(root: HTMLElement, profile: PersonalSpaceProfile
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay) {
       overlay.remove();
+    }
+  });
+}
+
+function showCardAppsSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-card-apps-sheet" role="dialog" aria-modal="true" aria-label="Mini-app">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div class="personal-module-mark">${icon("apps")}</div>
+      <h2>Mini-app</h2>
+      <p>Маленький инструмент внутри этой карточки.</p>
+      <div class="personal-app-actions">
+        <button type="button" data-app-agent>${icon("agent")} <span>ИИ</span></button>
+        <button type="button" data-app-module>${icon("apps")} <span>Добавить</span></button>
+      </div>
+      <small>URL может быть внешним или локальным. Наш сервер mini-app пока не хостит.</small>
+    </section>
+  `;
+  root.append(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", close);
+  overlay.querySelector<HTMLButtonElement>("[data-app-agent]")?.addEventListener("click", () => {
+    overlay.remove();
+    showAgentSheet(root, profile, options);
+  });
+  overlay.querySelector<HTMLButtonElement>("[data-app-module]")?.addEventListener("click", () => {
+    overlay.remove();
+    showModuleSheet(root, options);
+  });
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
     }
   });
 }
@@ -3129,14 +3199,22 @@ function normalizeCardModule(value: unknown): PersonalSpaceCardModule | null {
   }
   const kind: PersonalSpaceCardModuleKind = value.kind === "runtime" ? "runtime" : value.kind === "miniapp" ? "miniapp" : "link";
   const rawHref = typeof value.href === "string" ? value.href : typeof value.target === "string" ? value.target : "";
+  const rawInlineHtml = typeof value.inlineHtml === "string"
+    ? value.inlineHtml
+    : typeof value.html === "string"
+      ? value.html
+      : "";
+  const inlineHtml = kind === "miniapp" ? safeMiniAppInlineHtml(rawInlineHtml) : "";
   const href = kind === "miniapp"
-    ? safeMiniAppUrl(rawHref, { baseUrl: window.location.href })
+    ? inlineHtml
+      ? "about:srcdoc"
+      : safeMiniAppUrl(rawHref, { baseUrl: window.location.href })
     : kind === "runtime"
       ? cleanRuntimeModuleTarget(rawHref)
       : cleanUrlPath(rawHref);
   const runtime = kind === "runtime" ? runtimeModuleDefinitions.find((module) => module.target === href) : null;
   const title = cleanText(value.title, 80) || runtime?.title || "";
-  if (!href || (kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
+  if (!href || (!inlineHtml && kind === "miniapp" && isServerHostedMiniAppUrl(href))) {
     return null;
   }
   if (!title) {
@@ -3149,7 +3227,8 @@ function normalizeCardModule(value: unknown): PersonalSpaceCardModule | null {
     summary: cleanText(value.summary, 140) || runtime?.summary || "",
     href,
     visibility: value.visibility === "trusted" ? "trusted" : "public",
-    ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(cleanText(value.layout, 24) || "large") } : {})
+    ...(kind === "miniapp" ? { layout: normalizeMiniAppLayout(cleanText(value.layout, 24) || "large") } : {}),
+    ...(inlineHtml ? { inlineHtml } : {})
   };
 }
 

@@ -68,6 +68,30 @@ For a hosted app, build or deploy the frontend, make it available at a
 same-origin URL, trusted HTTPS URL, loopback helper, or future Soty/kernel proxy
 URL, then register it with `operation=mini_app` and `url`.
 
+## Info Card Modules
+
+Info cards may attach a mini app as a card module without using Soty as a
+hosting server:
+
+```json
+{
+  "kind": "miniapp",
+  "title": "Tiny Tool",
+  "summary": "One-screen helper",
+  "href": "about:srcdoc",
+  "inlineHtml": "<!doctype html><html><body>...</body></html>",
+  "visibility": "public",
+  "layout": "large"
+}
+```
+
+Inline info-card mini apps are opened in a sandboxed `srcdoc` frame. They must
+be self-contained, small, and must not receive relay secrets or raw device
+authority. If a real HTTPS or loopback URL already exists, the card may store
+that URL instead. Storing assets under the Soty web origin, `/mini-apps`, or the
+built-in Soty server remains disabled until the hosting/sandbox model is a
+separate TrustLink Kernel surface.
+
 Equivalent local CLI for an inline app:
 
 ```powershell

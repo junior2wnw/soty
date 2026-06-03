@@ -47,10 +47,10 @@ export function attachSpaces(app, { dataDir } = {}) {
   app.post("/api/spaces/:handle/posts", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpacePost(postStore, ownerStore, req, res);
   });
-  app.post("/api/spaces/:handle/modules", express.json({ limit: "32kb" }), async (req, res) => {
+  app.post("/api/spaces/:handle/modules", express.json({ limit: "360kb" }), async (req, res) => {
     await saveSpaceModule(moduleStore, ownerStore, req, res);
   });
-  app.post("/api/spaces/:handle/:space/modules", express.json({ limit: "32kb" }), async (req, res) => {
+  app.post("/api/spaces/:handle/:space/modules", express.json({ limit: "360kb" }), async (req, res) => {
     await saveSpaceModule(moduleStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/photo", express.json({ limit: "3mb" }), async (req, res) => {
@@ -871,8 +871,11 @@ function normalizeStoredPost(record) {
 function normalizeModuleBody(body) {
   const kind = cleanModuleKind(body?.kind);
   const title = cleanReviewText(body?.title, 80);
+  const inlineHtml = kind === "miniapp" ? cleanMiniAppInlineHtml(body?.inlineHtml || body?.html) : "";
   const href = kind === "miniapp"
-    ? cleanMiniAppHref(body?.href || body?.target)
+    ? inlineHtml
+      ? "about:srcdoc"
+      : cleanMiniAppHref(body?.href || body?.target)
     : kind === "runtime"
       ? cleanRuntimeModuleTarget(body?.href || body?.target)
       : cleanModuleHref(body?.href || body?.target);
@@ -885,7 +888,8 @@ function normalizeModuleBody(body) {
     summary: cleanReviewText(body?.summary, 140),
     href,
     visibility: body?.visibility === "trusted" ? "trusted" : "public",
-    ...(kind === "miniapp" ? { layout: cleanMiniAppLayout(body?.layout) } : {})
+    ...(kind === "miniapp" ? { layout: cleanMiniAppLayout(body?.layout) } : {}),
+    ...(inlineHtml ? { inlineHtml } : {})
   };
 }
 
@@ -905,6 +909,9 @@ function normalizeStoredModule(record) {
 }
 
 function moduleKey(module) {
+  if (module?.kind === "miniapp" && module.inlineHtml) {
+    return `${module.kind}:inline:${module.title}`.toLowerCase();
+  }
   return `${module.kind}:${module.href}`.toLowerCase();
 }
 
@@ -948,8 +955,25 @@ function cleanMiniAppHref(value) {
   return "";
 }
 
+function cleanMiniAppInlineHtml(value) {
+  const text = typeof value === "string"
+    ? value
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, "")
+      .trim()
+    : "";
+  if (!text || text.length > 240000) {
+    return "";
+  }
+  if (!/(?:<!doctype|<html|<body|<main|<section|<div|<script|<style)/iu.test(text)) {
+    return "";
+  }
+  return text;
+}
+
 function isServerHostedMiniAppBody(body) {
-  return cleanModuleKind(body?.kind) === "miniapp" && isServerHostedMiniAppUrl(body?.href || body?.target);
+  return cleanModuleKind(body?.kind) === "miniapp"
+    && !cleanMiniAppInlineHtml(body?.inlineHtml || body?.html)
+    && isServerHostedMiniAppUrl(body?.href || body?.target);
 }
 
 function isServerHostedMiniAppUrl(value) {
