@@ -93,7 +93,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : meta.headline || meta.about || "визитка, записи, отзывы, связь",
+      : meta.headline || meta.about || "Контактная страница.",
     about: activeSpace
       ? `${activeSpace.title}: связь, отзывы, действия.`
       : meta.about || "Пока без описания.",

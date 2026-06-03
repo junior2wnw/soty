@@ -32,7 +32,7 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
+import { cleanPersonalHandle, loadPersonalHandle, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalSpaceInstallResult, PersonalSpaceProfile, PersonalSpaceRoute } from "./features/personal-space";
 import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
@@ -334,7 +334,6 @@ const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
 const appBundlePath = currentAppBundlePath();
-const selfStartHandleKey = "soty:personal-handle:v1";
 const reservedLegacySelfHandles = new Set([".", cleanSelfStartHandle(selfCellLabel), "soty", "соты"]);
 let pendingInstallPrompt: BeforeInstallPromptEvent | null = null;
 
@@ -1085,11 +1084,7 @@ async function importSotyBackupFile(file: File, nickInput?: HTMLInputElement | n
 }
 
 function loadSelfStartHandle(): string {
-  try {
-    return cleanSelfStartHandle(window.localStorage.getItem(selfStartHandleKey) || "");
-  } catch {
-    return "";
-  }
+  return loadPersonalHandle();
 }
 
 async function loadSelfStartHandleOrLegacyDevice(): Promise<string> {
@@ -1116,25 +1111,11 @@ function legacySelfStartHandleFromNick(value: string): string {
 }
 
 function saveSelfStartHandle(handle: string): void {
-  try {
-    window.localStorage.setItem(selfStartHandleKey, handle);
-  } catch {
-    // The page can still open even when local storage is unavailable.
-  }
+  savePersonalHandle(handle);
 }
 
 function cleanSelfStartHandle(value: string): string {
-  try {
-    return decodeURIComponent(value)
-      .normalize("NFKC")
-      .replace(/^@/u, "")
-      .replace(/[^\p{L}\p{N}._-]+/gu, "-")
-      .replace(/^-+|-+$/gu, "")
-      .slice(0, 64)
-      .toLowerCase();
-  } catch {
-    return "";
-  }
+  return cleanPersonalHandle(value);
 }
 
 function isInfoRoute(): boolean {
