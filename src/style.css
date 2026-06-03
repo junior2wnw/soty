@@ -299,17 +299,17 @@ svg {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(240px, 0.72fr) 72px minmax(0, 1.56fr);
-  grid-template-rows: minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(260px, 0.82fr) minmax(0, 1.58fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px clamp(24px, 4vw, 48px);
   margin: 0 auto;
-  padding: 4px 0 18px;
+  padding: 10px 0 22px;
   overflow: hidden;
 }
 
 .personal-hero {
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 1 / span 2;
   min-height: 0;
   height: 100%;
   display: grid;
@@ -946,10 +946,10 @@ button.personal-avatar {
   grid-row: 1;
   z-index: 4;
   min-height: 0;
-  height: 100%;
+  height: 56px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
   padding: 0;
   border: 1px solid #000;
@@ -963,11 +963,12 @@ button.personal-avatar {
   min-width: 0;
   min-height: 0;
   display: inline-flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  border-bottom: 1px solid #000;
+  gap: 7px;
+  border-right: 1px solid #000;
+  border-bottom: 0;
   border-radius: 0;
   background: transparent;
   color: #000;
@@ -978,7 +979,7 @@ button.personal-avatar {
 }
 
 .personal-layerbar button:last-child {
-  border-bottom: 0;
+  border-right: 0;
 }
 
 .personal-layerbar svg {
@@ -993,8 +994,8 @@ button.personal-avatar {
 }
 
 .personal-panels {
-  grid-column: 3;
-  grid-row: 1;
+  grid-column: 2;
+  grid-row: 2;
   min-height: 0;
   overflow: hidden;
 }
@@ -1003,11 +1004,11 @@ button.personal-avatar {
   display: none;
   min-height: 0;
   height: 100%;
-  grid-template-columns: minmax(150px, 0.32fr) minmax(0, 1.68fr);
+  grid-template-columns: minmax(150px, 0.36fr) minmax(0, 1.64fr);
   gap: clamp(16px, 2.6vw, 28px);
   align-items: start;
   align-content: start;
-  padding: 18px 0;
+  padding: 6px 0 18px;
   overflow: auto;
   scrollbar-width: thin;
 }
