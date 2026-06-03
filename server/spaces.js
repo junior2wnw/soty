@@ -93,32 +93,17 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : meta.headline || meta.about || "контакт, отзывы, связь и соты",
+      : meta.headline || meta.about || "контакт, записи, отзывы, связь",
     about: activeSpace
-      ? `${activeSpace.title}: контакт, связь, отзывы и действия рядом.`
-      : meta.about || `${ownerName}: универсальная страница для контакта, отзывов, связи и сот.`,
+      ? `${activeSpace.title}: связь, отзывы, действия.`
+      : meta.about || `${ownerName}: контакт, записи, отзывы, связь.`,
     accent: meta.accent || accent,
     contacts: [
       { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
       ...meta.contact ? [meta.contact] : [],
       { label: "страница", value: url, href: url }
     ],
-    posts: storedPosts.length ? storedPosts : [
-      {
-        id: "hello",
-        title: activeSpace ? activeSpace.title : ownerName,
-        text: activeSpace
-          ? "Описание, сообщения, отзывы и действия живут рядом."
-          : meta.about || "QR открывает контакт, страницу и чат.",
-        meta: "Я"
-      },
-      {
-        id: "grow",
-        title: "Из сообщений",
-        text: "Свое можно сохранить в Я. Чужое можно сохранить как отзыв.",
-        meta: "Отзывы"
-      }
-    ],
+    posts: storedPosts,
     reviews,
     spaces: defaultSpaces.map((space) => ({
       ...space,
@@ -453,7 +438,7 @@ function normalizeMetaBody(body) {
     return null;
   }
   return {
-    ...(displayName ? { displayName, headline: about || "контакт, отзывы, связь и соты" } : {}),
+    ...(displayName ? { displayName, headline: about || "контакт, записи, отзывы, связь" } : {}),
     ...(about ? { about, headline: about } : {}),
     ...(contact ? { contact } : {})
   };

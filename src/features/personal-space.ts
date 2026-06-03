@@ -98,8 +98,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   accountName: "Соты",
   photoUrl: "",
   title: "страница",
-  headline: "контакт, отзывы, связь и соты",
-  about: "Универсальная страница для человека, проекта, компании, устройства или любой другой сущности.",
+  headline: "контакт, записи, отзывы, связь",
+  about: "Контакт, записи, отзывы, связь.",
   accent: "#f1f1f1",
   contacts: [],
   posts: [],
@@ -251,7 +251,6 @@ async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<Pers
 function renderLoading(route: PersonalSpaceRoute): string {
   return `
     <section class="personal-space-shell is-loading">
-      <div class="personal-orbit"></div>
       <main class="personal-loading">
         <span>@${escapeHtml(route.handle)}</span>
         <b>Открываю пространство</b>
@@ -269,7 +268,6 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
   const heroActions = entityActionsFor({ surface: "hero", ownSpace, canInstall });
   return `
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
-      <div class="personal-orbit"></div>
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
         ${ownSpace ? "" : `<nav aria-label="пространство"><button type="button" data-action="self">${icon("person")} ${localHandle ? "Я" : "Создать"}</button></nav>`}
@@ -288,9 +286,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <p>${escapeHtml(personalSpaceCopy(profile.headline, ownSpace))}</p>
             ${renderQuickContacts(profile, ownSpace)}
             ${renderEntityActions(heroActions)}
-            <div class="personal-note" data-install-note>${ownSpace
-              ? "Фото станет иконкой PWA."
-              : "Можно сохранить как PWA-контакт."}</div>
+            <div class="personal-note" data-install-note></div>
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои пространства">
@@ -373,7 +369,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
           </section>
         `),
         "hexagon",
-        ownSpace ? "Сохраняйте сюда важное." : "Пока пусто."
+        "Пока пусто."
       )
     };
   }
@@ -405,7 +401,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
         title: "Связь",
         body: `
           <div class="personal-message-preview">
-            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Запись на своей странице.</p></div>
+            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>На странице.</p></div>
             ${renderInlineEntityActions(messageActions)}
             <small data-action-note></small>
           </div>
@@ -417,7 +413,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       title: "Сообщения",
       body: `
         <div class="personal-message-preview">
-          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личный чат с этой страницей.</p></div>
+          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личный чат.</p></div>
           ${renderInlineEntityActions(messageActions)}
           <small data-action-note></small>
         </div>
@@ -428,7 +424,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
     return {
       eyebrow: "соты",
       title: "Соты",
-      text: "Агент, приложения, доступы и ваши пространства.",
+      text: "Модули страницы.",
       body: renderSpaceModules(profile)
     };
   }
@@ -458,7 +454,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
         { id: "install", label: options.canInstall ? "Установить" : "Как установить", icon: "install", tone: "secondary" }
       ]
       : [
-        { id: "install", label: "Сохранить контакт", icon: "install", tone: "primary" },
+        { id: "install", label: "Сохранить", icon: "install", tone: "primary" },
         { id: "message", label: "Написать", icon: "mail", tone: "secondary" },
         { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
       ];
@@ -496,9 +492,9 @@ function renderEntityAction(action: EntityAction, className?: string): string {
 
 function renderSpaceModules(profile: PersonalSpaceProfile): string {
   const coreModules = [
-    { title: "Агент", summary: "помощь и действия" },
-    { title: "Приложения", summary: "инструменты внутри пространства" },
-    { title: "Доступ", summary: "устройства и права" }
+    { title: "Агент", summary: "помощь" },
+    { title: "Приложения", summary: "инструменты" },
+    { title: "Доступ", summary: "устройства" }
   ];
   return `
     <div class="personal-spaces">
@@ -957,7 +953,7 @@ async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile, 
     <section class="personal-sheet personal-share-sheet" role="dialog" aria-modal="true" aria-label="Поделиться">
       <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
       <h2>Поделиться</h2>
-      <p>Покажите QR или отправьте ссылку.</p>
+      <p>QR или ссылка.</p>
       <img src="${escapeAttr(qr)}" alt="QR-код ${escapeAttr(profile.displayName)}" />
       <div class="personal-share-actions">
         <button type="button" data-copy>${icon("copy")} Скопировать</button>
