@@ -936,11 +936,16 @@ async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallR
 }
 
 function openPersonalSpaceMessage(profile: PersonalSpaceProfile, fromHandle: string): void {
+  const ownHandle = cleanContactHandle(fromHandle);
+  const targetHandle = cleanContactHandle(profile.handle);
+  if (ownHandle && targetHandle && ownHandle === targetHandle) {
+    window.location.assign("/?pwa=1&bare=1");
+    return;
+  }
   const target = profile.actions.messageUrl || bareChatPath();
   const url = new URL(target, window.location.origin);
-  const handle = fromHandle.replace(/^@/u, "").trim();
-  if (handle) {
-    url.searchParams.set("from", `@${handle}`);
+  if (ownHandle) {
+    url.searchParams.set("from", `@${ownHandle}`);
   }
   window.location.assign(`${url.pathname}${url.search}${url.hash}`);
 }
@@ -3180,7 +3185,7 @@ function renderApp(): void {
           <button class="agent-mode-button retro-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
-          <button class="dialog-id" type="button" aria-label="скопировать ссылку" data-tooltip="Ссылка на чат">${icon("copy")}</button>
+          <button class="dialog-id" type="button" aria-label="поделиться" data-tooltip="Поделиться">${icon("copy")}</button>
           <button class="dialog-notify retro-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
         </header>
         <section class="cell-surface" aria-label="пространство соты">
@@ -4645,7 +4650,7 @@ function renderDialogChrome(): void {
     const canShare = Boolean(publicContactUrl || code);
     id.innerHTML = canShare ? icon(publicContactUrl ? "qr" : "copy") : "";
     id.disabled = !canShare;
-    id.setAttribute("aria-label", publicContactUrl ? "поделиться контактом" : code ? "скопировать ссылку чата" : "сота не выбрана");
+    id.setAttribute("aria-label", publicContactUrl ? "поделиться контактом" : code ? "скопировать ссылку" : "сота не выбрана");
     if (id.dataset.copied !== "1") {
       id.dataset.tooltip = publicContactUrl ? "Поделиться контактом" : code ? `Скопировать ссылку · ${code}` : "Сота не выбрана";
     }

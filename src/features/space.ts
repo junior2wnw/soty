@@ -115,9 +115,9 @@ export function spaceMarkDisplay(kind: SpaceEntryKind, ownSpace = true): SpaceMa
       role: "self",
       icon: "hexagon",
       className: "is-hex",
-      actionLabel: "В Я",
-      activeLabel: "В Я",
-      entryLabel: "Я"
+      actionLabel: "Запись",
+      activeLabel: "В записях",
+      entryLabel: "Запись"
     };
   }
   return {

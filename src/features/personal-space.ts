@@ -187,9 +187,10 @@ export function personalSpaceManifestHref(route: PersonalSpaceRoute): string {
 }
 
 export async function renderPersonalSpacePage(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
+  const previousLayer = previousActiveLayer(root, routeUrl(options.route));
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
-  const activeLayer: PersonalSpaceLayer = options.route.slug ? "place" : "card";
+  const activeLayer: PersonalSpaceLayer = previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle);
   bindPersonalSpace(root, profile, options);
@@ -329,7 +330,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
   const heroText = heroLine(profile, ownSpace);
   const topbarActions = renderTopbarActions(ownSpace, localHandle, canInstall);
   return `
-    <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}">
+    <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}" data-route="${escapeAttr(profile.url)}">
       <header class="personal-topbar">
         <a href="/" class="personal-brand">соты</a>
         ${topbarActions}
@@ -358,7 +359,6 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
               ${icon(view.icon)}
               <span>${escapeHtml(view.label)}</span>
-              <small>${escapeHtml(layerSignal(profile, display.id, ownSpace))}</small>
             </button>
           `;
           }).join("")}
@@ -493,7 +493,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
       title: "Связь",
       body: `
         <div class="personal-message-preview">
-          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Сообщения напрямую.</p></div>
+          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>${ownSpace ? "Диалоги и заметки." : "Сообщения напрямую."}</p></div>
           ${renderInlineEntityActions(messageActions)}
           <small data-action-note></small>
         </div>
@@ -665,33 +665,13 @@ function isDefaultPersonalText(value: string): boolean {
     || text === "контактная страница.";
 }
 
-function layerSignal(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, ownSpace: boolean): string {
-  if (layer === "card") {
-    const contacts = visibleContacts(profile, ownSpace).length;
-    return contacts ? countLabel(contacts, "контакт", "контакта", "контактов") : "визитка";
+function previousActiveLayer(root: HTMLElement, routeUrl: string): PersonalSpaceLayer | null {
+  const shell = root.querySelector<HTMLElement>(".personal-space-shell");
+  if (!shell || shell.dataset.route !== routeUrl) {
+    return null;
   }
-  if (layer === "personal") {
-    return profile.posts.length ? countLabel(profile.posts.length, "запись", "записи", "записей") : ownSpace ? "записи" : "лента";
-  }
-  if (layer === "reviews") {
-    return profile.reviews.length ? countLabel(profile.reviews.length, "отзыв", "отзыва", "отзывов") : "мнения";
-  }
-  if (layer === "messages") {
-    return "связь";
-  }
-  const count = runtimeModuleDefinitions.length + profile.spaces.length;
-  return countLabel(count, "функция", "функции", "функций");
-}
-
-function countLabel(count: number, one: string, few: string, many: string): string {
-  const mod10 = Math.abs(count) % 10;
-  const mod100 = Math.abs(count) % 100;
-  const word = mod10 === 1 && mod100 !== 11
-    ? one
-    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
-      ? few
-      : many;
-  return `${count} ${word}`;
+  const layer = shell.dataset.activeLayer || "";
+  return isPersonalLayer(layer) ? layer : null;
 }
 
 function renderPanelList(className: string, items: readonly string[], emptyIcon: IconName, emptyText: string): string {
