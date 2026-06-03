@@ -237,13 +237,13 @@ svg {
 
 .personal-topbar {
   width: min(1200px, calc(100% - 32px));
-  min-height: 54px;
+  min-height: 48px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 16px;
   margin: 0 auto;
-  padding: 10px 0;
+  padding: 8px 0;
 }
 
 .personal-brand,
@@ -444,6 +444,10 @@ button.personal-avatar {
   gap: 8px;
 }
 
+.personal-panel-copy .personal-actions {
+  max-width: 340px;
+}
+
 .personal-primary,
 .personal-secondary,
 .personal-message-preview button,
@@ -457,6 +461,10 @@ button.personal-avatar {
   border: 1px solid #000;
   border-radius: 999px;
   font-weight: 800;
+}
+
+.personal-panel-copy .personal-actions button {
+  min-width: min(100%, 148px);
 }
 
 .personal-primary,
@@ -5456,7 +5464,7 @@ button:disabled {
   }
 
   .personal-topbar {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .personal-topbar nav {
