@@ -119,12 +119,17 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
 
 async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, res, rawHandle, rawSpace = "") {
   const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, rawHandle, rawSpace);
-  const appName = profile.accountName || profile.displayName;
+  const appName = manifestAppName(profile);
+  const iconSrc = profile.photoUrl || (profile.slug
+    ? `/icon/space/${encodeURIComponent(profile.handle)}/${encodeURIComponent(profile.slug)}.svg`
+    : `/icon/space/${encodeURIComponent(profile.handle)}.svg`);
+  const iconType = profile.photoUrl ? "image/jpeg" : "image/svg+xml";
+  const iconSizes = profile.photoUrl ? ["192x192", "512x512"] : ["any"];
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
   res.json({
     name: appName,
-    short_name: appName.slice(0, 12) || "Соты",
+    short_name: manifestShortName(appName),
     description: profile.slug ? profile.displayName : profile.headline,
     id: profile.url,
     start_url: profile.url,
@@ -135,17 +140,25 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
     },
     background_color: "#cacaca",
     theme_color: "#000000",
-    icons: [
-      {
-        src: profile.photoUrl || (profile.slug
-          ? `/icon/space/${encodeURIComponent(profile.handle)}/${encodeURIComponent(profile.slug)}.svg`
-          : `/icon/space/${encodeURIComponent(profile.handle)}.svg`),
-        sizes: profile.photoUrl ? "512x512" : "any",
-        type: profile.photoUrl ? "image/jpeg" : "image/svg+xml",
-        purpose: "any maskable"
-      }
-    ]
+    icons: iconSizes.map((sizes) => ({
+      src: iconSrc,
+      sizes,
+      type: iconType,
+      purpose: "any maskable"
+    }))
   });
+}
+
+function manifestAppName(profile) {
+  const raw = profile.slug
+    ? profile.displayName
+    : profile.accountName || profile.displayName;
+  return cleanReviewText(raw, 96) || "Соты";
+}
+
+function manifestShortName(value) {
+  const chars = Array.from(cleanReviewText(value, 96));
+  return chars.slice(0, 18).join("") || "Соты";
 }
 
 async function saveSpacePost(postStore, req, res) {
