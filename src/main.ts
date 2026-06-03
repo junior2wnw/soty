@@ -421,7 +421,7 @@ async function boot(): Promise<void> {
   const personalRoute = personalSpaceRouteFromLocation();
   setPersonalSpaceMode(Boolean(personalRoute));
   setSelfStartMode(false);
-  applyPersonalSpaceManifest(personalRoute);
+  applyPersonalSpaceManifest(null);
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
@@ -994,7 +994,7 @@ function cleanManifestText(value: string, max: number): string {
 function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
   setSelfStartMode(false);
   setPersonalSpaceMode(true);
-  applyPersonalSpaceManifest(route);
+  applyPersonalSpaceManifest(null);
   void renderPersonalSpacePage(app, {
     route,
     canInstall: shouldShowPersonalSpaceInstallAction,
