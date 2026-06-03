@@ -1038,24 +1038,9 @@ async function renderSelfStartPage(): Promise<void> {
           <button type="submit" aria-label="Открыть Я" data-tooltip="Открыть Я">${icon("check")}</button>
         </label>
       </form>
-      <div class="self-start-tools" aria-label="импорт и экспорт">
-        <button type="button" data-action="backup-import" aria-label="Импорт" data-tooltip="Импорт">${icon("upload")}</button>
-        <button type="button" data-action="backup-export" aria-label="Экспорт" data-tooltip="Экспорт">${icon("download")}</button>
-        <input data-backup-import type="file" accept="application/json,.json" hidden />
-      </div>
     </main>
   `;
   const input = app.querySelector<HTMLInputElement>(".self-start-input");
-  const backupInput = app.querySelector<HTMLInputElement>("[data-backup-import]");
-  app.querySelector<HTMLElement>("[data-action='backup-export']")?.addEventListener("click", exportSotyBackup);
-  app.querySelector<HTMLElement>("[data-action='backup-import']")?.addEventListener("click", () => backupInput?.click());
-  backupInput?.addEventListener("change", () => {
-    const file = backupInput.files?.[0];
-    if (file) {
-      void importSotyBackupFile(file, input);
-    }
-    backupInput.value = "";
-  });
   app.querySelector<HTMLFormElement>(".self-start-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const handle = cleanSelfStartHandle(input?.value || "");
@@ -1314,6 +1299,10 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   if (!device) {
     device = await createDevice(cleanNick(payload.device?.nick || "Soty"));
   }
+  const restoredHandle = restoredSelfStartHandle(payload);
+  if (restoredHandle) {
+    saveSelfStartHandle(restoredHandle);
+  }
 
   const restored = restoredTunnelsFromPayload(payload);
   if (restored.tunnels.length > 0) {
@@ -1336,6 +1325,13 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
     count: restored.tunnels.length,
     texts: restored.texts
   };
+}
+
+function restoredSelfStartHandle(payload: OperatorExportPayload): string {
+  return cleanSelfStartHandle(recordString(payload.localStorage, "soty:personal-handle:v1")
+    || recordString(payload.localStorage, "soty:self-start-handle:v1")
+    || recordString(payload.localStorage, "soty:handle:v1"))
+    || legacySelfStartHandleFromNick(payload.device?.nick || "");
 }
 
 function parseOperatorExportPayload(text: string): OperatorExportPayload {

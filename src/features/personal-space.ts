@@ -99,8 +99,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   accountName: "Соты",
   photoUrl: "",
   title: "страница",
-  headline: "Контактная страница.",
-  about: "Пока без описания.",
+  headline: "Визитка, отзывы, связь.",
+  about: "Описание не указано.",
   accent: "#f1f1f1",
   contacts: [],
   posts: [],
@@ -245,6 +245,7 @@ export function savePersonalHandle(handle: string): void {
   }
   try {
     window.localStorage.setItem(localHandleKey, clean);
+    window.localStorage.setItem("soty:self-start-handle:v1", clean);
   } catch {
     // Local storage is a convenience only; the current action can continue.
   }
@@ -345,7 +346,6 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(heroText)}</p>
-            ${renderEntitySignals(profile, ownSpace)}
             ${renderQuickContacts(profile, ownSpace)}
             ${renderEntityActions(heroActions)}
             <div class="personal-note" data-install-note></div>
@@ -355,7 +355,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           ${layers.map((display) => {
             const view = layerDisplay(display, ownSpace);
             return `
-            <button type="button" role="tab" data-layer="${display.id}" aria-label="${escapeAttr(view.title)}" title="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
+            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}">
               ${icon(view.icon)}
               <span>${escapeHtml(view.label)}</span>
               <small>${escapeHtml(layerSignal(profile, display.id, ownSpace))}</small>
@@ -417,17 +417,6 @@ function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): 
   `;
 }
 
-function renderEntitySignals(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  const contacts = visibleContacts(profile, ownSpace).length;
-  const signals = [
-    profile.slug ? "пространство" : ownSpace ? "моя страница" : "контакт",
-    profile.posts.length ? countLabel(profile.posts.length, "запись", "записи", "записей") : "",
-    profile.reviews.length ? countLabel(profile.reviews.length, "отзыв", "отзыва", "отзывов") : "",
-    contacts ? countLabel(contacts, "контакт", "контакта", "контактов") : ""
-  ].filter(Boolean).slice(0, 4);
-  return `<div class="personal-signals" aria-label="состояние">${signals.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>`;
-}
-
 type PersonalPanelView = {
   readonly eyebrow: string;
   readonly title: string;
@@ -461,7 +450,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   if (layer === "personal") {
     return {
       eyebrow: ownSpace ? "я" : "страница",
-      title: ownSpace ? "Мои записи" : "Записи",
+      title: "Записи",
       ...(ownSpace ? { action: { id: "note", label: "Записать", icon: "hexagon", tone: "primary" } as const } : {}),
       body: renderPanelList(
         "personal-feed",
@@ -499,25 +488,12 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   }
   if (layer === "messages") {
     const messageActions = entityActionsFor({ surface: "messages", ownSpace, canInstall: false, canNotify });
-    if (ownSpace) {
-      return {
-        eyebrow: "заметки",
-        title: "Заметки",
-        body: `
-          <div class="personal-message-preview">
-            <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Мысли, ссылки, черновики.</p></div>
-            ${renderInlineEntityActions(messageActions)}
-            <small data-action-note></small>
-          </div>
-        `
-      };
-    }
     return {
       eyebrow: "связь",
-      title: "Чат",
+      title: "Связь",
       body: `
         <div class="personal-message-preview">
-          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Личные сообщения.</p></div>
+          <div class="personal-message-copy"><b>${escapeHtml(profile.shortName)}</b><p>Сообщения напрямую.</p></div>
           ${renderInlineEntityActions(messageActions)}
           <small data-action-note></small>
         </div>
@@ -533,7 +509,7 @@ function panelView(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, own
   }
   return {
     eyebrow: "визитка",
-    title: "Обо мне",
+    title: "Визитка",
     text: cardText(profile, ownSpace),
     body: renderContactList(profile, ownSpace)
   };
@@ -568,7 +544,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   }
   if (options.surface === "messages") {
     return [
-      { id: options.ownSpace ? "note" : "message", label: options.ownSpace ? "Записать" : "Написать", icon: options.ownSpace ? "hexagon" : "send", tone: "primary" },
+      { id: "message", label: options.ownSpace ? "Открыть" : "Написать", icon: options.ownSpace ? "mail" : "send", tone: "primary" },
       ...(!options.ownSpace && options.canNotify ? [{ id: "notifications", label: "Оповещения", icon: "bell", tone: "secondary" } as const] : [])
     ];
   }
@@ -635,14 +611,8 @@ function renderPersonalModuleGroup(group: PersonalModuleGroup): string {
 }
 
 function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
-  if (layer.id === "card") {
-    return { ...layer, label: "Обо мне", title: "Обо мне" };
-  }
   if (!ownSpace && layer.id === "personal") {
     return { ...layer, label: "Страница", title: "Страница" };
-  }
-  if (ownSpace && layer.id === "messages") {
-    return { ...layer, label: "Заметки", title: "Заметки" };
   }
   return layer;
 }
@@ -663,13 +633,8 @@ function visibleContacts(profile: PersonalSpaceProfile, ownSpace: boolean): read
 }
 
 function personalSpaceCopy(text: string, ownSpace: boolean): string {
-  if (!ownSpace) {
-    return text;
-  }
+  void ownSpace;
   return text
-    .replaceAll("сообщений", "заметок")
-    .replaceAll("сообщения", "заметки")
-    .replaceAll("сообщение", "заметку")
     .replaceAll("Чат", "Связь")
     .replaceAll("чат", "связь");
 }
@@ -677,7 +642,7 @@ function personalSpaceCopy(text: string, ownSpace: boolean): string {
 function heroLine(profile: PersonalSpaceProfile, ownSpace: boolean): string {
   const text = personalSpaceCopy(profile.headline, ownSpace);
   if (isDefaultPersonalText(text)) {
-    return ownSpace ? "Ваша страница, контакты и связь." : "Контактная страница.";
+    return ownSpace ? "Визитка, записи, отзывы, связь." : "Контакты, отзывы, связь.";
   }
   return text;
 }
@@ -685,7 +650,7 @@ function heroLine(profile: PersonalSpaceProfile, ownSpace: boolean): string {
 function cardText(profile: PersonalSpaceProfile, ownSpace: boolean): string {
   const text = personalSpaceCopy(profile.about, ownSpace);
   if (isDefaultPersonalText(text)) {
-    return ownSpace ? "Добавьте пару слов и контакт." : "Пока без описания.";
+    return ownSpace ? "Добавьте описание и контакт." : "Описание не указано.";
   }
   return text;
 }
@@ -694,6 +659,8 @@ function isDefaultPersonalText(value: string): boolean {
   const text = value.trim().toLowerCase();
   return !text
     || text === "визитка, записи, отзывы, связь"
+    || text === "визитка, отзывы, связь."
+    || text === "описание не указано."
     || text === "пока без описания."
     || text === "контактная страница.";
 }
@@ -710,7 +677,7 @@ function layerSignal(profile: PersonalSpaceProfile, layer: PersonalSpaceLayer, o
     return profile.reviews.length ? countLabel(profile.reviews.length, "отзыв", "отзыва", "отзывов") : "мнения";
   }
   if (layer === "messages") {
-    return ownSpace ? "себе" : "лично";
+    return "связь";
   }
   const count = runtimeModuleDefinitions.length + profile.spaces.length;
   return countLabel(count, "функция", "функции", "функций");
@@ -964,7 +931,7 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
       <h2>Страница</h2>
       <form data-profile-form>
         <input name="displayName" autocomplete="name" maxlength="100" aria-label="имя" placeholder="Имя или название" value="${escapeAttr(profile.displayName)}" />
-        <textarea name="about" maxlength="420" aria-label="о странице" placeholder="О себе, проекте или месте">${escapeHtml(profile.about)}</textarea>
+        <textarea name="about" maxlength="420" aria-label="о странице" placeholder="О странице, проекте или месте">${escapeHtml(profile.about)}</textarea>
         <input name="contact" autocomplete="url" maxlength="160" aria-label="контакт" placeholder="Сайт, email или контакт" value="${escapeAttr(contact)}" />
         <button type="submit">${icon("check")} Сохранить</button>
       </form>

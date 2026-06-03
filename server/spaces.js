@@ -75,7 +75,6 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
   const ownerName = meta.displayName || titleFromSlug(handle);
   const activeSpace = spaceSlug ? spaceFor(spaceSlug) : null;
   const displayName = activeSpace ? `${activeSpace.title} · ${ownerName}` : ownerName;
-  const accent = colorFor(handle, spaceSlug);
   const url = activeSpace ? `/@${handle}/${activeSpace.slug}` : `/@${handle}`;
   const photo = await readSpacePhoto(photoStore, handle);
   const storedPosts = activeSpace ? [] : await readSpacePosts(postStore, handle);
@@ -93,11 +92,11 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     title: activeSpace ? "пространство" : "страница",
     headline: activeSpace
       ? activeSpace.summary
-      : meta.headline || meta.about || "Контактная страница.",
+      : meta.headline || meta.about || "Визитка, отзывы, связь.",
     about: activeSpace
       ? `${activeSpace.title}: связь, отзывы, действия.`
-      : meta.about || "Пока без описания.",
-    accent: meta.accent || accent,
+      : meta.about || "Описание не указано.",
+    accent: meta.accent || "#f1f1f1",
     contacts: [
       { label: "чат", value: `@${handle}`, href: `/?pwa=1&bare=1&to=${encodeURIComponent(`@${handle}`)}` },
       ...meta.contact ? [meta.contact] : [],
