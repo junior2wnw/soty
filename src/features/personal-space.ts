@@ -231,7 +231,7 @@ const fallbackProfile: PersonalSpaceProfile = {
   modules: [],
   actions: {
     messageUrl: "/@guest?layer=messages",
-    runtimeUrl: "/?pwa=1"
+    runtimeUrl: "/@guest?layer=place"
   }
 };
 
@@ -920,7 +920,7 @@ function localSpaceProfile(
     modules: [],
     actions: {
       messageUrl: personalMessageUrl(route),
-      runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
+      runtimeUrl: personalRuntimeUrl(route)
     }
   };
 }
@@ -3766,7 +3766,7 @@ function normalizeProfile(value: unknown, route: PersonalSpaceRoute): PersonalSp
     modules: list(record.modules).map(normalizeCardModule).filter(isCardModule).slice(0, 16),
     actions: {
       messageUrl: cleanUrlPath(actions.messageUrl) || personalMessageUrl(route),
-      runtimeUrl: cleanUrlPath(actions.runtimeUrl) || "/?pwa=1"
+      runtimeUrl: cleanRuntimeUrl(actions.runtimeUrl, route)
     }
   };
 }
@@ -3898,13 +3898,25 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
     photoUrl: "",
     actions: {
       messageUrl: personalMessageUrl(route),
-      runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
+      runtimeUrl: personalRuntimeUrl(route)
     }
   };
 }
 
 function personalMessageUrl(route: PersonalSpaceRoute): string {
   return `${routeUrl(route)}?layer=messages`;
+}
+
+function personalRuntimeUrl(route: PersonalSpaceRoute): string {
+  return `${routeUrl(route)}?layer=place`;
+}
+
+function cleanRuntimeUrl(value: unknown, route: PersonalSpaceRoute): string {
+  const clean = cleanUrlPath(value);
+  if (!clean || clean.startsWith("/?pwa=1")) {
+    return personalRuntimeUrl(route);
+  }
+  return clean;
 }
 
 function loadLocalHandle(): string {

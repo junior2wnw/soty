@@ -151,7 +151,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     modules,
     actions: {
       messageUrl: `${url}?layer=messages`,
-      runtimeUrl: `/?pwa=1&space=${encodeURIComponent(url)}`
+      runtimeUrl: `${url}?layer=place`
     }
   };
 }

@@ -37,7 +37,7 @@ import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./f
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
-import { runtimeModuleTargetFromString, runtimeModuleUsesEntity } from "./features/runtime-modules";
+import { runtimeModuleTargetFromString } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
@@ -1512,15 +1512,17 @@ async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallR
 }
 
 function openPersonalSpaceRuntime(profile: PersonalSpaceProfile, target = ""): void {
-  const url = new URL(profile.actions.runtimeUrl || bareChatPath(), window.location.origin);
   const moduleTarget = runtimeModuleTargetFromString(target);
-  if (moduleTarget) {
-    url.searchParams.set("module", moduleTarget);
-    if (runtimeModuleUsesEntity(moduleTarget) && profile.handle) {
-      url.searchParams.set("to", `@${profile.handle}`);
-    }
+  const handle = cleanSelfStartHandle(profile.handle);
+  if (handle) {
+    const route = {
+      handle,
+      slug: cleanSelfStartHandle(profile.slug)
+    };
+    window.location.assign(personalRuntimeModuleCardPath(route, moduleTarget));
+    return;
   }
-  window.location.assign(`${url.pathname}${url.search}${url.hash}`);
+  window.location.assign(personalRuntimeModuleCardPath({ handle: "guest", slug: "" }, moduleTarget));
 }
 
 function requestedRuntimeModule(location: Location = window.location): RuntimeModuleTarget | "" {
