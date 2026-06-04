@@ -172,7 +172,7 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
     description: profile.slug ? profile.displayName : profile.headline,
     id: profile.url,
     start_url: profile.url,
-    scope: "/",
+    scope: manifestScope(profile.url),
     display: "standalone",
     launch_handler: {
       client_mode: "navigate-existing"
@@ -186,6 +186,11 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
       purpose: "any"
     }]
   });
+}
+
+function manifestScope(url) {
+  const pathOnly = String(url || "").split(/[?#]/u)[0];
+  return pathOnly.startsWith("/@") ? pathOnly : "/@guest";
 }
 
 function manifestIconVersion(photoUrl) {

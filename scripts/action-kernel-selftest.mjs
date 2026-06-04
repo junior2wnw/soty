@@ -2484,6 +2484,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(httpApp.includes("`/icon/space/${encodedHandle}.svg`"));
       assert(spacesSource.includes('type: "image/svg+xml"'));
       assert(spacesSource.includes('sizes: "any"'));
+      assert(spacesSource.includes("scope: manifestScope(profile.url)"));
+      assert(spacesSource.includes('return pathOnly.startsWith("/@") ? pathOnly : "/@guest";'));
+      assert(!spacesSource.includes('scope: "/"'));
       assert(spacesSource.includes('data:image/jpeg;base64,${photo.bytes.toString("base64")}'));
       assert(!spacesSource.includes('const iconType = profile.photoUrl ? "image/jpeg"'));
       assert(ui.includes("function personalAvatarIconSrc(profile: PersonalSpaceProfile): string"));
