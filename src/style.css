@@ -303,9 +303,9 @@ svg {
   min-height: 0;
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(260px, 0.82fr) minmax(0, 1.58fr);
+  grid-template-columns: minmax(230px, 340px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 14px clamp(24px, 4vw, 48px);
+  gap: 14px clamp(30px, 5vw, 60px);
   margin: 0 auto;
   padding: 10px 0 22px;
   overflow: hidden;
@@ -321,14 +321,14 @@ svg {
   align-content: start;
   align-items: start;
   justify-items: start;
-  gap: 18px;
-  padding: 18px 0;
+  gap: 16px;
+  padding: 16px 0;
   overflow: auto;
   scrollbar-width: thin;
 }
 
 .personal-avatar {
-  width: min(18vw, 132px);
+  width: clamp(104px, 12vw, 132px);
   min-width: 92px;
   aspect-ratio: 1;
   position: relative;
@@ -1008,8 +1008,8 @@ button.personal-avatar {
   display: none;
   min-height: 0;
   height: 100%;
-  grid-template-columns: minmax(150px, 0.36fr) minmax(0, 1.64fr);
-  gap: clamp(16px, 2.6vw, 28px);
+  grid-template-columns: minmax(0, 1fr);
+  gap: clamp(14px, 2vw, 22px);
   align-items: start;
   align-content: start;
   padding: 6px 0 18px;
@@ -1034,8 +1034,9 @@ button.personal-avatar {
 }
 
 .personal-panel-copy {
+  max-width: 620px;
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .personal-panel-action {
@@ -1069,13 +1070,13 @@ button.personal-avatar {
 
 .personal-spaces {
   grid-template-columns: 1fr;
-  gap: clamp(18px, 2vw, 24px);
+  gap: clamp(14px, 2vw, 20px);
 }
 
 .personal-module-group {
   min-width: 0;
   display: grid;
-  gap: 0;
+  gap: 8px;
 }
 
 .personal-module-group h3 {
@@ -1091,13 +1092,17 @@ button.personal-avatar {
 
 .personal-module-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
-  gap: 0 18px;
+  grid-template-columns: repeat(auto-fit, minmax(166px, 1fr));
+  gap: 10px;
 }
 
 .personal-module-group.is-priority .personal-module-grid {
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(144px, 1fr));
+  gap: 10px;
+}
+
+.personal-module-group.is-priority h3 {
+  display: none;
 }
 
 .personal-contact-list a,
@@ -1123,10 +1128,14 @@ button.personal-avatar {
 
 .personal-spaces a,
 .personal-spaces button {
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   align-items: center;
   gap: 2px 12px;
   min-height: 64px;
+  padding: 12px;
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .personal-spaces button {
@@ -1135,12 +1144,12 @@ button.personal-avatar {
 }
 
 .personal-spaces button.is-priority {
-  min-height: 86px;
+  min-height: 68px;
   align-content: start;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr);
   justify-items: start;
-  gap: 7px;
-  padding: 12px 10px;
+  gap: 2px 12px;
+  padding: 12px;
   border: 1px solid #000;
   background: #ffffff;
 }
@@ -1152,9 +1161,9 @@ button.personal-avatar {
 }
 
 .personal-spaces button.is-priority svg {
-  grid-row: auto;
-  width: 24px;
-  height: 24px;
+  grid-row: 1 / span 2;
+  width: 22px;
+  height: 22px;
 }
 
 .personal-empty {
@@ -1192,7 +1201,7 @@ button.personal-avatar {
 }
 
 .personal-spaces button.is-priority span {
-  grid-column: 1;
+  grid-column: 2;
   color: #000;
   font-size: 15px;
 }
@@ -1209,14 +1218,14 @@ button.personal-avatar {
 }
 
 .personal-spaces button.is-priority p {
-  grid-column: 1;
+  grid-column: 2;
   color: #404040;
   font-size: 13px;
   line-height: 1.25;
 }
 
 .personal-spaces button.is-priority small {
-  grid-column: 1;
+  grid-column: 2;
 }
 
 .personal-contact-list b,
@@ -1245,7 +1254,8 @@ button.personal-avatar {
 
 .personal-spaces .is-active {
   border-color: #000;
-  background: #f1f1f1;
+  background: #ffffff;
+  box-shadow: inset 0 -3px 0 #000;
 }
 
 .personal-contact-list a:hover,
@@ -6068,9 +6078,9 @@ button:disabled {
 
   .personal-main {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-    gap: 10px;
-    padding: 0 0 10px;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 0 0 max(10px, env(safe-area-inset-bottom));
   }
 
   .personal-hero,
@@ -6102,7 +6112,7 @@ button:disabled {
 
   .personal-layerbar {
     grid-column: 1;
-    grid-row: 2;
+    grid-row: 3;
     height: auto;
     min-height: 48px;
     grid-template-columns: repeat(5, minmax(72px, 1fr));
@@ -6124,12 +6134,12 @@ button:disabled {
 
   .personal-panels {
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
     min-height: 0;
   }
 
   .personal-panel {
-    padding: 12px 0 8px;
+    padding: 8px 0 10px;
   }
 }
 
@@ -6163,6 +6173,8 @@ button:disabled {
 
   .personal-topbar {
     align-items: center;
+    min-height: 44px;
+    padding: 5px 0;
   }
 
   .personal-topbar nav {
@@ -6178,17 +6190,17 @@ button:disabled {
   }
 
   .personal-hero {
-    grid-template-columns: 76px minmax(0, 1fr);
-    gap: 12px;
-    padding: 8px 0 4px;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 10px;
+    padding: 6px 0 2px;
   }
 
   .personal-avatar {
-    width: 76px;
-    min-width: 76px;
+    width: 64px;
+    min-width: 64px;
     border-width: 1px;
-    border-radius: 12px;
-    font-size: 32px;
+    border-radius: 10px;
+    font-size: 28px;
   }
 
   .personal-avatar span {
@@ -6207,15 +6219,15 @@ button:disabled {
   }
 
   .personal-identity {
-    gap: 6px;
+    gap: 4px;
   }
 
   .personal-identity > span {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .personal-identity h1 {
-    font-size: 28px;
+    font-size: 25px;
     line-height: 1.02;
   }
 
@@ -6224,8 +6236,8 @@ button:disabled {
     overflow: hidden;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
-    font-size: 14px;
-    line-height: 1.32;
+    font-size: 13px;
+    line-height: 1.28;
   }
 
   .personal-reaction {
@@ -6292,6 +6304,8 @@ button:disabled {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     grid-template-rows: minmax(0, 1fr);
     overflow-x: auto;
+    border-radius: 999px;
+    background: #ffffff;
   }
 
   .personal-layerbar button {
@@ -6309,7 +6323,7 @@ button:disabled {
   }
 
   .personal-panel {
-    padding-top: 10px;
+    padding-top: 6px;
   }
 
   .personal-panel-action {
@@ -6327,18 +6341,18 @@ button:disabled {
 
   @media (max-width: 360px) {
     .personal-hero {
-      grid-template-columns: 68px minmax(0, 1fr);
-      gap: 10px;
+      grid-template-columns: 58px minmax(0, 1fr);
+      gap: 9px;
     }
 
     .personal-avatar {
-      width: 68px;
-      min-width: 68px;
-      font-size: 29px;
+      width: 58px;
+      min-width: 58px;
+      font-size: 25px;
     }
 
     .personal-identity h1 {
-      font-size: 25px;
+      font-size: 23px;
     }
 
     .personal-identity p {

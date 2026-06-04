@@ -1253,6 +1253,14 @@ function renderEntityAction(action: EntityAction, className?: string): string {
 
 function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): string {
   const groups = personalModuleGroups(profile, ownSpace, localHandle);
+  if (groups.length === 0) {
+    return renderPanelList(
+      "personal-spaces",
+      [],
+      "apps",
+      ownSpace ? "Добавьте пространство или модуль." : "Открытых модулей пока нет."
+    );
+  }
   return `
     <div class="personal-spaces">
       ${groups.map(renderPersonalModuleGroup).join("")}
@@ -3623,6 +3631,24 @@ function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
     panel.hidden = !active;
     panel.setAttribute("aria-hidden", active ? "false" : "true");
   });
+  rememberPersonalLayerInUrl(layer);
+}
+
+function rememberPersonalLayerInUrl(layer: PersonalSpaceLayer): void {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.pathname.split("/").filter(Boolean)[0]?.startsWith("@")) {
+      return;
+    }
+    if (layer === "card") {
+      url.searchParams.delete("layer");
+    } else {
+      url.searchParams.set("layer", layer);
+    }
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch {
+    // Layer navigation still works when History API is unavailable.
+  }
 }
 
 function bindPersonalLayerKeys(): void {
