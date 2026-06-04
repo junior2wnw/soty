@@ -159,6 +159,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
 async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, res, rawHandle, rawSpace = "") {
   const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, rawHandle, rawSpace);
   const appName = manifestAppName(profile);
+  const appUrl = manifestAppUrl(profile);
   const baseIconSrc = profile.slug
     ? `/icon/space/${encodeURIComponent(profile.handle)}/${encodeURIComponent(profile.slug)}.svg`
     : `/icon/space/${encodeURIComponent(profile.handle)}.svg`;
@@ -192,9 +193,9 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
     name: appName,
     short_name: manifestShortName(appName),
     description: profile.slug ? profile.displayName : profile.headline,
-    id: profile.url,
-    start_url: profile.url,
-    scope: manifestScope(profile.url),
+    id: appUrl,
+    start_url: appUrl,
+    scope: manifestScope(appUrl),
     display: "standalone",
     launch_handler: {
       client_mode: "navigate-existing"
@@ -205,9 +206,19 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
   });
 }
 
+function manifestAppUrl(profile) {
+  const handle = encodeURIComponent(profile.handle || "guest");
+  return profile.slug
+    ? `/pwa/@${handle}/${encodeURIComponent(profile.slug)}/`
+    : `/pwa/@${handle}/`;
+}
+
 function manifestScope(url) {
   const pathOnly = String(url || "").split(/[?#]/u)[0];
-  return pathOnly.startsWith("/@") ? pathOnly : "/@guest";
+  if (!pathOnly.startsWith("/pwa/@")) {
+    return "/pwa/@guest/";
+  }
+  return pathOnly.endsWith("/") ? pathOnly : `${pathOnly}/`;
 }
 
 function manifestIconVersion(photoUrl) {

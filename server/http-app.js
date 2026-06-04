@@ -101,7 +101,8 @@ export function createHttpApp(distDir, { dataDir } = {}) {
 }
 
 function personalRouteHead(pathname) {
-  const parts = String(pathname || "").split("/").filter(Boolean);
+  const rawParts = String(pathname || "").split("/").filter(Boolean);
+  const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;
   const first = parts[0] || "";
   if (!first.startsWith("@")) {
     return null;

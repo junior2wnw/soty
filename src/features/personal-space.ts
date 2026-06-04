@@ -302,9 +302,10 @@ const personalFileMaxBytes = 900_000;
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
-  const parts = location.pathname.split("/").filter(Boolean);
+  const rawParts = location.pathname.split("/").filter(Boolean);
+  const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;
   const first = parts[0] || "";
-  if (!first.startsWith("@")) {
+  if (!first.startsWith("@") || parts.length > 2) {
     return null;
   }
   const handle = cleanRoutePart(first.slice(1));
@@ -315,6 +316,17 @@ export function personalSpaceRouteFromLocation(location: Location = window.locat
     handle,
     slug: cleanRoutePart(parts[1] || "")
   };
+}
+
+export function personalSpacePublicUrl(route: PersonalSpaceRoute): string {
+  return routeUrl(route);
+}
+
+export function personalSpacePwaStartUrl(route: PersonalSpaceRoute): string {
+  const handle = encodeURIComponent(route.handle);
+  return route.slug
+    ? `/pwa/@${handle}/${encodeURIComponent(route.slug)}/`
+    : `/pwa/@${handle}/`;
 }
 
 export function personalSpaceManifestHref(route: PersonalSpaceRoute): string {
@@ -1581,7 +1593,7 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (kind === "space" && target) {
-    window.history.pushState({}, "", target);
+    window.history.pushState({}, "", personalNavigationTarget(target));
     window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
     return;
   }
@@ -2318,7 +2330,7 @@ function showSpaceSheet(root: HTMLElement, profile: PersonalSpaceProfile, option
         }
         saveCachedPersonalProfile(localSpaceProfile(profile, nextSpace, nextSpaces));
         overlay.remove();
-        const href = `/@${encodeURIComponent(profile.handle)}/${encodeURIComponent(slug)}?layer=place`;
+        const href = personalNavigationTarget(`/@${encodeURIComponent(profile.handle)}/${encodeURIComponent(slug)}?layer=place`);
         window.history.pushState({}, "", href);
         window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
       })
@@ -3683,7 +3695,9 @@ function setActiveLayer(root: HTMLElement, layer: PersonalSpaceLayer): void {
 function rememberPersonalLayerInUrl(layer: PersonalSpaceLayer): void {
   try {
     const url = new URL(window.location.href);
-    if (!url.pathname.split("/").filter(Boolean)[0]?.startsWith("@")) {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const routeFirst = parts[0] === "pwa" ? parts[1] : parts[0];
+    if (!routeFirst?.startsWith("@")) {
       return;
     }
     if (layer === "card") {
@@ -3991,6 +4005,44 @@ function readStoredHandle(key: string): string {
 
 function routeUrl(route: PersonalSpaceRoute): string {
   return route.slug ? `/@${route.handle}/${route.slug}` : `/@${route.handle}`;
+}
+
+function personalNavigationTarget(href: string): string {
+  const currentParts = window.location.pathname.split("/").filter(Boolean);
+  if (currentParts[0] !== "pwa") {
+    return href;
+  }
+  try {
+    const url = new URL(href, window.location.origin);
+    if (url.origin !== window.location.origin) {
+      return href;
+    }
+    const route = personalSpaceRouteFromPath(url.pathname);
+    if (!route) {
+      return href;
+    }
+    url.pathname = personalSpacePwaStartUrl(route);
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return href;
+  }
+}
+
+function personalSpaceRouteFromPath(pathname: string): PersonalSpaceRoute | null {
+  const rawParts = pathname.split("/").filter(Boolean);
+  const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;
+  const first = parts[0] || "";
+  if (!first.startsWith("@") || parts.length > 2) {
+    return null;
+  }
+  const handle = cleanRoutePart(first.slice(1));
+  if (!handle) {
+    return null;
+  }
+  return {
+    handle,
+    slug: cleanRoutePart(parts[1] || "")
+  };
 }
 
 function cleanRoutePart(value: string): string {

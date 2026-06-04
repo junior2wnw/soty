@@ -2450,6 +2450,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(hexField.includes("root.addEventListener(\"wheel\", wheel, { passive: false })"));
       assertEqual(webManifest.theme_color, "#090b0f");
       assertEqual(webManifest.background_color, "#090b0f");
+      assertEqual(webManifest.display, "browser");
       assert(html.includes('<meta name="theme-color" content="#090b0f"'));
       assert(html.includes('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"'));
       assert(!html.includes('rel="manifest" href="/manifest.webmanifest"'));
@@ -2471,9 +2472,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("applyPersonalSpaceManifest(personalRoute);"));
       assert(ui.includes("manifest.remove();"));
       assert(ui.includes("createManifestLink()"));
-      assert(ui.includes("return Boolean(personalSpaceRouteFromLocation());"));
+      assert(ui.includes("function shouldShowPersonalSpaceInstallAction(): boolean {\n  return false;"));
+      assert(ui.includes("function showPersonalPwaBoundary(route: PersonalSpaceRoute): void"));
+      assert(styles.includes(".personal-pwa-boundary"));
       assert(personalSpaceSource.includes('...(canInstall ? [{ id: "install"'));
       assert(personalSpaceSource.includes('...(ownSpace ? [{ id: "share"'));
+      assert(personalSpaceSource.includes("export function personalSpacePwaStartUrl(route: PersonalSpaceRoute): string"));
+      assert(personalSpaceSource.includes('const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;'));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
       assert(ui.includes("window.location.assign(selfStartPersonalPath(owned));"));
       assert(serviceWorker.includes('const cacheName = "soty-online-v26"'));
@@ -2488,8 +2493,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(spacesSource.includes('sizes: "any"'));
       assert(spacesSource.includes('sizes: "192x192"'));
       assert(spacesSource.includes('sizes: "512x512"'));
-      assert(spacesSource.includes("scope: manifestScope(profile.url)"));
-      assert(spacesSource.includes('return pathOnly.startsWith("/@") ? pathOnly : "/@guest";'));
+      assert(spacesSource.includes("const appUrl = manifestAppUrl(profile);"));
+      assert(spacesSource.includes("start_url: appUrl"));
+      assert(spacesSource.includes("scope: manifestScope(appUrl)"));
+      assert(spacesSource.includes('pathOnly.startsWith("/pwa/@")'));
+      assert(spacesSource.includes('return "/pwa/@guest/";'));
+      assert(httpApp.includes('const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;'));
       assert(!spacesSource.includes('scope: "/"'));
       assert(spacesSource.includes('data:image/jpeg;base64,${photo.bytes.toString("base64")}'));
       assert(!spacesSource.includes('const iconType = profile.photoUrl ? "image/jpeg"'));

@@ -66,6 +66,74 @@ body.personal-space-mode #app {
   height: 100svh;
 }
 
+.personal-pwa-boundary {
+  min-height: 100svh;
+  display: grid;
+  place-items: center;
+  padding: max(20px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(22px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  background: #cacaca;
+  color: #000;
+}
+
+.personal-pwa-boundary section {
+  width: min(100%, 430px);
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+}
+
+.personal-pwa-boundary span {
+  font-size: 14px;
+  font-weight: 850;
+  color: #3c3c3c;
+}
+
+.personal-pwa-boundary h1 {
+  margin: 0;
+  font-size: clamp(36px, 11vw, 64px);
+  line-height: 0.95;
+  letter-spacing: 0;
+}
+
+.personal-pwa-boundary p {
+  max-width: 34ch;
+  margin: 0;
+  color: #1f1f1f;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.38;
+}
+
+.personal-pwa-boundary div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.personal-pwa-boundary button {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.personal-pwa-boundary button:first-child {
+  background: #000;
+  color: #fff;
+}
+
+.personal-pwa-boundary small {
+  min-height: 18px;
+  color: #444;
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 body.self-start-mode {
   overflow: auto;
   color-scheme: light;
