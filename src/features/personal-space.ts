@@ -1053,11 +1053,10 @@ function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): 
 }
 
 function renderTopActions(ownSpace: boolean, canInstall: boolean): string {
-  const actions: readonly EntityAction[] = ownSpace
-    ? [{ id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }]
-    : canInstall
-      ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" }]
-      : [];
+  const actions: readonly EntityAction[] = [
+    ...(canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" } as const] : []),
+    ...(ownSpace ? [{ id: "share", label: "Поделиться", icon: "qr", tone: "secondary" } as const] : [])
+  ];
   if (actions.length === 0) {
     return "";
   }
@@ -1218,7 +1217,6 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   if (options.surface === "card") {
     if (options.ownSpace) {
       return [
-        ...(options.canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "secondary" } as const] : []),
         { id: "edit", label: "Править", icon: "person", tone: "secondary" }
       ];
     }

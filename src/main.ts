@@ -1450,7 +1450,7 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
 }
 
 function shouldShowPersonalSpaceInstallAction(): boolean {
-  return Boolean(pendingInstallPrompt) || !isStandaloneDisplay();
+  return Boolean(personalSpaceRouteFromLocation()) && !isStandaloneDisplay();
 }
 
 function isStandaloneDisplay(): boolean {

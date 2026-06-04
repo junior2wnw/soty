@@ -2087,6 +2087,7 @@ async function runScenarios({ relayUrl } = {}) {
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const quickActionsSource = (await readFile(join(root, "src", "features", "quick-actions.ts"), "utf8")).replace(/\r\n/gu, "\n");
+      const personalSpaceSource = (await readFile(join(root, "src", "features", "personal-space.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const styles = (await readFile(join(root, "src", "style.css"), "utf8")).replace(/\r\n/gu, "\n");
       const appRuntime = (await readFile(join(root, "src", "trustlink", "runtime.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const hexField = (await readFile(join(root, "src", "ui", "hex-field.ts"), "utf8")).replace(/\r\n/gu, "\n");
@@ -2469,6 +2470,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("applyPersonalSpaceManifest(personalRoute);"));
       assert(ui.includes("manifest.remove();"));
       assert(ui.includes("createManifestLink()"));
+      assert(ui.includes("return Boolean(personalSpaceRouteFromLocation()) && !isStandaloneDisplay();"));
+      assert(personalSpaceSource.includes('...(canInstall ? [{ id: "install"'));
+      assert(personalSpaceSource.includes('...(ownSpace ? [{ id: "share"'));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
       assert(ui.includes("window.location.assign(selfStartPersonalPath(owned));"));
       assert(serviceWorker.includes('const cacheName = "soty-online-v26"'));
