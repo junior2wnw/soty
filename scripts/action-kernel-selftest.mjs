@@ -2101,6 +2101,7 @@ async function runScenarios({ relayUrl } = {}) {
       const realtime = (await readFile(join(root, "server", "realtime.js"), "utf8")).replace(/\r\n/gu, "\n");
       const validators = (await readFile(join(root, "server", "validators.js"), "utf8")).replace(/\r\n/gu, "\n");
       const httpApp = await readFile(join(root, "server", "http-app.js"), "utf8");
+      const spacesSource = (await readFile(join(root, "server", "spaces.js"), "utf8")).replace(/\r\n/gu, "\n");
       const html = await readFile(join(root, "index.html"), "utf8");
       const triggerDoc = await readFile(join(root, "docs", "soty-agent-triggers.md"), "utf8");
       let userWindowsInstallerExists = true;
@@ -2479,6 +2480,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(serviceWorker.includes('"/boot.js"'));
       assert(!serviceWorker.includes('"/manifest.webmanifest"'));
       assert(httpApp.includes('rel="manifest" href="${manifestHref}"'));
+      assert(httpApp.includes('iconType: "image/svg+xml"'));
+      assert(httpApp.includes("`/icon/space/${encodedHandle}.svg`"));
+      assert(spacesSource.includes('type: "image/svg+xml"'));
+      assert(spacesSource.includes('sizes: "any"'));
+      assert(spacesSource.includes('data:image/jpeg;base64,${photo.bytes.toString("base64")}'));
+      assert(!spacesSource.includes('const iconType = profile.photoUrl ? "image/jpeg"'));
+      assert(ui.includes("function personalAvatarIconSrc(profile: PersonalSpaceProfile): string"));
+      assert(ui.includes('setHeadLink("icon", iconSrc, "image/svg+xml");'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));

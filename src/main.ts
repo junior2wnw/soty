@@ -1077,13 +1077,13 @@ function applyPersonalRouteHead(route: PersonalSpaceRoute | null): void {
     return;
   }
   const name = titleFromPersonalRoute(route);
-  const iconSrc = personalPhotoIconSrcFor(route.handle);
+  const iconSrc = fallbackPersonalIconSrcFor(route.handle, route.slug);
   document.title = name;
   setHeadMeta("theme-color", "#000000");
   setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
-  setHeadLink("icon", iconSrc, "image/jpeg");
-  setHeadLink("shortcut icon", iconSrc, "image/jpeg");
-  setHeadLink("apple-touch-icon", iconSrc, "image/jpeg");
+  setHeadLink("icon", iconSrc, "image/svg+xml");
+  setHeadLink("shortcut icon", iconSrc, "image/svg+xml");
+  setHeadLink("apple-touch-icon", iconSrc, "image/svg+xml");
 }
 
 function applyPersonalProfileHead(profile: PersonalSpaceProfile): void {
@@ -1137,24 +1137,24 @@ function setHeadLink(rel: string, href: string, type = ""): void {
 }
 
 function personalManifestIcons(profile: PersonalSpaceProfile): readonly Record<string, string>[] {
-  const photo = cleanManifestIconSrc(profile.photoUrl);
-  const src = absoluteManifestUrl(photo || fallbackPersonalIconSrc(profile));
+  const src = absoluteManifestUrl(personalAvatarIconSrc(profile));
   const type = manifestIconType(src);
-  const sizes = photo ? ["192x192", "512x512"] : ["any"];
-  return sizes.map((size) => ({
+  return [{
     src,
-    sizes: size,
+    sizes: "any",
     ...(type ? { type } : {}),
     purpose: "any"
-  }));
+  }];
 }
 
 function fallbackPersonalIconSrc(profile: PersonalSpaceProfile): string {
   return fallbackPersonalIconSrcFor(profile.handle, profile.slug);
 }
 
-function personalPhotoIconSrcFor(handleValue: string): string {
-  return `/photo/space/${encodeURIComponent(handleValue)}.jpg`;
+function personalAvatarIconSrc(profile: PersonalSpaceProfile): string {
+  const base = fallbackPersonalIconSrc(profile);
+  const version = manifestIconVersion(profile.photoUrl);
+  return version ? `${base}?v=${encodeURIComponent(version)}` : base;
 }
 
 function fallbackPersonalIconSrcFor(handleValue: string, slugValue = ""): string {
@@ -1176,6 +1176,19 @@ function cleanManifestIconSrc(value: string): string {
     return text.slice(0, 900_000);
   }
   return "";
+}
+
+function manifestIconVersion(photoUrl: string): string {
+  const text = cleanManifestIconSrc(photoUrl);
+  if (!text) {
+    return "";
+  }
+  try {
+    const url = new URL(text, window.location.href);
+    return cleanManifestText(url.searchParams.get("v") || "", 80);
+  } catch {
+    return "";
+  }
 }
 
 function manifestIconType(src: string): string {

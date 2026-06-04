@@ -113,13 +113,16 @@ function personalRouteHead(pathname) {
   }
   const encodedHandle = encodeURIComponent(handle);
   const encodedSlug = encodeURIComponent(slug);
+  const iconHref = slug
+    ? `/icon/space/${encodedHandle}/${encodedSlug}.svg`
+    : `/icon/space/${encodedHandle}.svg`;
   return {
     title: titleFromRoutePart(slug || handle),
     manifestHref: slug
       ? `/manifest/space/${encodedHandle}/${encodedSlug}.json`
       : `/manifest/space/${encodedHandle}.json`,
-    iconHref: `/photo/space/${encodedHandle}.jpg`,
-    iconType: "image/jpeg"
+    iconHref,
+    iconType: "image/svg+xml"
   };
 }
 

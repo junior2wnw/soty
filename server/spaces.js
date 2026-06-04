@@ -92,11 +92,11 @@ export function attachSpaces(app, { dataDir } = {}) {
   app.get("/photo/space/:handle.jpg", async (req, res) => {
     await sendSpacePhoto(photoStore, res, req.params.handle || "");
   });
-  app.get("/icon/space/:handle.svg", (req, res) => {
-    sendSpaceIcon(res, req.params.handle || "");
+  app.get("/icon/space/:handle.svg", async (req, res) => {
+    await sendSpaceIcon(photoStore, res, req.params.handle || "");
   });
-  app.get("/icon/space/:handle/:space.svg", (req, res) => {
-    sendSpaceIcon(res, req.params.handle || "", req.params.space || "");
+  app.get("/icon/space/:handle/:space.svg", async (req, res) => {
+    await sendSpaceIcon(photoStore, res, req.params.handle || "", req.params.space || "");
   });
 }
 
@@ -159,11 +159,11 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
 async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, res, rawHandle, rawSpace = "") {
   const profile = await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, rawHandle, rawSpace);
   const appName = manifestAppName(profile);
-  const iconSrc = profile.photoUrl || (profile.slug
+  const baseIconSrc = profile.slug
     ? `/icon/space/${encodeURIComponent(profile.handle)}/${encodeURIComponent(profile.slug)}.svg`
-    : `/icon/space/${encodeURIComponent(profile.handle)}.svg`);
-  const iconType = profile.photoUrl ? "image/jpeg" : "image/svg+xml";
-  const iconSizes = profile.photoUrl ? ["192x192", "512x512"] : ["any"];
+    : `/icon/space/${encodeURIComponent(profile.handle)}.svg`;
+  const iconVersion = manifestIconVersion(profile.photoUrl);
+  const iconSrc = iconVersion ? `${baseIconSrc}?v=${encodeURIComponent(iconVersion)}` : baseIconSrc;
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
   res.json({
@@ -179,13 +179,23 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
     },
     background_color: "#cacaca",
     theme_color: "#000000",
-    icons: iconSizes.map((sizes) => ({
+    icons: [{
       src: iconSrc,
-      sizes,
-      type: iconType,
+      sizes: "any",
+      type: "image/svg+xml",
       purpose: "any"
-    }))
+    }]
   });
+}
+
+function manifestIconVersion(photoUrl) {
+  const text = typeof photoUrl === "string" ? photoUrl : "";
+  try {
+    const url = new URL(text, "https://soty.local");
+    return cleanVersion(url.searchParams.get("v") || "");
+  } catch {
+    return "";
+  }
 }
 
 function manifestAppName(profile) {
@@ -377,12 +387,26 @@ async function sendSpacePhoto(photoStore, res, rawHandle) {
   res.send(photo.bytes);
 }
 
-function sendSpaceIcon(res, rawHandle, rawSpace = "") {
+async function sendSpaceIcon(photoStore, res, rawHandle, rawSpace = "") {
   const profile = fallbackIconProfile(rawHandle, rawSpace);
   const initials = profile.shortName.slice(0, 2).toUpperCase();
   const safeInitials = escapeSvg(initials || "С");
   res.setHeader("Cache-Control", "public, max-age=3600");
   res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+  const handle = cleanSlug(rawHandle) || "guest";
+  const photo = await readSpacePhoto(photoStore, handle);
+  if (photo) {
+    res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <clipPath id="avatar">
+      <rect width="512" height="512" rx="112"/>
+    </clipPath>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#f8f7f2"/>
+  <image width="512" height="512" href="data:image/jpeg;base64,${photo.bytes.toString("base64")}" preserveAspectRatio="xMidYMid slice" clip-path="url(#avatar)"/>
+</svg>`);
+    return;
+  }
   res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="112" fill="#f8f7f2"/>
   <circle cx="256" cy="226" r="154" fill="${profile.accent}"/>
