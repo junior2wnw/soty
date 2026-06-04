@@ -23,7 +23,14 @@ export type PersonalSpaceProfileUpdate = {
   readonly displayName: string;
   readonly about: string;
   readonly contact: string;
+  readonly spaces?: readonly PersonalSpaceLinkUpdate[];
   readonly trustedHandles?: readonly string[];
+};
+
+export type PersonalSpaceLinkUpdate = {
+  readonly slug: string;
+  readonly title: string;
+  readonly summary: string;
 };
 
 export type PersonalSpacePostDraft = {
@@ -690,6 +697,7 @@ function mergeLocalProfile(route: PersonalSpaceRoute, fetched: PersonalSpaceProf
     reactions: { likes: Math.max(fetched.reactions.likes, cached.reactions.likes) },
     trustedViewer: fetched.trustedViewer || cached.trustedViewer,
     trustedHandles: fetched.trustedHandles.length ? fetched.trustedHandles : cached.trustedHandles,
+    spaces: mergeByKey(fetched.spaces, cached.spaces, (space) => space.slug).slice(0, 12),
     modules: mergeByKey(fetched.modules, cached.modules, cardModuleKey).slice(0, 16)
   };
 }
@@ -700,6 +708,7 @@ function applyLocalProfileUpdate(route: PersonalSpaceRoute, update: PersonalSpac
   const about = cleanText(update.about, 420) || profile.about;
   const contact = cleanText(update.contact, 160);
   const trustedHandles = update.trustedHandles ? normalizeTrustedHandles(update.trustedHandles) : profile.trustedHandles;
+  const spaces = update.spaces ? normalizeSpaceUpdates(update.spaces, profile.handle) : profile.spaces;
   const contacts = contact
     ? [
         { label: "контакт", value: contact, ...(contactHref(contact) ? { href: contactHref(contact) } : {}) },
@@ -713,6 +722,7 @@ function applyLocalProfileUpdate(route: PersonalSpaceRoute, update: PersonalSpac
     accountName: displayName,
     about,
     trustedHandles,
+    spaces,
     contacts
   };
 }
@@ -830,6 +840,89 @@ function normalizeTrustedHandles(value: unknown): readonly string[] {
     }
   }
   return handles;
+}
+
+function normalizeSpaceUpdates(value: unknown, handle = ""): readonly PersonalSpaceLink[] {
+  const cleanHandle = cleanRoutePart(handle);
+  return list(value)
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+      const slug = cleanRoutePart(String(item.slug || ""));
+      const title = cleanText(item.title, 80);
+      if (!slug || !title) {
+        return null;
+      }
+      return {
+        slug,
+        title,
+        summary: cleanText(item.summary, 140),
+        href: cleanUrlPath(item.href) || (cleanHandle ? `/@${cleanHandle}/${slug}` : "#"),
+        active: item.active === true
+      };
+    })
+    .filter(isSpaceLink)
+    .slice(0, 12);
+}
+
+function spaceUpdatesWith(
+  current: readonly PersonalSpaceLink[],
+  next?: PersonalSpaceLinkUpdate
+): readonly PersonalSpaceLinkUpdate[] {
+  const seen = new Set<string>();
+  const spaces: PersonalSpaceLinkUpdate[] = [];
+  const push = (space: PersonalSpaceLinkUpdate): void => {
+    const slug = cleanRoutePart(space.slug);
+    const title = cleanText(space.title, 80);
+    if (!slug || !title || seen.has(slug)) {
+      return;
+    }
+    seen.add(slug);
+    spaces.push({
+      slug,
+      title,
+      summary: cleanText(space.summary, 140)
+    });
+  };
+  if (next) {
+    push(next);
+  }
+  current.forEach((space) => push(space));
+  return spaces.slice(0, 12);
+}
+
+function localSpaceProfile(
+  profile: PersonalSpaceProfile,
+  space: PersonalSpaceLinkUpdate,
+  spaces: readonly PersonalSpaceLinkUpdate[]
+): PersonalSpaceProfile {
+  const slug = cleanRoutePart(space.slug);
+  const title = cleanText(space.title, 80) || slug;
+  const summary = cleanText(space.summary, 140) || "пространство";
+  const route = { handle: profile.handle, slug };
+  const links = normalizeSpaceUpdates(spaces, profile.handle).map((item) => ({
+    ...item,
+    active: item.slug === slug
+  }));
+  return {
+    ...profile,
+    kind: "space",
+    slug,
+    url: routeUrl(route),
+    displayName: `${title} · ${profile.accountName || profile.displayName}`,
+    shortName: title,
+    title: "пространство",
+    headline: summary,
+    about: `${title}: связь, отзывы, действия.`,
+    posts: [],
+    spaces: links,
+    modules: [],
+    actions: {
+      messageUrl: personalMessageUrl(route),
+      runtimeUrl: `/?pwa=1&space=${encodeURIComponent(routeUrl(route))}`
+    }
+  };
 }
 
 function contactValueForProfile(profile: PersonalSpaceProfile): string {
@@ -1185,6 +1278,14 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean, 
     kind: "action",
     target: "module"
   };
+  const addSpace: PersonalModule = {
+    id: "space:add",
+    title: "Пространство",
+    summary: "создать",
+    icon: "hexagon",
+    kind: "action",
+    target: "space"
+  };
   const childSpaces: readonly PersonalModule[] = profile.spaces.map((space) => ({
     id: `space:${space.slug}`,
     title: space.title,
@@ -1204,7 +1305,7 @@ function personalModuleGroups(profile: PersonalSpaceProfile, ownSpace: boolean, 
       target: "data"
     }]
     : [];
-  const priorityModules = ownSpace ? [...runtimeById("agent"), addModule, ...runtimeById("access"), ...dataModules] : [];
+  const priorityModules = ownSpace ? [...runtimeById("agent"), addSpace, addModule, ...runtimeById("access"), ...dataModules] : [];
   return [
     ...(priorityModules.length ? [{ title: "Главное", modules: priorityModules, priority: true }] : []),
     ...(customModules.length ? [{ title: "Модули", modules: customModules }] : []),
@@ -1458,6 +1559,10 @@ function openPersonalModule(root: HTMLElement, node: HTMLElement, profile: Perso
   }
   if (kind === "action" && target === "module") {
     showModuleSheet(root, options);
+    return;
+  }
+  if (kind === "action" && target === "space") {
+    showSpaceSheet(root, profile, options);
     return;
   }
   if (kind === "space" && target) {
@@ -2070,6 +2175,7 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
       displayName: cleanText(nameInput?.value || "", 100),
       about: cleanText(aboutInput?.value || "", 420),
       contact: cleanText(contactInput?.value || "", 160),
+      spaces: spaceUpdatesWith(profile.spaces),
       trustedHandles: profile.trustedHandles
     };
     if (!update.displayName && !update.about && !update.contact) {
@@ -2132,6 +2238,83 @@ function showDataSheet(root: HTMLElement, options: PersonalSpacePageOptions): vo
     if (event.target === overlay) {
       overlay.remove();
     }
+  });
+}
+
+function showSpaceSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="Пространство">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <h2>Пространство</h2>
+      <form data-space-form>
+        <input name="title" maxlength="80" required placeholder="Название" />
+        <input name="summary" maxlength="140" placeholder="Коротко" />
+        <button type="submit">${icon("check")} Создать</button>
+      </form>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const titleInput = overlay.querySelector<HTMLInputElement>("input[name='title']");
+  const summaryInput = overlay.querySelector<HTMLInputElement>("input[name='summary']");
+  titleInput?.focus();
+  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      overlay.remove();
+    }
+  });
+  overlay.querySelector<HTMLFormElement>("[data-space-form]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+    const error = overlay.querySelector<HTMLElement>("[data-error]");
+    const title = cleanText(titleInput?.value || "", 80);
+    const slug = cleanRoutePart(title);
+    const summary = cleanText(summaryInput?.value || "", 140) || "пространство";
+    if (!title || !slug) {
+      if (error) {
+        error.textContent = "Добавьте название.";
+      }
+      return;
+    }
+    const nextSpace = {
+      slug,
+      title,
+      summary
+    };
+    const nextSpaces = spaceUpdatesWith(profile.spaces, nextSpace);
+    const update: PersonalSpaceProfileUpdate = {
+      displayName: profile.displayName,
+      about: profile.about,
+      contact: contactValueForProfile(profile),
+      trustedHandles: profile.trustedHandles,
+      spaces: nextSpaces
+    };
+    if (button) {
+      button.disabled = true;
+    }
+    void options.updateProfile(options.route, update)
+      .then((result) => {
+        if (!result.ok) {
+          throw new Error(result.message);
+        }
+        saveCachedPersonalProfile(localSpaceProfile(profile, nextSpace, nextSpaces));
+        overlay.remove();
+        const href = `/@${encodeURIComponent(profile.handle)}/${encodeURIComponent(slug)}?layer=place`;
+        window.history.pushState({}, "", href);
+        window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+      })
+      .catch((err) => {
+        if (error) {
+          error.textContent = err instanceof Error ? err.message : "Не удалось сохранить.";
+        }
+        if (button) {
+          button.disabled = false;
+        }
+      });
   });
 }
 
@@ -2965,6 +3148,7 @@ function showTrustedAccessSheet(root: HTMLElement, profile: PersonalSpaceProfile
       displayName: profile.displayName,
       about: profile.about,
       contact: contactValueForProfile(profile),
+      spaces: spaceUpdatesWith(profile.spaces),
       trustedHandles
     };
     if (button) {

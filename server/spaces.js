@@ -107,7 +107,8 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
   const meta = await readSpaceMeta(metaStore, handle);
   const owner = await readSpaceOwner(ownerStore, handle);
   const ownerName = meta.displayName || titleFromSlug(handle);
-  const activeSpace = spaceSlug ? spaceFor(spaceSlug) : null;
+  const spaces = spacesForMeta(meta.spaces, handle, spaceSlug);
+  const activeSpace = spaceSlug ? spaceFor(spaceSlug, spaces) : null;
   const displayName = activeSpace ? `${activeSpace.title} · ${ownerName}` : ownerName;
   const url = activeSpace ? `/@${handle}/${activeSpace.slug}` : `/@${handle}`;
   const photo = await readSpacePhoto(photoStore, handle);
@@ -146,11 +147,7 @@ async function publicSpaceProfile(metaStore, photoStore, postStore, reviewStore,
     reactions,
     trustedViewer,
     trustedHandles: viewer === handle ? trustedHandles : [],
-    spaces: defaultSpaces.map((space) => ({
-      ...space,
-      href: `/@${handle}/${space.slug}`,
-      active: space.slug === activeSpace?.slug
-    })),
+    spaces,
     modules,
     actions: {
       messageUrl: `${url}?layer=messages`,
@@ -405,8 +402,8 @@ function fallbackIconProfile(rawHandle, rawSpace = "") {
   };
 }
 
-function spaceFor(slug) {
-  const known = defaultSpaces.find((space) => space.slug === slug);
+function spaceFor(slug, spaces = defaultSpaces) {
+  const known = spaces.find((space) => space.slug === slug);
   if (known) {
     return known;
   }
@@ -415,6 +412,31 @@ function spaceFor(slug) {
     title: titleFromSlug(slug),
     summary: "большое место"
   };
+}
+
+function spacesForMeta(value, handle, activeSlug = "") {
+  const seen = new Set();
+  const spaces = [];
+  const add = (space) => {
+    const slug = cleanSlug(space?.slug || "");
+    const title = cleanReviewText(space?.title, 80) || titleFromSlug(slug);
+    if (!slug || !title || seen.has(slug)) {
+      return;
+    }
+    seen.add(slug);
+    spaces.push({
+      slug,
+      title,
+      summary: cleanReviewText(space?.summary, 140) || "пространство",
+      href: `/@${handle}/${slug}`,
+      active: slug === activeSlug
+    });
+  };
+  defaultSpaces.forEach(add);
+  if (Array.isArray(value)) {
+    value.forEach(add);
+  }
+  return spaces.slice(0, 12);
 }
 
 function titleFromSlug(value) {
@@ -1019,13 +1041,15 @@ function normalizeMetaBody(body) {
   const trustedHandles = Array.isArray(body?.trustedHandles) || typeof body?.trustedHandles === "string"
     ? cleanTrustedHandles(body.trustedHandles)
     : null;
-  if (!displayName && !about && !contact && trustedHandles === null) {
+  const spaces = Array.isArray(body?.spaces) ? normalizeSpacesMeta(body.spaces) : null;
+  if (!displayName && !about && !contact && trustedHandles === null && spaces === null) {
     return null;
   }
   return {
     ...(displayName ? { displayName, headline: about || "визитка, записи, отзывы, связь" } : {}),
     ...(about ? { about, headline: about } : {}),
     ...(contact ? { contact } : {}),
+    ...(spaces !== null ? { spaces } : {}),
     ...(trustedHandles !== null ? { trustedHandles } : {})
   };
 }
@@ -1039,13 +1063,43 @@ function normalizeStoredMeta(record) {
   const headline = cleanReviewText(record.headline, 180);
   const contact = normalizeContactMeta(record.contact);
   const trustedHandles = cleanTrustedHandles(record.trustedHandles);
+  const spaces = normalizeSpacesMeta(record.spaces);
   return {
     ...(displayName ? { displayName } : {}),
     ...(about ? { about } : {}),
     ...(headline ? { headline } : {}),
     ...(contact ? { contact } : {}),
+    ...(spaces.length ? { spaces } : {}),
     ...(trustedHandles.length ? { trustedHandles } : {})
   };
+}
+
+function normalizeSpacesMeta(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const spaces = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const slug = cleanSlug(item.slug || "");
+    const title = cleanReviewText(item.title, 80);
+    if (!slug || !title || seen.has(slug)) {
+      continue;
+    }
+    seen.add(slug);
+    spaces.push({
+      slug,
+      title,
+      summary: cleanReviewText(item.summary, 140)
+    });
+    if (spaces.length >= 12) {
+      break;
+    }
+  }
+  return spaces;
 }
 
 function cleanTrustedHandles(value) {
