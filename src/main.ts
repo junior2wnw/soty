@@ -35,7 +35,7 @@ import { infoPageHtml, paymentPageHtml, showAccessPanelModal, showTrustModal } f
 import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
-import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, personalSpaceManifestHref, personalSpacePublicUrl, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
+import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, personalSpaceManifestHref, personalSpaceRouteFromLocation, renderPersonalSpacePage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute } from "./features/personal-space";
 import { runtimeModuleTargetFromString } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
@@ -1115,64 +1115,6 @@ function titleFromManifestPart(value: string): string {
   return text.replace(/^\p{Ll}/u, (char) => char.toLocaleUpperCase("ru-RU"));
 }
 
-function isPersonalPublicRouteLocation(location: Location = window.location): boolean {
-  const parts = location.pathname.split("/").filter(Boolean);
-  return Boolean(parts[0]?.startsWith("@"));
-}
-
-function isPersonalPwaRouteLocation(location: Location = window.location): boolean {
-  const parts = location.pathname.split("/").filter(Boolean);
-  return parts[0] === "pwa" && Boolean(parts[1]?.startsWith("@"));
-}
-
-function shouldShowPersonalPwaBoundary(): boolean {
-  return isStandalonePersonalApp() && isPersonalPublicRouteLocation() && !isPersonalPwaRouteLocation();
-}
-
-function showPersonalPwaBoundary(route: PersonalSpaceRoute): void {
-  const publicPath = personalSpacePublicUrl(route);
-  const publicUrl = new URL(publicPath, window.location.origin).toString();
-  const title = titleFromPersonalRoute(route);
-  document.title = title;
-  app.innerHTML = `
-    <main class="personal-pwa-boundary" aria-label="Карточка">
-      <section>
-        <span>@${escapeHtml(route.handle)}</span>
-        <h1>${escapeHtml(title)}</h1>
-        <p>Ссылка открылась внутри установленного приложения. Откройте карточку в браузере, чтобы не смешивать разные страницы.</p>
-        <div>
-          <button type="button" data-open-public-card>Открыть</button>
-          <button type="button" data-copy-public-card>Ссылка</button>
-        </div>
-        <small data-pwa-boundary-note></small>
-      </section>
-    </main>
-  `;
-  app.querySelector<HTMLButtonElement>("[data-open-public-card]")?.addEventListener("click", () => {
-    const opened = window.open(publicUrl, "_blank", "noopener,noreferrer");
-    const note = app.querySelector<HTMLElement>("[data-pwa-boundary-note]");
-    if (note) {
-      note.textContent = opened ? "Открылось в новом окне." : "Скопируйте ссылку и откройте её в браузере.";
-    }
-  });
-  app.querySelector<HTMLButtonElement>("[data-copy-public-card]")?.addEventListener("click", () => {
-    const note = app.querySelector<HTMLElement>("[data-pwa-boundary-note]");
-    const write = navigator.clipboard?.writeText(publicUrl) ?? Promise.reject(new Error("clipboard_unavailable"));
-    void write
-      .then(() => {
-        if (note) {
-          note.textContent = "Ссылка скопирована.";
-        }
-      })
-      .catch(() => {
-        if (note) {
-          note.textContent = publicUrl;
-        }
-      });
-  });
-  document.body.dataset.sotyReady = "1";
-}
-
 function setHeadMeta(name: string, content: string): void {
   const meta = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`) || document.createElement("meta");
   meta.name = name;
@@ -1299,10 +1241,6 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
   setSelfStartMode(false);
   setPersonalSpaceMode(true);
   applyPersonalSpaceManifest(route);
-  if (shouldShowPersonalPwaBoundary()) {
-    showPersonalPwaBoundary(route);
-    return;
-  }
   void renderPersonalSpacePage(app, {
     route,
     canInstall: shouldShowPersonalSpaceInstallAction,

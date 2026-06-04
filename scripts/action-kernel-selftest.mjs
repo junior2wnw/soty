@@ -2473,8 +2473,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("manifest.remove();"));
       assert(ui.includes("createManifestLink()"));
       assert(ui.includes("function shouldShowPersonalSpaceInstallAction(): boolean {\n  return false;"));
-      assert(ui.includes("function showPersonalPwaBoundary(route: PersonalSpaceRoute): void"));
-      assert(styles.includes(".personal-pwa-boundary"));
+      assert(!ui.includes("showPersonalPwaBoundary"));
+      assert(!styles.includes(".personal-pwa-boundary"));
       assert(personalSpaceSource.includes('...(canInstall ? [{ id: "install"'));
       assert(personalSpaceSource.includes('...(ownSpace ? [{ id: "share"'));
       assert(personalSpaceSource.includes("export function personalSpacePwaStartUrl(route: PersonalSpaceRoute): string"));

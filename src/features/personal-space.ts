@@ -318,10 +318,6 @@ export function personalSpaceRouteFromLocation(location: Location = window.locat
   };
 }
 
-export function personalSpacePublicUrl(route: PersonalSpaceRoute): string {
-  return routeUrl(route);
-}
-
 export function personalSpacePwaStartUrl(route: PersonalSpaceRoute): string {
   const handle = encodeURIComponent(route.handle);
   return route.slug
