@@ -6083,16 +6083,21 @@ button:disabled {
     grid-row: 1;
     min-height: auto;
     height: auto;
-    max-height: 30svh;
+    max-height: none;
     grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
+    align-items: start;
     align-content: start;
     gap: 16px;
     padding: 14px 0 8px;
+    overflow: visible;
   }
 
   .personal-avatar {
     width: 128px;
+  }
+
+  .personal-hero .personal-quick-contacts {
+    display: none;
   }
 
   .personal-layerbar {
@@ -6173,36 +6178,60 @@ button:disabled {
   }
 
   .personal-hero {
-    max-height: 26svh;
-    gap: 14px;
-    padding-top: 12px;
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 12px;
+    padding: 8px 0 4px;
   }
 
   .personal-avatar {
-    width: 96px;
+    width: 76px;
+    min-width: 76px;
     border-width: 1px;
     border-radius: 12px;
-    font-size: 40px;
+    font-size: 32px;
   }
 
   .personal-avatar span {
-    min-height: 30px;
-    bottom: 8px;
-    font-size: 12px;
+    width: 28px;
+    min-height: 28px;
+    justify-content: center;
+    bottom: 6px;
+    padding: 0;
+    font-size: 0;
     opacity: 1;
   }
 
+  .personal-avatar span svg {
+    width: 14px;
+    height: 14px;
+  }
+
   .personal-identity {
-    gap: 9px;
+    gap: 6px;
+  }
+
+  .personal-identity > span {
+    font-size: 13px;
   }
 
   .personal-identity h1 {
-    font-size: 32px;
-    line-height: 1;
+    font-size: 28px;
+    line-height: 1.02;
   }
 
   .personal-identity p {
-    font-size: 15px;
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: 14px;
+    line-height: 1.32;
+  }
+
+  .personal-reaction {
+    min-height: 32px;
+    padding: 0 10px;
+    font-size: 12px;
   }
 
   .personal-actions {
@@ -6260,17 +6289,18 @@ button:disabled {
   }
 
   .personal-layerbar {
-    grid-template-columns: repeat(5, minmax(62px, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     grid-template-rows: minmax(0, 1fr);
     overflow-x: auto;
   }
 
   .personal-layerbar button {
-    min-height: 46px;
+    min-height: 44px;
     padding: 0 6px;
     border-right: 1px solid #000;
     border-bottom: 0;
-    font-size: 11px;
+    font-size: 10px;
+    gap: 4px;
   }
 
   .personal-layerbar svg {
@@ -6279,7 +6309,7 @@ button:disabled {
   }
 
   .personal-panel {
-    padding-top: 14px;
+    padding-top: 10px;
   }
 
   .personal-panel-action {
@@ -6287,7 +6317,46 @@ button:disabled {
   }
 
   .personal-panel-copy h2 {
-    font-size: 28px;
+    font-size: 26px;
+  }
+
+  .personal-panel-copy p {
+    font-size: 15px;
+    line-height: 1.46;
+  }
+
+  @media (max-width: 360px) {
+    .personal-hero {
+      grid-template-columns: 68px minmax(0, 1fr);
+      gap: 10px;
+    }
+
+    .personal-avatar {
+      width: 68px;
+      min-width: 68px;
+      font-size: 29px;
+    }
+
+    .personal-identity h1 {
+      font-size: 25px;
+    }
+
+    .personal-identity p {
+      font-size: 13px;
+    }
+
+    .personal-layerbar button {
+      flex-direction: column;
+      min-height: 46px;
+      gap: 2px;
+      padding: 2px 0;
+      font-size: 9px;
+    }
+
+    .personal-layerbar svg {
+      width: 14px;
+      height: 14px;
+    }
   }
 
   .shell {

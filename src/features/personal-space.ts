@@ -583,13 +583,12 @@ async function savePersonalReaction(profile: PersonalSpaceProfile): Promise<Pers
 async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
   const viewer = loadLocalHandle();
   const url = personalProfileApiUrl(route, viewer);
-  const cacheProfile = !viewer || viewer === route.handle;
   const cached = loadCachedPersonalProfile(route);
-  if (cached && cacheProfile) {
-    void refreshPersonalSpaceProfile(route, url, cacheProfile);
+  if (cached) {
+    void refreshPersonalSpaceProfile(route, url);
     return cached;
   }
-  const fetched = await fetchPersonalSpaceProfile(route, url, cacheProfile);
+  const fetched = await fetchPersonalSpaceProfile(route, url);
   if (fetched) {
     return fetched;
   }
@@ -609,11 +608,11 @@ function personalProfileApiUrl(route: PersonalSpaceRoute, viewer = ""): string {
   return cleanViewer ? `${path}?viewer=${encodeURIComponent(cleanViewer)}` : path;
 }
 
-async function refreshPersonalSpaceProfile(route: PersonalSpaceRoute, url: string, cacheProfile: boolean): Promise<void> {
-  await fetchPersonalSpaceProfile(route, url, cacheProfile);
+async function refreshPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<void> {
+  await fetchPersonalSpaceProfile(route, url);
 }
 
-async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string, cacheProfile = true): Promise<PersonalSpaceProfile | null> {
+async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<PersonalSpaceProfile | null> {
   try {
     const response = await fetch(url, {
       cache: "no-store",
@@ -623,9 +622,7 @@ async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string,
       return null;
     }
     const profile = mergeLocalProfile(route, normalizeProfile(await response.json(), route));
-    if (cacheProfile) {
-      saveCachedPersonalProfile(profile);
-    }
+    saveCachedPersonalProfile(profile);
     return profile;
   } catch {
     return null;
