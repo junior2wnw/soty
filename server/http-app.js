@@ -118,9 +118,8 @@ function personalRouteHead(pathname) {
     manifestHref: slug
       ? `/manifest/space/${encodedHandle}/${encodedSlug}.json`
       : `/manifest/space/${encodedHandle}.json`,
-    iconHref: slug
-      ? `/icon/space/${encodedHandle}/${encodedSlug}.svg`
-      : `/icon/space/${encodedHandle}.svg`
+    iconHref: `/photo/space/${encodedHandle}.jpg`,
+    iconType: "image/jpeg"
   };
 }
 
@@ -128,18 +127,23 @@ function applyPersonalRouteHead(html, head) {
   const title = escapeHtml(head.title || "soty.online");
   const titleAttr = escapeAttr(head.title || "soty.online");
   const iconHref = escapeAttr(head.iconHref);
+  const iconType = escapeAttr(head.iconType || "image/svg+xml");
   return ensureHeadTag(
     ensureHeadTag(
-      html
-        .replace(/<link rel="manifest" href="\/manifest\.webmanifest"\s*\/?>/u, `<link rel="manifest" href="${escapeAttr(head.manifestHref)}" />`)
-        .replace(/<title>.*?<\/title>/su, `<title>${title}</title>`)
-        .replace(/<meta name="theme-color" content="[^"]*"\s*\/?>/u, '<meta name="theme-color" content="#000000" />')
-        .replace(/<link rel="icon" href="[^"]*"[^>]*>/u, `<link rel="icon" href="${iconHref}" type="image/svg+xml" />`),
-      /<meta name="apple-mobile-web-app-title" content="[^"]*"\s*\/?>/u,
-      `<meta name="apple-mobile-web-app-title" content="${titleAttr}" />`
+      ensureHeadTag(
+        html
+          .replace(/<link rel="manifest" href="\/manifest\.webmanifest"\s*\/?>/u, `<link rel="manifest" href="${escapeAttr(head.manifestHref)}" />`)
+          .replace(/<title>.*?<\/title>/su, `<title>${title}</title>`)
+          .replace(/<meta name="theme-color" content="[^"]*"\s*\/?>/u, '<meta name="theme-color" content="#000000" />')
+          .replace(/<link rel="icon" href="[^"]*"[^>]*>/u, `<link rel="icon" href="${iconHref}" type="${iconType}" />`),
+        /<meta name="apple-mobile-web-app-title" content="[^"]*"\s*\/?>/u,
+        `<meta name="apple-mobile-web-app-title" content="${titleAttr}" />`
+      ),
+      /<link rel="shortcut icon" href="[^"]*"[^>]*>/u,
+      `<link rel="shortcut icon" href="${iconHref}" type="${iconType}" />`
     ),
     /<link rel="apple-touch-icon" href="[^"]*"[^>]*>/u,
-    `<link rel="apple-touch-icon" href="${iconHref}" type="image/svg+xml" />`
+    `<link rel="apple-touch-icon" href="${iconHref}" type="${iconType}" />`
   );
 }
 

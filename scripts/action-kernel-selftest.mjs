@@ -2462,7 +2462,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!styles.includes("body.native-window-chrome .pwa-titlebar"));
       assert(!styles.includes("env(titlebar-area-width"));
       assert(!styles.includes("-webkit-app-region: drag"));
-      assert(serviceWorker.includes('const cacheName = "soty-online-v24"'));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v25"'));
+      assert(serviceWorker.includes('"/boot.js"'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));

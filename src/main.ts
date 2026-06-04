@@ -1116,16 +1116,18 @@ function applyPersonalRouteHead(route: PersonalSpaceRoute | null): void {
     setHeadMeta("theme-color", "#090b0f");
     setHeadMeta("apple-mobile-web-app-title", "соты");
     setHeadLink("icon", "/icon.svg", "image/svg+xml");
+    setHeadLink("shortcut icon", "/icon.svg", "image/svg+xml");
     setHeadLink("apple-touch-icon", "/icon.svg", "image/svg+xml");
     return;
   }
   const name = titleFromPersonalRoute(route);
-  const iconSrc = fallbackPersonalIconSrcFor(route.handle, route.slug);
+  const iconSrc = personalPhotoIconSrcFor(route.handle);
   document.title = name;
   setHeadMeta("theme-color", "#000000");
   setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
-  setHeadLink("icon", iconSrc, "image/svg+xml");
-  setHeadLink("apple-touch-icon", iconSrc, "image/svg+xml");
+  setHeadLink("icon", iconSrc, "image/jpeg");
+  setHeadLink("shortcut icon", iconSrc, "image/jpeg");
+  setHeadLink("apple-touch-icon", iconSrc, "image/jpeg");
 }
 
 function applyPersonalProfileHead(profile: PersonalSpaceProfile): void {
@@ -1138,6 +1140,7 @@ function applyPersonalProfileHead(profile: PersonalSpaceProfile): void {
   setHeadMeta("theme-color", "#000000");
   setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
   setHeadLink("icon", iconSrc, iconType);
+  setHeadLink("shortcut icon", iconSrc, iconType);
   setHeadLink("apple-touch-icon", iconSrc, iconType);
 }
 
@@ -1192,6 +1195,10 @@ function personalManifestIcons(profile: PersonalSpaceProfile): readonly Record<s
 
 function fallbackPersonalIconSrc(profile: PersonalSpaceProfile): string {
   return fallbackPersonalIconSrcFor(profile.handle, profile.slug);
+}
+
+function personalPhotoIconSrcFor(handleValue: string): string {
+  return `/photo/space/${encodeURIComponent(handleValue)}.jpg`;
 }
 
 function fallbackPersonalIconSrcFor(handleValue: string, slugValue = ""): string {

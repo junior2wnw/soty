@@ -11,9 +11,44 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icon.svg" type="image/svg+xml" />
     <title>соты.online</title>
+    <style>
+      .html-boot-loading[hidden] {
+        display: none;
+      }
+
+      .html-boot-loading {
+        min-height: 100svh;
+        display: grid;
+        place-items: center;
+        gap: 10px;
+        background: #cacaca;
+        color: #101010;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-align: center;
+      }
+
+      .html-boot-loading span {
+        color: #5a6470;
+        font-size: 16px;
+      }
+
+      .html-boot-loading b {
+        display: block;
+        font-size: clamp(28px, 7vw, 56px);
+        line-height: 1;
+      }
+    </style>
   </head>
   <body>
-    <main id="app"></main>
+    <main id="app">
+      <section class="html-boot-loading" data-html-boot hidden>
+        <div>
+          <span data-html-boot-handle></span>
+          <b>Открываю пространство</b>
+        </div>
+      </section>
+    </main>
+    <script src="/boot.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -319,6 +319,7 @@ export function personalSpaceManifestHref(route: PersonalSpaceRoute): string {
 
 export async function renderPersonalSpacePage(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
   const previousLayer = previousActiveLayer(root, routeUrl(options.route));
+  delete document.body.dataset.sotyReady;
   root.innerHTML = renderLoading(options.route);
   const profile = await loadPersonalSpaceProfile(options.route);
   options.applyManifest(profile);
@@ -328,6 +329,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle, ownSpace);
   bindPersonalSpace(root, profile, options);
   openRequestedPersonalRuntimeModule(root, profile, options);
+  document.body.dataset.sotyReady = "1";
 }
 
 export async function uploadPersonalSpacePhoto(
