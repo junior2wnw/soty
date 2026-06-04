@@ -2470,7 +2470,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("applyPersonalSpaceManifest(personalRoute);"));
       assert(ui.includes("manifest.remove();"));
       assert(ui.includes("createManifestLink()"));
-      assert(ui.includes("return Boolean(personalSpaceRouteFromLocation()) && !isStandaloneDisplay();"));
+      assert(ui.includes("return Boolean(personalSpaceRouteFromLocation());"));
       assert(personalSpaceSource.includes('...(canInstall ? [{ id: "install"'));
       assert(personalSpaceSource.includes('...(ownSpace ? [{ id: "share"'));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));

@@ -1450,14 +1450,7 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
 }
 
 function shouldShowPersonalSpaceInstallAction(): boolean {
-  return Boolean(personalSpaceRouteFromLocation()) && !isStandaloneDisplay();
-}
-
-function isStandaloneDisplay(): boolean {
-  const standaloneNavigator = navigator as Navigator & { readonly standalone?: boolean };
-  return standaloneNavigator.standalone === true
-    || window.matchMedia?.("(display-mode: standalone)").matches === true
-    || window.matchMedia?.("(display-mode: fullscreen)").matches === true;
+  return Boolean(personalSpaceRouteFromLocation());
 }
 
 async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallResult> {
