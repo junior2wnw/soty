@@ -465,6 +465,17 @@ async function boot(): Promise<void> {
     return;
   }
 
+  const legacySpaceRoute = personalRuntimeSpaceRouteFromLocation();
+  if (legacySpaceRoute) {
+    const senderHandle = requestedSenderHandle();
+    if (senderHandle) {
+      savePersonalHandle(senderHandle);
+    }
+    window.history.replaceState({}, "", personalRuntimeModuleCardPath(legacySpaceRoute));
+    showPersonalSpaceRoute(legacySpaceRoute);
+    return;
+  }
+
   if (isPersonalRuntimeModuleStartRoute()) {
     const moduleRoute = await personalRuntimeModuleRouteFromLocation();
     if (moduleRoute) {
@@ -512,6 +523,12 @@ async function boot(): Promise<void> {
   }
 
   if (isSelfStartRoute()) {
+    await renderSelfStartPage();
+    return;
+  }
+
+  if (shouldStartFromPersonalCardForLegacyRuntime()) {
+    window.history.replaceState({}, "", "/?pwa=1");
     await renderSelfStartPage();
     return;
   }
@@ -801,6 +818,17 @@ function personalContactRouteFromLocation(location: Location = window.location):
   return { handle, slug: "" };
 }
 
+function personalRuntimeSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
+  const url = new URL(location.href);
+  if ((url.pathname !== "/" && url.pathname !== "") || !url.searchParams.has("space")) {
+    return null;
+  }
+  if (hasBlockingLegacyRuntimeSearch(url)) {
+    return null;
+  }
+  return personalRouteFromLegacySpace(url.searchParams.get("space") || "");
+}
+
 function isPersonalRuntimeModuleStartRoute(location: Location = window.location): boolean {
   const url = new URL(location.href);
   return (url.pathname === "/" || url.pathname === "")
@@ -822,6 +850,14 @@ function hasLegacyRuntimeSearch(url: URL): boolean {
     || url.searchParams.has("module");
 }
 
+function hasBlockingLegacyRuntimeSearch(url: URL): boolean {
+  return url.searchParams.has("j")
+    || url.searchParams.has("room")
+    || url.searchParams.has("chat")
+    || url.searchParams.has("restore-local")
+    || url.searchParams.has("reset-local");
+}
+
 function hasHardLegacyRuntimeSearch(url: URL): boolean {
   return url.searchParams.has("j")
     || url.searchParams.has("room")
@@ -829,6 +865,19 @@ function hasHardLegacyRuntimeSearch(url: URL): boolean {
     || url.searchParams.has("space")
     || url.searchParams.has("restore-local")
     || url.searchParams.has("reset-local");
+}
+
+function shouldStartFromPersonalCardForLegacyRuntime(location: Location = window.location): boolean {
+  const url = new URL(location.href);
+  if (url.pathname !== "/" && url.pathname !== "") {
+    return false;
+  }
+  if (url.searchParams.has("j") || url.searchParams.has("space") || shouldResetLocalState()) {
+    return false;
+  }
+  return url.searchParams.has("room")
+    || url.searchParams.has("chat")
+    || url.searchParams.has("restore-local");
 }
 
 function personalContactCardPath(route: PersonalSpaceRoute): string {
@@ -843,6 +892,36 @@ function personalRuntimeModuleCardPath(route: PersonalSpaceRoute, target: Runtim
     : `/@${handle}`;
   const moduleTarget = target ? `&module=${encodeURIComponent(target)}` : "";
   return `${path}?layer=place${moduleTarget}`;
+}
+
+function personalRouteFromLegacySpace(value: string): PersonalSpaceRoute | null {
+  const clean = value.trim();
+  if (!clean) {
+    return null;
+  }
+  let pathname = "";
+  try {
+    const parsed = new URL(clean.startsWith("@") ? `/${clean}` : clean, window.location.origin);
+    if (parsed.origin !== window.location.origin) {
+      return null;
+    }
+    pathname = parsed.pathname;
+  } catch {
+    pathname = clean.startsWith("/") ? clean : `/${clean}`;
+  }
+  const parts = pathname.split("/").filter(Boolean);
+  const first = parts[0] || "";
+  if (!first.startsWith("@")) {
+    return null;
+  }
+  const handle = cleanSelfStartHandle(first.slice(1));
+  if (!handle) {
+    return null;
+  }
+  return {
+    handle,
+    slug: cleanSelfStartHandle(parts[1] || "")
+  };
 }
 
 function cleanContactHandle(value: string): string {
