@@ -6,7 +6,7 @@ import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safe
 import type { MiniAppWindowLayout } from "./mini-apps";
 import { runtimeModuleDefinitions, runtimeModuleTargetFromString } from "./runtime-modules";
 import type { RuntimeModuleTarget } from "./runtime-modules";
-import { showLinkShareSheet } from "./share-sheet";
+import { copyText, showLinkShareSheet } from "./share-sheet";
 import type { Color, PieceSymbol, Square } from "chess.js";
 
 export type PersonalSpaceRoute = {
@@ -17,6 +17,13 @@ export type PersonalSpaceRoute = {
 export type PersonalSpaceInstallResult = {
   readonly ok: boolean;
   readonly message: string;
+  readonly guide?: PersonalSpaceInstallGuide;
+};
+
+export type PersonalSpaceInstallGuide = {
+  readonly title: string;
+  readonly steps: readonly string[];
+  readonly hint?: string;
 };
 
 export type PersonalSpaceProfileUpdate = {
@@ -3590,6 +3597,46 @@ async function showShareSheet(root: HTMLElement, profile: PersonalSpaceProfile):
   });
 }
 
+function showInstallGuideSheet(root: HTMLElement, guide: PersonalSpaceInstallGuide): void {
+  closePersonalOverlay(root);
+  const overlay = document.createElement("div");
+  overlay.className = "personal-overlay";
+  overlay.innerHTML = `
+    <section class="personal-sheet personal-install-sheet" role="dialog" aria-modal="true" aria-label="${escapeAttr(guide.title)}">
+      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
+      <div class="personal-module-mark">${icon("install")}</div>
+      <h2>${escapeHtml(guide.title)}</h2>
+      <ol class="personal-install-steps">
+        ${guide.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}
+      </ol>
+      ${guide.hint ? `<p>${escapeHtml(guide.hint)}</p>` : ""}
+      <div class="personal-install-actions">
+        <button type="button" data-copy-install-link>${icon("copy")} <span>Ссылка</span></button>
+        <button type="button" data-close>Готово</button>
+      </div>
+      <small data-error></small>
+    </section>
+  `;
+  root.append(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelectorAll<HTMLElement>("[data-close]").forEach((button) => button.addEventListener("click", close));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      close();
+    }
+  });
+  overlay.querySelector<HTMLButtonElement>("[data-copy-install-link]")?.addEventListener("click", () => {
+    const note = overlay.querySelector<HTMLElement>("[data-error]");
+    void copyText(window.location.href)
+      .then(() => {
+        if (note) {
+          note.textContent = "Скопировано.";
+        }
+      })
+      .catch(() => undefined);
+  });
+}
+
 function closePersonalOverlay(root: HTMLElement): void {
   root.querySelector(".personal-overlay")?.remove();
 }
@@ -3726,6 +3773,10 @@ async function installPersonalSpace(root: HTMLElement, button: HTMLButtonElement
   button.disabled = true;
   try {
     const result = await options.install();
+    if (result.guide) {
+      showInstallGuideSheet(root, result.guide);
+      return;
+    }
     if (note) {
       note.textContent = result.message;
     }

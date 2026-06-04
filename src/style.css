@@ -1419,6 +1419,52 @@ button.personal-avatar {
   justify-items: start;
 }
 
+.personal-install-sheet {
+  justify-items: start;
+}
+
+.personal-install-steps {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0 0 0 20px;
+  color: #171717;
+  font-size: 15px;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.personal-install-steps li {
+  padding-left: 4px;
+}
+
+.personal-install-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.personal-install-actions button {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  border: 1px solid #000;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.personal-install-actions button:last-child {
+  background: #000;
+  color: #fff;
+}
+
 .personal-actions-sheet form {
   width: 100%;
 }

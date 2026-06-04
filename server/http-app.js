@@ -122,7 +122,9 @@ function personalRouteHead(pathname) {
       ? `/manifest/space/${encodedHandle}/${encodedSlug}.json`
       : `/manifest/space/${encodedHandle}.json`,
     iconHref,
-    iconType: "image/svg+xml"
+    iconType: "image/svg+xml",
+    appleIconHref: `/photo/space/${encodedHandle}.jpg`,
+    appleIconType: "image/jpeg"
   };
 }
 
@@ -132,6 +134,8 @@ function applyPersonalRouteHead(html, head) {
   const manifestHref = escapeAttr(head.manifestHref);
   const iconHref = escapeAttr(head.iconHref);
   const iconType = escapeAttr(head.iconType || "image/svg+xml");
+  const appleIconHref = escapeAttr(head.appleIconHref || head.iconHref);
+  const appleIconType = escapeAttr(head.appleIconType || head.iconType || "image/svg+xml");
   const nextHtml = ensureHeadTag(
     html
       .replace(/<title>.*?<\/title>/su, `<title>${title}</title>`)
@@ -151,7 +155,7 @@ function applyPersonalRouteHead(html, head) {
       `<link rel="shortcut icon" href="${iconHref}" type="${iconType}" />`
     ),
     /<link rel="apple-touch-icon" href="[^"]*"[^>]*>/u,
-    `<link rel="apple-touch-icon" href="${iconHref}" type="${iconType}" />`
+    `<link rel="apple-touch-icon" href="${appleIconHref}" type="${appleIconType}" />`
   );
 }
 

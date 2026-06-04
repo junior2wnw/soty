@@ -164,6 +164,28 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
     : `/icon/space/${encodeURIComponent(profile.handle)}.svg`;
   const iconVersion = manifestIconVersion(profile.photoUrl);
   const iconSrc = iconVersion ? `${baseIconSrc}?v=${encodeURIComponent(iconVersion)}` : baseIconSrc;
+  const icons = [{
+    src: iconSrc,
+    sizes: "any",
+    type: "image/svg+xml",
+    purpose: "any"
+  }];
+  if (profile.photoUrl) {
+    icons.push(
+      {
+        src: profile.photoUrl,
+        sizes: "192x192",
+        type: "image/jpeg",
+        purpose: "any"
+      },
+      {
+        src: profile.photoUrl,
+        sizes: "512x512",
+        type: "image/jpeg",
+        purpose: "any"
+      }
+    );
+  }
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
   res.json({
@@ -179,12 +201,7 @@ async function sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, 
     },
     background_color: "#cacaca",
     theme_color: "#000000",
-    icons: [{
-      src: iconSrc,
-      sizes: "any",
-      type: "image/svg+xml",
-      purpose: "any"
-    }]
+    icons
   });
 }
 

@@ -1083,7 +1083,7 @@ function applyPersonalRouteHead(route: PersonalSpaceRoute | null): void {
   setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
   setHeadLink("icon", iconSrc, "image/svg+xml");
   setHeadLink("shortcut icon", iconSrc, "image/svg+xml");
-  setHeadLink("apple-touch-icon", iconSrc, "image/svg+xml");
+  setHeadLink("apple-touch-icon", personalPhotoIconSrcFor(route.handle), "image/jpeg");
 }
 
 function applyPersonalProfileHead(profile: PersonalSpaceProfile): void {
@@ -1092,12 +1092,14 @@ function applyPersonalProfileHead(profile: PersonalSpaceProfile): void {
   const icon = icons[0];
   const iconSrc = icon?.src || absoluteManifestUrl(fallbackPersonalIconSrc(profile));
   const iconType = typeof icon?.type === "string" ? icon.type : manifestIconType(iconSrc);
+  const touchIconSrc = cleanManifestIconSrc(profile.photoUrl) || iconSrc;
+  const touchIconType = profile.photoUrl ? manifestIconType(touchIconSrc) : iconType;
   document.title = name;
   setHeadMeta("theme-color", "#000000");
   setHeadMeta("apple-mobile-web-app-title", manifestShortName(name));
   setHeadLink("icon", iconSrc, iconType);
   setHeadLink("shortcut icon", iconSrc, iconType);
-  setHeadLink("apple-touch-icon", iconSrc, iconType);
+  setHeadLink("apple-touch-icon", touchIconSrc, touchIconType);
 }
 
 function personalProfileAppName(profile: PersonalSpaceProfile): string {
@@ -1155,6 +1157,10 @@ function personalAvatarIconSrc(profile: PersonalSpaceProfile): string {
   const base = fallbackPersonalIconSrc(profile);
   const version = manifestIconVersion(profile.photoUrl);
   return version ? `${base}?v=${encodeURIComponent(version)}` : base;
+}
+
+function personalPhotoIconSrcFor(handleValue: string): string {
+  return `/photo/space/${encodeURIComponent(handleValue)}.jpg`;
 }
 
 function fallbackPersonalIconSrcFor(handleValue: string, slugValue = ""): string {
@@ -1441,6 +1447,20 @@ function bytesBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult> {
+  if (isStandalonePersonalApp()) {
+    return {
+      ok: true,
+      message: "Уже сохранено."
+    };
+  }
+  const fallbackGuide = personalInstallGuide();
+  if (shouldPreferManualPersonalInstallGuide() || !pendingInstallPrompt) {
+    return {
+      ok: false,
+      message: "Откройте подсказку.",
+      guide: fallbackGuide
+    };
+  }
   if (!pendingInstallPrompt) {
     return {
       ok: false,
@@ -1460,6 +1480,71 @@ async function promptPersonalSpaceInstall(): Promise<PersonalSpaceInstallResult>
   return choice.outcome === "accepted"
     ? { ok: true, message: "Готово." }
     : { ok: false, message: "Можно повторить позже." };
+}
+
+function isStandalonePersonalApp(): boolean {
+  const nav = navigator as Navigator & { readonly standalone?: boolean };
+  return window.matchMedia("(display-mode: standalone)").matches || nav.standalone === true;
+}
+
+function shouldPreferManualPersonalInstallGuide(): boolean {
+  return isIosDevice() || isInAppBrowser();
+}
+
+function personalInstallGuide(): NonNullable<PersonalSpaceInstallResult["guide"]> {
+  if (isInAppBrowser()) {
+    return {
+      title: "Откройте в браузере",
+      steps: [
+        "Откройте меню этого окна.",
+        "Выберите «Открыть в Chrome» или «Открыть в Safari».",
+        "На странице нажмите «Сохранить»."
+      ],
+      hint: "Встроенные браузеры мессенджеров обычно не ставят PWA."
+    };
+  }
+  if (isIosDevice()) {
+    return {
+      title: "Сохранить на iPhone",
+      steps: [
+        "Откройте эту страницу в Safari.",
+        "Нажмите «Поделиться».",
+        "Выберите «На экран Домой»."
+      ]
+    };
+  }
+  if (isAndroidDevice()) {
+    return {
+      title: "Сохранить на Android",
+      steps: [
+        "Откройте меню Chrome.",
+        "Нажмите «Установить приложение» или «На главный экран».",
+        "Подтвердите добавление."
+      ]
+    };
+  }
+  return {
+    title: "Сохранить карточку",
+    steps: [
+      "Нажмите значок установки в адресной строке.",
+      "Если значка нет, откройте меню браузера.",
+      "Выберите «Установить приложение»."
+    ]
+  };
+}
+
+function isIosDevice(): boolean {
+  const nav = navigator as Navigator & { readonly maxTouchPoints?: number };
+  return /iPad|iPhone|iPod/iu.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
+}
+
+function isAndroidDevice(): boolean {
+  return /Android/iu.test(navigator.userAgent);
+}
+
+function isInAppBrowser(): boolean {
+  return /FBAN|FBAV|Instagram|Line\/|Telegram|VKAndroidApp|VKiOSApp|YaApp_|; wv\)/iu.test(navigator.userAgent);
 }
 
 function shouldShowPersonalSpaceInstallAction(): boolean {
