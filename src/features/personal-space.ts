@@ -3597,8 +3597,7 @@ function closePersonalOverlay(root: HTMLElement): void {
 }
 
 function openPersonalRoute(handle: string): void {
-  window.history.pushState({}, "", `/@${encodeURIComponent(handle)}`);
-  window.dispatchEvent(new CustomEvent("soty-personal-routechange"));
+  window.location.assign(`/@${encodeURIComponent(handle)}`);
 }
 
 async function updateProfilePhoto(root: HTMLElement, file: File, options: PersonalSpacePageOptions): Promise<void> {

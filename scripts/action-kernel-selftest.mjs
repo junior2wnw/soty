@@ -2465,6 +2465,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("soty-installpromptchange"));
       assert(!ui.includes("application/manifest+json"));
       assert(!ui.includes("personalProfileManifest"));
+      assert(ui.includes("applyPersonalSpaceManifest(personalRoute);"));
+      assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
+      assert(ui.includes("window.location.assign(selfStartPersonalPath(owned));"));
       assert(serviceWorker.includes('const cacheName = "soty-online-v25"'));
       assert(serviceWorker.includes('"/boot.js"'));
       assert(ui.includes("agentDeviceNetworkContext"));

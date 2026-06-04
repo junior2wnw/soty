@@ -423,7 +423,7 @@ async function boot(): Promise<void> {
   const personalRoute = personalSpaceRouteFromLocation();
   setPersonalSpaceMode(Boolean(personalRoute));
   setSelfStartMode(false);
-  applyPersonalSpaceManifest(null);
+  applyPersonalSpaceManifest(personalRoute);
   adoptAgentRelayFromUrl();
   startSameDeviceWindowSync();
   void refreshMiniApps(true);
@@ -462,8 +462,7 @@ async function boot(): Promise<void> {
     if (senderHandle) {
       savePersonalHandle(senderHandle);
     }
-    window.history.replaceState({}, "", personalRuntimeModuleCardPath(legacySpaceRoute));
-    showPersonalSpaceRoute(legacySpaceRoute);
+    window.location.replace(personalRuntimeModuleCardPath(legacySpaceRoute));
     return;
   }
 
@@ -474,8 +473,7 @@ async function boot(): Promise<void> {
       if (senderHandle) {
         savePersonalHandle(senderHandle);
       }
-      window.history.replaceState({}, "", personalRuntimeModuleCardPath(moduleRoute));
-      showPersonalSpaceRoute(moduleRoute);
+      window.location.replace(personalRuntimeModuleCardPath(moduleRoute));
       return;
     }
     await renderSelfStartPage();
@@ -488,8 +486,7 @@ async function boot(): Promise<void> {
     if (senderHandle) {
       savePersonalHandle(senderHandle);
     }
-    window.history.replaceState({}, "", personalContactCardPath(contactRoute));
-    showPersonalSpaceRoute(contactRoute);
+    window.location.replace(personalContactCardPath(contactRoute));
     return;
   }
 
@@ -1535,8 +1532,7 @@ function isSelfStartRoute(location: Location = window.location): boolean {
 async function renderSelfStartPage(): Promise<void> {
   const saved = await loadSelfStartHandleOrLegacyDevice();
   if (saved) {
-    window.history.replaceState({}, "", selfStartPersonalPath(saved));
-    showPersonalSpaceRoute({ handle: saved, slug: "" });
+    window.location.replace(selfStartPersonalPath(saved));
     return;
   }
   const suggestedHandle = loadPersonalHandle();
@@ -1640,8 +1636,7 @@ async function openCreatedSelfStartHandle(handle: string, input?: HTMLInputEleme
   const serverOwnerDeviceId = await fetchPersonalOwnerDeviceId(handle);
   if (serverOwnerDeviceId && serverOwnerDeviceId !== currentDevice.id) {
     savePersonalHandle(handle);
-    window.history.pushState({}, "", selfStartPersonalPath(handle));
-    showPersonalSpaceRoute({ handle, slug: "" });
+    window.location.assign(selfStartPersonalPath(handle));
     return;
   }
   const owned = await bindPersonalOwner(handle, { replace: true });
@@ -1650,8 +1645,7 @@ async function openCreatedSelfStartHandle(handle: string, input?: HTMLInputEleme
     return;
   }
   saveSelfStartHandle(owned);
-  window.history.pushState({}, "", selfStartPersonalPath(owned));
-  showPersonalSpaceRoute({ handle: owned, slug: "" });
+  window.location.assign(selfStartPersonalPath(owned));
 }
 
 function selfStartPersonalPath(handle: string): string {
