@@ -2462,6 +2462,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!styles.includes("body.native-window-chrome .pwa-titlebar"));
       assert(!styles.includes("env(titlebar-area-width"));
       assert(!styles.includes("-webkit-app-region: drag"));
+      assert(!ui.includes("soty-installpromptchange"));
+      assert(!ui.includes("application/manifest+json"));
+      assert(!ui.includes("personalProfileManifest"));
       assert(serviceWorker.includes('const cacheName = "soty-online-v25"'));
       assert(serviceWorker.includes('"/boot.js"'));
       assert(ui.includes("agentDeviceNetworkContext"));

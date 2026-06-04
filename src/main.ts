@@ -341,7 +341,6 @@ let appBundleReloading = false;
 let appBundleWatchTimer = 0;
 let sameDeviceWindowSyncStarted = false;
 let sameDeviceWindowSyncTimer = 0;
-let personalManifestObjectUrl = "";
 const serviceWorkerUpdateMs = 60_000;
 const appBundleWatchVisibleMs = 45_000;
 const appBundleWatchHiddenMs = 90_000;
@@ -353,7 +352,6 @@ let pendingInstallPrompt: BeforeInstallPromptEvent | null = null;
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   pendingInstallPrompt = event as BeforeInstallPromptEvent;
-  window.dispatchEvent(new CustomEvent("soty-installpromptchange"));
 });
 
 window.addEventListener("message", (event) => {
@@ -386,13 +384,6 @@ window.addEventListener("popstate", () => {
 window.addEventListener("soty-personal-routechange", () => {
   const route = personalSpaceRouteFromLocation();
   if (route) {
-    showPersonalSpaceRoute(route);
-  }
-});
-
-window.addEventListener("soty-installpromptchange", () => {
-  const route = personalSpaceRouteFromLocation();
-  if (route && document.body.classList.contains("personal-space-mode")) {
     showPersonalSpaceRoute(route);
   }
 });
@@ -1034,7 +1025,6 @@ function setSelfStartMode(active: boolean): void {
 }
 
 function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
-  revokePersonalManifestObjectUrl();
   const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
   if (!manifest) {
     return;
@@ -1044,22 +1034,12 @@ function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
 }
 
 function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
+  applyPersonalProfileHead(profile);
   const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
   if (!manifest) {
     return;
   }
-  applyPersonalProfileHead(profile);
-  try {
-    const blob = new Blob([JSON.stringify(personalProfileManifest(profile))], {
-      type: "application/manifest+json"
-    });
-    const nextHref = URL.createObjectURL(blob);
-    revokePersonalManifestObjectUrl();
-    personalManifestObjectUrl = nextHref;
-    setManifestHref(manifest, nextHref, false);
-  } catch {
-    setManifestHref(manifest, personalSpaceManifestHref({ handle: profile.handle, slug: profile.slug }), false);
-  }
+  setManifestHref(manifest, personalSpaceManifestHref({ handle: profile.handle, slug: profile.slug }), false);
 }
 
 function setManifestHref(manifest: HTMLLinkElement, href: string, resetPrompt: boolean): void {
@@ -1078,36 +1058,6 @@ function clearPendingInstallPrompt(): void {
     return;
   }
   pendingInstallPrompt = null;
-  window.dispatchEvent(new CustomEvent("soty-installpromptchange"));
-}
-
-function revokePersonalManifestObjectUrl(): void {
-  if (!personalManifestObjectUrl) {
-    return;
-  }
-  URL.revokeObjectURL(personalManifestObjectUrl);
-  personalManifestObjectUrl = "";
-}
-
-function personalProfileManifest(profile: PersonalSpaceProfile): Record<string, unknown> {
-  const name = personalProfileAppName(profile);
-  const startUrl = profile.url || (profile.slug ? `/@${profile.handle}/${profile.slug}` : `/@${profile.handle}`);
-  const absoluteStartUrl = absoluteManifestUrl(startUrl);
-  return {
-    name,
-    short_name: manifestShortName(name),
-    description: cleanManifestText(profile.slug ? profile.displayName : profile.headline || profile.about, 180) || name,
-    id: absoluteStartUrl,
-    start_url: absoluteStartUrl,
-    scope: absoluteManifestUrl("/"),
-    display: "standalone",
-    launch_handler: {
-      client_mode: "navigate-existing"
-    },
-    background_color: "#cacaca",
-    theme_color: "#000000",
-    icons: personalManifestIcons(profile)
-  };
 }
 
 function applyPersonalRouteHead(route: PersonalSpaceRoute | null): void {
