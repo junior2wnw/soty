@@ -126,16 +126,21 @@ function personalRouteHead(pathname) {
 function applyPersonalRouteHead(html, head) {
   const title = escapeHtml(head.title || "soty.online");
   const titleAttr = escapeAttr(head.title || "soty.online");
+  const manifestHref = escapeAttr(head.manifestHref);
   const iconHref = escapeAttr(head.iconHref);
   const iconType = escapeAttr(head.iconType || "image/svg+xml");
+  const nextHtml = ensureHeadTag(
+    html
+      .replace(/<title>.*?<\/title>/su, `<title>${title}</title>`)
+      .replace(/<meta name="theme-color" content="[^"]*"\s*\/?>/u, '<meta name="theme-color" content="#000000" />')
+      .replace(/<link rel="icon" href="[^"]*"[^>]*>/u, `<link rel="icon" href="${iconHref}" type="${iconType}" />`),
+    /<link rel="manifest" href="[^"]*"\s*\/?>/u,
+    `<link rel="manifest" href="${manifestHref}" />`
+  );
   return ensureHeadTag(
     ensureHeadTag(
       ensureHeadTag(
-        html
-          .replace(/<link rel="manifest" href="\/manifest\.webmanifest"\s*\/?>/u, `<link rel="manifest" href="${escapeAttr(head.manifestHref)}" />`)
-          .replace(/<title>.*?<\/title>/su, `<title>${title}</title>`)
-          .replace(/<meta name="theme-color" content="[^"]*"\s*\/?>/u, '<meta name="theme-color" content="#000000" />')
-          .replace(/<link rel="icon" href="[^"]*"[^>]*>/u, `<link rel="icon" href="${iconHref}" type="${iconType}" />`),
+        nextHtml,
         /<meta name="apple-mobile-web-app-title" content="[^"]*"\s*\/?>/u,
         `<meta name="apple-mobile-web-app-title" content="${titleAttr}" />`
       ),

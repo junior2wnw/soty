@@ -1023,20 +1023,29 @@ function setSelfStartMode(active: boolean): void {
 
 function applyPersonalSpaceManifest(route: PersonalSpaceRoute | null): void {
   const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
-  if (!manifest) {
+  if (!route) {
+    if (manifest) {
+      manifest.remove();
+      clearPendingInstallPrompt();
+    }
+    applyPersonalRouteHead(null);
     return;
   }
-  setManifestHref(manifest, route ? personalSpaceManifestHref(route) : "/manifest.webmanifest", true);
+  setManifestHref(manifest || createManifestLink(), personalSpaceManifestHref(route), true);
   applyPersonalRouteHead(route);
 }
 
 function applyPersonalProfileManifest(profile: PersonalSpaceProfile): void {
   applyPersonalProfileHead(profile);
-  const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
-  if (!manifest) {
-    return;
-  }
+  const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]') || createManifestLink();
   setManifestHref(manifest, personalSpaceManifestHref({ handle: profile.handle, slug: profile.slug }), false);
+}
+
+function createManifestLink(): HTMLLinkElement {
+  const manifest = document.createElement("link");
+  manifest.rel = "manifest";
+  document.head.append(manifest);
+  return manifest;
 }
 
 function setManifestHref(manifest: HTMLLinkElement, href: string, resetPrompt: boolean): void {

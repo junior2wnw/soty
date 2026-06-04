@@ -1,5 +1,5 @@
-const cacheName = "soty-online-v25";
-const shell = ["/", "/manifest.webmanifest", "/icon.svg", "/boot.js"];
+const cacheName = "soty-online-v26";
+const shell = ["/", "/icon.svg", "/boot.js"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(shell)));

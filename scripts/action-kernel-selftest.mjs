@@ -2450,6 +2450,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(webManifest.background_color, "#090b0f");
       assert(html.includes('<meta name="theme-color" content="#090b0f"'));
       assert(html.includes('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"'));
+      assert(!html.includes('rel="manifest" href="/manifest.webmanifest"'));
       assert(!webManifest.display_override?.includes("window-controls-overlay"));
       assert(!appRuntime.includes("window-controls-overlay"));
       assert(!ui.includes("pwaTitlebarMarkup"));
@@ -2466,10 +2467,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("application/manifest+json"));
       assert(!ui.includes("personalProfileManifest"));
       assert(ui.includes("applyPersonalSpaceManifest(personalRoute);"));
+      assert(ui.includes("manifest.remove();"));
+      assert(ui.includes("createManifestLink()"));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
       assert(ui.includes("window.location.assign(selfStartPersonalPath(owned));"));
-      assert(serviceWorker.includes('const cacheName = "soty-online-v25"'));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v26"'));
       assert(serviceWorker.includes('"/boot.js"'));
+      assert(!serviceWorker.includes('"/manifest.webmanifest"'));
+      assert(httpApp.includes('rel="manifest" href="${manifestHref}"'));
       assert(ui.includes("agentDeviceNetworkContext"));
       assert(ui.includes("deviceNetwork"));
       assert(ui.includes('type: "operator.visibility"'));
