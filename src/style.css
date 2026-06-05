@@ -527,16 +527,17 @@ svg {
 
 .personal-main {
   grid-row: 1;
-  width: min(1240px, calc(100% - clamp(24px, 6vw, 96px)));
-  min-height: 0;
-  height: 100%;
+  width: min(1360px, calc(100% - clamp(24px, 4vw, 72px)));
+  min-height: 100%;
+  height: auto;
   display: grid;
-  grid-template-columns: minmax(330px, 430px) minmax(0, 1fr);
+  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 32px;
+  align-content: start;
+  gap: 24px;
   margin: 0 auto;
   padding: 36px 0 28px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .personal-hero {
@@ -544,6 +545,7 @@ svg {
   grid-row: 1 / 3;
   min-height: 0;
   height: auto;
+  align-self: start;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   align-content: start;
@@ -1245,13 +1247,13 @@ button.personal-avatar {
   grid-column: 2;
   grid-row: 2;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .personal-panel {
   display: none;
   min-height: 0;
-  height: 100%;
+  height: auto;
   grid-template-columns: minmax(0, 1fr);
   gap: clamp(14px, 2vw, 22px);
   align-items: start;
@@ -1261,13 +1263,18 @@ button.personal-avatar {
   border-radius: 28px;
   background: rgba(255, 255, 255, 0.72);
   box-shadow: 10px 10px 0 #111412;
-  overflow: auto;
+  overflow: visible;
   scrollbar-width: thin;
 }
 
 .personal-panel.is-active {
   display: grid;
   animation: personalPanelIn 180ms cubic-bezier(.2, .8, .2, 1);
+}
+
+.personal-panel[data-panel="messages"].is-active {
+  gap: 16px;
+  padding-bottom: 20px;
 }
 
 @keyframes personalPanelIn {
@@ -1546,9 +1553,18 @@ button.personal-avatar {
 .personal-panel[data-panel="messages"] .personal-message-preview {
   width: 100%;
   max-width: none;
-  min-height: min(100%, 620px);
+  min-height: 0;
   gap: 0;
+  align-items: start;
   border-top: 1px solid rgba(17, 20, 18, 0.16);
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger:not(.is-owner) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger:not(.is-owner) .personal-messenger-side {
+  display: none;
 }
 
 .personal-messenger:not(.is-owner) {
@@ -1584,6 +1600,11 @@ button.personal-avatar {
 
 .personal-panel[data-panel="messages"] .personal-messenger-room {
   border-right: 1px solid rgba(17, 20, 18, 0.16);
+  min-height: 0;
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger:not(.is-owner) .personal-messenger-room {
+  border-right: 0;
 }
 
 .personal-messenger-side {
@@ -1702,12 +1723,18 @@ button.personal-avatar {
   display: grid;
   align-content: start;
   gap: 10px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 16px;
   background:
     linear-gradient(90deg, rgba(17, 20, 18, 0.028) 1px, transparent 1px) 0 0 / 26px 26px,
     linear-gradient(180deg, rgba(17, 20, 18, 0.024) 1px, transparent 1px) 0 0 / 26px 26px;
   scrollbar-width: thin;
+}
+
+.personal-panel[data-panel="messages"] .personal-thread {
+  min-height: clamp(190px, 28vh, 320px);
+  max-height: clamp(240px, 36vh, 380px);
 }
 
 .personal-thread.is-compact {
