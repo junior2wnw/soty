@@ -183,6 +183,16 @@ type PersonalSpaceReview = {
   readonly rating: number;
 };
 
+type PersonalSocialContact = {
+  readonly handle: string;
+  readonly slug: string;
+  readonly displayName: string;
+  readonly headline: string;
+  readonly photoUrl: string;
+  readonly url: string;
+  readonly lastSeenAt: string;
+};
+
 type PersonalSpaceReactions = {
   readonly likes: number;
 };
@@ -342,6 +352,7 @@ const personalChessPrefix = "soty:personal-chess:v1:";
 const personalFilesPrefix = "soty:personal-files:v1:";
 const personalThreadPrefix = "soty:personal-thread:v1:";
 const personalMessageClientKey = "soty:personal-message-client:v1";
+const personalSocialContactsKey = "soty:personal-social-contacts:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
 const personalReactionClientKey = "soty:personal-reaction-client:v1";
 let personalLayerKeysBound = false;
@@ -353,6 +364,7 @@ const personalMessengerAttachments = new WeakMap<HTMLElement, PersonalSpaceMessa
 const personalMessengerReplies = new WeakMap<HTMLElement, PersonalSpaceMessageReplyRef>();
 const personalFileLimit = 8;
 const personalFileMaxBytes = 900_000;
+const personalSocialContactLimit = 24;
 const internalContactLabels = new Set(["чат", "страница"]);
 
 export function personalSpaceRouteFromLocation(location: Location = window.location): PersonalSpaceRoute | null {
@@ -1299,8 +1311,8 @@ function panelView(
   }
   if (layer === "messages") {
     return {
-      eyebrow: "связь",
-      title: ownSpace ? "Диалоги" : "Связь",
+      eyebrow: "сообщения",
+      title: ownSpace ? "Мессенджер" : "Сообщения",
       body: renderMessagePreview(profile, ownSpace, localHandle)
     };
   }
@@ -1355,10 +1367,13 @@ function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, 
   const actor = cleanRoutePart(localHandle || (ownSpace ? profile.handle : "")) || "guest";
   const clientId = ownSpace ? "" : personalMessageClientId();
   const lines = ownSpace ? [] : loadPersonalThread(profile, actor).slice(-32);
-  const roomTitle = ownSpace ? "Входящие" : profile.displayName;
-  const roomStatus = ownSpace ? "Выберите диалог" : "Личный диалог";
+  const roomTitle = ownSpace ? "Диалог" : profile.displayName;
+  const roomStatus = ownSpace ? "Выберите человека" : profile.accountName || profile.headline || "Личный диалог";
   return `
     <div class="personal-message-preview personal-messenger${ownSpace ? " is-owner" : ""}" data-personal-messenger data-actor="${escapeAttr(actor)}" data-client-id="${escapeAttr(clientId)}">
+      <div class="personal-messenger-side">
+        ${ownSpace ? renderOwnerInboxShell(profile) : renderMessengerSocialPanel(profile)}
+      </div>
       <section class="personal-messenger-room" aria-label="${escapeAttr(roomTitle)}">
         <header class="personal-messenger-head">
           <div class="personal-messenger-avatar" aria-hidden="true" data-room-avatar>${escapeHtml(initials(profile.shortName || profile.displayName))}</div>
@@ -1375,39 +1390,193 @@ function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, 
         ${renderMessageComposer(ownSpace)}
         <small data-action-note data-error></small>
       </section>
-      <div class="personal-messenger-side">
-        ${ownSpace ? renderOwnerInboxShell() : renderMessengerHints(profile)}
-      </div>
     </div>
   `;
 }
 
-function renderOwnerInboxShell(): string {
+function renderOwnerInboxShell(profile: PersonalSpaceProfile): string {
   return `
     <section class="personal-inbox" data-personal-inbox aria-label="Входящие">
-      <h3>Входящие</h3>
+      <header class="personal-sidebar-head">
+        <h3>Диалоги</h3>
+        <span>${escapeHtml(profile.handle)}</span>
+      </header>
+      <div class="personal-inbox-search">
+        <input type="search" maxlength="80" data-inbox-search placeholder="${escapeAttr("Люди и сообщения")}" aria-label="${escapeAttr("Поиск диалогов")}">
+      </div>
       <div class="personal-inbox-list">
         <section class="personal-empty">${icon("mail")} <span>Проверяю...</span></section>
+      </div>
+    </section>
+    <section class="personal-social-card" aria-label="Профиль">
+      <div class="personal-social-stats">
+        <a href="${escapeAttr(profile.url)}?layer=personal"><b>${escapeHtml(String(profile.posts.length))}</b><span>записи</span></a>
+        <a href="${escapeAttr(profile.url)}?layer=reviews"><b>${escapeHtml(String(profile.reviews.length))}</b><span>отзывы</span></a>
+        <a href="${escapeAttr(profile.url)}?layer=place"><b>${escapeHtml(String(visiblePersonalPlaceCount(profile, true, profile.handle)))}</b><span>место</span></a>
       </div>
     </section>
   `;
 }
 
-function renderMessengerHints(profile: PersonalSpaceProfile): string {
+function renderMessengerSocialPanel(profile: PersonalSpaceProfile): string {
+  const recent = loadPersonalSocialContacts()
+    .filter((contact) => contact.url !== profile.url)
+    .slice(0, 5);
+  const feedItems = messengerSocialFeedItems(profile);
   return `
-    <section class="personal-messenger-hints" aria-label="Связь">
-      <h3>Связь</h3>
-      <div>
-        <span>${icon("shield")}</span>
-        <p>Сообщение уйдет владельцу карточки.</p>
+    <section class="personal-social-card" aria-label="Профиль">
+      <div class="personal-social-profile">
+        <div class="personal-social-avatar">${profile.photoUrl ? `<img src="${escapeAttr(profile.photoUrl)}" alt="">` : `<span>${escapeHtml(initials(profile.shortName || profile.displayName))}</span>`}</div>
+        <div>
+          <h3>${escapeHtml(profile.displayName)}</h3>
+          <p>${escapeHtml(profile.headline || profile.about || profile.accountName)}</p>
+        </div>
       </div>
-      <div>
-        <span>${icon("qr")}</span>
-        <p>Эта переписка открывается прямо по ссылке или QR.</p>
+      <div class="personal-social-stats">
+        <a href="${escapeAttr(profile.url)}?layer=personal"><b>${escapeHtml(String(profile.posts.length))}</b><span>записи</span></a>
+        <a href="${escapeAttr(profile.url)}?layer=reviews"><b>${escapeHtml(String(profile.reviews.length))}</b><span>отзывы</span></a>
+        <a href="${escapeAttr(profile.url)}?layer=place"><b>${escapeHtml(String(visiblePersonalPlaceCount(profile, false, loadLocalHandle())))}</b><span>место</span></a>
       </div>
-      <a href="${escapeAttr(profile.url)}?layer=place">${icon("apps")} <span>Открыть место</span></a>
+      <nav class="personal-social-actions" aria-label="Переходы">
+        <a href="${escapeAttr(profile.url)}">${icon("person")}<span>Профиль</span></a>
+        <a href="${escapeAttr(profile.url)}?layer=personal">${icon("hexagon")}<span>Лента</span></a>
+        <a href="${escapeAttr(profile.url)}?layer=place">${icon("apps")}<span>Место</span></a>
+      </nav>
     </section>
+    ${feedItems.length ? `
+      <section class="personal-social-card personal-social-feed" aria-label="Лента">
+        <header class="personal-sidebar-head">
+          <h3>Лента</h3>
+          <span>${escapeHtml(threadTime(new Date().toISOString()))}</span>
+        </header>
+        ${feedItems.join("")}
+      </section>
+    ` : ""}
+    ${recent.length ? `
+      <section class="personal-social-card personal-social-people" aria-label="Люди">
+        <header class="personal-sidebar-head">
+          <h3>Люди</h3>
+          <span>${escapeHtml(String(recent.length))}</span>
+        </header>
+        ${recent.map(renderPersonalSocialContact).join("")}
+      </section>
+    ` : ""}
   `;
+}
+
+function messengerSocialFeedItems(profile: PersonalSpaceProfile): readonly string[] {
+  const postItems = profile.posts.slice(0, 2).map((post) => {
+    const text = personalSpaceCopy(post.text, false);
+    return `
+      <a class="personal-social-feed-item" href="${escapeAttr(profile.url)}?layer=personal">
+        <span>${icon("hexagon")}</span>
+        <div>
+          <b>${escapeHtml(post.title)}</b>
+          <p>${escapeHtml(text)}</p>
+          <small>${escapeHtml(post.meta || "запись")}</small>
+        </div>
+      </a>
+    `;
+  });
+  const reviewItems = profile.reviews.slice(0, 1).map((review) => `
+    <a class="personal-social-feed-item" href="${escapeAttr(profile.url)}?layer=reviews">
+      <span>${icon("heart")}</span>
+      <div>
+        <b>${escapeHtml(review.author)}</b>
+        <p>${escapeHtml(review.text)}</p>
+        <small>${escapeHtml("отзыв")}</small>
+      </div>
+    </a>
+  `);
+  return [...postItems, ...reviewItems].slice(0, 3);
+}
+
+function renderPersonalSocialContact(contact: PersonalSocialContact): string {
+  const title = contact.displayName || contact.handle;
+  const subtitle = contact.headline || `@${contact.handle}`;
+  return `
+    <a class="personal-social-person" href="${escapeAttr(contact.url)}">
+      <span class="personal-social-person-avatar">${contact.photoUrl ? `<img src="${escapeAttr(contact.photoUrl)}" alt="">` : `<b>${escapeHtml(initials(title))}</b>`}</span>
+      <span>
+        <b>${escapeHtml(title)}</b>
+        <small>${escapeHtml(subtitle)}</small>
+      </span>
+    </a>
+  `;
+}
+
+function rememberPersonalSocialContact(profile: PersonalSpaceProfile): void {
+  const contact = socialContactFromProfile(profile);
+  if (!contact.handle || !contact.url) {
+    return;
+  }
+  try {
+    const current = loadPersonalSocialContacts();
+    const contactKey = personalSocialContactKey(contact);
+    const next = [
+      contact,
+      ...current.filter((item) => personalSocialContactKey(item) !== contactKey)
+    ].slice(0, personalSocialContactLimit);
+    window.localStorage.setItem(personalSocialContactsKey, JSON.stringify(next));
+  } catch {
+    // Social memory only improves repeated visits; the card must work without it.
+  }
+}
+
+function loadPersonalSocialContacts(): readonly PersonalSocialContact[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(personalSocialContactsKey) || "[]") as unknown;
+    return list(parsed)
+      .map(normalizePersonalSocialContact)
+      .filter(isPersonalSocialContact)
+      .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt))
+      .slice(0, personalSocialContactLimit);
+  } catch {
+    return [];
+  }
+}
+
+function normalizePersonalSocialContact(value: unknown): PersonalSocialContact | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const handle = cleanRoutePart(String(value.handle || ""));
+  const slug = cleanRoutePart(String(value.slug || ""));
+  const url = cleanUrlPath(value.url) || (handle ? routeUrl({ handle, slug }) : "");
+  const displayName = cleanText(value.displayName, 80) || titleFromRoutePart(handle);
+  const lastSeenAt = cleanText(value.lastSeenAt, 40) || new Date(0).toISOString();
+  if (!handle || !url) {
+    return null;
+  }
+  return {
+    handle,
+    slug,
+    displayName,
+    headline: cleanText(value.headline, 120),
+    photoUrl: cleanProfilePhotoUrl(value.photoUrl),
+    url,
+    lastSeenAt
+  };
+}
+
+function isPersonalSocialContact(value: PersonalSocialContact | null): value is PersonalSocialContact {
+  return Boolean(value);
+}
+
+function socialContactFromProfile(profile: PersonalSpaceProfile): PersonalSocialContact {
+  return {
+    handle: cleanRoutePart(profile.handle),
+    slug: cleanRoutePart(profile.slug),
+    displayName: cleanText(profile.displayName, 80) || titleFromRoutePart(profile.handle),
+    headline: cleanText(profile.headline || profile.about || profile.accountName, 120),
+    photoUrl: cleanProfilePhotoUrl(profile.photoUrl),
+    url: cleanUrlPath(profile.url) || routeUrl(profile),
+    lastSeenAt: new Date().toISOString()
+  };
+}
+
+function personalSocialContactKey(contact: Pick<PersonalSocialContact, "handle" | "slug" | "url">): string {
+  return `${cleanRoutePart(contact.handle)}:${cleanRoutePart(contact.slug)}:${cleanUrlPath(contact.url)}`;
 }
 
 function renderMessageComposer(ownSpace: boolean): string {
@@ -1560,6 +1729,16 @@ function canSeePersonalModule(
   }
   const handle = cleanRoutePart(localHandle);
   return Boolean(handle && (profile.trustedViewer || profile.trustedHandles.includes(handle)));
+}
+
+function visiblePersonalModules(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): readonly PersonalSpaceCardModule[] {
+  return profile.modules.filter((module) => canSeePersonalModule(module, profile, ownSpace, localHandle));
+}
+
+function visiblePersonalPlaceCount(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): number {
+  const customCount = visiblePersonalModules(profile, ownSpace, localHandle).length;
+  const runtimeCount = ownSpace ? runtimeModuleDefinitions.length : 0;
+  return customCount + profile.spaces.length + runtimeCount;
 }
 
 function cardModuleToPersonalModule(module: PersonalSpaceCardModule): PersonalModule {
@@ -1731,6 +1910,7 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   const photoInput = root.querySelector<HTMLInputElement>("[data-profile-photo]");
   const backupInput = root.querySelector<HTMLInputElement>("[data-backup-import]");
   bindPersonalLayerKeys();
+  rememberPersonalSocialContact(profile);
   shell?.addEventListener("click", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     const layerButton = target?.closest<HTMLButtonElement>("[data-layer]");
@@ -2043,6 +2223,7 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
   const fileInput = form?.querySelector<HTMLInputElement>("[data-message-file]");
   const attachButton = form?.querySelector<HTMLButtonElement>("[data-message-attach]");
   const searchInput = messenger?.querySelector<HTMLInputElement>("[data-thread-search]");
+  const inboxSearch = messenger?.querySelector<HTMLInputElement>("[data-inbox-search]");
   if (!messenger || !form || !textarea) {
     return;
   }
@@ -2137,6 +2318,9 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
   });
   searchInput?.addEventListener("input", () => {
     filterMessengerThread(messenger, searchInput.value);
+  });
+  inboxSearch?.addEventListener("input", () => {
+    filterOwnerInbox(messenger, inboxSearch.value);
   });
   textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing) {
@@ -2320,6 +2504,18 @@ function filterMessengerThread(messenger: HTMLElement, query: string): void {
   });
 }
 
+function filterOwnerInbox(root: ParentNode, query: string): void {
+  const needle = cleanText(query, 80).toLocaleLowerCase("ru-RU");
+  root.querySelectorAll<HTMLElement>("[data-inbox-client-id]").forEach((item) => {
+    if (!needle) {
+      item.hidden = false;
+      return;
+    }
+    const haystack = `${item.dataset.inboxAuthor || ""} ${item.dataset.inboxSearch || ""}`.toLocaleLowerCase("ru-RU");
+    item.hidden = !haystack.includes(needle);
+  });
+}
+
 function threadLineReplyRefFromNode(node: HTMLElement | null): PersonalSpaceMessageReplyRef | null {
   if (!node) {
     return null;
@@ -2383,6 +2579,7 @@ async function hydrateOwnerInbox(root: HTMLElement, profile: PersonalSpaceProfil
     return;
   }
   inbox.innerHTML = renderInboxItems(messages, selectedClientId);
+  filterOwnerInbox(root, root.querySelector<HTMLInputElement>("[data-inbox-search]")?.value || "");
   if (!selectedClientId && messages[0]?.clientId) {
     const first = inbox.querySelector<HTMLElement>("[data-inbox-client-id]");
     if (first) {
@@ -2557,7 +2754,7 @@ function renderInboxItems(messages: readonly PersonalSpaceInboxMessage[], select
     return `<section class="personal-empty">${icon("mail")} <span>Сообщений пока нет.</span></section>`;
   }
   return messages.slice(0, 8).map((message) => `
-    <button class="personal-inbox-item${message.clientId === selectedClientId ? " is-active" : ""}" type="button" data-inbox-client-id="${escapeAttr(message.clientId)}" data-inbox-author="${escapeAttr(message.author)}">
+    <button class="personal-inbox-item${message.clientId === selectedClientId ? " is-active" : ""}" type="button" data-inbox-client-id="${escapeAttr(message.clientId)}" data-inbox-author="${escapeAttr(message.author)}" data-inbox-search="${escapeAttr(messagePreviewText(message))}">
       <span>${escapeHtml(message.author)}</span>
       <p>${escapeHtml(messagePreviewText(message))}</p>
       <time>${escapeHtml(threadTime(message.createdAt))}</time>
