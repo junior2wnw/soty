@@ -276,11 +276,15 @@ const joinPrompts = new Set<string>();
 let joinSocket: WebSocket | null = null;
 let joinReconnectTimer = 0;
 let joinHeartbeatTimer = 0;
+let joinPingWatchdogTimer = 0;
 let joinLastSeenAt = 0;
+let joinConnectionStartedAt = 0;
 let joinCompleted = false;
 let joinWakeCleanup: (() => void) | null = null;
 const joinHeartbeatIntervalMs = 8000;
 const joinStaleMs = 22_000;
+const joinWakeStaleMs = 6_000;
+const joinPingWatchdogMs = 3_200;
 let qrOverlay: HTMLDivElement | null = null;
 let actionOverlay: HTMLDivElement | null = null;
 let miniAppGalleryOverlay: HTMLDivElement | null = null;
@@ -3925,6 +3929,7 @@ function renderJoinWaiting(invite: JoinInvite): void {
 
 function clearJoinSocketTimers(): void {
   window.clearTimeout(joinReconnectTimer);
+  window.clearTimeout(joinPingWatchdogTimer);
   window.clearInterval(joinHeartbeatTimer);
   joinHeartbeatTimer = 0;
 }
@@ -3950,21 +3955,34 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
     clearJoinSocketTimers();
     clearJoinWakeListeners();
   };
-  const pulseJoinSocket = () => {
+  const pulseJoinSocket = (urgent = false) => {
     const ws = joinSocket;
     if (!ws || ws.readyState >= WebSocket.CLOSING) {
       connect();
       return;
     }
+    if (ws.readyState === WebSocket.CONNECTING) {
+      if (urgent && Date.now() - joinConnectionStartedAt > joinWakeStaleMs) {
+        ws.close();
+      }
+      return;
+    }
     if (ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    if (Date.now() - joinLastSeenAt > joinStaleMs) {
+    if (Date.now() - joinLastSeenAt > (urgent ? joinWakeStaleMs : joinStaleMs)) {
       ws.close();
       return;
     }
     try {
+      const sentAt = Date.now();
       ws.send(JSON.stringify({ type: "ping" }));
+      window.clearTimeout(joinPingWatchdogTimer);
+      joinPingWatchdogTimer = window.setTimeout(() => {
+        if (!joinCompleted && joinSocket === ws && ws.readyState === WebSocket.OPEN && joinLastSeenAt <= sentAt) {
+          ws.close();
+        }
+      }, urgent ? joinPingWatchdogMs : Math.max(joinPingWatchdogMs, Math.min(6000, Math.round(joinHeartbeatIntervalMs * 0.75))));
     } catch {
       ws.close();
     }
@@ -3973,20 +3991,23 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
     if (joinCompleted || document.visibilityState === "hidden") {
       return;
     }
-    pulseJoinSocket();
+    pulseJoinSocket(true);
   }
   function connect(): void {
     if (!device || joinCompleted) {
       return;
     }
     if (joinSocket && joinSocket.readyState < WebSocket.CLOSING) {
+      pulseJoinSocket(true);
       return;
     }
     window.clearTimeout(joinReconnectTimer);
+    window.clearTimeout(joinPingWatchdogTimer);
     window.clearInterval(joinHeartbeatTimer);
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${invite.roomId}`);
     joinSocket = ws;
+    joinConnectionStartedAt = Date.now();
     ws.onopen = () => {
       joinLastSeenAt = Date.now();
       reconnectDelay = 1000;
@@ -4018,6 +4039,7 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
           return;
         }
         joinLastSeenAt = Date.now();
+        window.clearTimeout(joinPingWatchdogTimer);
         if (message.type === "pong" || message.type === "join.waiting") {
           return;
         }
@@ -4053,11 +4075,14 @@ async function startJoinRequest(invite: JoinInvite): Promise<void> {
       ws.close();
     };
     ws.onclose = () => {
+      const shouldReconnect = !joinCompleted && joinSocket === ws;
       if (joinSocket === ws) {
+        joinSocket = null;
+        window.clearTimeout(joinPingWatchdogTimer);
         window.clearInterval(joinHeartbeatTimer);
         joinHeartbeatTimer = 0;
       }
-      if (!joinCompleted && joinSocket === ws) {
+      if (shouldReconnect) {
         const delay = reconnectDelay + Math.round(Math.random() * 700);
         reconnectDelay = Math.min(10_000, Math.round(reconnectDelay * 1.5));
         joinReconnectTimer = window.setTimeout(connect, delay);

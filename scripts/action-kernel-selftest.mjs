@@ -2284,8 +2284,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentRelay.includes("redactTerminalText"));
       assert(syncSource.includes("joinRequests?: readonly JoinRequest[]"));
       assert(syncSource.includes("pingWatchdogTimer"));
+      assert(syncSource.includes("wakeStaleConnectionMs"));
+      assert(syncSource.includes("wakePingWatchdogMs"));
+      assert(syncSource.includes("refreshDirectLinks"));
+      assert(syncSource.includes("this.recoverConnection(true)"));
       assert(syncSource.includes("queueOfflineUpdate"));
       assert(syncSource.includes('window.addEventListener("pagehide"'));
+      assert(ui.includes("joinPingWatchdogTimer"));
+      assert(ui.includes("joinWakeStaleMs"));
+      assert(ui.includes("joinSocket = null;"));
       assert(realtime.includes("joinRequestTtlMs"));
       assert(realtime.includes("queuedMessages"));
       assert(realtime.includes("maxQueuedHandshakeBytes"));

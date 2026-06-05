@@ -419,12 +419,16 @@ const hiddenHeartbeatIntervalMs = 36_000;
 const directHeartbeatIntervalMs = 24_000;
 const busyHeartbeatIntervalMs = 7_000;
 const staleConnectionMs = 42_000;
+const wakeStaleConnectionMs = 9_000;
 const connectTimeoutMs = 14_000;
 const handshakeTimeoutMs = 16_000;
+const wakeConnectTimeoutMs = 5_000;
+const wakePingWatchdogMs = 3_200;
 const reconnectJitterMs = 750;
 const minReconnectDelayMs = 500;
 const maxReconnectDelayMs = 30_000;
 const p2pRetryMs = 6000;
+const p2pRefreshMinIntervalMs = 15_000;
 const p2pIceServers: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" }
@@ -459,6 +463,7 @@ export class TunnelSync {
   private lastPingSentAt = 0;
   private lastPongLatencyMs = 0;
   private pingSeq = 0;
+  private recovering = false;
   private needsSnapshot = false;
   private readonly auth: Promise<string>;
   private readonly offlineQueue: OutboundUpdate[] = [];
@@ -467,6 +472,8 @@ export class TunnelSync {
   private readonly controlQueue: ControlMessage[] = [];
   private readonly fileTransfers = new Map<string, FileTransfer>();
   private readonly p2pPeers = new Map<string, P2pPeer>();
+  private knownPeers: readonly PeerInfo[] = [];
+  private lastP2pRefreshAt = 0;
   private readonly seenUpdateIds = new Set<string>();
   private readonly seenControlIds = new Set<string>();
   private readonly completedFileIds = new Set<string>();
@@ -475,7 +482,7 @@ export class TunnelSync {
   private liveDraftSeq = 0;
   private sendQueue = Promise.resolve();
   private readonly wakeReconnect = () => {
-    this.recoverConnection();
+    this.recoverConnection(true);
   };
   private readonly visibleReconnect = () => {
     if (document.visibilityState === "visible") {
@@ -489,6 +496,7 @@ export class TunnelSync {
   };
   private readonly offlineState = () => {
     this.ready = false;
+    this.recovering = true;
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.pingWatchdogTimer);
     window.clearTimeout(this.connectWatchdogTimer);
@@ -1070,6 +1078,7 @@ export class TunnelSync {
       this.callbacks.onPeers([]);
       this.callbacks.onState("closed");
       if (!this.destroyed) {
+        this.recovering = true;
         const delay = this.reconnectDelay + Math.round(Math.random() * reconnectJitterMs);
         this.reconnectDelay = Math.min(maxReconnectDelayMs, Math.round(this.reconnectDelay * 1.7));
         this.reconnectTimer = window.setTimeout(() => this.connect(), delay);
@@ -1115,6 +1124,7 @@ export class TunnelSync {
 
     if (message.type === "presence") {
       const peers = message.peers.filter((peer) => peer.id !== this.device.id);
+      this.knownPeers = peers;
       this.callbacks.onPeers(peers);
       this.syncP2pPeers(peers);
       return;
@@ -1144,6 +1154,7 @@ export class TunnelSync {
         await this.applyFile(file, true);
       }
       const peers = message.peers.filter((peer) => peer.id !== this.device.id);
+      this.knownPeers = peers;
       this.callbacks.onPeers(peers);
       this.syncP2pPeers(peers);
       for (const request of message.joinRequests ?? []) {
@@ -1159,7 +1170,12 @@ export class TunnelSync {
       this.callbacks.onTerminal(this.terminalSnapshot());
       this.flushOfflineQueue();
       this.flushControls();
-      this.scheduleSnapshot();
+      if (this.recovering) {
+        this.recovering = false;
+        this.queueSnapshotNow();
+      } else {
+        this.scheduleSnapshot();
+      }
       return;
     }
 
@@ -1810,6 +1826,32 @@ export class TunnelSync {
     }
   }
 
+  private refreshDirectLinks(): void {
+    if (this.knownPeers.length === 0 || !("RTCPeerConnection" in window) || !("RTCDataChannel" in window)) {
+      return;
+    }
+    if (this.hasOpenDirectChannels()) {
+      this.sendDirectSnapshot();
+      return;
+    }
+    const now = Date.now();
+    if (now - this.lastP2pRefreshAt < p2pRefreshMinIntervalMs) {
+      return;
+    }
+    this.lastP2pRefreshAt = now;
+    const peers = this.knownPeers;
+    for (const peer of peers) {
+      if (!peer.id || peer.id === this.device.id) {
+        continue;
+      }
+      this.closeP2pPeer(peer.id);
+      const link = this.ensureP2pPeer(peer.id);
+      if (this.device.id < peer.id) {
+        void this.startP2pOffer(link, true);
+      }
+    }
+  }
+
   private ensureP2pPeer(peerId: string): P2pPeer {
     const existing = this.p2pPeers.get(peerId);
     if (existing) {
@@ -2124,11 +2166,12 @@ export class TunnelSync {
     const ws = this.ws;
     if (!ws || ws.readyState >= WebSocket.CLOSING) {
       this.ready = false;
+      this.recovering = true;
       this.connect();
       return;
     }
     if (ws.readyState === WebSocket.CONNECTING) {
-      if (Date.now() - this.connectionStartedAt > connectTimeoutMs) {
+      if (Date.now() - this.connectionStartedAt > (forcePing ? wakeConnectTimeoutMs : connectTimeoutMs)) {
         this.closeAndReconnect(ws);
       }
       return;
@@ -2138,12 +2181,17 @@ export class TunnelSync {
       return;
     }
     const staleFor = Date.now() - this.lastSeenAt;
-    if (staleFor > staleConnectionMs) {
+    if (staleFor > (forcePing ? wakeStaleConnectionMs : staleConnectionMs)) {
+      this.closeAndReconnect(ws);
+      return;
+    }
+    if (!this.ready && Date.now() - this.connectionStartedAt > handshakeTimeoutMs) {
       this.closeAndReconnect(ws);
       return;
     }
     if (forcePing || staleFor > this.heartbeatDueMs()) {
-      this.safePing(ws);
+      this.refreshDirectLinks();
+      this.safePing(ws, forcePing);
     }
   }
 
@@ -2204,6 +2252,7 @@ export class TunnelSync {
       return;
     }
     this.ready = false;
+    this.recovering = true;
     window.clearTimeout(this.pingWatchdogTimer);
     window.clearTimeout(this.connectWatchdogTimer);
     this.closeP2pPeers();
@@ -2218,7 +2267,7 @@ export class TunnelSync {
     this.connect();
   }
 
-  private safePing(ws: WebSocket): void {
+  private safePing(ws: WebSocket, urgent = false): void {
     try {
       const sentAt = Date.now();
       this.lastPingSentAt = sentAt;
@@ -2228,7 +2277,7 @@ export class TunnelSync {
         if (!this.destroyed && this.ws === ws && ws.readyState === WebSocket.OPEN && this.lastSeenAt <= sentAt) {
           this.closeAndReconnect(ws);
         }
-      }, Math.max(4500, Math.min(9000, 1800 + this.lastPongLatencyMs * 4)));
+      }, urgent ? wakePingWatchdogMs : Math.max(4500, Math.min(9000, 1800 + this.lastPongLatencyMs * 4)));
     } catch {
       this.closeAndReconnect(ws);
     }
