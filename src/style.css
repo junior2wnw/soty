@@ -1534,80 +1534,100 @@ button.personal-avatar {
   background: rgba(255, 255, 255, 0.5);
 }
 
-.personal-message-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.personal-message-preview button {
-  justify-self: start;
-}
-
-.personal-message-preview small {
-  min-height: 18px;
-  color: #404040;
-  font-size: 13px;
-  font-weight: 760;
-}
-
-.personal-inbox {
+.personal-message-preview {
+  width: 100%;
+  min-height: min(100%, 560px);
   display: grid;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  gap: 14px;
 }
 
-.personal-inbox h3 {
-  margin: 0;
-  padding-bottom: 7px;
-  border-bottom: 1px solid #000;
-  color: #000;
-  font-size: 13px;
-  font-weight: 900;
-  line-height: 1.1;
+.personal-messenger-room,
+.personal-inbox,
+.personal-messenger-hints {
+  min-width: 0;
+  border: 1px solid #111412;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  overflow: hidden;
 }
 
-.personal-inbox-list {
+.personal-messenger-room {
+  min-height: 480px;
   display: grid;
-  gap: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
 
-.personal-inbox-item {
+.personal-messenger-head {
   min-width: 0;
   display: grid;
-  gap: 5px;
-  padding: 10px 0;
-  border-top: 1px solid #000;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid #111412;
+  background: #ffffff;
 }
 
-.personal-inbox-item span,
-.personal-inbox-item time {
-  color: #616161;
-  font-size: 12px;
-  font-weight: 820;
-}
-
-.personal-inbox-item p {
-  margin: 0;
-  color: #000;
+.personal-messenger-avatar {
+  width: 42px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 1px solid #111412;
+  border-radius: 12px;
+  background: var(--personal-accent);
+  color: #111412;
   font-size: 15px;
-  line-height: 1.35;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.personal-messenger-head div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.personal-messenger-head b {
+  min-width: 0;
+  color: #111412;
+  font-size: 16px;
+  line-height: 1.1;
   overflow-wrap: anywhere;
 }
 
-.personal-message-sheet {
-  width: min(100%, 520px);
-  max-height: min(88svh, 680px);
-  grid-template-rows: auto auto minmax(120px, 1fr) auto auto;
+.personal-messenger-head p {
+  margin: 0;
+  color: #5b6561;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.personal-messenger-head > span {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid #111412;
+  border-radius: 999px;
+  background: #d7ff65;
+  color: #111412;
+  font-size: 11px;
+  font-weight: 900;
 }
 
 .personal-thread {
-  max-height: min(34svh, 260px);
+  min-height: 0;
+  max-height: none;
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 10px;
   overflow: auto;
-  padding: 2px 2px 6px;
+  padding: 16px;
+  background:
+    linear-gradient(90deg, rgba(17, 20, 18, 0.028) 1px, transparent 1px) 0 0 / 26px 26px,
+    linear-gradient(180deg, rgba(17, 20, 18, 0.024) 1px, transparent 1px) 0 0 / 26px 26px;
   scrollbar-width: thin;
 }
 
@@ -1623,17 +1643,18 @@ button.personal-avatar {
   display: grid;
   gap: 4px;
   justify-self: start;
-  padding: 9px 11px;
-  border: 1px solid #000;
-  border-radius: 8px;
-  background: #f1f1f1;
-  color: #000;
+  padding: 10px 12px;
+  border: 1px solid #111412;
+  border-radius: 14px 14px 14px 4px;
+  background: #ffffff;
+  color: #111412;
   animation: personalPanelIn 140ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .personal-thread-line.is-mine {
   justify-self: end;
-  background: #ffffff;
+  border-radius: 14px 14px 4px 14px;
+  background: #d7ff65;
 }
 
 .personal-thread-line span,
@@ -1645,7 +1666,7 @@ button.personal-avatar {
 
 .personal-thread-line p {
   margin: 0;
-  color: #000;
+  color: #111412;
   font-size: 15px;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -1676,7 +1697,152 @@ button.personal-avatar {
 }
 
 .personal-thread-empty {
+  min-height: 92px;
+  align-self: center;
+  justify-self: center;
+  border: 0;
+  color: #5b6561;
+}
+
+.personal-message-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid #111412;
+  background: #ffffff;
+}
+
+.personal-message-composer textarea {
+  min-width: 0;
   min-height: 48px;
+  max-height: 132px;
+  padding: 13px 14px;
+  border: 1px solid #111412;
+  border-radius: 16px;
+  outline: 0;
+  resize: vertical;
+  background: #f7f9f5;
+  color: #111412;
+  font: inherit;
+  line-height: 1.35;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.personal-message-composer textarea:focus {
+  box-shadow: 0 0 0 3px rgba(215, 255, 101, 0.62);
+}
+
+.personal-message-composer button {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #111412;
+  border-radius: 999px;
+  background: #111412;
+  color: #ffffff;
+}
+
+.personal-message-composer button:disabled {
+  opacity: 0.52;
+}
+
+.personal-message-composer svg {
+  width: 19px;
+  height: 19px;
+}
+
+.personal-message-preview small[data-action-note] {
+  min-height: 28px;
+  display: block;
+  padding: 0 12px 10px;
+  color: #5b6561;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.personal-messenger-side {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.personal-inbox,
+.personal-messenger-hints {
+  display: grid;
+  gap: 0;
+}
+
+.personal-inbox h3,
+.personal-messenger-hints h3 {
+  margin: 0;
+  padding: 12px;
+  border-bottom: 1px solid #111412;
+  color: #111412;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1.1;
+}
+
+.personal-inbox-list {
+  max-height: 420px;
+  display: grid;
+  gap: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.personal-inbox-item,
+.personal-messenger-hints div,
+.personal-messenger-hints a {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid rgba(17, 20, 18, 0.18);
+  color: #111412;
+  text-decoration: none;
+}
+
+.personal-inbox-item:first-child,
+.personal-messenger-hints div:first-of-type {
+  border-top: 0;
+}
+
+.personal-inbox-item span,
+.personal-inbox-item time {
+  color: #5b6561;
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.personal-inbox-item p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #111412;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.personal-messenger-hints svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+.personal-messenger-hints p,
+.personal-messenger-hints span {
+  margin: 0;
+  color: #3d4542;
+  font-size: 13px;
+  line-height: 1.38;
+  font-weight: 760;
 }
 
 .personal-module-sheet {
@@ -6627,6 +6793,19 @@ button:disabled {
     border-radius: 20px;
     box-shadow: 5px 5px 0 #111412;
   }
+
+  .personal-message-preview {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .personal-messenger-room {
+    min-height: 430px;
+  }
+
+  .personal-messenger-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 680px) {
@@ -6801,6 +6980,59 @@ button:disabled {
   .personal-actions button:only-child,
   .personal-actions button:first-child:nth-last-child(3) {
     grid-column: 1 / -1;
+  }
+
+  .personal-message-preview {
+    gap: 10px;
+  }
+
+  .personal-messenger-room {
+    min-height: 390px;
+    border-radius: 16px;
+  }
+
+  .personal-messenger-head {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    padding: 10px;
+  }
+
+  .personal-messenger-avatar {
+    width: 36px;
+    border-radius: 10px;
+    font-size: 13px;
+  }
+
+  .personal-messenger-head b {
+    font-size: 15px;
+  }
+
+  .personal-messenger-head p {
+    font-size: 12px;
+  }
+
+  .personal-thread {
+    padding: 12px;
+  }
+
+  .personal-thread-line {
+    max-width: 92%;
+  }
+
+  .personal-message-composer {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .personal-message-composer textarea {
+    min-height: 44px;
+    padding: 11px 12px;
+    border-radius: 14px;
+  }
+
+  .personal-message-composer button {
+    width: 44px;
+    height: 44px;
   }
 
   .personal-quick-contacts {

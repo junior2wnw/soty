@@ -338,7 +338,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || (requestedRuntimeModule() ? "place" : null) || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   const ownSpace = await options.isOwned(profile);
-  root.innerHTML = renderPage(profile, activeLayer, options.canNotify(), localHandle, ownSpace);
+  root.innerHTML = renderPage(profile, activeLayer, localHandle, ownSpace);
   bindPersonalSpace(root, profile, options);
   openRequestedPersonalRuntimeModule(root, profile, options);
   document.body.dataset.sotyReady = "1";
@@ -981,7 +981,7 @@ function renderLoading(route: PersonalSpaceRoute): string {
   `;
 }
 
-function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canNotify: boolean, localHandle: string, ownSpace: boolean): string {
+function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, localHandle: string, ownSpace: boolean): string {
   const initialsText = initials(profile.shortName || profile.displayName);
   const avatar = profile.photoUrl
     ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
@@ -1015,7 +1015,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
           }).join("")}
         </div>
         <section class="personal-panels" aria-label="инфо-карта">
-          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canNotify, localHandle)).join("")}
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, localHandle)).join("")}
         </section>
       </main>
       ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
@@ -1056,10 +1056,9 @@ function renderLayerPanel(
   layer: PersonalSpaceLayer,
   ownSpace: boolean,
   activeLayer: PersonalSpaceLayer,
-  canNotify: boolean,
   localHandle: string
 ): string {
-  const view = panelView(profile, layer, ownSpace, canNotify, localHandle);
+  const view = panelView(profile, layer, ownSpace, localHandle);
   const active = layer === activeLayer;
   return `
     <article id="personal-panel-${layer}" class="personal-panel${active ? " is-active" : ""}" data-panel="${layer}" role="tabpanel" aria-hidden="${active ? "false" : "true"}"${active ? "" : " hidden"}>
@@ -1078,7 +1077,6 @@ function panelView(
   profile: PersonalSpaceProfile,
   layer: PersonalSpaceLayer,
   ownSpace: boolean,
-  canNotify: boolean,
   localHandle: string
 ): PersonalPanelView {
   if (layer === "personal") {
@@ -1111,11 +1109,9 @@ function panelView(
     };
   }
   if (layer === "messages") {
-    const actions = entityActionsFor({ surface: "messages", ownSpace, canNotify });
     return {
       eyebrow: "связь",
       title: ownSpace ? "Заметки" : "Связь",
-      ...(actions.length ? { actions } : {}),
       body: renderMessagePreview(profile, ownSpace, localHandle)
     };
   }
@@ -1167,17 +1163,28 @@ function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): st
 }
 
 function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): string {
-  const actor = cleanRoutePart(localHandle || profile.handle) || "guest";
-  const lines = loadPersonalThread(profile, actor).slice(-3);
+  const actor = cleanRoutePart(localHandle || (ownSpace ? profile.handle : "")) || "guest";
+  const lines = loadPersonalThread(profile, actor).slice(-32);
+  const roomTitle = ownSpace ? "Личные заметки" : profile.displayName;
+  const roomStatus = ownSpace ? "Приватно в этой карточке" : "Личная переписка";
   return `
-    <div class="personal-message-preview">
-      <div class="personal-message-copy">
-        <b>${escapeHtml(ownSpace ? profile.shortName : profile.displayName)}</b>
-        <p>${escapeHtml(ownSpace ? "Личные заметки в этой карточке." : "Личная переписка по этой карточке.")}</p>
+    <div class="personal-message-preview personal-messenger${ownSpace ? " is-owner" : ""}" data-personal-messenger data-actor="${escapeAttr(actor)}">
+      <section class="personal-messenger-room" aria-label="${escapeAttr(roomTitle)}">
+        <header class="personal-messenger-head">
+          <div class="personal-messenger-avatar" aria-hidden="true">${escapeHtml(initials(profile.shortName || profile.displayName))}</div>
+          <div>
+            <b>${escapeHtml(roomTitle)}</b>
+            <p>${escapeHtml(roomStatus)}</p>
+          </div>
+          <span>${escapeHtml(ownSpace ? "owner" : "dm")}</span>
+        </header>
+        ${renderThreadLines(lines, ownSpace, false)}
+        ${renderMessageComposer(ownSpace)}
+        <small data-action-note data-error></small>
+      </section>
+      <div class="personal-messenger-side">
+        ${ownSpace ? renderOwnerInboxShell() : renderMessengerHints(profile)}
       </div>
-      ${ownSpace ? renderOwnerInboxShell() : ""}
-      ${renderThreadLines(lines, ownSpace, true)}
-      <small data-action-note></small>
     </div>
   `;
 }
@@ -1190,6 +1197,32 @@ function renderOwnerInboxShell(): string {
         <section class="personal-empty">${icon("mail")} <span>Проверяю...</span></section>
       </div>
     </section>
+  `;
+}
+
+function renderMessengerHints(profile: PersonalSpaceProfile): string {
+  return `
+    <section class="personal-messenger-hints" aria-label="Связь">
+      <h3>Связь</h3>
+      <div>
+        <span>${icon("shield")}</span>
+        <p>Сообщение уйдет владельцу карточки.</p>
+      </div>
+      <div>
+        <span>${icon("qr")}</span>
+        <p>Эта переписка открывается прямо по ссылке или QR.</p>
+      </div>
+      <a href="${escapeAttr(profile.url)}?layer=place">${icon("apps")} <span>Открыть место</span></a>
+    </section>
+  `;
+}
+
+function renderMessageComposer(ownSpace: boolean): string {
+  return `
+    <form class="personal-message-composer" data-message-form>
+      <textarea name="text" maxlength="420" rows="2" required placeholder="${escapeAttr(ownSpace ? "Короткая заметка" : "Сообщение")}"></textarea>
+      <button type="submit" aria-label="${escapeAttr(ownSpace ? "Записать" : "Отправить")}">${icon("send")}</button>
+    </form>
   `;
 }
 
@@ -1515,6 +1548,7 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       handleEntityAction(root, actionNode, profile, options);
     }
   });
+  bindPersonalMessenger(root, profile, options);
   backupInput?.addEventListener("change", () => {
     const file = backupInput.files?.[0];
     if (file) {
@@ -1649,16 +1683,17 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (action === "message") {
+    setActiveLayer(root, "messages");
     const handle = loadLocalHandle();
-    if (handle) {
-      showMessageSheet(root, profile, handle, options);
+    if (handle || isRenderedOwnSpace(root)) {
+      focusPersonalMessenger(root, handle || profile.handle);
       return;
     }
     showNicknameSheet(root, {
       title: "Ваше имя",
       description: "",
       action: "Написать",
-      onDone: (nextHandle) => showMessageSheet(root, profile, nextHandle, options)
+      onDone: (nextHandle) => focusPersonalMessenger(root, nextHandle)
     });
     return;
   }
@@ -1719,6 +1754,21 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
   }
 }
 
+function focusPersonalMessenger(root: HTMLElement, actor: string): void {
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  if (messenger) {
+    const cleanActor = cleanRoutePart(actor);
+    if (cleanActor) {
+      messenger.dataset.actor = cleanActor;
+    }
+  }
+  window.setTimeout(() => {
+    const textarea = root.querySelector<HTMLTextAreaElement>("[data-personal-messenger] textarea[name='text']");
+    textarea?.focus();
+    textarea?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, 0);
+}
+
 async function reactToPersonalSpace(root: HTMLElement, button: HTMLButtonElement, profile: PersonalSpaceProfile): Promise<void> {
   if (hasLocalReaction(profile)) {
     updateReactionButton(button, reactionCountForDisplay(profile), true);
@@ -1776,123 +1826,115 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
   button.disabled = false;
 }
 
-function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, author: string, options: PersonalSpacePageOptions): void {
-  closePersonalOverlay(root);
-  const actor = cleanRoutePart(author) || "guest";
+function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile, _options: PersonalSpacePageOptions): void {
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  const form = messenger?.querySelector<HTMLFormElement>("[data-message-form]");
+  const textarea = form?.querySelector<HTMLTextAreaElement>("textarea[name='text']");
+  if (!messenger || !form || !textarea) {
+    return;
+  }
   const ownSpace = isRenderedOwnSpace(root);
-  let lines = loadPersonalThread(profile, actor);
-  const overlay = document.createElement("div");
-  overlay.className = "personal-overlay";
-  overlay.innerHTML = `
-    <section class="personal-sheet personal-message-sheet" role="dialog" aria-modal="true" aria-label="${escapeAttr(ownSpace ? "Заметки" : "Связь")}">
-      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
-      <h2>${escapeHtml(ownSpace ? "Заметки" : profile.shortName)}</h2>
-      <p>${escapeHtml(ownSpace ? "Только для себя." : "Личная связь.")}</p>
-      ${renderThreadLines(lines, ownSpace, false)}
-      <form data-message-form>
-        <textarea name="text" maxlength="420" required placeholder="${escapeAttr(ownSpace ? "Короткая заметка" : "Сообщение")}"></textarea>
-        <button type="submit">${icon("send")} ${escapeHtml(ownSpace ? "Записать" : "Отправить")}</button>
-      </form>
-      <small data-error></small>
-    </section>
-  `;
-  root.append(overlay);
-  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
-  textarea?.focus();
-  const close = () => {
-    overlay.remove();
-    void renderPersonalSpacePage(root, options).then(() => setActiveLayer(root, "messages"));
-  };
-  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", close);
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      close();
-    }
-  });
-  overlay.querySelector<HTMLFormElement>("[data-message-form]")?.addEventListener("submit", (event) => {
+  form.addEventListener("submit", (event) => {
     event.preventDefault();
-    void submitPersonalMessage();
+    const text = cleanText(textarea.value || "", 420);
+    if (!text) {
+      setMessengerNote(messenger, "Напишите пару слов.");
+      textarea.focus();
+      return;
+    }
+    const currentActor = cleanRoutePart(messenger.dataset.actor || loadLocalHandle() || profile.handle);
+    if (!ownSpace && (!currentActor || currentActor === "guest") && !loadLocalHandle()) {
+      showNicknameSheet(root, {
+        title: "Ваше имя",
+        description: "",
+        action: "Продолжить",
+        onDone: (nextHandle) => {
+          messenger.dataset.actor = nextHandle;
+          void submitMessengerMessage(messenger, profile, nextHandle, text, ownSpace);
+        }
+      });
+      return;
+    }
+    void submitMessengerMessage(messenger, profile, currentActor || "guest", text, ownSpace);
   });
-  textarea?.addEventListener("keydown", (event) => {
+  textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing) {
       event.preventDefault();
-      void submitPersonalMessage();
+      form.requestSubmit();
     }
   });
-  async function submitPersonalMessage(): Promise<void> {
-    const text = cleanText(textarea?.value || "", 420);
-    const error = overlay.querySelector<HTMLElement>("[data-error]");
-    const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
-    const thread = overlay.querySelector<HTMLElement>("[data-personal-thread]");
-    if (!text) {
-      if (error) {
-        error.textContent = "Напишите пару слов.";
+}
+
+async function submitMessengerMessage(
+  messenger: HTMLElement,
+  profile: PersonalSpaceProfile,
+  actor: string,
+  text: string,
+  ownSpace: boolean
+): Promise<void> {
+  const cleanActor = cleanRoutePart(actor) || "guest";
+  const textarea = messenger.querySelector<HTMLTextAreaElement>("textarea[name='text']");
+  const button = messenger.querySelector<HTMLButtonElement>("button[type='submit']");
+  const thread = messenger.querySelector<HTMLElement>("[data-personal-thread]");
+  let lines = loadPersonalThread(profile, cleanActor);
+  const optimisticId = localItemId("message");
+  const optimisticLine: PersonalThreadLine = {
+    id: optimisticId,
+    author: cleanActor,
+    text,
+    createdAt: new Date().toISOString(),
+    mine: true,
+    status: ownSpace ? "saved" : "sending"
+  };
+  lines = [...lines, optimisticLine].slice(-80);
+  if (button) {
+    button.disabled = true;
+  }
+  if (textarea) {
+    textarea.value = "";
+    textarea.focus();
+  }
+  renderMessengerThread(thread, lines, ownSpace);
+  setMessengerNote(messenger, ownSpace ? "" : "Отправляю...");
+  if (!ownSpace) {
+    const result = await sendPersonalSpaceMessage(profile, {
+      author: cleanActor,
+      text,
+      clientId: personalMessageClientId()
+    });
+    if (!result.ok) {
+      lines = lines.map((line) => line.id === optimisticId ? { ...line, status: "failed" } : line);
+      renderMessengerThread(thread, lines, ownSpace);
+      setMessengerNote(messenger, result.message);
+      if (button) {
+        button.disabled = false;
       }
       return;
     }
-    if (button) {
-      button.disabled = true;
-    }
-    const optimisticId = localItemId("message");
-    const optimisticLine: PersonalThreadLine = {
-      id: optimisticId,
-      author: actor,
-      text,
-      createdAt: new Date().toISOString(),
-      mine: true,
-      status: ownSpace ? "saved" : "sending"
-    };
-    lines = [...lines, optimisticLine];
-    if (thread) {
-      thread.innerHTML = renderThreadLineItems(lines, ownSpace);
-      thread.scrollTop = thread.scrollHeight;
-    }
-    if (textarea) {
-      textarea.value = "";
-      textarea.focus();
-    }
-    if (error) {
-      error.textContent = ownSpace ? "" : "sending";
-    }
-    if (!ownSpace) {
-      const result = await sendPersonalSpaceMessage(profile, {
-        author: actor,
-        text,
-        clientId: personalMessageClientId()
-      });
-      if (!result.ok) {
-        lines = lines.map((line) => line.id === optimisticId ? { ...line, status: "failed" } : line);
-        if (thread) {
-          thread.innerHTML = renderThreadLineItems(lines, ownSpace);
-          thread.scrollTop = thread.scrollHeight;
-        }
-        if (error) {
-          error.textContent = result.message;
-        }
-        if (button) {
-          button.disabled = false;
-        }
-        return;
-      }
-    }
-    const savedLines = appendPersonalThreadLine(profile, actor, text);
-    lines = savedLines.map((line, index) => index === savedLines.length - 1
-      ? { ...line, status: ownSpace ? "saved" : "sent" }
-      : line);
-    if (thread) {
-      thread.innerHTML = renderThreadLineItems(lines, ownSpace);
-      thread.scrollTop = thread.scrollHeight;
-    }
-    if (textarea) {
-      textarea.value = "";
-      textarea.focus();
-    }
-    if (error) {
-      error.textContent = ownSpace ? "" : "Отправлено.";
-    }
-    if (button) {
-      button.disabled = false;
-    }
+  }
+  const savedLines = appendPersonalThreadLine(profile, cleanActor, text);
+  lines = savedLines.map((line, index) => index === savedLines.length - 1
+    ? { ...line, status: ownSpace ? "saved" : "sent" }
+    : line);
+  renderMessengerThread(thread, lines, ownSpace);
+  setMessengerNote(messenger, ownSpace ? "Сохранено." : "Отправлено.");
+  if (button) {
+    button.disabled = false;
+  }
+}
+
+function renderMessengerThread(thread: HTMLElement | null, lines: readonly PersonalThreadLine[], ownSpace: boolean): void {
+  if (!thread) {
+    return;
+  }
+  thread.innerHTML = renderThreadLineItems(lines, ownSpace);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function setMessengerNote(messenger: HTMLElement, message: string): void {
+  const note = messenger.querySelector<HTMLElement>("[data-action-note]");
+  if (note) {
+    note.textContent = message;
   }
 }
 
