@@ -1543,6 +1543,14 @@ button.personal-avatar {
   align-items: stretch;
 }
 
+.personal-panel[data-panel="messages"] .personal-message-preview {
+  width: 100%;
+  max-width: none;
+  min-height: min(100%, 620px);
+  gap: 0;
+  border-top: 1px solid rgba(17, 20, 18, 0.16);
+}
+
 .personal-messenger:not(.is-owner) {
   grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
 }
@@ -1558,11 +1566,24 @@ button.personal-avatar {
   overflow: hidden;
 }
 
+.personal-panel[data-panel="messages"] .personal-messenger-room,
+.personal-panel[data-panel="messages"] .personal-inbox,
+.personal-panel[data-panel="messages"] .personal-social-card,
+.personal-panel[data-panel="messages"] .personal-messenger-hints {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .personal-messenger-room {
   order: 1;
   min-height: 540px;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger-room {
+  border-right: 1px solid rgba(17, 20, 18, 0.16);
 }
 
 .personal-messenger-side {
@@ -1575,6 +1596,20 @@ button.personal-avatar {
 
 .personal-messenger:not(.is-owner) .personal-messenger-side {
   order: 1;
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger-side {
+  padding-left: 14px;
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger.is-owner .personal-messenger-room {
+  border-right: 0;
+}
+
+.personal-panel[data-panel="messages"] .personal-messenger.is-owner .personal-messenger-side {
+  padding-right: 14px;
+  padding-left: 0;
+  border-right: 1px solid rgba(17, 20, 18, 0.16);
 }
 
 .personal-messenger-head {
@@ -7252,7 +7287,7 @@ button:disabled {
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1120px) {
   .self-start-shell {
     align-items: start;
     padding: 30px;
@@ -7372,11 +7407,22 @@ button:disabled {
   }
 
   .personal-messenger-room {
-    min-height: 430px;
+    min-height: 360px;
   }
 
   .personal-messenger-side {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .personal-panel[data-panel="messages"] .personal-messenger-room,
+  .personal-panel[data-panel="messages"] .personal-messenger.is-owner .personal-messenger-side {
+    border-right: 0;
+  }
+
+  .personal-panel[data-panel="messages"] .personal-messenger-side {
+    padding-top: 12px;
+    padding-left: 0;
+    border-top: 1px solid rgba(17, 20, 18, 0.16);
   }
 }
 
@@ -7558,8 +7604,12 @@ button:disabled {
     gap: 10px;
   }
 
+  .personal-social-actions {
+    display: none;
+  }
+
   .personal-messenger-room {
-    min-height: 390px;
+    min-height: 340px;
     border-radius: 16px;
   }
 
