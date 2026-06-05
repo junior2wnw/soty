@@ -140,9 +140,38 @@ svg {
   display: grid;
   place-items: center;
   align-content: center;
-  gap: 14px;
+  gap: 22px;
   padding: 24px;
   color: #151515;
+}
+
+.self-start-copy {
+  width: min(100%, 680px);
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  text-align: center;
+}
+
+.self-start-copy span {
+  color: #404040;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.self-start-copy h1 {
+  margin: 0;
+  color: #000;
+  font-size: 56px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.self-start-copy p {
+  margin: 0;
+  color: #404040;
+  font-size: 16px;
+  line-height: 1.35;
 }
 
 .self-start-form {
@@ -153,9 +182,9 @@ svg {
   width: 100%;
   min-height: 76px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   border-bottom: 2px solid rgba(21, 21, 21, 0.18);
   color: #151515;
 }
@@ -194,10 +223,6 @@ svg {
   box-shadow: none;
 }
 
-.self-start-input:placeholder-shown {
-  text-align: center;
-}
-
 .self-start-field button {
   width: 44px;
   min-width: 44px;
@@ -231,7 +256,7 @@ svg {
   height: 100svh;
   min-height: 100svh;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   isolation: isolate;
   color: #171717;
@@ -299,6 +324,7 @@ svg {
 }
 
 .personal-main {
+  grid-row: 1;
   width: min(1240px, calc(100% - clamp(24px, 6vw, 96px)));
   min-height: 0;
   height: 100%;
@@ -492,6 +518,10 @@ button.personal-avatar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.personal-identity .personal-actions {
+  margin-top: 4px;
 }
 
 .personal-panel-copy .personal-actions {
@@ -1268,6 +1298,12 @@ button.personal-avatar {
   letter-spacing: 0;
 }
 
+.personal-review-pulse {
+  width: min(100%, 760px);
+  display: flex;
+  justify-content: flex-start;
+}
+
 .personal-spaces .is-active {
   border-color: #000;
   background: #ffffff;
@@ -1345,6 +1381,8 @@ button.personal-avatar {
 
 .personal-message-sheet {
   width: min(100%, 520px);
+  max-height: min(88svh, 680px);
+  grid-template-rows: auto auto minmax(120px, 1fr) auto auto;
 }
 
 .personal-thread {
@@ -1353,6 +1391,7 @@ button.personal-avatar {
   align-content: start;
   gap: 8px;
   overflow: auto;
+  padding: 2px 2px 6px;
   scrollbar-width: thin;
 }
 
@@ -1373,6 +1412,7 @@ button.personal-avatar {
   border-radius: 8px;
   background: #f1f1f1;
   color: #000;
+  animation: personalPanelIn 140ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .personal-thread-line.is-mine {
@@ -1399,6 +1439,24 @@ button.personal-avatar {
 
 .personal-thread-line time {
   justify-self: end;
+}
+
+.personal-thread-line.is-sending time {
+  color: #007aff;
+}
+
+.personal-thread-line.is-sent time,
+.personal-thread-line.is-saved time {
+  color: #404040;
+}
+
+.personal-thread-line.is-failed {
+  border-color: #9f1d1d;
+  background: #fff5f5;
+}
+
+.personal-thread-line.is-failed time {
+  color: #9f1d1d;
 }
 
 .personal-thread-empty {
@@ -2597,6 +2655,12 @@ button.personal-avatar {
   font-family: "Segoe UI", system-ui, sans-serif;
 }
 
+.shell.simple-contact-shell .bubble-status {
+  color: currentColor;
+  opacity: 0.5;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
 .shell.simple-contact-shell .bubble-avatar {
   top: 9px;
   background: #ffffff;
@@ -2660,6 +2724,32 @@ button.personal-avatar {
 .shell.simple-contact-shell .message-dialog-panel {
   border-color: #000;
   background: #ffffff;
+}
+
+.shell.simple-contact-shell .bubble-file {
+  border-color: #000;
+  background: #ffffff;
+  color: #000;
+  box-shadow: none;
+}
+
+.shell.simple-contact-shell .chat-bubble.local .bubble-file {
+  border-color: rgba(255, 255, 255, 0.48);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.shell.simple-contact-shell .bubble-media-preview,
+.shell.simple-contact-shell .bubble-media img,
+.shell.simple-contact-shell .bubble-media video,
+.shell.simple-contact-shell .bubble-media audio {
+  background: #f1f1f1;
+}
+
+.shell.simple-contact-shell .bubble-media .bubble-download {
+  border-color: #000;
+  background: #ffffff;
+  color: #000;
 }
 
 .shell.simple-contact-shell .message-dialog-panel header span,
@@ -3688,9 +3778,9 @@ button:disabled {
 }
 
 .chat-bubble.local {
-  align-self: flex-start;
-  margin-left: 28px;
-  margin-right: 0;
+  align-self: flex-end;
+  margin-left: 52px;
+  margin-right: 28px;
   background:
     linear-gradient(90deg, rgba(109, 255, 143, 0.07), transparent 48%),
     #0d1712;
@@ -3707,6 +3797,10 @@ button:disabled {
   box-shadow:
     inset 3px 0 0 var(--bubble-color),
     0 5px 12px rgba(0, 0, 0, 0.18);
+}
+
+.chat-bubble.is-chat-message {
+  animation: surface-rise 150ms cubic-bezier(.2, .8, .2, 1);
 }
 
 .chat-bubble.surface {
@@ -3899,6 +3993,18 @@ button:disabled {
   pointer-events: none;
 }
 
+.bubble-status {
+  position: absolute;
+  left: 12px;
+  bottom: 5px;
+  color: color-mix(in srgb, var(--bubble-color) 62%, var(--muted));
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .bubble-mark {
   position: absolute;
   top: 5px;
@@ -3965,8 +4071,8 @@ button:disabled {
 }
 
 .chat-bubble.local .bubble-avatar {
-  left: -28px;
-  right: auto;
+  right: -28px;
+  left: auto;
 }
 
 .message-dialog-peek {
@@ -4223,6 +4329,81 @@ button:disabled {
   color: color-mix(in srgb, var(--bubble-color) 72%, var(--muted));
   font-size: 10px;
   font-weight: 800;
+}
+
+.bubble-media {
+  width: min(100%, 380px);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.bubble-media:hover {
+  transform: none;
+}
+
+.bubble-media-preview {
+  width: 100%;
+  min-width: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: #05090c;
+  cursor: pointer;
+}
+
+.bubble-media img,
+.bubble-media video {
+  width: 100%;
+  max-height: min(48svh, 360px);
+  display: block;
+  object-fit: contain;
+  background: #05090c;
+}
+
+.bubble-media audio {
+  width: 100%;
+  display: block;
+  padding: 8px;
+  background: #05090c;
+}
+
+.bubble-media figcaption {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 28px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+}
+
+.bubble-media figcaption b,
+.bubble-media figcaption small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+.bubble-media .bubble-download {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--bubble-color) 62%, #24323d);
+  border-radius: 7px;
+  background: rgba(5, 9, 12, 0.72);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.bubble-media .bubble-download:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--bubble-color) 82%, var(--cream));
 }
 
 .dialog-buffer {
@@ -6221,6 +6402,10 @@ button:disabled {
     gap: 6px;
   }
 
+  .self-start-copy h1 {
+    font-size: 38px;
+  }
+
   .self-start-field > span {
     font-size: 28px;
   }
@@ -6599,6 +6784,20 @@ button:disabled {
 
   .chat-bubble {
     max-width: 94%;
+  }
+
+  .chat-bubble.local {
+    margin-left: 34px;
+    margin-right: 24px;
+  }
+
+  .chat-bubble.remote {
+    margin-left: 24px;
+    margin-right: 34px;
+  }
+
+  .bubble-media {
+    width: min(100%, 320px);
   }
 
   .message-dialog-panel {

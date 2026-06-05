@@ -1,8 +1,20 @@
 # soty.online
 
-A small PWA surface for a long-lived byte tunnel between counterparties.
+Soty is a living info card for a person, object, or place.
 
-The browser side stays deliberately simple:
+Someone opens it from a QR code, understands who or what it is, writes a message, leaves a review, shares or saves the contact. When the owner needs more power, the same card can become a workspace with modules, realtime chat, files, agent tools, remote access, games, and mini apps.
+
+The first product scenario is intentionally narrow:
+
+- create a card from one field: name or title;
+- share the card link or QR;
+- a visitor opens the card without installing anything;
+- the visitor sees photo, name, description, write, share, and calm layers;
+- the visitor writes to the owner.
+
+The powerful runtime is deeper in the `Место` layer. PWA installation is a browser bonus, not the primary call to action.
+
+The browser runtime still keeps the older long-lived byte tunnel:
 
 - an installed PWA owns a local device name;
 - an empty device shows a QR code in the honeycomb field;

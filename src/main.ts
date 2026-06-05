@@ -195,6 +195,7 @@ const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
 const miniAppContextProtocol = "soty.mini-app.context.v1";
 const fileBundlePrefix = "SOTY_FILE_BUNDLE:";
+const chatMessagePrefix = "SOTY_CHAT_MESSAGE:";
 const agentAttachmentLimit = 10;
 let miniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
@@ -257,6 +258,15 @@ type OpenMessageDialog = {
   readonly sourceText: string;
   readonly sourceAuthor: string;
   readonly target: MessageDialogTarget;
+};
+
+type ChatMessageRecord = {
+  readonly id: string;
+  readonly author: string;
+  readonly authorId: string;
+  readonly text: string;
+  readonly attachments: readonly FileBundleAttachment[];
+  readonly createdAt: string;
 };
 
 const writerLines = new Map<string, Map<number, WriterLine>>();
@@ -1631,32 +1641,36 @@ function isSelfStartRoute(location: Location = window.location): boolean {
 
 async function renderSelfStartPage(): Promise<void> {
   const saved = await loadSelfStartHandleOrLegacyDevice();
-  if (saved) {
+  if (saved && requestedRuntimeModule()) {
     window.location.replace(selfStartPersonalPath(saved));
     return;
   }
-  const suggestedHandle = loadPersonalHandle();
+  const suggestedHandle = loadPersonalHandle() || saved;
   setPersonalSpaceMode(false);
   setSelfStartMode(true);
   applyPersonalSpaceManifest(null);
   app.innerHTML = `
-    <main class="self-start-shell" aria-label="создать страницу">
+    <main class="self-start-shell" aria-label="создать карточку">
+      <section class="self-start-copy">
+        <span>соты</span>
+        <h1>Живая инфо-карта</h1>
+        <p>Открыл по QR, понял, написал.</p>
+      </section>
       <form class="self-start-form">
         <label class="self-start-field">
-          <span aria-hidden="true">@</span>
           <input
             class="self-start-input"
             name="handle"
             autocomplete="nickname"
-            autocapitalize="none"
+            autocapitalize="words"
             enterkeyhint="go"
             inputmode="text"
             maxlength="32"
-            aria-label="Имя страницы"
-            placeholder="имя"
+            aria-label="Имя или название"
+            placeholder="Имя или название"
             value="${escapeHtml(suggestedHandle)}"
           />
-          <button type="submit" aria-label="Открыть Я" data-tooltip="Открыть Я">${icon("check")}</button>
+          <button type="submit" aria-label="Создать карточку" data-tooltip="Создать карточку">${icon("check")}</button>
         </label>
       </form>
     </main>
@@ -4147,6 +4161,11 @@ function renderApp(): void {
   });
   renderTiles();
   composer?.addEventListener("input", () => rememberComposerDraft());
+  composer?.addEventListener("paste", (event) => {
+    if ((event.clipboardData?.files.length ?? 0) > 0) {
+      stageFiles(event.clipboardData?.files);
+    }
+  });
   composer?.addEventListener("keydown", (event) => {
     if (isMessageSendEnter(event)) {
       event.preventDefault();
@@ -8911,7 +8930,19 @@ async function finalizeComposerDraft(): Promise<void> {
   const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
   const bundleLine = sentFiles.length > 0 ? fileBundleLine(sentFiles) : "";
   const visibleMessage = [visibleText, bundleLine].filter(Boolean).join("\n");
-  const next = `${current}${separator}${visibleMessage}\n`;
+  const finalVisibleMessage = spaceMode === "dialog"
+    ? createChatMessageLine({
+      author,
+      authorId: device?.id || "",
+      text: message,
+      attachments: sentFiles.map(fileBundleAttachment)
+    })
+    : visibleMessage;
+  if (!finalVisibleMessage) {
+    renderComposerAttachments();
+    return;
+  }
+  const next = `${current}${separator}${finalVisibleMessage}\n`;
   textarea.value = next;
   texts.set(tunnelId, next);
   sync.setText(next);
@@ -8952,6 +8983,77 @@ function fileBundleAttachment(file: ReceivedFile): FileBundleAttachment {
     type: file.type || "application/octet-stream",
     size: Math.max(0, Math.trunc(file.size || file.bytes.byteLength || 0))
   };
+}
+
+function createChatMessageLine(input: {
+  readonly author: string;
+  readonly authorId: string;
+  readonly text: string;
+  readonly attachments?: readonly FileBundleAttachment[];
+  readonly createdAt?: string;
+}): string {
+  const text = normalizeChatMessage(input.text);
+  const attachments = sanitizeChatMessageAttachments(input.attachments ?? []);
+  if (!text && attachments.length === 0) {
+    return "";
+  }
+  return `${chatMessagePrefix}${JSON.stringify({
+    v: 1,
+    id: `msg_${crypto.randomUUID()}`,
+    author: cleanNick(input.author) || "Me",
+    authorId: cleanChatToken(input.authorId, 180),
+    text,
+    attachments,
+    createdAt: cleanIsoDate(input.createdAt || new Date().toISOString())
+  })}`;
+}
+
+function parseChatMessageLine(line: string): ChatMessageRecord | null {
+  if (!line.startsWith(chatMessagePrefix)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(line.slice(chatMessagePrefix.length)) as unknown;
+    if (!isRecord(payload)) {
+      return null;
+    }
+    const attachments = sanitizeChatMessageAttachments(Array.isArray(payload.attachments) ? payload.attachments : []);
+    const text = normalizeChatMessage(recordString(payload, "text"));
+    if (!text && attachments.length === 0) {
+      return null;
+    }
+    return {
+      id: cleanChatToken(recordString(payload, "id"), 140) || `msg_${hashShort(`${text}:${recordString(payload, "createdAt")}`)}`,
+      author: cleanNick(recordString(payload, "author")) || "Guest",
+      authorId: cleanChatToken(recordString(payload, "authorId"), 180),
+      text,
+      attachments,
+      createdAt: cleanIsoDate(recordString(payload, "createdAt") || new Date().toISOString())
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeChatMessageAttachments(value: readonly unknown[]): readonly FileBundleAttachment[] {
+  return value
+    .map((item) => isRecord(item) ? {
+      id: cleanChatToken(recordString(item, "id"), 140),
+      name: cleanDownloadedFileName(recordString(item, "name") || "file"),
+      type: recordString(item, "type").slice(0, 160) || "application/octet-stream",
+      size: Math.max(0, Math.trunc(Number(item.size) || 0))
+    } : null)
+    .filter((item): item is FileBundleAttachment => Boolean(item?.id))
+    .slice(0, 80);
+}
+
+function cleanChatToken(value: string, maxLength: number): string {
+  return String(value || "").replace(/[^A-Za-z0-9._:-]/gu, "_").slice(0, maxLength);
+}
+
+function cleanIsoDate(value: string): string {
+  const time = Date.parse(String(value || "").slice(0, 48));
+  return Number.isFinite(time) ? new Date(time).toISOString() : new Date().toISOString();
 }
 
 function messageWithAttachmentContext(message: string, sentFiles: readonly ReceivedFile[]): string {
@@ -9824,11 +9926,11 @@ function handleTextPaintClick(event: MouseEvent): void {
     return;
   }
 
-  const fileButton = target.closest<HTMLButtonElement>(".bubble-file[data-file-id]");
-  if (fileButton && root.contains(fileButton)) {
+  const fileButton = target.closest<HTMLElement>("[data-file-download-id], .bubble-file[data-file-id]");
+  if (fileButton && root.contains(fileButton) && !target.closest("audio, video")) {
     event.preventDefault();
     event.stopPropagation();
-    const fileId = fileButton.dataset.fileId || "";
+    const fileId = fileButton.dataset.fileDownloadId || fileButton.dataset.fileId || "";
     const file = (files.get(selectedId) ?? []).find((item) => item.id === fileId);
     if (file) {
       downloadReceivedFile(file);
@@ -9968,11 +10070,46 @@ function renderTextPaint(): void {
     sourceId: string;
     markKind: SpaceEntryKind | null;
     marked: boolean;
+    delivery?: string;
   }[] = [];
   let lastHiddenEntry = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (isMessageDialogLine(line)) {
+      lastHiddenEntry = false;
+      continue;
+    }
+    const chatMessage = parseChatMessageLine(line);
+    if (chatMessage) {
+      if (!showDialog) {
+        lastHiddenEntry = true;
+        continue;
+      }
+      const localNick = cleanNick(device?.nick || "");
+      const mine = Boolean(chatMessage.authorId && chatMessage.authorId === device?.id)
+        || Boolean(!chatMessage.authorId && localNick && cleanNick(chatMessage.author) === localNick);
+      const sourceText = chatMessage.text || chatMessage.attachments.map((item) => item.name).join(", ");
+      const sourceId = chatMessage.id;
+      const markKind = spaceEntryKindForMessage(mine, isOwnSpace(tunnel));
+      bubbles.push({
+        key: `chat-message:${chatMessage.id}`,
+        side: mine ? "local" : "remote",
+        nick: chatMessage.author,
+        color: mine ? colorFor(`local:${device?.id || selectedId}`) : safeColor(undefined, `${selectedId}:${chatMessage.author}`),
+        time: clock(new Date(chatMessage.createdAt)),
+        className: "is-chat-message",
+        lines: chatMessage.text ? chatMessage.text.split("\n") : [],
+        attachments: chatMessage.attachments.length > 0 ? [{ id: `bundle_${chatMessage.id}`, files: chatMessage.attachments }] : [],
+        entry: null,
+        live: null,
+        groupKey: "",
+        sourceLine: index,
+        sourceText,
+        sourceId,
+        markKind,
+        marked: markedSources.has(sourceId) || markedSources.has(spaceFallbackMarkerId(markKind, sourceText)),
+        delivery: mine ? chatDeliveryLabel() : ""
+      });
       lastHiddenEntry = false;
       continue;
     }
@@ -10183,6 +10320,7 @@ function renderTextPaint(): void {
       ? `<em class="live-chip">${escapeHtml(activityCode(bubble.live.action))}${bubble.live.preview ? ` ${escapeHtml(compactPreview(bubble.live.preview))}` : ""}</em>`
       : "";
     const time = bubble.time ? `<time class="bubble-time">${escapeHtml(bubble.time)}</time>` : "";
+    const delivery = bubble.delivery ? `<span class="bubble-status">${escapeHtml(bubble.delivery)}</span>` : "";
     const avatar = bubble.side === "local" || bubble.side === "remote"
       ? `<span class="bubble-avatar" aria-hidden="true">${escapeHtml(initials(bubble.nick))}</span>`
       : "";
@@ -10201,6 +10339,7 @@ function renderTextPaint(): void {
         ${avatar}
         ${action}
         ${time}
+        ${delivery}
         ${live}
         ${body ? bubble.entry ? body : `<p>${body}</p>` : ""}
         ${attachmentHtml}
@@ -10398,7 +10537,7 @@ function markDialogMessage(button: HTMLButtonElement): void {
   const lines = current.endsWith("\n") ? current.slice(0, -1).split("\n") : current.split("\n");
   const lineIndex = Number(button.dataset.lineIndex || "-1");
   const line = lines[lineIndex] ?? "";
-  const text = normalizeChatMessage(line || button.dataset.text || "");
+  const text = normalizeChatMessage(button.dataset.text || chatMessageSourceTextFromLine(line) || line);
   if (!text) {
     return;
   }
@@ -10483,6 +10622,14 @@ function spaceMessageSourceId(tunnelId: string, lineIndex: number, text: string)
   return `msg:${tunnelId}:${lineIndex}:${hashShort(text)}`;
 }
 
+function chatMessageSourceTextFromLine(line: string): string {
+  const message = parseChatMessageLine(line);
+  if (!message) {
+    return "";
+  }
+  return message.text || message.attachments.map((item) => item.name).join(", ");
+}
+
 function spaceFallbackMarkerId(kind: SpaceEntryKind, text: string): string {
   return `fallback:${kind}:${hashShort(text)}`;
 }
@@ -10537,18 +10684,66 @@ function renderBubbleAttachments(bundles: readonly FileBundleMarker[]): string {
   }
   return `
     <div class="bubble-files">
-      ${items.map((item) => {
-        const file = known.get(item.id);
-        const ready = Boolean(file);
-        return `
-          <button class="bubble-file" type="button" data-file-id="${escapeHtml(item.id)}" ${ready ? "" : "disabled"} data-tooltip="${ready ? "Download file" : "Waiting for file data"}">
-            <span>${icon(ready ? "download" : "clip")}</span>
-            <b>${escapeHtml(item.name)}</b>
-            <small>${escapeHtml(formatFileSize(item.size))}</small>
-          </button>
-        `;
-      }).join("")}
+      ${items.map((item) => renderBubbleAttachment(item, known.get(item.id))).join("")}
     </div>
+  `;
+}
+
+function renderBubbleAttachment(item: FileBundleAttachment, file?: ReceivedFile): string {
+  const ready = Boolean(file);
+  const type = (file?.type || item.type || "application/octet-stream").toLowerCase();
+  const name = file?.name || item.name || "file";
+  const size = Math.max(0, file?.size || item.size || 0);
+  const fileId = escapeHtml(item.id);
+  const title = escapeHtml(name);
+  const meta = escapeHtml(formatFileSize(size));
+  const downloadAttrs = ready
+    ? `data-file-download-id="${fileId}" data-tooltip="Download file"`
+    : `disabled data-tooltip="Waiting for file data"`;
+  if (ready && file?.url && type.startsWith("image/")) {
+    return `
+      <figure class="bubble-file bubble-media is-image">
+        <button class="bubble-media-preview" type="button" data-file-download-id="${fileId}" data-tooltip="Download image">
+          <img src="${escapeHtml(file.url)}" alt="${title}" loading="lazy" />
+        </button>
+        <figcaption>
+          <b>${title}</b>
+          <small>${meta}</small>
+          <button class="bubble-download" type="button" ${downloadAttrs} aria-label="download">${icon("download")}</button>
+        </figcaption>
+      </figure>
+    `;
+  }
+  if (ready && file?.url && type.startsWith("video/")) {
+    return `
+      <figure class="bubble-file bubble-media is-video">
+        <video src="${escapeHtml(file.url)}" controls preload="metadata"></video>
+        <figcaption>
+          <b>${title}</b>
+          <small>${meta}</small>
+          <button class="bubble-download" type="button" ${downloadAttrs} aria-label="download">${icon("download")}</button>
+        </figcaption>
+      </figure>
+    `;
+  }
+  if (ready && file?.url && type.startsWith("audio/")) {
+    return `
+      <figure class="bubble-file bubble-media is-audio">
+        <audio src="${escapeHtml(file.url)}" controls preload="metadata"></audio>
+        <figcaption>
+          <b>${title}</b>
+          <small>${meta}</small>
+          <button class="bubble-download" type="button" ${downloadAttrs} aria-label="download">${icon("download")}</button>
+        </figcaption>
+      </figure>
+    `;
+  }
+  return `
+    <button class="bubble-file bubble-download" type="button" data-file-id="${fileId}" ${downloadAttrs}>
+      <span>${icon(ready ? "download" : "clip")}</span>
+      <b>${title}</b>
+      <small>${meta}</small>
+    </button>
   `;
 }
 
@@ -10556,6 +10751,21 @@ function liveDraftsForSelected(): LiveDraftState[] {
   return [...(liveDrafts.get(selectedId)?.values() ?? [])]
     .filter((draft) => draft.active && draft.text.trim())
     .sort((a, b) => a.at - b.at);
+}
+
+function chatDeliveryLabel(): string {
+  const state = selectedId ? syncStates.get(selectedId) : "";
+  if (state === "connecting") {
+    return "sending";
+  }
+  if (state === "closed") {
+    return "offline";
+  }
+  const peersOnline = (peerDevices.get(selectedId) ?? []).length > 0;
+  if (peersOnline) {
+    return "live";
+  }
+  return state === "open" ? "sent" : "saved";
 }
 
 function speakerForLine(
@@ -10692,6 +10902,13 @@ function cleanAgentContext(value: string): string {
 }
 
 function agentContextLine(line: string): string {
+  const message = parseChatMessageLine(line);
+  if (message) {
+    const names = message.attachments
+      .map((file) => `${file.name} (${formatFileSize(file.size)}, sotyFileId=${file.id})`)
+      .join("; ");
+    return [message.text, names ? `Attached files: ${names}` : ""].filter(Boolean).join("\n");
+  }
   const bundle = parseFileBundleLine(line);
   if (!bundle) {
     return line;

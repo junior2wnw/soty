@@ -175,6 +175,7 @@ type PersonalThreadLine = {
   readonly text: string;
   readonly createdAt: string;
   readonly mine: boolean;
+  readonly status?: "sending" | "sent" | "failed" | "saved";
 };
 
 type PersonalFileItem = {
@@ -224,8 +225,8 @@ const fallbackProfile: PersonalSpaceProfile = {
   shortName: "Соты",
   accountName: "Соты",
   photoUrl: "",
-  title: "страница",
-  headline: "Визитка, отзывы, связь.",
+  title: "карточка",
+  headline: "Живая инфо-карта.",
   about: "Описание не указано.",
   accent: "#f1f1f1",
   contacts: [],
@@ -244,7 +245,7 @@ const fallbackProfile: PersonalSpaceProfile = {
 
 const layers = [
   { id: "card", label: "Визитка", title: "Визитка", icon: "person" },
-  { id: "personal", label: "Я", title: "Я", icon: "hexagon" },
+  { id: "personal", label: "Записи", title: "Записи", icon: "hexagon" },
   { id: "reviews", label: "Отзывы", title: "Отзывы", icon: "heart" },
   { id: "messages", label: "Связь", title: "Связь", icon: "mail" },
   { id: "place", label: "Место", title: "Место", icon: "apps" }
@@ -256,12 +257,6 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
-type PersonalLayerDisplay = {
-  readonly id: PersonalSpaceLayer;
-  readonly label: string;
-  readonly title: string;
-  readonly icon: IconName;
-};
 type EntityActionId = "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "card" | "personal" | "reviews" | "messages" | "place";
 type EntityAction = {
@@ -297,6 +292,8 @@ const personalMessageClientKey = "soty:personal-message-client:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
 const personalReactionClientKey = "soty:personal-reaction-client:v1";
 let personalLayerKeysBound = false;
+let personalInboxRefreshTimer = 0;
+let personalInboxRefreshKey = "";
 const personalFileLimit = 8;
 const personalFileMaxBytes = 900_000;
 const internalContactLabels = new Set(["чат", "страница"]);
@@ -341,7 +338,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || (requestedRuntimeModule() ? "place" : null) || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   const ownSpace = await options.isOwned(profile);
-  root.innerHTML = renderPage(profile, activeLayer, options.canInstall(), options.canNotify(), localHandle, ownSpace);
+  root.innerHTML = renderPage(profile, activeLayer, options.canNotify(), localHandle, ownSpace);
   bindPersonalSpace(root, profile, options);
   openRequestedPersonalRuntimeModule(root, profile, options);
   document.body.dataset.sotyReady = "1";
@@ -931,7 +928,7 @@ function localSpaceProfile(
     shortName: title,
     title: "пространство",
     headline: summary,
-    about: `${title}: связь, отзывы, действия.`,
+    about: `${title}: записи, отзывы, связь.`,
     posts: [],
     spaces: links,
     modules: [],
@@ -978,13 +975,13 @@ function renderLoading(route: PersonalSpaceRoute): string {
     <section class="personal-space-shell is-loading">
       <main class="personal-loading">
         <span>@${escapeHtml(route.handle)}</span>
-        <b>Открываю пространство</b>
+        <b>Открываю карточку</b>
       </main>
     </section>
   `;
 }
 
-function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canInstall: boolean, canNotify: boolean, localHandle: string, ownSpace: boolean): string {
+function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, canNotify: boolean, localHandle: string, ownSpace: boolean): string {
   const initialsText = initials(profile.shortName || profile.displayName);
   const avatar = profile.photoUrl
     ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
@@ -992,11 +989,6 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
   const heroText = heroLine(profile, ownSpace);
   return `
     <section class="personal-space-shell" style="--personal-accent:${escapeAttr(profile.accent)}" data-active-layer="${activeLayer}" data-owned="${ownSpace ? "true" : "false"}" data-route="${escapeAttr(profile.url)}">
-      <header class="personal-topbar">
-        <a href="/" class="personal-brand">соты</a>
-        ${renderTopActions(ownSpace, canInstall)}
-        ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
-      </header>
       <main class="personal-main">
         <section class="personal-hero" aria-label="визитная карточка">
           ${ownSpace ? `<button class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" type="button" data-action="photo" aria-label="Сделать фото страницы">` : `<div class="personal-avatar${profile.photoUrl ? " has-photo" : ""}" aria-hidden="true">`}
@@ -1008,28 +1000,31 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <span>@${escapeHtml(profile.handle)}${profile.slug ? ` / ${escapeHtml(profile.slug)}` : ""}</span>
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(heroText)}</p>
-            ${renderReactionPulse(profile, ownSpace)}
-            ${renderQuickContacts(profile, ownSpace)}
+            ${renderHeroActions(ownSpace)}
             <div class="personal-note" data-install-note></div>
           </div>
         </section>
         <div class="personal-layerbar" role="tablist" aria-label="слои инфо-карты">
           ${layers.map((display) => {
-            const view = layerDisplay(display, ownSpace);
             return `
-            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(view.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}" aria-controls="personal-panel-${display.id}" tabindex="${display.id === activeLayer ? "0" : "-1"}">
-              ${icon(view.icon)}
-              <span>${escapeHtml(view.label)}</span>
+            <button type="button" role="tab" data-layer="${display.id}" data-tooltip="off" aria-label="${escapeAttr(display.title)}" aria-selected="${display.id === activeLayer ? "true" : "false"}" aria-controls="personal-panel-${display.id}" tabindex="${display.id === activeLayer ? "0" : "-1"}">
+              ${icon(display.icon)}
+              <span>${escapeHtml(display.label)}</span>
             </button>
           `;
           }).join("")}
         </div>
         <section class="personal-panels" aria-label="инфо-карта">
-          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canInstall, canNotify, localHandle)).join("")}
+          ${layers.map((layer) => renderLayerPanel(profile, layer.id, ownSpace, activeLayer, canNotify, localHandle)).join("")}
         </section>
       </main>
+      ${ownSpace ? `<input data-backup-import type="file" accept="application/json,.json" hidden />` : ""}
     </section>
   `;
+}
+
+function renderHeroActions(ownSpace: boolean): string {
+  return renderEntityActions(entityActionsFor({ surface: "card", ownSpace }));
 }
 
 function renderReactionPulse(profile: PersonalSpaceProfile, ownSpace: boolean): string {
@@ -1048,40 +1043,6 @@ function renderReactionPulse(profile: PersonalSpaceProfile, ownSpace: boolean): 
   `;
 }
 
-function renderQuickContacts(profile: PersonalSpaceProfile, ownSpace: boolean): string {
-  const contacts = visibleContacts(profile, ownSpace)
-    .filter((contact) => !internalContactLabels.has(contact.label))
-    .slice(0, 2);
-  if (contacts.length === 0) {
-    return "";
-  }
-  return `
-    <div class="personal-quick-contacts" aria-label="контакты">
-      ${contacts.map((contact) => `
-        ${contact.href ? `<a href="${escapeAttr(contact.href)}">` : "<span>"}
-          <small>${escapeHtml(contact.label)}</small>
-          <b>${escapeHtml(contact.value)}</b>
-        ${contact.href ? "</a>" : "</span>"}
-      `).join("")}
-    </div>
-  `;
-}
-
-function renderTopActions(ownSpace: boolean, canInstall: boolean): string {
-  const actions: readonly EntityAction[] = [
-    ...(canInstall ? [{ id: "install", label: "Сохранить", icon: "install", tone: "primary" } as const] : []),
-    ...(ownSpace ? [{ id: "share", label: "Поделиться", icon: "qr", tone: "secondary" } as const] : [])
-  ];
-  if (actions.length === 0) {
-    return "";
-  }
-  return `
-    <nav class="personal-top-actions" aria-label="действия карточки">
-      ${actions.map((action) => renderEntityAction(action)).join("")}
-    </nav>
-  `;
-}
-
 type PersonalPanelView = {
   readonly eyebrow: string;
   readonly title: string;
@@ -1095,11 +1056,10 @@ function renderLayerPanel(
   layer: PersonalSpaceLayer,
   ownSpace: boolean,
   activeLayer: PersonalSpaceLayer,
-  canInstall: boolean,
   canNotify: boolean,
   localHandle: string
 ): string {
-  const view = panelView(profile, layer, ownSpace, canInstall, canNotify, localHandle);
+  const view = panelView(profile, layer, ownSpace, canNotify, localHandle);
   const active = layer === activeLayer;
   return `
     <article id="personal-panel-${layer}" class="personal-panel${active ? " is-active" : ""}" data-panel="${layer}" role="tabpanel" aria-hidden="${active ? "false" : "true"}"${active ? "" : " hidden"}>
@@ -1118,14 +1078,13 @@ function panelView(
   profile: PersonalSpaceProfile,
   layer: PersonalSpaceLayer,
   ownSpace: boolean,
-  canInstall: boolean,
   canNotify: boolean,
   localHandle: string
 ): PersonalPanelView {
   if (layer === "personal") {
-    const actions = entityActionsFor({ surface: "personal", ownSpace, canInstall: false });
+    const actions = entityActionsFor({ surface: "personal", ownSpace });
     return {
-      eyebrow: ownSpace ? "я" : "страница",
+      eyebrow: "записи",
       title: "Записи",
       ...(actions.length ? { actions } : {}),
       body: renderPanelList(
@@ -1143,27 +1102,16 @@ function panelView(
     };
   }
   if (layer === "reviews") {
-    const actions = entityActionsFor({ surface: "reviews", ownSpace, canInstall: false });
+    const actions = entityActionsFor({ surface: "reviews", ownSpace });
     return {
       eyebrow: "отзывы",
       title: "Отзывы",
       ...(actions.length ? { actions } : {}),
-      body: renderPanelList(
-        "personal-reviews",
-        profile.reviews.map((review) => `
-          <section class="personal-review">
-            <div>${"★".repeat(Math.max(1, Math.min(5, review.rating)))}</div>
-            <p>${escapeHtml(review.text)}</p>
-            <b>${escapeHtml(review.author)}</b>
-          </section>
-        `),
-        "heart",
-        ownSpace ? "Отзывы появятся здесь." : "Пока нет отзывов."
-      )
+      body: renderReviewsPanel(profile, ownSpace)
     };
   }
   if (layer === "messages") {
-    const actions = entityActionsFor({ surface: "messages", ownSpace, canInstall: false, canNotify });
+    const actions = entityActionsFor({ surface: "messages", ownSpace, canNotify });
     return {
       eyebrow: "связь",
       title: ownSpace ? "Заметки" : "Связь",
@@ -1182,9 +1130,26 @@ function panelView(
     eyebrow: "визитка",
     title: "Визитка",
     text: cardText(profile, ownSpace),
-    actions: entityActionsFor({ surface: "card", ownSpace, canInstall }),
     body: renderContactList(profile, ownSpace)
   };
+}
+
+function renderReviewsPanel(profile: PersonalSpaceProfile, ownSpace: boolean): string {
+  return `
+    ${!ownSpace ? `<div class="personal-review-pulse">${renderReactionPulse(profile, ownSpace)}</div>` : ""}
+    ${renderPanelList(
+      "personal-reviews",
+      profile.reviews.map((review) => `
+        <section class="personal-review">
+          <div>${"★".repeat(Math.max(1, Math.min(5, review.rating)))}</div>
+          <p>${escapeHtml(review.text)}</p>
+          <b>${escapeHtml(review.author)}</b>
+        </section>
+      `),
+      "heart",
+      ownSpace ? "Отзывы появятся здесь." : "Пока нет отзывов."
+    )}
+  `;
 }
 
 function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): string {
@@ -1228,11 +1193,12 @@ function renderOwnerInboxShell(): string {
   `;
 }
 
-function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canInstall: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
+function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canNotify?: boolean }): readonly EntityAction[] {
   if (options.surface === "card") {
     if (options.ownSpace) {
       return [
-        { id: "edit", label: "Править", icon: "person", tone: "secondary" }
+        { id: "edit", label: "Править", icon: "person", tone: "secondary" },
+        { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
       ];
     }
     return [
@@ -1385,13 +1351,6 @@ function cardModuleToPersonalModule(module: PersonalSpaceCardModule): PersonalMo
   };
 }
 
-function layerDisplay(layer: typeof layers[number], ownSpace: boolean): PersonalLayerDisplay {
-  if (!ownSpace && layer.id === "personal") {
-    return { ...layer, label: "Страница", title: "Страница" };
-  }
-  return layer;
-}
-
 function renderPersonalModule(module: PersonalModule): string {
   return `
     <button type="button" data-module-id="${escapeAttr(module.id)}" data-module-kind="${module.kind}" data-module-target="${escapeAttr(module.target)}" data-module-layout="${escapeAttr(module.layout || "")}" class="${[module.active ? "is-active" : "", module.priority ? "is-priority" : ""].filter(Boolean).join(" ")}">
@@ -1422,7 +1381,7 @@ function personalSpaceCopy(text: string, ownSpace: boolean): string {
 function heroLine(profile: PersonalSpaceProfile, ownSpace: boolean): string {
   const text = personalSpaceCopy(profile.headline, ownSpace);
   if (isDefaultPersonalText(text)) {
-    return ownSpace ? "Визитка, записи, отзывы, связь." : "Контакты, отзывы, связь.";
+    return ownSpace ? "Визитка, записи, отзывы, связь." : "Контакты и личная связь.";
   }
   return text;
 }
@@ -1430,7 +1389,7 @@ function heroLine(profile: PersonalSpaceProfile, ownSpace: boolean): string {
 function cardText(profile: PersonalSpaceProfile, ownSpace: boolean): string {
   const text = personalSpaceCopy(profile.about, ownSpace);
   if (isDefaultPersonalText(text)) {
-    return ownSpace ? "Добавьте описание и контакт." : "Описание не указано.";
+    return ownSpace ? "Добавьте описание и контакт." : "Контактная карточка.";
   }
   return text;
 }
@@ -1439,6 +1398,8 @@ function isDefaultPersonalText(value: string): boolean {
   const text = value.trim().toLowerCase();
   return !text
     || text === "визитка, записи, отзывы, связь"
+    || text === "живая инфо-карта."
+    || text === "контакты и личная связь."
     || text === "визитка, отзывы, связь."
     || text === "описание не указано."
     || text === "пока без описания."
@@ -1570,6 +1531,9 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
   });
   if (isRenderedOwnSpace(root)) {
     void hydrateOwnerInbox(root, options);
+    startOwnerInboxRefresh(root, options);
+  } else {
+    stopOwnerInboxRefresh();
   }
 }
 
@@ -1849,10 +1813,17 @@ function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, auth
     event.preventDefault();
     void submitPersonalMessage();
   });
+  textarea?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing) {
+      event.preventDefault();
+      void submitPersonalMessage();
+    }
+  });
   async function submitPersonalMessage(): Promise<void> {
     const text = cleanText(textarea?.value || "", 420);
     const error = overlay.querySelector<HTMLElement>("[data-error]");
     const button = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
+    const thread = overlay.querySelector<HTMLElement>("[data-personal-thread]");
     if (!text) {
       if (error) {
         error.textContent = "Напишите пару слов.";
@@ -1862,6 +1833,27 @@ function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, auth
     if (button) {
       button.disabled = true;
     }
+    const optimisticId = localItemId("message");
+    const optimisticLine: PersonalThreadLine = {
+      id: optimisticId,
+      author: actor,
+      text,
+      createdAt: new Date().toISOString(),
+      mine: true,
+      status: ownSpace ? "saved" : "sending"
+    };
+    lines = [...lines, optimisticLine];
+    if (thread) {
+      thread.innerHTML = renderThreadLineItems(lines, ownSpace);
+      thread.scrollTop = thread.scrollHeight;
+    }
+    if (textarea) {
+      textarea.value = "";
+      textarea.focus();
+    }
+    if (error) {
+      error.textContent = ownSpace ? "" : "sending";
+    }
     if (!ownSpace) {
       const result = await sendPersonalSpaceMessage(profile, {
         author: actor,
@@ -1869,6 +1861,11 @@ function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, auth
         clientId: personalMessageClientId()
       });
       if (!result.ok) {
+        lines = lines.map((line) => line.id === optimisticId ? { ...line, status: "failed" } : line);
+        if (thread) {
+          thread.innerHTML = renderThreadLineItems(lines, ownSpace);
+          thread.scrollTop = thread.scrollHeight;
+        }
         if (error) {
           error.textContent = result.message;
         }
@@ -1878,8 +1875,10 @@ function showMessageSheet(root: HTMLElement, profile: PersonalSpaceProfile, auth
         return;
       }
     }
-    lines = appendPersonalThreadLine(profile, actor, text);
-    const thread = overlay.querySelector<HTMLElement>("[data-personal-thread]");
+    const savedLines = appendPersonalThreadLine(profile, actor, text);
+    lines = savedLines.map((line, index) => index === savedLines.length - 1
+      ? { ...line, status: ownSpace ? "saved" : "sent" }
+      : line);
     if (thread) {
       thread.innerHTML = renderThreadLineItems(lines, ownSpace);
       thread.scrollTop = thread.scrollHeight;
@@ -1917,6 +1916,34 @@ async function hydrateOwnerInbox(root: HTMLElement, options: PersonalSpacePageOp
   inbox.innerHTML = renderInboxItems(messages);
 }
 
+function startOwnerInboxRefresh(root: HTMLElement, options: PersonalSpacePageOptions): void {
+  const key = routeUrl(options.route);
+  if (personalInboxRefreshTimer && personalInboxRefreshKey === key) {
+    return;
+  }
+  stopOwnerInboxRefresh();
+  personalInboxRefreshKey = key;
+  personalInboxRefreshTimer = window.setInterval(() => {
+    const inbox = root.querySelector<HTMLElement>("[data-personal-inbox] .personal-inbox-list");
+    if (!inbox || !inbox.isConnected) {
+      stopOwnerInboxRefresh();
+      return;
+    }
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+    void hydrateOwnerInbox(root, options);
+  }, 3500);
+}
+
+function stopOwnerInboxRefresh(): void {
+  if (personalInboxRefreshTimer) {
+    window.clearInterval(personalInboxRefreshTimer);
+    personalInboxRefreshTimer = 0;
+  }
+  personalInboxRefreshKey = "";
+}
+
 function renderInboxItems(messages: readonly PersonalSpaceInboxMessage[]): string {
   if (messages.length === 0) {
     return `<section class="personal-empty">${icon("mail")} <span>Сообщений пока нет.</span></section>`;
@@ -1935,10 +1962,10 @@ function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: b
     return `<section class="personal-empty personal-thread-empty">${icon(ownSpace ? "hexagon" : "mail")} <span>${escapeHtml(ownSpace ? "Заметок пока нет." : "Переписка начнется здесь.")}</span></section>`;
   }
   return lines.map((line) => `
-    <article class="personal-thread-line${line.mine ? " is-mine" : ""}">
+    <article class="personal-thread-line${line.mine ? " is-mine" : ""}${line.status ? ` is-${line.status}` : ""}">
       <span>${escapeHtml(line.author)}</span>
       <p>${escapeHtml(line.text)}</p>
-      <time>${escapeHtml(threadTime(line.createdAt))}</time>
+      <time>${escapeHtml(line.status || threadTime(line.createdAt))}</time>
     </article>
   `).join("");
 }
@@ -2167,12 +2194,12 @@ function showProfileSheet(root: HTMLElement, profile: PersonalSpaceProfile, opti
   const overlay = document.createElement("div");
   overlay.className = "personal-overlay";
   overlay.innerHTML = `
-    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="Править страницу">
+    <section class="personal-sheet" role="dialog" aria-modal="true" aria-label="Править карточку">
       <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
-      <h2>Страница</h2>
+      <h2>Карточка</h2>
       <form data-profile-form>
         <input name="displayName" autocomplete="name" maxlength="100" aria-label="имя" placeholder="Имя или название" value="${escapeAttr(profile.displayName)}" />
-        <textarea name="about" maxlength="420" aria-label="о странице" placeholder="О странице, проекте или месте">${escapeHtml(profile.about)}</textarea>
+        <textarea name="about" maxlength="420" aria-label="о карточке" placeholder="Кто это и чем полезно">${escapeHtml(profile.about)}</textarea>
         <input name="contact" autocomplete="url" maxlength="160" aria-label="контакт" placeholder="Сайт, email или контакт" value="${escapeAttr(contact)}" />
         <button type="submit">${icon("check")} Сохранить</button>
       </form>
@@ -2548,7 +2575,7 @@ function showAgentSheet(root: HTMLElement, profile: PersonalSpaceProfile, option
       <form data-agent-form>
         <select name="intent" aria-label="тип задачи">
           <option value="miniapp">Mini-app</option>
-          <option value="page">Страница</option>
+          <option value="page">Ссылка</option>
         </select>
         <textarea name="text" maxlength="720" required placeholder="Что сделать для этой карточки?"></textarea>
         <button type="submit">${icon("check")} Сделать</button>
@@ -2759,7 +2786,7 @@ function showPersonalActionsSheet(root: HTMLElement, profile: PersonalSpaceProfi
       <form data-command-form>
         <select name="intent" aria-label="тип команды">
           <option value="miniapp">Mini-app</option>
-          <option value="page">Страница</option>
+          <option value="page">Ссылка</option>
         </select>
         <textarea name="text" maxlength="720" required placeholder="Что сделать?"></textarea>
         <button type="submit">${icon("check")} Выполнить</button>
