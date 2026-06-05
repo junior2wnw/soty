@@ -2,12 +2,39 @@ import assert from "node:assert/strict";
 import express from "express";
 import { attachPayments } from "../server/payments.js";
 
-const savedEnv = {
-  SOTY_PAYMENT_URL: process.env.SOTY_PAYMENT_URL,
-  SOTY_PAYMENT_PROVIDER_LABEL: process.env.SOTY_PAYMENT_PROVIDER_LABEL,
-  SOTY_PAYMENT_CONTACT_URL: process.env.SOTY_PAYMENT_CONTACT_URL,
-  SOTY_PAYMENT_PLANS: process.env.SOTY_PAYMENT_PLANS
-};
+const paymentSelftestEnvKeys = [
+  "SOTY_PAYMENT_URL",
+  "SOTY_PAYMENT_PROVIDER",
+  "SOTY_PAYMENT_PROVIDER_LABEL",
+  "SOTY_PAYMENT_CONTACT_URL",
+  "SOTY_PAYMENT_CURRENCY",
+  "SOTY_PAYMENT_PLANS",
+  "SOTY_LEGAL_FORM",
+  "SOTY_LEGAL_EMAIL",
+  "SOTY_LEGAL_EXECUTOR_NAME",
+  "SOTY_LEGAL_INN",
+  "SOTY_LEGAL_OGRN",
+  "SOTY_LEGAL_OGRNIP",
+  "SOTY_LEGAL_ADDRESS",
+  "SOTY_LEGAL_POSTAL_ADDRESS",
+  "SOTY_LEGAL_TAX_REGIME",
+  "SOTY_LEGAL_PHONE",
+  "SOTY_LEGAL_SUPPORT_URL",
+  "SOTY_LEGAL_CLAIMS_EMAIL",
+  "SOTY_LEGAL_PRIVACY_EMAIL",
+  "SOTY_LEGAL_RKN_NOTICE_URL",
+  "SOTY_LEGAL_RKN_OPERATOR_NUMBER",
+  "SOTY_LEGAL_DATA_COUNTRY",
+  "SOTY_LEGAL_DATA_REGION",
+  "SOTY_LEGAL_CROSS_BORDER",
+  "SOTY_LEGAL_PROCESSORS",
+  "SOTY_LEGAL_VERSION",
+  "SOTY_LEGAL_EFFECTIVE_DATE"
+];
+
+const savedEnv = Object.fromEntries(
+  paymentSelftestEnvKeys.map((key) => [key, process.env[key]])
+);
 
 try {
   await withPaymentServer({}, async (baseUrl) => {
@@ -41,6 +68,7 @@ try {
   await withPaymentServer({
     SOTY_PAYMENT_URL: "https://pay.example.test/soty",
     SOTY_PAYMENT_PROVIDER_LABEL: "TestPay",
+    ...readyLegalEnv(),
     SOTY_PAYMENT_PLANS: JSON.stringify([
       { id: "task", title: "Разовая задача", amount: 3000, currency: "RUB" }
     ])
@@ -63,7 +91,7 @@ try {
 }
 
 async function withPaymentServer(env, run) {
-  restoreEnv();
+  clearPaymentSelftestEnv();
   Object.assign(process.env, env);
   const app = express();
   attachPayments(app);
@@ -78,6 +106,23 @@ async function withPaymentServer(env, run) {
       server.close((error) => error ? reject(error) : resolve());
     });
   }
+}
+
+function readyLegalEnv() {
+  return {
+    SOTY_LEGAL_FORM: "self_employed",
+    SOTY_LEGAL_EXECUTOR_NAME: "Test Executor",
+    SOTY_LEGAL_INN: "123456789012",
+    SOTY_LEGAL_ADDRESS: "Test address",
+    SOTY_LEGAL_EMAIL: "legal@example.test",
+    SOTY_LEGAL_PHONE: "+7 000 000-00-00",
+    SOTY_LEGAL_TAX_REGIME: "NPD",
+    SOTY_LEGAL_RKN_OPERATOR_NUMBER: "77-0000000",
+    SOTY_LEGAL_DATA_REGION: "Test region",
+    SOTY_LEGAL_PROCESSORS: JSON.stringify([
+      { name: "TestPay", role: "payments", country: "RU" }
+    ])
+  };
 }
 
 async function readJson(url) {
@@ -105,5 +150,11 @@ function restoreEnv() {
     } else {
       process.env[key] = value;
     }
+  }
+}
+
+function clearPaymentSelftestEnv() {
+  for (const key of paymentSelftestEnvKeys) {
+    delete process.env[key];
   }
 }

@@ -2475,8 +2475,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("function shouldShowPersonalSpaceInstallAction(): boolean {\n  return false;"));
       assert(!ui.includes("showPersonalPwaBoundary"));
       assert(!styles.includes(".personal-pwa-boundary"));
-      assert(personalSpaceSource.includes('...(canInstall ? [{ id: "install"'));
-      assert(personalSpaceSource.includes('...(ownSpace ? [{ id: "share"'));
+      assert(personalSpaceSource.includes("function entityActionsFor(options: { readonly surface: EntityActionSurface; readonly ownSpace: boolean; readonly canNotify?: boolean }): readonly EntityAction[]"));
+      assert(personalSpaceSource.includes('if (options.surface === "card")'));
+      assert(personalSpaceSource.includes('{ id: "message", label:'));
+      assert(personalSpaceSource.includes('{ id: "share", label:'));
+      assert(!personalSpaceSource.includes('{ id: "install", label:'));
       assert(personalSpaceSource.includes("export function personalSpacePwaStartUrl(route: PersonalSpaceRoute): string"));
       assert(personalSpaceSource.includes('const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;'));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
