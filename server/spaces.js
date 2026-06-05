@@ -378,7 +378,7 @@ async function saveSpaceMessage(messageStore, req, res) {
     return;
   }
   const entries = await readSpaceMessages(messageStore, handle, spaceSlug);
-  const next = [{
+  const stored = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     author: message.author,
     text: message.text,
@@ -388,10 +388,19 @@ async function saveSpaceMessage(messageStore, req, res) {
     ...(message.attachment ? { attachment: message.attachment } : {}),
     reactions: {},
     createdAt: new Date().toISOString()
-  }, ...entries].slice(0, 200);
+  };
+  const next = [stored, ...entries].slice(0, 200);
   await writeSpaceMessages(messageStore, handle, spaceSlug, next);
+  await mirrorDirectSpaceMessage(messageStore, {
+    sourceHandle: handle,
+    sourceSpaceSlug: spaceSlug,
+    targetHandle: message.author,
+    message: stored,
+    sender: "owner",
+    author: message.author
+  });
   res.setHeader("Cache-Control", "no-store");
-  res.json({ ok: true, message: publicMessage(next[0]) });
+  res.json({ ok: true, message: publicMessage(stored) });
 }
 
 async function sendSpaceThread(messageStore, ownerStore, req, res) {
@@ -405,6 +414,7 @@ async function sendSpaceThread(messageStore, ownerStore, req, res) {
   }
   const limit = safeThreadLimit(data?.limit);
   const reader = req.body?.owner ? "owner" : "visitor";
+  const peek = data?.peek === true;
   if (reader === "owner" && !await authorizeSpaceOwner(ownerStore, req, res, "messages", data)) {
     return;
   }
@@ -415,11 +425,11 @@ async function sendSpaceThread(messageStore, ownerStore, req, res) {
     if (message.clientId !== clientId) {
       return message;
     }
-    if (reader === "owner" && message.sender !== "owner" && !message.readByOwnerAt) {
+    if (!peek && reader === "owner" && message.sender !== "owner" && !message.readByOwnerAt) {
       touched = true;
       return { ...message, readByOwnerAt: now };
     }
-    if (reader === "visitor" && message.sender === "owner" && !message.readByVisitorAt) {
+    if (!peek && reader === "visitor" && message.sender === "owner" && !message.readByVisitorAt) {
       touched = true;
       return { ...message, readByVisitorAt: now };
     }
@@ -451,7 +461,8 @@ async function saveSpaceReply(messageStore, ownerStore, req, res) {
     return;
   }
   const entries = await readSpaceMessages(messageStore, handle, spaceSlug);
-  const next = [{
+  const peerHandle = directThreadPeerHandle(entries, reply.clientId, handle);
+  const stored = {
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     author: handle,
     text: reply.text,
@@ -461,10 +472,19 @@ async function saveSpaceReply(messageStore, ownerStore, req, res) {
     ...(reply.attachment ? { attachment: reply.attachment } : {}),
     reactions: {},
     createdAt: new Date().toISOString()
-  }, ...entries].slice(0, 200);
+  };
+  const next = [stored, ...entries].slice(0, 200);
   await writeSpaceMessages(messageStore, handle, spaceSlug, next);
+  await mirrorDirectSpaceMessage(messageStore, {
+    sourceHandle: handle,
+    sourceSpaceSlug: spaceSlug,
+    targetHandle: peerHandle,
+    message: stored,
+    sender: "visitor",
+    author: handle
+  });
   res.setHeader("Cache-Control", "no-store");
-  res.json({ ok: true, message: publicMessage(next[0]) });
+  res.json({ ok: true, message: publicMessage(stored) });
 }
 
 async function saveSpaceMessageReaction(messageStore, ownerStore, req, res) {
@@ -518,6 +538,47 @@ async function saveSpaceMessageReaction(messageStore, ownerStore, req, res) {
   await writeSpaceMessages(messageStore, handle, spaceSlug, next);
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, message: publicMessage(target) });
+}
+
+async function mirrorDirectSpaceMessage(messageStore, options) {
+  const sourceHandle = cleanSlug(options?.sourceHandle || "");
+  const sourceSpaceSlug = cleanSlug(options?.sourceSpaceSlug || "");
+  const targetHandle = cleanSlug(options?.targetHandle || "");
+  const message = normalizeStoredMessage({
+    ...options?.message,
+    author: options?.author,
+    sender: options?.sender
+  });
+  if (!sourceHandle || sourceSpaceSlug || !targetHandle || targetHandle === sourceHandle || !message || !isDirectMessageClientId(message.clientId)) {
+    return;
+  }
+  const entries = await readSpaceMessages(messageStore, targetHandle, "");
+  if (entries.some((entry) => entry.id === message.id && entry.clientId === message.clientId)) {
+    return;
+  }
+  await writeSpaceMessages(messageStore, targetHandle, "", [message, ...entries].slice(0, 200));
+}
+
+function directThreadPeerHandle(entries, clientId, currentHandle) {
+  const cleanClientId = cleanMessageClientId(clientId);
+  const handle = cleanSlug(currentHandle || "");
+  if (!cleanClientId || !isDirectMessageClientId(cleanClientId)) {
+    return "";
+  }
+  for (const message of entries) {
+    if (message.clientId !== cleanClientId || message.sender === "owner") {
+      continue;
+    }
+    const author = cleanSlug(message.author || "");
+    if (author && author !== handle) {
+      return author;
+    }
+  }
+  return "";
+}
+
+function isDirectMessageClientId(value) {
+  return /^mc_dm_[a-z0-9_-]{8,72}$/iu.test(cleanMessageClientId(value));
 }
 
 async function sendSpaceInbox(messageStore, ownerStore, req, res) {
