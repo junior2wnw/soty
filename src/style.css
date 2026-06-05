@@ -1809,9 +1809,42 @@ button.personal-avatar {
   text-decoration: none;
 }
 
+.personal-message-preview .personal-inbox-item {
+  width: 100%;
+  appearance: none;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  justify-content: stretch;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid rgba(17, 20, 18, 0.18);
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #111412;
+  text-align: left;
+  font: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+}
+
 .personal-inbox-item:first-child,
 .personal-messenger-hints div:first-of-type {
   border-top: 0;
+}
+
+.personal-message-preview .personal-inbox-item:hover,
+.personal-message-preview .personal-inbox-item.is-active {
+  background: rgba(215, 255, 101, 0.42);
+  transform: none;
+}
+
+.personal-message-preview .personal-inbox-item.is-active {
+  box-shadow: inset 3px 0 0 #111412;
 }
 
 .personal-inbox-item span,
@@ -1819,6 +1852,11 @@ button.personal-avatar {
   color: #5b6561;
   font-size: 12px;
   font-weight: 820;
+}
+
+.personal-inbox-item time {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .personal-inbox-item p {

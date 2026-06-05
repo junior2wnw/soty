@@ -71,6 +71,18 @@ export function attachSpaces(app, { dataDir } = {}) {
   app.post("/api/spaces/:handle/:space/messages", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceMessage(messageStore, req, res);
   });
+  app.post("/api/spaces/:handle/messages/thread", express.json({ limit: "12kb" }), async (req, res) => {
+    await sendSpaceThread(messageStore, req, res);
+  });
+  app.post("/api/spaces/:handle/:space/messages/thread", express.json({ limit: "12kb" }), async (req, res) => {
+    await sendSpaceThread(messageStore, req, res);
+  });
+  app.post("/api/spaces/:handle/messages/reply", express.json({ limit: "24kb" }), async (req, res) => {
+    await saveSpaceReply(messageStore, ownerStore, req, res);
+  });
+  app.post("/api/spaces/:handle/:space/messages/reply", express.json({ limit: "24kb" }), async (req, res) => {
+    await saveSpaceReply(messageStore, ownerStore, req, res);
+  });
   app.post("/api/spaces/:handle/messages/inbox", express.json({ limit: "24kb" }), async (req, res) => {
     await sendSpaceInbox(messageStore, ownerStore, req, res);
   });
@@ -365,6 +377,53 @@ async function saveSpaceMessage(messageStore, req, res) {
     author: message.author,
     text: message.text,
     clientId: message.clientId,
+    sender: "visitor",
+    createdAt: new Date().toISOString()
+  }, ...entries].slice(0, 200);
+  await writeSpaceMessages(messageStore, handle, spaceSlug, next);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, message: publicMessage(next[0]) });
+}
+
+async function sendSpaceThread(messageStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const spaceSlug = cleanSlug(req.params.space || "");
+  const data = ownerActionData(req.body);
+  const clientId = cleanMessageClientId(data?.clientId);
+  if (!clientId) {
+    res.status(400).json({ ok: false, error: "invalid_thread" });
+    return;
+  }
+  const limit = safeThreadLimit(data?.limit);
+  const messages = (await readSpaceMessages(messageStore, handle, spaceSlug))
+    .filter((message) => message.clientId === clientId)
+    .slice(0, limit)
+    .reverse()
+    .map(publicMessage)
+    .filter(Boolean);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, messages });
+}
+
+async function saveSpaceReply(messageStore, ownerStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const spaceSlug = cleanSlug(req.params.space || "");
+  const data = ownerActionData(req.body);
+  const reply = normalizeMessageReplyBody(data);
+  if (!reply) {
+    res.status(400).json({ ok: false, error: "invalid_reply" });
+    return;
+  }
+  if (!await authorizeSpaceOwner(ownerStore, req, res, "messages", data)) {
+    return;
+  }
+  const entries = await readSpaceMessages(messageStore, handle, spaceSlug);
+  const next = [{
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    author: handle,
+    text: reply.text,
+    clientId: reply.clientId,
+    sender: "owner",
     createdAt: new Date().toISOString()
   }, ...entries].slice(0, 200);
   await writeSpaceMessages(messageStore, handle, spaceSlug, next);
@@ -380,9 +439,27 @@ async function sendSpaceInbox(messageStore, ownerStore, req, res) {
     return;
   }
   const limit = safeInboxLimit(data?.limit);
-  const messages = (await readSpaceMessages(messageStore, handle, spaceSlug))
+  const conversations = new Map();
+  for (const message of await readSpaceMessages(messageStore, handle, spaceSlug)) {
+    if (!message.clientId) {
+      continue;
+    }
+    const current = conversations.get(message.clientId);
+    if (!current) {
+      conversations.set(message.clientId, {
+        latest: message,
+        visitorAuthor: message.sender === "owner" ? "" : message.author
+      });
+    } else if (!current.visitorAuthor && message.sender !== "owner") {
+      current.visitorAuthor = message.author;
+    }
+  }
+  const messages = Array.from(conversations.values())
     .slice(0, limit)
-    .map(publicMessage)
+    .map((conversation) => publicMessage({
+      ...conversation.latest,
+      author: conversation.visitorAuthor || conversation.latest.author
+    }))
     .filter(Boolean);
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, messages });
@@ -1262,6 +1339,18 @@ function normalizeMessageBody(body) {
   };
 }
 
+function normalizeMessageReplyBody(body) {
+  const text = cleanReviewText(body?.text, 420);
+  const clientId = cleanMessageClientId(body?.clientId);
+  if (text.length < 1 || !clientId) {
+    return null;
+  }
+  return {
+    text,
+    clientId
+  };
+}
+
 function normalizeStoredMessage(record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -1273,6 +1362,7 @@ function normalizeStoredMessage(record) {
   return {
     id: cleanReviewText(record.id, 80) || message.text,
     ...message,
+    sender: cleanMessageSender(record.sender),
     createdAt: cleanReviewText(record.createdAt, 40) || new Date(0).toISOString()
   };
 }
@@ -1286,6 +1376,8 @@ function publicMessage(record) {
     id: message.id,
     author: message.author,
     text: message.text,
+    clientId: message.clientId,
+    sender: message.sender,
     createdAt: message.createdAt
   };
 }
@@ -1293,6 +1385,11 @@ function publicMessage(record) {
 function safeInboxLimit(value) {
   const number = Number(value);
   return Number.isSafeInteger(number) ? Math.max(1, Math.min(50, number)) : 30;
+}
+
+function safeThreadLimit(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? Math.max(1, Math.min(100, number)) : 80;
 }
 
 function normalizeStoredReview(record) {
@@ -1366,6 +1463,11 @@ function cleanReactionClientId(value) {
 function cleanMessageClientId(value) {
   const text = cleanReviewText(value, 80);
   return /^mc_[a-z0-9_-]{8,76}$/iu.test(text) ? text : "";
+}
+
+function cleanMessageSender(value) {
+  const text = cleanReviewText(value, 24).toLowerCase();
+  return text === "owner" ? "owner" : "visitor";
 }
 
 function cleanVersion(value) {

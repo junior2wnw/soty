@@ -54,12 +54,28 @@ export type PersonalSpaceInboxRequest = {
   readonly limit: number;
 };
 
+export type PersonalSpaceThreadRequest = {
+  readonly clientId: string;
+  readonly limit: number;
+};
+
+export type PersonalSpaceMessageReplyDraft = {
+  readonly clientId: string;
+  readonly text: string;
+};
+
+type PersonalSpaceMessageSender = "visitor" | "owner";
+
 export type PersonalSpaceInboxMessage = {
   readonly id: string;
   readonly author: string;
   readonly text: string;
+  readonly clientId: string;
+  readonly sender: PersonalSpaceMessageSender;
   readonly createdAt: string;
 };
+
+export type PersonalSpaceThreadMessage = PersonalSpaceInboxMessage;
 
 export type PersonalSpaceAgentRequest = {
   readonly text: string;
@@ -104,6 +120,8 @@ export type PersonalSpacePageOptions = {
   readonly savePost: (route: PersonalSpaceRoute, draft: PersonalSpacePostDraft) => Promise<PersonalSpaceInstallResult>;
   readonly saveModule: (route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft) => Promise<PersonalSpaceInstallResult>;
   readonly loadInbox: (route: PersonalSpaceRoute) => Promise<readonly PersonalSpaceInboxMessage[]>;
+  readonly loadThread: (route: PersonalSpaceRoute, request: PersonalSpaceThreadRequest) => Promise<readonly PersonalSpaceThreadMessage[]>;
+  readonly replyMessage: (route: PersonalSpaceRoute, draft: PersonalSpaceMessageReplyDraft) => Promise<PersonalSpaceInstallResult>;
   readonly askAgent: (profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest) => Promise<PersonalSpaceAgentResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
@@ -294,6 +312,8 @@ const personalReactionClientKey = "soty:personal-reaction-client:v1";
 let personalLayerKeysBound = false;
 let personalInboxRefreshTimer = 0;
 let personalInboxRefreshKey = "";
+let personalThreadRefreshTimer = 0;
+let personalThreadRefreshKey = "";
 const personalFileLimit = 8;
 const personalFileMaxBytes = 900_000;
 const internalContactLabels = new Set(["чат", "страница"]);
@@ -538,6 +558,81 @@ export async function loadPersonalSpaceInbox(
     return list(payload.messages).map(normalizeInboxMessage).filter(isInboxMessage).slice(0, 50);
   } catch {
     return [];
+  }
+}
+
+export async function loadPersonalSpaceThread(
+  route: PersonalSpaceRoute,
+  request: PersonalSpaceThreadRequest
+): Promise<readonly PersonalSpaceThreadMessage[]> {
+  const clientId = cleanMessageClientId(request.clientId);
+  if (!clientId) {
+    return [];
+  }
+  const handle = encodeURIComponent(route.handle);
+  const url = route.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/messages/thread`
+    : `/api/spaces/${handle}/messages/thread`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ clientId, limit: Math.max(1, Math.min(100, Math.round(request.limit || 80))) })
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload) || payload.ok !== true) {
+      return [];
+    }
+    return list(payload.messages).map(normalizeInboxMessage).filter(isInboxMessage).slice(-100);
+  } catch {
+    return [];
+  }
+}
+
+export async function replyPersonalSpaceMessage(
+  route: PersonalSpaceRoute,
+  draft: PersonalSpaceMessageReplyDraft,
+  owner?: PersonalOwnerProof | null
+): Promise<PersonalSpaceInstallResult> {
+  const clientId = cleanMessageClientId(draft.clientId);
+  const text = cleanText(draft.text, 420);
+  if (!clientId || !text) {
+    return { ok: false, message: "Напишите ответ." };
+  }
+  if (!owner) {
+    return { ok: false, message: "Нужна подпись владельца." };
+  }
+  const handle = encodeURIComponent(route.handle);
+  const url = route.slug
+    ? `/api/spaces/${handle}/${encodeURIComponent(route.slug)}/messages/reply`
+    : `/api/spaces/${handle}/messages/reply`;
+  const data = { clientId, text };
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ data, owner })
+    });
+    if (!response.ok) {
+      return { ok: false, message: "Не получилось ответить." };
+    }
+    const payload = await response.json() as unknown;
+    return isRecord(payload) && payload.ok === true
+      ? { ok: true, message: "Ответ отправлен." }
+      : { ok: false, message: "Не получилось ответить." };
+  } catch {
+    return { ok: false, message: "Не получилось ответить." };
   }
 }
 
@@ -1111,7 +1206,7 @@ function panelView(
   if (layer === "messages") {
     return {
       eyebrow: "связь",
-      title: ownSpace ? "Заметки" : "Связь",
+      title: ownSpace ? "Диалоги" : "Связь",
       body: renderMessagePreview(profile, ownSpace, localHandle)
     };
   }
@@ -1164,19 +1259,20 @@ function renderContactList(profile: PersonalSpaceProfile, ownSpace: boolean): st
 
 function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): string {
   const actor = cleanRoutePart(localHandle || (ownSpace ? profile.handle : "")) || "guest";
-  const lines = loadPersonalThread(profile, actor).slice(-32);
-  const roomTitle = ownSpace ? "Личные заметки" : profile.displayName;
-  const roomStatus = ownSpace ? "Приватно в этой карточке" : "Личная переписка";
+  const clientId = ownSpace ? "" : personalMessageClientId();
+  const lines = ownSpace ? [] : loadPersonalThread(profile, actor).slice(-32);
+  const roomTitle = ownSpace ? "Входящие" : profile.displayName;
+  const roomStatus = ownSpace ? "Выберите диалог" : "Личный диалог";
   return `
-    <div class="personal-message-preview personal-messenger${ownSpace ? " is-owner" : ""}" data-personal-messenger data-actor="${escapeAttr(actor)}">
+    <div class="personal-message-preview personal-messenger${ownSpace ? " is-owner" : ""}" data-personal-messenger data-actor="${escapeAttr(actor)}" data-client-id="${escapeAttr(clientId)}">
       <section class="personal-messenger-room" aria-label="${escapeAttr(roomTitle)}">
         <header class="personal-messenger-head">
-          <div class="personal-messenger-avatar" aria-hidden="true">${escapeHtml(initials(profile.shortName || profile.displayName))}</div>
+          <div class="personal-messenger-avatar" aria-hidden="true" data-room-avatar>${escapeHtml(initials(profile.shortName || profile.displayName))}</div>
           <div>
-            <b>${escapeHtml(roomTitle)}</b>
-            <p>${escapeHtml(roomStatus)}</p>
+            <b data-room-title>${escapeHtml(roomTitle)}</b>
+            <p data-room-status>${escapeHtml(roomStatus)}</p>
           </div>
-          <span>${escapeHtml(ownSpace ? "owner" : "dm")}</span>
+          <span data-room-badge>${escapeHtml(ownSpace ? "live" : "dm")}</span>
         </header>
         ${renderThreadLines(lines, ownSpace, false)}
         ${renderMessageComposer(ownSpace)}
@@ -1220,8 +1316,8 @@ function renderMessengerHints(profile: PersonalSpaceProfile): string {
 function renderMessageComposer(ownSpace: boolean): string {
   return `
     <form class="personal-message-composer" data-message-form>
-      <textarea name="text" maxlength="420" rows="2" required placeholder="${escapeAttr(ownSpace ? "Короткая заметка" : "Сообщение")}"></textarea>
-      <button type="submit" aria-label="${escapeAttr(ownSpace ? "Записать" : "Отправить")}">${icon("send")}</button>
+      <textarea name="text" maxlength="420" rows="2" required placeholder="${escapeAttr(ownSpace ? "Ответ" : "Сообщение")}"></textarea>
+      <button type="submit" aria-label="${escapeAttr("Отправить")}">${icon("send")}</button>
     </form>
   `;
 }
@@ -1543,6 +1639,11 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       openPersonalModule(root, moduleNode, profile, options);
       return;
     }
+    const inboxNode = target?.closest<HTMLElement>("[data-inbox-client-id]");
+    if (inboxNode && shell.contains(inboxNode)) {
+      void openOwnerConversation(root, inboxNode, profile, options);
+      return;
+    }
     const actionNode = target?.closest<HTMLElement>("[data-action]");
     if (actionNode && shell.contains(actionNode)) {
       handleEntityAction(root, actionNode, profile, options);
@@ -1564,10 +1665,12 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     photoInput.value = "";
   });
   if (isRenderedOwnSpace(root)) {
-    void hydrateOwnerInbox(root, options);
-    startOwnerInboxRefresh(root, options);
+    void hydrateOwnerInbox(root, profile, options);
+    startOwnerInboxRefresh(root, profile, options);
+    stopThreadRefresh();
   } else {
     stopOwnerInboxRefresh();
+    startThreadRefresh(root, profile, options, personalMessageClientId(), false);
   }
 }
 
@@ -1826,7 +1929,7 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
   button.disabled = false;
 }
 
-function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile, _options: PersonalSpacePageOptions): void {
+function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
   const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
   const form = messenger?.querySelector<HTMLFormElement>("[data-message-form]");
   const textarea = form?.querySelector<HTMLTextAreaElement>("textarea[name='text']");
@@ -1850,12 +1953,12 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
         action: "Продолжить",
         onDone: (nextHandle) => {
           messenger.dataset.actor = nextHandle;
-          void submitMessengerMessage(messenger, profile, nextHandle, text, ownSpace);
+          void submitMessengerMessage(messenger, profile, nextHandle, text, ownSpace, options);
         }
       });
       return;
     }
-    void submitMessengerMessage(messenger, profile, currentActor || "guest", text, ownSpace);
+    void submitMessengerMessage(messenger, profile, currentActor || "guest", text, ownSpace, options);
   });
   textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing) {
@@ -1870,21 +1973,30 @@ async function submitMessengerMessage(
   profile: PersonalSpaceProfile,
   actor: string,
   text: string,
-  ownSpace: boolean
+  ownSpace: boolean,
+  options: PersonalSpacePageOptions
 ): Promise<void> {
   const cleanActor = cleanRoutePart(actor) || "guest";
+  const clientId = ownSpace
+    ? cleanMessageClientId(messenger.dataset.clientId || "")
+    : cleanMessageClientId(messenger.dataset.clientId || personalMessageClientId());
   const textarea = messenger.querySelector<HTMLTextAreaElement>("textarea[name='text']");
   const button = messenger.querySelector<HTMLButtonElement>("button[type='submit']");
   const thread = messenger.querySelector<HTMLElement>("[data-personal-thread]");
-  let lines = loadPersonalThread(profile, cleanActor);
+  if (ownSpace && !clientId) {
+    setMessengerNote(messenger, "Выберите диалог.");
+    return;
+  }
+  const storageKey = ownSpace ? clientId : cleanActor;
+  let lines = loadPersonalThread(profile, storageKey);
   const optimisticId = localItemId("message");
   const optimisticLine: PersonalThreadLine = {
     id: optimisticId,
-    author: cleanActor,
+    author: ownSpace ? profile.handle : cleanActor,
     text,
     createdAt: new Date().toISOString(),
     mine: true,
-    status: ownSpace ? "saved" : "sending"
+    status: "sending"
   };
   lines = [...lines, optimisticLine].slice(-80);
   if (button) {
@@ -1895,29 +2007,29 @@ async function submitMessengerMessage(
     textarea.focus();
   }
   renderMessengerThread(thread, lines, ownSpace);
-  setMessengerNote(messenger, ownSpace ? "" : "Отправляю...");
-  if (!ownSpace) {
-    const result = await sendPersonalSpaceMessage(profile, {
+  setMessengerNote(messenger, "Отправляю...");
+  const result = ownSpace
+    ? await options.replyMessage(options.route, { clientId, text })
+    : await sendPersonalSpaceMessage(profile, {
       author: cleanActor,
       text,
-      clientId: personalMessageClientId()
+      clientId
     });
-    if (!result.ok) {
-      lines = lines.map((line) => line.id === optimisticId ? { ...line, status: "failed" } : line);
-      renderMessengerThread(thread, lines, ownSpace);
-      setMessengerNote(messenger, result.message);
-      if (button) {
-        button.disabled = false;
-      }
-      return;
+  if (!result.ok) {
+    lines = lines.map((line) => line.id === optimisticId ? { ...line, status: "failed" } : line);
+    renderMessengerThread(thread, lines, ownSpace);
+    setMessengerNote(messenger, result.message);
+    if (button) {
+      button.disabled = false;
     }
+    return;
   }
-  const savedLines = appendPersonalThreadLine(profile, cleanActor, text);
-  lines = savedLines.map((line, index) => index === savedLines.length - 1
-    ? { ...line, status: ownSpace ? "saved" : "sent" }
-    : line);
+  lines = lines.map((line) => line.id === optimisticId ? { ...line, status: "sent" } : line);
+  savePersonalThread(profile, storageKey, lines);
   renderMessengerThread(thread, lines, ownSpace);
-  setMessengerNote(messenger, ownSpace ? "Сохранено." : "Отправлено.");
+  setMessengerNote(messenger, result.message);
+  await hydrateMessengerThread(rootForMessenger(messenger), profile, options, clientId, ownSpace);
+  startThreadRefresh(rootForMessenger(messenger), profile, options, clientId, ownSpace);
   if (button) {
     button.disabled = false;
   }
@@ -1946,19 +2058,27 @@ function renderThreadLines(lines: readonly PersonalThreadLine[], ownSpace: boole
   `;
 }
 
-async function hydrateOwnerInbox(root: HTMLElement, options: PersonalSpacePageOptions): Promise<void> {
+async function hydrateOwnerInbox(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): Promise<void> {
   const inbox = root.querySelector<HTMLElement>("[data-personal-inbox] .personal-inbox-list");
   if (!inbox) {
     return;
   }
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  const selectedClientId = cleanMessageClientId(messenger?.dataset.clientId || "");
   const messages = await options.loadInbox(options.route);
   if (!inbox.isConnected) {
     return;
   }
-  inbox.innerHTML = renderInboxItems(messages);
+  inbox.innerHTML = renderInboxItems(messages, selectedClientId);
+  if (!selectedClientId && messages[0]?.clientId) {
+    const first = inbox.querySelector<HTMLElement>("[data-inbox-client-id]");
+    if (first) {
+      await openOwnerConversation(root, first, profile, options);
+    }
+  }
 }
 
-function startOwnerInboxRefresh(root: HTMLElement, options: PersonalSpacePageOptions): void {
+function startOwnerInboxRefresh(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
   const key = routeUrl(options.route);
   if (personalInboxRefreshTimer && personalInboxRefreshKey === key) {
     return;
@@ -1974,7 +2094,7 @@ function startOwnerInboxRefresh(root: HTMLElement, options: PersonalSpacePageOpt
     if (document.visibilityState !== "visible") {
       return;
     }
-    void hydrateOwnerInbox(root, options);
+    void hydrateOwnerInbox(root, profile, options);
   }, 3500);
 }
 
@@ -1986,22 +2106,150 @@ function stopOwnerInboxRefresh(): void {
   personalInboxRefreshKey = "";
 }
 
-function renderInboxItems(messages: readonly PersonalSpaceInboxMessage[]): string {
+async function openOwnerConversation(root: HTMLElement, node: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): Promise<void> {
+  const clientId = cleanMessageClientId(node.dataset.inboxClientId || "");
+  if (!clientId) {
+    return;
+  }
+  const actor = cleanRoutePart(node.dataset.inboxAuthor || "") || "guest";
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  if (!messenger) {
+    return;
+  }
+  messenger.dataset.clientId = clientId;
+  messenger.dataset.actor = actor;
+  setMessengerRoom(messenger, actor, "Диалог открыт", "live");
+  root.querySelectorAll<HTMLElement>("[data-inbox-client-id]").forEach((item) => {
+    item.classList.toggle("is-active", item === node);
+  });
+  await hydrateMessengerThread(root, profile, options, clientId, true);
+  startThreadRefresh(root, profile, options, clientId, true);
+  messenger.querySelector<HTMLTextAreaElement>("textarea[name='text']")?.focus();
+}
+
+async function hydrateMessengerThread(
+  root: HTMLElement,
+  profile: PersonalSpaceProfile,
+  options: PersonalSpacePageOptions,
+  clientId: string,
+  ownSpace: boolean
+): Promise<void> {
+  const cleanClientId = cleanMessageClientId(clientId);
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  if (!cleanClientId || !messenger) {
+    return;
+  }
+  if (ownSpace && cleanMessageClientId(messenger.dataset.clientId || "") !== cleanClientId) {
+    return;
+  }
+  const messages = await options.loadThread(options.route, { clientId: cleanClientId, limit: 80 });
+  if (!messenger.isConnected || (ownSpace && cleanMessageClientId(messenger.dataset.clientId || "") !== cleanClientId)) {
+    return;
+  }
+  if (messages.length === 0) {
+    return;
+  }
+  const actor = cleanRoutePart(messenger.dataset.actor || loadLocalHandle() || "guest") || "guest";
+  const lines = threadMessagesToLines(messages, profile, actor, ownSpace);
+  savePersonalThread(profile, ownSpace ? cleanClientId : actor, lines);
+  renderMessengerThread(messenger.querySelector<HTMLElement>("[data-personal-thread]"), lines, ownSpace);
+}
+
+function startThreadRefresh(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions, clientId: string, ownSpace: boolean): void {
+  const cleanClientId = cleanMessageClientId(clientId);
+  if (!cleanClientId) {
+    return;
+  }
+  const key = `${routeUrl(options.route)}:${cleanClientId}:${ownSpace ? "owner" : "visitor"}`;
+  if (personalThreadRefreshTimer && personalThreadRefreshKey === key) {
+    return;
+  }
+  stopThreadRefresh();
+  personalThreadRefreshKey = key;
+  personalThreadRefreshTimer = window.setInterval(() => {
+    const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+    if (!messenger || !messenger.isConnected) {
+      stopThreadRefresh();
+      return;
+    }
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+    if (ownSpace && cleanMessageClientId(messenger.dataset.clientId || "") !== cleanClientId) {
+      return;
+    }
+    void hydrateMessengerThread(root, profile, options, cleanClientId, ownSpace);
+  }, 3000);
+  void hydrateMessengerThread(root, profile, options, cleanClientId, ownSpace);
+}
+
+function stopThreadRefresh(): void {
+  if (personalThreadRefreshTimer) {
+    window.clearInterval(personalThreadRefreshTimer);
+    personalThreadRefreshTimer = 0;
+  }
+  personalThreadRefreshKey = "";
+}
+
+function rootForMessenger(messenger: HTMLElement): HTMLElement {
+  return messenger.closest<HTMLElement>("#app") || document.querySelector<HTMLElement>("#app") || messenger;
+}
+
+function setMessengerRoom(messenger: HTMLElement, title: string, status: string, badge: string): void {
+  const cleanTitle = cleanText(title, 80) || "Диалог";
+  const titleNode = messenger.querySelector<HTMLElement>("[data-room-title]");
+  const statusNode = messenger.querySelector<HTMLElement>("[data-room-status]");
+  const badgeNode = messenger.querySelector<HTMLElement>("[data-room-badge]");
+  const avatarNode = messenger.querySelector<HTMLElement>("[data-room-avatar]");
+  if (titleNode) {
+    titleNode.textContent = cleanTitle;
+  }
+  if (statusNode) {
+    statusNode.textContent = status;
+  }
+  if (badgeNode) {
+    badgeNode.textContent = badge;
+  }
+  if (avatarNode) {
+    avatarNode.textContent = initials(cleanTitle);
+  }
+}
+
+function threadMessagesToLines(
+  messages: readonly PersonalSpaceThreadMessage[],
+  profile: PersonalSpaceProfile,
+  actor: string,
+  ownSpace: boolean
+): readonly PersonalThreadLine[] {
+  const ownerName = profile.shortName || profile.displayName || profile.handle;
+  return messages.map((message) => {
+    const fromOwner = message.sender === "owner";
+    return {
+      id: message.id,
+      author: fromOwner ? ownerName : cleanText(message.author, 80) || actor || "guest",
+      text: message.text,
+      createdAt: message.createdAt,
+      mine: ownSpace ? fromOwner : !fromOwner
+    };
+  }).slice(-80);
+}
+
+function renderInboxItems(messages: readonly PersonalSpaceInboxMessage[], selectedClientId = ""): string {
   if (messages.length === 0) {
     return `<section class="personal-empty">${icon("mail")} <span>Сообщений пока нет.</span></section>`;
   }
   return messages.slice(0, 8).map((message) => `
-    <article class="personal-inbox-item">
+    <button class="personal-inbox-item${message.clientId === selectedClientId ? " is-active" : ""}" type="button" data-inbox-client-id="${escapeAttr(message.clientId)}" data-inbox-author="${escapeAttr(message.author)}">
       <span>${escapeHtml(message.author)}</span>
       <p>${escapeHtml(message.text)}</p>
       <time>${escapeHtml(threadTime(message.createdAt))}</time>
-    </article>
+    </button>
   `).join("");
 }
 
 function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: boolean): string {
   if (lines.length === 0) {
-    return `<section class="personal-empty personal-thread-empty">${icon(ownSpace ? "hexagon" : "mail")} <span>${escapeHtml(ownSpace ? "Заметок пока нет." : "Переписка начнется здесь.")}</span></section>`;
+    return `<section class="personal-empty personal-thread-empty">${icon("mail")} <span>${escapeHtml(ownSpace ? "Выберите диалог справа." : "Переписка начнется здесь.")}</span></section>`;
   }
   return lines.map((line) => `
     <article class="personal-thread-line${line.mine ? " is-mine" : ""}${line.status ? ` is-${line.status}` : ""}">
@@ -2010,19 +2258,6 @@ function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: b
       <time>${escapeHtml(line.status || threadTime(line.createdAt))}</time>
     </article>
   `).join("");
-}
-
-function appendPersonalThreadLine(profile: PersonalSpaceProfile, author: string, text: string): readonly PersonalThreadLine[] {
-  const line = {
-    id: localItemId("message"),
-    author: cleanText(author, 80) || "guest",
-    text: cleanText(text, 420),
-    createdAt: new Date().toISOString(),
-    mine: true
-  };
-  const next = [...loadPersonalThread(profile, author), line].filter((item) => item.text).slice(-80);
-  savePersonalThread(profile, author, next);
-  return next;
 }
 
 function loadPersonalThread(profile: PersonalSpaceProfile, author: string): readonly PersonalThreadLine[] {
@@ -2065,6 +2300,10 @@ function personalMessageClientId(): string {
 function cleanMessageClientId(value: string): string {
   const text = cleanText(value, 80);
   return /^mc_[a-z0-9_-]{8,76}$/iu.test(text) ? text : "";
+}
+
+function normalizeMessageSender(value: unknown): PersonalSpaceMessageSender {
+  return cleanText(value, 24).toLowerCase() === "owner" ? "owner" : "visitor";
 }
 
 function reactionCountForDisplay(profile: PersonalSpaceProfile): number {
@@ -2145,13 +2384,16 @@ function normalizeInboxMessage(value: unknown): PersonalSpaceInboxMessage | null
     return null;
   }
   const text = cleanText(value.text, 420);
-  if (!text) {
+  const clientId = cleanMessageClientId(String(value.clientId || ""));
+  if (!text || !clientId) {
     return null;
   }
   return {
     id: cleanText(value.id, 80) || localItemId("message"),
     author: cleanText(value.author, 80) || "guest",
     text,
+    clientId,
+    sender: normalizeMessageSender(value.sender),
     createdAt: cleanText(value.createdAt, 40) || new Date().toISOString()
   };
 }
