@@ -1651,31 +1651,77 @@ async function renderSelfStartPage(): Promise<void> {
   applyPersonalSpaceManifest(null);
   app.innerHTML = `
     <main class="self-start-shell" aria-label="создать карточку">
-      <section class="self-start-copy">
-        <span>соты</span>
-        <h1>Живая инфо-карта</h1>
-        <p>Открыл по QR, понял, написал.</p>
+      <section class="self-start-hero">
+        <section class="self-start-copy">
+          <span>соты.online</span>
+          <h1>Карточка, по которой сразу пишут</h1>
+          <p>Один QR. Человек открывает, понимает кто перед ним и сразу связывается.</p>
+          <form class="self-start-form">
+            <label class="self-start-field">
+              <input
+                class="self-start-input"
+                name="handle"
+                autocomplete="nickname"
+                autocapitalize="words"
+                enterkeyhint="go"
+                inputmode="text"
+                maxlength="32"
+                aria-label="Имя или название"
+                placeholder="Имя или название"
+                value="${escapeHtml(suggestedHandle)}"
+              />
+              <button type="submit" aria-label="Создать карточку" data-tooltip="Создать карточку">${icon("send")}</button>
+            </label>
+          </form>
+        </section>
+        <section class="self-start-preview" aria-label="пример карточки">
+          <div class="self-start-preview-card">
+            <div class="self-start-preview-photo" data-self-start-avatar>С</div>
+            <div class="self-start-preview-copy">
+              <span data-self-start-preview-handle>@soty</span>
+              <h2 data-self-start-preview-name>${escapeHtml(selfStartPreviewName(suggestedHandle))}</h2>
+              <p>Живая инфо-карта: визитка, связь, отзывы и место с модулями, когда они действительно нужны.</p>
+            </div>
+            <div class="self-start-preview-actions" aria-hidden="true">
+              <span>${icon("mail")} Написать</span>
+              <span>${icon("qr")} Поделиться</span>
+            </div>
+            <div class="self-start-preview-layers" aria-hidden="true">
+              <span class="is-active">Визитка</span>
+              <span>Записи</span>
+              <span>Отзывы</span>
+              <span>Связь</span>
+              <span>Место</span>
+            </div>
+            <div class="self-start-preview-message" aria-hidden="true">
+              <b>Новое сообщение</b>
+              <p>Здравствуйте. Можно связаться?</p>
+            </div>
+          </div>
+        </section>
       </section>
-      <form class="self-start-form">
-        <label class="self-start-field">
-          <input
-            class="self-start-input"
-            name="handle"
-            autocomplete="nickname"
-            autocapitalize="words"
-            enterkeyhint="go"
-            inputmode="text"
-            maxlength="32"
-            aria-label="Имя или название"
-            placeholder="Имя или название"
-            value="${escapeHtml(suggestedHandle)}"
-          />
-          <button type="submit" aria-label="Создать карточку" data-tooltip="Создать карточку">${icon("check")}</button>
-        </label>
-      </form>
     </main>
   `;
   const input = app.querySelector<HTMLInputElement>(".self-start-input");
+  const previewName = app.querySelector<HTMLElement>("[data-self-start-preview-name]");
+  const previewHandle = app.querySelector<HTMLElement>("[data-self-start-preview-handle]");
+  const previewAvatar = app.querySelector<HTMLElement>("[data-self-start-avatar]");
+  const refreshPreview = () => {
+    const raw = input?.value || "";
+    const name = selfStartPreviewName(raw);
+    const handle = cleanSelfStartHandle(raw) || "soty";
+    if (previewName) {
+      previewName.textContent = name;
+    }
+    if (previewHandle) {
+      previewHandle.textContent = `@${handle}`;
+    }
+    if (previewAvatar) {
+      previewAvatar.textContent = initials(name);
+    }
+  };
+  input?.addEventListener("input", refreshPreview);
+  refreshPreview();
   app.querySelector<HTMLFormElement>(".self-start-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const handle = cleanSelfStartHandle(input?.value || "");
@@ -1685,6 +1731,15 @@ async function renderSelfStartPage(): Promise<void> {
     }
     void openCreatedSelfStartHandle(handle, input);
   });
+}
+
+function selfStartPreviewName(value: string): string {
+  const text = value
+    .replace(/[@/#?]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 64);
+  return text || "Соты";
 }
 
 function exportSotyBackup(): void {
