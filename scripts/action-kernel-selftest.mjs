@@ -2457,10 +2457,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(hexField.includes("root.addEventListener(\"wheel\", wheel, { passive: false })"));
       assertEqual(webManifest.theme_color, "#090b0f");
       assertEqual(webManifest.background_color, "#090b0f");
-      assertEqual(webManifest.display, "browser");
+      assertEqual(webManifest.display, "standalone");
       assert(html.includes('<meta name="theme-color" content="#090b0f"'));
       assert(html.includes('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"'));
-      assert(!html.includes('rel="manifest" href="/manifest.webmanifest"'));
+      assert(html.includes('rel="manifest" href="/manifest.webmanifest"'));
       assert(!webManifest.display_override?.includes("window-controls-overlay"));
       assert(!appRuntime.includes("window-controls-overlay"));
       assert(!ui.includes("pwaTitlebarMarkup"));
@@ -2491,7 +2491,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(personalSpaceSource.includes('const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;'));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
       assert(ui.includes("window.location.assign(selfStartPersonalPath(owned));"));
-      assert(serviceWorker.includes('const cacheName = "soty-online-v26"'));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v28"'));
       assert(serviceWorker.includes('"/boot.js"'));
       assert(!serviceWorker.includes('"/manifest.webmanifest"'));
       assert(httpApp.includes('rel="manifest" href="${manifestHref}"'));

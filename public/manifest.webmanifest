@@ -4,7 +4,7 @@
   "id": "/?pwa=1",
   "start_url": "/?pwa=1",
   "scope": "/",
-  "display": "browser",
+  "display": "standalone",
   "launch_handler": {
     "client_mode": "navigate-existing"
   },
