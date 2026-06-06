@@ -21,6 +21,10 @@ self.addEventListener("message", (event) => {
   }
 });
 
+self.addEventListener("push", (event) => {
+  event.waitUntil(showPushNotices(event));
+});
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const targetUrl = new URL(event.notification.data?.url || "/?pwa=1", self.location.origin).href;
@@ -40,6 +44,89 @@ self.addEventListener("notificationclick", (event) => {
     await clients.openWindow(targetUrl);
   })());
 });
+
+async function showPushNotices(event) {
+  const notices = await pushNotices(event);
+  const visibleNotices = notices.length
+    ? notices
+    : [{ title: "Соты", body: "Новое сообщение", url: "/?pwa=1" }];
+  await Promise.all(visibleNotices.slice(0, 4).map((notice) => {
+    const title = cleanNoticeText(notice.title, 80) || "Соты";
+    const body = cleanNoticeText(notice.body, 180) || "Новое сообщение";
+    const url = cleanNoticeUrl(notice.url);
+    return self.registration.showNotification(title, {
+      body,
+      icon: "/icon.svg",
+      badge: "/icon.svg",
+      tag: `soty:${url}`,
+      data: { url }
+    });
+  }));
+}
+
+async function pushNotices(event) {
+  const dataNotice = noticeFromPushData(event);
+  if (dataNotice) {
+    return [dataNotice];
+  }
+  try {
+    const subscription = await self.registration.pushManager.getSubscription();
+    const endpoint = subscription?.endpoint || "";
+    if (!endpoint) {
+      return [];
+    }
+    const response = await fetch("/api/push/notices", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({ endpoint })
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const payload = await response.json();
+    return Array.isArray(payload?.notices) ? payload.notices.map(normalizeNotice).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function noticeFromPushData(event) {
+  try {
+    return normalizeNotice(event.data?.json());
+  } catch {
+    return null;
+  }
+}
+
+function normalizeNotice(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  return {
+    title: cleanNoticeText(value.title, 80),
+    body: cleanNoticeText(value.body, 180),
+    url: cleanNoticeUrl(value.url)
+  };
+}
+
+function cleanNoticeText(value, max) {
+  return String(typeof value === "string" || typeof value === "number" ? value : "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, max);
+}
+
+function cleanNoticeUrl(value) {
+  try {
+    const url = new URL(String(value || "/?pwa=1"), self.location.origin);
+    return url.origin === self.location.origin ? `${url.pathname}${url.search}${url.hash}` : "/?pwa=1";
+  } catch {
+    return "/?pwa=1";
+  }
+}
 
 self.addEventListener("fetch", (event) => {
   const request = event.request;

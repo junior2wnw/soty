@@ -1,6 +1,6 @@
 import express from "express";
 import { webcrypto } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stableJson } from "trustlink-kernel";
 
@@ -33,6 +33,15 @@ export function attachSpaces(app, { dataDir } = {}) {
   const messageStore = createMessageStore(dataDir);
   const moduleStore = createModuleStore(dataDir);
   const ownerStore = createOwnerStore(dataDir);
+  const pushStore = createPushStore(dataDir);
+  app.get("/api/push/vapid-public-key", async (_req, res) => {
+    const keys = await readOrCreatePushKeys(pushStore);
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, publicKey: keys.publicKey });
+  });
+  app.post("/api/push/notices", express.json({ limit: "16kb" }), async (req, res) => {
+    await pullPushNotices(pushStore, req, res);
+  });
   app.get("/api/spaces/:handle", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.json(await publicSpaceProfile(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, req.params.handle || "", "", req.query?.viewer || ""));
@@ -66,10 +75,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await saveSpaceReview(reviewStore, req, res);
   });
   app.post("/api/spaces/:handle/messages", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceMessage(messageStore, req, res);
+    await saveSpaceMessage(messageStore, pushStore, req, res);
   });
   app.post("/api/spaces/:handle/:space/messages", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceMessage(messageStore, req, res);
+    await saveSpaceMessage(messageStore, pushStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/thread", express.json({ limit: "12kb" }), async (req, res) => {
     await sendSpaceThread(messageStore, ownerStore, req, res);
@@ -78,10 +87,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await sendSpaceThread(messageStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/reply", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceReply(messageStore, ownerStore, req, res);
+    await saveSpaceReply(messageStore, ownerStore, pushStore, req, res);
   });
   app.post("/api/spaces/:handle/:space/messages/reply", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceReply(messageStore, ownerStore, req, res);
+    await saveSpaceReply(messageStore, ownerStore, pushStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/react", express.json({ limit: "12kb" }), async (req, res) => {
     await saveSpaceMessageReaction(messageStore, ownerStore, req, res);
@@ -94,6 +103,12 @@ export function attachSpaces(app, { dataDir } = {}) {
   });
   app.post("/api/spaces/:handle/:space/messages/inbox", express.json({ limit: "24kb" }), async (req, res) => {
     await sendSpaceInbox(messageStore, ownerStore, req, res);
+  });
+  app.post("/api/spaces/:handle/messages/push", express.json({ limit: "96kb" }), async (req, res) => {
+    await saveSpacePushSubscription(pushStore, ownerStore, req, res);
+  });
+  app.post("/api/spaces/:handle/:space/messages/push", express.json({ limit: "96kb" }), async (req, res) => {
+    await saveSpacePushSubscription(pushStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/reactions", express.json({ limit: "8kb" }), async (req, res) => {
     await saveSpaceReaction(reactionStore, req, res);
@@ -369,7 +384,7 @@ async function saveSpaceReview(reviewStore, req, res) {
   res.json({ ok: true, review: next[0] });
 }
 
-async function saveSpaceMessage(messageStore, req, res) {
+async function saveSpaceMessage(messageStore, pushStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
   const spaceSlug = cleanSlug(req.params.space || "");
   const message = normalizeMessageBody(req.body);
@@ -398,6 +413,12 @@ async function saveSpaceMessage(messageStore, req, res) {
     message: stored,
     sender: "owner",
     author: message.author
+  });
+  await notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, {
+    scope: "owner",
+    title: message.author,
+    body: messagePreviewText(stored),
+    url: spaceMessagesUrl(handle, spaceSlug)
   });
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, message: publicMessage(stored) });
@@ -455,7 +476,7 @@ async function sendSpaceThread(messageStore, ownerStore, req, res) {
   res.json({ ok: true, messages });
 }
 
-async function saveSpaceReply(messageStore, ownerStore, req, res) {
+async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
   const spaceSlug = cleanSlug(req.params.space || "");
   const data = ownerActionData(req.body);
@@ -489,6 +510,13 @@ async function saveSpaceReply(messageStore, ownerStore, req, res) {
     message: stored,
     sender: "visitor",
     author: handle
+  });
+  await notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, {
+    scope: "visitor",
+    clientId: reply.clientId,
+    title: handle,
+    body: messagePreviewText(stored),
+    url: spaceMessagesUrl(handle, spaceSlug)
   });
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, message: publicMessage(stored) });
@@ -693,6 +721,169 @@ async function sendSpaceInbox(messageStore, ownerStore, req, res) {
   res.json({ ok: true, messages });
 }
 
+async function saveSpacePushSubscription(pushStore, ownerStore, req, res) {
+  const handle = cleanSlug(req.params.handle || "") || "guest";
+  const spaceSlug = cleanSlug(req.params.space || "");
+  const data = ownerActionData(req.body);
+  const record = normalizePushRegistration(data);
+  if (!record) {
+    res.status(400).json({ ok: false, error: "invalid_push_subscription" });
+    return;
+  }
+  if (record.scope === "owner" && !await authorizeSpaceOwner(ownerStore, req, res, "messages", data)) {
+    return;
+  }
+  const now = new Date().toISOString();
+  const entries = await readPushSubscriptions(pushStore, handle, spaceSlug);
+  const current = entries.find((entry) => entry.endpoint === record.endpoint);
+  const withoutCurrent = entries.filter((entry) => entry.endpoint !== record.endpoint);
+  const next = [{
+    ...record,
+    notices: current?.notices || [],
+    createdAt: current?.createdAt || now,
+    updatedAt: now
+  }, ...withoutCurrent].slice(0, 120);
+  await writePushSubscriptions(pushStore, handle, spaceSlug, next);
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true });
+}
+
+async function pullPushNotices(pushStore, req, res) {
+  const endpoint = cleanPushEndpoint(req.body?.endpoint);
+  if (!endpoint) {
+    res.status(400).json({ ok: false, error: "invalid_endpoint" });
+    return;
+  }
+  const notices = [];
+  let files = [];
+  try {
+    files = await readdir(pushStore.dir);
+  } catch {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ ok: true, notices });
+    return;
+  }
+  for (const file of files) {
+    if (!file.endsWith(".json") || file === "vapid.json" || file.includes("/") || file.includes("\\")) {
+      continue;
+    }
+    const route = pushRouteFromFile(file);
+    if (!route) {
+      continue;
+    }
+    const entries = await readPushSubscriptions(pushStore, route.handle, route.spaceSlug);
+    let changed = false;
+    const next = entries.map((entry) => {
+      if (entry.endpoint !== endpoint || entry.notices.length === 0) {
+        return entry;
+      }
+      notices.push(...entry.notices);
+      changed = true;
+      return { ...entry, notices: [] };
+    });
+    if (changed) {
+      await writePushSubscriptions(pushStore, route.handle, route.spaceSlug, next);
+    }
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ ok: true, notices: notices.slice(-8).map(publicPushNotice).filter(Boolean) });
+}
+
+async function notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, notice) {
+  const cleanHandle = cleanSlug(handle || "");
+  const cleanSpace = cleanSlug(spaceSlug || "");
+  const cleanNotice = normalizePushNotice(notice);
+  if (!cleanHandle || !cleanNotice) {
+    return;
+  }
+  const keys = await readOrCreatePushKeys(pushStore);
+  const entries = await readPushSubscriptions(pushStore, cleanHandle, cleanSpace);
+  let changed = false;
+  const queued = entries.map((entry) => {
+    const matches = entry.scope === cleanNotice.scope
+      && (entry.scope === "owner" || entry.clientId === cleanNotice.clientId);
+    if (!matches) {
+      return entry;
+    }
+    changed = true;
+    return {
+      ...entry,
+      notices: [...entry.notices, {
+        title: cleanNotice.title,
+        body: cleanNotice.body,
+        url: cleanNotice.url,
+        createdAt: new Date().toISOString()
+      }].slice(-5),
+      updatedAt: new Date().toISOString()
+    };
+  });
+  if (!changed) {
+    return;
+  }
+  await writePushSubscriptions(pushStore, cleanHandle, cleanSpace, queued);
+  const gone = new Set();
+  await Promise.all(queued
+    .filter((entry) => entry.scope === cleanNotice.scope && (entry.scope === "owner" || entry.clientId === cleanNotice.clientId))
+    .map(async (entry) => {
+      const result = await sendEmptyWebPush(entry, keys);
+      if (result === "gone") {
+        gone.add(entry.endpoint);
+      }
+    }));
+  if (gone.size > 0) {
+    await writePushSubscriptions(pushStore, cleanHandle, cleanSpace, queued.filter((entry) => !gone.has(entry.endpoint)));
+  }
+}
+
+async function sendEmptyWebPush(subscription, keys) {
+  try {
+    const endpointUrl = new URL(subscription.endpoint);
+    const audience = `${endpointUrl.protocol}//${endpointUrl.host}`;
+    const jwt = await webPushJwt(keys, audience);
+    const response = await fetch(subscription.endpoint, {
+      method: "POST",
+      headers: {
+        TTL: "120",
+        Urgency: "high",
+        Authorization: `vapid t=${jwt}, k=${keys.publicKey}`
+      }
+    });
+    if (response.status === 404 || response.status === 410) {
+      return "gone";
+    }
+    return response.ok ? "sent" : "failed";
+  } catch {
+    return "failed";
+  }
+}
+
+async function webPushJwt(keys, audience) {
+  const header = base64UrlJson({ typ: "JWT", alg: "ES256" });
+  const payload = base64UrlJson({
+    aud: audience,
+    exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+    sub: process.env.SOTY_WEB_PUSH_SUBJECT || "mailto:admin@soty.online"
+  });
+  const unsigned = `${header}.${payload}`;
+  const key = await webcrypto.subtle.importKey(
+    "jwk",
+    keys.privateJwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+  const signature = new Uint8Array(await webcrypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    utf8Bytes(unsigned)
+  ));
+  return `${unsigned}.${base64UrlString(signature)}`;
+}
+
+function base64UrlJson(value) {
+  return base64UrlString(utf8Bytes(JSON.stringify(value)));
+}
+
 async function saveSpaceReaction(reactionStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
   const spaceSlug = cleanSlug(req.params.space || "");
@@ -867,6 +1058,12 @@ function createOwnerStore(dataDir) {
   };
 }
 
+function createPushStore(dataDir) {
+  return {
+    dir: path.join(dataDir || path.join(process.cwd(), "data"), "profile-push")
+  };
+}
+
 function metaPath(metaStore, handle) {
   return path.join(metaStore.dir, `${handle}.json`);
 }
@@ -901,6 +1098,15 @@ function modulePath(moduleStore, handle, spaceSlug = "") {
 
 function ownerPath(ownerStore, handle) {
   return path.join(ownerStore.dir, `${handle}.json`);
+}
+
+function pushPath(pushStore, handle, spaceSlug = "") {
+  const suffix = spaceSlug ? `__${spaceSlug}` : "";
+  return path.join(pushStore.dir, `${handle}${suffix}.json`);
+}
+
+function pushKeysPath(pushStore) {
+  return path.join(pushStore.dir, "vapid.json");
 }
 
 async function readSpaceMeta(metaStore, handle) {
@@ -1000,6 +1206,56 @@ async function readSpaceOwner(ownerStore, handle) {
   } catch {
     return null;
   }
+}
+
+async function readPushSubscriptions(pushStore, handle, spaceSlug = "") {
+  try {
+    const records = JSON.parse(await readFile(pushPath(pushStore, handle, spaceSlug), "utf8"));
+    if (!Array.isArray(records)) {
+      return [];
+    }
+    return records.map(normalizePushRecord).filter(Boolean).slice(0, 120);
+  } catch {
+    return [];
+  }
+}
+
+async function writePushSubscriptions(pushStore, handle, spaceSlug, records) {
+  await mkdir(pushStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(pushPath(pushStore, handle, spaceSlug), JSON.stringify(records.slice(0, 120), null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+async function readOrCreatePushKeys(pushStore) {
+  const envPublic = cleanBase64Url(process.env.SOTY_WEB_PUSH_PUBLIC_KEY || "", 256);
+  const envPrivate = normalizePushPrivateJwk(safeJsonParse(process.env.SOTY_WEB_PUSH_PRIVATE_JWK || ""));
+  if (envPublic && envPrivate) {
+    return { publicKey: envPublic, privateJwk: envPrivate };
+  }
+  try {
+    const stored = normalizePushKeys(JSON.parse(await readFile(pushKeysPath(pushStore), "utf8")));
+    if (stored) {
+      return stored;
+    }
+  } catch {
+    // Create persistent VAPID keys below.
+  }
+  const keyPair = await webcrypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["sign", "verify"]
+  );
+  const publicBytes = new Uint8Array(await webcrypto.subtle.exportKey("raw", keyPair.publicKey));
+  const privateJwk = await webcrypto.subtle.exportKey("jwk", keyPair.privateKey);
+  const keys = normalizePushKeys({
+    publicKey: base64UrlString(publicBytes),
+    privateJwk
+  });
+  if (!keys) {
+    throw new Error("failed_to_create_push_keys");
+  }
+  await mkdir(pushStore.dir, { recursive: true, mode: 0o700 });
+  await writeFile(pushKeysPath(pushStore), JSON.stringify(keys, null, 2), { encoding: "utf8", mode: 0o600 });
+  return keys;
 }
 
 async function writeSpaceMeta(metaStore, handle, meta) {
@@ -1208,6 +1464,14 @@ function cleanBase64Url(value, max) {
 
 function isPlainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeJsonParse(value) {
+  try {
+    return JSON.parse(String(value || ""));
+  } catch {
+    return null;
+  }
 }
 
 function base64UrlBytes(value) {
@@ -1603,6 +1867,104 @@ function normalizeMessageReactionBody(body) {
   };
 }
 
+function normalizePushRegistration(body) {
+  if (!isPlainRecord(body)) {
+    return null;
+  }
+  const scope = cleanReviewText(body.scope, 16) === "owner" ? "owner" : cleanReviewText(body.scope, 16) === "visitor" ? "visitor" : "";
+  const clientId = scope === "visitor" ? cleanMessageClientId(body.clientId) : "";
+  const subscription = normalizePushSubscription(body.subscription) || normalizePushSubscription(body);
+  if (!scope || (scope === "visitor" && !clientId) || !subscription) {
+    return null;
+  }
+  return {
+    scope,
+    clientId,
+    endpoint: subscription.endpoint,
+    keys: subscription.keys,
+    title: cleanReviewText(body.title, 80),
+    url: cleanPushUrl(body.url),
+    notices: [],
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString()
+  };
+}
+
+function normalizePushRecord(record) {
+  if (!isPlainRecord(record)) {
+    return null;
+  }
+  const registration = normalizePushRegistration(record);
+  if (!registration) {
+    return null;
+  }
+  return {
+    ...registration,
+    notices: Array.isArray(record.notices)
+      ? record.notices.map(normalizeStoredPushNotice).filter(Boolean).slice(-5)
+      : [],
+    createdAt: cleanReviewText(record.createdAt, 40) || new Date(0).toISOString(),
+    updatedAt: cleanReviewText(record.updatedAt, 40) || new Date(0).toISOString()
+  };
+}
+
+function normalizePushSubscription(value) {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const endpoint = cleanPushEndpoint(value.endpoint);
+  const keys = isPlainRecord(value.keys)
+    ? {
+        p256dh: cleanBase64Url(value.keys.p256dh, 256),
+        auth: cleanBase64Url(value.keys.auth, 64)
+      }
+    : null;
+  if (!endpoint || !keys?.p256dh || !keys.auth) {
+    return null;
+  }
+  return { endpoint, keys };
+}
+
+function normalizePushNotice(value) {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const scope = cleanReviewText(value.scope, 16) === "owner" ? "owner" : cleanReviewText(value.scope, 16) === "visitor" ? "visitor" : "";
+  const clientId = scope === "visitor" ? cleanMessageClientId(value.clientId) : "";
+  const title = cleanReviewText(value.title, 80) || "Соты";
+  const body = cleanReviewText(value.body, 180) || "Новое сообщение";
+  const url = cleanPushUrl(value.url);
+  if (!scope || (scope === "visitor" && !clientId) || !url) {
+    return null;
+  }
+  return { scope, clientId, title, body, url };
+}
+
+function normalizeStoredPushNotice(value) {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const title = cleanReviewText(value.title, 80) || "Соты";
+  const body = cleanReviewText(value.body, 180) || "Новое сообщение";
+  const url = cleanPushUrl(value.url);
+  if (!url) {
+    return null;
+  }
+  return {
+    title,
+    body,
+    url,
+    createdAt: cleanReviewText(value.createdAt, 40) || new Date(0).toISOString()
+  };
+}
+
+function publicPushNotice(value) {
+  const notice = normalizeStoredPushNotice(value);
+  return notice
+    ? { title: notice.title, body: notice.body, url: notice.url }
+    : null;
+}
+
 function normalizeStoredMessage(record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -1821,6 +2183,53 @@ function cleanMessageReactionKey(value) {
   return text === "heart" || text === "check" || text === "like" ? text : "";
 }
 
+function cleanPushEndpoint(value) {
+  const text = String(typeof value === "string" ? value : "").trim();
+  if (text.length < 20 || text.length > 2048) {
+    return "";
+  }
+  try {
+    const url = new URL(text);
+    return url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function cleanPushUrl(value) {
+  const text = cleanReviewText(value, 240) || "/?pwa=1";
+  try {
+    const url = new URL(text, "https://soty.local");
+    return `${url.pathname}${url.search}${url.hash}`.slice(0, 240) || "/?pwa=1";
+  } catch {
+    return "/?pwa=1";
+  }
+}
+
+function normalizePushKeys(value) {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const publicKey = cleanBase64Url(value.publicKey, 256);
+  const privateJwk = normalizePushPrivateJwk(value.privateJwk);
+  return publicKey && privateJwk ? { publicKey, privateJwk } : null;
+}
+
+function normalizePushPrivateJwk(value) {
+  if (!isPlainRecord(value)) {
+    return null;
+  }
+  const kty = cleanReviewText(value.kty, 16);
+  const crv = cleanReviewText(value.crv, 16);
+  const x = cleanBase64Url(value.x, 120);
+  const y = cleanBase64Url(value.y, 120);
+  const d = cleanBase64Url(value.d, 120);
+  if (kty !== "EC" || crv !== "P-256" || !x || !y || !d) {
+    return null;
+  }
+  return { kty, crv, x, y, d, ext: true };
+}
+
 function cleanMessageSender(value) {
   const text = cleanReviewText(value, 24).toLowerCase();
   return text === "owner" ? "owner" : "visitor";
@@ -1850,6 +2259,34 @@ function cleanAttachmentDataUrl(value) {
     return "";
   }
   return text;
+}
+
+function pushRouteFromFile(file) {
+  const name = String(file || "").replace(/\.json$/u, "");
+  if (!name || name === "vapid" || name.includes("/") || name.includes("\\")) {
+    return null;
+  }
+  const [rawHandle, rawSpace = ""] = name.split("__");
+  const handle = cleanSlug(rawHandle);
+  const spaceSlug = cleanSlug(rawSpace);
+  return handle ? { handle, spaceSlug } : null;
+}
+
+function spaceMessagesUrl(handle, spaceSlug = "") {
+  const encodedHandle = encodeURIComponent(cleanSlug(handle || "") || "guest");
+  const encodedSpace = encodeURIComponent(cleanSlug(spaceSlug || ""));
+  return encodedSpace
+    ? `/@${encodedHandle}/${encodedSpace}?layer=messages`
+    : `/@${encodedHandle}?layer=messages`;
+}
+
+function messagePreviewText(message) {
+  const text = cleanReviewText(message?.text, 180);
+  if (text) {
+    return text;
+  }
+  const attachment = normalizeMessageAttachment(message?.attachment);
+  return attachment?.name ? `Файл: ${attachment.name}` : "Новое сообщение";
 }
 
 function cleanVersion(value) {

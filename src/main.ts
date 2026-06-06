@@ -26,7 +26,7 @@ import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
 import { bindLegalPage } from "./features/legal";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
-import { clearAttentionNotices, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications } from "./features/notifications";
+import { clearAttentionNotices, hasNotificationPermission, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications, subscribeToPushNotifications, supportsPushNotifications } from "./features/notifications";
 import type { AttentionNotice } from "./features/notifications";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceEntryKind, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess, spaceEmptyPrompt, spaceEntryKindForMessage, spaceMarkDisplay } from "./features/space";
@@ -36,7 +36,7 @@ import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, loadPersonalSpaceThread, personalSpaceManifestHref, personalSpaceRouteFromLocation, reactPersonalSpaceMessage, renderPersonalSpacePage, replyPersonalSpaceMessage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
-import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceMessageReactionDraft, PersonalSpaceMessageReplyDraft, PersonalSpaceModuleDraft, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute, PersonalSpaceThreadRequest } from "./features/personal-space";
+import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceMessageReactionDraft, PersonalSpaceMessageReplyDraft, PersonalSpaceModuleDraft, PersonalSpaceNotificationRequest, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute, PersonalSpaceThreadRequest } from "./features/personal-space";
 import { runtimeModuleTargetFromString } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
@@ -1268,6 +1268,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     loadThread: loadSignedPersonalSpaceThread,
     replyMessage: replySignedPersonalSpaceMessage,
     reactMessage: reactSignedPersonalSpaceMessage,
+    syncNotifications: syncPersonalSpaceNotifications,
     askAgent: askPersonalSpaceAgent,
     uploadPhoto: uploadSignedPersonalSpacePhoto,
     exportBackup: exportSotyBackup,
@@ -1580,10 +1581,10 @@ function shouldShowPersonalSpaceInstallAction(): boolean {
   return false;
 }
 
-async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallResult> {
+async function promptPersonalSpaceNotifications(request: PersonalSpaceNotificationRequest): Promise<PersonalSpaceInstallResult> {
   const permission = await requestNotificationPermission();
   if (permission === "granted") {
-    return { ok: true, message: "Оповещения включены." };
+    return await registerPersonalSpacePush(request, true);
   }
   if (permission === "denied") {
     return { ok: false, message: "Включите в настройках браузера." };
@@ -1592,6 +1593,78 @@ async function promptPersonalSpaceNotifications(): Promise<PersonalSpaceInstallR
     return { ok: false, message: "Браузер не поддерживает оповещения." };
   }
   return { ok: false, message: "Оповещения не включены." };
+}
+
+async function syncPersonalSpaceNotifications(request: PersonalSpaceNotificationRequest): Promise<void> {
+  if (!hasNotificationPermission()) {
+    return;
+  }
+  await registerPersonalSpacePush(request, false);
+}
+
+async function registerPersonalSpacePush(request: PersonalSpaceNotificationRequest, verbose: boolean): Promise<PersonalSpaceInstallResult> {
+  if (!supportsPushNotifications()) {
+    return verbose
+      ? { ok: false, message: "Браузер не поддерживает push-оповещения." }
+      : { ok: false, message: "" };
+  }
+  try {
+    const keyResponse = await fetch("/api/push/vapid-public-key", {
+      cache: "no-store",
+      headers: { Accept: "application/json" }
+    });
+    const keyPayload = await keyResponse.json().catch(() => null) as unknown;
+    const publicKey = isRecord(keyPayload) && typeof keyPayload.publicKey === "string" ? keyPayload.publicKey : "";
+    if (!keyResponse.ok || !publicKey) {
+      return verbose
+        ? { ok: false, message: "Push-сервер пока недоступен." }
+        : { ok: false, message: "" };
+    }
+    const subscription = await subscribeToPushNotifications(publicKey);
+    if (!subscription) {
+      return verbose
+        ? { ok: false, message: "Не получилось создать push-подписку." }
+        : { ok: false, message: "" };
+    }
+    const data = {
+      scope: request.scope,
+      clientId: request.clientId,
+      subscription: subscription.toJSON(),
+      title: request.title,
+      url: request.url
+    };
+    const owner = request.scope === "owner"
+      ? await createPersonalOwnerProof(request.route, "messages", data)
+      : null;
+    if (request.scope === "owner" && !owner) {
+      return verbose
+        ? { ok: false, message: "Нужна подпись владельца." }
+        : { ok: false, message: "" };
+    }
+    const handle = encodeURIComponent(request.route.handle);
+    const url = request.route.slug
+      ? `/api/spaces/${handle}/${encodeURIComponent(request.route.slug)}/messages/push`
+      : `/api/spaces/${handle}/messages/push`;
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify(owner ? { data, owner } : data)
+    });
+    if (!response.ok) {
+      return verbose
+        ? { ok: false, message: "Push-подписка не сохранилась." }
+        : { ok: false, message: "" };
+    }
+    return { ok: true, message: "Оповещения включены." };
+  } catch {
+    return verbose
+      ? { ok: false, message: "Push-оповещения не включились." }
+      : { ok: false, message: "" };
+  }
 }
 
 function openPersonalSpaceRuntime(profile: PersonalSpaceProfile, target = ""): void {

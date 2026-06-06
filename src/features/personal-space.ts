@@ -77,6 +77,14 @@ export type PersonalSpaceMessageReactionDraft = {
   readonly key: "heart" | "check" | "like";
 };
 
+export type PersonalSpaceNotificationRequest = {
+  readonly route: PersonalSpaceRoute;
+  readonly scope: "owner" | "visitor";
+  readonly clientId: string;
+  readonly title: string;
+  readonly url: string;
+};
+
 type PersonalSpaceMessageSender = "visitor" | "owner";
 
 export type PersonalSpaceMessageAttachment = {
@@ -148,7 +156,7 @@ export type PersonalSpacePageOptions = {
   readonly canInstall: () => boolean;
   readonly canNotify: () => boolean;
   readonly install: () => Promise<PersonalSpaceInstallResult>;
-  readonly enableNotifications: () => Promise<PersonalSpaceInstallResult>;
+  readonly enableNotifications: (request: PersonalSpaceNotificationRequest) => Promise<PersonalSpaceInstallResult>;
   readonly updateProfile: (route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate) => Promise<PersonalSpaceInstallResult>;
   readonly savePost: (route: PersonalSpaceRoute, draft: PersonalSpacePostDraft) => Promise<PersonalSpaceInstallResult>;
   readonly saveModule: (route: PersonalSpaceRoute, draft: PersonalSpaceModuleDraft) => Promise<PersonalSpaceInstallResult>;
@@ -156,6 +164,7 @@ export type PersonalSpacePageOptions = {
   readonly loadThread: (route: PersonalSpaceRoute, request: PersonalSpaceThreadRequest) => Promise<readonly PersonalSpaceThreadMessage[]>;
   readonly replyMessage: (route: PersonalSpaceRoute, draft: PersonalSpaceMessageReplyDraft) => Promise<PersonalSpaceInstallResult>;
   readonly reactMessage: (route: PersonalSpaceRoute, draft: PersonalSpaceMessageReactionDraft) => Promise<PersonalSpaceInstallResult>;
+  readonly syncNotifications: (request: PersonalSpaceNotificationRequest) => Promise<void>;
   readonly askAgent: (profile: PersonalSpaceProfile, request: PersonalSpaceAgentRequest) => Promise<PersonalSpaceAgentResult>;
   readonly uploadPhoto: (route: PersonalSpaceRoute, file: File) => Promise<string>;
   readonly exportBackup: () => void;
@@ -2119,7 +2128,7 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (action === "notifications" && node instanceof HTMLButtonElement) {
-    void enablePersonalNotifications(root, node, options);
+    void enablePersonalNotifications(root, node, profile, options);
     return;
   }
   if (action === "note") {
@@ -2214,11 +2223,18 @@ async function importPersonalBackup(root: HTMLElement, file: File, options: Pers
   }
 }
 
-async function enablePersonalNotifications(root: HTMLElement, button: HTMLButtonElement, options: PersonalSpacePageOptions): Promise<void> {
+async function enablePersonalNotifications(root: HTMLElement, button: HTMLButtonElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): Promise<void> {
   const note = button.closest<HTMLElement>(".personal-message-preview")?.querySelector<HTMLElement>("[data-action-note]")
     || root.querySelector<HTMLElement>("[data-install-note]");
+  const request = personalNotificationRequest(root, profile, options);
+  if (!request) {
+    if (note) {
+      note.textContent = "Откройте диалог.";
+    }
+    return;
+  }
   button.disabled = true;
-  const result = await options.enableNotifications();
+  const result = await options.enableNotifications(request);
   if (note) {
     note.textContent = result.message;
   }
@@ -2227,6 +2243,40 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
     return;
   }
   button.disabled = false;
+}
+
+function personalNotificationRequest(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): PersonalSpaceNotificationRequest | null {
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  if (!messenger) {
+    return null;
+  }
+  const ownSpace = isRenderedOwnSpace(root);
+  if (ownSpace) {
+    return {
+      route: options.route,
+      scope: "owner",
+      clientId: "",
+      title: profile.displayName || profile.handle || "Соты",
+      url: personalMessageUrl(options.route)
+    };
+  }
+  const actor = cleanRoutePart(messenger.dataset.actor || loadLocalHandle() || "");
+  const clientId = personalMessageClientIdFor(profile, actor);
+  if (!clientId) {
+    return null;
+  }
+  messenger.dataset.clientId = clientId;
+  return {
+    route: options.route,
+    scope: "visitor",
+    clientId,
+    title: profile.displayName || profile.handle || "Соты",
+    url: personalMessageUrl(options.route)
+  };
+}
+
+function personalNotificationsAlreadyGranted(): boolean {
+  return "Notification" in window && Notification.permission === "granted";
 }
 
 function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
@@ -2427,6 +2477,10 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
       form.requestSubmit();
     }
   });
+  const notificationRequest = personalNotificationRequest(root, profile, options);
+  if (notificationRequest && personalNotificationsAlreadyGranted()) {
+    void options.syncNotifications(notificationRequest);
+  }
 }
 
 async function submitMessengerMessage(
