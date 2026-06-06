@@ -2491,7 +2491,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(personalSpaceSource.includes('const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;'));
       assert(ui.includes("window.location.replace(selfStartPersonalPath(saved));"));
       assert(ui.includes("window.location.assign(selfStartPersonalPath(owned));"));
-      assert(serviceWorker.includes('const cacheName = "soty-online-v29"'));
+      assert(serviceWorker.includes('const cacheName = "soty-online-v30"'));
       assert(serviceWorker.includes('"/boot.js"'));
       assert(!serviceWorker.includes('"/manifest.webmanifest"'));
       assert(httpApp.includes('rel="manifest" href="${manifestHref}"'));

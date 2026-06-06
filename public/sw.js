@@ -1,4 +1,4 @@
-const cacheName = "soty-online-v29";
+const cacheName = "soty-online-v30";
 const shell = ["/", "/icon.svg", "/boot.js"];
 
 self.addEventListener("install", (event) => {
@@ -65,6 +65,7 @@ async function showPushNotices(event) {
       badge,
       tag,
       renotify: notice.renotify === true,
+      silent: notice.silent === true,
       data: { url, tag }
     };
     if (vibrate.length > 0) {
@@ -126,6 +127,7 @@ function normalizeNotice(value) {
     badge: cleanNoticeAssetUrl(value.badge),
     tag: cleanNoticeTag(value.tag),
     renotify: value.renotify === true,
+    silent: value.silent === true,
     vibrate: cleanNoticeVibrate(value.vibrate),
     timestamp: cleanNoticeTimestamp(value.timestamp)
   };

@@ -4,7 +4,7 @@ import { applyChessMove, boardSquares, chessFromSnapshot, chooseAgentMove, creat
 import type { ChessSnapshot } from "./chess";
 import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safeMiniAppInlineHtml, safeMiniAppUrl } from "./mini-apps";
 import type { MiniAppWindowLayout } from "./mini-apps";
-import { showSystemAttentionNotice } from "./notifications";
+import { hasPushNotificationSubscription, showSystemAttentionNotice } from "./notifications";
 import { runtimeModuleDefinitions, runtimeModuleTargetFromString } from "./runtime-modules";
 import type { RuntimeModuleTarget } from "./runtime-modules";
 import { copyText, showLinkShareSheet } from "./share-sheet";
@@ -3080,13 +3080,16 @@ function noticePersonalThreadMessages(
   }
 }
 
-function showPersonalMessageNotice(profile: PersonalSpaceProfile, title: string, body: string, url: string, iconUrl = ""): void {
+async function showPersonalMessageNotice(profile: PersonalSpaceProfile, title: string, body: string, url: string, iconUrl = ""): Promise<void> {
   if (document.visibilityState === "visible") {
     return;
   }
   const noticeTitle = cleanText(title, 80) || profile.displayName || "Соты";
   const vibration = [24, 36, 24] as const;
   navigator.vibrate?.(vibration);
+  if (await hasPushNotificationSubscription()) {
+    return;
+  }
   void showSystemAttentionNotice(url, {
     title: noticeTitle,
     body: cleanText(body, 160) || "Новое сообщение",
@@ -3094,6 +3097,7 @@ function showPersonalMessageNotice(profile: PersonalSpaceProfile, title: string,
     badge: "/icon.svg",
     tag: personalNoticeTag(url, noticeTitle),
     renotify: true,
+    silent: false,
     vibrate: vibration,
     timestamp: Date.now()
   });

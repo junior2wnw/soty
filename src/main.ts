@@ -26,7 +26,7 @@ import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom } from "./features/files";
 import { bindLegalPage } from "./features/legal";
 import { isLocalAgentUnavailableText, localAgentUnavailableText, localAgentWsUrl } from "./features/local-agent-endpoint";
-import { clearAttentionNotices, hasNotificationPermission, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications, showSystemAttentionNotice, subscribeToPushNotifications, supportsPushNotifications } from "./features/notifications";
+import { clearAttentionNotices, hasNotificationPermission, notifyHiddenOnce, requestNotificationPermission, shouldNotifyTyping, shouldOfferNotifications, subscribeToPushNotifications, supportsPushNotifications } from "./features/notifications";
 import type { AttentionNotice } from "./features/notifications";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, loadRemoteGrantTargets, setRemoteAccess, setRemoteEnabled, setRemoteGrantTarget } from "./features/remote";
 import { makeSpaceEntryLine, normalizeSpaceEntryKind, normalizeSpaceMode, parseSpaceEntryLine, renderSpaceEntryBubble, renderSpaceRail, spaceComposerAccess, spaceEmptyPrompt, spaceEntryKindForMessage, spaceMarkDisplay } from "./features/space";
@@ -1632,7 +1632,8 @@ async function registerPersonalSpacePush(request: PersonalSpaceNotificationReque
       subscription: subscription.toJSON(),
       title: request.title,
       url: request.url,
-      icon: request.icon || ""
+      icon: request.icon || "",
+      test: verbose
     };
     const owner = request.scope === "owner"
       ? await createPersonalOwnerProof(request.route, "messages", data)
@@ -1655,16 +1656,17 @@ async function registerPersonalSpacePush(request: PersonalSpaceNotificationReque
       },
       body: JSON.stringify(owner ? { data, owner } : data)
     });
+    const payload = await response.json().catch(() => null) as unknown;
     if (!response.ok) {
       return verbose
         ? { ok: false, message: "Push-подписка не сохранилась." }
         : { ok: false, message: "" };
     }
-    if (verbose) {
-      void showSystemAttentionNotice(request.url, {
-        title: request.title || "Соты",
-        body: "Оповещения включены."
-      });
+    if (verbose && isRecord(payload) && payload.test === "sent") {
+      return { ok: true, message: "Оповещения включены. Сейчас должно прийти тестовое." };
+    }
+    if (verbose && isRecord(payload) && payload.test && payload.test !== "sent") {
+      return { ok: true, message: "Оповещения включены, тест пока не дошел." };
     }
     return { ok: true, message: "Оповещения включены." };
   } catch {

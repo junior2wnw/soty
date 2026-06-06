@@ -5,6 +5,7 @@ export type AttentionNotice = {
   readonly badge?: string;
   readonly tag?: string;
   readonly renotify?: boolean;
+  readonly silent?: boolean;
   readonly vibrate?: readonly number[];
   readonly timestamp?: number;
 };
@@ -81,6 +82,18 @@ export async function subscribeToPushNotifications(publicKey: string): Promise<P
   });
 }
 
+export async function hasPushNotificationSubscription(): Promise<boolean> {
+  if (!supportsPushNotifications()) {
+    return false;
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    return Boolean(await registration.pushManager.getSubscription());
+  } catch {
+    return false;
+  }
+}
+
 export async function showSystemAttentionNotice(url: string, notice: AttentionNotice): Promise<void> {
   if (!("Notification" in window) || Notification.permission !== "granted") {
     return;
@@ -90,6 +103,7 @@ export async function showSystemAttentionNotice(url: string, notice: AttentionNo
   const options: NotificationOptions & {
     badge?: string;
     renotify?: boolean;
+    silent?: boolean;
     timestamp?: number;
     vibrate?: readonly number[];
   } = {
@@ -98,6 +112,7 @@ export async function showSystemAttentionNotice(url: string, notice: AttentionNo
     badge: notice.badge || "/icon.svg",
     tag,
     renotify: notice.renotify === true,
+    silent: notice.silent === true,
     data: { url, tag }
   };
   if (notice.vibrate?.length) {
