@@ -511,6 +511,14 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
     sender: "visitor",
     author: handle
   });
+  if (peerHandle) {
+    await notifySpaceMessageSubscribers(pushStore, peerHandle, "", {
+      scope: "owner",
+      title: handle,
+      body: messagePreviewText(stored),
+      url: spaceMessagesUrl(peerHandle, "")
+    });
+  }
   await notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, {
     scope: "visitor",
     clientId: reply.clientId,
@@ -840,13 +848,30 @@ async function sendEmptyWebPush(subscription, keys) {
     const endpointUrl = new URL(subscription.endpoint);
     const audience = `${endpointUrl.protocol}//${endpointUrl.host}`;
     const jwt = await webPushJwt(keys, audience);
-    const response = await fetch(subscription.endpoint, {
+    const standard = await postWebPush(subscription.endpoint, {
+      TTL: "120",
+      Urgency: "high",
+      Authorization: `WebPush ${jwt}`,
+      "Crypto-Key": `p256ecdsa=${keys.publicKey}`
+    });
+    if (standard === "sent" || standard === "gone") {
+      return standard;
+    }
+    return await postWebPush(subscription.endpoint, {
+      TTL: "120",
+      Urgency: "high",
+      Authorization: `vapid t=${jwt}, k=${keys.publicKey}`
+    });
+  } catch {
+    return "failed";
+  }
+}
+
+async function postWebPush(endpoint, headers) {
+  try {
+    const response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        TTL: "120",
-        Urgency: "high",
-        Authorization: `vapid t=${jwt}, k=${keys.publicKey}`
-      }
+      headers
     });
     if (response.status === 404 || response.status === 410) {
       return "gone";

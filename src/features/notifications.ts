@@ -40,7 +40,7 @@ export function notificationPermissionNote(permission: NotificationPermission | 
 }
 
 export function shouldOfferNotifications(): boolean {
-  return "Notification" in window && Notification.permission === "default";
+  return "Notification" in window && Notification.permission !== "denied";
 }
 
 export function hasNotificationPermission(): boolean {
@@ -59,14 +59,19 @@ export async function subscribeToPushNotifications(publicKey: string): Promise<P
   if (!cleanKey) {
     return null;
   }
+  const keyBuffer = base64UrlToArrayBuffer(cleanKey);
   const registration = await navigator.serviceWorker.ready;
   const current = await registration.pushManager.getSubscription();
   if (current) {
-    return current;
+    const currentKey = current.options?.applicationServerKey;
+    if (currentKey && arrayBufferEquals(currentKey, keyBuffer)) {
+      return current;
+    }
+    await current.unsubscribe().catch(() => undefined);
   }
   return await registration.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: base64UrlToArrayBuffer(cleanKey)
+    applicationServerKey: keyBuffer
   });
 }
 
@@ -141,4 +146,18 @@ function base64UrlToArrayBuffer(value: string): ArrayBuffer {
     bytes[index] = raw.charCodeAt(index);
   }
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function arrayBufferEquals(left: ArrayBuffer, right: ArrayBuffer): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) {
+      return false;
+    }
+  }
+  return true;
 }
