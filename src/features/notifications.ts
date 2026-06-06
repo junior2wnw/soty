@@ -1,6 +1,12 @@
 export type AttentionNotice = {
   readonly title: string;
   readonly body?: string;
+  readonly icon?: string;
+  readonly badge?: string;
+  readonly tag?: string;
+  readonly renotify?: boolean;
+  readonly vibrate?: readonly number[];
+  readonly timestamp?: number;
 };
 
 type AttentionOptions = {
@@ -80,13 +86,28 @@ export async function showSystemAttentionNotice(url: string, notice: AttentionNo
     return;
   }
   const title = notice.title.trim() || "соты";
-  const options: NotificationOptions = {
+  const tag = notice.tag?.trim() || `soty:${url}`;
+  const options: NotificationOptions & {
+    badge?: string;
+    renotify?: boolean;
+    timestamp?: number;
+    vibrate?: readonly number[];
+  } = {
     body: notice.body || "Новое событие",
-    icon: "/icon.svg",
-    badge: "/icon.svg",
-    tag: `soty:${url}`,
-    data: { url }
+    icon: notice.icon || "/icon.svg",
+    badge: notice.badge || "/icon.svg",
+    tag,
+    renotify: notice.renotify === true,
+    data: { url, tag }
   };
+  if (notice.vibrate?.length) {
+    options.vibrate = notice.vibrate
+      .map((item) => Math.max(0, Math.min(220, Math.round(Number(item) || 0))))
+      .slice(0, 7);
+  }
+  if (notice.timestamp && Number.isFinite(notice.timestamp)) {
+    options.timestamp = notice.timestamp;
+  }
   try {
     const registration = "serviceWorker" in navigator
       ? await navigator.serviceWorker.ready
@@ -114,7 +135,7 @@ export function notifyHiddenOnce(options: AttentionOptions): void {
     return;
   }
   activeNoticeKeys.add(key);
-  navigator.vibrate?.([45, 70, 45]);
+  navigator.vibrate?.([24, 36, 24]);
   if (options.notice) {
     void showSystemAttentionNotice(options.url, options.notice);
   }

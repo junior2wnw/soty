@@ -1798,8 +1798,8 @@ button.personal-avatar {
   box-shadow: 0 0 0 3px rgba(215, 255, 101, 0.65), 0 0 0 5px rgba(17, 20, 18, 0.18);
 }
 
-.personal-thread-line span,
-.personal-thread-line time {
+.personal-thread-line > span,
+.personal-thread-meta {
   color: #616161;
   font-size: 12px;
   font-weight: 820;
@@ -1969,16 +1969,65 @@ button.personal-avatar {
   height: 15px;
 }
 
-.personal-thread-line time {
+.personal-thread-meta {
   justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.personal-thread-line.is-sending time {
+.personal-thread-clock {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.personal-thread-delivery {
+  min-width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: #404040;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.personal-thread-delivery svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.personal-thread-delivery svg path {
+  fill: currentColor;
+}
+
+.personal-thread-delivery.is-seen {
   color: #007aff;
 }
 
-.personal-thread-line.is-sent time,
-.personal-thread-line.is-saved time {
+.personal-thread-delivery.is-seen svg + svg {
+  margin-left: -7px;
+}
+
+.personal-thread-delivery.is-sending {
+  color: #007aff;
+  letter-spacing: 1px;
+}
+
+.personal-thread-delivery.is-failed {
+  color: #9f1d1d;
+}
+
+.personal-thread-line.is-sending .personal-thread-meta {
+  color: #007aff;
+}
+
+.personal-thread-line.is-sent .personal-thread-meta,
+.personal-thread-line.is-saved .personal-thread-meta {
   color: #404040;
 }
 
@@ -1987,7 +2036,7 @@ button.personal-avatar {
   background: #fff5f5;
 }
 
-.personal-thread-line.is-failed time {
+.personal-thread-line.is-failed .personal-thread-meta {
   color: #9f1d1d;
 }
 
@@ -7849,9 +7898,18 @@ button:disabled {
     line-height: 1.32;
   }
 
-  .personal-thread-line span,
-  .personal-thread-line time {
+  .personal-thread-line > span,
+  .personal-thread-meta {
     font-size: 11px;
+  }
+
+  .personal-thread-delivery svg {
+    width: 12px;
+    height: 12px;
+  }
+
+  .personal-thread-delivery.is-seen svg + svg {
+    margin-left: -6px;
   }
 
   .personal-thread-actions {

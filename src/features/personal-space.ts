@@ -83,6 +83,7 @@ export type PersonalSpaceNotificationRequest = {
   readonly clientId: string;
   readonly title: string;
   readonly url: string;
+  readonly icon?: string;
 };
 
 type PersonalSpaceMessageSender = "visitor" | "owner";
@@ -2257,7 +2258,8 @@ function personalNotificationRequest(root: HTMLElement, profile: PersonalSpacePr
       scope: "owner",
       clientId: "",
       title: profile.displayName || profile.handle || "Соты",
-      url: personalMessageUrl(options.route)
+      url: personalMessageUrl(options.route),
+      icon: personalProfileIconUrl(profile)
     };
   }
   const actor = cleanRoutePart(messenger.dataset.actor || loadLocalHandle() || "");
@@ -2271,7 +2273,8 @@ function personalNotificationRequest(root: HTMLElement, profile: PersonalSpacePr
     scope: "visitor",
     clientId,
     title: profile.displayName || profile.handle || "Соты",
-    url: personalMessageUrl(options.route)
+    url: personalMessageUrl(options.route),
+    icon: personalProfileIconUrl(profile)
   };
 }
 
@@ -2963,7 +2966,7 @@ function noticePersonalOwnerInbox(
     if (!initialized || previous === message.id || message.sender === "owner" || message.readByOwnerAt) {
       continue;
     }
-    showPersonalMessageNotice(profile, message.author, messagePreviewText(message), routeUrl(route));
+    showPersonalMessageNotice(profile, message.author, messagePreviewText(message), routeUrl(route), personalActorIconUrl(message.author));
   }
   personalMessageNoticeGroups.add(group);
 }
@@ -2993,18 +2996,26 @@ function noticePersonalThreadMessages(
     return;
   }
   if (!latest.readByVisitorAt) {
-    showPersonalMessageNotice(profile, profile.displayName || latest.author, messagePreviewText(latest), routeUrl(route));
+    showPersonalMessageNotice(profile, profile.displayName || latest.author, messagePreviewText(latest), routeUrl(route), personalProfileIconUrl(profile));
   }
 }
 
-function showPersonalMessageNotice(profile: PersonalSpaceProfile, title: string, body: string, url: string): void {
+function showPersonalMessageNotice(profile: PersonalSpaceProfile, title: string, body: string, url: string, iconUrl = ""): void {
   if (document.visibilityState === "visible") {
     return;
   }
-  navigator.vibrate?.([45, 70, 45]);
+  const noticeTitle = cleanText(title, 80) || profile.displayName || "Соты";
+  const vibration = [24, 36, 24] as const;
+  navigator.vibrate?.(vibration);
   void showSystemAttentionNotice(url, {
-    title: cleanText(title, 80) || profile.displayName || "Соты",
-    body: cleanText(body, 160) || "Новое сообщение"
+    title: noticeTitle,
+    body: cleanText(body, 160) || "Новое сообщение",
+    icon: iconUrl || personalProfileIconUrl(profile),
+    badge: "/icon.svg",
+    tag: personalNoticeTag(url, noticeTitle),
+    renotify: true,
+    vibrate: vibration,
+    timestamp: Date.now()
   });
 }
 
@@ -3041,17 +3052,20 @@ function threadMessagesToLines(
   const ownerName = profile.shortName || profile.displayName || profile.handle;
   return messages.map((message) => {
     const fromOwner = message.sender === "owner";
+    const mine = ownSpace ? fromOwner : !fromOwner;
+    const seen = ownSpace
+      ? fromOwner && Boolean(message.readByVisitorAt)
+      : !fromOwner && Boolean(message.readByOwnerAt);
     return {
       id: message.id,
       author: fromOwner ? ownerName : cleanText(message.author, 80) || actor || "guest",
       text: message.text,
       createdAt: message.createdAt,
-      mine: ownSpace ? fromOwner : !fromOwner,
+      mine,
       ...(message.replyTo ? { replyTo: message.replyTo } : {}),
       ...(message.attachment ? { attachment: message.attachment } : {}),
       reactions: message.reactions || {},
-      ...(ownSpace && fromOwner && message.readByVisitorAt ? { status: "seen" as const } : {}),
-      ...(!ownSpace && !fromOwner && message.readByOwnerAt ? { status: "seen" as const } : {})
+      ...(mine ? { status: seen ? "seen" as const : "sent" as const } : {})
     };
   }).slice(-80);
 }
@@ -3093,7 +3107,7 @@ function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: b
           <button type="button" data-thread-react data-reaction-key="check" aria-label="${escapeAttr("Готово")}">${icon("check")}</button>
         </div>
       `}
-      <time>${escapeHtml(threadLineTimeText(line))}</time>
+      ${renderThreadLineMeta(line)}
     </article>
   `).join("");
 }
@@ -3146,20 +3160,53 @@ function renderMessageReactions(reactions: PersonalSpaceMessageReactions): strin
   `;
 }
 
-function threadLineTimeText(line: PersonalThreadLine): string {
-  if (line.status === "seen") {
-    return "прочитано";
+function renderThreadLineMeta(line: PersonalThreadLine): string {
+  const label = threadLineTimeText(line);
+  return `
+    <time class="personal-thread-meta" datetime="${escapeAttr(line.createdAt)}" aria-label="${escapeAttr(label)}">
+      <span class="personal-thread-clock">${escapeHtml(threadTime(line.createdAt))}</span>
+      ${renderThreadDelivery(line)}
+    </time>
+  `;
+}
+
+function renderThreadDelivery(line: PersonalThreadLine): string {
+  if (!line.mine || !line.status) {
+    return "";
   }
-  if (line.status === "sending") {
-    return "отправляю";
+  const label = messageDeliveryLabel(line.status);
+  if (line.status === "seen") {
+    return `<span class="personal-thread-delivery is-seen" aria-label="${escapeAttr(label)}">${icon("check")}${icon("check")}</span>`;
   }
   if (line.status === "sent" || line.status === "saved") {
+    return `<span class="personal-thread-delivery is-sent" aria-label="${escapeAttr(label)}">${icon("check")}</span>`;
+  }
+  if (line.status === "sending") {
+    return `<span class="personal-thread-delivery is-sending" aria-label="${escapeAttr(label)}">...</span>`;
+  }
+  return `<span class="personal-thread-delivery is-failed" aria-label="${escapeAttr(label)}">!</span>`;
+}
+
+function messageDeliveryLabel(status: PersonalThreadLine["status"] | undefined): string {
+  if (status === "seen") {
+    return "прочитано";
+  }
+  if (status === "sending") {
+    return "отправляю";
+  }
+  if (status === "sent" || status === "saved") {
     return "отправлено";
   }
-  if (line.status === "failed") {
+  if (status === "failed") {
     return "не отправлено";
   }
-  return threadTime(line.createdAt);
+  return "";
+}
+
+function threadLineTimeText(line: PersonalThreadLine): string {
+  const time = threadTime(line.createdAt);
+  const delivery = line.mine ? messageDeliveryLabel(line.status) : "";
+  return delivery ? `${time}, ${delivery}` : time;
 }
 
 function loadPersonalThread(profile: PersonalSpaceProfile, author: string): readonly PersonalThreadLine[] {
@@ -5307,6 +5354,29 @@ function fallbackFor(route: PersonalSpaceRoute): PersonalSpaceProfile {
 
 function personalMessageUrl(route: PersonalSpaceRoute): string {
   return `${routeUrl(route)}?layer=messages`;
+}
+
+function personalProfileIconUrl(profile: Pick<PersonalSpaceProfile, "handle" | "slug">): string {
+  const handle = encodeURIComponent(cleanRoutePart(profile.handle) || "guest");
+  const slug = encodeURIComponent(cleanRoutePart(profile.slug || ""));
+  return slug
+    ? `/icon/space/${handle}/${slug}.svg`
+    : `/icon/space/${handle}.svg`;
+}
+
+function personalActorIconUrl(handle: string): string {
+  const cleanHandle = cleanRoutePart(handle);
+  return cleanHandle && cleanHandle !== "guest"
+    ? `/icon/space/${encodeURIComponent(cleanHandle)}.svg`
+    : "";
+}
+
+function personalNoticeTag(url: string, title: string): string {
+  const route = cleanText(url, 120)
+    .replace(/[^\p{L}\p{N}:._/?=@-]+/gu, "-")
+    .replace(/-+/gu, "-");
+  const peer = cleanRoutePart(title) || "thread";
+  return `soty:messages:${route}:${peer}`.slice(0, 140);
 }
 
 function personalRuntimeUrl(route: PersonalSpaceRoute): string {

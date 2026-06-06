@@ -419,7 +419,13 @@ async function saveSpaceMessage(messageStore, pushStore, req, res) {
     scope: "owner",
     title: message.author,
     body: messagePreviewText(stored),
-    url: spaceMessagesUrl(handle, spaceSlug)
+    url: spaceMessagesUrl(handle, spaceSlug),
+    icon: spacePushIconUrl(message.author),
+    badge: "/icon.svg",
+    tag: spacePushTag(handle, spaceSlug, message.clientId),
+    renotify: true,
+    vibrate: [24, 36, 24],
+    timestamp: Date.now()
   });
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, message: publicMessage(stored) });
@@ -517,7 +523,13 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
       scope: "owner",
       title: handle,
       body: messagePreviewText(stored),
-      url: spaceMessagesUrl(peerHandle, "")
+      url: spaceMessagesUrl(peerHandle, ""),
+      icon: spacePushIconUrl(handle, spaceSlug),
+      badge: "/icon.svg",
+      tag: spacePushTag(peerHandle, "", reply.clientId),
+      renotify: true,
+      vibrate: [24, 36, 24],
+      timestamp: Date.now()
     });
   }
   await notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, {
@@ -525,7 +537,13 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
     clientId: reply.clientId,
     title: handle,
     body: messagePreviewText(stored),
-    url: spaceMessagesUrl(handle, spaceSlug)
+    url: spaceMessagesUrl(handle, spaceSlug),
+    icon: spacePushIconUrl(handle, spaceSlug),
+    badge: "/icon.svg",
+    tag: spacePushTag(handle, spaceSlug, reply.clientId),
+    renotify: true,
+    vibrate: [24, 36, 24],
+    timestamp: Date.now()
   });
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, message: publicMessage(stored) });
@@ -812,6 +830,12 @@ async function notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, notic
     title: cleanNotice.title,
     body: cleanNotice.body,
     url: cleanNotice.url,
+    ...(cleanNotice.icon ? { icon: cleanNotice.icon } : {}),
+    ...(cleanNotice.badge ? { badge: cleanNotice.badge } : {}),
+    ...(cleanNotice.tag ? { tag: cleanNotice.tag } : {}),
+    ...(cleanNotice.renotify ? { renotify: true } : {}),
+    ...(cleanNotice.vibrate.length ? { vibrate: cleanNotice.vibrate } : {}),
+    ...(cleanNotice.timestamp ? { timestamp: cleanNotice.timestamp } : {}),
     createdAt: new Date().toISOString()
   };
   const queued = entries.map((entry) => {
@@ -1995,10 +2019,28 @@ function normalizePushNotice(value) {
   const title = cleanReviewText(value.title, 80) || "Соты";
   const body = cleanReviewText(value.body, 180) || "Новое сообщение";
   const url = cleanPushUrl(value.url);
+  const icon = cleanPushAssetUrl(value.icon);
+  const badge = cleanPushAssetUrl(value.badge);
+  const tag = cleanPushTag(value.tag);
+  const vibrate = cleanPushVibrate(value.vibrate);
+  const timestamp = cleanPushTimestamp(value.timestamp);
+  const renotify = value.renotify === true;
   if (!scope || (scope === "visitor" && !clientId) || !url) {
     return null;
   }
-  return { scope, clientId, title, body, url };
+  return {
+    scope,
+    clientId,
+    title,
+    body,
+    url,
+    icon,
+    badge,
+    tag,
+    renotify,
+    vibrate,
+    timestamp
+  };
 }
 
 function normalizeStoredPushNotice(value) {
@@ -2008,6 +2050,11 @@ function normalizeStoredPushNotice(value) {
   const title = cleanReviewText(value.title, 80) || "Соты";
   const body = cleanReviewText(value.body, 180) || "Новое сообщение";
   const url = cleanPushUrl(value.url);
+  const icon = cleanPushAssetUrl(value.icon);
+  const badge = cleanPushAssetUrl(value.badge);
+  const tag = cleanPushTag(value.tag);
+  const vibrate = cleanPushVibrate(value.vibrate);
+  const timestamp = cleanPushTimestamp(value.timestamp) || Date.parse(cleanReviewText(value.createdAt, 40) || "") || 0;
   if (!url) {
     return null;
   }
@@ -2015,6 +2062,12 @@ function normalizeStoredPushNotice(value) {
     title,
     body,
     url,
+    ...(icon ? { icon } : {}),
+    ...(badge ? { badge } : {}),
+    ...(tag ? { tag } : {}),
+    ...(value.renotify === true ? { renotify: true } : {}),
+    ...(vibrate.length ? { vibrate } : {}),
+    ...(timestamp ? { timestamp } : {}),
     createdAt: cleanReviewText(value.createdAt, 40) || new Date(0).toISOString()
   };
 }
@@ -2022,7 +2075,17 @@ function normalizeStoredPushNotice(value) {
 function publicPushNotice(value) {
   const notice = normalizeStoredPushNotice(value);
   return notice
-    ? { title: notice.title, body: notice.body, url: notice.url }
+    ? {
+        title: notice.title,
+        body: notice.body,
+        url: notice.url,
+        ...(notice.icon ? { icon: notice.icon } : {}),
+        ...(notice.badge ? { badge: notice.badge } : {}),
+        ...(notice.tag ? { tag: notice.tag } : {}),
+        ...(notice.renotify ? { renotify: true } : {}),
+        ...(notice.vibrate?.length ? { vibrate: notice.vibrate } : {}),
+        ...(notice.timestamp ? { timestamp: notice.timestamp } : {})
+      }
     : null;
 }
 
@@ -2267,6 +2330,46 @@ function cleanPushUrl(value) {
   }
 }
 
+function cleanPushAssetUrl(value) {
+  const text = cleanReviewText(value, 240);
+  if (!text) {
+    return "";
+  }
+  try {
+    const origin = "https://soty.local";
+    const url = new URL(text, origin);
+    if (url.origin !== origin) {
+      return "";
+    }
+    return `${url.pathname}${url.search}`.slice(0, 240);
+  } catch {
+    return "";
+  }
+}
+
+function cleanPushTag(value) {
+  return cleanReviewText(value, 140)
+    .replace(/[^\p{L}\p{N}:._/?=@-]+/gu, "-")
+    .replace(/-+/gu, "-")
+    .slice(0, 140);
+}
+
+function cleanPushVibrate(value) {
+  const raw = Array.isArray(value) ? value : typeof value === "number" ? [value] : [];
+  return raw
+    .map((item) => Math.round(Number(item)))
+    .filter((item) => Number.isFinite(item) && item >= 0)
+    .map((item) => Math.min(item, 220))
+    .slice(0, 7);
+}
+
+function cleanPushTimestamp(value) {
+  const number = Math.round(Number(value));
+  return Number.isFinite(number) && number > 0 && number < 4_102_444_800_000
+    ? number
+    : 0;
+}
+
 function normalizePushKeys(value) {
   if (!isPlainRecord(value)) {
     return null;
@@ -2339,6 +2442,21 @@ function spaceMessagesUrl(handle, spaceSlug = "") {
   return encodedSpace
     ? `/@${encodedHandle}/${encodedSpace}?layer=messages`
     : `/@${encodedHandle}?layer=messages`;
+}
+
+function spacePushIconUrl(handle, spaceSlug = "") {
+  const encodedHandle = encodeURIComponent(cleanSlug(handle || "") || "guest");
+  const encodedSpace = encodeURIComponent(cleanSlug(spaceSlug || ""));
+  return encodedSpace
+    ? `/icon/space/${encodedHandle}/${encodedSpace}.svg`
+    : `/icon/space/${encodedHandle}.svg`;
+}
+
+function spacePushTag(handle, spaceSlug = "", clientId = "") {
+  const cleanHandle = cleanSlug(handle || "") || "guest";
+  const cleanSpace = cleanSlug(spaceSlug || "");
+  const cleanClient = cleanMessageClientId(clientId) || "thread";
+  return cleanPushTag(["soty", "messages", cleanHandle, cleanSpace, cleanClient].filter(Boolean).join(":"));
 }
 
 function messagePreviewText(message) {

@@ -1631,7 +1631,8 @@ async function registerPersonalSpacePush(request: PersonalSpaceNotificationReque
       clientId: request.clientId,
       subscription: subscription.toJSON(),
       title: request.title,
-      url: request.url
+      url: request.url,
+      icon: request.icon || ""
     };
     const owner = request.scope === "owner"
       ? await createPersonalOwnerProof(request.route, "messages", data)
