@@ -7532,7 +7532,7 @@ button:disabled {
 
   .personal-topbar,
   .personal-main {
-    width: min(100% - 20px, 1200px);
+    width: min(100% - 16px, 1200px);
   }
 
   .personal-topbar {
@@ -7556,9 +7556,10 @@ button:disabled {
   .personal-hero {
     grid-template-columns: 64px minmax(0, 1fr);
     gap: 10px;
-    padding: 12px;
-    border-radius: 18px;
-    box-shadow: 4px 4px 0 #111412;
+    padding: 10px;
+    border-width: 1px;
+    border-radius: 16px;
+    box-shadow: 3px 3px 0 #111412;
   }
 
   .personal-avatar {
@@ -7615,11 +7616,15 @@ button:disabled {
   .personal-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .personal-actions button {
     min-width: 0;
-    padding-inline: 12px;
+    min-height: 38px;
+    padding-inline: 8px;
+    font-size: 13px;
+    line-height: 1.05;
   }
 
   .personal-actions button:only-child,
@@ -7631,13 +7636,38 @@ button:disabled {
     gap: 10px;
   }
 
+  .personal-panel[data-panel="messages"].is-active {
+    height: 100%;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .personal-panel[data-panel="messages"] > .personal-panel-copy {
+    display: none;
+  }
+
+  .personal-panel[data-panel="messages"] .personal-message-preview {
+    height: 100%;
+    min-height: 0;
+    border-top: 0;
+  }
+
   .personal-social-actions {
     display: none;
   }
 
   .personal-messenger-room {
-    min-height: 340px;
-    border-radius: 16px;
+    height: 100%;
+    min-height: 0;
+    border-radius: 14px;
+  }
+
+  .personal-panel[data-panel="messages"] .personal-messenger-room {
+    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
   }
 
   .personal-messenger-head {
@@ -7659,40 +7689,62 @@ button:disabled {
     font-size: 12px;
   }
 
+  .personal-thread-tools {
+    display: none;
+  }
+
   .personal-thread {
-    padding: 12px;
+    min-height: 0 !important;
+    max-height: none !important;
+    padding: 10px;
+    gap: 8px;
   }
 
   .personal-thread-line {
-    max-width: 92%;
+    max-width: 82%;
+    padding: 9px 10px;
+    border-radius: 13px 13px 13px 4px;
+  }
+
+  .personal-thread-line.is-mine {
+    border-radius: 13px 13px 4px 13px;
+  }
+
+  .personal-thread-line p {
+    font-size: 14px;
+    line-height: 1.32;
+  }
+
+  .personal-thread-line span,
+  .personal-thread-line time {
+    font-size: 11px;
   }
 
   .personal-thread-actions {
-    position: static;
-    justify-self: end;
-    opacity: 1;
-    transform: none;
+    display: none;
   }
 
   .personal-thread-line.is-mine .personal-thread-actions {
-    justify-self: start;
+    display: none;
   }
 
   .personal-message-composer {
-    grid-template-columns: 44px minmax(0, 1fr) 44px;
-    gap: 8px;
-    padding: 10px;
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    gap: 7px;
+    padding: 8px;
   }
 
   .personal-message-composer textarea {
-    min-height: 44px;
-    padding: 11px 12px;
-    border-radius: 14px;
+    min-height: 40px;
+    max-height: 96px;
+    padding: 9px 10px;
+    border-radius: 12px;
+    font-size: 15px;
   }
 
   .personal-message-composer > button {
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
   }
 
   .personal-quick-contacts {
@@ -7738,8 +7790,11 @@ button:disabled {
     grid-template-columns: repeat(5, minmax(0, 1fr));
     grid-template-rows: minmax(0, 1fr);
     overflow-x: auto;
-    border-radius: 14px;
+    min-height: 46px;
+    border-width: 1px;
+    border-radius: 13px;
     background: rgba(241, 241, 241, 0.72);
+    box-shadow: 2px 2px 0 #111412;
   }
 
   .personal-layerbar button {
@@ -7761,8 +7816,13 @@ button:disabled {
   }
 
   .personal-panel {
-    padding-top: 6px;
-    padding-bottom: calc(72px + env(safe-area-inset-bottom));
+    min-height: 0;
+    padding: 14px;
+    padding-bottom: 14px;
+    border-width: 1px;
+    border-radius: 16px;
+    box-shadow: 3px 3px 0 #111412;
+    overflow: hidden;
   }
 
   .personal-panel-action {
