@@ -364,6 +364,7 @@ const personalChessPrefix = "soty:personal-chess:v1:";
 const personalFilesPrefix = "soty:personal-files:v1:";
 const personalThreadPrefix = "soty:personal-thread:v1:";
 const personalMessageClientKey = "soty:personal-message-client:v1";
+const personalNotificationPromptPrefix = "soty:personal-notification-prompt:v1:";
 const personalSocialContactsKey = "soty:personal-social-contacts:v1";
 const personalReactionPrefix = "soty:personal-reaction:v1:";
 const personalReactionClientKey = "soty:personal-reaction-client:v1";
@@ -1409,9 +1410,21 @@ function renderMessagePreview(profile: PersonalSpaceProfile, ownSpace: boolean, 
           <input type="search" maxlength="80" data-thread-search placeholder="${escapeAttr("Поиск")}" aria-label="${escapeAttr("Поиск по диалогу")}">
         </div>
         ${renderThreadLines(lines, ownSpace, false)}
+        ${renderNotificationPrompt()}
         ${renderMessageComposer(ownSpace)}
         <small data-action-note data-error></small>
       </section>
+    </div>
+  `;
+}
+
+function renderNotificationPrompt(): string {
+  return `
+    <div class="personal-notification-prompt" data-notification-prompt hidden>
+      <span aria-hidden="true">${icon("bell")}</span>
+      <b>Не пропустить ответ?</b>
+      <button type="button" data-notification-enable>Включить</button>
+      <button type="button" data-notification-dismiss aria-label="${escapeAttr("Не сейчас")}">${icon("close")}</button>
     </div>
   `;
 }
@@ -2241,9 +2254,11 @@ async function enablePersonalNotifications(root: HTMLElement, button: HTMLButton
   }
   if (result.ok) {
     button.textContent = "Включено";
+    hidePersonalNotificationPrompt(root);
     return;
   }
   button.disabled = false;
+  updatePersonalNotificationPrompt(root, profile, options);
 }
 
 function personalNotificationRequest(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): PersonalSpaceNotificationRequest | null {
@@ -2280,6 +2295,55 @@ function personalNotificationRequest(root: HTMLElement, profile: PersonalSpacePr
 
 function personalNotificationsAlreadyGranted(): boolean {
   return "Notification" in window && Notification.permission === "granted";
+}
+
+function updatePersonalNotificationPrompt(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions, hasConversationActivity = false): void {
+  const messenger = root.querySelector<HTMLElement>("[data-personal-messenger]");
+  const prompt = messenger?.querySelector<HTMLElement>("[data-notification-prompt]");
+  if (!messenger || !prompt) {
+    return;
+  }
+  if (hasConversationActivity) {
+    messenger.dataset.notificationPromptArmed = "true";
+  }
+  const request = personalNotificationRequest(root, profile, options);
+  const shouldShow = messenger.dataset.notificationPromptArmed === "true"
+    && Boolean(request)
+    && options.canNotify()
+    && !personalNotificationsAlreadyGranted()
+    && !personalNotificationPromptSnoozed(messenger, options);
+  prompt.hidden = !shouldShow;
+}
+
+function hidePersonalNotificationPrompt(root: HTMLElement): void {
+  root.querySelector<HTMLElement>("[data-notification-prompt]")?.setAttribute("hidden", "");
+}
+
+function dismissPersonalNotificationPrompt(messenger: HTMLElement, options: PersonalSpacePageOptions): void {
+  try {
+    window.localStorage.setItem(personalNotificationPromptKey(messenger, options), String(Date.now()));
+  } catch {
+    // A blocked storage write should not trap the messenger UI.
+  }
+  messenger.querySelector<HTMLElement>("[data-notification-prompt]")?.setAttribute("hidden", "");
+  setMessengerNote(messenger, "Хорошо.");
+}
+
+function personalNotificationPromptSnoozed(messenger: HTMLElement, options: PersonalSpacePageOptions, now = Date.now()): boolean {
+  try {
+    const timestamp = Number(window.localStorage.getItem(personalNotificationPromptKey(messenger, options)) || 0);
+    return Number.isFinite(timestamp) && now - timestamp < 7 * 24 * 60 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+function personalNotificationPromptKey(messenger: HTMLElement, options: PersonalSpacePageOptions): string {
+  const owner = messenger.classList.contains("is-owner");
+  const peer = owner
+    ? cleanMessageClientId(messenger.dataset.clientId || "") || "owner"
+    : cleanRoutePart(messenger.dataset.actor || loadLocalHandle() || "guest") || "guest";
+  return `${personalNotificationPromptPrefix}${routeUrl(options.route)}:${owner ? "owner" : "visitor"}:${peer}`;
 }
 
 function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
@@ -2405,6 +2469,18 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
       selectThreadLine(messenger, reactButton.closest<HTMLElement>("[data-thread-line]"), true);
       return;
     }
+    const notificationEnable = target?.closest<HTMLButtonElement>("[data-notification-enable]");
+    if (notificationEnable && messenger.contains(notificationEnable)) {
+      event.preventDefault();
+      void enablePersonalNotifications(root, notificationEnable, profile, options);
+      return;
+    }
+    const notificationDismiss = target?.closest<HTMLButtonElement>("[data-notification-dismiss]");
+    if (notificationDismiss && messenger.contains(notificationDismiss)) {
+      event.preventDefault();
+      dismissPersonalNotificationPrompt(messenger, options);
+      return;
+    }
     const line = target?.closest<HTMLElement>("[data-thread-line]");
     if (line && messenger.contains(line) && !isMessengerInteractiveTarget(target)) {
       if (skipNextLineClick) {
@@ -2484,6 +2560,7 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
   if (notificationRequest && personalNotificationsAlreadyGranted()) {
     void options.syncNotifications(notificationRequest);
   }
+  updatePersonalNotificationPrompt(root, profile, options, !ownSpace && loadPersonalThread(profile, cleanRoutePart(messenger.dataset.actor || "") || "guest").length > 0);
 }
 
 async function submitMessengerMessage(
@@ -2563,6 +2640,7 @@ async function submitMessengerMessage(
   savePersonalThread(profile, storageKey, lines);
   renderMessengerThread(thread, lines, ownSpace);
   setMessengerNote(messenger, result.message);
+  updatePersonalNotificationPrompt(rootForMessenger(messenger), profile, options, true);
   await hydrateMessengerThread(rootForMessenger(messenger), profile, options, clientId, ownSpace);
   startThreadRefresh(rootForMessenger(messenger), profile, options, clientId, ownSpace);
   if (button) {
@@ -2911,12 +2989,14 @@ async function hydrateMessengerThread(
   }
   noticePersonalThreadMessages(profile, options.route, messages, cleanClientId, ownSpace);
   if (messages.length === 0) {
+    updatePersonalNotificationPrompt(root, profile, options, false);
     return;
   }
   const actor = cleanRoutePart(messenger.dataset.actor || loadLocalHandle() || "guest") || "guest";
   const lines = threadMessagesToLines(messages, profile, actor, ownSpace);
   savePersonalThread(profile, ownSpace ? cleanClientId : actor, lines);
   renderMessengerThread(messenger.querySelector<HTMLElement>("[data-personal-thread]"), lines, ownSpace);
+  updatePersonalNotificationPrompt(root, profile, options, true);
 }
 
 function startThreadRefresh(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions, clientId: string, ownSpace: boolean): void {

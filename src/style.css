@@ -2153,6 +2153,69 @@ button.personal-avatar {
   height: 19px;
 }
 
+.personal-notification-prompt {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto 34px;
+  align-items: center;
+  gap: 8px;
+  margin: 0 12px 10px;
+  padding: 8px;
+  border: 1px solid rgba(17, 20, 18, 0.18);
+  border-radius: 12px;
+  background: #f7f9f5;
+  color: #111412;
+}
+
+.personal-notification-prompt[hidden] {
+  display: none;
+}
+
+.personal-notification-prompt > span {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(17, 20, 18, 0.22);
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.personal-notification-prompt b {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.personal-notification-prompt button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.personal-notification-prompt button[data-notification-enable] {
+  border-color: #111412;
+  background: #111412;
+  color: #ffffff;
+}
+
+.personal-notification-prompt button[data-notification-dismiss] {
+  width: 34px;
+  padding: 0;
+  border-color: rgba(17, 20, 18, 0.22);
+  background: #ffffff;
+  color: #111412;
+}
+
+.personal-notification-prompt svg {
+  width: 15px;
+  height: 15px;
+}
+
 .personal-message-preview small[data-action-note] {
   min-height: 28px;
   display: block;
@@ -7957,6 +8020,22 @@ button:disabled {
   .personal-message-composer > button {
     width: 40px;
     height: 40px;
+  }
+
+  .personal-notification-prompt {
+    grid-template-columns: 24px minmax(0, 1fr) auto 32px;
+    margin: 0 8px 8px;
+    padding: 7px;
+  }
+
+  .personal-notification-prompt button[data-notification-enable] {
+    min-height: 32px;
+    padding: 0 10px;
+  }
+
+  .personal-notification-prompt button[data-notification-dismiss] {
+    width: 32px;
+    min-height: 32px;
   }
 
   .personal-thread-attachment {
