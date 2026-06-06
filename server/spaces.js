@@ -65,10 +65,10 @@ export function attachSpaces(app, { dataDir } = {}) {
   app.post("/api/spaces/:handle/:space/reviews", express.json({ limit: "24kb" }), async (req, res) => {
     await saveSpaceReview(reviewStore, req, res);
   });
-  app.post("/api/spaces/:handle/messages", express.json({ limit: "1200kb" }), async (req, res) => {
+  app.post("/api/spaces/:handle/messages", express.json({ limit: "14mb" }), async (req, res) => {
     await saveSpaceMessage(messageStore, req, res);
   });
-  app.post("/api/spaces/:handle/:space/messages", express.json({ limit: "1200kb" }), async (req, res) => {
+  app.post("/api/spaces/:handle/:space/messages", express.json({ limit: "14mb" }), async (req, res) => {
     await saveSpaceMessage(messageStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/thread", express.json({ limit: "12kb" }), async (req, res) => {
@@ -77,10 +77,10 @@ export function attachSpaces(app, { dataDir } = {}) {
   app.post("/api/spaces/:handle/:space/messages/thread", express.json({ limit: "12kb" }), async (req, res) => {
     await sendSpaceThread(messageStore, ownerStore, req, res);
   });
-  app.post("/api/spaces/:handle/messages/reply", express.json({ limit: "1200kb" }), async (req, res) => {
+  app.post("/api/spaces/:handle/messages/reply", express.json({ limit: "14mb" }), async (req, res) => {
     await saveSpaceReply(messageStore, ownerStore, req, res);
   });
-  app.post("/api/spaces/:handle/:space/messages/reply", express.json({ limit: "1200kb" }), async (req, res) => {
+  app.post("/api/spaces/:handle/:space/messages/reply", express.json({ limit: "14mb" }), async (req, res) => {
     await saveSpaceReply(messageStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/react", express.json({ limit: "12kb" }), async (req, res) => {
@@ -437,6 +437,13 @@ async function sendSpaceThread(messageStore, ownerStore, req, res) {
   });
   if (touched) {
     await writeSpaceMessages(messageStore, handle, spaceSlug, next);
+    await mirrorDirectSpaceThreadUpdates(messageStore, {
+      sourceHandle: handle,
+      sourceSpaceSlug: spaceSlug,
+      targetHandle: directThreadPeerHandle(next, clientId, handle),
+      clientId,
+      messages: next
+    });
   }
   const messages = next
     .filter((message) => message.clientId === clientId)
@@ -536,6 +543,12 @@ async function saveSpaceMessageReaction(messageStore, ownerStore, req, res) {
     return;
   }
   await writeSpaceMessages(messageStore, handle, spaceSlug, next);
+  await mirrorDirectSpaceMessageUpdate(messageStore, {
+    sourceHandle: handle,
+    sourceSpaceSlug: spaceSlug,
+    targetHandle: directThreadPeerHandle(next, reaction.clientId, handle),
+    message: target
+  });
   res.setHeader("Cache-Control", "no-store");
   res.json({ ok: true, message: publicMessage(target) });
 }
@@ -557,6 +570,71 @@ async function mirrorDirectSpaceMessage(messageStore, options) {
     return;
   }
   await writeSpaceMessages(messageStore, targetHandle, "", [message, ...entries].slice(0, 200));
+}
+
+async function mirrorDirectSpaceMessageUpdate(messageStore, options) {
+  const sourceHandle = cleanSlug(options?.sourceHandle || "");
+  const sourceSpaceSlug = cleanSlug(options?.sourceSpaceSlug || "");
+  const targetHandle = cleanSlug(options?.targetHandle || "");
+  const message = normalizeStoredMessage(options?.message);
+  if (!sourceHandle || sourceSpaceSlug || !targetHandle || targetHandle === sourceHandle || !message || !isDirectMessageClientId(message.clientId)) {
+    return;
+  }
+  const entries = await readSpaceMessages(messageStore, targetHandle, "");
+  let changed = false;
+  const next = entries.map((entry) => {
+    if (entry.id !== message.id || entry.clientId !== message.clientId) {
+      return entry;
+    }
+    changed = true;
+    return {
+      ...entry,
+      reactions: normalizeMessageReactionMap(message.reactions),
+      ...(message.readByOwnerAt ? { readByOwnerAt: message.readByOwnerAt } : {}),
+      ...(message.readByVisitorAt ? { readByVisitorAt: message.readByVisitorAt } : {})
+    };
+  });
+  if (changed) {
+    await writeSpaceMessages(messageStore, targetHandle, "", next);
+  }
+}
+
+async function mirrorDirectSpaceThreadUpdates(messageStore, options) {
+  const sourceHandle = cleanSlug(options?.sourceHandle || "");
+  const sourceSpaceSlug = cleanSlug(options?.sourceSpaceSlug || "");
+  const targetHandle = cleanSlug(options?.targetHandle || "");
+  const clientId = cleanMessageClientId(options?.clientId);
+  if (!sourceHandle || sourceSpaceSlug || !targetHandle || targetHandle === sourceHandle || !isDirectMessageClientId(clientId)) {
+    return;
+  }
+  const updates = new Map();
+  for (const rawMessage of Array.isArray(options?.messages) ? options.messages : []) {
+    const message = normalizeStoredMessage(rawMessage);
+    if (message?.clientId === clientId) {
+      updates.set(message.id, message);
+    }
+  }
+  if (updates.size === 0) {
+    return;
+  }
+  const entries = await readSpaceMessages(messageStore, targetHandle, "");
+  let changed = false;
+  const next = entries.map((entry) => {
+    const message = updates.get(entry.id);
+    if (!message || message.clientId !== entry.clientId) {
+      return entry;
+    }
+    changed = true;
+    return {
+      ...entry,
+      reactions: normalizeMessageReactionMap(message.reactions),
+      ...(message.readByOwnerAt ? { readByOwnerAt: message.readByOwnerAt } : {}),
+      ...(message.readByVisitorAt ? { readByVisitorAt: message.readByVisitorAt } : {})
+    };
+  });
+  if (changed) {
+    await writeSpaceMessages(messageStore, targetHandle, "", next);
+  }
 }
 
 function directThreadPeerHandle(entries, clientId, currentHandle) {
@@ -1755,12 +1833,12 @@ function cleanAttachmentType(value) {
 
 function safeAttachmentSize(value) {
   const number = Number(value);
-  return Number.isSafeInteger(number) && number > 0 && number <= 900_000 ? number : 0;
+  return Number.isSafeInteger(number) && number > 0 && number <= 8_000_000 ? number : 0;
 }
 
 function cleanAttachmentDataUrl(value) {
   const text = String(typeof value === "string" ? value : "").trim();
-  if (text.length < 20 || text.length > 1_250_000) {
+  if (text.length < 20 || text.length > 11_200_000) {
     return "";
   }
   const match = text.match(/^data:([a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*);base64,([a-z0-9+/=]+)$/iu);
@@ -1768,7 +1846,7 @@ function cleanAttachmentDataUrl(value) {
     return "";
   }
   const bytes = Buffer.from(match[2], "base64");
-  if (bytes.length <= 0 || bytes.length > 900_000) {
+  if (bytes.length <= 0 || bytes.length > 8_000_000) {
     return "";
   }
   return text;

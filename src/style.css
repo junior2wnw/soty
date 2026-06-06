@@ -1753,6 +1753,7 @@ button.personal-avatar {
   padding: 10px 12px;
   border: 1px solid #111412;
   border-radius: 14px 14px 14px 4px;
+  outline: 0;
   background: #ffffff;
   color: #111412;
   animation: personalPanelIn 140ms cubic-bezier(.2, .8, .2, 1);
@@ -1762,6 +1763,18 @@ button.personal-avatar {
   justify-self: end;
   border-radius: 14px 14px 4px 14px;
   background: #d7ff65;
+}
+
+.personal-thread-line.is-selected {
+  box-shadow: 0 0 0 3px rgba(215, 255, 101, 0.55);
+}
+
+.personal-thread-line:focus-visible {
+  box-shadow: 0 0 0 3px rgba(17, 20, 18, 0.18);
+}
+
+.personal-thread-line.is-selected:focus-visible {
+  box-shadow: 0 0 0 3px rgba(215, 255, 101, 0.65), 0 0 0 5px rgba(17, 20, 18, 0.18);
 }
 
 .personal-thread-line span,
@@ -1898,6 +1911,7 @@ button.personal-avatar {
   display: flex;
   gap: 4px;
   opacity: 0;
+  pointer-events: none;
   transform: translateY(-50%);
   transition: opacity 140ms ease;
 }
@@ -1908,8 +1922,10 @@ button.personal-avatar {
 }
 
 .personal-thread-line:hover .personal-thread-actions,
-.personal-thread-line:focus-within .personal-thread-actions {
+.personal-thread-line:focus-within .personal-thread-actions,
+.personal-thread-line.is-selected .personal-thread-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .personal-thread-actions button {
@@ -2216,6 +2232,14 @@ button.personal-avatar {
   box-shadow: inset 3px 0 0 #111412;
 }
 
+.personal-message-preview .personal-inbox-item.has-unread {
+  background: rgba(215, 255, 101, 0.22);
+}
+
+.personal-message-preview .personal-inbox-item.has-unread span {
+  color: #111412;
+}
+
 .personal-inbox-item span,
 .personal-inbox-item time {
   color: #5b6561;
@@ -2235,6 +2259,28 @@ button.personal-avatar {
   font-size: 14px;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.personal-inbox-item small {
+  grid-column: 1 / -1;
+  width: fit-content;
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid rgba(17, 20, 18, 0.18);
+  border-radius: 999px;
+  color: #5b6561;
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 11px;
+  font-weight: 860;
+  line-height: 1;
+}
+
+.personal-inbox-item.has-unread small {
+  border-color: #111412;
+  background: #d7ff65;
+  color: #111412;
 }
 
 .personal-social-card {
@@ -7724,8 +7770,26 @@ button:disabled {
     display: none;
   }
 
-  .personal-thread-line.is-mine .personal-thread-actions {
-    display: none;
+  .personal-thread-line.is-selected {
+    max-width: min(92%, 360px);
+  }
+
+  .personal-thread-line.is-selected .personal-thread-actions,
+  .personal-thread-line.is-mine.is-selected .personal-thread-actions {
+    position: static;
+    display: flex;
+    justify-self: start;
+    align-items: center;
+    gap: 6px;
+    margin-top: 3px;
+    opacity: 1;
+    pointer-events: auto;
+    transform: none;
+  }
+
+  .personal-thread-line.is-selected .personal-thread-actions button {
+    width: 34px;
+    height: 34px;
   }
 
   .personal-message-composer {

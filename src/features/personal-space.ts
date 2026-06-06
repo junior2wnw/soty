@@ -367,7 +367,8 @@ const personalMessageNoticeGroups = new Set<string>();
 const personalMessengerAttachments = new WeakMap<HTMLElement, PersonalSpaceMessageAttachment>();
 const personalMessengerReplies = new WeakMap<HTMLElement, PersonalSpaceMessageReplyRef>();
 const personalFileLimit = 8;
-const personalFileMaxBytes = 900_000;
+const personalFileMaxBytes = 8_000_000;
+const personalFileDataUrlMaxChars = 11_200_000;
 const personalSocialContactLimit = 24;
 const internalContactLabels = new Set(["чат", "страница"]);
 
@@ -2241,6 +2242,18 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
   }
   textarea.required = false;
   const ownSpace = isRenderedOwnSpace(root);
+  let holdTimer = 0;
+  let holdX = 0;
+  let holdY = 0;
+  let holdLine: HTMLElement | null = null;
+  let skipNextLineClick = false;
+  const cancelHold = () => {
+    if (holdTimer) {
+      window.clearTimeout(holdTimer);
+      holdTimer = 0;
+    }
+    holdLine = null;
+  };
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const text = cleanText(textarea.value || "", 420);
@@ -2278,7 +2291,7 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
     void messageAttachmentFromFile(file)
       .then((attachment) => {
         if (!attachment) {
-          setMessengerNote(messenger, "Файл не подошел.");
+          setMessengerNote(messenger, messageAttachmentRejectText(file));
           return;
         }
         setMessengerAttachment(messenger, attachment);
@@ -2293,7 +2306,7 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
         textarea.focus();
       })
       .catch(() => {
-        setMessengerNote(messenger, "Файл не подошел.");
+        setMessengerNote(messenger, messageAttachmentRejectText(file));
       });
   });
   messenger.addEventListener("click", (event) => {
@@ -2322,10 +2335,79 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
       }
       return;
     }
+    const copyButton = target?.closest<HTMLButtonElement>("[data-thread-copy]");
+    if (copyButton && messenger.contains(copyButton)) {
+      event.preventDefault();
+      const line = copyButton.closest<HTMLElement>("[data-thread-line]");
+      const text = cleanText(line?.dataset.threadText || "", 420);
+      void copyText(text);
+      setMessengerNote(messenger, text ? "Скопировано." : "Нечего копировать.");
+      clearThreadSelection(messenger);
+      return;
+    }
     const reactButton = target?.closest<HTMLButtonElement>("[data-thread-react]");
     if (reactButton && messenger.contains(reactButton)) {
       event.preventDefault();
       void submitMessengerReaction(messenger, profile, reactButton, ownSpace, options);
+      selectThreadLine(messenger, reactButton.closest<HTMLElement>("[data-thread-line]"), true);
+      return;
+    }
+    const line = target?.closest<HTMLElement>("[data-thread-line]");
+    if (line && messenger.contains(line) && !isMessengerInteractiveTarget(target)) {
+      if (skipNextLineClick) {
+        skipNextLineClick = false;
+        return;
+      }
+      if (messenger.querySelector(".personal-thread-line.is-selected")) {
+        event.preventDefault();
+        toggleThreadLineSelection(messenger, line);
+      }
+    }
+  });
+  messenger.addEventListener("pointerdown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const line = target?.closest<HTMLElement>("[data-thread-line]");
+    if (!line || !messenger.contains(line) || isMessengerInteractiveTarget(target)) {
+      return;
+    }
+    cancelHold();
+    holdLine = line;
+    holdX = event.clientX;
+    holdY = event.clientY;
+    holdTimer = window.setTimeout(() => {
+      if (!holdLine) {
+        return;
+      }
+      skipNextLineClick = true;
+      selectThreadLine(messenger, holdLine, true);
+      holdLine.focus({ preventScroll: true });
+      navigator.vibrate?.(18);
+      holdTimer = 0;
+    }, 420);
+  });
+  messenger.addEventListener("pointermove", (event) => {
+    if (!holdTimer) {
+      return;
+    }
+    if (Math.abs(event.clientX - holdX) > 8 || Math.abs(event.clientY - holdY) > 8) {
+      cancelHold();
+    }
+  });
+  messenger.addEventListener("pointerup", cancelHold);
+  messenger.addEventListener("pointercancel", cancelHold);
+  messenger.addEventListener("contextmenu", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const line = target?.closest<HTMLElement>("[data-thread-line]");
+    if (!line || !messenger.contains(line) || isMessengerInteractiveTarget(target)) {
+      return;
+    }
+    event.preventDefault();
+    selectThreadLine(messenger, line, true);
+    line.focus({ preventScroll: true });
+  });
+  messenger.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      clearThreadSelection(messenger);
     }
   });
   searchInput?.addEventListener("input", () => {
@@ -2335,6 +2417,11 @@ function bindPersonalMessenger(root: HTMLElement, profile: PersonalSpaceProfile,
     filterOwnerInbox(messenger, inboxSearch.value);
   });
   textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      clearThreadSelection(messenger);
+      clearMessengerReply(messenger);
+      return;
+    }
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !event.isComposing) {
       event.preventDefault();
       form.requestSubmit();
@@ -2430,13 +2517,34 @@ function renderMessengerThread(thread: HTMLElement | null, lines: readonly Perso
   if (!thread) {
     return;
   }
+  const signature = personalThreadSignature(lines);
+  if (thread.dataset.threadSignature === signature) {
+    return;
+  }
+  const shouldStickToBottom = !thread.dataset.threadSignature
+    || thread.scrollHeight - thread.scrollTop - thread.clientHeight < 72;
   thread.innerHTML = renderThreadLineItems(lines, ownSpace);
+  thread.dataset.threadSignature = signature;
   const messenger = thread.closest<HTMLElement>("[data-personal-messenger]");
   const search = messenger?.querySelector<HTMLInputElement>("[data-thread-search]");
   if (messenger && search?.value) {
     filterMessengerThread(messenger, search.value);
   }
-  thread.scrollTop = thread.scrollHeight;
+  if (shouldStickToBottom) {
+    thread.scrollTop = thread.scrollHeight;
+  }
+}
+
+function personalThreadSignature(lines: readonly PersonalThreadLine[]): string {
+  return lines.map((line) => [
+    line.id,
+    line.text,
+    line.status || "",
+    line.createdAt,
+    line.replyTo ? `${line.replyTo.id}:${line.replyTo.text}` : "",
+    line.attachment ? `${line.attachment.name}:${line.attachment.size}` : "",
+    Object.entries(line.reactions || {}).sort(([left], [right]) => left.localeCompare(right)).map(([key, count]) => `${key}:${count}`).join(",")
+  ].join("|")).join("~");
 }
 
 function setMessengerNote(messenger: HTMLElement, message: string): void {
@@ -2507,6 +2615,16 @@ async function messageAttachmentFromFile(file: File): Promise<PersonalSpaceMessa
   });
 }
 
+function messageAttachmentRejectText(file: File): string {
+  if (file.size <= 0) {
+    return "Файл пустой.";
+  }
+  if (file.size > personalFileMaxBytes) {
+    return `Файл больше ${personalFileSize(personalFileMaxBytes)}.`;
+  }
+  return "Файл не прочитался.";
+}
+
 function filterMessengerThread(messenger: HTMLElement, query: string): void {
   const needle = cleanText(query, 80).toLocaleLowerCase("ru-RU");
   messenger.querySelectorAll<HTMLElement>("[data-thread-line]").forEach((line) => {
@@ -2529,6 +2647,42 @@ function filterOwnerInbox(root: ParentNode, query: string): void {
     const haystack = `${item.dataset.inboxAuthor || ""} ${item.dataset.inboxSearch || ""}`.toLocaleLowerCase("ru-RU");
     item.hidden = !haystack.includes(needle);
   });
+}
+
+function isMessengerInteractiveTarget(target: Element | null): boolean {
+  return Boolean(target?.closest("button,a,input,textarea,label,select,[contenteditable='true']"));
+}
+
+function setThreadLineSelected(line: HTMLElement, selected: boolean): void {
+  line.classList.toggle("is-selected", selected);
+  line.setAttribute("aria-selected", selected ? "true" : "false");
+}
+
+function clearThreadSelection(messenger: HTMLElement): void {
+  messenger.querySelectorAll<HTMLElement>(".personal-thread-line.is-selected").forEach((line) => {
+    setThreadLineSelected(line, false);
+  });
+}
+
+function selectThreadLine(messenger: HTMLElement, line: HTMLElement | null, single: boolean): void {
+  if (!line || !messenger.contains(line)) {
+    return;
+  }
+  if (single) {
+    clearThreadSelection(messenger);
+  }
+  setThreadLineSelected(line, true);
+  setMessengerNote(messenger, "Сообщение выбрано.");
+}
+
+function toggleThreadLineSelection(messenger: HTMLElement, line: HTMLElement): void {
+  const selected = line.classList.contains("is-selected");
+  setThreadLineSelected(line, !selected);
+  if (!messenger.querySelector(".personal-thread-line.is-selected")) {
+    setMessengerNote(messenger, "");
+  } else {
+    setMessengerNote(messenger, "Сообщение выбрано.");
+  }
 }
 
 function threadLineReplyRefFromNode(node: HTMLElement | null): PersonalSpaceMessageReplyRef | null {
@@ -2597,7 +2751,11 @@ async function hydrateOwnerInbox(root: HTMLElement, profile: PersonalSpaceProfil
     return;
   }
   noticePersonalOwnerInbox(profile, options.route, messages);
-  inbox.innerHTML = renderInboxItems(messages, selectedClientId);
+  const signature = personalInboxSignature(messages, selectedClientId);
+  if (inbox.dataset.inboxSignature !== signature) {
+    inbox.innerHTML = renderInboxItems(messages, selectedClientId);
+    inbox.dataset.inboxSignature = signature;
+  }
   filterOwnerInbox(root, root.querySelector<HTMLInputElement>("[data-inbox-search]")?.value || "");
   if (!selectedClientId && messages[0]?.clientId && document.visibilityState === "visible") {
     const first = inbox.querySelector<HTMLElement>("[data-inbox-client-id]");
@@ -2605,6 +2763,23 @@ async function hydrateOwnerInbox(root: HTMLElement, profile: PersonalSpaceProfil
       await openOwnerConversation(root, first, profile, options);
     }
   }
+}
+
+function personalInboxSignature(messages: readonly PersonalSpaceInboxMessage[], selectedClientId: string): string {
+  return [
+    selectedClientId,
+    messages.slice(0, 8).map((message) => [
+      message.id,
+      message.clientId,
+      message.author,
+      message.sender,
+      message.text,
+      message.readByOwnerAt || "",
+      message.readByVisitorAt || "",
+      message.createdAt,
+      message.attachment ? `${message.attachment.name}:${message.attachment.size}` : ""
+    ].join("|")).join("~")
+  ].join("::");
 }
 
 function startOwnerInboxRefresh(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
@@ -2831,13 +3006,18 @@ function renderInboxItems(messages: readonly PersonalSpaceInboxMessage[], select
   if (messages.length === 0) {
     return `<section class="personal-empty">${icon("mail")} <span>Сообщений пока нет.</span></section>`;
   }
-  return messages.slice(0, 8).map((message) => `
-    <button class="personal-inbox-item${message.clientId === selectedClientId ? " is-active" : ""}" type="button" data-inbox-client-id="${escapeAttr(message.clientId)}" data-inbox-author="${escapeAttr(message.author)}" data-inbox-search="${escapeAttr(messagePreviewText(message))}">
+  return messages.slice(0, 8).map((message) => {
+    const unread = message.sender !== "owner" && !message.readByOwnerAt;
+    const state = unread ? "новое" : message.sender === "owner" ? "вы ответили" : "прочитано";
+    return `
+    <button class="personal-inbox-item${message.clientId === selectedClientId ? " is-active" : ""}${unread ? " has-unread" : ""}" type="button" data-inbox-client-id="${escapeAttr(message.clientId)}" data-inbox-author="${escapeAttr(message.author)}" data-inbox-search="${escapeAttr(messagePreviewText(message))}">
       <span>${escapeHtml(message.author)}</span>
-      <p>${escapeHtml(messagePreviewText(message))}</p>
       <time>${escapeHtml(threadTime(message.createdAt))}</time>
+      <p>${escapeHtml(messagePreviewText(message))}</p>
+      <small>${escapeHtml(state)}</small>
     </button>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: boolean): string {
@@ -2845,7 +3025,7 @@ function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: b
     return `<section class="personal-empty personal-thread-empty">${icon("mail")} <span>${escapeHtml(ownSpace ? "Выберите диалог справа." : "Переписка начнется здесь.")}</span></section>`;
   }
   return lines.map((line) => `
-    <article class="personal-thread-line${line.mine ? " is-mine" : ""}${line.status ? ` is-${line.status}` : ""}" data-thread-line data-thread-id="${escapeAttr(line.id)}" data-thread-author="${escapeAttr(line.author)}" data-thread-text="${escapeAttr(messagePreviewText(line))}">
+    <article class="personal-thread-line${line.mine ? " is-mine" : ""}${line.status ? ` is-${line.status}` : ""}" data-thread-line data-thread-id="${escapeAttr(line.id)}" data-thread-author="${escapeAttr(line.author)}" data-thread-text="${escapeAttr(messagePreviewText(line))}" tabindex="0" aria-selected="false">
       <span>${escapeHtml(line.author)}</span>
       ${line.replyTo ? renderMessageReplyRef(line.replyTo) : ""}
       ${line.text ? `<p>${escapeHtml(line.text)}</p>` : ""}
@@ -2854,6 +3034,7 @@ function renderThreadLineItems(lines: readonly PersonalThreadLine[], ownSpace: b
       ${line.status === "sending" ? "" : `
         <div class="personal-thread-actions" aria-label="${escapeAttr("Действия сообщения")}">
           <button type="button" data-thread-reply aria-label="${escapeAttr("Ответить")}">${icon("reply")}</button>
+          <button type="button" data-thread-copy aria-label="${escapeAttr("Копировать")}">${icon("copy")}</button>
           <button type="button" data-thread-react data-reaction-key="heart" aria-label="${escapeAttr("Сердце")}">${icon("heart")}</button>
           <button type="button" data-thread-react data-reaction-key="check" aria-label="${escapeAttr("Готово")}">${icon("check")}</button>
         </div>
@@ -4157,7 +4338,7 @@ function isPersonalFile(value: PersonalFileItem | null): value is PersonalFileIt
 
 function cleanPersonalFileDataUrl(value: unknown): string {
   const text = typeof value === "string" ? value.trim() : "";
-  if (text.length > 1_400_000) {
+  if (text.length > personalFileDataUrlMaxChars) {
     return "";
   }
   return /^data:[a-z0-9.+/-]{1,100};base64,[a-z0-9+/=]+$/iu.test(text) ? text : "";
