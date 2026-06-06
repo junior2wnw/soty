@@ -3096,7 +3096,6 @@ async function showPersonalMessageNotice(profile: PersonalSpaceProfile, title: s
     icon: iconUrl || personalProfileIconUrl(profile),
     badge: "/icon.svg",
     tag: personalNoticeTag(url, noticeTitle),
-    renotify: true,
     silent: false,
     vibrate: vibration,
     timestamp: Date.now()

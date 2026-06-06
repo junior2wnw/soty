@@ -423,7 +423,6 @@ async function saveSpaceMessage(messageStore, pushStore, req, res) {
     icon: spacePushIconUrl(message.author),
     badge: "/icon.svg",
     tag: spacePushTag(handle, spaceSlug, message.clientId),
-    renotify: true,
     vibrate: [24, 36, 24],
     timestamp: Date.now()
   });
@@ -527,7 +526,6 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
       icon: spacePushIconUrl(handle, spaceSlug),
       badge: "/icon.svg",
       tag: spacePushTag(peerHandle, "", reply.clientId),
-      renotify: true,
       vibrate: [24, 36, 24],
       timestamp: Date.now()
     });
@@ -541,7 +539,6 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
     icon: spacePushIconUrl(handle, spaceSlug),
     badge: "/icon.svg",
     tag: spacePushTag(handle, spaceSlug, reply.clientId),
-    renotify: true,
     vibrate: [24, 36, 24],
     timestamp: Date.now()
   });
@@ -771,27 +768,8 @@ async function saveSpacePushSubscription(pushStore, ownerStore, req, res) {
     updatedAt: now
   }, ...withoutCurrent].slice(0, 120);
   await writePushSubscriptions(pushStore, handle, spaceSlug, next);
-  let test = "";
-  if (data.test === true) {
-    const keys = await readOrCreatePushKeys(pushStore);
-    test = await sendNoticeWebPush(record, keys, {
-      title: "Соты",
-      body: "Оповещения включены.",
-      url: record.url || spaceMessagesUrl(handle, spaceSlug),
-      icon: record.icon || spacePushIconUrl(handle, spaceSlug),
-      badge: "/icon.svg",
-      tag: cleanPushTag(`soty:push-test:${handle}:${spaceSlug || "card"}:${record.scope}:${record.clientId || "owner"}`),
-      renotify: true,
-      vibrate: [24, 36, 24],
-      timestamp: Date.now(),
-      createdAt: new Date().toISOString()
-    });
-    if (test === "gone") {
-      await writePushSubscriptions(pushStore, handle, spaceSlug, next.filter((entry) => entry.endpoint !== record.endpoint));
-    }
-  }
   res.setHeader("Cache-Control", "no-store");
-  res.json({ ok: true, ...(test ? { test } : {}) });
+  res.json({ ok: true });
 }
 
 async function pullPushNotices(pushStore, req, res) {

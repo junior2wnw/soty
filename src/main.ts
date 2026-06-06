@@ -1632,8 +1632,7 @@ async function registerPersonalSpacePush(request: PersonalSpaceNotificationReque
       subscription: subscription.toJSON(),
       title: request.title,
       url: request.url,
-      icon: request.icon || "",
-      test: verbose
+      icon: request.icon || ""
     };
     const owner = request.scope === "owner"
       ? await createPersonalOwnerProof(request.route, "messages", data)
@@ -1656,17 +1655,10 @@ async function registerPersonalSpacePush(request: PersonalSpaceNotificationReque
       },
       body: JSON.stringify(owner ? { data, owner } : data)
     });
-    const payload = await response.json().catch(() => null) as unknown;
     if (!response.ok) {
       return verbose
         ? { ok: false, message: "Push-подписка не сохранилась." }
         : { ok: false, message: "" };
-    }
-    if (verbose && isRecord(payload) && payload.test === "sent") {
-      return { ok: true, message: "Оповещения включены. Сейчас должно прийти тестовое." };
-    }
-    if (verbose && isRecord(payload) && payload.test && payload.test !== "sent") {
-      return { ok: true, message: "Оповещения включены, тест пока не дошел." };
     }
     return { ok: true, message: "Оповещения включены." };
   } catch {
