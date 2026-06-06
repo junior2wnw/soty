@@ -76,10 +76,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await saveSpaceReview(reviewStore, req, res);
   });
   app.post("/api/spaces/:handle/messages", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceMessage(messageStore, pushStore, req, res);
+    await saveSpaceMessage(messageStore, pushStore, photoStore, req, res);
   });
   app.post("/api/spaces/:handle/:space/messages", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceMessage(messageStore, pushStore, req, res);
+    await saveSpaceMessage(messageStore, pushStore, photoStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/thread", express.json({ limit: "12kb" }), async (req, res) => {
     await sendSpaceThread(messageStore, ownerStore, req, res);
@@ -88,10 +88,10 @@ export function attachSpaces(app, { dataDir } = {}) {
     await sendSpaceThread(messageStore, ownerStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/reply", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceReply(messageStore, ownerStore, pushStore, req, res);
+    await saveSpaceReply(messageStore, ownerStore, pushStore, photoStore, req, res);
   });
   app.post("/api/spaces/:handle/:space/messages/reply", express.json({ limit: "14mb" }), async (req, res) => {
-    await saveSpaceReply(messageStore, ownerStore, pushStore, req, res);
+    await saveSpaceReply(messageStore, ownerStore, pushStore, photoStore, req, res);
   });
   app.post("/api/spaces/:handle/messages/react", express.json({ limit: "12kb" }), async (req, res) => {
     await saveSpaceMessageReaction(messageStore, ownerStore, req, res);
@@ -124,13 +124,13 @@ export function attachSpaces(app, { dataDir } = {}) {
     await sendSpaceManifest(metaStore, photoStore, postStore, reviewStore, reactionStore, moduleStore, ownerStore, res, req.params.handle || "", req.params.space || "");
   });
   app.get("/photo/space/:handle.jpg", async (req, res) => {
-    await sendSpacePhoto(photoStore, res, req.params.handle || "");
+    await sendSpacePhoto(photoStore, res, req.params.handle || "", req.query?.v || "");
   });
   app.get("/icon/space/:handle.svg", async (req, res) => {
-    await sendSpaceIcon(photoStore, res, req.params.handle || "");
+    await sendSpaceIcon(photoStore, res, req.params.handle || "", "", req.query?.v || "");
   });
   app.get("/icon/space/:handle/:space.svg", async (req, res) => {
-    await sendSpaceIcon(photoStore, res, req.params.handle || "", req.params.space || "");
+    await sendSpaceIcon(photoStore, res, req.params.handle || "", req.params.space || "", req.query?.v || "");
   });
 }
 
@@ -385,7 +385,7 @@ async function saveSpaceReview(reviewStore, req, res) {
   res.json({ ok: true, review: next[0] });
 }
 
-async function saveSpaceMessage(messageStore, pushStore, req, res) {
+async function saveSpaceMessage(messageStore, pushStore, photoStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
   const spaceSlug = cleanSlug(req.params.space || "");
   const message = normalizeMessageBody(req.body);
@@ -420,7 +420,7 @@ async function saveSpaceMessage(messageStore, pushStore, req, res) {
     title: message.author,
     body: messagePreviewText(stored),
     url: spaceMessagesUrl(handle, spaceSlug),
-    icon: spacePushIconUrl(message.author),
+    icon: await spacePushIconUrl(photoStore, message.author),
     badge: "/icon.svg",
     tag: spacePushTag(handle, spaceSlug, message.clientId),
     vibrate: [24, 36, 24],
@@ -482,7 +482,7 @@ async function sendSpaceThread(messageStore, ownerStore, req, res) {
   res.json({ ok: true, messages });
 }
 
-async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
+async function saveSpaceReply(messageStore, ownerStore, pushStore, photoStore, req, res) {
   const handle = cleanSlug(req.params.handle || "") || "guest";
   const spaceSlug = cleanSlug(req.params.space || "");
   const data = ownerActionData(req.body);
@@ -523,7 +523,7 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
       title: handle,
       body: messagePreviewText(stored),
       url: spaceMessagesUrl(peerHandle, ""),
-      icon: spacePushIconUrl(handle, spaceSlug),
+      icon: await spacePushIconUrl(photoStore, handle, spaceSlug),
       badge: "/icon.svg",
       tag: spacePushTag(peerHandle, "", reply.clientId),
       vibrate: [24, 36, 24],
@@ -536,7 +536,7 @@ async function saveSpaceReply(messageStore, ownerStore, pushStore, req, res) {
     title: handle,
     body: messagePreviewText(stored),
     url: spaceMessagesUrl(handle, spaceSlug),
-    icon: spacePushIconUrl(handle, spaceSlug),
+    icon: await spacePushIconUrl(photoStore, handle, spaceSlug),
     badge: "/icon.svg",
     tag: spacePushTag(handle, spaceSlug, reply.clientId),
     vibrate: [24, 36, 24],
@@ -986,23 +986,23 @@ async function saveSpaceReaction(reactionStore, req, res) {
   res.json({ ok: true, reactions: publicReactionStats(next) });
 }
 
-async function sendSpacePhoto(photoStore, res, rawHandle) {
+async function sendSpacePhoto(photoStore, res, rawHandle, rawVersion = "") {
   const handle = cleanSlug(rawHandle) || "guest";
   const photo = await readSpacePhoto(photoStore, handle);
   if (!photo) {
     res.status(404).json({ ok: false, error: "profile_photo_not_found" });
     return;
   }
-  res.setHeader("Cache-Control", "public, max-age=3600");
+  setVersionedImageCache(res, rawVersion);
   res.setHeader("Content-Type", "image/jpeg");
   res.send(photo.bytes);
 }
 
-async function sendSpaceIcon(photoStore, res, rawHandle, rawSpace = "") {
+async function sendSpaceIcon(photoStore, res, rawHandle, rawSpace = "", rawVersion = "") {
   const profile = fallbackIconProfile(rawHandle, rawSpace);
   const initials = profile.shortName.slice(0, 2).toUpperCase();
   const safeInitials = escapeSvg(initials || "С");
-  res.setHeader("Cache-Control", "public, max-age=3600");
+  setVersionedImageCache(res, rawVersion);
   res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
   const handle = cleanSlug(rawHandle) || "guest";
   const photo = await readSpacePhoto(photoStore, handle);
@@ -1035,6 +1035,15 @@ function fallbackIconProfile(rawHandle, rawSpace = "") {
     shortName: activeSpace?.title || ownerName,
     accent: colorFor(handle, spaceSlug)
   };
+}
+
+function setVersionedImageCache(res, rawVersion) {
+  res.setHeader(
+    "Cache-Control",
+    cleanOptionalVersion(rawVersion)
+      ? "public, max-age=31536000, immutable"
+      : "no-cache"
+  );
 }
 
 function spaceFor(slug, spaces = defaultSpaces) {
@@ -2442,12 +2451,14 @@ function spaceMessagesUrl(handle, spaceSlug = "") {
     : `/@${encodedHandle}?layer=messages`;
 }
 
-function spacePushIconUrl(handle, spaceSlug = "") {
+async function spacePushIconUrl(photoStore, handle, spaceSlug = "") {
   const encodedHandle = encodeURIComponent(cleanSlug(handle || "") || "guest");
   const encodedSpace = encodeURIComponent(cleanSlug(spaceSlug || ""));
-  return encodedSpace
+  const baseUrl = encodedSpace
     ? `/icon/space/${encodedHandle}/${encodedSpace}.svg`
     : `/icon/space/${encodedHandle}.svg`;
+  const photo = await readSpacePhoto(photoStore, cleanSlug(handle || "") || "guest");
+  return photo?.version ? `${baseUrl}?v=${encodeURIComponent(photo.version)}` : baseUrl;
 }
 
 function spacePushTag(handle, spaceSlug = "", clientId = "") {
@@ -2466,8 +2477,12 @@ function messagePreviewText(message) {
   return attachment?.name ? `Файл: ${attachment.name}` : "Новое сообщение";
 }
 
+function cleanOptionalVersion(value) {
+  return String(value || "").replace(/[^a-z0-9_-]/giu, "").slice(0, 32);
+}
+
 function cleanVersion(value) {
-  return String(value || "").replace(/[^a-z0-9_-]/giu, "").slice(0, 32) || "1";
+  return cleanOptionalVersion(value) || "1";
 }
 
 function colorFor(handle, space) {

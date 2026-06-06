@@ -85,12 +85,12 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   });
   app.get("*", async (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
-    const cardHead = personalRouteHead(req.path);
-    if (!cardHead) {
-      res.sendFile(path.join(distDir, "index.html"));
-      return;
-    }
     try {
+      const cardHead = await personalRouteHead(req.path, { dataDir });
+      if (!cardHead) {
+        res.sendFile(path.join(distDir, "index.html"));
+        return;
+      }
       const html = await readFile(path.join(distDir, "index.html"), "utf8");
       res.type("html").send(applyPersonalRouteHead(html, cardHead));
     } catch (error) {
@@ -100,7 +100,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
   return app;
 }
 
-function personalRouteHead(pathname) {
+async function personalRouteHead(pathname, { dataDir } = {}) {
   const rawParts = String(pathname || "").split("/").filter(Boolean);
   const parts = rawParts[0] === "pwa" ? rawParts.slice(1) : rawParts;
   const first = parts[0] || "";
@@ -114,6 +114,8 @@ function personalRouteHead(pathname) {
   }
   const encodedHandle = encodeURIComponent(handle);
   const encodedSlug = encodeURIComponent(slug);
+  const iconVersion = await readPersonalPhotoVersion(dataDir, handle);
+  const iconVersionSuffix = iconVersion ? `?v=${encodeURIComponent(iconVersion)}` : "";
   const iconHref = slug
     ? `/icon/space/${encodedHandle}/${encodedSlug}.svg`
     : `/icon/space/${encodedHandle}.svg`;
@@ -122,11 +124,25 @@ function personalRouteHead(pathname) {
     manifestHref: slug
       ? `/manifest/space/${encodedHandle}/${encodedSlug}.json`
       : `/manifest/space/${encodedHandle}.json`,
-    iconHref,
+    iconHref: `${iconHref}${iconVersionSuffix}`,
     iconType: "image/svg+xml",
-    appleIconHref: `/photo/space/${encodedHandle}.jpg`,
+    appleIconHref: `/photo/space/${encodedHandle}.jpg${iconVersionSuffix}`,
     appleIconType: "image/jpeg"
   };
+}
+
+async function readPersonalPhotoVersion(dataDir, handle) {
+  try {
+    const root = dataDir || path.join(process.cwd(), "data");
+    const record = JSON.parse(await readFile(path.join(root, "profile-photos", `${handle}.json`), "utf8"));
+    return cleanPersonalAssetVersion(record?.version || "");
+  } catch {
+    return "";
+  }
+}
+
+function cleanPersonalAssetVersion(value) {
+  return String(value || "").replace(/[^a-z0-9_-]/giu, "").slice(0, 32);
 }
 
 function applyPersonalRouteHead(html, head) {

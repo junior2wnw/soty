@@ -418,7 +418,11 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const previousLayer = previousActiveLayer(root, routeUrl(options.route));
   delete document.body.dataset.sotyReady;
   root.innerHTML = renderLoading(options.route);
-  const profile = await loadPersonalSpaceProfile(options.route);
+  const profile = await loadPersonalSpaceProfile(options.route, (freshProfile) => {
+    if (freshProfile.handle === options.route.handle && freshProfile.slug === options.route.slug) {
+      options.applyManifest(freshProfile);
+    }
+  });
   options.applyManifest(profile);
   const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || (requestedRuntimeModule() ? "place" : null) || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
@@ -821,12 +825,15 @@ async function savePersonalReaction(profile: PersonalSpaceProfile): Promise<Pers
   }
 }
 
-async function loadPersonalSpaceProfile(route: PersonalSpaceRoute): Promise<PersonalSpaceProfile> {
+async function loadPersonalSpaceProfile(
+  route: PersonalSpaceRoute,
+  onFreshProfile?: (profile: PersonalSpaceProfile) => void
+): Promise<PersonalSpaceProfile> {
   const viewer = loadLocalHandle();
   const url = personalProfileApiUrl(route, viewer);
   const cached = loadCachedPersonalProfile(route);
   if (cached) {
-    void refreshPersonalSpaceProfile(route, url);
+    void refreshPersonalSpaceProfile(route, url, onFreshProfile);
     return cached;
   }
   const fetched = await fetchPersonalSpaceProfile(route, url);
@@ -849,8 +856,15 @@ function personalProfileApiUrl(route: PersonalSpaceRoute, viewer = ""): string {
   return cleanViewer ? `${path}?viewer=${encodeURIComponent(cleanViewer)}` : path;
 }
 
-async function refreshPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<void> {
-  await fetchPersonalSpaceProfile(route, url);
+async function refreshPersonalSpaceProfile(
+  route: PersonalSpaceRoute,
+  url: string,
+  onFreshProfile?: (profile: PersonalSpaceProfile) => void
+): Promise<void> {
+  const profile = await fetchPersonalSpaceProfile(route, url);
+  if (profile) {
+    onFreshProfile?.(profile);
+  }
 }
 
 async function fetchPersonalSpaceProfile(route: PersonalSpaceRoute, url: string): Promise<PersonalSpaceProfile | null> {
@@ -5439,12 +5453,14 @@ function personalMessageUrl(route: PersonalSpaceRoute): string {
   return `${routeUrl(route)}?layer=messages`;
 }
 
-function personalProfileIconUrl(profile: Pick<PersonalSpaceProfile, "handle" | "slug">): string {
+function personalProfileIconUrl(profile: Pick<PersonalSpaceProfile, "handle" | "slug"> & { readonly photoUrl?: string }): string {
   const handle = encodeURIComponent(cleanRoutePart(profile.handle) || "guest");
   const slug = encodeURIComponent(cleanRoutePart(profile.slug || ""));
-  return slug
+  const baseUrl = slug
     ? `/icon/space/${handle}/${slug}.svg`
     : `/icon/space/${handle}.svg`;
+  const version = personalPhotoVersion(profile.photoUrl || "");
+  return version ? `${baseUrl}?v=${encodeURIComponent(version)}` : baseUrl;
 }
 
 function personalActorIconUrl(handle: string): string {
@@ -5452,6 +5468,15 @@ function personalActorIconUrl(handle: string): string {
   return cleanHandle && cleanHandle !== "guest"
     ? `/icon/space/${encodeURIComponent(cleanHandle)}.svg`
     : "";
+}
+
+function personalPhotoVersion(photoUrl: string): string {
+  try {
+    const url = new URL(photoUrl, window.location.origin);
+    return cleanText(url.searchParams.get("v") || "", 32).replace(/[^a-z0-9_-]/giu, "");
+  } catch {
+    return "";
+  }
 }
 
 function personalNoticeTag(url: string, title: string): string {
