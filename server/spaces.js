@@ -3,6 +3,7 @@ import { webcrypto } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { stableJson } from "trustlink-kernel";
+import webPush from "web-push";
 
 const defaultSpaces = Object.freeze([
   {
@@ -807,6 +808,12 @@ async function notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, notic
   const keys = await readOrCreatePushKeys(pushStore);
   const entries = await readPushSubscriptions(pushStore, cleanHandle, cleanSpace);
   let changed = false;
+  const storedNotice = {
+    title: cleanNotice.title,
+    body: cleanNotice.body,
+    url: cleanNotice.url,
+    createdAt: new Date().toISOString()
+  };
   const queued = entries.map((entry) => {
     const matches = entry.scope === cleanNotice.scope
       && (entry.scope === "owner" || entry.clientId === cleanNotice.clientId);
@@ -816,12 +823,7 @@ async function notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, notic
     changed = true;
     return {
       ...entry,
-      notices: [...entry.notices, {
-        title: cleanNotice.title,
-        body: cleanNotice.body,
-        url: cleanNotice.url,
-        createdAt: new Date().toISOString()
-      }].slice(-5),
+      notices: [...entry.notices, storedNotice].slice(-5),
       updatedAt: new Date().toISOString()
     };
   });
@@ -830,16 +832,50 @@ async function notifySpaceMessageSubscribers(pushStore, handle, spaceSlug, notic
   }
   await writePushSubscriptions(pushStore, cleanHandle, cleanSpace, queued);
   const gone = new Set();
+  const delivered = new Set();
   await Promise.all(queued
     .filter((entry) => entry.scope === cleanNotice.scope && (entry.scope === "owner" || entry.clientId === cleanNotice.clientId))
     .map(async (entry) => {
-      const result = await sendEmptyWebPush(entry, keys);
+      const result = await sendNoticeWebPush(entry, keys, storedNotice);
       if (result === "gone") {
         gone.add(entry.endpoint);
+      } else if (result === "sent") {
+        delivered.add(entry.endpoint);
       }
     }));
-  if (gone.size > 0) {
-    await writePushSubscriptions(pushStore, cleanHandle, cleanSpace, queued.filter((entry) => !gone.has(entry.endpoint)));
+  if (gone.size > 0 || delivered.size > 0) {
+    await writePushSubscriptions(pushStore, cleanHandle, cleanSpace, queued
+      .filter((entry) => !gone.has(entry.endpoint))
+      .map((entry) => delivered.has(entry.endpoint)
+        ? { ...entry, notices: entry.notices.filter((item) => item.createdAt !== storedNotice.createdAt) }
+        : entry));
+  }
+}
+
+async function sendNoticeWebPush(subscription, keys, notice) {
+  const payload = publicPushNotice(notice);
+  if (!payload || !keys?.privateJwk?.d) {
+    return await sendEmptyWebPush(subscription, keys);
+  }
+  try {
+    webPush.setVapidDetails(
+      process.env.SOTY_WEB_PUSH_SUBJECT || "mailto:admin@soty.online",
+      keys.publicKey,
+      keys.privateJwk.d
+    );
+    await webPush.sendNotification({
+      endpoint: subscription.endpoint,
+      keys: subscription.keys
+    }, JSON.stringify(payload), {
+      TTL: 120,
+      urgency: "high"
+    });
+    return "sent";
+  } catch (error) {
+    if (error?.statusCode === 404 || error?.statusCode === 410) {
+      return "gone";
+    }
+    return await sendEmptyWebPush(subscription, keys);
   }
 }
 

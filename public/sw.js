@@ -1,4 +1,4 @@
-const cacheName = "soty-online-v27";
+const cacheName = "soty-online-v28";
 const shell = ["/", "/icon.svg", "/boot.js"];
 
 self.addEventListener("install", (event) => {
