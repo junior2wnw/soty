@@ -10,6 +10,7 @@ import {
 } from "trustlink-kernel";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, SyncedMiniApp, SyncedWriterLine, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
+import { createAgentActionCard, serializeAgentActionPrompt } from "./agent-layer/core";
 import { fetchFrontendQuickActions, mergeQuickActions, quickActions } from "./features/quick-actions";
 import type { QuickAction } from "./features/quick-actions";
 import { copyText, showLinkShareSheet } from "./features/share-sheet";
@@ -3897,24 +3898,11 @@ function quickActionVisibleMessage(action: QuickAction, comment: string): string
 }
 
 function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: TunnelRecord): string {
-  const hint = {
-    schema: "soty.action-hint.v1",
-    id: action.id,
-    title: action.title,
-    source: action.source || "curated",
-    kind: action.kind || "curated",
-    runtime: action.runtime || {}
-  };
-  return [
-    `Действие: ${action.title}`,
-    `Комментарий пользователя: ${comment || "(нет)"}`,
-    `Текущая сота: ${counterpartyLabel(tunnel)}`,
-    "",
-    "ACTION_HINT:",
-    JSON.stringify(hint),
-    "",
-    "Treat this as a lightweight action label, not a route or plan. Use current chat context, available tools, fresh proof, and on-demand capability discovery."
-  ].join("\n");
+  return serializeAgentActionPrompt(
+    createAgentActionCard(action),
+    comment,
+    counterpartyLabel(tunnel)
+  );
 }
 
 function appendUserMessageToDialog(tunnelId: string, message: string): void {

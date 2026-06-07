@@ -2086,6 +2086,7 @@ async function runScenarios({ relayUrl } = {}) {
       const windowsMachineBootstrap = await readFile(join(root, "public", "agent", "install-windows-machine-bootstrap.ps1"), "utf8");
       const unixInstall = await readFile(join(root, "public", "agent", "install-macos-linux.sh"), "utf8");
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
+      const agentLayerCore = (await readFile(join(root, "src", "agent-layer", "core.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const quickActionsSource = (await readFile(join(root, "src", "features", "quick-actions.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const personalSpaceSource = (await readFile(join(root, "src", "features", "personal-space.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const styles = (await readFile(join(root, "src", "style.css"), "utf8")).replace(/\r\n/gu, "\n");
@@ -2237,14 +2238,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("machine-button"));
       assert(!ui.includes("canInstallMachineAgent"));
       assert(ui.includes("quickActions"));
-      assert(ui.includes("soty.action-hint.v1"));
+      assert(agentLayerCore.includes("soty.action-card.v2"));
       assert(ui.includes("openCounterpartyMenu"));
       assert(ui.includes("actions: () =>"));
       assert(!ui.includes("quick-actions-action"));
-      assert(ui.includes("Комментарий пользователя"));
-      assert(ui.includes("ACTION_HINT"));
+      assert(agentLayerCore.includes("SOTY_ACTION_CARD"));
+      assert(!ui.includes("ACTION_HINT"));
       assert(!ui.includes("ACTION_INTENT_HINT"));
-      assert(ui.includes("not a route or plan"));
+      assert(agentLayerCore.includes("private action contract"));
       assert(ui.includes("appendUserMessageToDialog"));
       assert(!ui.includes("soty:scenarios"));
       assert(!ui.includes("scenarioInvocationPrompt"));

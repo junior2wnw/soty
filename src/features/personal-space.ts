@@ -1,5 +1,7 @@
 import { icon } from "../icons";
 import type { IconName } from "../icons";
+import { showAgentWorkspace } from "../agent-layer/workspace";
+import type { AgentWorkspaceController } from "../agent-layer/workspace";
 import { applyChessMove, boardSquares, chessFromSnapshot, chooseAgentMove, createChessSnapshot, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices } from "./chess";
 import type { ChessSnapshot } from "./chess";
 import { miniAppDefaultHeight, miniAppDefaultWidth, normalizeMiniAppLayout, safeMiniAppInlineHtml, safeMiniAppUrl } from "./mini-apps";
@@ -218,6 +220,11 @@ type PersonalSpaceLink = {
 };
 
 type PersonalModuleVisibility = "public" | "trusted";
+
+type PersonalAgentPreset = {
+  readonly mode?: "miniapp" | "page" | "style";
+  readonly text?: string;
+};
 type PersonalSpaceCardModuleKind = "link" | "miniapp" | "runtime";
 
 type PersonalSpaceCardModule = {
@@ -332,7 +339,7 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
-type EntityActionId = "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
+type EntityActionId = "agent" | "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "card" | "personal" | "reviews" | "messages" | "place";
 type EntityAction = {
   readonly id: EntityActionId;
@@ -1235,6 +1242,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(heroText)}</p>
             ${renderHeroActions(ownSpace)}
+            ${ownSpace ? renderOwnerAgentDock() : ""}
             <div class="personal-note" data-install-note></div>
           </div>
         </section>
@@ -1651,6 +1659,7 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   if (options.surface === "card") {
     if (options.ownSpace) {
       return [
+        { id: "agent", label: "Agent", icon: "agent", tone: "primary" },
         { id: "edit", label: "Править", icon: "person", tone: "secondary" },
         { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
       ];
@@ -1685,6 +1694,36 @@ function renderEntityActions(actions: readonly EntityAction[]): string {
 function renderEntityAction(action: EntityAction, className?: string): string {
   const buttonClass = className || (action.tone === "secondary" ? "personal-secondary" : "personal-primary");
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
+}
+
+function renderOwnerAgentDock(): string {
+  const presets: readonly { readonly mode: "miniapp" | "page" | "style"; readonly label: string; readonly text: string }[] = [
+    {
+      mode: "miniapp",
+      label: "Mini-app",
+      text: "Сделай полезный mini-app для этой карточки. Он должен быть сразу понятным, аккуратным и работать внутри карточки."
+    },
+    {
+      mode: "style",
+      label: "Красота",
+      text: "Наведи красоту в этой соте: предложи и создай красивый визуальный модуль для карточки, который подходит моему стилю и не перегружает страницу."
+    },
+    {
+      mode: "page",
+      label: "Ссылка",
+      text: "Добавь полезную ссылку или страницу для этой карточки. Сформулируй короткое название и понятное описание."
+    }
+  ];
+  return `
+    <div class="personal-agent-dock" aria-label="${escapeAttr("Agent")}">
+      ${presets.map((preset) => `
+        <button type="button" data-agent-preset="${escapeAttr(preset.mode)}" data-agent-text="${escapeAttr(preset.text)}">
+          ${preset.mode === "page" ? icon("qr") : preset.mode === "style" ? icon("hexagon") : icon("apps")}
+          <span>${escapeHtml(preset.label)}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderSpaceModules(profile: PersonalSpaceProfile, ownSpace: boolean, localHandle: string): string {
@@ -1971,6 +2010,16 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       }
       return;
     }
+    const agentPresetButton = target?.closest<HTMLButtonElement>("[data-agent-preset]");
+    if (agentPresetButton && shell.contains(agentPresetButton)) {
+      const mode = agentPresetMode(agentPresetButton.dataset.agentPreset || "");
+      const text = agentPresetButton.dataset.agentText || "";
+      showAgentSheet(root, profile, options, {
+        ...(mode ? { mode } : {}),
+        ...(text ? { text } : {})
+      });
+      return;
+    }
     const moduleNode = target?.closest<HTMLElement>("[data-module-kind]");
     if (moduleNode && shell.contains(moduleNode)) {
       openPersonalModule(root, moduleNode, profile, options);
@@ -2155,6 +2204,10 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     options.openRuntime(profile);
     return;
   }
+  if (action === "agent") {
+    showAgentSheet(root, profile, options);
+    return;
+  }
   if (action === "notifications" && node instanceof HTMLButtonElement) {
     void enablePersonalNotifications(root, node, profile, options);
     return;
@@ -2192,6 +2245,10 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
   if (action === "install" && node instanceof HTMLButtonElement) {
     void installPersonalSpace(root, node, options);
   }
+}
+
+function agentPresetMode(value: string): PersonalAgentPreset["mode"] {
+  return value === "page" || value === "style" ? value : "miniapp";
 }
 
 function focusPersonalMessenger(root: HTMLElement, actor: string): void {
@@ -4022,89 +4079,98 @@ function fillRuntimeModuleDraft(
   }
 }
 
-function showAgentSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+function showAgentSheet(root: HTMLElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions, preset: PersonalAgentPreset = {}): void {
   closePersonalOverlay(root);
-  const overlay = document.createElement("div");
-  overlay.className = "personal-overlay";
-  overlay.innerHTML = `
-    <section class="personal-sheet personal-agent-sheet" role="dialog" aria-modal="true" aria-label="ИИ">
-      <button class="personal-sheet-close" type="button" data-close>${icon("close")}</button>
-      <div class="personal-module-mark">${icon("agent")}</div>
-      <h2>ИИ</h2>
-      <form data-agent-form>
-        <select name="intent" aria-label="тип задачи">
-          <option value="miniapp">Mini-app</option>
-          <option value="page">Ссылка</option>
-        </select>
-        <textarea name="text" maxlength="720" required placeholder="Что сделать для этой карточки?"></textarea>
-        <button type="submit">${icon("check")} Сделать</button>
-      </form>
-      <div class="personal-agent-reply" data-agent-reply hidden></div>
-      <small data-error></small>
-    </section>
-  `;
-  root.append(overlay);
-  const textarea = overlay.querySelector<HTMLTextAreaElement>("textarea[name='text']");
-  const intentInput = overlay.querySelector<HTMLSelectElement>("select[name='intent']");
-  const submitButton = overlay.querySelector<HTMLButtonElement>("button[type='submit']");
-  const replyBox = overlay.querySelector<HTMLElement>("[data-agent-reply]");
-  const error = overlay.querySelector<HTMLElement>("[data-error]");
-  textarea?.focus();
-  overlay.querySelector<HTMLElement>("[data-close]")?.addEventListener("click", () => overlay.remove());
-  overlay.addEventListener("click", (event) => {
-    if (event.target === overlay) {
-      overlay.remove();
+  let savedModule = false;
+  let rawReply = "";
+  let controller: AgentWorkspaceController | null = null;
+  const presetMode = preset.mode === "page" ? "page" : preset.mode === "style" ? "style" : "miniapp";
+  const presetText = cleanText(preset.text || "", 900);
+  controller = showAgentWorkspace(root, {
+    title: "Agent",
+    subtitle: profile.displayName || `@${profile.handle}`,
+    userId: profile.handle,
+    projectId: `${profile.handle}/${profile.slug}`,
+    surface: "personal-card",
+    providers: [{
+      id: "soty-codex",
+      kind: "soty-codex",
+      label: "Soty Codex",
+      summary: "Server Codex executor with Soty context.",
+      capabilities: ["card-module", "miniapp", "page"]
+    }],
+    modes: [
+      {
+        id: "miniapp",
+        label: "Mini-app",
+        intentPrefix: "Create or improve a mini-app module for this personal Soty card.",
+        placeholder: "Какой mini-app сделать для этой карточки?"
+      },
+      {
+        id: "page",
+        label: "Ссылка",
+        intentPrefix: "Create or improve a useful link/page module for this personal Soty card.",
+        placeholder: "Какую ссылку или страницу добавить?"
+      },
+      {
+        id: "style",
+        label: "Красота",
+        intentPrefix: "Create a polished visual mini-app or card module that improves this Soty card without clutter.",
+        placeholder: "Какой визуальный результат нужен для этой соты?"
+      }
+    ],
+    defaultModeId: presetMode,
+    initialText: presetText,
+    contextItems: [
+      { label: "handle", value: `@${profile.handle}` },
+      { label: "space", value: profile.slug || "home" },
+      { label: "owner", value: profile.displayName }
+    ],
+    async onRun(request) {
+      savedModule = false;
+      rawReply = "";
+      request.emit({ kind: "status", text: "personal-card agent request" });
+      const result = await options.askAgent(profile, {
+        text: request.text,
+        intent: request.mode.id === "page" ? "page" : "miniapp"
+      });
+      rawReply = result.reply;
+      const visibleReply = replyWithoutCardModule(result.reply) || result.message;
+      if (!result.ok) {
+        return {
+          ok: false,
+          message: result.message,
+          reply: visibleReply,
+          proof: ["agent returned non-ok result"]
+        };
+      }
+      const draft = agentModuleDraftFromReply(rawReply);
+      if (!draft) {
+        return {
+          ok: true,
+          message: result.message,
+          reply: visibleReply,
+          proof: ["agent reply received", "no card module marker"]
+        };
+      }
+      const saved = await options.saveModule(options.route, draft);
+      savedModule = saved.ok;
+      return {
+        ok: saved.ok,
+        message: saved.message,
+        reply: visibleReply,
+        proof: saved.ok ? ["agent reply received", "card module saved"] : ["agent reply received", saved.message]
+      };
+    },
+    async onResult(result) {
+      if (!result.ok || !savedModule) {
+        return;
+      }
+      controller?.close();
+      await renderPersonalSpacePage(root, options);
+      setActiveLayer(root, "place");
     }
   });
-  overlay.querySelector<HTMLFormElement>("[data-agent-form]")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    void askAgentFromSheet();
-  });
-
-  async function askAgentFromSheet(): Promise<void> {
-    const text = cleanText(textarea?.value || "", 720);
-    if (!text) {
-      if (error) {
-        error.textContent = "Напишите короткую задачу.";
-      }
-      return;
-    }
-    if (submitButton) {
-      submitButton.disabled = true;
-    }
-    if (error) {
-      error.textContent = "";
-    }
-    if (replyBox) {
-      replyBox.hidden = false;
-      replyBox.textContent = "Думаю...";
-    }
-    try {
-      await runPersonalAgentCommand(
-        root,
-        profile,
-        options,
-        {
-          text,
-          intent: intentInput?.value === "page" ? "page" : "miniapp"
-        },
-        replyBox,
-        error,
-        overlay
-      );
-    } catch {
-      if (replyBox) {
-        replyBox.textContent = "ИИ сейчас недоступен.";
-      }
-      if (error) {
-        error.textContent = "Можно повторить позже.";
-      }
-    } finally {
-      if (submitButton && overlay.isConnected) {
-        submitButton.disabled = false;
-      }
-    }
-  }
 }
 
 function agentModuleDraftFromReply(reply: string): PersonalSpaceModuleDraft | null {
