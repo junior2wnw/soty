@@ -1276,6 +1276,7 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     importBackup: importSotyBackupFile,
     applyManifest: applyPersonalProfileManifest,
     isOwned: isPersonalProfileOwned,
+    installAgent: installPersonalSpaceAgent,
     openRuntime: openPersonalSpaceRuntime
   });
 }
@@ -1395,6 +1396,13 @@ function personalSpaceAgentTask(profile: PersonalSpaceProfile, request: Personal
 
 function personalSpaceAgentLabel(profile: PersonalSpaceProfile): string {
   return `@${profile.handle}${profile.slug ? `/${profile.slug}` : ""}`;
+}
+
+function installPersonalSpaceAgent(profile: PersonalSpaceProfile): void {
+  const label = personalSpaceAgentLabel(profile);
+  void refreshAgentRelease(true).finally(() => {
+    requestAgentDownload(device || undefined, `Агент ставится один раз на устройство. После этого в чате можно писать задачи для ${label}, файлов, приложений и системы.`);
+  });
 }
 
 function personalSpaceAgentReplyText(reply: LocalAgentReply): string {
@@ -1671,6 +1679,10 @@ async function registerPersonalSpacePush(request: PersonalSpaceNotificationReque
 
 function openPersonalSpaceRuntime(profile: PersonalSpaceProfile, target = ""): void {
   const moduleTarget = runtimeModuleTargetFromString(target);
+  if (moduleTarget === "agent") {
+    void openPersonalSpaceAgentChat(profile);
+    return;
+  }
   const handle = cleanSelfStartHandle(profile.handle);
   if (handle) {
     const route = {
@@ -1681,6 +1693,31 @@ function openPersonalSpaceRuntime(profile: PersonalSpaceProfile, target = ""): v
     return;
   }
   window.location.assign(personalRuntimeModuleCardPath({ handle: "guest", slug: "" }, moduleTarget));
+}
+
+async function openPersonalSpaceAgentChat(profile: PersonalSpaceProfile): Promise<void> {
+  setPersonalSpaceMode(false);
+  setSelfStartMode(false);
+  applyPersonalSpaceManifest(null);
+  rememberAppRuntime();
+  try {
+    window.history.pushState({}, "", bareChatPath());
+  } catch {
+    // The chat can still open even when history cannot be updated.
+  }
+  if (!device) {
+    device = await loadDevice();
+  }
+  if (!device) {
+    device = await createDevice(cleanNick(profile.shortName || profile.displayName || profile.handle || selfCellLabel));
+  }
+  const tunnel = ensureAgentChatMode(`Для моей карточки ${personalSpaceAgentLabel(profile)}: `);
+  renderApp();
+  if (tunnel) {
+    applySelectedText(true);
+  }
+  startAgentButtonWatcher(true);
+  ensureAgentDialogBridgeReady();
 }
 
 function requestedRuntimeModule(location: Location = window.location): RuntimeModuleTarget | "" {
@@ -2832,10 +2869,47 @@ function openActionMenu(): void {
   openLauncher();
 }
 
+function ensureAgentChatMode(draftPrefix = ""): TunnelRecord | null {
+  if (!device) {
+    return null;
+  }
+  tunnels = loadTunnels();
+  ensurePermanentCells();
+  let tunnel = findActiveAgentDialog();
+  if (tunnel) {
+    tunnel = normalizeAgentDialog(tunnel.id) || tunnel;
+    selectedId = tunnel.id;
+    saveSelectedTunnelId(tunnel.id);
+    tunnels = markTunnel(tunnel.id, false);
+  } else {
+    tunnel = createFreshDialog(agentDialogLabel, { agent: true, archiveCurrent: false });
+  }
+  if (!tunnel) {
+    return null;
+  }
+  selectedId = tunnel.id;
+  saveSelectedTunnelId(tunnel.id);
+  spaceModes.set(tunnel.id, "dialog");
+  agentModes.set(tunnel.id, true);
+  saveSpaceModes();
+  saveAgentModes();
+  if (draftPrefix && !localDrafts.get(tunnel.id)) {
+    localDrafts.set(tunnel.id, draftPrefix);
+  }
+  return tunnel;
+}
+
 async function openRuntimeModule(target: RuntimeModuleTarget): Promise<void> {
   const handlers: Record<RuntimeModuleTarget, () => void | Promise<void>> = {
     agent: () => {
-      setSelectedAgentMode(true);
+      const tunnel = ensureAgentChatMode();
+      if (tunnel) {
+        renderApp();
+        applySelectedText(true);
+        ensureAgentDialogBridgeReady();
+      } else {
+        setSelectedAgentMode(true);
+      }
     },
     apps: () => {
       openMiniAppGallery();
@@ -4178,7 +4252,7 @@ function renderApp(): void {
 
   const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
-    <section class="shell retro-shell${bareChatMode ? " bare-chat-shell" : ""}${hiveDrawerOpen ? " hive-open" : ""}">
+    <section class="shell retro-shell chat-first-shell${bareChatMode ? " bare-chat-shell" : ""}${hiveDrawerOpen ? " hive-open" : ""}">
       <button class="hive-toggle retro-icon-button" type="button" aria-label="cells" data-tooltip="Cells">${icon("hexagon")}</button>
       <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}" aria-hidden="${hiveDrawerOpen ? "false" : "true"}"${hiveDrawerOpen ? "" : " inert"}>
         <div class="retro-brand">
@@ -4203,11 +4277,14 @@ function renderApp(): void {
             <span class="writer-pop"></span>
           </span>
           <button class="agent-mode-button retro-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
+          <span class="agent-mode-pill" hidden>${icon("agent")}<b>Agent mode</b></span>
+          <button class="remote-action retro-action-button" type="button" hidden aria-label="установить агента" data-tooltip="Установить агента">${icon("download")}<span>Установить</span></button>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="поделиться" data-tooltip="Поделиться">${icon("copy")}</button>
           <button class="dialog-notify retro-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
         </header>
+        <nav class="chat-switcher" aria-label="чаты"></nav>
         <section class="cell-surface" aria-label="пространство соты">
           <div class="cell-app-shelf" aria-label="мини-аппы"></div>
           <section class="space-rail" aria-label="режимы соты"></section>
@@ -4300,8 +4377,19 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
   });
+  app.querySelector<HTMLButtonElement>(".chat-connect-button")?.addEventListener("click", () => {
+    void showQr();
+  });
   app.querySelector<HTMLButtonElement>(".agent-mode-button")?.addEventListener("click", () => {
     setSelectedAgentMode(!selectedAgentMode());
+  });
+  app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
+    const active = loadTunnels().find((tunnel) => tunnel.id === selectedId);
+    if (active && isAgentTunnel(active)) {
+      void toggleAgentRemoteGrant(active.id);
+      return;
+    }
+    requestAgentDownload(device || undefined, "Агент ставится на устройство один раз. После установки задачи можно писать прямо в чат при включенном agent mode.");
   });
   app.querySelector<HTMLButtonElement>(".info-open")?.addEventListener("click", openInfoPage);
   app.querySelector<HTMLButtonElement>(".access-open")?.addEventListener("click", () => {
@@ -4386,12 +4474,14 @@ function renderApp(): void {
 
 function renderTiles(): void {
   const field = app.querySelector<HTMLDivElement>(".hex-field");
-  if (!field) {
-    return;
-  }
   tunnels = loadTunnels();
   normalizeSelectedTunnel();
   const sorted = sortedVisibleTunnels();
+  renderChatSwitcher(sorted);
+  if (!field) {
+    renderDialogChrome();
+    return;
+  }
   if (sorted.length === 0) {
     renderHexField(field, [], {
       select: () => undefined,
@@ -4488,6 +4578,123 @@ function renderTiles(): void {
     }
   });
   renderDialogChrome();
+}
+
+function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
+  const switcher = app.querySelector<HTMLElement>(".chat-switcher");
+  if (!switcher) {
+    return;
+  }
+  switcher.innerHTML = `
+    <button class="chat-connect-button" type="button" aria-label="подключить" data-tooltip="Подключить контакт или устройство">
+      ${icon("qr")}
+      <span>Подключить</span>
+    </button>
+    <div class="chat-switcher-list" role="list">
+      ${sorted.map((tunnel) => chatSwitchButtonHtml(tunnel)).join("")}
+    </div>
+  `;
+  switcher.querySelector<HTMLButtonElement>(".chat-connect-button")?.addEventListener("click", () => {
+    void showQr();
+  });
+  switcher.querySelectorAll<HTMLButtonElement>("[data-chat-tunnel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.chatTunnel || "";
+      if (!id) {
+        return;
+      }
+      selectTunnel(id);
+      clearTunnelNotices(id);
+      tunnels = markTunnel(id, false);
+      renderTiles();
+      applySelectedText(true);
+      renderComposerAttachments();
+      renderTerminal();
+      renderChess();
+      renderMiniAppPanel();
+      publishMiniAppContext();
+    });
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openChatSwitcherMenu(button.dataset.chatTunnel || "", event.clientX, event.clientY);
+    });
+  });
+}
+
+function chatSwitchButtonHtml(tunnel: TunnelRecord): string {
+  const label = counterpartyLabel(tunnel);
+  const color = safeColor(tunnel.color, `${label}:${tunnel.id}`);
+  const active = tunnel.id === selectedId;
+  return `
+    <button class="chat-switch-item${active ? " is-active" : ""}${tunnel.unread ? " has-unread" : ""}" type="button" role="listitem" data-chat-tunnel="${escapeHtml(tunnel.id)}" style="--chat-color:${escapeHtml(color)}" aria-label="${escapeHtml(label)}">
+      <span>${icon(isAgentTunnel(tunnel) ? "agent" : isSelfTunnel(tunnel) ? "person" : "mail")}</span>
+      <b>${escapeHtml(label)}</b>
+      ${tunnel.unread ? "<i></i>" : ""}
+    </button>
+  `;
+}
+
+function openChatSwitcherMenu(id: string, x: number, y: number): void {
+  const tunnel = loadTunnels().find((item) => item.id === id);
+  if (!tunnel) {
+    return;
+  }
+  selectTunnel(id);
+  applySelectedText(true);
+  renderComposerAttachments();
+  renderTerminal();
+  renderChess();
+  renderMiniAppPanel();
+  const canClose = !isPermanentCell(tunnel);
+  const availableMiniApps = globalMiniApps();
+  openCounterpartyMenu(x, y, {
+    attach: () => {
+      selectTunnel(id);
+      fileInput?.click();
+    },
+    knock: () => {
+      selectTunnel(id);
+      void requestNotificationPermission();
+      syncs.get(id)?.sendKnock("*");
+      tunnels = touchTunnel(id);
+      renderTiles();
+    },
+    remote: () => {
+      selectTunnel(id);
+      if (isAgentTunnelId(id)) {
+        void toggleAgentRemoteGrant(id);
+      } else {
+        void toggleRemoteGrant(id);
+      }
+    },
+    actions: () => {
+      selectTunnel(id);
+      openActionMenu();
+    },
+    apps: () => {
+      selectTunnel(id);
+      openMiniAppGallery();
+    },
+    chess: () => {
+      selectTunnel(id);
+      void openChessForSelected();
+    },
+    agentInstall: () => {
+      void (async () => {
+        selectTunnel(id);
+        const mode = await refreshAgentButtonState(true);
+        if (mode !== "link") {
+          requestAgentDownload(isAgentTunnelId(id) ? device || undefined : undefined, "Клава ставится один раз и потом дает управляемые инструменты для выбранных устройств.");
+        }
+      })();
+    },
+    ...(canClose ? { close: () => closeTunnel(id) } : {})
+  }, {
+    remoteEnabled: remoteEnabled.has(id),
+    canClose,
+    hasMiniApps: availableMiniApps.length > 0,
+    needsAgentInstall: agentButtonMode() !== "link"
+  });
 }
 
 function renderEmptyHiveActions(field: HTMLDivElement): void {
@@ -5075,11 +5282,14 @@ function permanentCellRank(tunnel: TunnelRecord): number {
   if (isSelfTunnel(tunnel)) {
     return 2;
   }
+  if (isAgentTunnel(tunnel)) {
+    return 1;
+  }
   return 0;
 }
 
 function isSelectableCell(tunnel: TunnelRecord): boolean {
-  return !tunnel.archived && !isAgentTunnel(tunnel) && hasCounterparty(tunnel);
+  return !tunnel.archived && hasCounterparty(tunnel);
 }
 
 function isSimpleContactSurface(tunnel: TunnelRecord): boolean {
@@ -5617,6 +5827,7 @@ function renderDialogChrome(): void {
   const editor = app.querySelector<HTMLElement>(".editor");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const agentButton = app.querySelector<HTMLButtonElement>(".agent-mode-button");
+  const agentPill = app.querySelector<HTMLElement>(".agent-mode-pill");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
@@ -5691,10 +5902,13 @@ function renderDialogChrome(): void {
     agentButton.hidden = !tunnel || selectedSpaceMode() !== "dialog";
     agentButton.classList.toggle("is-on", agentMode);
     agentButton.setAttribute("aria-pressed", agentMode ? "true" : "false");
-    agentButton.dataset.tooltip = agentMode ? "Agent on" : "Agent";
+    agentButton.dataset.tooltip = agentMode ? "Agent mode включен" : "Включить agent mode";
+  }
+  if (agentPill) {
+    agentPill.hidden = !agentMode;
   }
   if (remoteButton) {
-    const needsAgent = mode !== "link";
+    const needsAgent = Boolean(tunnel && (agentTunnel || agentMode) && mode !== "link");
     remoteButton.hidden = !needsAgent;
     remoteButton.classList.toggle("is-on", false);
     remoteButton.classList.toggle("has-access", false);
@@ -5754,7 +5968,7 @@ function renderAgentPrivatePanel(): void {
         <p>${line.text.split("\n").map((item) => item ? `<span>${linkifyChatLine(item)}</span>` : "<br>").join("")}</p>
       </article>
     `).join("")
-    : `<div class="agent-private-empty">${icon("agent")}</div>`;
+    : `<div class="agent-private-empty">${icon("agent")}<span>Agent mode включен</span><small>Задачи идут агенту, обычный диалог остается чистым.</small></div>`;
   panel.scrollTop = panel.scrollHeight;
 }
 
@@ -5781,7 +5995,7 @@ function updateComposerSpaceMode(): void {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const access = composerAccessFor(tunnel, mode);
   const agentMode = Boolean(tunnel && selectedAgentMode(tunnel.id));
-  composer.placeholder = agentMode ? "" : access.placeholder;
+  composer.placeholder = agentMode ? agentComposerPlaceholder(tunnel) : access.placeholder;
   composer.disabled = !access.canCompose;
   const bar = app.querySelector<HTMLFormElement>(".composer-bar");
   if (bar) {
@@ -5794,6 +6008,12 @@ function updateComposerSpaceMode(): void {
   }
   app.querySelector<HTMLButtonElement>(".composer-attach")?.toggleAttribute("disabled", !access.canCompose || agentMode);
   app.querySelector<HTMLButtonElement>(".send-button")?.toggleAttribute("disabled", !access.canCompose);
+}
+
+function agentComposerPlaceholder(tunnel: TunnelRecord | null | undefined): string {
+  return tunnel && isAgentTunnel(tunnel)
+    ? "Напишите задачу агенту"
+    : "Напишите задачу агенту для этого диалога";
 }
 
 function composerAccessFor(tunnel: TunnelRecord | null | undefined, mode = selectedSpaceMode()): SpaceComposerAccess {

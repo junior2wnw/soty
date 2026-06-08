@@ -174,6 +174,7 @@ export type PersonalSpacePageOptions = {
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
   readonly applyManifest: (profile: PersonalSpaceProfile) => void;
   readonly isOwned: (profile: PersonalSpaceProfile) => boolean | Promise<boolean>;
+  readonly installAgent: (profile: PersonalSpaceProfile) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile, target?: string) => void;
 };
 
@@ -339,7 +340,7 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
-type EntityActionId = "agent" | "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
+type EntityActionId = "agent" | "agent-install" | "agent-studio" | "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "card" | "personal" | "reviews" | "messages" | "place";
 type EntityAction = {
   readonly id: EntityActionId;
@@ -1659,7 +1660,6 @@ function entityActionsFor(options: { readonly surface: EntityActionSurface; read
   if (options.surface === "card") {
     if (options.ownSpace) {
       return [
-        { id: "agent", label: "Agent", icon: "agent", tone: "primary" },
         { id: "edit", label: "Править", icon: "person", tone: "secondary" },
         { id: "share", label: "Поделиться", icon: "qr", tone: "secondary" }
       ];
@@ -1697,29 +1697,36 @@ function renderEntityAction(action: EntityAction, className?: string): string {
 }
 
 function renderOwnerAgentDock(): string {
-  const presets: readonly { readonly mode: "miniapp" | "page" | "style"; readonly label: string; readonly text: string }[] = [
+  const actions: readonly { readonly action: EntityActionId; readonly label: string; readonly detail: string; readonly icon: IconName; readonly primary?: boolean }[] = [
     {
-      mode: "miniapp",
-      label: "Mini-app",
-      text: "Сделай полезный mini-app для этой карточки. Он должен быть сразу понятным, аккуратным и работать внутри карточки."
+      action: "agent",
+      label: "Чат агента",
+      detail: "задачи и ответы",
+      icon: "agent",
+      primary: true
     },
     {
-      mode: "style",
-      label: "Красота",
-      text: "Наведи красоту в этой соте: предложи и создай красивый визуальный модуль для карточки, который подходит моему стилю и не перегружает страницу."
+      action: "agent-install",
+      label: "Устройство",
+      detail: "установить агент",
+      icon: "download"
     },
     {
-      mode: "page",
-      label: "Ссылка",
-      text: "Добавь полезную ссылку или страницу для этой карточки. Сформулируй короткое название и понятное описание."
+      action: "agent-studio",
+      label: "Мастерская",
+      detail: "mini-app / стиль",
+      icon: "apps"
     }
   ];
   return `
     <div class="personal-agent-dock" aria-label="${escapeAttr("Agent")}">
-      ${presets.map((preset) => `
-        <button type="button" data-agent-preset="${escapeAttr(preset.mode)}" data-agent-text="${escapeAttr(preset.text)}">
-          ${preset.mode === "page" ? icon("qr") : preset.mode === "style" ? icon("hexagon") : icon("apps")}
-          <span>${escapeHtml(preset.label)}</span>
+      ${actions.map((action) => `
+        <button type="button" data-action="${escapeAttr(action.action)}"${action.primary ? ` class="is-primary"` : ""}>
+          ${icon(action.icon)}
+          <span>
+            <b>${escapeHtml(action.label)}</b>
+            <small>${escapeHtml(action.detail)}</small>
+          </span>
         </button>
       `).join("")}
     </div>
@@ -2108,7 +2115,7 @@ function openPersonalRuntimeModule(root: HTMLElement, profile: PersonalSpaceProf
     return;
   }
   if (target === "agent") {
-    showAgentSheet(root, profile, options);
+    options.openRuntime(profile, "agent");
     return;
   }
   showRuntimeModuleSheet(root, profile, target, options);
@@ -2205,6 +2212,14 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (action === "agent") {
+    options.openRuntime(profile, "agent");
+    return;
+  }
+  if (action === "agent-install") {
+    options.installAgent(profile);
+    return;
+  }
+  if (action === "agent-studio") {
     showAgentSheet(root, profile, options);
     return;
   }
