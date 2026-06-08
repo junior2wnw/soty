@@ -192,7 +192,7 @@ sequenceDiagram
 
 - `src/main.ts` - большой клиентский оркестратор приложения.
 - `src/style.css` - основная визуальная система.
-- `src/ui/hex-field.ts`, `src/ui/tooltips.ts`, `src/ui/context-menu.ts` - вспомогательные UI-компоненты.
+- `src/ui/tooltips.ts`, `src/ui/context-menu.ts` - вспомогательные UI-компоненты.
 - `public/boot.js`, `public/sw.js`, `public/manifest.webmanifest`, `public/icon.svg`, `index.html` - загрузка, PWA-оболочка и статический bootstrap.
 
 Основные функции:

@@ -4184,7 +4184,6 @@ function renderApp(): void {
           </span>
           <button class="agent-mode-button retro-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
           <span class="agent-mode-pill" hidden>${icon("agent")}<b>Agent mode</b></span>
-          <button class="remote-action retro-action-button" type="button" hidden aria-label="установить агента" data-tooltip="Установить агента">${icon("download")}<span>Установить</span></button>
           <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="поделиться" data-tooltip="Поделиться">${icon("copy")}</button>
@@ -4275,14 +4274,6 @@ function renderApp(): void {
   }, { passive: true });
   app.querySelector<HTMLButtonElement>(".agent-mode-button")?.addEventListener("click", () => {
     setSelectedAgentMode(!selectedAgentMode());
-  });
-  app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
-    const active = loadTunnels().find((tunnel) => tunnel.id === selectedId);
-    if (active && isAgentTunnel(active)) {
-      void toggleAgentRemoteGrant(active.id);
-      return;
-    }
-    requestAgentDownload(device || undefined, "Агент ставится на устройство один раз. После установки задачи можно писать прямо в чат при включенном agent mode.");
   });
   app.querySelector<HTMLButtonElement>(".access-open")?.addEventListener("click", () => {
     showAccessPanel();
@@ -5693,7 +5684,6 @@ function renderDialogChrome(): void {
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const appShell = app.querySelector<HTMLElement>(".shell");
   const editor = app.querySelector<HTMLElement>(".editor");
-  const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
   const agentButton = app.querySelector<HTMLButtonElement>(".agent-mode-button");
   const agentPill = app.querySelector<HTMLElement>(".agent-mode-pill");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
@@ -5774,18 +5764,6 @@ function renderDialogChrome(): void {
   }
   if (agentPill) {
     agentPill.hidden = !agentMode;
-  }
-  if (remoteButton) {
-    const needsAgent = Boolean(tunnel && (agentTunnel || agentMode) && mode !== "link");
-    remoteButton.hidden = !needsAgent;
-    remoteButton.classList.toggle("is-on", false);
-    remoteButton.classList.toggle("has-access", false);
-    remoteButton.classList.toggle("needs-agent", needsAgent);
-    if (needsAgent) {
-      remoteButton.setAttribute("aria-label", mode === "update" ? "update" : "download");
-      remoteButton.innerHTML = `${icon("download")}<span>${mode === "update" ? "Обновить" : "Подключить"}</span>`;
-      remoteButton.dataset.tooltip = mode === "update" ? "Обновить Клаву" : "Подключить Клаву";
-    }
   }
   publishMiniAppContext();
   renderSpace();
