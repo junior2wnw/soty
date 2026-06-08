@@ -1,4 +1,5 @@
 import { icon } from "../icons";
+import { openSotyFieldOverview } from "./soty-field-overview";
 
 type IconName = Parameters<typeof icon>[0];
 
@@ -29,6 +30,11 @@ const longPressMs = 540;
 export function renderSotyField(root: HTMLElement, items: readonly SotyFieldItem[], actions: SotyFieldActions): void {
   root.dataset.empty = items.length > 0 ? "0" : "1";
   root.innerHTML = `
+    <button class="soty-field-overview-button" type="button" aria-label="Открыть поле сот" data-tooltip="Поле сот">
+      ${icon("hexagon")}
+      <span>Соты</span>
+      <b>${escapeHtml(String(items.length))}</b>
+    </button>
     <button class="soty-field-connect" type="button" aria-label="Подключить" data-tooltip="Подключить QR">
       ${icon("qr")}
       <span>Подключить</span>
@@ -37,6 +43,9 @@ export function renderSotyField(root: HTMLElement, items: readonly SotyFieldItem
       ${items.length > 0 ? items.map(renderSotyFieldCell).join("") : renderEmptySotyFieldCell()}
     </div>
   `;
+  root.querySelector<HTMLButtonElement>(".soty-field-overview-button")?.addEventListener("click", () => {
+    openSotyFieldOverview(items, actions);
+  });
   root.querySelector<HTMLButtonElement>(".soty-field-connect")?.addEventListener("click", actions.connect);
   root.querySelector<HTMLButtonElement>(".soty-field-empty")?.addEventListener("click", actions.connect);
   root.querySelectorAll<HTMLButtonElement>("[data-soty-field-id]").forEach((button) => {
@@ -47,7 +56,7 @@ export function renderSotyField(root: HTMLElement, items: readonly SotyFieldItem
 
 function renderSotyFieldCell(item: SotyFieldItem): string {
   const badges = [
-    item.agentMode ? fieldBadge("agent", "Agent") : "",
+    item.agentMode ? fieldBadge("agent", "Агент") : "",
     item.remote ? fieldBadge("remote", "Доступ") : "",
     !item.remote && item.access ? fieldBadge("shield", "Можно подключиться") : "",
     item.apps > 0 ? `<span class="soty-field-badge text" aria-label="Mini-apps">${escapeHtml(String(item.apps))}</span>` : "",

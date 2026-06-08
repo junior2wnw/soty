@@ -2104,6 +2104,7 @@ async function runScenarios({ relayUrl } = {}) {
       const sotyActionSheet = await readFile(join(root, "src", "ui", "soty-action-sheet.ts"), "utf8");
       const sotyAppDock = await readFile(join(root, "src", "ui", "soty-app-dock.ts"), "utf8");
       const sotyField = await readFile(join(root, "src", "ui", "soty-field.ts"), "utf8");
+      const sotyFieldOverview = await readFile(join(root, "src", "ui", "soty-field-overview.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
@@ -2481,7 +2482,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("renderSotyFieldSurface"));
       assert(ui.includes("soty-field"));
       assert(sotyField.includes("renderSotyField"));
+      assert(sotyField.includes("soty-field-overview-button"));
+      assert(sotyField.includes("openSotyFieldOverview"));
+      assert(sotyFieldOverview.includes("openSotyFieldOverview"));
+      assert(sotyFieldOverview.includes("soty-field-overview-cell"));
       assert(styles.includes(".soty-field"));
+      assert(styles.includes(".soty-field-overview"));
       assert(ui.includes("renderSotyAppDockSurface"));
       assert(ui.includes("soty-app-dock"));
       assert(sotyAppDock.includes("renderSotyAppDock"));
@@ -2519,6 +2525,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(webManifest.background_color, "#090b0f");
       assertEqual(webManifest.display, "standalone");
       assert(html.includes('<meta name="theme-color" content="#090b0f"'));
+      assert(html.includes('<meta name="mobile-web-app-capable" content="yes"'));
       assert(html.includes('<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"'));
       assert(html.includes('rel="manifest" href="/manifest.webmanifest"'));
       assert(!webManifest.display_override?.includes("window-controls-overlay"));
