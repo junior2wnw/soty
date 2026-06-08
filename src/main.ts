@@ -44,6 +44,8 @@ import { installWebController, resolveWebControllerTarget } from "./features/web
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
+import { renderSotyField } from "./ui/soty-field";
+import type { SotyFieldItem } from "./ui/soty-field";
 import { installTooltips } from "./ui/tooltips";
 import {
   DeviceRecord,
@@ -4193,6 +4195,7 @@ function renderApp(): void {
           <button class="dialog-notify chat-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
         </header>
         <nav class="chat-switcher" aria-label="чаты"></nav>
+        <section class="soty-field" aria-label="Поле сот"></section>
         <section class="editor">
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
@@ -4363,10 +4366,60 @@ function renderTiles(): void {
   normalizeSelectedTunnel();
   const sorted = sortedVisibleTunnels();
   renderChatSwitcher(sorted);
+  renderSotyFieldSurface(sorted);
   if (qrMode === "auto") {
     closeQrOverlay();
   }
   renderDialogChrome();
+}
+
+function renderSotyFieldSurface(sorted: readonly TunnelRecord[]): void {
+  const field = app.querySelector<HTMLElement>(".soty-field");
+  if (!field) {
+    return;
+  }
+  renderSotyField(field, sorted.map(sotyFieldItemForTunnel), {
+    connect: () => {
+      void showQr();
+    },
+    select: (id) => {
+      activateChatTunnel(id);
+      clearTunnelNotices(id);
+      tunnels = markTunnel(id, false);
+      renderTiles();
+      applySelectedText(true);
+      renderComposerAttachments();
+      renderTerminal();
+      renderChess();
+      renderMiniAppPanel();
+      publishMiniAppContext();
+    },
+    menu: (id, x, y) => {
+      openChatSwitcherMenu(id, x, y);
+    }
+  });
+}
+
+function sotyFieldItemForTunnel(tunnel: TunnelRecord): SotyFieldItem {
+  const label = counterpartyLabel(tunnel);
+  const peerIds = uniquePeerDeviceIds(tunnel.id);
+  const roomApps = miniApps.filter((item) =>
+    (item.scope === "chat" && item.profileId === tunnel.id)
+    || (item.scope === "device" && peerIds.includes(item.targetDeviceId || ""))
+  );
+  return {
+    id: tunnel.id,
+    label,
+    color: safeColor(tunnel.color, `${label}:${tunnel.id}`),
+    kind: isAgentTunnel(tunnel) ? "agent" : isSelfTunnel(tunnel) ? "self" : "chat",
+    active: tunnel.id === selectedId,
+    unread: tunnel.unread,
+    agentMode: selectedAgentMode(tunnel.id),
+    remote: remoteEnabled.has(tunnel.id),
+    access: remoteAccess.has(tunnel.id),
+    apps: dedupeMiniApps(roomApps).length,
+    peers: peerIds.length
+  };
 }
 
 type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "agentTask" | "info";
@@ -4389,59 +4442,14 @@ function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
   }
   const activeTunnel = sorted.find((tunnel) => tunnel.id === selectedId) || null;
   switcher.innerHTML = `
-    <button class="chat-connect-button" type="button" aria-label="подключить" data-tooltip="Подключить контакт или устройство">
-      ${icon("qr")}
-      <span>Подключить</span>
-    </button>
-    <div class="chat-switcher-list" role="list">
-      ${sorted.map((tunnel) => chatSwitchButtonHtml(tunnel)).join("")}
-    </div>
     ${chatActionRailHtml(activeTunnel)}
     <section class="space-rail chat-mode-rail" aria-label="режимы чата"></section>
   `;
-  switcher.querySelector<HTMLButtonElement>(".chat-connect-button")?.addEventListener("click", () => {
-    void showQr();
-  });
-  switcher.querySelectorAll<HTMLButtonElement>("[data-chat-tunnel]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const id = button.dataset.chatTunnel || "";
-      if (!id) {
-        return;
-      }
-      selectTunnel(id);
-      clearTunnelNotices(id);
-      tunnels = markTunnel(id, false);
-      renderTiles();
-      applySelectedText(true);
-      renderComposerAttachments();
-      renderTerminal();
-      renderChess();
-      renderMiniAppPanel();
-      publishMiniAppContext();
-    });
-    button.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      openChatSwitcherMenu(button.dataset.chatTunnel || "", event.clientX, event.clientY);
-    });
-  });
   switcher.querySelectorAll<HTMLButtonElement>("[data-chat-action]").forEach((button) => {
     button.addEventListener("click", () => {
       runChatQuickAction((button.dataset.chatAction || "") as ChatQuickActionId);
     });
   });
-}
-
-function chatSwitchButtonHtml(tunnel: TunnelRecord): string {
-  const label = counterpartyLabel(tunnel);
-  const color = safeColor(tunnel.color, `${label}:${tunnel.id}`);
-  const active = tunnel.id === selectedId;
-  return `
-    <button class="chat-switch-item${active ? " is-active" : ""}${tunnel.unread ? " has-unread" : ""}" type="button" role="listitem" data-chat-tunnel="${escapeHtml(tunnel.id)}" style="--chat-color:${escapeHtml(color)}" aria-label="${escapeHtml(label)}">
-      <span>${icon(isAgentTunnel(tunnel) ? "agent" : isSelfTunnel(tunnel) ? "person" : "mail")}</span>
-      <b>${escapeHtml(label)}</b>
-      ${tunnel.unread ? "<i></i>" : ""}
-    </button>
-  `;
 }
 
 function chatActionRailHtml(tunnel: TunnelRecord | null): string {

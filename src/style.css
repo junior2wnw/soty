@@ -4209,13 +4209,13 @@ button.personal-avatar {
 }
 
 .shell.chat-first-shell .dialog-shell {
-  grid-template-rows: 64px auto minmax(0, 1fr);
+  grid-template-rows: 64px auto auto minmax(0, 1fr);
 }
 
 .chat-switcher {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(140px, 1fr) auto minmax(240px, 336px);
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 336px);
   gap: 8px;
   align-items: stretch;
 }
@@ -4325,6 +4325,9 @@ button.personal-avatar {
   grid-auto-columns: minmax(42px, auto);
   gap: 6px;
   align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .chat-action-rail[hidden] {
@@ -4335,7 +4338,7 @@ button.personal-avatar {
   min-width: 42px;
   min-height: 48px;
   display: inline-grid;
-  grid-template-columns: 18px;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   gap: 4px;
   padding: 0 9px;
@@ -4382,6 +4385,159 @@ button.personal-avatar {
   border-color: color-mix(in srgb, var(--red) 42%, var(--edge));
 }
 
+.soty-field {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.soty-field-connect,
+.soty-field-cell {
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid color-mix(in srgb, var(--soty-field-color, var(--green)) 34%, var(--edge));
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--soty-field-color, var(--green)) 10%, transparent), transparent 74%),
+    rgba(7, 11, 15, 0.9);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.soty-field-connect {
+  --soty-field-color: var(--green);
+  display: inline-grid;
+  grid-template-columns: 20px minmax(0, auto);
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.soty-field-map {
+  min-width: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(122px, 168px);
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.soty-field-cell {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px 30px minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  gap: 3px 7px;
+  align-items: center;
+  padding: 7px 9px;
+  text-align: left;
+  --soty-field-color: var(--cyan);
+}
+
+.soty-field-mark,
+.soty-field-core {
+  display: grid;
+  place-items: center;
+  color: var(--soty-field-color);
+}
+
+.soty-field-mark {
+  grid-row: 1 / span 2;
+}
+
+.soty-field-mark svg,
+.soty-field-connect svg,
+.soty-field-badge svg {
+  width: 17px;
+  height: 17px;
+}
+
+.soty-field-core {
+  width: 30px;
+  height: 28px;
+  grid-row: 1 / span 2;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: color-mix(in srgb, var(--soty-field-color) 22%, rgba(255, 255, 255, 0.02));
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.soty-field-cell b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.soty-field-badges {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.soty-field-badge {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--soty-field-color) 18%, rgba(255, 255, 255, 0.03));
+  color: var(--soty-field-color);
+}
+
+.soty-field-badge.text {
+  width: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.soty-field-cell i {
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--red);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.14);
+}
+
+.soty-field-connect:hover,
+.soty-field-connect:focus-visible,
+.soty-field-cell:hover,
+.soty-field-cell:focus-visible,
+.soty-field-cell.is-active {
+  border-color: color-mix(in srgb, var(--soty-field-color, var(--green)) 72%, var(--green));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--soty-field-color, var(--green)) 15%, transparent), transparent 76%),
+    #101922;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.soty-field-cell.is-active {
+  box-shadow: inset 0 -2px 0 var(--soty-field-color);
+}
+
 .shell.simple-contact-shell {
   --ink: #000000;
   --muted: #616161;
@@ -4399,6 +4555,10 @@ button.personal-avatar {
   margin: 0 auto;
   grid-template-rows: 54px auto minmax(0, 1fr);
   gap: 8px;
+}
+
+.shell.simple-contact-shell .soty-field {
+  display: none;
 }
 
 .shell.simple-contact-shell .dialog-head {
@@ -8525,11 +8685,11 @@ button:disabled {
   }
 
   .dialog-shell {
-    grid-template-rows: 58px auto minmax(0, 1fr);
+    grid-template-rows: 58px auto auto minmax(0, 1fr);
   }
 
   .shell.chat-first-shell .dialog-shell {
-    grid-template-rows: 58px auto minmax(0, 1fr);
+    grid-template-rows: 58px auto auto minmax(0, 1fr);
   }
 
   .chat-switcher {
@@ -8583,6 +8743,55 @@ button:disabled {
   .chat-action-button span {
     max-width: 54px;
     font-size: 10px;
+  }
+
+  .soty-field {
+    min-height: 46px;
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .soty-field-connect,
+  .soty-field-cell {
+    min-height: 46px;
+  }
+
+  .soty-field-connect {
+    grid-template-columns: 18px;
+    padding: 0;
+  }
+
+  .soty-field-connect span {
+    display: none;
+  }
+
+  .soty-field-map {
+    grid-auto-columns: minmax(108px, 140px);
+    gap: 6px;
+  }
+
+  .soty-field-cell {
+    grid-template-columns: 24px minmax(0, 1fr);
+    grid-template-rows: 1fr auto;
+    gap: 2px 6px;
+    padding: 6px 8px;
+  }
+
+  .soty-field-mark {
+    display: none;
+  }
+
+  .soty-field-core {
+    width: 24px;
+    height: 24px;
+  }
+
+  .soty-field-cell b {
+    font-size: 12px;
+  }
+
+  .soty-field-badges {
+    max-width: 100%;
   }
 
   .space-rail {
