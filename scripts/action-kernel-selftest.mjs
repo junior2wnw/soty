@@ -215,9 +215,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(main.includes("miniAppsRegistryKey"));
       assert(main.includes("roomMiniApps"));
       assert(main.includes("globalMiniApps"));
-      assert(main.includes("cell-app-shelf"));
-      assert(main.includes("function cellShelfMiniApps()"));
-      assert(main.includes("...sortedMiniApps(globalMiniApps()).filter"));
+      assert(main.includes("chat-mode-rail"));
+      assert(main.includes('id: "apps"'));
+      assert(!main.includes("cell-app-shelf"));
+      assert(!main.includes("function cellShelfMiniApps()"));
+      assert(!main.includes("cell-surface"));
+      assert(main.includes("const items = sortedMiniApps(globalMiniApps());"));
       assert(main.includes("openMiniAppGallery"));
       assert(!main.includes("app-visibility-select"));
       assert(main.includes("miniAppInlineHtmlWithContext"));
@@ -244,7 +247,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("operation=appka"));
       assert(agentSource.includes("inlineHtml"));
       assert(agentSource.includes("APPKA/appka"));
-      assert(agentSource.includes("cell app shelf"));
+      assert(agentSource.includes("chat Apps panel"));
+      assert(!agentSource.includes("cell app shelf"));
       assert(agentSource.includes("visibility"));
       assert(agentSource.includes("node_modules/trustlink-kernel/docs/app-surfaces.md"));
       assert(agentSource.includes("TrustLink Kernel first"));

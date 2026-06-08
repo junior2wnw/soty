@@ -3303,44 +3303,6 @@ function handleMiniAppRegistryChange(): void {
   renderDialogChrome();
 }
 
-function renderCellAppShelf(): void {
-  const shelf = app.querySelector<HTMLElement>(".cell-app-shelf");
-  if (!shelf) {
-    return;
-  }
-  const cellApps = cellShelfMiniApps();
-  const allCount = globalMiniApps().length;
-  shelf.dataset.empty = cellApps.length > 0 ? "0" : "1";
-  shelf.innerHTML = `
-    <button class="cell-app-all" type="button" aria-label="все мини-аппы" data-tooltip="Все мини-аппы">
-      ${icon("apps")}
-      <small>${allCount}</small>
-    </button>
-    <div class="cell-app-strip" role="list">
-      ${cellApps.length > 0
-        ? cellApps.map((item) => cellAppTileHtml(item)).join("")
-        : `<button class="cell-app-empty" type="button" aria-label="добавить мини-апп" data-tooltip="Добавить мини-апп">${icon("install")}</button>`}
-    </div>
-  `;
-  shelf.querySelector<HTMLButtonElement>(".cell-app-all")?.addEventListener("click", openMiniAppGallery);
-  shelf.querySelector<HTMLButtonElement>(".cell-app-empty")?.addEventListener("click", openActionMenu);
-  shelf.querySelectorAll<HTMLButtonElement>("[data-mini-app-key]").forEach((button) => {
-    button.addEventListener("click", () => {
-      openMiniAppByKey(button.dataset.miniAppKey || "");
-    });
-  });
-}
-
-function cellAppTileHtml(appItem: MiniAppDefinition): string {
-  const active = miniAppSession && sameMiniAppRecord(miniAppSession.app, appItem);
-  return `
-    <button class="cell-app-tile${active ? " is-active" : ""}" type="button" role="listitem" data-mini-app-key="${escapeHtml(miniAppRecordKey(appItem))}" aria-label="${escapeHtml(appItem.title)}" data-tooltip="${escapeHtml(appItem.title)}">
-      <span>${icon(appItem.icon)}</span>
-      <b>${escapeHtml(appItem.title)}</b>
-    </button>
-  `;
-}
-
 function openMiniAppGallery(): void {
   closeActionMenu();
   closeMiniAppGallery();
@@ -3390,19 +3352,6 @@ function miniAppGalleryItemHtml(appItem: MiniAppDefinition): string {
 
 function sortedMiniApps(apps: readonly MiniAppDefinition[]): MiniAppDefinition[] {
   return searchMiniApps(apps, "");
-}
-
-function cellShelfMiniApps(): MiniAppDefinition[] {
-  const scoped = [
-    ...sortedMiniApps(roomMiniAppsForSelected()),
-    ...sortedMiniApps(localMiniAppsForSelected())
-  ];
-  return dedupeMiniApps([
-    ...scoped,
-    ...sortedMiniApps(globalMiniApps()).filter((item) =>
-      !scoped.some((scopedItem) => sameMiniAppRecord(scopedItem, item))
-    )
-  ]);
 }
 
 function installDraftLauncherItem(draft: MiniAppInstallDraft): LauncherItem {
@@ -4242,10 +4191,6 @@ function renderApp(): void {
           <button class="dialog-notify retro-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
         </header>
         <nav class="chat-switcher" aria-label="чаты"></nav>
-        <section class="cell-surface" aria-label="пространство соты">
-          <div class="cell-app-shelf" aria-label="мини-аппы"></div>
-          <section class="space-rail" aria-label="режимы соты"></section>
-        </section>
         <section class="editor retro-screen">
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
@@ -4458,6 +4403,7 @@ function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
       ${sorted.map((tunnel) => chatSwitchButtonHtml(tunnel)).join("")}
     </div>
     ${chatActionRailHtml(activeTunnel)}
+    <section class="space-rail chat-mode-rail" aria-label="режимы чата"></section>
   `;
   switcher.querySelector<HTMLButtonElement>(".chat-connect-button")?.addEventListener("click", () => {
     void showQr();
@@ -5841,7 +5787,6 @@ function renderDialogChrome(): void {
       remoteButton.dataset.tooltip = mode === "update" ? "Обновить Клаву" : "Подключить Клаву";
     }
   }
-  renderCellAppShelf();
   publishMiniAppContext();
   renderSpace();
   updateComposerSpaceMode();
