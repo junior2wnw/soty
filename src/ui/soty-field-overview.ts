@@ -1,6 +1,7 @@
 import { icon } from "../icons";
 import type { IconName } from "../icons";
 import type { SotyFieldActions, SotyFieldItem, SotyFieldKind } from "./soty-field";
+import { renderSotyFieldMap, resetSotyFieldMap } from "./soty-field-map";
 
 let currentOverview: HTMLElement | null = null;
 let currentCleanup: (() => void) | null = null;
@@ -24,13 +25,23 @@ export function openSotyFieldOverview(items: readonly SotyFieldItem[], actions: 
         </span>
         <button class="action-close icon-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть">${icon("close")}</button>
       </header>
-      ${searchHtml(items)}
-      <div class="soty-field-overview-grid" role="list" aria-label="Все соты">
-        ${items.length > 0 ? items.map(overviewCellHtml).join("") : emptyOverviewHtml()}
-      </div>
-      <div class="soty-field-overview-no-results" role="status" hidden>
-        ${icon("search")}
-        <span>Не найдено</span>
+      <div class="soty-field-overview-body">
+        <section class="soty-field-overview-map-panel" aria-label="Карта сот">
+          <div class="soty-field-overview-map" role="list" aria-label="Карта сот"></div>
+          <button class="soty-field-overview-center" type="button" aria-label="Центр" data-tooltip="Центр">
+            ${icon("refresh")}
+          </button>
+        </section>
+        <section class="soty-field-overview-list">
+          ${searchHtml(items)}
+          <div class="soty-field-overview-grid" role="list" aria-label="Все соты">
+            ${items.length > 0 ? items.map(overviewCellHtml).join("") : emptyOverviewHtml()}
+          </div>
+          <div class="soty-field-overview-no-results" role="status" hidden>
+            ${icon("search")}
+            <span>Не найдено</span>
+          </div>
+        </section>
       </div>
       <button class="soty-field-overview-connect" type="button">
         ${icon("qr")}
@@ -45,6 +56,23 @@ export function openSotyFieldOverview(items: readonly SotyFieldItem[], actions: 
       closeSotyFieldOverview();
     }
   });
+  const mapRoot = overlay.querySelector<HTMLElement>(".soty-field-overview-map");
+  if (mapRoot) {
+    renderSotyFieldMap(mapRoot, items, {
+      connect: actions.connect,
+      select: (id) => {
+        closeSotyFieldOverview();
+        actions.select(id);
+      },
+      menu: (id, x, y) => {
+        closeSotyFieldOverview();
+        actions.menu(id, x, y);
+      }
+    });
+    overlay.querySelector<HTMLButtonElement>(".soty-field-overview-center")?.addEventListener("click", () => {
+      resetSotyFieldMap(mapRoot);
+    });
+  }
   const searchInput = overlay.querySelector<HTMLInputElement>(".soty-field-overview-search input");
   const applySearch = () => applySotyFieldSearch(overlay, searchInput?.value || "");
   const onKeyDown = (event: KeyboardEvent): void => {

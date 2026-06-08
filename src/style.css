@@ -4689,10 +4689,247 @@ button.personal-avatar {
   box-shadow: inset 0 -2px 0 var(--soty-field-color);
 }
 
-.soty-field-overview {
-  width: min(720px, calc(100vw - 24px));
+.action-sheet.soty-field-overview {
+  width: min(900px, calc(100vw - 24px));
   max-height: min(760px, calc(100svh - 28px));
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.soty-field-overview-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.92fr) minmax(280px, 1fr);
+  gap: 10px;
+}
+
+.soty-field-overview-map-panel {
+  position: relative;
+  min-width: 0;
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cyan) 32%, var(--edge));
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(103, 232, 249, 0.09), transparent 34%),
+    linear-gradient(135deg, rgba(109, 255, 143, 0.045), transparent 38%),
+    rgba(7, 11, 15, 0.78);
+}
+
+.soty-field-overview-map-panel::before,
+.soty-field-overview-map-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.soty-field-overview-map-panel::before {
+  background:
+    linear-gradient(90deg, rgba(103, 232, 249, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.038) 1px, transparent 1px);
+  background-size: 38px 38px;
+  opacity: 0.28;
+}
+
+.soty-field-overview-map-panel::after {
+  background:
+    linear-gradient(0deg, rgba(0, 0, 0, 0.24), transparent 26%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.16), transparent 20%, transparent 80%, rgba(0, 0, 0, 0.16));
+}
+
+.soty-field-overview-map {
+  --soty-map-step-x: 112px;
+  --soty-map-step-y: 86px;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
+.soty-field-overview-map:active {
+  cursor: grabbing;
+}
+
+.soty-field-map-canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: 0 0;
+}
+
+.soty-field-map-slot,
+.soty-field-map-cell {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  transform: translate(-50%, -50%);
+}
+
+.soty-field-map-slot {
+  width: 40px;
+  height: 34px;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  background: rgba(103, 232, 249, 0.025);
+  opacity: 0.62;
+}
+
+.soty-field-map-cell {
+  z-index: 2;
+  width: 118px;
+  min-height: 78px;
+  display: grid;
+  grid-template-columns: 18px 34px minmax(0, 1fr);
+  grid-template-rows: 1fr auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--soty-field-color, var(--cyan)) 42%, var(--edge));
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soty-field-color, var(--cyan)) 13%, transparent), transparent 68%),
+    rgba(8, 13, 18, 0.92);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.soty-field-map-kind,
+.soty-field-map-core {
+  display: grid;
+  place-items: center;
+  color: var(--soty-field-color);
+}
+
+.soty-field-map-kind {
+  grid-row: 1 / span 2;
+}
+
+.soty-field-map-kind svg,
+.soty-field-map-badge svg {
+  width: 16px;
+  height: 16px;
+}
+
+.soty-field-map-core {
+  width: 34px;
+  height: 32px;
+  grid-row: 1 / span 2;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  background: color-mix(in srgb, var(--soty-field-color) 24%, rgba(255, 255, 255, 0.02));
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.soty-field-map-cell b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 880;
+}
+
+.soty-field-map-badges {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.soty-field-map-badge {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--soty-field-color) 18%, rgba(255, 255, 255, 0.03));
+  color: var(--soty-field-color);
+}
+
+.soty-field-map-badge.text {
+  width: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.soty-field-map-cell i {
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--red);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.16);
+}
+
+.soty-field-map-cell:hover,
+.soty-field-map-cell:focus-visible,
+.soty-field-map-cell.is-active {
+  border-color: color-mix(in srgb, var(--soty-field-color, var(--green)) 72%, var(--green));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soty-field-color, var(--green)) 17%, transparent), transparent 70%),
+    #101922;
+  outline: none;
+  transform: translate(-50%, calc(-50% - 2px));
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+}
+
+.soty-field-map-cell.is-active {
+  box-shadow:
+    inset 0 -2px 0 var(--soty-field-color),
+    0 16px 34px rgba(0, 0, 0, 0.24);
+}
+
+.soty-field-overview-center {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--cyan) 44%, var(--edge));
+  border-radius: 8px;
+  background: rgba(7, 11, 15, 0.88);
+  color: var(--cyan);
+  cursor: pointer;
+}
+
+.soty-field-overview-center svg {
+  width: 17px;
+  height: 17px;
+}
+
+.soty-field-overview-center:hover,
+.soty-field-overview-center:focus-visible {
+  border-color: color-mix(in srgb, var(--green) 66%, var(--cyan));
+  color: var(--green);
+  outline: none;
+}
+
+.soty-field-overview-list {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.soty-field-overview-list:has(.soty-field-overview-search) {
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .soty-field-overview-search {
@@ -9300,9 +9537,55 @@ button:disabled {
     max-width: 100%;
   }
 
-  .soty-field-overview {
+  .action-sheet.soty-field-overview {
     width: calc(100vw - 32px);
     max-height: calc(100svh - 20px);
+  }
+
+  .soty-field-overview-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(230px, 0.86fr) minmax(210px, 1fr);
+  }
+
+  .soty-field-overview-map-panel {
+    min-height: 230px;
+  }
+
+  .soty-field-overview-map {
+    --soty-map-step-x: 88px;
+    --soty-map-step-y: 68px;
+  }
+
+  .soty-field-map-slot {
+    width: 32px;
+    height: 28px;
+  }
+
+  .soty-field-map-cell {
+    width: 98px;
+    min-height: 68px;
+    grid-template-columns: 28px minmax(0, 1fr);
+    grid-template-rows: 1fr auto;
+    gap: 2px 7px;
+    padding: 8px;
+  }
+
+  .soty-field-map-kind {
+    display: none;
+  }
+
+  .soty-field-map-core {
+    width: 28px;
+    height: 26px;
+  }
+
+  .soty-field-map-cell b {
+    font-size: 11px;
+  }
+
+  .soty-field-overview-center {
+    width: 36px;
+    height: 36px;
   }
 
   .soty-field-overview-grid {
