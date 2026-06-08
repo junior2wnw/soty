@@ -1,10 +1,11 @@
-export type IconName = "install" | "apps" | "qr" | "scan" | "close" | "check" | "more" | "person" | "clip" | "reply" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand" | "heart" | "hexagon" | "mail" | "agent";
+export type IconName = "install" | "apps" | "qr" | "scan" | "search" | "close" | "check" | "more" | "person" | "clip" | "reply" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand" | "heart" | "hexagon" | "mail" | "agent";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
   apps: "M4 4h7v7H4V4Zm2 2v3h3V6H6Zm7-2h7v7h-7V4Zm2 2v3h3V6h-3ZM4 13h7v7H4v-7Zm2 2v3h3v-3H6Zm7-2h7v7h-7v-7Zm2 2v3h3v-3h-3Z",
   qr: "M3 3h8v8H3V3Zm2 2v4h4V5H5Zm8-2h8v8h-8V3Zm2 2v4h4V5h-4ZM3 13h8v8H3v-8Zm2 2v4h4v-4H5Zm10-2h2v2h-2v-2Zm2 2h2v2h-2v-2Zm-4 2h2v2h-2v-2Zm2 2h2v2h-2v-2Zm4-2h2v4h-4v-2h2v-2Zm-6-4h2v2h-2v-2Zm6 0h2v2h-2v-2Z",
   scan: "M4 4h5v2H6v3H4V4Zm11 0h5v5h-2V6h-3V4ZM4 15h2v3h3v2H4v-5Zm14 0h2v5h-5v-2h3v-3ZM8 8h8v8H8V8Zm2 2v4h4v-4h-4Z",
+  search: "M10.5 4a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Zm5 9 5 5-1.4 1.4-5-5L15.5 15Z",
   close: "M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6 6.4 5Z",
   check: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7 19.6 5.6 9 16.2Z",
   more: "M5 12a2 2 0 1 1 4 0 2 2 0 0 1-4 0Zm5 0a2 2 0 1 1 4 0 2 2 0 0 1-4 0Zm5 0a2 2 0 1 1 4 0 2 2 0 0 1-4 0Z",

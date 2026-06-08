@@ -2486,8 +2486,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(sotyField.includes("openSotyFieldOverview"));
       assert(sotyFieldOverview.includes("openSotyFieldOverview"));
       assert(sotyFieldOverview.includes("soty-field-overview-cell"));
+      assert(sotyFieldOverview.includes("soty-field-overview-search"));
+      assert(sotyFieldOverview.includes("data-soty-field-search"));
+      assert(sotyFieldOverview.includes("applySotyFieldSearch"));
       assert(styles.includes(".soty-field"));
       assert(styles.includes(".soty-field-overview"));
+      assert(styles.includes(".soty-field-overview-search"));
       assert(ui.includes("renderSotyAppDockSurface"));
       assert(ui.includes("soty-app-dock"));
       assert(sotyAppDock.includes("renderSotyAppDock"));

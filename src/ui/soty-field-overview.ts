@@ -7,6 +7,7 @@ let currentCleanup: (() => void) | null = null;
 let previousFocus: HTMLElement | null = null;
 
 const longPressMs = 540;
+const searchThreshold = 7;
 
 export function openSotyFieldOverview(items: readonly SotyFieldItem[], actions: SotyFieldActions): void {
   closeSotyFieldOverview();
@@ -23,8 +24,13 @@ export function openSotyFieldOverview(items: readonly SotyFieldItem[], actions: 
         </span>
         <button class="action-close icon-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть">${icon("close")}</button>
       </header>
+      ${searchHtml(items)}
       <div class="soty-field-overview-grid" role="list" aria-label="Все соты">
         ${items.length > 0 ? items.map(overviewCellHtml).join("") : emptyOverviewHtml()}
+      </div>
+      <div class="soty-field-overview-no-results" role="status" hidden>
+        ${icon("search")}
+        <span>Не найдено</span>
       </div>
       <button class="soty-field-overview-connect" type="button">
         ${icon("qr")}
@@ -39,13 +45,34 @@ export function openSotyFieldOverview(items: readonly SotyFieldItem[], actions: 
       closeSotyFieldOverview();
     }
   });
+  const searchInput = overlay.querySelector<HTMLInputElement>(".soty-field-overview-search input");
+  const applySearch = () => applySotyFieldSearch(overlay, searchInput?.value || "");
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") {
+      if (searchInput?.value.trim()) {
+        event.preventDefault();
+        searchInput.value = "";
+        applySearch();
+        searchInput.focus();
+        return;
+      }
       closeSotyFieldOverview();
     }
   };
   document.addEventListener("keydown", onKeyDown);
   currentCleanup = () => document.removeEventListener("keydown", onKeyDown);
+  searchInput?.addEventListener("input", applySearch);
+  searchInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    const first = firstVisibleCell(overlay);
+    if (!first) {
+      return;
+    }
+    event.preventDefault();
+    first.click();
+  });
   overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", closeSotyFieldOverview);
   overlay.querySelector<HTMLButtonElement>(".soty-field-overview-connect")?.addEventListener("click", () => {
     closeSotyFieldOverview();
@@ -54,7 +81,8 @@ export function openSotyFieldOverview(items: readonly SotyFieldItem[], actions: 
   overlay.querySelectorAll<HTMLButtonElement>("[data-soty-field-overview-id]").forEach((button) => {
     bindOverviewCell(button, button.dataset.sotyFieldOverviewId || "", actions);
   });
-  const focusTarget = overlay.querySelector<HTMLButtonElement>(".soty-field-overview-cell.is-active")
+  const focusTarget = searchInput
+    || overlay.querySelector<HTMLButtonElement>(".soty-field-overview-cell.is-active")
     || overlay.querySelector<HTMLButtonElement>(".soty-field-overview-cell")
     || overlay.querySelector<HTMLButtonElement>(".soty-field-overview-connect")
     || overlay.querySelector<HTMLButtonElement>(".action-close");
@@ -73,7 +101,7 @@ export function closeSotyFieldOverview(): void {
 function overviewCellHtml(item: SotyFieldItem): string {
   return `
     <button class="soty-field-overview-cell${item.active ? " is-active" : ""}${item.unread ? " has-unread" : ""}" type="button" role="listitem"
-      data-soty-field-overview-id="${escapeHtml(item.id)}" style="--soty-field-color:${escapeHtml(item.color)}" aria-label="${escapeHtml(item.label)}">
+      data-soty-field-overview-id="${escapeHtml(item.id)}" data-soty-field-search="${escapeHtml(itemSearchText(item))}" style="--soty-field-color:${escapeHtml(item.color)}" aria-label="${escapeHtml(item.label)}">
       <span class="soty-field-overview-kind">${icon(kindIcon(item.kind))}</span>
       <span class="soty-field-overview-core">${escapeHtml(initials(item.label))}</span>
       <span class="soty-field-overview-copy">
@@ -83,6 +111,18 @@ function overviewCellHtml(item: SotyFieldItem): string {
       ${badgesHtml(item)}
       ${item.unread ? "<i></i>" : ""}
     </button>
+  `;
+}
+
+function searchHtml(items: readonly SotyFieldItem[]): string {
+  if (items.length < searchThreshold) {
+    return "";
+  }
+  return `
+    <label class="soty-field-overview-search">
+      ${icon("search")}
+      <input type="search" autocomplete="off" spellcheck="false" aria-label="Найти соту" placeholder="Найти">
+    </label>
   `;
 }
 
@@ -145,6 +185,25 @@ function bindOverviewCell(button: HTMLButtonElement, id: string, actions: SotyFi
   });
 }
 
+function applySotyFieldSearch(overlay: HTMLElement, value: string): void {
+  const query = normalizeSearch(value);
+  let visible = 0;
+  overlay.querySelectorAll<HTMLButtonElement>("[data-soty-field-overview-id]").forEach((button) => {
+    const haystack = normalizeSearch(button.dataset.sotyFieldSearch || button.textContent || "");
+    const match = !query || haystack.includes(query);
+    button.hidden = !match;
+    if (match) {
+      visible += 1;
+    }
+  });
+  overlay.querySelector<HTMLElement>(".soty-field-overview-no-results")?.toggleAttribute("hidden", visible > 0);
+}
+
+function firstVisibleCell(overlay: HTMLElement): HTMLButtonElement | null {
+  return [...overlay.querySelectorAll<HTMLButtonElement>("[data-soty-field-overview-id]")]
+    .find((button) => !button.hidden) || null;
+}
+
 function fieldSummary(items: readonly SotyFieldItem[]): string {
   if (items.length === 0) {
     return "нет подключений";
@@ -158,6 +217,19 @@ function fieldSummary(items: readonly SotyFieldItem[]): string {
   ].filter(Boolean).join(" · ");
 }
 
+function itemSearchText(item: SotyFieldItem): string {
+  return [
+    item.id,
+    item.label,
+    initials(item.label),
+    itemStatus(item),
+    item.agentMode ? "агент agent" : "",
+    item.unread ? "новое unread" : "",
+    item.remote ? "доступ remote" : "",
+    item.access ? "подключиться access" : ""
+  ].filter(Boolean).join(" ");
+}
+
 function itemStatus(item: SotyFieldItem): string {
   return [
     item.kind === "agent" ? "агент" : item.kind === "self" ? "вы" : "чат",
@@ -165,6 +237,15 @@ function itemStatus(item: SotyFieldItem): string {
     item.apps > 0 ? `${item.apps} app` : "",
     item.peers > 1 ? `${item.peers} ${pluralRu(item.peers, "устройство", "устройства", "устройств")}` : ""
   ].filter(Boolean).join(" · ");
+}
+
+function normalizeSearch(value: string): string {
+  return value
+    .toLocaleLowerCase("ru-RU")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/ё/gu, "е")
+    .trim();
 }
 
 function badgesHtml(item: SotyFieldItem): string {
