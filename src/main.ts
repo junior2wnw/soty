@@ -37,7 +37,7 @@ import type { AccessPanelRow } from "./features/trust-ui";
 import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./features/payments";
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, loadPersonalSpaceThread, personalSpaceManifestHref, personalSpaceRouteFromLocation, reactPersonalSpaceMessage, renderPersonalSpacePage, replyPersonalSpaceMessage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
-import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceMessageReactionDraft, PersonalSpaceMessageReplyDraft, PersonalSpaceModuleDraft, PersonalSpaceNotificationRequest, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute, PersonalSpaceThreadRequest } from "./features/personal-space";
+import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentDeviceState, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceMessageReactionDraft, PersonalSpaceMessageReplyDraft, PersonalSpaceModuleDraft, PersonalSpaceNotificationRequest, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute, PersonalSpaceThreadRequest } from "./features/personal-space";
 import { runtimeModuleTargetFromString } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
@@ -1272,9 +1272,15 @@ function showPersonalSpaceRoute(route: PersonalSpaceRoute): void {
     importBackup: importSotyBackupFile,
     applyManifest: applyPersonalProfileManifest,
     isOwned: isPersonalProfileOwned,
+    agentDeviceState: personalSpaceAgentDeviceState,
     installAgent: installPersonalSpaceAgent,
     openRuntime: openPersonalSpaceRuntime
-  });
+  }).then(() => startAgentButtonWatcher(true));
+}
+
+function personalSpaceAgentDeviceState(): PersonalSpaceAgentDeviceState {
+  const mode = agentButtonMode();
+  return mode === "link" ? "ready" : mode === "update" ? "update" : "missing";
 }
 
 async function updateSignedPersonalSpaceProfile(route: PersonalSpaceRoute, update: PersonalSpaceProfileUpdate): Promise<PersonalSpaceInstallResult> {
@@ -4366,7 +4372,7 @@ function renderTiles(): void {
   renderDialogChrome();
 }
 
-type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "info";
+type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "agentTask" | "info";
 
 type ChatQuickAction = {
   readonly id: ChatQuickActionId;
@@ -4447,6 +4453,7 @@ function chatActionRailHtml(tunnel: TunnelRecord | null): string {
   }
   const mode = agentButtonMode();
   const actions: readonly ChatQuickAction[] = [
+    { id: "agentTask", icon: "agent", label: "Задача", tooltip: "Задача агенту", active: selectedAgentMode(tunnel.id) },
     { id: "attach", icon: "clip", label: "Файл", tooltip: "Прикрепить файл" },
     { id: "knock", icon: "bell", label: "Позвать", tooltip: "Позвать в чат" },
     { id: "remote", icon: "remote", label: "Доступ", tooltip: "Доступ к устройству", active: remoteEnabled.has(tunnel.id) },
@@ -4454,7 +4461,7 @@ function chatActionRailHtml(tunnel: TunnelRecord | null): string {
     { id: "apps", icon: "apps", label: "Apps", tooltip: "Мини-аппы" },
     { id: "chess", icon: "chess", label: "Шахматы", tooltip: "Открыть шахматы" },
     { id: "info", icon: "shield", label: "Инфо", tooltip: "Инфа и безопасность" },
-    { id: "agentInstall", icon: "download", label: "Клава", tooltip: "Установить или обновить Клаву", hidden: mode === "link" },
+    { id: "agentInstall", icon: "download", label: "Устройство", tooltip: "Установить агента на устройство", hidden: mode === "link" },
     { id: "close", icon: "close", label: "Закрыть", tooltip: "Закрыть чат", danger: true, hidden: isPermanentCell(tunnel) }
   ];
   return `
@@ -4480,6 +4487,11 @@ function runChatQuickAction(action: ChatQuickActionId): void {
   }
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   if (!tunnel) {
+    return;
+  }
+  if (action === "agentTask") {
+    activateChatTunnel(tunnel.id);
+    setSelectedAgentMode(!selectedAgentMode(tunnel.id));
     return;
   }
   const actions = chatActionsFor(tunnel.id);
@@ -5805,6 +5817,13 @@ function renderAgentPrivatePanel(): void {
     panel.innerHTML = "";
     return;
   }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
+  const mode = agentButtonMode();
+  const status = mode === "link"
+    ? { label: "Агент готов", detail: "Пишите задачу внизу. Ответ появится здесь.", action: "" }
+    : mode === "update"
+      ? { label: "Нужно обновить агента", detail: "Скачайте новую версию, потом пишите задачу в чат.", action: "Обновить" }
+      : { label: "Сначала установите агента", detail: "После установки этот же чат станет рабочим местом для задач.", action: "Установить" };
   const lines = agentPrivateLogs.get(selectedId) ?? [];
   panel.innerHTML = lines.length > 0
     ? lines.map((line) => `
@@ -5813,7 +5832,40 @@ function renderAgentPrivatePanel(): void {
         <p>${line.text.split("\n").map((item) => item ? `<span>${linkifyChatLine(item)}</span>` : "<br>").join("")}</p>
       </article>
     `).join("")
-    : `<div class="agent-private-empty">${icon("agent")}<span>Agent mode включен</span><small>Задачи идут агенту, обычный диалог остается чистым.</small></div>`;
+    : `<div class="agent-private-empty">
+      ${icon("agent")}
+      <span>${escapeHtml(status.label)}</span>
+      <small>${escapeHtml(status.detail)}</small>
+      <div class="agent-private-steps" aria-label="agent steps">
+        <b>1 устройство</b>
+        <b>2 задача</b>
+        <b>3 ответ</b>
+      </div>
+      <div class="agent-private-actions">
+        ${status.action ? `<button class="agent-private-action" type="button" data-agent-private-action="install">${icon("download")}<span>${escapeHtml(status.action)}</span></button>` : ""}
+        <button class="agent-private-action" type="button" data-agent-private-action="access">${icon("remote")}<span>${escapeHtml(tunnel && isAgentTunnel(tunnel) ? "Доступ" : "Инструменты")}</span></button>
+      </div>
+    </div>`;
+  panel.querySelectorAll<HTMLButtonElement>("[data-agent-private-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.agentPrivateAction === "install") {
+        void (async () => {
+          const nextMode = await refreshAgentButtonState(true);
+          if (nextMode !== "link") {
+            requestAgentDownload(tunnel && isAgentTunnel(tunnel) ? device || undefined : undefined, "Агент ставится один раз на устройство. После установки пишите задачи в этом чате.");
+          } else {
+            renderAgentPrivatePanel();
+          }
+        })();
+        return;
+      }
+      if (tunnel && isAgentTunnel(tunnel)) {
+        void toggleAgentRemoteGrant(tunnel.id);
+      } else if (tunnel) {
+        void toggleRemoteGrant(tunnel.id);
+      }
+    });
+  });
   panel.scrollTop = panel.scrollHeight;
 }
 

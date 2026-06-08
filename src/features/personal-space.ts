@@ -126,6 +126,8 @@ export type PersonalSpaceAgentRequest = {
   readonly intent: "miniapp" | "page";
 };
 
+export type PersonalSpaceAgentDeviceState = "ready" | "update" | "missing";
+
 export type PersonalSpaceAgentResult = {
   readonly ok: boolean;
   readonly message: string;
@@ -174,6 +176,7 @@ export type PersonalSpacePageOptions = {
   readonly importBackup: (file: File) => Promise<PersonalSpaceInstallResult>;
   readonly applyManifest: (profile: PersonalSpaceProfile) => void;
   readonly isOwned: (profile: PersonalSpaceProfile) => boolean | Promise<boolean>;
+  readonly agentDeviceState?: () => PersonalSpaceAgentDeviceState;
   readonly installAgent: (profile: PersonalSpaceProfile) => void;
   readonly openRuntime: (profile: PersonalSpaceProfile, target?: string) => void;
 };
@@ -435,7 +438,7 @@ export async function renderPersonalSpacePage(root: HTMLElement, options: Person
   const activeLayer: PersonalSpaceLayer = requestedActiveLayer() || (requestedRuntimeModule() ? "place" : null) || previousLayer || (options.route.slug ? "place" : "card");
   const localHandle = loadLocalHandle();
   const ownSpace = await options.isOwned(profile);
-  root.innerHTML = renderPage(profile, activeLayer, localHandle, ownSpace, options.canNotify());
+  root.innerHTML = renderPage(profile, activeLayer, localHandle, ownSpace, options.canNotify(), options.agentDeviceState?.() || "missing");
   bindPersonalSpace(root, profile, options);
   openRequestedPersonalRuntimeModule(root, profile, options);
   document.body.dataset.sotyReady = "1";
@@ -1223,7 +1226,14 @@ function renderLoading(route: PersonalSpaceRoute): string {
   `;
 }
 
-function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLayer, localHandle: string, ownSpace: boolean, canNotify: boolean): string {
+function renderPage(
+  profile: PersonalSpaceProfile,
+  activeLayer: PersonalSpaceLayer,
+  localHandle: string,
+  ownSpace: boolean,
+  canNotify: boolean,
+  agentDeviceState: PersonalSpaceAgentDeviceState
+): string {
   const initialsText = initials(profile.shortName || profile.displayName);
   const avatar = profile.photoUrl
     ? `<img src="${escapeAttr(profile.photoUrl)}" alt="" />`
@@ -1243,7 +1253,7 @@ function renderPage(profile: PersonalSpaceProfile, activeLayer: PersonalSpaceLay
             <h1>${escapeHtml(profile.displayName)}</h1>
             <p>${escapeHtml(heroText)}</p>
             ${renderHeroActions(ownSpace)}
-            ${ownSpace ? renderOwnerAgentDock() : ""}
+            ${ownSpace ? renderOwnerAgentDock(agentDeviceState) : ""}
             <div class="personal-note" data-install-note></div>
           </div>
         </section>
@@ -1696,19 +1706,36 @@ function renderEntityAction(action: EntityAction, className?: string): string {
   return `<button class="${escapeAttr(buttonClass)}" type="button" data-action="${action.id}">${icon(action.icon)} ${escapeHtml(action.label)}</button>`;
 }
 
-function renderOwnerAgentDock(): string {
+function renderOwnerAgentDock(agentDeviceState: PersonalSpaceAgentDeviceState): string {
+  const status = agentDeviceState === "ready"
+    ? {
+      label: "Агент готов",
+      detail: "Можно писать задачи в чат",
+      installDetail: "проверить / обновить"
+    }
+    : agentDeviceState === "update"
+      ? {
+        label: "Нужно обновление",
+        detail: "Скачайте новую версию агента",
+        installDetail: "обновить агент"
+      }
+      : {
+        label: "Сначала устройство",
+        detail: "Установите агента один раз",
+        installDetail: "установить агент"
+      };
   const actions: readonly { readonly action: EntityActionId; readonly label: string; readonly detail: string; readonly icon: IconName; readonly primary?: boolean }[] = [
     {
       action: "agent",
-      label: "Чат агента",
-      detail: "задачи и ответы",
+      label: "Задача ИИ",
+      detail: "открыть чат агента",
       icon: "agent",
       primary: true
     },
     {
       action: "agent-install",
       label: "Устройство",
-      detail: "установить агент",
+      detail: status.installDetail,
       icon: "download"
     },
     {
@@ -1719,17 +1746,36 @@ function renderOwnerAgentDock(): string {
     }
   ];
   return `
-    <div class="personal-agent-dock" aria-label="${escapeAttr("Agent")}">
-      ${actions.map((action) => `
-        <button type="button" data-action="${escapeAttr(action.action)}"${action.primary ? ` class="is-primary"` : ""}>
-          ${icon(action.icon)}
-          <span>
-            <b>${escapeHtml(action.label)}</b>
-            <small>${escapeHtml(action.detail)}</small>
-          </span>
-        </button>
-      `).join("")}
-    </div>
+    <section class="personal-agent-guide" data-agent-guide data-agent-device-state="${escapeAttr(agentDeviceState)}" aria-label="${escapeAttr("Агент карточки")}">
+      <div class="personal-agent-status">
+        <span>${icon("agent")}</span>
+        <div>
+          <b>${escapeHtml(status.label)}</b>
+          <small>${escapeHtml(status.detail)}</small>
+        </div>
+      </div>
+      <div class="personal-agent-path" aria-label="${escapeAttr("Как работает агент")}">
+        <span><b>1</b> устройство</span>
+        <span><b>2</b> чат</span>
+        <span><b>3</b> задача</span>
+      </div>
+      <div class="personal-agent-dock" aria-label="${escapeAttr("Действия агента")}">
+        ${actions.map((action) => `
+          <button type="button" data-action="${escapeAttr(action.action)}"${action.primary ? ` class="is-primary"` : ""}>
+            ${icon(action.icon)}
+            <span>
+              <b>${escapeHtml(action.label)}</b>
+              <small>${escapeHtml(action.detail)}</small>
+            </span>
+          </button>
+        `).join("")}
+      </div>
+      <div class="personal-agent-presets" aria-label="${escapeAttr("Быстрые задачи агента")}">
+        <button type="button" data-agent-preset="style" data-agent-text="${escapeAttr("Наведи красоту в моей карточке: сделай аккуратный визуальный блок без лишнего шума.")}">${icon("agent")} <span>Красота</span></button>
+        <button type="button" data-agent-preset="miniapp" data-agent-text="${escapeAttr("Создай полезный mini-app для этой карточки.")}">${icon("apps")} <span>Mini-app</span></button>
+        <button type="button" data-agent-preset="page" data-agent-text="${escapeAttr("Добавь полезную страницу или ссылку для этой карточки.")}">${icon("qr")} <span>Страница</span></button>
+      </div>
+    </section>
   `;
 }
 
