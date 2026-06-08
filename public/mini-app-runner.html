@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Soty mini app</title>
+    <style>
+      html,
+      body,
+      iframe {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: transparent;
+        overflow: hidden;
+      }
+
+      iframe {
+        border: 0;
+        display: block;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <iframe id="mini-app-frame" title="Soty mini app" sandbox="allow-scripts allow-forms allow-popups allow-downloads"></iframe>
+    <script type="module" src="/mini-app-runner.js"></script>
+  </body>
+</html>

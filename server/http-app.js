@@ -23,11 +23,13 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     .join(" ");
   app.use((req, res, next) => {
     const miniAppAsset = req.path === "/mini-apps/manifest.json" || req.path.startsWith("/mini-apps/");
+    const miniAppRunner = req.path === "/mini-app-runner.html" || req.path === "/mini-app-runner.js";
+    const scriptSrc = miniAppRunner ? "script-src 'self' 'unsafe-inline'" : "script-src 'self'";
     res.setHeader("Content-Security-Policy", [
       "default-src 'self'",
       "base-uri 'none'",
       "object-src 'none'",
-      "script-src 'self'",
+      scriptSrc,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' blob: data:",
       "font-src 'self'",
@@ -35,7 +37,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
       `frame-src 'self' https: http://127.0.0.1:* http://localhost:*${miniAppFrameSrc ? ` ${miniAppFrameSrc}` : ""}`,
       "manifest-src 'self' blob:",
       "worker-src 'self'",
-      `frame-ancestors ${miniAppAsset ? "'self'" : "'none'"}`,
+      `frame-ancestors ${miniAppAsset || miniAppRunner ? "'self'" : "'none'"}`,
       "form-action 'self'"
     ].join("; "));
     res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
@@ -54,7 +56,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-Frame-Options", miniAppAsset ? "SAMEORIGIN" : "DENY");
+    res.setHeader("X-Frame-Options", miniAppAsset || miniAppRunner ? "SAMEORIGIN" : "DENY");
     next();
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));

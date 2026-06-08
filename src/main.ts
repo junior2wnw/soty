@@ -44,6 +44,8 @@ import { installWebController, resolveWebControllerTarget } from "./features/web
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
+import { renderSotyAppDock } from "./ui/soty-app-dock";
+import type { SotyAppDockItem } from "./ui/soty-app-dock";
 import { renderSotyField } from "./ui/soty-field";
 import type { SotyFieldItem } from "./ui/soty-field";
 import { installTooltips } from "./ui/tooltips";
@@ -195,12 +197,14 @@ const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
 const miniAppContextProtocol = "soty.mini-app.context.v1";
+const miniAppRunnerProtocol = "soty.mini-app.runner.v1";
 const fileBundlePrefix = "SOTY_FILE_BUNDLE:";
 const chatMessagePrefix = "SOTY_CHAT_MESSAGE:";
 const agentAttachmentLimit = 10;
 let miniApps: MiniAppDefinition[] = [];
 const roomMiniApps = new Map<string, MiniAppDefinition[]>();
 let miniAppSession: MiniAppSession | null = null;
+let miniAppRunnerHtml = "";
 let openMessageDialog: OpenMessageDialog | null = null;
 const chessGames = new Map<string, ChessSnapshot>();
 const chessFlipped = new Set<string>();
@@ -3012,6 +3016,7 @@ function closeMiniAppGallery(): void {
 
 async function refreshMiniApps(_force = false): Promise<readonly MiniAppDefinition[]> {
   miniApps = currentMiniApps();
+  renderSotyAppDockSurface();
   renderDialogChrome();
   return miniApps;
 }
@@ -3305,6 +3310,7 @@ function handleMiniAppRegistryChange(): void {
       renderMiniAppPanel();
     }
   }
+  renderSotyAppDockSurface();
   renderDialogChrome();
 }
 
@@ -3516,6 +3522,7 @@ function renderMiniAppPanel(): void {
     dock.hidden = !miniAppSession?.collapsed;
   }
   if (!miniAppSession) {
+    miniAppRunnerHtml = "";
     frame.removeAttribute("src");
     frame.removeAttribute("srcdoc");
     frame.removeAttribute("sandbox");
@@ -3560,13 +3567,17 @@ function renderMiniAppPanel(): void {
     return;
   }
   if (session.app.inlineHtml) {
-    frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-downloads");
-    frame.removeAttribute("src");
-    const nextHtml = miniAppInlineHtmlWithContext(session);
-    if (frame.srcdoc !== nextHtml) {
-      frame.srcdoc = nextHtml;
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads");
+    frame.removeAttribute("srcdoc");
+    miniAppRunnerHtml = miniAppInlineHtmlWithContext(session);
+    const nextUrl = miniAppRunnerUrl(session);
+    if (frame.src !== nextUrl) {
+      frame.src = nextUrl;
+    } else {
+      publishInlineMiniAppRunner();
     }
   } else {
+    miniAppRunnerHtml = "";
     frame.removeAttribute("sandbox");
     frame.removeAttribute("srcdoc");
     const nextUrl = miniAppUrlWithContext(session);
@@ -3581,6 +3592,30 @@ function miniAppUrlWithContext(session: MiniAppSession): string {
   url.searchParams.set("sotyMiniApp", session.app.id);
   url.searchParams.set("sotyNonce", session.nonce);
   return url.href;
+}
+
+function miniAppRunnerUrl(session: MiniAppSession): string {
+  const url = new URL("/mini-app-runner.html", window.location.href);
+  url.searchParams.set("sotyMiniApp", session.app.id);
+  url.searchParams.set("sotyNonce", session.nonce);
+  return url.href;
+}
+
+function publishInlineMiniAppRunner(): void {
+  if (!miniAppSession?.app.inlineHtml || !miniAppRunnerHtml) {
+    return;
+  }
+  const frame = app.querySelector<HTMLIFrameElement>(".mini-frame");
+  if (!frame?.contentWindow) {
+    return;
+  }
+  frame.contentWindow.postMessage({
+    schema: miniAppRunnerProtocol,
+    type: "load",
+    appId: miniAppSession.app.id,
+    nonce: miniAppSession.nonce,
+    html: miniAppRunnerHtml
+  }, "*");
 }
 
 function miniAppInlineHtmlWithContext(session: MiniAppSession): string {
@@ -3667,7 +3702,7 @@ function handleMiniAppMessage(event: MessageEvent): void {
 
 function isAllowedMiniAppOrigin(origin: string, appItem: MiniAppDefinition): boolean {
   if (appItem.inlineHtml) {
-    return origin === "null";
+    return origin === "null" || origin === window.location.origin;
   }
   return appSurfaceAllowedOrigin(origin, appItem.url, window.location.href, {
     kernelIntentSchemes: ["soty:"]
@@ -4348,6 +4383,7 @@ function renderApp(): void {
     restoreMiniApp();
   });
   app.querySelector<HTMLIFrameElement>(".mini-frame")?.addEventListener("load", () => {
+    publishInlineMiniAppRunner();
     publishMiniAppContext();
   });
   setupSplitter();
@@ -4367,6 +4403,7 @@ function renderTiles(): void {
   const sorted = sortedVisibleTunnels();
   renderChatSwitcher(sorted);
   renderSotyFieldSurface(sorted);
+  renderSotyAppDockSurface();
   if (qrMode === "auto") {
     closeQrOverlay();
   }
@@ -4422,6 +4459,41 @@ function sotyFieldItemForTunnel(tunnel: TunnelRecord): SotyFieldItem {
   };
 }
 
+function renderSotyAppDockSurface(): void {
+  const dock = app.querySelector<HTMLElement>(".soty-app-dock");
+  if (!dock) {
+    return;
+  }
+  const dockItems = sotyAppDockItems();
+  const activeKey = miniAppSession ? miniAppRecordKey(miniAppSession.app) : "";
+  renderSotyAppDock(dock, dockItems.map((appItem): SotyAppDockItem => ({
+    key: miniAppRecordKey(appItem),
+    title: appItem.title,
+    icon: appItem.icon,
+    active: miniAppRecordKey(appItem) === activeKey
+  })), dockItems.length, {
+    open: (key) => {
+      openMiniAppByKey(key);
+    },
+    all: () => {
+      openMiniAppGallery();
+    }
+  });
+}
+
+function sotyAppDockItems(): MiniAppDefinition[] {
+  const scoped = [
+    ...sortedMiniApps(roomMiniAppsForSelected()),
+    ...sortedMiniApps(localMiniAppsForSelected())
+  ];
+  return dedupeMiniApps([
+    ...scoped,
+    ...sortedMiniApps(globalMiniApps()).filter((item) =>
+      !scoped.some((scopedItem) => sameMiniAppRecord(scopedItem, item))
+    )
+  ]);
+}
+
 type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "agentTask" | "info";
 
 type ChatQuickAction = {
@@ -4472,6 +4544,7 @@ function chatActionRailHtml(tunnel: TunnelRecord | null): string {
   return `
     <div class="chat-action-rail" role="toolbar" aria-label="действия чата">
       ${actions.filter((action) => !action.hidden).map(chatActionButtonHtml).join("")}
+      <div class="soty-app-dock" aria-label="Mini-apps" hidden></div>
     </div>
   `;
 }
@@ -5782,6 +5855,7 @@ function renderDialogChrome(): void {
   if (agentPill) {
     agentPill.hidden = !agentMode;
   }
+  renderSotyAppDockSurface();
   publishMiniAppContext();
   renderSpace();
   updateComposerSpaceMode();
