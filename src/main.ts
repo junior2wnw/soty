@@ -4223,8 +4223,8 @@ function renderApp(): void {
           <span class="dialog-live" aria-live="polite">
             <span class="writer-pop"></span>
           </span>
-          <button class="agent-mode-button chat-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
-          <span class="agent-mode-pill" hidden>${icon("agent")}<b>Agent mode</b></span>
+          <button class="agent-mode-button chat-icon-button" type="button" aria-label="агент" data-tooltip="Агент">${icon("agent")}</button>
+          <span class="agent-mode-pill" hidden>${icon("agent")}<b>Агент</b></span>
           <button class="clear-dialog-button chat-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <button class="access-open chat-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="поделиться" data-tooltip="Поделиться">${icon("copy")}</button>
@@ -4541,7 +4541,7 @@ function chatActionRailHtml(tunnel: TunnelRecord | null): string {
 function chatQuickActions(tunnel: TunnelRecord): readonly ChatQuickAction[] {
   const mode = agentButtonMode();
   return [
-    { id: "agentTask", icon: "agent", label: "Задача", tooltip: "Задача агенту", active: selectedAgentMode(tunnel.id) },
+    { id: "agentTask", icon: "agent", label: "Агент", tooltip: "Писать агенту", active: selectedAgentMode(tunnel.id) },
     { id: "attach", icon: "clip", label: "Файл", tooltip: "Прикрепить файл" },
     { id: "knock", icon: "bell", label: "Позвать", tooltip: "Позвать в чат" },
     { id: "remote", icon: "remote", label: "Доступ", tooltip: "Доступ к устройству", active: remoteEnabled.has(tunnel.id) },
@@ -5900,14 +5900,14 @@ function renderDialogChrome(): void {
     const stopping = selectedSpaceMode() === "dialog" && agentThinking.has(selectedId);
     sendButton.classList.toggle("is-stop", stopping);
     sendButton.setAttribute("aria-label", stopping ? "остановить" : "отправить");
-    sendButton.dataset.tooltip = stopping ? "Остановить" : agentMode ? "Agent" : "Отправить";
+    sendButton.dataset.tooltip = stopping ? "Остановить" : agentMode ? "Отправить агенту" : "Отправить";
     sendButton.innerHTML = icon(stopping ? "stop" : agentMode ? "agent" : "send");
   }
   if (agentButton) {
     agentButton.hidden = !tunnel || selectedSpaceMode() !== "dialog";
     agentButton.classList.toggle("is-on", agentMode);
     agentButton.setAttribute("aria-pressed", agentMode ? "true" : "false");
-    agentButton.dataset.tooltip = agentMode ? "Agent mode включен" : "Включить agent mode";
+    agentButton.dataset.tooltip = agentMode ? "Агентный режим включен" : "Писать агенту";
   }
   if (agentPill) {
     agentPill.hidden = !agentMode;
@@ -5958,8 +5958,8 @@ function renderAgentPrivatePanel(): void {
   const status = mode === "link"
     ? { label: "Агент готов", detail: "Пишите задачу внизу. Ответ появится здесь.", action: "" }
     : mode === "update"
-      ? { label: "Нужно обновить агента", detail: "Скачайте новую версию, потом пишите задачу в чат.", action: "Обновить" }
-      : { label: "Сначала установите агента", detail: "После установки этот же чат станет рабочим местом для задач.", action: "Установить" };
+      ? { label: "Нужно обновить агента", detail: "Задачи можно писать сейчас. Для работы с устройством обновите агент.", action: "Обновить" }
+      : { label: "ИИ-агент в этом чате", detail: "Пишите задачу ниже. Для действий на устройстве установите агент один раз.", action: "Установить" };
   const lines = agentPrivateLogs.get(selectedId) ?? [];
   panel.innerHTML = lines.length > 0
     ? lines.map((line) => `
@@ -5977,11 +5977,21 @@ function renderAgentPrivatePanel(): void {
         <b>2 задача</b>
         <b>3 ответ</b>
       </div>
+      <div class="agent-private-presets" aria-label="быстрые задачи агента">
+        <button type="button" data-agent-private-prompt="Проверь состояние агента, устройства, сети и доступа в этой соте.">${icon("check")}<span>Проверить</span></button>
+        <button type="button" data-agent-private-prompt="Наведи порядок в этой соте: предложи и сделай самый полезный первый шаг без лишнего шума.">${icon("agent")}<span>Улучшить</span></button>
+        <button type="button" data-agent-private-prompt="Создай полезный mini-app для этой соты и подключи его через доступный модульный слой.">${icon("apps")}<span>Mini-app</span></button>
+      </div>
       <div class="agent-private-actions">
         ${status.action ? `<button class="agent-private-action" type="button" data-agent-private-action="install">${icon("download")}<span>${escapeHtml(status.action)}</span></button>` : ""}
         <button class="agent-private-action" type="button" data-agent-private-action="access">${icon("remote")}<span>${escapeHtml(tunnel && isAgentTunnel(tunnel) ? "Доступ" : "Инструменты")}</span></button>
       </div>
     </div>`;
+  panel.querySelectorAll<HTMLButtonElement>("[data-agent-private-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      applyAgentPrivatePrompt(button.dataset.agentPrivatePrompt || "");
+    });
+  });
   panel.querySelectorAll<HTMLButtonElement>("[data-agent-private-action]").forEach((button) => {
     button.addEventListener("click", () => {
       if (button.dataset.agentPrivateAction === "install") {
@@ -6003,6 +6013,18 @@ function renderAgentPrivatePanel(): void {
     });
   });
   panel.scrollTop = panel.scrollHeight;
+}
+
+function applyAgentPrivatePrompt(prompt: string): void {
+  const text = normalizeChatMessage(prompt).slice(0, 900);
+  if (!text || !composer) {
+    return;
+  }
+  composer.value = text;
+  localDrafts.set(selectedId, text);
+  resizeComposer();
+  rememberComposerDraft();
+  composer.focus();
 }
 
 function selectedSpaceModel(): SpaceModel | null {

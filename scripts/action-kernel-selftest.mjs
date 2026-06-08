@@ -2234,11 +2234,18 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes('downloadAgentInstallerForDevice('));
       assert(ui.includes('"machine",'));
       assert(personalSpaceSource.includes('data-agent-guide'));
+      assert(personalSpaceSource.includes('data-agent-compose'));
+      assert(personalSpaceSource.includes('submitOwnerAgentCompose'));
       assert(personalSpaceSource.includes('personal-agent-presets'));
       assert(ui.includes('id: "agentTask"'));
+      assert(ui.includes('label: "Агент"'));
+      assert(ui.includes('data-agent-private-prompt'));
+      assert(ui.includes("applyAgentPrivatePrompt"));
       assert(ui.includes('data-agent-private-action="install"'));
       assert(styles.includes(".personal-agent-guide"));
+      assert(styles.includes(".personal-agent-compose"));
       assert(styles.includes(".agent-private-steps"));
+      assert(styles.includes(".agent-private-presets"));
       assert(ui.includes('id: "agentInstall"'));
       assert(ui.includes('hidden: mode === "link"'));
       assert(ui.includes('needsAgentInstall: agentButtonMode() !== "link"'));

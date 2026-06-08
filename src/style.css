@@ -790,7 +790,7 @@ button.personal-avatar {
 }
 
 .personal-agent-guide {
-  width: min(100%, 390px);
+  width: min(100%, 460px);
   display: grid;
   gap: 8px;
   margin-top: 2px;
@@ -830,8 +830,7 @@ button.personal-avatar {
   gap: 2px;
 }
 
-.personal-agent-status b,
-.personal-agent-status small {
+.personal-agent-status b {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -844,9 +843,64 @@ button.personal-avatar {
 }
 
 .personal-agent-status small {
+  min-width: 0;
   color: #3b4541;
   font-size: 11px;
   font-weight: 800;
+  line-height: 1.16;
+  overflow-wrap: anywhere;
+}
+
+.personal-agent-compose {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: stretch;
+  gap: 7px;
+}
+
+.personal-agent-compose textarea {
+  min-width: 0;
+  width: 100%;
+  min-height: 48px;
+  max-height: 96px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: #fff;
+  color: #000;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 780;
+  line-height: 1.25;
+}
+
+.personal-agent-compose textarea::placeholder {
+  color: #66716c;
+}
+
+.personal-agent-compose button {
+  min-width: 0;
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #000;
+  border-radius: 8px;
+  background: #000;
+  color: #fff;
+  cursor: pointer;
+}
+
+.personal-agent-compose button:hover,
+.personal-agent-compose button:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 2px 2px 0 #000;
+}
+
+.personal-agent-compose svg {
+  width: 18px;
+  height: 18px;
 }
 
 .personal-agent-path {
@@ -5569,6 +5623,8 @@ button:disabled {
 }
 
 .agent-private-panel {
+  position: relative;
+  z-index: 8;
   max-height: min(30svh, 260px);
   display: grid;
   gap: 7px;
@@ -5683,6 +5739,7 @@ button:disabled {
   white-space: nowrap;
 }
 
+.agent-private-presets,
 .agent-private-actions {
   grid-column: 2;
   min-width: 0;
@@ -5691,6 +5748,7 @@ button:disabled {
   gap: 6px;
 }
 
+.agent-private-presets button,
 .agent-private-action {
   min-height: 32px;
   display: inline-flex;
@@ -5707,6 +5765,14 @@ button:disabled {
   cursor: pointer;
 }
 
+.agent-private-presets button {
+  border-color: color-mix(in srgb, var(--green) 48%, var(--edge));
+  background: rgba(109, 255, 143, 0.07);
+  color: var(--green);
+}
+
+.agent-private-presets button:hover,
+.agent-private-presets button:focus-visible,
 .agent-private-action:hover,
 .agent-private-action:focus-visible {
   border-color: color-mix(in srgb, var(--green) 65%, var(--cyan));
@@ -5715,9 +5781,18 @@ button:disabled {
   transform: translateY(-1px);
 }
 
+.agent-private-presets svg,
 .agent-private-action svg {
   width: 15px;
   height: 15px;
+}
+
+.agent-private-presets span,
+.agent-private-action span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor.dropping {
@@ -8701,6 +8776,21 @@ button:disabled {
   .personal-agent-status {
     min-height: 44px;
     padding: 7px 8px;
+  }
+
+  .personal-agent-compose {
+    grid-template-columns: minmax(0, 1fr) 40px;
+    gap: 6px;
+  }
+
+  .personal-agent-compose textarea {
+    min-height: 44px;
+    padding: 8px;
+    font-size: 12px;
+  }
+
+  .personal-agent-compose button {
+    min-height: 44px;
   }
 
   .personal-agent-path {

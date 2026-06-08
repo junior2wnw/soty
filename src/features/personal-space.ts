@@ -343,7 +343,7 @@ const layers = [
 }[];
 
 type PersonalSpaceLayer = typeof layers[number]["id"];
-type EntityActionId = "agent" | "agent-install" | "agent-studio" | "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
+type EntityActionId = "agent" | "agent-chat" | "agent-install" | "agent-studio" | "edit" | "install" | "message" | "note" | "notifications" | "review" | "share" | "runtime";
 type EntityActionSurface = "card" | "personal" | "reviews" | "messages" | "place";
 type EntityAction = {
   readonly id: EntityActionId;
@@ -1710,25 +1710,25 @@ function renderOwnerAgentDock(agentDeviceState: PersonalSpaceAgentDeviceState): 
   const status = agentDeviceState === "ready"
     ? {
       label: "Агент готов",
-      detail: "Можно писать задачи в чат",
+      detail: "Напишите задачу ниже",
       installDetail: "проверить / обновить"
     }
     : agentDeviceState === "update"
       ? {
         label: "Нужно обновление",
-        detail: "Скачайте новую версию агента",
+        detail: "Пишите ниже. Обновление кнопкой",
         installDetail: "обновить агент"
       }
       : {
-        label: "Сначала устройство",
-        detail: "Установите агента один раз",
+        label: "ИИ-агент",
+        detail: "Пишите ниже. Установка кнопкой",
         installDetail: "установить агент"
       };
   const actions: readonly { readonly action: EntityActionId; readonly label: string; readonly detail: string; readonly icon: IconName; readonly primary?: boolean }[] = [
     {
-      action: "agent",
-      label: "Задача ИИ",
-      detail: "открыть чат агента",
+      action: "agent-studio",
+      label: "Мастерская",
+      detail: "открыть ИИ",
       icon: "agent",
       primary: true
     },
@@ -1739,9 +1739,9 @@ function renderOwnerAgentDock(agentDeviceState: PersonalSpaceAgentDeviceState): 
       icon: "download"
     },
     {
-      action: "agent-studio",
-      label: "Мастерская",
-      detail: "mini-app / стиль",
+      action: "agent-chat",
+      label: "Чат",
+      detail: "агентный режим",
       icon: "apps"
     }
   ];
@@ -1754,10 +1754,14 @@ function renderOwnerAgentDock(agentDeviceState: PersonalSpaceAgentDeviceState): 
           <small>${escapeHtml(status.detail)}</small>
         </div>
       </div>
+      <form class="personal-agent-compose" data-agent-compose>
+        <textarea name="task" maxlength="900" rows="2" placeholder="${escapeAttr("Например: наведи красоту в карточке или сделай mini-app")}"></textarea>
+        <button type="submit" aria-label="${escapeAttr("Запустить агента")}" data-tooltip="${escapeAttr("Запустить агента")}">${icon("send")}</button>
+      </form>
       <div class="personal-agent-path" aria-label="${escapeAttr("Как работает агент")}">
         <span><b>1</b> устройство</span>
-        <span><b>2</b> чат</span>
-        <span><b>3</b> задача</span>
+        <span><b>2</b> задача</span>
+        <span><b>3</b> готово</span>
       </div>
       <div class="personal-agent-dock" aria-label="${escapeAttr("Действия агента")}">
         ${actions.map((action) => `
@@ -1773,7 +1777,7 @@ function renderOwnerAgentDock(agentDeviceState: PersonalSpaceAgentDeviceState): 
       <div class="personal-agent-presets" aria-label="${escapeAttr("Быстрые задачи агента")}">
         <button type="button" data-agent-preset="style" data-agent-text="${escapeAttr("Наведи красоту в моей карточке: сделай аккуратный визуальный блок без лишнего шума.")}">${icon("agent")} <span>Красота</span></button>
         <button type="button" data-agent-preset="miniapp" data-agent-text="${escapeAttr("Создай полезный mini-app для этой карточки.")}">${icon("apps")} <span>Mini-app</span></button>
-        <button type="button" data-agent-preset="page" data-agent-text="${escapeAttr("Добавь полезную страницу или ссылку для этой карточки.")}">${icon("qr")} <span>Страница</span></button>
+        <button type="button" data-agent-preset="page" data-agent-text="${escapeAttr("Добавь полезную страницу или ссылку для этой карточки.")}">${icon("qr")} <span>Ссылка</span></button>
       </div>
     </section>
   `;
@@ -2073,6 +2077,10 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
       });
       return;
     }
+    const agentComposeForm = target?.closest<HTMLFormElement>("[data-agent-compose]");
+    if (agentComposeForm && shell.contains(agentComposeForm)) {
+      return;
+    }
     const moduleNode = target?.closest<HTMLElement>("[data-module-kind]");
     if (moduleNode && shell.contains(moduleNode)) {
       openPersonalModule(root, moduleNode, profile, options);
@@ -2086,6 +2094,13 @@ function bindPersonalSpace(root: HTMLElement, profile: PersonalSpaceProfile, opt
     const actionNode = target?.closest<HTMLElement>("[data-action]");
     if (actionNode && shell.contains(actionNode)) {
       handleEntityAction(root, actionNode, profile, options);
+    }
+  });
+  shell?.querySelector<HTMLFormElement>("[data-agent-compose]")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget instanceof HTMLFormElement ? event.currentTarget : null;
+    if (form) {
+      submitOwnerAgentCompose(root, form, profile, options);
     }
   });
   bindPersonalMessenger(root, profile, options);
@@ -2258,6 +2273,10 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
     return;
   }
   if (action === "agent") {
+    showAgentSheet(root, profile, options);
+    return;
+  }
+  if (action === "agent-chat") {
     options.openRuntime(profile, "agent");
     return;
   }
@@ -2310,6 +2329,26 @@ function handleEntityAction(root: HTMLElement, node: HTMLElement, profile: Perso
 
 function agentPresetMode(value: string): PersonalAgentPreset["mode"] {
   return value === "page" || value === "style" ? value : "miniapp";
+}
+
+function submitOwnerAgentCompose(root: HTMLElement, form: HTMLFormElement, profile: PersonalSpaceProfile, options: PersonalSpacePageOptions): void {
+  const input = form.querySelector<HTMLTextAreaElement>("textarea[name='task']");
+  const text = cleanText(input?.value || "", 900);
+  showAgentSheet(root, profile, options, {
+    mode: agentTaskModeFromText(text),
+    ...(text ? { text } : {})
+  });
+}
+
+function agentTaskModeFromText(text: string): NonNullable<PersonalAgentPreset["mode"]> {
+  const needle = text.toLocaleLowerCase("ru-RU");
+  if (/(крас|дизайн|стил|визуал|оформ|аккурат|обнови|улучш)/u.test(needle)) {
+    return "style";
+  }
+  if (/(ссыл|страниц|сайт|лендинг|url|href|контакт)/u.test(needle)) {
+    return "page";
+  }
+  return "miniapp";
 }
 
 function focusPersonalMessenger(root: HTMLElement, actor: string): void {
@@ -4148,7 +4187,7 @@ function showAgentSheet(root: HTMLElement, profile: PersonalSpaceProfile, option
   const presetMode = preset.mode === "page" ? "page" : preset.mode === "style" ? "style" : "miniapp";
   const presetText = cleanText(preset.text || "", 900);
   controller = showAgentWorkspace(root, {
-    title: "Agent",
+    title: "ИИ-агент",
     subtitle: profile.displayName || `@${profile.handle}`,
     userId: profile.handle,
     projectId: `${profile.handle}/${profile.slug}`,
