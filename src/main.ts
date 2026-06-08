@@ -44,7 +44,6 @@ import { installWebController, resolveWebControllerTarget } from "./features/web
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
-import { renderHexField } from "./ui/hex-field";
 import { installTooltips } from "./ui/tooltips";
 import {
   DeviceRecord,
@@ -190,7 +189,6 @@ const chatScrollKey = "soty:chat-scroll:v1";
 const spaceModeKey = "soty:space-mode:v1";
 const agentModeKey = "soty:agent-mode:v1";
 const agentPrivateLogKey = "soty:agent-private-log:v1";
-const hiveDrawerKey = "soty:hive-drawer:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const miniAppsRegistryKey = "soty:mini-apps:v1";
 const miniAppProtocol = "soty.mini-app.v1";
@@ -308,7 +306,6 @@ let terminalCollapsed = loadTerminalCollapsed();
 let spaceModes = loadSpaceModes();
 let agentModes = loadAgentModes();
 let agentPrivateLogs = loadAgentPrivateLogs();
-let hiveDrawerOpen = loadHiveDrawerOpen();
 type OperatorRemoteRun = {
   readonly commandId: string;
   readonly tunnelId: string;
@@ -454,7 +451,6 @@ async function boot(): Promise<void> {
     spaceModes = loadSpaceModes();
     agentModes = loadAgentModes();
     agentPrivateLogs = loadAgentPrivateLogs();
-    hiveDrawerOpen = loadHiveDrawerOpen();
     localDrafts.clear();
     pendingAttachments.clear();
     terminalOpenId = "";
@@ -2763,31 +2759,6 @@ function appendAgentPrivateLine(tunnelId: string, role: AgentPrivateLine["role"]
   return true;
 }
 
-function loadHiveDrawerOpen(): boolean {
-  try {
-    return localStorage.getItem(hiveDrawerKey) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function saveHiveDrawerOpen(): void {
-  try {
-    localStorage.setItem(hiveDrawerKey, hiveDrawerOpen ? "1" : "0");
-  } catch {
-    // Drawer state is cosmetic.
-  }
-}
-
-function setHiveDrawerOpen(open: boolean): void {
-  hiveDrawerOpen = open;
-  saveHiveDrawerOpen();
-  app.querySelector<HTMLElement>(".shell")?.classList.toggle("hive-open", hiveDrawerOpen);
-  const panel = app.querySelector<HTMLElement>(".hive-panel");
-  panel?.toggleAttribute("inert", !hiveDrawerOpen);
-  panel?.setAttribute("aria-hidden", hiveDrawerOpen ? "false" : "true");
-}
-
 function selectedSpaceMode(): SpaceMode {
   return normalizeSpaceMode(spaceModes.get(selectedId) || "dialog");
 }
@@ -4449,59 +4420,13 @@ function renderApp(): void {
 }
 
 function renderTiles(): void {
-  const field = app.querySelector<HTMLDivElement>(".hex-field");
   tunnels = loadTunnels();
   normalizeSelectedTunnel();
   const sorted = sortedVisibleTunnels();
   renderChatSwitcher(sorted);
-  if (!field) {
-    renderDialogChrome();
-    return;
-  }
-  if (sorted.length === 0) {
-    renderHexField(field, [], {
-      select: () => undefined,
-      menu: () => undefined
-    });
-    renderEmptyHiveActions(field);
-    renderDialogChrome();
-    void showQr(true);
-    return;
-  }
   if (qrMode === "auto") {
     closeQrOverlay();
   }
-  renderHexField(field, sorted.map((tunnel) => ({
-    id: tunnel.id,
-    label: counterpartyLabel(tunnel),
-    color: safeColor(tunnel.color, counterpartyLabel(tunnel) + tunnel.id),
-    active: tunnel.id === selectedId,
-    unread: tunnel.unread
-  })), {
-    select: (id) => {
-      selectTunnel(id);
-      if (window.matchMedia("(max-width: 980px)").matches) {
-        setHiveDrawerOpen(false);
-      }
-      clearTunnelNotices(id);
-      tunnels = markTunnel(id, false);
-      renderTiles();
-      applySelectedText(true);
-      renderComposerAttachments();
-      renderTerminal();
-      renderChess();
-      renderMiniAppPanel();
-      publishMiniAppContext();
-    },
-    menu: (id, x, y) => {
-      const tunnel = loadTunnels().find((item) => item.id === id);
-      if (!tunnel) {
-        return;
-      }
-      activateChatTunnel(id);
-      openCounterpartyMenu(x, y, chatActionsFor(id), chatActionMenuState(tunnel));
-    }
-  });
   renderDialogChrome();
 }
 
@@ -4710,24 +4635,6 @@ function openChatSwitcherMenu(id: string, x: number, y: number): void {
   }
   activateChatTunnel(id);
   openCounterpartyMenu(x, y, chatActionsFor(id), chatActionMenuState(tunnel));
-}
-
-function renderEmptyHiveActions(field: HTMLDivElement): void {
-  const actions = document.createElement("div");
-  actions.className = "empty-hive-actions";
-  actions.innerHTML = `
-    <button class="empty-hive-action empty-qr-action" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">
-      ${icon("qr")}
-      <span>QR</span>
-    </button>
-  `;
-  field.append(actions);
-  actions.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-  });
-  actions.querySelector<HTMLButtonElement>(".empty-qr-action")?.addEventListener("click", () => {
-    void showQr();
-  });
 }
 
 async function toggleRemoteGrant(id: string): Promise<void> {
