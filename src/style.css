@@ -4095,7 +4095,7 @@ button.personal-avatar {
 .chat-switcher {
   min-width: 0;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px;
   align-items: stretch;
 }
@@ -4196,6 +4196,70 @@ button.personal-avatar {
 
 .chat-switch-item.is-active {
   box-shadow: inset 0 -2px 0 var(--chat-color);
+}
+
+.chat-action-rail {
+  min-width: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(42px, auto);
+  gap: 6px;
+  align-items: stretch;
+}
+
+.chat-action-rail[hidden] {
+  display: none;
+}
+
+.chat-action-button {
+  min-width: 42px;
+  min-height: 48px;
+  display: inline-grid;
+  grid-template-columns: 18px;
+  place-items: center;
+  gap: 4px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 28%, var(--edge));
+  border-radius: 8px;
+  background: rgba(7, 11, 15, 0.82);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.chat-action-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.chat-action-button span {
+  max-width: 62px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.chat-action-button:hover,
+.chat-action-button:focus-visible,
+.chat-action-button.is-on {
+  border-color: color-mix(in srgb, var(--cyan) 70%, var(--green));
+  background: #101922;
+  color: var(--ink);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.chat-action-button.is-on {
+  color: var(--green);
+  box-shadow: inset 0 -2px 0 var(--green);
+}
+
+.chat-action-button.is-danger {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 42%, var(--edge));
 }
 
 .shell.simple-contact-shell {
@@ -8921,6 +8985,25 @@ button:disabled {
 
   .chat-switch-item b {
     font-size: 12px;
+  }
+
+  .chat-action-rail {
+    grid-column: 1 / -1;
+    grid-auto-columns: minmax(48px, auto);
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .chat-action-button {
+    min-height: 40px;
+    padding: 0 8px;
+  }
+
+  .chat-action-button span {
+    max-width: 54px;
+    font-size: 10px;
   }
 
   .cell-surface {

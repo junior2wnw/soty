@@ -4250,22 +4250,8 @@ function renderApp(): void {
     ensureSync(tunnel);
   }
 
-  const hasVisibleTunnels = sortedVisibleTunnels().length > 0;
   app.innerHTML = `
-    <section class="shell retro-shell chat-first-shell${bareChatMode ? " bare-chat-shell" : ""}${hiveDrawerOpen ? " hive-open" : ""}">
-      <button class="hive-toggle retro-icon-button" type="button" aria-label="cells" data-tooltip="Cells">${icon("hexagon")}</button>
-      <aside class="tiles hive-panel${hasVisibleTunnels ? "" : " empty"}" aria-hidden="${hiveDrawerOpen ? "false" : "true"}"${hiveDrawerOpen ? "" : " inert"}>
-        <div class="retro-brand">
-          <span class="retro-brand-mark">S</span>
-          <span>
-            <b>Соты</b>
-            <small>мое место</small>
-          </span>
-        </div>
-        <button class="info-open retro-icon-button" type="button" aria-label="инфа" data-tooltip="Инфа и безопасность">${icon("shield")}</button>
-        <button class="qr-open retro-icon-button" type="button" aria-label="подключить" data-tooltip="Подключить контакт или устройство">${icon("qr")}</button>
-        <div class="hex-field"></div>
-      </aside>
+    <section class="shell retro-shell chat-first-shell${bareChatMode ? " bare-chat-shell" : ""}">
       <main class="dialog-shell">
         <header class="dialog-head">
           <span class="dialog-avatar"></span>
@@ -4371,15 +4357,6 @@ function renderApp(): void {
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
   }, { passive: true });
-  app.querySelector<HTMLButtonElement>(".hive-toggle")?.addEventListener("click", () => {
-    setHiveDrawerOpen(!hiveDrawerOpen);
-  });
-  app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
-    void showQr();
-  });
-  app.querySelector<HTMLButtonElement>(".chat-connect-button")?.addEventListener("click", () => {
-    void showQr();
-  });
   app.querySelector<HTMLButtonElement>(".agent-mode-button")?.addEventListener("click", () => {
     setSelectedAgentMode(!selectedAgentMode());
   });
@@ -4391,7 +4368,6 @@ function renderApp(): void {
     }
     requestAgentDownload(device || undefined, "Агент ставится на устройство один раз. После установки задачи можно писать прямо в чат при включенном agent mode.");
   });
-  app.querySelector<HTMLButtonElement>(".info-open")?.addEventListener("click", openInfoPage);
   app.querySelector<HTMLButtonElement>(".access-open")?.addEventListener("click", () => {
     showAccessPanel();
   });
@@ -4518,73 +4494,36 @@ function renderTiles(): void {
       publishMiniAppContext();
     },
     menu: (id, x, y) => {
-      selectTunnel(id);
-      applySelectedText(true);
-      renderComposerAttachments();
-      renderTerminal();
-      renderChess();
-      renderMiniAppPanel();
       const tunnel = loadTunnels().find((item) => item.id === id);
-      const canClose = !tunnel || !isPermanentCell(tunnel);
-      const availableMiniApps = globalMiniApps();
-      openCounterpartyMenu(x, y, {
-        attach: () => {
-          selectTunnel(id);
-          fileInput?.click();
-        },
-        knock: () => {
-          selectTunnel(id);
-          void requestNotificationPermission();
-          syncs.get(id)?.sendKnock("*");
-          tunnels = touchTunnel(id);
-          renderTiles();
-        },
-        remote: () => {
-          selectTunnel(id);
-          if (isAgentTunnelId(id)) {
-            void toggleAgentRemoteGrant(id);
-          } else {
-            void toggleRemoteGrant(id);
-          }
-        },
-        actions: () => {
-          selectTunnel(id);
-          openActionMenu();
-        },
-        apps: () => {
-          selectTunnel(id);
-          openMiniAppGallery();
-        },
-        chess: () => {
-          selectTunnel(id);
-          void openChessForSelected();
-        },
-        agentInstall: () => {
-          void (async () => {
-            selectTunnel(id);
-            const mode = await refreshAgentButtonState(true);
-            if (mode !== "link") {
-              requestAgentDownload(isAgentTunnelId(id) ? device || undefined : undefined, "Клава ставится один раз и потом дает управляемые инструменты для выбранных устройств.");
-            }
-          })();
-        },
-        ...(canClose ? { close: () => closeTunnel(id) } : {})
-      }, {
-        remoteEnabled: remoteEnabled.has(id),
-        canClose,
-        hasMiniApps: availableMiniApps.length > 0,
-        needsAgentInstall: agentButtonMode() !== "link"
-      });
+      if (!tunnel) {
+        return;
+      }
+      activateChatTunnel(id);
+      openCounterpartyMenu(x, y, chatActionsFor(id), chatActionMenuState(tunnel));
     }
   });
   renderDialogChrome();
 }
+
+type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "info";
+
+type ChatQuickAction = {
+  readonly id: ChatQuickActionId;
+  readonly icon: Parameters<typeof icon>[0];
+  readonly label: string;
+  readonly tooltip: string;
+  readonly active?: boolean;
+  readonly danger?: boolean;
+  readonly disabled?: boolean;
+  readonly hidden?: boolean;
+};
 
 function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
   const switcher = app.querySelector<HTMLElement>(".chat-switcher");
   if (!switcher) {
     return;
   }
+  const activeTunnel = sorted.find((tunnel) => tunnel.id === selectedId) || null;
   switcher.innerHTML = `
     <button class="chat-connect-button" type="button" aria-label="подключить" data-tooltip="Подключить контакт или устройство">
       ${icon("qr")}
@@ -4593,6 +4532,7 @@ function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
     <div class="chat-switcher-list" role="list">
       ${sorted.map((tunnel) => chatSwitchButtonHtml(tunnel)).join("")}
     </div>
+    ${chatActionRailHtml(activeTunnel)}
   `;
   switcher.querySelector<HTMLButtonElement>(".chat-connect-button")?.addEventListener("click", () => {
     void showQr();
@@ -4619,6 +4559,11 @@ function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
       openChatSwitcherMenu(button.dataset.chatTunnel || "", event.clientX, event.clientY);
     });
   });
+  switcher.querySelectorAll<HTMLButtonElement>("[data-chat-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      runChatQuickAction((button.dataset.chatAction || "") as ChatQuickActionId);
+    });
+  });
 }
 
 function chatSwitchButtonHtml(tunnel: TunnelRecord): string {
@@ -4634,10 +4579,58 @@ function chatSwitchButtonHtml(tunnel: TunnelRecord): string {
   `;
 }
 
-function openChatSwitcherMenu(id: string, x: number, y: number): void {
-  const tunnel = loadTunnels().find((item) => item.id === id);
+function chatActionRailHtml(tunnel: TunnelRecord | null): string {
+  if (!tunnel) {
+    return `<div class="chat-action-rail" hidden></div>`;
+  }
+  const mode = agentButtonMode();
+  const actions: readonly ChatQuickAction[] = [
+    { id: "attach", icon: "clip", label: "Файл", tooltip: "Прикрепить файл" },
+    { id: "knock", icon: "bell", label: "Позвать", tooltip: "Позвать в чат" },
+    { id: "remote", icon: "remote", label: "Доступ", tooltip: "Доступ к устройству", active: remoteEnabled.has(tunnel.id) },
+    { id: "actions", icon: "check", label: "Задачи", tooltip: "Задачи и действия" },
+    { id: "apps", icon: "apps", label: "Apps", tooltip: "Мини-аппы" },
+    { id: "chess", icon: "chess", label: "Шахматы", tooltip: "Открыть шахматы" },
+    { id: "info", icon: "shield", label: "Инфо", tooltip: "Инфа и безопасность" },
+    { id: "agentInstall", icon: "download", label: "Клава", tooltip: "Установить или обновить Клаву", hidden: mode === "link" },
+    { id: "close", icon: "close", label: "Закрыть", tooltip: "Закрыть чат", danger: true, hidden: isPermanentCell(tunnel) }
+  ];
+  return `
+    <div class="chat-action-rail" role="toolbar" aria-label="действия чата">
+      ${actions.filter((action) => !action.hidden).map(chatActionButtonHtml).join("")}
+    </div>
+  `;
+}
+
+function chatActionButtonHtml(action: ChatQuickAction): string {
+  return `
+    <button class="chat-action-button${action.active ? " is-on" : ""}${action.danger ? " is-danger" : ""}" type="button" data-chat-action="${escapeHtml(action.id)}" aria-label="${escapeHtml(action.label)}" data-tooltip="${escapeHtml(action.tooltip)}"${action.disabled ? " disabled" : ""}>
+      ${icon(action.icon)}
+      <span>${escapeHtml(action.label)}</span>
+    </button>
+  `;
+}
+
+function runChatQuickAction(action: ChatQuickActionId): void {
+  if (action === "info") {
+    openInfoPage();
+    return;
+  }
+  const tunnel = loadTunnels().find((item) => item.id === selectedId);
   if (!tunnel) {
     return;
+  }
+  const actions = chatActionsFor(tunnel.id);
+  const handler = actions[action];
+  if (handler) {
+    handler();
+  }
+}
+
+function activateChatTunnel(id: string): TunnelRecord | null {
+  const tunnel = loadTunnels().find((item) => item.id === id);
+  if (!tunnel) {
+    return null;
   }
   selectTunnel(id);
   applySelectedText(true);
@@ -4645,22 +4638,26 @@ function openChatSwitcherMenu(id: string, x: number, y: number): void {
   renderTerminal();
   renderChess();
   renderMiniAppPanel();
-  const canClose = !isPermanentCell(tunnel);
-  const availableMiniApps = globalMiniApps();
-  openCounterpartyMenu(x, y, {
+  publishMiniAppContext();
+  return tunnel;
+}
+
+function chatActionsFor(id: string): Parameters<typeof openCounterpartyMenu>[2] {
+  const activate = () => activateChatTunnel(id);
+  return {
     attach: () => {
-      selectTunnel(id);
+      activate();
       fileInput?.click();
     },
     knock: () => {
-      selectTunnel(id);
+      activate();
       void requestNotificationPermission();
       syncs.get(id)?.sendKnock("*");
       tunnels = touchTunnel(id);
       renderTiles();
     },
     remote: () => {
-      selectTunnel(id);
+      activate();
       if (isAgentTunnelId(id)) {
         void toggleAgentRemoteGrant(id);
       } else {
@@ -4668,33 +4665,51 @@ function openChatSwitcherMenu(id: string, x: number, y: number): void {
       }
     },
     actions: () => {
-      selectTunnel(id);
+      activate();
       openActionMenu();
     },
     apps: () => {
-      selectTunnel(id);
+      activate();
       openMiniAppGallery();
     },
     chess: () => {
-      selectTunnel(id);
+      activate();
       void openChessForSelected();
     },
     agentInstall: () => {
       void (async () => {
-        selectTunnel(id);
+        activate();
         const mode = await refreshAgentButtonState(true);
         if (mode !== "link") {
           requestAgentDownload(isAgentTunnelId(id) ? device || undefined : undefined, "Клава ставится один раз и потом дает управляемые инструменты для выбранных устройств.");
         }
       })();
     },
-    ...(canClose ? { close: () => closeTunnel(id) } : {})
-  }, {
-    remoteEnabled: remoteEnabled.has(id),
-    canClose,
-    hasMiniApps: availableMiniApps.length > 0,
+    close: () => {
+      const tunnel = loadTunnels().find((item) => item.id === id);
+      if (tunnel && !isPermanentCell(tunnel)) {
+        closeTunnel(id);
+      }
+    }
+  };
+}
+
+function chatActionMenuState(tunnel: TunnelRecord): NonNullable<Parameters<typeof openCounterpartyMenu>[3]> {
+  return {
+    remoteEnabled: remoteEnabled.has(tunnel.id),
+    canClose: !isPermanentCell(tunnel),
+    hasMiniApps: globalMiniApps().length > 0,
     needsAgentInstall: agentButtonMode() !== "link"
-  });
+  };
+}
+
+function openChatSwitcherMenu(id: string, x: number, y: number): void {
+  const tunnel = loadTunnels().find((item) => item.id === id);
+  if (!tunnel) {
+    return;
+  }
+  activateChatTunnel(id);
+  openCounterpartyMenu(x, y, chatActionsFor(id), chatActionMenuState(tunnel));
 }
 
 function renderEmptyHiveActions(field: HTMLDivElement): void {
