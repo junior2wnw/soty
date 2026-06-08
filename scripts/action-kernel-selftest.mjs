@@ -2101,6 +2101,7 @@ async function runScenarios({ relayUrl } = {}) {
       const miniAppRunnerJs = await readFile(join(root, "public", "mini-app-runner.js"), "utf8");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const contextMenu = await readFile(join(root, "src", "ui", "context-menu.ts"), "utf8");
+      const sotyActionSheet = await readFile(join(root, "src", "ui", "soty-action-sheet.ts"), "utf8");
       const sotyAppDock = await readFile(join(root, "src", "ui", "soty-app-dock.ts"), "utf8");
       const sotyField = await readFile(join(root, "src", "ui", "soty-field.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
@@ -2466,8 +2467,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("chatActionRailHtml"));
       assert(ui.includes("chatActionsFor"));
       assert(ui.includes("chatActionMenuState"));
+      assert(ui.includes("chatPrimaryActions"));
+      assert(ui.includes('id: "more"'));
+      assert(ui.includes("openChatQuickActionSheet"));
       assert(styles.includes(".chat-action-rail"));
       assert(styles.includes(".chat-action-button"));
+      assert(styles.includes(".soty-action-sheet"));
+      assert(sotyActionSheet.includes("openSotyActionSheet"));
+      assert(sotyActionSheet.includes("soty-action-sheet-row"));
       assert(ui.includes("chat-icon-button"));
       assert(styles.includes(".chat-icon-button"));
       assert(contextMenu.includes("chat-context-menu"));

@@ -44,6 +44,7 @@ import { installWebController, resolveWebControllerTarget } from "./features/web
 import type { WebControllerPending, WebControllerRunRequest, WebControllerRunResult, WebControllerTargetInfo, WebControllerTargetRef } from "./features/web-controller";
 import { agentDialogLabel, isOperatorHeaderText } from "./features/agent-identity";
 import { openCounterpartyMenu } from "./ui/context-menu";
+import { openSotyActionSheet } from "./ui/soty-action-sheet";
 import { renderSotyAppDock } from "./ui/soty-app-dock";
 import type { SotyAppDockItem } from "./ui/soty-app-dock";
 import { renderSotyField } from "./ui/soty-field";
@@ -4494,7 +4495,7 @@ function sotyAppDockItems(): MiniAppDefinition[] {
   ]);
 }
 
-type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "agentTask" | "info";
+type ChatQuickActionId = keyof Parameters<typeof openCounterpartyMenu>[2] | "agentTask" | "info" | "more";
 
 type ChatQuickAction = {
   readonly id: ChatQuickActionId;
@@ -4528,25 +4529,57 @@ function chatActionRailHtml(tunnel: TunnelRecord | null): string {
   if (!tunnel) {
     return `<div class="chat-action-rail" hidden></div>`;
   }
+  const actions = chatPrimaryActions(tunnel);
+  return `
+    <div class="chat-action-rail" role="toolbar" aria-label="действия чата">
+      ${actions.map(chatActionButtonHtml).join("")}
+      <div class="soty-app-dock" aria-label="Mini-apps" hidden></div>
+    </div>
+  `;
+}
+
+function chatQuickActions(tunnel: TunnelRecord): readonly ChatQuickAction[] {
   const mode = agentButtonMode();
-  const actions: readonly ChatQuickAction[] = [
+  return [
     { id: "agentTask", icon: "agent", label: "Задача", tooltip: "Задача агенту", active: selectedAgentMode(tunnel.id) },
     { id: "attach", icon: "clip", label: "Файл", tooltip: "Прикрепить файл" },
     { id: "knock", icon: "bell", label: "Позвать", tooltip: "Позвать в чат" },
     { id: "remote", icon: "remote", label: "Доступ", tooltip: "Доступ к устройству", active: remoteEnabled.has(tunnel.id) },
-    { id: "actions", icon: "check", label: "Задачи", tooltip: "Задачи и действия" },
+    { id: "actions", icon: "check", label: "Действия", tooltip: "Задачи и действия" },
     { id: "apps", icon: "apps", label: "Apps", tooltip: "Мини-аппы" },
     { id: "chess", icon: "chess", label: "Шахматы", tooltip: "Открыть шахматы" },
     { id: "info", icon: "shield", label: "Инфо", tooltip: "Инфа и безопасность" },
     { id: "agentInstall", icon: "download", label: "Устройство", tooltip: "Установить агента на устройство", hidden: mode === "link" },
     { id: "close", icon: "close", label: "Закрыть", tooltip: "Закрыть чат", danger: true, hidden: isPermanentCell(tunnel) }
   ];
-  return `
-    <div class="chat-action-rail" role="toolbar" aria-label="действия чата">
-      ${actions.filter((action) => !action.hidden).map(chatActionButtonHtml).join("")}
-      <div class="soty-app-dock" aria-label="Mini-apps" hidden></div>
-    </div>
-  `;
+}
+
+function visibleChatQuickActions(tunnel: TunnelRecord): ChatQuickAction[] {
+  return chatQuickActions(tunnel).filter((action) => !action.hidden);
+}
+
+function chatPrimaryActions(tunnel: TunnelRecord): ChatQuickAction[] {
+  const mode = agentButtonMode();
+  const primaryIds = new Set<ChatQuickActionId>([
+    "agentTask",
+    "attach",
+    mode === "link" ? "remote" : "agentInstall"
+  ]);
+  const visible = visibleChatQuickActions(tunnel);
+  const primary = visible.filter((action) => primaryIds.has(action.id));
+  const overflow = visible.filter((action) => !primaryIds.has(action.id));
+  return overflow.length > 0
+    ? [
+      ...primary,
+      { id: "more", icon: "more", label: "Ещё", tooltip: "Ещё действия" }
+    ]
+    : primary;
+}
+
+function chatOverflowActions(tunnel: TunnelRecord): ChatQuickAction[] {
+  const primaryIds = new Set(chatPrimaryActions(tunnel).map((action) => action.id));
+  primaryIds.delete("more");
+  return visibleChatQuickActions(tunnel).filter((action) => !primaryIds.has(action.id));
 }
 
 function chatActionButtonHtml(action: ChatQuickAction): string {
@@ -4567,6 +4600,10 @@ function runChatQuickAction(action: ChatQuickActionId): void {
   if (!tunnel) {
     return;
   }
+  if (action === "more") {
+    openChatQuickActionSheet(tunnel);
+    return;
+  }
   if (action === "agentTask") {
     activateChatTunnel(tunnel.id);
     setSelectedAgentMode(!selectedAgentMode(tunnel.id));
@@ -4577,6 +4614,26 @@ function runChatQuickAction(action: ChatQuickActionId): void {
   if (handler) {
     handler();
   }
+}
+
+function openChatQuickActionSheet(tunnel: TunnelRecord): void {
+  const items = chatOverflowActions(tunnel);
+  openSotyActionSheet(items.map((action) => ({
+    id: action.id,
+    label: action.label,
+    detail: action.tooltip,
+    icon: action.icon,
+    active: action.active === true,
+    danger: action.danger === true,
+    disabled: action.disabled === true
+  })), {
+    run: (id) => {
+      runChatQuickAction(id as ChatQuickActionId);
+    }
+  }, {
+    title: counterpartyLabel(tunnel),
+    subtitle: "Действия соты"
+  });
 }
 
 function activateChatTunnel(id: string): TunnelRecord | null {
