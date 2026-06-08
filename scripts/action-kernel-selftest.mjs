@@ -2098,6 +2098,7 @@ async function runScenarios({ relayUrl } = {}) {
       const webManifest = JSON.parse(await readFile(join(root, "public", "manifest.webmanifest"), "utf8"));
       const serviceWorker = await readFile(join(root, "public", "sw.js"), "utf8");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
+      const contextMenu = await readFile(join(root, "src", "ui", "context-menu.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
@@ -2463,6 +2464,16 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("chatActionMenuState"));
       assert(styles.includes(".chat-action-rail"));
       assert(styles.includes(".chat-action-button"));
+      assert(ui.includes("chat-icon-button"));
+      assert(styles.includes(".chat-icon-button"));
+      assert(contextMenu.includes("chat-context-menu"));
+      assert(ui.includes("isAgentBridgeUnavailableText"));
+      assert(ui.includes("Агент пока не подключен."));
+      assert(!ui.includes("retro-shell"));
+      assert(!ui.includes("retro-screen"));
+      assert(!ui.includes("retro-icon-button"));
+      assert(!styles.includes("retro-icon-button"));
+      assert(!contextMenu.includes("retro-menu"));
       assert(!ui.includes("renderHexField"));
       assert(!ui.includes("hive-toggle"));
       assert(!ui.includes("hive-panel"));

@@ -28,7 +28,7 @@ export function openCounterpartyMenu(
 ): void {
   closeCounterpartyMenu();
   const menu = document.createElement("div");
-  menu.className = "counterparty-menu retro-menu";
+  menu.className = "counterparty-menu chat-context-menu";
   menu.innerHTML = `
     <button type="button" data-action="attach" aria-label="attach" data-tooltip="Прикрепить файлы">${icon("clip")}</button>
     <button type="button" data-action="knock" aria-label="knock" data-tooltip="Позвать">${icon("bell")}</button>

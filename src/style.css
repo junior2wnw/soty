@@ -3539,7 +3539,7 @@ button.personal-avatar {
 }
 
 .icon-button,
-.retro-icon-button {
+.chat-icon-button {
   display: grid;
   place-items: center;
   background: #17202a;
@@ -3553,7 +3553,7 @@ button.personal-avatar {
 }
 
 .icon-button:hover,
-.retro-icon-button:hover {
+.chat-icon-button:hover {
   border-color: color-mix(in srgb, currentColor 54%, #3d515f);
   filter: brightness(1.04);
   transform: translateY(-1px);
@@ -3563,13 +3563,13 @@ button.personal-avatar {
 }
 
 .icon-button,
-.retro-icon-button {
+.chat-icon-button {
   width: 46px;
   height: 46px;
 }
 
 .icon-button:active,
-.retro-icon-button:active,
+.chat-icon-button:active,
 .chat-action-button:active {
   transform: translateY(1px);
   box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.62);

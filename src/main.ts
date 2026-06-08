@@ -20,7 +20,7 @@ import { commonMessageDialogTarget, createMessageDialogLine, isMessageDialogLine
 import type { MessageDialogEntry, MessageDialogTarget } from "./features/message-dialogs";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
 import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
@@ -1422,10 +1422,7 @@ function personalSpaceAgentReplyText(reply: LocalAgentReply): string {
 }
 
 function personalSpaceAgentFailureText(value: string): string {
-  const message = userVisibleAgentFailureText(value);
-  return /agent-relay|agent bridge|could not reach relay|relay-not-connected/iu.test(message)
-    ? "ИИ пока не подключен."
-    : message;
+  return userVisibleAgentFailureText(value);
 }
 
 async function uploadSignedPersonalSpacePhoto(route: PersonalSpaceRoute, file: File): Promise<string> {
@@ -4177,7 +4174,7 @@ function renderApp(): void {
   }
 
   app.innerHTML = `
-    <section class="shell retro-shell chat-first-shell${bareChatMode ? " bare-chat-shell" : ""}">
+    <section class="shell chat-first-shell${bareChatMode ? " bare-chat-shell" : ""}">
       <main class="dialog-shell">
         <header class="dialog-head">
           <span class="dialog-avatar"></span>
@@ -4188,15 +4185,15 @@ function renderApp(): void {
           <span class="dialog-live" aria-live="polite">
             <span class="writer-pop"></span>
           </span>
-          <button class="agent-mode-button retro-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
+          <button class="agent-mode-button chat-icon-button" type="button" aria-label="agent mode" data-tooltip="Agent">${icon("agent")}</button>
           <span class="agent-mode-pill" hidden>${icon("agent")}<b>Agent mode</b></span>
-          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
-          <button class="access-open retro-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
+          <button class="clear-dialog-button chat-icon-button" type="button" aria-label="очистить" data-tooltip="Очистить диалог">${icon("refresh")}</button>
+          <button class="access-open chat-icon-button" type="button" aria-label="доступы" data-tooltip="Доступы и устройства">${icon("shield")}</button>
           <button class="dialog-id" type="button" aria-label="поделиться" data-tooltip="Поделиться">${icon("copy")}</button>
-          <button class="dialog-notify retro-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
+          <button class="dialog-notify chat-icon-button" type="button" aria-label="включить оповещения" data-tooltip="Оповещения" hidden>${icon("bell")}</button>
         </header>
         <nav class="chat-switcher" aria-label="чаты"></nav>
-        <section class="editor retro-screen">
+        <section class="editor">
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
           </div>
@@ -4206,9 +4203,9 @@ function renderApp(): void {
           <textarea class="dialog-buffer" spellcheck="false" autocapitalize="sentences" aria-hidden="true" tabindex="-1"></textarea>
           <form class="composer-bar">
             <div class="composer-attachments" hidden></div>
-            <button class="composer-attach retro-icon-button" type="button" aria-label="прикрепить" data-tooltip="Прикрепить файл">${icon("clip")}</button>
+            <button class="composer-attach chat-icon-button" type="button" aria-label="прикрепить" data-tooltip="Прикрепить файл">${icon("clip")}</button>
             <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="сообщение"></textarea>
-            <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
+            <button class="send-button chat-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
           </form>
         <div class="terminal-panel mini-app-panel" data-mini-app="commands" data-tooltip="Окно удаленных команд" data-tooltip-side="top">
           <div class="terminal-head">
@@ -9649,6 +9646,7 @@ function finishAgentDialogReply(
 function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fallback: string, privateMode = false): boolean {
   const messages = (reply.messages ?? [])
     .map((message) => cleanAgentReplyText(message))
+    .map((message) => reply.ok ? message : userVisibleAgentFailureText(message))
     .filter(Boolean);
   if (messages.length > 0) {
     return appendAgentOutput(tunnelId, messages.join("\n\n"), privateMode);
@@ -9660,7 +9658,17 @@ function appendAgentReplyMessages(tunnelId: string, reply: LocalAgentReply, fall
 }
 
 function userVisibleAgentFailureText(value: string): string {
-  return cleanAgentReplyText(value) || "! agent: no reply";
+  const message = cleanAgentReplyText(value);
+  if (isAgentBridgeUnavailableText(message)) {
+    return "Агент пока не подключен. Нажмите «Подключить» или «Устройство», установите Клаву один раз и повторите задачу.";
+  }
+  return message || "Агент не ответил. Проверьте подключение и повторите задачу.";
+}
+
+function isAgentBridgeUnavailableText(value: string): boolean {
+  const message = cleanAgentReplyText(value);
+  return isLocalAgentUnavailableText(message)
+    || /agent-relay|agent bridge|could not reach relay|relay-not-connected|server Codex executor did not pick up/iu.test(message);
 }
 
 function appendAgentOutput(tunnelId: string, rawText: string, privateMode: boolean): boolean {
@@ -9763,9 +9771,7 @@ function normalizeChatMessage(value: string): string {
 
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
   return !reply.ok
-    && reply.exitCode === 127
-    && isLocalAgentUnavailableText(reply.text)
-    && !hasAgentRelayId();
+    && (isAgentBridgeUnavailableText(reply.text) || (reply.exitCode === 127 && isLocalAgentUnavailableText(reply.text)));
 }
 
 function resizeComposer(): void {
