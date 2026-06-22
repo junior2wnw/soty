@@ -39,6 +39,7 @@ const windowsReinstallScriptSpecs = [
     sourcePath: join(root, "scripts", "windows", "soty-make-fast-usb.ps1")
   }
 ];
+const excludedRuntimeFamilies = new Set(["surface"]);
 
 const source = await readFile(sourcePath, "utf8");
 const sourceText = source.replace(/\r\n/g, "\n");
@@ -284,6 +285,7 @@ function buildSotyAgentRuntime() {
     runtimeId: "soty-agent",
     entrypoint: "computer",
     capabilities: defaultAgentRuntimeCapabilities()
+      .filter((capability) => !excludedRuntimeFamilies.has(capability.family))
   });
 }
 
@@ -333,7 +335,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         kind: "legacy-alias",
         phases: ["describe", "start", "status", "stop", "list", "reinstall"],
         proof: ["toolkit", "phase", "jobId", "statusPath", "resultPath", "proof"],
-        promotion: "Thin, proofed computer-control surface for Server Codex."
+        promotion: "Thin, proofed computer-control plane for Server Codex."
       },
       {
         name: "durable-action",
