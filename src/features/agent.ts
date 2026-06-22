@@ -346,7 +346,9 @@ function publicLocalAgentHealth(status: LocalAgentStatus | undefined): Record<st
     companion: status?.companion === true,
     sourceWorker: status?.sourceWorker === true,
     autoUpdate: status?.autoUpdate === true,
-    system: status?.system === true
+    system: status?.system === true,
+    deviceId: String(status?.deviceId || "").slice(0, 180),
+    deviceNick: String(status?.deviceNick || "").slice(0, 180)
   };
 }
 
@@ -365,7 +367,9 @@ function readLocalAgentStatus(value: unknown): LocalAgentStatus | null {
     ...(typeof source.companion === "boolean" ? { companion: source.companion } : {}),
     ...(typeof source.sourceWorker === "boolean" ? { sourceWorker: source.sourceWorker } : {}),
     ...(typeof source.autoUpdate === "boolean" ? { autoUpdate: source.autoUpdate } : {}),
-    ...(typeof source.system === "boolean" ? { system: source.system } : {})
+    ...(typeof source.system === "boolean" ? { system: source.system } : {}),
+    ...(typeof source.deviceId === "string" ? { deviceId: source.deviceId.slice(0, 180) } : {}),
+    ...(typeof source.deviceNick === "string" ? { deviceNick: source.deviceNick.slice(0, 180) } : {})
   };
 }
 
@@ -811,7 +815,7 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch("http://127.0.0.1:49424/health", {
+    const response = await fetch("http://127.0.0.1:49424/health?update=1", {
       cache: "no-store",
       signal: controller.signal,
       targetAddressSpace: "loopback"
@@ -837,6 +841,8 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       readonly codex?: boolean;
       readonly codexBinary?: boolean;
       readonly codexAuth?: boolean;
+      readonly deviceId?: string;
+      readonly deviceNick?: string;
     };
     return {
       ok: true,
@@ -856,7 +862,9 @@ async function checkLocalAgentHttp(timeoutMs: number): Promise<LocalAgentStatus>
       ...(typeof message.sourceWorker === "boolean" ? { sourceWorker: message.sourceWorker } : {}),
       ...(typeof message.codex === "boolean" ? { codex: message.codex } : {}),
       ...(typeof message.codexBinary === "boolean" ? { codexBinary: message.codexBinary } : {}),
-      ...(typeof message.codexAuth === "boolean" ? { codexAuth: message.codexAuth } : {})
+      ...(typeof message.codexAuth === "boolean" ? { codexAuth: message.codexAuth } : {}),
+      ...(typeof message.deviceId === "string" ? { deviceId: message.deviceId.slice(0, 180) } : {}),
+      ...(typeof message.deviceNick === "string" ? { deviceNick: message.deviceNick.slice(0, 180) } : {})
     };
   } catch {
     return { ok: false };

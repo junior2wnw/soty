@@ -6,6 +6,9 @@ param(
   [switch] $UseExistingUsbInstallImage,
   [string] $ManifestUrl = "https://xn--n1afe0b.online/agent/manifest.json",
   [string] $PanelSiteUrl = "https://xn--n1afe0b.online",
+  [string] $WindowsMediaManifestUrl = "",
+  [string] $WindowsImageUrl = "",
+  [string] $WindowsImageSha256 = "",
   [ValidateSet("auto", "current", "home", "pro", "iot-ltsc", "enterprise-ltsc")]
   [string] $WindowsEditionPolicy = "auto",
   [string] $WindowsEditionHint = "",
@@ -181,6 +184,16 @@ function Resolve-UsbDrive([string] $RequestedLetter) {
   }
 }
 
+function Get-MinimumUsbFreeGB([bool] $UseExistingInstallImage, $Usb) {
+  if ($UseExistingInstallImage) { return 8 }
+  try {
+    if ($Usb -and ($Usb.hasInstallImage -eq $true -or $Usb.hasSotyReinstall -eq $true)) {
+      return 8
+    }
+  } catch {}
+  return 12
+}
+
 function Get-SotyUserName {
   return (-join ([char[]](0x0421, 0x043E, 0x0442, 0x044B)))
 }
@@ -190,19 +203,42 @@ function Count-FilesSafe([string] $Path) {
   try { return @((Get-ChildItem -LiteralPath $Path -File -Recurse -ErrorAction SilentlyContinue)).Count } catch { return 0 }
 }
 
-function Get-PrepareProcesses([string] $Root) {
+function Convert-CimDateTimeUtc($Value) {
+  if ($null -eq $Value) { return [datetime]::MinValue }
+  try {
+    if ($Value -is [datetime]) { return ([datetime] $Value).ToUniversalTime() }
+    $text = [string] $Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return [datetime]::MinValue }
+    if ($text -match '^\d{14}\.') {
+      return ([System.Management.ManagementDateTimeConverter]::ToDateTime($text)).ToUniversalTime()
+    }
+    return ([datetime] $text).ToUniversalTime()
+  } catch {
+    return [datetime]::MinValue
+  }
+}
+
+function Test-PrepareChildProcessName([string] $Name) {
+  return ([string] $Name) -match "^(dism|dismhost|robocopy|curl)\.exe$"
+}
+
+function Get-PrepareProcesses([string] $Root, [switch] $IncludeToolChildrenWithoutCommandLine) {
   try {
     $rootLower = ([string] $Root).ToLowerInvariant()
     return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
       Where-Object {
         $name = [string]$_.Name
         $cmd = ([string]$_.CommandLine).ToLowerInvariant()
-        ($name -match "^(powershell|pwsh|dism|dismhost|robocopy|curl)\.exe$") -and (
-          $cmd -match "soty-prepare-windows-reinstall|prepare-windows-reinstall|soty windows reinstall image|dism-export-drivers" -or
-          (($name -match "^(dism|dismhost|robocopy|curl)\.exe$") -and $cmd -match "windowsreinstall|install\.(wim|esd|swm)|\.download")
-        )
+        if ([string]::IsNullOrWhiteSpace($cmd)) {
+          $IncludeToolChildrenWithoutCommandLine -and (Test-PrepareChildProcessName $name)
+        } else {
+          ($name -match "^(powershell|pwsh|dism|dismhost|robocopy|curl)\.exe$") -and (
+            $cmd -match "soty-prepare-windows-reinstall|prepare-windows-reinstall|soty windows reinstall image|dism-export-drivers" -or
+            (($name -match "^(dism|dismhost|robocopy|curl)\.exe$") -and $cmd -match "windowsreinstall|install\.(wim|esd|swm)|\.download")
+          )
+        }
       } |
-      Select-Object -First 16 ProcessId, Name, CommandLine)
+      Select-Object -First 16 ProcessId, Name, CommandLine, CreationDate)
   } catch {
     return @()
   }
@@ -225,13 +261,36 @@ function Stop-PrepareProcesses([array] $Processes) {
 }
 
 function Test-PrepareProcessMatchesJob($Process, [string] $JobId, [string] $JobPath, [string] $Root) {
+  $name = [string] $Process.Name
   $cmd = ([string] $Process.CommandLine).ToLowerInvariant()
-  if ([string]::IsNullOrWhiteSpace($cmd)) { return $false }
   $jobIdLower = ([string] $JobId).ToLowerInvariant()
   $jobPathLower = ([string] $JobPath).ToLowerInvariant()
-  if (-not [string]::IsNullOrWhiteSpace($jobIdLower) -and $cmd.Contains($jobIdLower)) { return $true }
-  if (-not [string]::IsNullOrWhiteSpace($jobPathLower) -and $cmd.Contains($jobPathLower)) { return $true }
-  return $false
+  if (-not [string]::IsNullOrWhiteSpace($cmd)) {
+    if (-not [string]::IsNullOrWhiteSpace($jobIdLower) -and $cmd.Contains($jobIdLower)) { return $true }
+    if (-not [string]::IsNullOrWhiteSpace($jobPathLower) -and $cmd.Contains($jobPathLower)) { return $true }
+    return $false
+  }
+  if (-not (Test-PrepareChildProcessName $name)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($JobPath) -or -not (Test-Path -LiteralPath $JobPath)) { return $false }
+  $stdoutTail = Tail-Text (Join-Path $JobPath "stdout.txt") 3500
+  $expectedTool = switch -Regex ($name) {
+    "^dismhost\.exe$" { "dism|dism-export-drivers|export-driver"; break }
+    "^dism\.exe$" { "dism|dism-export-drivers|export-driver"; break }
+    "^robocopy\.exe$" { "robocopy"; break }
+    "^curl\.exe$" { "curl|download|Windows image|install\.(wim|esd|swm)"; break }
+    default { "" }
+  }
+  if ([string]::IsNullOrWhiteSpace($expectedTool) -or $stdoutTail -notmatch $expectedTool) { return $false }
+  $jobStartedUtc = [datetime]::MinValue
+  try {
+    $jobItem = Get-Item -LiteralPath $JobPath -ErrorAction Stop
+    $jobStartedUtc = $jobItem.CreationTimeUtc
+  } catch {}
+  $processStartedUtc = Convert-CimDateTimeUtc $Process.CreationDate
+  if ($jobStartedUtc -gt [datetime]::MinValue -and $processStartedUtc -gt [datetime]::MinValue) {
+    if ($processStartedUtc -lt $jobStartedUtc.AddMinutes(-2)) { return $false }
+  }
+  return $true
 }
 
 function Get-PrepareJobUpdatedUtc([string] $JobPath, [string[]] $ExtraPaths) {
@@ -251,6 +310,38 @@ function Get-PrepareJobUpdatedUtc([string] $JobPath, [string[]] $ExtraPaths) {
   return $updated.ToUniversalTime()
 }
 
+function Get-PrepareMediaArtifactPaths([string] $Root) {
+  $paths = New-Object System.Collections.Generic.List[string]
+  $mediaRoot = Join-Path $Root "media"
+  if (-not (Test-Path -LiteralPath $mediaRoot)) { return @() }
+  Get-ChildItem -LiteralPath $mediaRoot -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match "\.(download|esd|wim|swm)$" } |
+    ForEach-Object { $paths.Add($_.FullName) }
+  Get-ChildItem -LiteralPath $mediaRoot -Directory -Filter "*.download.parts" -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      $paths.Add($_.FullName)
+      Get-ChildItem -LiteralPath $_.FullName -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match "\.(seg|tmp)$" } |
+        ForEach-Object { $paths.Add($_.FullName) }
+    }
+  return @($paths)
+}
+
+function Test-PrepareJobMediaActive([string] $Root, [string] $JobPath) {
+  if ([string]::IsNullOrWhiteSpace($JobPath) -or -not (Test-Path -LiteralPath $JobPath)) { return $false }
+  $stdoutTail = Tail-Text (Join-Path $JobPath "stdout.txt") 3500
+  if ($stdoutTail -notmatch "Downloading Windows image|Download attempt|curl\.exe|\.download|install\.(wim|esd|swm)") { return $false }
+  $nowUtc = (Get-Date).ToUniversalTime()
+  foreach ($path in @(Get-PrepareMediaArtifactPaths $Root)) {
+    try {
+      $item = Get-Item -LiteralPath $path -ErrorAction Stop
+      $age = ($nowUtc - $item.LastWriteTimeUtc).TotalSeconds
+      if ($age -ge 0 -and $age -lt $script:MediaResumeGraceSeconds) { return $true }
+    } catch {}
+  }
+  return $false
+}
+
 function Get-PrepareJobs([string] $Root) {
   $roots = @(
     (Join-Path $env:ProgramData "soty-agent\ops\jobs"),
@@ -258,7 +349,7 @@ function Get-PrepareJobs([string] $Root) {
   ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   $items = New-Object System.Collections.Generic.List[object]
   $nowUtc = (Get-Date).ToUniversalTime()
-  $prepareProcesses = Get-PrepareProcesses $Root
+  $prepareProcesses = Get-PrepareProcesses $Root -IncludeToolChildrenWithoutCommandLine
   foreach ($jobsRoot in $roots) {
     if (-not (Test-Path -LiteralPath $jobsRoot)) { continue }
     Get-ChildItem -LiteralPath $jobsRoot -Directory -ErrorAction SilentlyContinue |
@@ -272,6 +363,7 @@ function Get-PrepareJobs([string] $Root) {
         $result = Read-JsonFile $resultPath
         $stdoutPath = Join-Path $jobPath "stdout.txt"
         $stderrPath = Join-Path $jobPath "stderr.txt"
+        $activeForJob = @($prepareProcesses | Where-Object { Test-PrepareProcessMatchesJob $_ $jobId $jobPath $Root })
         $extraPaths = @(
           $resultPath,
           $stdoutPath,
@@ -279,11 +371,17 @@ function Get-PrepareJobs([string] $Root) {
           (Join-Path $jobPath "dism-export-drivers.txt"),
           (Join-Path $jobPath "backup-proof.json")
         )
+        $mediaActive = $false
+        if (@($activeForJob).Count -gt 0) {
+          $mediaActive = Test-PrepareJobMediaActive $Root $jobPath
+          if ($mediaActive) {
+            $extraPaths += @(Get-PrepareMediaArtifactPaths $Root)
+          }
+        }
         $updatedUtc = Get-PrepareJobUpdatedUtc $jobPath $extraPaths
         $updatedAgeSeconds = [math]::Round(($nowUtc - $updatedUtc).TotalSeconds, 0)
-        $activeForJob = @($prepareProcesses | Where-Object { Test-PrepareProcessMatchesJob $_ $jobId $jobPath $Root })
         $status = if ($result) { [string] $result.status } else { "running-or-started" }
-        if (-not $result -and @($activeForJob).Count -eq 0 -and $updatedAgeSeconds -ge $script:PrepareOrphanGraceSeconds) {
+        if (-not $result -and @($activeForJob).Count -eq 0 -and -not $mediaActive -and $updatedAgeSeconds -ge $script:PrepareOrphanGraceSeconds) {
           $status = "stale-orphaned"
         }
         $items.Add([pscustomobject]@{
@@ -298,6 +396,7 @@ function Get-PrepareJobs([string] $Root) {
           stderrTail = Tail-Text $stderrPath 1500
           updated = $updatedUtc.ToString("o")
           updatedAgeSeconds = $updatedAgeSeconds
+          mediaActive = $mediaActive
           activeProcessCount = @($activeForJob).Count
           activeProcesses = @($activeForJob | Select-Object -First 4 ProcessId, Name)
         })
@@ -367,10 +466,13 @@ function Test-ReadyEditionValid($Ready) {
   return (Test-WindowsEditionKindCompatible -Actual $selected -Expected $desired)
 }
 
-function Test-MediaDownloadProcess($Process) {
+function Test-MediaDownloadProcess($Process, [bool] $AllowCommandLineUnavailableDownloadChild = $false) {
   $name = [string] $Process.Name
   $cmd = [string] $Process.CommandLine
-  if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($cmd)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($cmd)) {
+    return ($AllowCommandLineUnavailableDownloadChild -and $name -match "^(curl|bitsadmin)\.exe$")
+  }
   if ($cmd -match "soty-managed-windows-reinstall\.ps1") { return $false }
   if ($name -match "^(curl|bitsadmin)\.exe$") {
     return ($cmd -match "Windows11_|\.download(?:\.parts)?|dl\.delivery|Soty Windows reinstall image|install\.(wim|esd|swm)")
@@ -384,11 +486,7 @@ function Test-MediaDownloadProcess($Process) {
 function Get-MediaStatus([string] $Root, [string] $Letter) {
   $usbRoot = if ([string]::IsNullOrWhiteSpace($Letter)) { "" } else { $Letter + ":\" }
   $downloadProcesses = @()
-  try {
-    $downloadProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-      Where-Object { Test-MediaDownloadProcess $_ } |
-      Select-Object -First 8 ProcessId, Name, CommandLine)
-  } catch { $downloadProcesses = @() }
+  $mediaSpec = Read-JsonFile (Join-Path (Join-Path $Root "media") "windows-media-spec.json")
   $roots = @((Join-Path $Root "media"))
   if (-not [string]::IsNullOrWhiteSpace($usbRoot)) {
     $roots += @(
@@ -448,13 +546,20 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
         })
       }
   }
+  $hasDownloadArtifact = @($items | Where-Object { $_.downloading -eq $true }).Count -gt 0
+  try {
+    $downloadProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { Test-MediaDownloadProcess $_ $hasDownloadArtifact } |
+      Select-Object -First 8 ProcessId, Name, CommandLine, CreationDate)
+  } catch { $downloadProcesses = @() }
   $largest = @($items | Sort-Object bytes -Descending | Select-Object -First 1)
   if (-not $largest) {
-    return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; stalled = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null }
+    return [pscustomobject]@{ found = $false; path = ""; bytes = 0; gb = 0; downloading = $false; complete = $false; active = $false; stalled = $false; activeProcessCount = @($downloadProcesses).Count; updated = ""; updatedAgeSeconds = $null; spec = $mediaSpec }
   }
   $age = if ($null -ne $largest.updatedAgeSeconds) { [double] $largest.updatedAgeSeconds } else { $null }
-  $stalled = [bool]($largest.downloading -and $null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
-  $active = [bool]($largest.downloading -and -not $stalled -and ((@($downloadProcesses).Count -gt 0) -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
+  $hasDownloadProcess = @($downloadProcesses).Count -gt 0
+  $stalled = [bool]($largest.downloading -and -not $hasDownloadProcess -and $null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
+  $active = [bool]($largest.downloading -and ($hasDownloadProcess -or ($null -ne $age -and $age -lt $script:MediaResumeGraceSeconds)))
   return [pscustomobject]@{
     found = $true
     path = [string] $largest.path
@@ -468,11 +573,15 @@ function Get-MediaStatus([string] $Root, [string] $Letter) {
     activeProcessCount = @($downloadProcesses).Count
     updated = [string] $largest.updated
     updatedAgeSeconds = $age
+    spec = $mediaSpec
   }
 }
 
 function Test-MediaStale($Media) {
   if (-not $Media -or $Media.downloading -ne $true) { return $false }
+  try {
+    if ([int] $Media.activeProcessCount -gt 0) { return $false }
+  } catch {}
   $age = $null
   try { $age = [double] $Media.updatedAgeSeconds } catch {}
   return ($null -ne $age -and $age -ge $script:MediaResumeGraceSeconds)
@@ -572,6 +681,9 @@ function Get-ReinstallStatus([string] $Root, [string] $Letter) {
   $prepareJobs = Get-PrepareJobs $Root
   $latestPrepare = $prepareJobs | Select-Object -First 1
   $activePrepareProcesses = @(Get-PrepareProcesses $Root)
+  if (@($activePrepareProcesses).Count -eq 0) {
+    $activePrepareProcesses = @($prepareJobs | ForEach-Object { @($_.activeProcesses) } | Where-Object { $_ })
+  }
   return [pscustomobject]@{
     ok = $true
     action = "status"
@@ -649,6 +761,7 @@ function Test-PrepareJobActiveStatus($Job) {
   $activeCount = 0
   try { $activeCount = [int] $Job.activeProcessCount } catch {}
   if ($activeCount -gt 0) { return $true }
+  try { if ($Job.mediaActive -eq $true) { return $true } } catch {}
   $age = $null
   try { $age = [double] $Job.updatedAgeSeconds } catch {}
   return ($null -ne $age -and $age -lt $script:PrepareOrphanGraceSeconds)
@@ -724,7 +837,8 @@ function Get-ManagedRepairBlockers($Status) {
     $blockers.Add("usb-not-accepted")
   }
   try {
-    if ([double] $usb.freeGB -lt 12 -and (Test-UsbFreeSpaceRequired $usb $Status)) {
+    $minimumUsbFreeGB = Get-MinimumUsbFreeGB -UseExistingInstallImage:$UseExistingUsbInstallImage -Usb $usb
+    if ([double] $usb.freeGB -lt $minimumUsbFreeGB -and (Test-UsbFreeSpaceRequired $usb $Status)) {
       $blockers.Add("usb-free-space-low")
     }
   } catch {}
@@ -932,6 +1046,9 @@ function Invoke-ManagedPrepare([string] $Root, [string] $Letter) {
     "-WindowsEditionPolicy", $WindowsEditionPolicy,
     "-NoTemporaryManagedPassword"
   )
+  if (-not [string]::IsNullOrWhiteSpace($WindowsMediaManifestUrl)) { $psArgs += @("-WindowsMediaManifestUrl", $WindowsMediaManifestUrl) }
+  if (-not [string]::IsNullOrWhiteSpace($WindowsImageUrl)) { $psArgs += @("-WindowsImageUrl", $WindowsImageUrl) }
+  if (-not [string]::IsNullOrWhiteSpace($WindowsImageSha256)) { $psArgs += @("-WindowsImageSha256", $WindowsImageSha256) }
   if (-not [string]::IsNullOrWhiteSpace($WindowsEditionHint)) { $psArgs += @("-WindowsEditionHint", $WindowsEditionHint) }
   if ($UseExistingUsbInstallImage) { $psArgs += "-UseExistingUsbInstallImage" }
   if (-not [string]::IsNullOrWhiteSpace($ConfirmationPhrase)) { $psArgs += @("-ConfirmationPhrase", $ConfirmationPhrase) }
@@ -997,6 +1114,7 @@ try {
       $bitlocker = [pscustomobject]@{ protectionStatus = [string] $blv.ProtectionStatus; volumeStatus = [string] $blv.VolumeStatus; encryptionPercentage = [int] $blv.EncryptionPercentage }
     } catch {}
     $status = Get-ReinstallStatus $WorkspaceRoot $letter
+    $minimumUsbFreeGB = Get-MinimumUsbFreeGB -UseExistingInstallImage:$UseExistingUsbInstallImage -Usb $usb
     $blockers = New-Object System.Collections.Generic.List[string]
     if (-not $isAdmin) { $blockers.Add("not-elevated") }
     if ($status.ready -eq $true -and $status.backupProofOk -eq $true -and $status.readyEditionOk -ne $true) {
@@ -1006,7 +1124,7 @@ try {
       if ($usb.ambiguous) { $blockers.Add("usb-ambiguous") } else { $blockers.Add("usb-not-found") }
     }
     elseif ($usb.accepted -ne $true) { $blockers.Add("usb-not-removable") }
-    elseif ($usb.freeGB -lt 12 -and (Test-UsbFreeSpaceRequired $usb $status)) { $blockers.Add("usb-free-space-low") }
+    elseif ($usb.freeGB -lt $minimumUsbFreeGB -and (Test-UsbFreeSpaceRequired $usb $status)) { $blockers.Add("usb-free-space-low") }
     Emit ([pscustomobject]@{
       ok = ($blockers.Count -eq 0)
       action = "preflight"
@@ -1015,6 +1133,7 @@ try {
       osVersion = if ($os) { [string] $os.Version } else { "" }
       isAdmin = $isAdmin
       usb = $usb
+      minimumUsbFreeGB = $minimumUsbFreeGB
       bitLockerC = $bitlocker
       status = $status
       blockers = @($blockers)

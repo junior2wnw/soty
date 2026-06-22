@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.74";
+const agentVersion = "0.4.75";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -37,10 +37,11 @@ const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
   || (managed && process.env.SOTY_AGENT_AUTO_UPDATE !== "0");
 const maxCommandChars = 8_000;
 const maxScriptChars = 8_000_000;
-const maxChatChars = 12_000;
+const maxChatChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_CHAT_CHARS, 64_000, 1_000_000);
 const maxArtifactTransferBytes = 64 * 1024 * 1024;
-const maxAgentContextChars = 16_000;
-const maxAgentRuntimePromptChars = 48_000;
+const maxAgentContextChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_CONTEXT_CHARS, 128_000, 1_000_000);
+const maxAgentRuntimePromptChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_RUNTIME_PROMPT_CHARS, 192_000, 1_000_000);
+const maxAgentMemoryChars = safeAgentLimit(process.env.SOTY_AGENT_MAX_MEMORY_CHARS, 12_000, 128_000);
 const maxLearningMarkersPerTurn = 8;
 const maxOperatorTargets = 5000;
 const maxDeviceIdsPerTarget = 32;
@@ -60,7 +61,15 @@ const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
 const codexNativeWebSearch = process.env.SOTY_CODEX_WEB_SEARCH !== "0";
-const codexNativeOpenAiToolFeatures = Object.freeze(["image_generation", "tool_search"]);
+const codexNativeOpenAiToolFeatures = Object.freeze([
+  "image_generation",
+  "tool_search",
+  "computer_use",
+  "browser_use",
+  "shell_tool",
+  "shell_snapshot",
+  "workspace_dependencies"
+]);
 const openAiBuiltInTools = Object.freeze(["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"]);
 const sotyMcpPublicTools = Object.freeze(["computer"]);
 const sotyMcpLegacyTools = Object.freeze([
@@ -82,7 +91,8 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_open_url",
   "soty_audio"
 ]);
-const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "");
+const codexMinimumReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_MIN_REASONING_EFFORT || "high") || "high";
+const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "xhigh");
 const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexDisabled = process.env.SOTY_CODEX_DISABLED === "1";
 const localCodexDisabled = true;
@@ -139,6 +149,11 @@ let agentSourceWorkerStarted = false;
 let audioWarmupStarted = false;
 let updateCheckRunning = false;
 let deferredUpdateTimer = null;
+let updateNudgeAt = 0;
+let updateLastCheckAt = 0;
+let updateLastResult = "";
+let updateLastVersion = "";
+let updateLastError = "";
 const allowedOrigins = new Set([
   "https://xn--n1afe0b.online",
 ]);
@@ -448,6 +463,9 @@ async function handleHttpRequest(request, response) {
       ok: true,
       ...runtimeHealth()
     });
+    if (url.searchParams.get("update") === "1") {
+      nudgeUpdateCheck();
+    }
     return;
   }
   if (url.pathname === "/operator/targets" && request.method === "GET") {
@@ -5049,28 +5067,52 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
 }
 
 function codexReasoningEffortForTask(taskFamily, target = null) {
-  if (codexDefaultReasoningEffort) {
-    return codexDefaultReasoningEffort;
-  }
   const family = cleanActionToken(taskFamily, "generic");
-  if (family === "windows-reinstall") {
+  return codexReasoningAtLeast(codexDefaultReasoningEffort || codexReasoningPolicyForTask(family, target));
+}
+
+function codexReasoningPolicyForTask(family, target = null) {
+  if ([
+    "windows-reinstall",
+    "package-install",
+    "driver-check",
+    "program-control",
+    "file-work",
+    "script-task",
+    "system-check",
+    "service-check",
+    "software-check",
+    "web-lookup",
+    "browser",
+    "lifecycle",
+    "durable-action",
+    "console",
+    "software"
+  ].includes(family)) {
     return "xhigh";
   }
-  if (["package-install", "driver-check"].includes(family)) {
-    return "high";
-  }
-  if (family === "web-lookup") {
-    return "medium";
-  }
-  if (["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(family)) {
-    return "low";
-  }
-  return "medium";
+  return target?.id ? "xhigh" : "high";
+}
+
+function codexReasoningAtLeast(value) {
+  const effort = safeCodexReasoningEffort(value) || "high";
+  const rank = { high: 1, xhigh: 2 };
+  const floor = safeCodexReasoningEffort(codexMinimumReasoningEffort) || "high";
+  return rank[effort] < rank[floor] ? floor : effort;
 }
 
 function safeCodexReasoningEffort(value) {
   const effort = String(value || "").trim().toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(effort) ? effort : "";
+  if (!effort || ["auto", "adaptive", "task"].includes(effort)) {
+    return "";
+  }
+  if (["xhigh", "x-high", "max", "maximum", "deep"].includes(effort)) {
+    return "xhigh";
+  }
+  if (["high", "strong", "medium", "low"].includes(effort)) {
+    return "high";
+  }
+  return "";
 }
 
 function safeAgentResponseStyleId(value) {
@@ -6298,7 +6340,6 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   const agentDialog = isAgentDialogSource(safeSource);
   const targetForPrompt = target || null;
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
-  const routineTask = isRoutineAgentTaskFamily(taskFamily);
   const sourceDeviceId = promptInline(bridgeSourceDeviceId(targetForPrompt, safeSource) || (targetForPrompt ? safeSource.deviceId : "") || "");
   const targetLabel = promptInline(targetForPrompt?.label || (agentDialog ? "" : safeSource.preferredTargetLabel) || "");
   const targetId = promptInline(targetForPrompt?.id || (agentDialog ? "" : safeSource.preferredTargetId) || "");
@@ -6310,7 +6351,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
   return {
     taskFamily,
     userText: String(text || "").trim().slice(0, maxChatChars),
-    visibleContext: cleanPromptBlock(context, routineTask ? 3000 : maxAgentContextChars),
+    visibleContext: cleanPromptBlock(context, maxAgentContextChars),
     source: {
       tunnelId: promptInline(safeSource.tunnelId),
       tunnelLabel: promptInline(safeSource.tunnelLabel),
@@ -6335,7 +6376,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       mode: codexSessionMode,
       workspaceDir: promptInline(jobDir)
     },
-    memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, routineTask ? 1400 : 4000)
+    memory: (await codexLearningMemoryPrompt(taskFamily)).slice(0, maxAgentMemoryChars)
   };
 }
 
@@ -6507,7 +6548,7 @@ function windowsReinstallRouteProfile() {
       "run repair/status when the user reports a broken or interrupted reinstall workflow",
       "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
       "start managed prepare once with stable idempotency",
-      "download Windows media with the single-stream resumable route on the selected PC",
+      "download Windows media with the guarded parallel/resumable route on the selected PC",
       "prove backup, install media, unattended account, Autounattend, postinstall",
       "ask final reinstall confirmation only after proof is complete",
       "arm reinstall and stop probing while reboot return path is expected"
@@ -6578,9 +6619,11 @@ function sotyRuntimeHints() {
     "- Source-device canonical: when a Soty source target is attached, treat that user's device as the only canonical computer-use plane: perception, action, files, browser, desktop, display, jobs, artifacts, and final state.",
     "- Web-controller canonical: if the current client is controller-only/web-controller and no current source-device agent target is listed, the current phone/browser is not a computer-use plane. It can request tasks on connected devices, but do not run shell/files/desktop/wallpaper on the phone or invent `agent-source:<phone>`.",
     "- Target policy: in a plain Agent chat, only the current/source computer is available unless the current user request explicitly names a Link device. If the current client is web-controller only, require a named/selected connected device for device actions. Hidden Link devices are not candidates and must not be guessed from access state, count, memory, or previous turns.",
-    "- Linked-device canonical: in a device chat invoked through `agent`/`агент`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
+    "- Linked-device canonical: in a device chat invoked through `lord`/`лорд`, or in an Agent chat where the current request names a Link device, that selected/named Link target is the first-class computer-use plane through the controller device.",
     "- Linked-device UX: for simple shell/file/browser/desktop checks on a selected/named Link target, call the needed `computer` capability directly with a realistic timeout. If an initial call times out but status or a retry succeeds, do not mention the recovered timeout/fallback to the user; return the useful result.",
     "- Full remote access: `computer` shell/script/file/desktop routes are normal Codex-like access to the selected device. Managed capabilities are optimized routes, not barriers. For parallel console work, start separate `computer` operation=terminal/action jobs with detached=true, then inspect or stop them with job_status/job_stop/jobs.",
+    "- Installed agent runtime: TrustLink Kernel `docs/agent-runtime.md` is the reusable contract. Treat the user agent as a capability runtime with console, filesystem, process, service, package, browser, desktop, app, api, job, artifact, os, transaction, and device adapters.",
+    "- Transaction/app work: for deals, orders, payments, publishing, or any external side-effect, use prepare/preview before submit, require explicit confirmation for critical actions, return structured proof, and keep credentials/secrets in the user-approved local app or platform store rather than in prompts.",
     "- OpenAI tool plane: use native Codex/OpenAI built-in tools for web search, image generation, computer-use previews, code, shell, and patching when the runtime exposes them. Soty MCP is only the selected user's computer-control plane.",
     "- Stock Codex model: use native OpenAI tools plus Soty MCP `computer`. `computer` is the selected user's device. Do not describe internal transport, relay, bridge, companion, worker, or route names to the user.",
     "- User-facing device model: ordinary desktop tasks run through `computer` on the selected user's device. For Link targets, try the remote desktop/interactive route first; report desktop control unavailable only after status plus a direct retry prove that no interactive route is attached.",
@@ -6593,7 +6636,7 @@ function sotyRuntimeHints() {
     "- For Windows reinstall problem reports, do not answer from memory alone. First call `computer` with operation=reinstall, capability=os-reinstall, action=repair or action=status, then use its structured proof/nextAction. If repair says nextAction=prepare and the user is asking to continue reinstall, call prepare; if it says nextAction=arm, ask only for the exact final confirmation phrase.",
     "- For Windows reinstall status, prefer `computer` directly with operation=reinstall, capability=os-reinstall, action=status, and waitMs when useful because it returns compact proof. Full shell/file access remains available for direct diagnostics and repair. If latestPrepare.status is running-or-started/running/created or media.active=true, the task is running, not blocked; ignore older failed prepare jobs.",
     "- For generated image/wallpaper delivery, use route profile `soty-generated-asset-wallpaper-fast-lane`: native OpenAI image_gen/image_generation -> `computer` operation=artifact -> `computer` operation=wallpaper or desktop action=wallpaper -> source-device proof.",
-    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `agent`/`агент`.",
+    "- Agent dialog targeting: a plain Agent chat must target the current/source computer. Use a Link device only when the user names it in the current Agent-chat request or when the request came from that device chat via `lord`/`лорд`.",
     "- Server workspace is allowed for thinking, helper scripts, transformations of existing artifacts, and durable improvements, but it is not the user's computer and cannot substitute for a missing source-device or native OpenAI image-generation tool.",
     "- Image generation is a native OpenAI built-in (`image_generation` / Codex `image_gen`), not a Soty MCP tool. The user's source device does not need image credentials; it only saves, applies, and verifies generated bytes.",
     "- Soty is the data plane for files and artifacts. For source-device -> controller computer Downloads, use `computer` operation=file action=download: it streams exact bytes through the encrypted Soty room and asks the controller browser to save the file to its Downloads. For source-device -> room file rail only, use action=publish. For server/Codex artifact -> source-device, use `computer` operation=artifact. Never use 0x0.st, file.io, temp.sh, bashupload, ad-hoc local HTTP servers, pasted base64, or public upload services while Soty file/artifact operations are available.",
@@ -6715,7 +6758,21 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "5. Send progress rarely, only when it changes what the user needs to know. Otherwise sleep and poll.",
     "6. Stop only on completed, failed, blocked-needs-user, waiting-confirmation, or a source-device outage that survived the recovery window.",
     "",
-    "Record reusable proof/improvement when this route teaches a better deterministic script or check."
+    "Record reusable proof/improvement when this route teaches a better deterministic script or check.",
+    "",
+    "## Installed Agent Runtime",
+    "",
+    "Use this route whenever the user asks to make the installed agent more universal, connect to local programs, automate browser/app flows, enter deals/orders/payments, or build reusable remote operations.",
+    "",
+    "Principle: the installed agent is a local capability runtime. TrustLink Kernel owns the reusable runtime contract (`node_modules/trustlink-kernel/docs/agent-runtime.md`); Soty owns the adapter and user-facing orchestration.",
+    "",
+    "Capability families: console, filesystem, process, service, package, browser, desktop, screen, keyboard, mouse, clipboard, network, app, api, job, artifact, audio, os, transaction, and device. Prefer a first-class adapter or durable job over ad-hoc shell when the action is repeated, long, state-changing, or touches a specific program.",
+    "",
+    "Transaction rule: use `transaction.prepare`/`transaction.preview` before `transaction.submit`. Submit/cancel/payment/order/destructive OS actions are critical risk and need explicit confirmation plus proof. Keep credentials, exchange sessions, browser profiles, API keys, and secrets in the local approved app/platform store, not in prompts or logs.",
+    "",
+    "Adapter rule: connect new programs through small capability adapters (`app.connect`, `app.read`, `app.write`, `app.submit`, `api.post`, `transaction.submit`) with structured proof and idempotency, then promote proven repeated flows into manifest-pinned toolkits/tests.",
+    "",
+    "Keep frontend integration work out of this runtime unless it directly controls a selected computer with structured proof."
   ].join("\n");
   const agents = [
     "# Soty Runtime",
@@ -6728,7 +6785,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_ROUTES.md contains exact high-signal tool routes, including Windows reinstall status/prepare and generated-image artifact transfer."
+    "- SOTY_ROUTES.md contains exact high-signal computer routes, including Windows reinstall status/prepare and generated-image artifact transfer."
   ].join("\n");
   const context = [
     "# Soty Runtime Packet",
@@ -6783,6 +6840,11 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     `- target_source_device_id: ${runtime.target?.sourceDeviceId || "none"}`,
     ...sotyRuntimeHints(),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
+    "",
+    "Codex capability policy:",
+    "- Optimize for the best verified outcome, not the shortest response. Use the full available Codex toolset: native search/image/computer/browser/shell/patch tools plus Soty `computer` for the selected user's device.",
+    "- For coding and repository work, inspect the relevant files first, preserve unrelated user changes, make focused patches, and run the narrowest useful verification before final answer.",
+    "- Do not downshift effort for routine-looking code, file, script, or system tasks; simple wording can still hide complex state.",
     "",
     "Computer-use plane:",
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
@@ -6862,7 +6924,7 @@ async function codexLearningMemoryPrompt(taskFamily = "") {
   ]);
   cachedCodexLearningMemoryAt = now;
   cachedCodexLearningMemoryKey = key;
-  cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, 4000);
+  cachedCodexLearningMemoryText = formatCodexLearningMemory(report).slice(0, maxAgentMemoryChars);
   return cachedCodexLearningMemoryText;
 }
 
@@ -7479,12 +7541,12 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
@@ -12182,6 +12244,11 @@ function safeDurationMs(value, fallback, max = maxLongTaskTimeoutMs) {
   return Number.isSafeInteger(timeoutMs) ? Math.max(1000, Math.min(timeoutMs, max)) : fallback;
 }
 
+function safeAgentLimit(value, fallback, max) {
+  const limit = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(limit) ? Math.max(1000, Math.min(limit, max)) : fallback;
+}
+
 function safeRunTimeoutMs(value) {
   return safeDurationMs(value, defaultTimeoutMs, maxLongTaskTimeoutMs);
 }
@@ -12397,6 +12464,40 @@ function openAiToolPlaneStatus() {
   };
 }
 
+function agentRuntimeStatus() {
+  return {
+    schema: "trustlink.agent-runtime.v1",
+    runtimeId: "soty-agent",
+    entrypoint: "computer",
+    jobModel: "durable-jobs",
+    proofModel: "structured-proof",
+    adapterModel: "capability-adapters",
+    terminalStates: ["completed", "failed", "blocked", "waiting-confirmation", "running"],
+    capabilities: [
+      { family: "console", actions: ["run", "script", "terminal"], risk: "medium", proof: ["status", "result"] },
+      { family: "filesystem", actions: ["read", "write", "copy", "move", "delete"], risk: "high", proof: ["status", "result"] },
+      { family: "process", actions: ["list", "start", "stop"], risk: "medium", proof: ["status", "result"] },
+      { family: "service", actions: ["status", "start", "stop", "restart"], risk: "high", proof: ["status", "result"] },
+      { family: "package", actions: ["list", "install", "remove", "upgrade"], risk: "high", proof: ["status", "result"] },
+      { family: "browser", actions: ["open", "inspect", "click", "type", "download", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "desktop", actions: ["screenshot", "focus", "click", "type"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "screen", actions: ["capture"], risk: "low", proof: ["status", "result"] },
+      { family: "keyboard", actions: ["send"], risk: "high", proof: ["status", "result"] },
+      { family: "mouse", actions: ["move", "click"], risk: "high", proof: ["status", "result"] },
+      { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
+      { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
+      { family: "app", actions: ["discover", "launch", "focus", "connect", "read", "write", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
+      { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },
+      { family: "artifact", actions: ["push", "pull", "verify"], risk: "medium", proof: ["status", "result"] },
+      { family: "audio", actions: ["status", "set"], risk: "medium", proof: ["status", "result"] },
+      { family: "os", actions: ["status", "repair", "reinstall", "reset"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] },
+      { family: "transaction", actions: ["prepare", "preview", "submit", "cancel"], risk: "critical", requiresConfirmation: true, proof: ["preparedActionId", "visiblePreview", "confirmation", "result"] },
+      { family: "device", actions: ["status", "reboot", "poweroff"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] }
+    ]
+  };
+}
+
 function runtimeHealth() {
   return {
     managed,
@@ -12424,8 +12525,10 @@ function runtimeHealth() {
     codexProxyScheme: proxyScheme(codexProxyUrl),
     responseStyle: agentResponseStyleStatus(),
     trace: agentTraceStatus(),
+    update: agentUpdateStatus(),
     memory: memoryPlaneStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
+    agentRuntime: agentRuntimeStatus(),
     computerUsePlane: runtimeComputerUsePlaneStatus(),
     automationToolkits: automationToolkitStatus(),
     ...(process.platform === "win32" ? {
@@ -12439,6 +12542,17 @@ function runtimeHealth() {
       system: isUnixRoot(),
       maintenance: agentScope === "Machine" && isUnixRoot()
     })
+  };
+}
+
+function agentUpdateStatus() {
+  return {
+    autoUpdate: agentAutoUpdate,
+    manifestUrl: updateManifestUrl,
+    lastCheckAt: updateLastCheckAt ? new Date(updateLastCheckAt).toISOString() : "",
+    lastResult: updateLastResult,
+    latestVersion: updateLastVersion,
+    lastError: updateLastError
   };
 }
 
@@ -12469,6 +12583,7 @@ function runtimeComputerUsePlaneStatus() {
     openAiBuiltInTools: [...openAiBuiltInTools],
     executionPlane: runtimeExecutionPlane(),
     sourceWorker: canRunAgentSourceWorker(),
+    agentRuntimeSchema: agentRuntimeStatus().schema,
     routeProfiles: routeProfilesStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
     selfImprovement: "real-run+sanitized-receipts+route-profile+capability-promotion",
@@ -12489,6 +12604,9 @@ function runtimeComputerUsePlaneStatus() {
       "mouse",
       "wallpaper",
       "audio",
+      "app",
+      "api",
+      "transaction",
       "generated-asset-save-apply-verify",
       "managed-windows-reinstall"
     ]
@@ -12506,6 +12624,7 @@ function automationToolkitStatus() {
     legacyFrontDoor: "soty_computer",
     openAiToolPlane: openAiToolPlaneStatus(),
     defaultKernel: "jobs",
+    agentRuntime: agentRuntimeStatus(),
     terminalStates: ["completed", "failed", "blocked-needs-user", "waiting-confirmation"],
     computerUsePlane: {
       schema: "soty.computer-use-plane.v1",
@@ -12518,8 +12637,16 @@ function automationToolkitStatus() {
       imagePipeline: "openai.image_generation+computer.artifact-save-apply-verify",
       routeProfileSchema: "soty.route-profiles.v1"
     },
-    available: ["computer-use-plane", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
+    available: ["computer-use-plane", "agent-runtime", "capability-gateway", "durable-action", "turnkey-monitoring", "generated-asset", "windows-reinstall"],
     toolkits: [
+      {
+        name: "agent-runtime",
+        entryTool: "computer",
+        phases: ["discover", "invoke", "prepare", "confirm", "status", "stop", "learn"],
+        proof: ["capability", "risk", "confirmation", "jobId", "result", "proof"],
+        schema: agentRuntimeStatus().schema,
+        capabilities: agentRuntimeStatus().capabilities.map((capability) => capability.family)
+      },
       {
         name: "computer-use-plane",
         entryTool: "computer",
@@ -12740,7 +12867,7 @@ function scheduleUpdate() {
   if (!managed || !updateManifestUrl || !agentAutoUpdate) {
     return;
   }
-  const firstDelay = 8000 + Math.floor(Math.random() * 5000);
+  const firstDelay = 3000 + Math.floor(Math.random() * 4000);
   setTimeout(() => {
     void checkForUpdate();
     let fastChecks = 0;
@@ -12755,6 +12882,19 @@ function scheduleUpdate() {
   }, firstDelay);
 }
 
+function nudgeUpdateCheck() {
+  if (!managed || !updateManifestUrl || !agentAutoUpdate) {
+    return;
+  }
+  const now = Date.now();
+  if (now - updateNudgeAt < 45_000) {
+    return;
+  }
+  updateNudgeAt = now;
+  const timer = setTimeout(() => void checkForUpdate(), 25);
+  timer.unref?.();
+}
+
 async function checkForUpdate() {
   if (!agentAutoUpdate) {
     return;
@@ -12763,30 +12903,40 @@ async function checkForUpdate() {
     return;
   }
   updateCheckRunning = true;
+  updateLastCheckAt = Date.now();
+  updateLastResult = "checking";
+  updateLastError = "";
   try {
     const { response, json: manifest } = await fetchJsonWithTimeout(updateManifestUrl, { cache: "no-store" }, updateFetchTimeoutMs);
     if (!response.ok) {
+      updateLastResult = `manifest-http-${response.status}`;
       return;
     }
     if (!isSafeManifest(manifest)) {
+      updateLastResult = "manifest-invalid";
       return;
     }
+    updateLastVersion = manifest.version;
     const scriptPath = fileURLToPath(import.meta.url);
     const currentHash = sha256(await readFile(scriptPath));
     const versionCompare = compareVersion(manifest.version, agentVersion);
     if (versionCompare < 0 || (versionCompare === 0 && manifest.sha256 === currentHash)) {
+      updateLastResult = "current";
       return;
     }
     if (shouldDeferAgentUpdate()) {
+      updateLastResult = "deferred-busy";
       scheduleDeferredUpdateCheck();
       return;
     }
     const nextUrl = new URL(manifest.agentUrl, updateManifestUrl);
     const { response: nextResponse, bytes } = await fetchBytesWithTimeout(nextUrl, { cache: "no-store" }, updateFetchTimeoutMs);
     if (!nextResponse.ok) {
+      updateLastResult = `agent-http-${nextResponse.status}`;
       return;
     }
     if (sha256(bytes) !== manifest.sha256) {
+      updateLastResult = "sha256-mismatch";
       return;
     }
     await mkdir(dirname(scriptPath), { recursive: true });
@@ -12794,10 +12944,13 @@ async function checkForUpdate() {
     await writeFile(tempPath, bytes, { mode: 0o755 });
     await copyFile(tempPath, scriptPath);
     await rm(tempPath, { force: true });
+    updateLastResult = `updating-${manifest.version}`;
     notifyOperatorUpdating(manifest.version);
     await sleep(250);
     process.exit(75);
-  } catch {
+  } catch (error) {
+    updateLastResult = "error";
+    updateLastError = error?.message ? String(error.message).slice(0, 300) : String(error || "").slice(0, 300);
     // Updates are best-effort; the running agent must keep the tunnel useful.
   } finally {
     updateCheckRunning = false;

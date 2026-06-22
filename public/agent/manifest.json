@@ -1,9 +1,9 @@
 {
-  "version": "0.4.74",
+  "version": "0.4.75",
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "26e700801f2967dde74a00c69927035a362c09ef555b22775663322c3505b76e",
+  "sha256": "1e74db420871ea312a7d886286cc3c9fd1271a772bca4455fa1232b8d4a99368",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -16,9 +16,12 @@
     ],
     "codexCliFeatureFlags": [
       "image_generation",
+      "tool_search",
       "computer_use",
       "browser_use",
-      "tool_search"
+      "shell_tool",
+      "shell_snapshot",
+      "workspace_dependencies"
     ],
     "webSearch": "native --search",
     "mcp": {
@@ -63,6 +66,7 @@
     ],
     "model": "discover+invoke+durable-jobs+artifacts+source-proof",
     "imagePipeline": "openai.image_generation+computer.artifact-save-apply-verify",
+    "agentRuntimeSchema": "trustlink.agent-runtime.v1",
     "routeProfileSchema": "soty.route-profiles.v1",
     "capabilities": [
       "discover",
@@ -81,9 +85,309 @@
       "mouse",
       "wallpaper",
       "audio",
+      "app",
+      "api",
+      "transaction",
       "generated-asset-save-apply-verify",
       "managed-windows-reinstall"
     ]
+  },
+  "agentRuntime": {
+    "schema": "trustlink.agent-runtime.v1",
+    "runtimeId": "soty-agent",
+    "entrypoint": "computer",
+    "capabilities": [
+      {
+        "family": "console",
+        "actions": [
+          "run",
+          "script",
+          "terminal"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "filesystem",
+        "actions": [
+          "read",
+          "write",
+          "copy",
+          "move",
+          "delete"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "process",
+        "actions": [
+          "list",
+          "start",
+          "stop"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "service",
+        "actions": [
+          "status",
+          "start",
+          "stop",
+          "restart"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "package",
+        "actions": [
+          "list",
+          "install",
+          "remove",
+          "upgrade"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "browser",
+        "actions": [
+          "open",
+          "inspect",
+          "click",
+          "type",
+          "download",
+          "submit"
+        ],
+        "risk": "high",
+        "proof": [
+          "target",
+          "stateBefore",
+          "stateAfter",
+          "result"
+        ]
+      },
+      {
+        "family": "desktop",
+        "actions": [
+          "screenshot",
+          "focus",
+          "click",
+          "type"
+        ],
+        "risk": "high",
+        "proof": [
+          "target",
+          "stateBefore",
+          "stateAfter",
+          "result"
+        ]
+      },
+      {
+        "family": "screen",
+        "actions": [
+          "capture"
+        ],
+        "risk": "low",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "keyboard",
+        "actions": [
+          "send"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "mouse",
+        "actions": [
+          "move",
+          "click"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "clipboard",
+        "actions": [
+          "read",
+          "write"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "network",
+        "actions": [
+          "status",
+          "probe"
+        ],
+        "risk": "low",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "app",
+        "actions": [
+          "discover",
+          "launch",
+          "focus",
+          "connect",
+          "read",
+          "write",
+          "submit"
+        ],
+        "risk": "high",
+        "proof": [
+          "target",
+          "stateBefore",
+          "stateAfter",
+          "result"
+        ]
+      },
+      {
+        "family": "api",
+        "actions": [
+          "get",
+          "post",
+          "put",
+          "delete",
+          "submit"
+        ],
+        "risk": "high",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "job",
+        "actions": [
+          "start",
+          "status",
+          "stop"
+        ],
+        "risk": "medium",
+        "proof": [
+          "jobId",
+          "status",
+          "resultPath"
+        ]
+      },
+      {
+        "family": "artifact",
+        "actions": [
+          "push",
+          "pull",
+          "verify"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "audio",
+        "actions": [
+          "status",
+          "set"
+        ],
+        "risk": "medium",
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "os",
+        "actions": [
+          "status",
+          "repair",
+          "reinstall",
+          "reset"
+        ],
+        "risk": "critical",
+        "requiresConfirmation": true,
+        "proof": [
+          "status",
+          "result"
+        ]
+      },
+      {
+        "family": "transaction",
+        "actions": [
+          "prepare",
+          "preview",
+          "submit",
+          "cancel"
+        ],
+        "risk": "critical",
+        "requiresConfirmation": true,
+        "proof": [
+          "preparedActionId",
+          "visiblePreview",
+          "confirmation",
+          "result"
+        ]
+      },
+      {
+        "family": "device",
+        "actions": [
+          "status",
+          "reboot",
+          "poweroff"
+        ],
+        "risk": "critical",
+        "requiresConfirmation": true,
+        "proof": [
+          "status",
+          "result"
+        ]
+      }
+    ],
+    "terminalStates": [
+      "completed",
+      "failed",
+      "blocked",
+      "waiting-confirmation",
+      "running"
+    ],
+    "jobModel": "durable-jobs",
+    "proofModel": "structured-proof",
+    "adapterModel": "capability-adapters"
   },
   "routeProfiles": {
     "schema": "soty.route-profiles.v1",
@@ -118,7 +422,7 @@
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
           "start managed prepare once with stable idempotency",
-          "download Windows media with the single-stream resumable route on the selected PC",
+          "download Windows media with the guarded parallel/resumable route on the selected PC",
           "prove backup, install media, unattended account, Autounattend, postinstall",
           "ask final reinstall confirmation only after proof is complete",
           "arm reinstall and stop probing while reboot return path is expected"
@@ -146,13 +450,13 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-            "bytes": 46829
+            "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
+            "bytes": 53772
           },
           {
             "name": "prepare",
-            "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-            "bytes": 89686
+            "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
+            "bytes": 96345
           },
           {
             "name": "arm",
@@ -226,14 +530,14 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-        "bytes": 46829
+        "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
+        "bytes": 53772
       },
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-        "bytes": 89686
+        "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
+        "bytes": 96345
       },
       {
         "name": "arm",
@@ -258,6 +562,7 @@
       "route": "computer-use-plane-with-memory-hints",
       "fallbackKernel": "jobs",
       "routeProfiles": "soty.route-profiles.v1",
+      "agentRuntime": "trustlink.agent-runtime.v1",
       "chat": "agent-sysadmin",
       "responseStyle": {
         "schema": "soty.response-style.v1",
@@ -280,9 +585,12 @@
         ],
         "codexCliFeatureFlags": [
           "image_generation",
+          "tool_search",
           "computer_use",
           "browser_use",
-          "tool_search"
+          "shell_tool",
+          "shell_snapshot",
+          "workspace_dependencies"
         ],
         "webSearch": "native --search",
         "mcp": {
@@ -307,6 +615,51 @@
       ]
     },
     "toolkits": [
+      {
+        "name": "agent-runtime",
+        "entryTool": "computer",
+        "kind": "runtime-contract",
+        "phases": [
+          "discover",
+          "invoke",
+          "prepare",
+          "confirm",
+          "status",
+          "stop",
+          "learn"
+        ],
+        "proof": [
+          "capability",
+          "risk",
+          "confirmation",
+          "jobId",
+          "result",
+          "proof"
+        ],
+        "schema": "trustlink.agent-runtime.v1",
+        "capabilities": [
+          "console",
+          "filesystem",
+          "process",
+          "service",
+          "package",
+          "browser",
+          "desktop",
+          "screen",
+          "keyboard",
+          "mouse",
+          "clipboard",
+          "network",
+          "app",
+          "api",
+          "job",
+          "artifact",
+          "audio",
+          "os",
+          "transaction",
+          "device"
+        ]
+      },
       {
         "name": "computer-use-plane",
         "entryTool": "computer",
@@ -413,13 +766,13 @@
         "scripts": [
           {
             "name": "managed",
-            "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-            "bytes": 46829
+            "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
+            "bytes": 53772
           },
           {
             "name": "prepare",
-            "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-            "bytes": 89686
+            "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
+            "bytes": 96345
           },
           {
             "name": "arm",
@@ -477,7 +830,7 @@
             "run repair/status when the user reports a broken or interrupted reinstall workflow",
             "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
             "start managed prepare once with stable idempotency",
-            "download Windows media with the single-stream resumable route on the selected PC",
+            "download Windows media with the guarded parallel/resumable route on the selected PC",
             "prove backup, install media, unattended account, Autounattend, postinstall",
             "ask final reinstall confirmation only after proof is complete",
             "arm reinstall and stop probing while reboot return path is expected"
@@ -505,13 +858,13 @@
           "scripts": [
             {
               "name": "managed",
-              "sha256": "9402c77f4c80a15610d46e3ef8595537db89d6d9d4734a48180ed653058f8714",
-              "bytes": 46829
+              "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
+              "bytes": 53772
             },
             {
               "name": "prepare",
-              "sha256": "6943a827b2aacd5f533088518c1a808d24a150c521c8d97a29e277736f21b5b8",
-              "bytes": 89686
+              "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
+              "bytes": 96345
             },
             {
               "name": "arm",
