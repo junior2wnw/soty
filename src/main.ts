@@ -38,6 +38,7 @@ import { createPaymentIntent, formatPaymentAmount, loadPaymentConfig } from "./f
 import type { PaymentConfig, PaymentPlan } from "./features/payments";
 import { cleanPersonalHandle, loadPersonalHandle, loadPersonalSpaceInbox, loadPersonalSpaceThread, personalSpaceManifestHref, personalSpaceRouteFromLocation, reactPersonalSpaceMessage, renderPersonalSpacePage, replyPersonalSpaceMessage, savePersonalHandle, savePersonalSpaceModule, savePersonalSpacePost, updatePersonalSpaceProfile, uploadPersonalSpacePhoto } from "./features/personal-space";
 import type { PersonalOwnerAction, PersonalOwnerProof, PersonalSpaceAgentDeviceState, PersonalSpaceAgentRequest, PersonalSpaceAgentResult, PersonalSpaceInstallResult, PersonalSpaceMessageReactionDraft, PersonalSpaceMessageReplyDraft, PersonalSpaceModuleDraft, PersonalSpaceNotificationRequest, PersonalSpacePostDraft, PersonalSpaceProfile, PersonalSpaceProfileUpdate, PersonalSpaceRoute, PersonalSpaceThreadRequest } from "./features/personal-space";
+import { isSotyClientRoute, renderSotyClientShell } from "./features/soty-client-shell";
 import { runtimeModuleTargetFromString } from "./features/runtime-modules";
 import type { RuntimeModuleTarget } from "./features/runtime-modules";
 import { installWebController, resolveWebControllerTarget } from "./features/web-controller";
@@ -147,6 +148,8 @@ const app: HTMLDivElement = root;
 installTooltips();
 
 const selfCellLabel = "Я";
+const selfCellColor = "#8bd3e6";
+const agentCellColor = "#8af0a2";
 const agentReleaseCheckTtlMs = 60_000;
 const infoPagePath = "/info";
 const paymentPagePath = "/pay";
@@ -439,6 +442,7 @@ void boot();
 
 async function boot(): Promise<void> {
   bareChatMode = requestedBareChatMode();
+  const clientRoute = isSotyClientRoute();
   const personalRoute = personalSpaceRouteFromLocation();
   setPersonalSpaceMode(Boolean(personalRoute));
   setSelfStartMode(false);
@@ -468,6 +472,11 @@ async function boot(): Promise<void> {
 
   await registerServiceWorker();
   startAppBundleWatcher(true);
+
+  if (clientRoute) {
+    renderSotyClientShell(app);
+    return;
+  }
 
   if (personalRoute) {
     showPersonalSpaceRoute(personalRoute);
@@ -2683,28 +2692,8 @@ function saveAgentModes(): void {
 }
 
 function selectedAgentMode(tunnelId = selectedId): boolean {
-  return Boolean(tunnelId && normalizeSpaceMode(spaceModes.get(tunnelId) || "dialog") === "dialog" && agentModes.get(tunnelId) === true);
-}
-
-function setSelectedAgentMode(active: boolean): void {
-  if (!selectedId) {
-    return;
-  }
-  if (active) {
-    spaceModes.set(selectedId, "dialog");
-    agentModes.set(selectedId, true);
-  } else {
-    agentModes.delete(selectedId);
-  }
-  saveSpaceModes();
-  saveAgentModes();
-  void syncs.get(selectedId)?.sendLiveDraft("");
-  renderSpace();
-  updateComposerSpaceMode();
-  renderDialogChrome();
-  renderAgentPrivatePanel();
-  renderTextPaint();
-  composer?.focus();
+  void tunnelId;
+  return false;
 }
 
 function loadAgentPrivateLogs(): Map<string, AgentPrivateLine[]> {
@@ -2770,7 +2759,7 @@ function appendAgentPrivateLine(tunnelId: string, role: AgentPrivateLine["role"]
 }
 
 function selectedSpaceMode(): SpaceMode {
-  return normalizeSpaceMode(spaceModes.get(selectedId) || "dialog");
+  return "dialog";
 }
 
 function setSelectedSpaceMode(mode: SpaceMode): void {
@@ -2871,7 +2860,7 @@ function ensureAgentChatMode(draftPrefix = ""): TunnelRecord | null {
   selectedId = tunnel.id;
   saveSelectedTunnelId(tunnel.id);
   spaceModes.set(tunnel.id, "dialog");
-  agentModes.set(tunnel.id, true);
+  agentModes.delete(tunnel.id);
   saveSpaceModes();
   saveAgentModes();
   if (draftPrefix && !localDrafts.get(tunnel.id)) {
@@ -2880,17 +2869,26 @@ function ensureAgentChatMode(draftPrefix = ""): TunnelRecord | null {
   return tunnel;
 }
 
+function openAgentDialogSurface(draftPrefix = ""): void {
+  const tunnel = ensureAgentChatMode(draftPrefix);
+  if (!tunnel) {
+    return;
+  }
+  renderApp();
+  applySelectedText(true);
+  renderComposerAttachments();
+  renderTerminal();
+  renderChess();
+  renderMiniAppPanel();
+  publishMiniAppContext();
+  ensureAgentDialogBridgeReady();
+  window.setTimeout(() => composer?.focus(), 0);
+}
+
 async function openRuntimeModule(target: RuntimeModuleTarget): Promise<void> {
   const handlers: Record<RuntimeModuleTarget, () => void | Promise<void>> = {
     agent: () => {
-      const tunnel = ensureAgentChatMode();
-      if (tunnel) {
-        renderApp();
-        applySelectedText(true);
-        ensureAgentDialogBridgeReady();
-      } else {
-        setSelectedAgentMode(true);
-      }
+      openAgentDialogSurface();
     },
     apps: () => {
       openMiniAppGallery();
@@ -3742,7 +3740,7 @@ function publishMiniAppContext(): void {
       label,
       color: safeColor(tunnel.color, label + tunnel.id),
       agent: isAgentTunnel(tunnel),
-      agentMode: selectedAgentMode(tunnel.id),
+      agentMode: isAgentTunnel(tunnel) || selectedAgentMode(tunnel.id),
       remoteController: remoteAccess.has(tunnel.id),
       remoteHost: remoteEnabled.has(tunnel.id),
       syncState: syncStates.get(tunnel.id) || "connecting"
@@ -3798,12 +3796,14 @@ async function invokeAgentFromMiniApp(message: Record<string, unknown>): Promise
   if (!text) {
     return;
   }
-  if (visible) {
-    appendUserMessageToDialog(selectedId, visible);
+  if (isAgentTunnel(tunnel)) {
+    if (visible) {
+      appendUserMessageToDialog(selectedId, visible);
+    }
+    await sendAgentDialogMessage(selectedId, text);
+    return;
   }
-  await sendAgentDialogMessage(selectedId, text, {
-    privateMode: !isAgentTunnel(tunnel)
-  });
+  await sendAgentMessageFromPeerChat(selectedId, text, visible || text);
 }
 
 async function runTerminalFromMiniApp(message: Record<string, unknown>): Promise<void> {
@@ -3918,11 +3918,13 @@ async function runQuickAction(actionId: string): Promise<void> {
   const visible = quickActionVisibleMessage(action, comment);
   const agentTask = quickActionAgentMessage(action, comment, tunnel);
   closeActionMenu();
-  appendUserMessageToDialog(tunnelId, visible);
-  clearComposerDraftForTunnel(tunnelId);
-  void sendAgentDialogMessage(tunnelId, agentTask, {
-    privateMode: !isAgentTunnel(tunnel)
-  });
+  if (isAgentTunnel(tunnel)) {
+    appendUserMessageToDialog(tunnelId, visible);
+    clearComposerDraftForTunnel(tunnelId);
+    void sendAgentDialogMessage(tunnelId, agentTask);
+    return;
+  }
+  void sendAgentMessageFromPeerChat(tunnelId, agentTask, visible);
 }
 
 function quickActionVisibleMessage(action: QuickAction, comment: string): string {
@@ -3969,6 +3971,15 @@ function clearComposerDraftForTunnel(tunnelId: string): void {
   renderTiles();
   renderTextPaint();
   renderWriterPop();
+}
+
+async function sendAgentMessageFromPeerChat(tunnelId: string, taskText: string, visibleText: string): Promise<LocalAgentReply | null> {
+  const visible = normalizeChatMessage(visibleText);
+  if (visible) {
+    appendUserMessageToDialog(tunnelId, visible);
+  }
+  clearComposerDraftForTunnel(tunnelId);
+  return sendAgentDialogMessage(tunnelId, taskText, { explicitMention: true });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -4315,7 +4326,7 @@ function renderApp(): void {
     rememberCurrentChatScroll();
   }, { passive: true });
   app.querySelector<HTMLButtonElement>(".agent-mode-button")?.addEventListener("click", () => {
-    setSelectedAgentMode(!selectedAgentMode());
+    openAgentDialogSurface();
   });
   app.querySelector<HTMLButtonElement>(".access-open")?.addEventListener("click", () => {
     showAccessPanel();
@@ -4513,16 +4524,9 @@ function renderChatSwitcher(sorted: readonly TunnelRecord[]): void {
   if (!switcher) {
     return;
   }
-  const activeTunnel = sorted.find((tunnel) => tunnel.id === selectedId) || null;
-  switcher.innerHTML = `
-    ${chatActionRailHtml(activeTunnel)}
-    <section class="space-rail chat-mode-rail" aria-label="режимы чата"></section>
-  `;
-  switcher.querySelectorAll<HTMLButtonElement>("[data-chat-action]").forEach((button) => {
-    button.addEventListener("click", () => {
-      runChatQuickAction((button.dataset.chatAction || "") as ChatQuickActionId);
-    });
-  });
+  void sorted;
+  switcher.hidden = true;
+  switcher.innerHTML = chatActionRailHtml(null);
 }
 
 function chatActionRailHtml(tunnel: TunnelRecord | null): string {
@@ -4541,7 +4545,7 @@ function chatActionRailHtml(tunnel: TunnelRecord | null): string {
 function chatQuickActions(tunnel: TunnelRecord): readonly ChatQuickAction[] {
   const mode = agentButtonMode();
   return [
-    { id: "agentTask", icon: "agent", label: "Агент", tooltip: "Писать агенту", active: selectedAgentMode(tunnel.id) },
+    { id: "agentTask", icon: "agent", label: "Агент", tooltip: "Писать агенту", active: isAgentTunnel(tunnel) },
     { id: "attach", icon: "clip", label: "Файл", tooltip: "Прикрепить файл" },
     { id: "knock", icon: "bell", label: "Позвать", tooltip: "Позвать в чат" },
     { id: "remote", icon: "remote", label: "Доступ", tooltip: "Доступ к устройству", active: remoteEnabled.has(tunnel.id) },
@@ -4605,8 +4609,7 @@ function runChatQuickAction(action: ChatQuickActionId): void {
     return;
   }
   if (action === "agentTask") {
-    activateChatTunnel(tunnel.id);
-    setSelectedAgentMode(!selectedAgentMode(tunnel.id));
+    openAgentDialogSurface();
     return;
   }
   const actions = chatActionsFor(tunnel.id);
@@ -5395,6 +5398,7 @@ type PermanentCellSpec = {
   readonly kind: PermanentCellKind;
   readonly label: string;
   readonly score: number;
+  readonly color: string;
   readonly colorSeed: string;
   readonly match: (tunnel: TunnelRecord) => boolean;
 };
@@ -5452,8 +5456,17 @@ function permanentCellSpecs(now = new Date().toISOString()): readonly PermanentC
       kind: "self",
       label: selfCellLabel,
       score: 2_000_000,
+      color: selfCellColor,
       colorSeed: `self:${device?.id || now}`,
       match: isSelfTunnel
+    },
+    {
+      kind: "agent",
+      label: agentDialogLabel,
+      score: 1_900_000,
+      color: agentCellColor,
+      colorSeed: `agent:${device?.id || now}`,
+      match: isAgentTunnel
     }
   ];
 }
@@ -5473,6 +5486,7 @@ function ensurePermanentCells(): void {
         self: spec.kind === "self",
         agent: spec.kind === "agent",
         score: spec.score,
+        color: spec.color,
         colorSeed: spec.colorSeed
       });
       current = [cell, ...current];
@@ -5548,7 +5562,7 @@ function normalizePermanentCell(tunnel: TunnelRecord, spec: PermanentCellSpec, n
     archived: false,
     unread: tunnel.unread,
     score: Math.max(tunnel.score ?? 0, spec.score),
-    color: tunnel.color || colorFor(spec.colorSeed),
+    color: spec.color,
     updatedAt: tunnel.updatedAt || now,
     lastActionAt: tunnel.lastActionAt || tunnel.updatedAt || now
   };
@@ -5836,7 +5850,7 @@ function renderDialogChrome(): void {
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
-  const agentMode = Boolean(tunnel && selectedAgentMode(tunnel.id));
+  const agentMode = agentTunnel || Boolean(tunnel && selectedAgentMode(tunnel.id));
   const simpleContactSurface = Boolean(tunnel && isSimpleContactSurface(tunnel));
   const publicContactUrl = tunnel ? publicContactUrlForTunnel(tunnel) : "";
   const availableMiniApps = globalMiniApps();
@@ -5907,7 +5921,7 @@ function renderDialogChrome(): void {
     agentButton.hidden = !tunnel || selectedSpaceMode() !== "dialog";
     agentButton.classList.toggle("is-on", agentMode);
     agentButton.setAttribute("aria-pressed", agentMode ? "true" : "false");
-    agentButton.dataset.tooltip = agentMode ? "Агентный режим включен" : "Писать агенту";
+    agentButton.dataset.tooltip = agentTunnel ? "Агент" : "Писать агенту";
   }
   if (agentPill) {
     agentPill.hidden = !agentMode;
@@ -5927,6 +5941,11 @@ async function enableSelectedNotifications(): Promise<void> {
 function renderSpace(): void {
   const rail = app.querySelector<HTMLDivElement>(".space-rail");
   if (!rail) {
+    return;
+  }
+  if (rail.classList.contains("chat-mode-rail")) {
+    rail.hidden = true;
+    rail.innerHTML = "";
     return;
   }
   const model = selectedSpaceModel();
@@ -6049,7 +6068,8 @@ function updateComposerSpaceMode(): void {
   const mode = selectedSpaceMode();
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const access = composerAccessFor(tunnel, mode);
-  const agentMode = Boolean(tunnel && selectedAgentMode(tunnel.id));
+  const agentMode = Boolean(tunnel && (isAgentTunnel(tunnel) || selectedAgentMode(tunnel.id)));
+  const privateAgentMode = Boolean(tunnel && !isAgentTunnel(tunnel) && selectedAgentMode(tunnel.id));
   composer.placeholder = agentMode ? agentComposerPlaceholder(tunnel) : access.placeholder;
   composer.disabled = !access.canCompose;
   const bar = app.querySelector<HTMLFormElement>(".composer-bar");
@@ -6061,7 +6081,7 @@ function updateComposerSpaceMode(): void {
     bar.classList.toggle("is-agent-mode", agentMode);
     bar.classList.toggle("is-readonly-space", !access.canCompose);
   }
-  app.querySelector<HTMLButtonElement>(".composer-attach")?.toggleAttribute("disabled", !access.canCompose || agentMode);
+  app.querySelector<HTMLButtonElement>(".composer-attach")?.toggleAttribute("disabled", !access.canCompose || privateAgentMode);
   app.querySelector<HTMLButtonElement>(".send-button")?.toggleAttribute("disabled", !access.canCompose);
 }
 
@@ -6075,7 +6095,7 @@ function composerAccessFor(tunnel: TunnelRecord | null | undefined, mode = selec
   if (!tunnel) {
     return { canCompose: false, entryKind: null, placeholder: "" };
   }
-  return spaceComposerAccess(mode, counterpartyLabel(tunnel), isOwnSpace(tunnel));
+  return spaceComposerAccess(mode, counterpartyLabel(tunnel), mode === "dialog" ? false : isOwnSpace(tunnel));
 }
 
 function ensureSync(tunnel: TunnelRecord): void {
@@ -8142,11 +8162,7 @@ function activeTerminalTunnelId(): string {
   ) {
     return terminalOpenId;
   }
-  if (selectedId && isAgentTunnelId(selectedId)) {
-    terminalOpenId = selectedId;
-    return selectedId;
-  }
-  if (selectedId && (remoteAccess.has(selectedId) || isAgentLinkedTunnel(selectedId))) {
+  if (selectedId && remoteAccess.has(selectedId)) {
     terminalOpenId = selectedId;
     return selectedId;
   }
@@ -8164,10 +8180,6 @@ function terminalStateLabel(state: "idle" | "run" | "ok" | "bad" | "off"): strin
     return "не в сети";
   }
   return "готово";
-}
-
-function isAgentLinkedTunnel(tunnelId: string): boolean {
-  return isAgentTunnelId(tunnelId) && remoteEnabled.has(tunnelId);
 }
 
 function applySyncedTerminal(tunnelId: string, terminal: TerminalSnapshot): void {
@@ -9327,26 +9339,6 @@ async function finalizeComposerDraft(): Promise<void> {
     stopAgentDialogReply(tunnelId);
     return;
   }
-  if (spaceMode === "dialog" && tunnel && selectedAgentMode(tunnelId)) {
-    if (!message) {
-      renderComposerAttachments();
-      return;
-    }
-    appendAgentPrivateLine(tunnelId, "user", message);
-    const pendingLiveDraftTimer = liveDraftSendTimers.get(tunnelId);
-    if (pendingLiveDraftTimer) {
-      window.clearTimeout(pendingLiveDraftTimer);
-      liveDraftSendTimers.delete(tunnelId);
-    }
-    void sync.sendLiveDraft("");
-    localDrafts.delete(tunnelId);
-    composer.value = "";
-    resizeComposer();
-    renderAgentPrivatePanel();
-    renderDialogChrome();
-    void sendAgentDialogMessage(tunnelId, message, { privateMode: true });
-    return;
-  }
   const sentFiles = await sendPendingAttachments(tunnelId, sync);
   if (!message && sentFiles.length === 0) {
     renderComposerAttachments();
@@ -9389,6 +9381,8 @@ async function finalizeComposerDraft(): Promise<void> {
   if (spaceMode === "dialog" && tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
     void sendAgentDialogMessage(tunnelId, agentMessage);
+  } else if (spaceMode === "dialog" && tunnel && containsAgentInvocation(message)) {
+    void sendAgentDialogMessage(tunnelId, agentMessage, { explicitMention: true });
   }
   localDrafts.delete(tunnelId);
   composer.value = "";
@@ -9503,6 +9497,16 @@ function messageWithAttachmentContext(message: string, sentFiles: readonly Recei
     "",
     "Use the room-file-transfer / artifact route to inspect or move these files when needed."
   ].join("\n");
+}
+
+function containsAgentInvocation(text: string): boolean {
+  return /(^|[^\p{L}\p{N}_])(?:\u043b\u043e\u0440\u0434|lord)(?=$|[^\p{L}\p{N}_])/iu.test(text);
+}
+
+function stripAgentInvocation(text: string): string {
+  const body = normalizeChatMessage(text);
+  const stripped = body.replace(/^\s*(?:\u043b\u043e\u0440\u0434|lord)\s*[,.:;!?-]*\s*/iu, "").trim();
+  return stripped || body;
 }
 
 function agentReplyStopToken(tunnelId: string): number {
@@ -9647,15 +9651,16 @@ async function resumeAgentDialogReply(pending: LocalAgentPendingRelayReply): Pro
 function sendAgentDialogMessage(
   tunnelId: string,
   text: string,
-  options: { readonly privateMode?: boolean } = {}
+  options: { readonly privateMode?: boolean; readonly explicitMention?: boolean } = {}
 ): Promise<LocalAgentReply | null> {
   const tunnel = loadTunnels().find((item) => item.id === tunnelId);
   const agentTunnel = tunnel ? isAgentTunnel(tunnel) : false;
   const privateMode = options.privateMode === true;
-  if (!tunnel || (!agentTunnel && !privateMode) || !text.trim()) {
+  const explicitMention = options.explicitMention === true;
+  if (!tunnel || (!agentTunnel && !privateMode && !explicitMention) || !text.trim()) {
     return Promise.resolve(null);
   }
-  const taskText = text;
+  const taskText = explicitMention ? stripAgentInvocation(text) : text;
   const context = cleanAgentContext(texts.get(tunnelId) || "").slice(-16_000);
   const previous = agentReplyQueues.get(tunnelId) ?? Promise.resolve();
   const replyToken = agentReplyStopToken(tunnelId);
@@ -9673,7 +9678,7 @@ function sendAgentDialogMessage(
       try {
         if (agentTunnel) {
           await prepareAgentSourceForDialog(tunnelId, tunnel);
-        } else if (privateMode) {
+        } else if (privateMode || explicitMention) {
           await preparePeerAgentInvocation(tunnelId);
         }
         if (controller.signal.aborted || agentReplyStopToken(tunnelId) !== replyToken) {
@@ -9744,7 +9749,6 @@ async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecor
     remoteEnabled = setRemoteEnabled(tunnelId, true);
   }
   remoteGrantTargets = setRemoteGrantTarget(tunnelId, device.id, true);
-  terminalOpenId = tunnelId;
   if (!terminalState.has(tunnelId)) {
     setTerminalState(tunnelId, "idle");
   }
@@ -11086,7 +11090,7 @@ function hashShort(value: string): string {
 
 function renderEmptySpacePrompt(mode: SpaceMode, tunnel: TunnelRecord | null | undefined): string {
   const text = spaceEmptyPrompt(mode, {
-    ownSpace: isOwnSpace(tunnel),
+    ownSpace: mode === "dialog" ? false : isOwnSpace(tunnel),
     agentSpace: Boolean(tunnel && isAgentTunnel(tunnel))
   });
   return `<div class="space-empty">${escapeHtml(text)}</div>`;

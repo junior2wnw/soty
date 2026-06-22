@@ -1,0 +1,8 @@
+[submodule "upstream/element-web"]
+	path = upstream/element-web
+	url = https://github.com/element-hq/element-web.git
+	branch = develop
+[submodule "upstream/element-desktop"]
+	path = upstream/element-desktop
+	url = https://github.com/element-hq/element-desktop.git
+	branch = develop

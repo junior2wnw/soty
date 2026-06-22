@@ -20,6 +20,9 @@
     "agent:selftest": "node scripts/action-kernel-selftest.mjs",
     "payments:selftest": "node scripts/payment-selftest.mjs",
     "agent:eval": "node scripts/soty-agent-eval.mjs",
+    "element:init": "node scripts/element-upstream.mjs init",
+    "element:status": "node scripts/element-upstream.mjs status",
+    "element:update": "node scripts/element-upstream.mjs update",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
