@@ -61,6 +61,7 @@ const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRE
 const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexMcpTaskNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_MCP_TASK_NO_PROGRESS_TIMEOUT_MS, 60_000, 180_000);
 const codexIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 90_000, 600_000);
+const codexRecoverableIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_RECOVERABLE_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 7_000, 60_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -5255,8 +5256,12 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const lastFromFile = cleanAgentChatReply(lastFileRaw);
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
-  const recoveredFinalText = recoverFinalTextFromCodexCommandOutput(result.stdout);
-  if (!finalText && recoveredFinalText) {
+  const recoveredFinalText = cleanAgentChatReply(state.recoverableFinalText) || recoverFinalTextFromCodexCommandOutput(result.stdout);
+  const shouldUseRecoveredFinalText = Boolean(
+    recoveredFinalText
+      && (!finalText || isLikelyInternalCodexReasoningReply(finalText) || result.exitCode === 124)
+  );
+  if (shouldUseRecoveredFinalText) {
     finalText = recoveredFinalText;
     messages = compactCodexMessages([finalText]);
     result.exitCode = 0;
@@ -5468,21 +5473,25 @@ function recoverFinalTextFromCodexCommandOutput(stdout) {
     } catch {
       continue;
     }
-    const item = event?.item && typeof event.item === "object" ? event.item : null;
-    if (event?.type !== "item.completed" || item?.type !== "command_execution" || item.status !== "completed") {
-      continue;
-    }
-    const output = String(item.aggregated_output || "").trim();
-    const payload = parseJsonObjectLoose(output);
-    if (!payload?.ok || typeof payload.text !== "string") {
-      continue;
-    }
-    const clean = formatRecoveredOperatorText(payload.text);
+    const clean = recoverFinalTextFromCodexEvent(event);
     if (clean) {
       return cleanAgentChatReply(clean).slice(0, maxChatChars);
     }
   }
   return "";
+}
+
+function recoverFinalTextFromCodexEvent(event) {
+  const item = event?.item && typeof event.item === "object" ? event.item : null;
+  if (event?.type !== "item.completed" || item?.type !== "command_execution" || item.status !== "completed") {
+    return "";
+  }
+  const output = String(item.aggregated_output || "").trim();
+  const payload = parseJsonObjectLoose(output);
+  if (!payload?.ok || typeof payload.text !== "string") {
+    return "";
+  }
+  return formatRecoveredOperatorText(payload.text);
 }
 
 function formatRecoveredOperatorText(value) {
@@ -6490,6 +6499,12 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     let jsonBuffer = "";
     let done = false;
     let forcedExitCode = null;
+    const idleAfterProgressTimeoutMs = Number.isSafeInteger(options?.idleAfterProgressTimeoutMs)
+      ? Math.max(1000, options.idleAfterProgressTimeoutMs)
+      : codexIdleAfterProgressTimeoutMs;
+    const recoverableIdleAfterProgressTimeoutMs = Number.isSafeInteger(options?.recoverableIdleAfterProgressTimeoutMs)
+      ? Math.max(1000, options.recoverableIdleAfterProgressTimeoutMs)
+      : codexRecoverableIdleAfterProgressTimeoutMs;
     let sawStartupActivity = false;
     let sawModelProgress = false;
     let startupTimer = null;
@@ -6505,7 +6520,10 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     const markModelProgress = () => {
       sawModelProgress = true;
       clearTimeout(noProgressTimer);
-      if (codexIdleAfterProgressTimeoutMs <= 0 || done) {
+      const timeoutMs = state?.recoverableFinalText
+        ? recoverableIdleAfterProgressTimeoutMs
+        : idleAfterProgressTimeoutMs;
+      if (timeoutMs <= 0 || done) {
         return;
       }
       clearTimeout(idleAfterProgressTimer);
@@ -6516,13 +6534,14 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
         forcedExitCode = 124;
         stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! codex idle after progress timeout\n`.slice(-24_000);
         traceStep(state?.trace, "codex.idle-after-progress-timeout", {
-          timeoutMs: codexIdleAfterProgressTimeoutMs,
+          timeoutMs,
+          recoverableFinalText: Boolean(state?.recoverableFinalText),
           stdoutChars: stdout.length,
           stderrChars: stderr.length,
           usage: state?.usage || emptyCodexUsage()
         });
         killProcessTree(child);
-      }, codexIdleAfterProgressTimeoutMs);
+      }, timeoutMs);
     };
     const armNoProgressTimer = () => {
       if (done || sawModelProgress || noProgressTimer || noProgressTimeoutMs <= 0) {
@@ -6661,6 +6680,10 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
   }
   traceCodexEvent(state?.trace, text, event);
   mergeCodexUsage(state, extractCodexUsage(event));
+  const recoveredFinalText = cleanAgentChatReply(recoverFinalTextFromCodexEvent(event));
+  if (recoveredFinalText) {
+    state.recoverableFinalText = recoveredFinalText.slice(0, maxChatChars);
+  }
   const threadId = codexEventThreadId(event);
   if (threadId) {
     state.threadId = threadId;
@@ -7313,8 +7336,8 @@ function isLikelyInternalCodexReasoningReply(value) {
   }
   const lower = text.toLowerCase();
   const startsLikeHiddenReasoning = /^(?:пользователь\s+(?:просит|хочет|попросил)|the\s+user\s+(?:asks|wants|requested)|нужно\s+|надо\s+|давайте\s+|подождите\b|лучше\s+|сначала\s+нужно\b)/iu.test(lower);
-  const mentionsInternalTooling = /(?:\btools?\b|tool-call|function tools?|exec_command|shell_command|computer capability|доступн\w*\s+tools?|инструкци|payload|route profiles?|operator\/(?:toolkits|action|script|run)|http:\/\/127\.0\.0\.1)/iu.test(lower);
-  const narratesAttempt = /(?:давайте\s+(?:попробуем|посмотрим)|смотрим\s+инструкции|какой\s+payload|я\s+не\s+знаю\s+точн\w*\s+формат|но\s+в\s+списке\s+доступных|в\s+компактном\s+контексте)/iu.test(lower);
+  const mentionsInternalTooling = /(?:\btools?\b|tool-call|function tools?|exec_command|shell_command|computer capability|soty_local_api|local api|desktop-exists|script-powershell|доступн\w*\s+tools?|инструкци|payload|route profiles?|operator\/(?:toolkits|action|script|run)|http:\/\/127\.0\.0\.1|подключенн\w*\s+устройств)/iu.test(lower);
+  const narratesAttempt = /(?:давайте\s+(?:попробуем|посмотрим)|использу(?:ю|ем)\s+[`"']?(?:soty|.*команд)|смотрим\s+инструкции|какой\s+payload|я\s+не\s+знаю\s+точн\w*\s+формат|но\s+в\s+списке\s+доступных|в\s+компактном\s+контексте)/iu.test(lower);
   return startsLikeHiddenReasoning && (mentionsInternalTooling || narratesAttempt || text.length > 900);
 }
 
