@@ -60,6 +60,7 @@ const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIME
 const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 7000, 120_000);
 const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexMcpTaskNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_MCP_TASK_NO_PROGRESS_TIMEOUT_MS, 60_000, 180_000);
+const codexIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 90_000, 600_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -6108,6 +6109,34 @@ function agentResponseStyleStatus(profile = activeAgentResponseStyle) {
   };
 }
 
+function gonkaLocalApiComputerUsePromptLines(runtime = null) {
+  if (!codexUsesGonka) {
+    return [];
+  }
+  const targetId = promptInline(runtime?.target?.id || "");
+  const sourceDeviceId = promptInline(runtime?.target?.sourceDeviceId || runtime?.source?.deviceId || "");
+  return [
+    "- Gonka local-api route: MCP/Responses namespace tools are not available in this provider adapter. Do not search for a `computer` tool and do not read SOTY_ROUTES.md for ordinary file/system/process tasks.",
+    "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
+    `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"}.`,
+    "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
+    "- Shell command cookbook:",
+    "```sh",
+    "node - <<'NODE'",
+    "const payload = {",
+    `  target: ${JSON.stringify(targetId || "<target-id>")},`,
+    `  sourceDeviceId: ${JSON.stringify(sourceDeviceId || "<source-device-id>")},`,
+    "  shell: \"powershell\",",
+    "  timeoutMs: 60000,",
+    "  script: \"$p = Join-Path $env:USERPROFILE 'Desktop\\\\rrr.txt'; if (Test-Path -LiteralPath $p) { 'exists ' + $p } else { 'missing ' + $p }\"",
+    "};",
+    "const res = await fetch('http://127.0.0.1:49424/operator/script', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });",
+    "console.log(JSON.stringify(await res.json()));",
+    "NODE",
+    "```"
+  ];
+}
+
 function shouldRetryCodexWithoutResume(result, state) {
   if (!result || result.exitCode === 0) {
     return false;
@@ -6401,6 +6430,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     let sawModelProgress = false;
     let startupTimer = null;
     let noProgressTimer = null;
+    let idleAfterProgressTimer = null;
     const markStartupActivity = () => {
       if (sawStartupActivity) {
         return;
@@ -6409,11 +6439,26 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       clearTimeout(startupTimer);
     };
     const markModelProgress = () => {
-      if (sawModelProgress) {
-        return;
-      }
       sawModelProgress = true;
       clearTimeout(noProgressTimer);
+      if (codexIdleAfterProgressTimeoutMs <= 0 || done) {
+        return;
+      }
+      clearTimeout(idleAfterProgressTimer);
+      idleAfterProgressTimer = setTimeout(() => {
+        if (done) {
+          return;
+        }
+        forcedExitCode = 124;
+        stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! codex idle after progress timeout\n`.slice(-24_000);
+        traceStep(state?.trace, "codex.idle-after-progress-timeout", {
+          timeoutMs: codexIdleAfterProgressTimeoutMs,
+          stdoutChars: stdout.length,
+          stderrChars: stderr.length,
+          usage: state?.usage || emptyCodexUsage()
+        });
+        killProcessTree(child);
+      }, codexIdleAfterProgressTimeoutMs);
     };
     const armNoProgressTimer = () => {
       if (done || sawModelProgress || noProgressTimer || noProgressTimeoutMs <= 0) {
@@ -6441,6 +6486,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       done = true;
       clearTimeout(startupTimer);
       clearTimeout(noProgressTimer);
+      clearTimeout(idleAfterProgressTimer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
       void traceWriteText(state?.trace, "stderr-tail.txt", stderr, 24_000);
@@ -6467,6 +6513,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! cancelled\n`.slice(-24_000);
       traceStep(state?.trace, "codex.cancel-requested", {});
       clearTimeout(noProgressTimer);
+      clearTimeout(idleAfterProgressTimer);
       killProcessTree(child);
     };
     if (signal?.aborted) {
@@ -6482,6 +6529,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       done = true;
       signal?.removeEventListener?.("abort", cancelCodexRun);
       clearTimeout(noProgressTimer);
+      clearTimeout(idleAfterProgressTimer);
       killProcessTree(child);
       traceStep(state?.trace, "codex.startup-timeout", {
         timeoutMs: codexStartupTimeoutMs,
@@ -6525,6 +6573,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       done = true;
       clearTimeout(startupTimer);
       clearTimeout(noProgressTimer);
+      clearTimeout(idleAfterProgressTimer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       traceStep(state?.trace, "codex.spawn-error", {
         message: error instanceof Error ? error.message : String(error)
@@ -7809,6 +7858,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Operating model:",
     ...sotyRuntimeHints(),
+    ...gonkaLocalApiComputerUsePromptLines(runtimeContext),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "",
     "Useful local files:",
@@ -7878,6 +7928,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "",
     "Computer-use plane:",
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
+    ...gonkaLocalApiComputerUsePromptLines(runtime),
     "- Full access model: managed capabilities are preferred routes, not walls. You may still use shell/script/file/terminal directly on the selected device when that is the right way to solve, inspect, or repair the task.",
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
     "- Own turnkey tasks until a real terminal state. If work is still running, poll it yourself with `computer` operation=job_status/status and waitMs, or keep waitForCompletion active. Do not final-answer with instructions like `write continue`, `try again later`, or `check status yourself`.",
@@ -8279,6 +8330,8 @@ function agentFailureText(details) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
+    .filter((line) => !/^\{"type":/u.test(line))
+    .filter((line) => !isLikelyInternalCodexReasoningReply(line))
     .slice(-8)
     .join("\n")
     .trim();
