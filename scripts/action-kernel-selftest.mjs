@@ -150,10 +150,38 @@ async function runScenarios({ relayUrl } = {}) {
           model: "moonshotai/Kimi-K2.6",
           instructions: "long codex instructions ".repeat(300),
           stream: true,
+          tools: [{
+            type: "function",
+            name: "exec_command",
+            description: "Run a shell command",
+            parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] }
+          }],
           input: [{
             type: "message",
             role: "user",
-            content: [{ type: "input_text", text: "hello" }]
+            content: [{
+              type: "input_text",
+              text: [
+                "Current user request (authoritative):",
+                "hello",
+                "",
+                "Soty runtime packet:",
+                "- session_mode: soty-clean-codex-memory-plane-v1",
+                "- source_device: deploy-smoke (deploy-smoke)",
+                "- target: none (none)",
+                "- target_source_device_id: none",
+                "- Identity: Агент.",
+                "- extra-noise: " + "x".repeat(6000),
+                "",
+                "Visible Soty shared-text context:",
+                "selftest",
+                "",
+                "User message to satisfy now:",
+                "hello",
+                "",
+                "Use the user message above as the task."
+              ].join("\n")
+            }]
           }]
         }), {
           "Authorization": "Bearer selftest-key",
@@ -166,6 +194,9 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(gonkaRequests[0].stream, false);
         assert(gonkaRequests[0].messages[0].content.includes("Gonka AI Chat Completions adapter"));
         assert(gonkaRequests[0].messages[0].content.length < 700);
+        assertEqual(gonkaRequests[0].tools, undefined);
+        assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("Compact Soty runtime packet")));
+        assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("- target: none (none)")));
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           input: "hello"

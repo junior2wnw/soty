@@ -677,10 +677,11 @@ function bearerTokenFromRequest(request) {
 }
 
 function gonkaChatCompletionPayload(payload) {
-  const tools = responsesToolsToChatTools(payload?.tools);
+  const messages = responsesInputToChatMessages(payload);
+  const tools = gonkaPromptHasNoTarget(messages) ? [] : responsesToolsToChatTools(payload?.tools);
   const body = {
     model: codexGonkaModel || safeCodexModelId(payload?.model) || "moonshotai/Kimi-K2.6",
-    messages: responsesInputToChatMessages(payload),
+    messages,
     stream: false
   };
   if (tools.length > 0) {
@@ -692,6 +693,10 @@ function gonkaChatCompletionPayload(payload) {
     }
   }
   return body;
+}
+
+function gonkaPromptHasNoTarget(messages) {
+  return messages.some((message) => /\btarget:\s*none\b/iu.test(String(message?.content || "")));
 }
 
 function responsesToolsToChatTools(tools) {
@@ -723,14 +728,14 @@ function responsesInputToChatMessages(payload) {
   }
   messages.push({ role: "system", content: gonkaAdapterSystemInstruction() });
   if (typeof payload?.input === "string") {
-    const content = payload.input.trim();
+    const content = gonkaAdapterInputText(payload.input, "user");
     if (content) {
       messages.push({ role: "user", content });
     }
   }
   for (const item of Array.isArray(payload?.input) ? payload.input : []) {
     if (item?.type === "message") {
-      const content = responseContentText(item.content);
+      const content = gonkaAdapterInputText(responseContentText(item.content), item.role);
       if (content) {
         messages.push({
           role: chatRoleForResponseRole(item.role),
@@ -770,6 +775,80 @@ function responsesInputToChatMessages(payload) {
     }
   }
   return messages.length > 0 ? messages : [{ role: "user", content: "" }];
+}
+
+function gonkaAdapterInputText(value, role = "user") {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (String(role || "").toLowerCase() === "developer" && /<skills_instructions>|<permissions instructions>/u.test(text)) {
+    return [
+      "Codex harness context is available but compacted for Gonka.",
+      "Filesystem access is unrestricted, network is enabled, and approval policy is never.",
+      "Use function tools only when needed for the user's task."
+    ].join("\n");
+  }
+  if (text.includes("Soty runtime packet:")) {
+    return compactSotyRuntimePromptForGonka(text);
+  }
+  if (text.length > 12_000) {
+    return `${text.slice(0, 6000)}\n\n[...compacted for Gonka...]\n\n${text.slice(-3000)}`;
+  }
+  return text;
+}
+
+function compactSotyRuntimePromptForGonka(text) {
+  const userRequest = extractBetween(text, "Current user request (authoritative):", "\n\nSoty runtime packet:") || "";
+  const visibleContext = extractBetween(text, "Visible Soty shared-text context:", "\n\nUser message to satisfy now:") || "";
+  const userMessage = extractBetween(text, "User message to satisfy now:", "\n\nUse the user message above as the task.") || userRequest;
+  const runtimePacket = extractBetween(text, "Soty runtime packet:", "\n\nVisible Soty shared-text context:") || "";
+  const keepNeedles = [
+    "session_mode:",
+    "session_resumed:",
+    "source_device:",
+    "target:",
+    "target_source_device_id:",
+    "Identity:",
+    "Source-device canonical:",
+    "Web-controller canonical:",
+    "Available computer-use",
+    "Allowed target",
+    "Never confuse controller and target",
+    "Report a target blocker"
+  ];
+  const runtimeLines = runtimePacket
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => keepNeedles.some((needle) => line.includes(needle)))
+    .slice(0, 24);
+  return [
+    "Current user request (authoritative):",
+    userRequest.trim() || userMessage.trim(),
+    "",
+    "Compact Soty runtime packet:",
+    ...runtimeLines,
+    "",
+    "Operating rules:",
+    "- Use function tools when the task requires inspecting or changing the selected target computer.",
+    "- If target is none/controller-only, answer directly or state the missing target briefly; do not invent a computer.",
+    "- Keep controller and target distinct, verify important actions with tool results, and keep the user-facing reply brief.",
+    ...(visibleContext.trim() ? ["", "Visible Soty shared-text context:", visibleContext.trim().slice(0, 1200)] : []),
+    "",
+    "User message to satisfy now:",
+    userMessage.trim() || userRequest.trim()
+  ].join("\n").slice(0, 5000);
+}
+
+function extractBetween(text, startMarker, endMarker) {
+  const source = String(text || "");
+  const start = source.indexOf(startMarker);
+  if (start < 0) {
+    return "";
+  }
+  const contentStart = start + startMarker.length;
+  const end = source.indexOf(endMarker, contentStart);
+  return (end < 0 ? source.slice(contentStart) : source.slice(contentStart, end)).trim();
 }
 
 function gonkaAdapterCodexInstructions(value) {
