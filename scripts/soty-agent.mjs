@@ -57,6 +57,7 @@ const maxCodexDialogMessages = 64;
 const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
 const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIMEOUT_MS, 25_000, 120_000);
+const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 25_000, 120_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -5080,7 +5081,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   });
   await writeCodexRuntimeFiles(jobDir, runtimeContext);
   const prompt = buildAgentPrompt(text, context, runtimeContext);
-  const outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
+  let outPath = join(jobDir, `last-message-${randomUUID()}.txt`);
   if (trace?.doc) {
     trace.doc.codex.jobDir = jobDir;
   }
@@ -5183,6 +5184,51 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.terminalKeys = freshState.terminalKeys;
       state.learningMarkers = freshState.learningMarkers;
       state.usage = freshState.usage;
+    }
+    if (shouldRetryCodexWithoutMcp(result, state, args, signal)) {
+      const fallbackState = {
+        threadId: "",
+        lastMessage: "",
+        messages: [],
+        terminal: [],
+        terminalKeys: new Set(),
+        learningMarkers: [],
+        usage: emptyCodexUsage(),
+        trace
+      };
+      const fallbackOutPath = join(jobDir, `last-message-${randomUUID()}-nomcp.txt`);
+      const fallbackArgs = codexSotySessionArgs({
+        jobDir,
+        target,
+        source: safeSource,
+        outPath: fallbackOutPath,
+        threadId: "",
+        taskFamily,
+        attachMcp: false
+      });
+      const fallbackPrompt = `${prompt}\n\nRuntime recovery note: the first Codex run exited before reaching the model while Soty computer-control MCP was attached. In this retry, do not claim that any selected-computer action was completed unless a tool result is present. If the user requested computer control, report a brief retry/blocker; if the user asked a plain dialog question, answer normally.`;
+      traceStep(trace, "codex.retry-without-mcp", {
+        reason: "empty-before-model",
+        firstExitCode: result.exitCode,
+        firstStdout: Boolean(result.stdout),
+        firstStderr: Boolean(result.stderr)
+      });
+      await traceWriteJson(trace, "codex-retry-args.json", {
+        file: basename(codexBin),
+        args: fallbackArgs,
+        outPath: fallbackOutPath,
+        reason: "empty-before-model",
+        mcpAttached: false
+      });
+      result = await runCodexForSotyChat(codexBin, fallbackArgs, childEnv, fallbackPrompt, fallbackState, jobDir, codexOnMessage, onTerminal, signal);
+      state.threadId = fallbackState.threadId;
+      state.lastMessage = fallbackState.lastMessage;
+      state.messages = fallbackState.messages;
+      state.terminal = fallbackState.terminal;
+      state.terminalKeys = fallbackState.terminalKeys;
+      state.learningMarkers = fallbackState.learningMarkers;
+      state.usage = fallbackState.usage;
+      outPath = fallbackOutPath;
     }
   } finally {
     if (activeTurn) {
@@ -5805,7 +5851,7 @@ async function postCodexGuardProgress(onMessage, text) {
   await Promise.resolve(onMessage(clean)).catch(() => undefined);
 }
 
-function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", taskFamily = "generic" }) {
+function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", taskFamily = "generic", attachMcp = true }) {
   const resumeThreadId = safeCodexThreadId(threadId);
   const args = [
     ...(codexNativeWebSearch ? ["--search"] : []),
@@ -5843,8 +5889,10 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   if (targetId && sourceDeviceId) {
     mcpArgs.push("--target", targetId, "--source-device", sourceDeviceId);
   }
-  args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
-  args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
+  if (attachMcp) {
+    args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
+    args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
+  }
   if (outPath) {
     args.push("-o", outPath);
   }
@@ -5853,6 +5901,19 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   }
   args.push("-");
   return args;
+}
+
+function shouldRetryCodexWithoutMcp(result, state, args, signal = null) {
+  if (signal?.aborted || !Array.isArray(args) || !args.some((item) => String(item).includes("mcp_servers.soty"))) {
+    return false;
+  }
+  if (!result || ![0, 124].includes(result.exitCode)) {
+    return false;
+  }
+  if (state?.usage?.actual || state?.messages?.length || state?.terminal?.length || cleanAgentChatReply(state?.lastMessage || "")) {
+    return false;
+  }
+  return true;
 }
 
 function pushCodexProviderArgs(args) {
@@ -6323,7 +6384,9 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     let done = false;
     let forcedExitCode = null;
     let sawStartupActivity = false;
+    let sawModelProgress = false;
     let startupTimer = null;
+    let noProgressTimer = null;
     const markStartupActivity = () => {
       if (sawStartupActivity) {
         return;
@@ -6331,12 +6394,39 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       sawStartupActivity = true;
       clearTimeout(startupTimer);
     };
+    const markModelProgress = () => {
+      if (sawModelProgress) {
+        return;
+      }
+      sawModelProgress = true;
+      clearTimeout(noProgressTimer);
+    };
+    const armNoProgressTimer = () => {
+      if (done || sawModelProgress || noProgressTimer || codexNoProgressTimeoutMs <= 0) {
+        return;
+      }
+      noProgressTimer = setTimeout(() => {
+        if (done || sawModelProgress) {
+          return;
+        }
+        forcedExitCode = 124;
+        stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! codex no-progress timeout\n`.slice(-24_000);
+        traceStep(state?.trace, "codex.no-progress-timeout", {
+          timeoutMs: codexNoProgressTimeoutMs,
+          stdoutChars: stdout.length,
+          stderrChars: stderr.length,
+          usage: state?.usage || emptyCodexUsage()
+        });
+        killProcessTree(child);
+      }, Math.max(5000, codexNoProgressTimeoutMs));
+    };
     const finish = (exitCode) => {
       if (done) {
         return;
       }
       done = true;
       clearTimeout(startupTimer);
+      clearTimeout(noProgressTimer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       void traceWriteText(state?.trace, "stdout-tail.txt", stdout, 24_000);
       void traceWriteText(state?.trace, "stderr-tail.txt", stderr, 24_000);
@@ -6362,6 +6452,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       forcedExitCode = 130;
       stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! cancelled\n`.slice(-24_000);
       traceStep(state?.trace, "codex.cancel-requested", {});
+      clearTimeout(noProgressTimer);
       killProcessTree(child);
     };
     if (signal?.aborted) {
@@ -6375,6 +6466,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       }
       done = true;
       signal?.removeEventListener?.("abort", cancelCodexRun);
+      clearTimeout(noProgressTimer);
       killProcessTree(child);
       traceStep(state?.trace, "codex.startup-timeout", {
         timeoutMs: codexStartupTimeoutMs,
@@ -6391,7 +6483,17 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       const lines = jsonBuffer.split(/\r?\n/u);
       jsonBuffer = lines.pop() || "";
       for (const line of lines) {
+        const beforeMessages = Array.isArray(state?.messages) ? state.messages.length : 0;
+        const beforeTerminal = Array.isArray(state?.terminal) ? state.terminal.length : 0;
+        const eventType = codexJsonLineType(line);
         handleCodexJsonLineForSoty(line, state, onMessage, onTerminal);
+        if (state?.usage?.actual || (state?.messages?.length || 0) > beforeMessages || (state?.terminal?.length || 0) > beforeTerminal) {
+          markModelProgress();
+        } else if (eventType === "turn.started") {
+          armNoProgressTimer();
+        } else if (eventType && !["thread.started", "turn.started"].includes(eventType)) {
+          markModelProgress();
+        }
       }
     });
     child.stderr.on("data", (chunk) => {
@@ -6407,6 +6509,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       }
       done = true;
       clearTimeout(startupTimer);
+      clearTimeout(noProgressTimer);
       signal?.removeEventListener?.("abort", cancelCodexRun);
       traceStep(state?.trace, "codex.spawn-error", {
         message: error instanceof Error ? error.message : String(error)
@@ -6464,6 +6567,15 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
         Promise.resolve(onMessage(message)).catch(() => undefined);
       }
     }
+  }
+}
+
+function codexJsonLineType(line) {
+  try {
+    const event = JSON.parse(String(line || "").trim());
+    return String(event?.type || "");
+  } catch {
+    return "";
   }
 }
 
