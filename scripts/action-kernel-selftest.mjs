@@ -80,6 +80,85 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.responseStyle.id, "agent-sysadmin");
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
     }],
+    ["gonka codex provider exposes local responses adapter", async () => {
+      const gonkaUpstream = createServer((request, response) => {
+        if (request.url === "/v1/chat/completions" && request.method === "POST") {
+          response.writeHead(200, {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-store"
+          });
+          response.write(`data: ${JSON.stringify({
+            choices: [{ delta: { content: "adapter ok" } }]
+          })}\n\n`);
+          response.end("data: [DONE]\n\n");
+          return;
+        }
+        response.writeHead(404, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: "not-found" }));
+      });
+      await listen(gonkaUpstream, "127.0.0.1", 0);
+      const gonkaPort = await freePort();
+      const gonkaDir = await mkdtemp(join(tmpdir(), "soty-gonka-selftest-"));
+      const child = spawn(process.execPath, [
+        agentPath,
+        "--port",
+        String(gonkaPort),
+        "--relay-id",
+        "selftest_relay_00000000000000000001",
+        "--update-url",
+        `${relayUrl}/agent/manifest.json`
+      ], {
+        cwd: gonkaDir,
+        env: {
+          ...process.env,
+          SOTY_AGENT_ACTION_JOBS_DIR: join(gonkaDir, "jobs"),
+          SOTY_AGENT_TRACE_DIR: join(gonkaDir, "traces"),
+          SOTY_AGENT_RELAY_URL: relayUrl,
+          SOTY_AGENT_MANAGED: "0",
+          SOTY_CODEX_DISABLED: "1",
+          SOTY_CODEX_PROVIDER: "gonka",
+          SOTY_GONKA_API_KEY: "selftest-key",
+          SOTY_GONKA_BASE_URL: `http://127.0.0.1:${gonkaUpstream.address().port}/v1`,
+          SOTY_CODEX_MODEL: "moonshotai/Kimi-K2.6",
+          SOTY_CODEX_RELAY_FALLBACK: "0"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      try {
+        const health = await waitForAgentHealth(gonkaPort);
+        assertEqual(health.body.codexProvider, "gonka");
+        assertEqual(health.body.codexModel, "moonshotai/Kimi-K2.6");
+        assertEqual(health.body.codexAuth, true);
+        assert(health.body.codexProviderAdapter.includes("gonka-chat-completions"));
+        assertEqual(health.body.openAiToolPlane.codexCliFeatureFlags.length, 0);
+        const models = await requestPort(gonkaPort, "GET", "/codex-gonka/v1/models");
+        assertEqual(models.status, 200);
+        assertEqual(models.body.models[0].id, "moonshotai/Kimi-K2.6");
+        const proxied = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
+          model: "moonshotai/Kimi-K2.6",
+          stream: true,
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }]
+          }]
+        }), {
+          "Authorization": "Bearer selftest-key",
+          "Content-Type": "application/json"
+        });
+        assertEqual(proxied.status, 200);
+        const proxiedText = String(proxied.body.text || JSON.stringify(proxied.body));
+        assert(proxiedText.includes("response.output_text.delta"), proxiedText.slice(0, 1200));
+        assert(proxiedText.includes("adapter ok"), proxiedText.slice(0, 1200));
+      } finally {
+        if (child.exitCode === null) {
+          child.kill();
+        }
+        await onceExit(child).catch(() => undefined);
+        await closeServer(gonkaUpstream);
+        await rm(gonkaDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }],
     ["managed agent allows trusted web origins for local health", async () => {
       const managedPort = await freePort();
       const managedDir = await mkdtemp(join(tmpdir(), "soty-managed-origin-selftest-"));

@@ -60,8 +60,27 @@ const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIME
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
-const codexNativeWebSearch = process.env.SOTY_CODEX_WEB_SEARCH !== "0";
-const codexNativeOpenAiToolFeatures = Object.freeze([
+const codexProvider = safeCodexProvider(process.env.SOTY_CODEX_PROVIDER || autoCodexProvider());
+const codexUsesGonka = codexProvider === "gonka";
+const codexGonkaUpstreamBaseUrl = safeHttpApiBaseUrl(
+  process.env.SOTY_GONKA_BASE_URL
+  || process.env.GONKA_BASE_URL
+  || process.env.GONKA_API_BASE_URL
+  || process.env.GONKA_BROKER_URL
+  || process.env.JOIN_GONKA_BASE_URL
+  || "https://gate.joingonka.ai/v1"
+);
+const codexGonkaModel = safeCodexModelId(
+  process.env.SOTY_CODEX_MODEL
+  || process.env.SOTY_GONKA_MODEL
+  || process.env.GONKA_MODEL
+  || "moonshotai/Kimi-K2.6"
+);
+const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
+const codexNativeWebSearch = codexUsesGonka
+  ? process.env.SOTY_CODEX_WEB_SEARCH === "1"
+  : process.env.SOTY_CODEX_WEB_SEARCH !== "0";
+const codexNativeOpenAiToolFeatureCatalog = Object.freeze([
   "image_generation",
   "tool_search",
   "computer_use",
@@ -70,6 +89,10 @@ const codexNativeOpenAiToolFeatures = Object.freeze([
   "shell_snapshot",
   "workspace_dependencies"
 ]);
+const codexNativeOpenAiToolsEnabled = process.env.SOTY_CODEX_NATIVE_OPENAI_TOOLS
+  ? process.env.SOTY_CODEX_NATIVE_OPENAI_TOOLS !== "0"
+  : !codexUsesGonka;
+const codexNativeOpenAiToolFeatures = Object.freeze(codexNativeOpenAiToolsEnabled ? codexNativeOpenAiToolFeatureCatalog : []);
 const openAiBuiltInTools = Object.freeze(["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"]);
 const sotyMcpPublicTools = Object.freeze(["computer"]);
 const sotyMcpLegacyTools = Object.freeze([
@@ -448,7 +471,7 @@ async function handleHttpRequest(request, response) {
   const headers = {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
     "Access-Control-Allow-Private-Network": "true",
     "Cache-Control": "no-store"
   };
@@ -458,6 +481,14 @@ async function handleHttpRequest(request, response) {
     return;
   }
   const url = new URL(request.url || "/", "http://127.0.0.1");
+  if (url.pathname === "/codex-gonka/v1/models" && request.method === "GET") {
+    handleGonkaModelsProxy(response, headers);
+    return;
+  }
+  if (url.pathname === "/codex-gonka/v1/responses" && request.method === "POST") {
+    await handleGonkaResponsesProxy(request, response, headers);
+    return;
+  }
   if (url.pathname === "/health") {
     sendJson(response, 200, headers, {
       ok: true,
@@ -565,6 +596,525 @@ async function handleHttpRequest(request, response) {
   }
   response.writeHead(204, headers);
   response.end();
+}
+
+function handleGonkaModelsProxy(response, headers) {
+  const model = codexGonkaModel || "moonshotai/Kimi-K2.6";
+  const item = {
+    id: model,
+    slug: model,
+    name: model,
+    display_name: model,
+    supported_reasoning_levels: [],
+    shell_type: "default",
+    visibility: "list"
+  };
+  sendJson(response, 200, headers, {
+    object: "list",
+    models: [item],
+    data: [{ ...item, object: "model", created: 0, owned_by: "gonka" }]
+  });
+}
+
+async function handleGonkaResponsesProxy(request, response, headers) {
+  if (!codexUsesGonka) {
+    sendJson(response, 404, headers, { error: { message: "Gonka provider is disabled" } });
+    return;
+  }
+  const apiKey = bearerTokenFromRequest(request) || codexGonkaApiKey();
+  if (!apiKey) {
+    sendJson(response, 401, headers, { error: { message: "Gonka API key is not configured" } });
+    return;
+  }
+  let payload;
+  try {
+    payload = await readJsonBody(request, 32_000_000);
+  } catch {
+    sendJson(response, 400, headers, { error: { message: "Invalid Responses payload" } });
+    return;
+  }
+  const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(gonkaChatCompletionPayload(payload))
+    });
+  } catch (error) {
+    sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
+    return;
+  }
+  if (!upstream.ok) {
+    const text = await upstream.text().catch(() => "");
+    sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, text || upstream.statusText || "Gonka request failed");
+    return;
+  }
+  const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("text/event-stream")) {
+    await streamGonkaChatCompletions(upstream, response, headers, payload?.model || codexGonkaModel);
+    return;
+  }
+  const body = await upstream.json().catch(() => null);
+  streamGonkaChatCompletionObject(body, response, headers, payload?.model || codexGonkaModel);
+}
+
+function bearerTokenFromRequest(request) {
+  const header = String(request.headers.authorization || "");
+  const match = header.match(/^Bearer\s+(.+)$/iu);
+  return match ? match[1].trim() : "";
+}
+
+function gonkaChatCompletionPayload(payload) {
+  const tools = responsesToolsToChatTools(payload?.tools);
+  const body = {
+    model: codexGonkaModel || safeCodexModelId(payload?.model) || "moonshotai/Kimi-K2.6",
+    messages: responsesInputToChatMessages(payload),
+    stream: true
+  };
+  if (tools.length > 0) {
+    body.tools = tools;
+    if (typeof payload?.tool_choice === "string" && ["auto", "none", "required"].includes(payload.tool_choice)) {
+      body.tool_choice = payload.tool_choice;
+    } else {
+      body.tool_choice = "auto";
+    }
+  }
+  return body;
+}
+
+function responsesToolsToChatTools(tools) {
+  return Array.isArray(tools)
+    ? tools
+      .filter((tool) => tool?.type === "function" && safeChatToolName(tool.name))
+      .map((tool) => ({
+        type: "function",
+        function: {
+          name: safeChatToolName(tool.name),
+          description: String(tool.description || "").slice(0, 4000),
+          parameters: tool.parameters && typeof tool.parameters === "object" ? tool.parameters : { type: "object", properties: {} },
+          ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {})
+        }
+      }))
+    : [];
+}
+
+function safeChatToolName(value) {
+  const name = String(value || "").trim();
+  return /^[A-Za-z0-9_-]{1,64}$/u.test(name) ? name : "";
+}
+
+function responsesInputToChatMessages(payload) {
+  const messages = [];
+  const instructions = String(payload?.instructions || "").trim();
+  if (instructions) {
+    messages.push({ role: "system", content: instructions });
+  }
+  messages.push({ role: "system", content: gonkaAdapterSystemInstruction() });
+  for (const item of Array.isArray(payload?.input) ? payload.input : []) {
+    if (item?.type === "message") {
+      const content = responseContentText(item.content);
+      if (content) {
+        messages.push({
+          role: chatRoleForResponseRole(item.role),
+          content
+        });
+      }
+      continue;
+    }
+    if (item?.type === "function_call") {
+      const name = safeChatToolName(item.name);
+      const callId = safeToolCallId(item.call_id);
+      if (name && callId) {
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: callId,
+            type: "function",
+            function: {
+              name,
+              arguments: String(item.arguments || "{}")
+            }
+          }]
+        });
+      }
+      continue;
+    }
+    if (item?.type === "function_call_output") {
+      const callId = safeToolCallId(item.call_id);
+      if (callId) {
+        messages.push({
+          role: "tool",
+          tool_call_id: callId,
+          content: String(item.output || "")
+        });
+      }
+    }
+  }
+  return messages.length > 0 ? messages : [{ role: "user", content: "" }];
+}
+
+function gonkaAdapterSystemInstruction() {
+  return [
+    "Soty Codex is using a local Responses-to-Chat adapter for Gonka AI.",
+    "Only ordinary function tools are available through this adapter; Responses namespace/MCP tools are not passed to Gonka.",
+    `If the user's computer must be controlled and no direct computer function tool is available, use shell_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
+    "Useful local routes: GET /operator/targets, GET /operator/source-status, GET /operator/toolkits, POST /operator/run, POST /operator/script, POST /operator/action, GET /operator/action/<jobId>.",
+    "Prefer POST /operator/action for durable computer work and POST /operator/script for precise diagnostics. Keep user-facing answers brief and verify important actions with returned proof."
+  ].join("\n");
+}
+
+function responseContentText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (typeof part === "string") {
+        return part;
+      }
+      if (part?.type === "input_text" || part?.type === "output_text" || part?.type === "text") {
+        return String(part.text || "");
+      }
+      if (typeof part?.text === "string") {
+        return part.text;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function chatRoleForResponseRole(role) {
+  const clean = String(role || "").toLowerCase();
+  if (clean === "assistant") {
+    return "assistant";
+  }
+  if (clean === "system" || clean === "developer") {
+    return "system";
+  }
+  return "user";
+}
+
+function safeToolCallId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_.:-]{1,160}$/u.test(text) ? text : "";
+}
+
+async function streamGonkaChatCompletions(upstream, response, headers, model) {
+  const writer = responsesSseWriter(response, headers, model);
+  const reader = upstream.body?.getReader?.();
+  if (!reader) {
+    writer.error(502, "Gonka stream is unavailable");
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const packets = buffer.split(/\r?\n\r?\n/u);
+      buffer = packets.pop() || "";
+      for (const packet of packets) {
+        const donePacket = processGonkaSsePacket(packet, writer);
+        if (donePacket) {
+          writer.complete();
+          return;
+        }
+      }
+    }
+    if (buffer.trim()) {
+      processGonkaSsePacket(buffer, writer);
+    }
+    writer.complete();
+  } catch (error) {
+    writer.error(502, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function processGonkaSsePacket(packet, writer) {
+  const dataLines = String(packet || "")
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart());
+  if (dataLines.length === 0) {
+    return false;
+  }
+  const data = dataLines.join("\n").trim();
+  if (data === "[DONE]") {
+    return true;
+  }
+  let event;
+  try {
+    event = JSON.parse(data);
+  } catch {
+    return false;
+  }
+  const choice = Array.isArray(event?.choices) ? event.choices[0] : null;
+  const delta = choice?.delta || choice?.message || {};
+  if (typeof delta.content === "string" && delta.content) {
+    writer.text(delta.content);
+  }
+  if (Array.isArray(delta.tool_calls)) {
+    for (const call of delta.tool_calls) {
+      writer.tool(call);
+    }
+  }
+  if (event?.usage) {
+    writer.usage(event.usage);
+  }
+  return false;
+}
+
+function streamGonkaChatCompletionObject(body, response, headers, model) {
+  const writer = responsesSseWriter(response, headers, model);
+  const choice = Array.isArray(body?.choices) ? body.choices[0] : null;
+  const message = choice?.message || {};
+  if (typeof message.content === "string" && message.content) {
+    writer.text(message.content);
+  }
+  if (Array.isArray(message.tool_calls)) {
+    for (const call of message.tool_calls) {
+      writer.tool(call);
+    }
+  }
+  if (body?.usage) {
+    writer.usage(body.usage);
+  }
+  writer.complete();
+}
+
+function responsesSseWriter(response, headers, model) {
+  const responseId = `resp_${randomUUID().replace(/-/gu, "")}`;
+  const now = Math.floor(Date.now() / 1000);
+  const output = [];
+  const toolCalls = new Map();
+  let outputIndex = 0;
+  let messageItem = null;
+  let messageText = "";
+  let usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  let completed = false;
+  response.writeHead(200, {
+    ...headers,
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  const baseResponse = (status = "in_progress") => ({
+    id: responseId,
+    object: "response",
+    created_at: now,
+    status,
+    model,
+    output: status === "completed" ? output : [],
+    usage
+  });
+  const send = (event, data) => {
+    response.write(`event: ${event}\n`);
+    response.write(`data: ${JSON.stringify({ type: event, ...data })}\n\n`);
+  };
+  send("response.created", { response: baseResponse("in_progress") });
+  send("response.in_progress", { response: baseResponse("in_progress") });
+  const ensureMessage = () => {
+    if (messageItem) {
+      return messageItem;
+    }
+    messageItem = {
+      id: `msg_${randomUUID().replace(/-/gu, "")}`,
+      type: "message",
+      status: "in_progress",
+      role: "assistant",
+      content: []
+    };
+    const index = outputIndex++;
+    messageItem.__outputIndex = index;
+    send("response.output_item.added", {
+      response_id: responseId,
+      output_index: index,
+      item: stripPrivateFields(messageItem)
+    });
+    send("response.content_part.added", {
+      response_id: responseId,
+      item_id: messageItem.id,
+      output_index: index,
+      content_index: 0,
+      part: { type: "output_text", text: "", annotations: [] }
+    });
+    return messageItem;
+  };
+  const finishMessage = () => {
+    if (!messageItem || messageItem.status === "completed") {
+      return;
+    }
+    const part = { type: "output_text", text: messageText, annotations: [] };
+    messageItem.status = "completed";
+    messageItem.content = [part];
+    send("response.output_text.done", {
+      response_id: responseId,
+      item_id: messageItem.id,
+      output_index: messageItem.__outputIndex,
+      content_index: 0,
+      text: messageText
+    });
+    send("response.content_part.done", {
+      response_id: responseId,
+      item_id: messageItem.id,
+      output_index: messageItem.__outputIndex,
+      content_index: 0,
+      part
+    });
+    const done = stripPrivateFields(messageItem);
+    send("response.output_item.done", {
+      response_id: responseId,
+      output_index: messageItem.__outputIndex,
+      item: done
+    });
+    output.push(done);
+  };
+  return {
+    text(delta) {
+      if (!delta || completed) {
+        return;
+      }
+      const item = ensureMessage();
+      messageText += String(delta);
+      send("response.output_text.delta", {
+        response_id: responseId,
+        item_id: item.id,
+        output_index: item.__outputIndex,
+        content_index: 0,
+        delta: String(delta)
+      });
+    },
+    tool(call) {
+      if (!call || completed) {
+        return;
+      }
+      const index = Number.isInteger(call.index) ? call.index : toolCalls.size;
+      let record = toolCalls.get(index);
+      const fn = call.function || {};
+      if (!record) {
+        const callId = safeToolCallId(call.id) || `call_${randomUUID().replace(/-/gu, "")}`;
+        const name = safeChatToolName(fn.name) || "shell_command";
+        record = {
+          id: `fc_${randomUUID().replace(/-/gu, "")}`,
+          type: "function_call",
+          status: "in_progress",
+          call_id: callId,
+          name,
+          arguments: "",
+          __outputIndex: outputIndex++
+        };
+        toolCalls.set(index, record);
+        send("response.output_item.added", {
+          response_id: responseId,
+          output_index: record.__outputIndex,
+          item: stripPrivateFields({ ...record, arguments: "" })
+        });
+      }
+      if (safeChatToolName(fn.name)) {
+        record.name = safeChatToolName(fn.name);
+      }
+      if (safeToolCallId(call.id)) {
+        record.call_id = safeToolCallId(call.id);
+      }
+      if (typeof fn.arguments === "string" && fn.arguments) {
+        record.arguments += fn.arguments;
+        send("response.function_call_arguments.delta", {
+          response_id: responseId,
+          item_id: record.id,
+          output_index: record.__outputIndex,
+          delta: fn.arguments
+        });
+      }
+    },
+    usage(nextUsage) {
+      usage = {
+        input_tokens: Number.isFinite(nextUsage?.prompt_tokens) ? nextUsage.prompt_tokens : usage.input_tokens,
+        output_tokens: Number.isFinite(nextUsage?.completion_tokens) ? nextUsage.completion_tokens : usage.output_tokens,
+        total_tokens: Number.isFinite(nextUsage?.total_tokens) ? nextUsage.total_tokens : usage.total_tokens
+      };
+    },
+    complete() {
+      if (completed) {
+        return;
+      }
+      finishMessage();
+      for (const record of toolCalls.values()) {
+        if (record.status === "completed") {
+          continue;
+        }
+        record.status = "completed";
+        send("response.function_call_arguments.done", {
+          response_id: responseId,
+          item_id: record.id,
+          output_index: record.__outputIndex,
+          arguments: record.arguments
+        });
+        const done = stripPrivateFields(record);
+        send("response.output_item.done", {
+          response_id: responseId,
+          output_index: record.__outputIndex,
+          item: done
+        });
+        output.push(done);
+      }
+      send("response.completed", { response: baseResponse("completed") });
+      response.end("data: [DONE]\n\n");
+      completed = true;
+    },
+    error(status, message) {
+      if (completed) {
+        return;
+      }
+      send("response.failed", {
+        response: {
+          ...baseResponse("failed"),
+          error: {
+            code: String(status || 502),
+            message: cleanAdapterErrorMessage(message)
+          }
+        }
+      });
+      response.end("data: [DONE]\n\n");
+      completed = true;
+    }
+  };
+}
+
+function stripPrivateFields(item) {
+  const clean = { ...item };
+  for (const key of Object.keys(clean)) {
+    if (key.startsWith("__")) {
+      delete clean[key];
+    }
+  }
+  return clean;
+}
+
+function sendGonkaAdapterErrorSse(response, headers, status, message) {
+  const writer = responsesSseWriter(response, headers, codexGonkaModel || "moonshotai/Kimi-K2.6");
+  writer.error(status, message);
+}
+
+function cleanAdapterErrorMessage(message) {
+  return String(message || "Gonka adapter request failed")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gu, "Bearer <redacted>")
+    .replace(/\b(?:SOTY_GONKA_API_KEY|GONKA_API_KEY|GONKA_BROKER_API_KEY|JOIN_GONKA_API_KEY|ANTHROPIC_AUTH_TOKEN)\s*[:=]\s*['"]?[^'"\s]+/gu, "$1=<redacted>")
+    .slice(0, 2000);
 }
 
 function handleMessage(ws, raw) {
@@ -3983,11 +4533,14 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     const codexHome = await preparePersistentStockCodexHome();
     const childEnv = withAgentToolPath(cleanChildProcessEnv({
       ...codexNetworkProxyEnv(),
+      ...codexProviderEnv(),
       CODEX_HOME: codexHome
     }));
     traceStep(trace, "codex.local.ready", {
       codexBinary: basename(codexBin),
       codexHome,
+      provider: codexProviderName(),
+      providerAdapter: codexUsesGonka ? "responses-to-chat" : "",
       proxy: Boolean(codexProxyUrl)
     });
     const local = await runCodexSotySessionTurn({
@@ -5018,7 +5571,8 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   for (const feature of codexNativeOpenAiToolFeatures) {
     args.push("--enable", feature);
   }
-  const reasoningEffort = codexReasoningEffortForTask(taskFamily, target);
+  pushCodexProviderArgs(args);
+  const reasoningEffort = codexUsesGonka ? "" : codexReasoningEffortForTask(taskFamily, target);
   if (reasoningEffort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
   }
@@ -5066,6 +5620,19 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   return args;
 }
 
+function pushCodexProviderArgs(args) {
+  if (!codexUsesGonka) {
+    return;
+  }
+  args.push("-m", codexGonkaModel);
+  args.push("-c", "model_provider=\"soty_gonka\"");
+  args.push("-c", "model_providers.soty_gonka.name=\"Gonka AI\"");
+  args.push("-c", `model_providers.soty_gonka.base_url=${JSON.stringify(`http://127.0.0.1:${port}/codex-gonka/v1`)}`);
+  args.push("-c", `model_providers.soty_gonka.env_key=${JSON.stringify(codexGonkaEnvKey)}`);
+  args.push("-c", "model_providers.soty_gonka.wire_api=\"responses\"");
+  args.push("-c", "model_providers.soty_gonka.supports_websockets=false");
+}
+
 function codexReasoningEffortForTask(taskFamily, target = null) {
   const family = cleanActionToken(taskFamily, "generic");
   return codexReasoningAtLeast(codexDefaultReasoningEffort || codexReasoningPolicyForTask(family, target));
@@ -5099,6 +5666,55 @@ function codexReasoningAtLeast(value) {
   const rank = { high: 1, xhigh: 2 };
   const floor = safeCodexReasoningEffort(codexMinimumReasoningEffort) || "high";
   return rank[effort] < rank[floor] ? floor : effort;
+}
+
+function autoCodexProvider() {
+  return firstNonEmptyEnv([
+    "SOTY_GONKA_API_KEY",
+    "GONKA_API_KEY",
+    "GONKA_BROKER_API_KEY",
+    "JOIN_GONKA_API_KEY"
+  ])
+    ? "gonka"
+    : "";
+}
+
+function safeCodexProvider(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  return ["gonka"].includes(provider) ? provider : "";
+}
+
+function safeCodexModelId(value) {
+  return String(value || "").trim().replace(/[\r\n\t]+/gu, "").slice(0, 160);
+}
+
+function firstNonEmptyEnv(names) {
+  for (const name of names) {
+    const value = process.env[name];
+    if (String(value || "").trim()) {
+      return String(value || "").trim();
+    }
+  }
+  return "";
+}
+
+function codexGonkaApiKey() {
+  const names = [
+    "SOTY_GONKA_API_KEY",
+    "GONKA_API_KEY",
+    "GONKA_BROKER_API_KEY",
+    "JOIN_GONKA_API_KEY",
+    ...(codexUsesGonka ? ["ANTHROPIC_AUTH_TOKEN"] : [])
+  ];
+  return firstNonEmptyEnv(names);
+}
+
+function codexProviderAuthConfigured() {
+  return codexUsesGonka ? Boolean(codexGonkaApiKey() && codexGonkaUpstreamBaseUrl && codexGonkaModel) : false;
+}
+
+function codexProviderName() {
+  return codexUsesGonka ? "gonka" : "openai";
 }
 
 function safeCodexReasoningEffort(value) {
@@ -7283,6 +7899,14 @@ function codexNetworkProxyEnv() {
   };
 }
 
+function codexProviderEnv() {
+  if (!codexUsesGonka) {
+    return {};
+  }
+  const apiKey = codexGonkaApiKey();
+  return apiKey ? { [codexGonkaEnvKey]: apiKey } : {};
+}
+
 function safeProxyUrl(value) {
   const text = String(value || "").trim();
   if (!text) {
@@ -7351,6 +7975,9 @@ function hasCodexBinary() {
 }
 
 function hasCodexAuth() {
+  if (codexProviderAuthConfigured()) {
+    return true;
+  }
   if (process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY) {
     return true;
   }
@@ -12516,6 +13143,9 @@ function runtimeHealth() {
     codex: hasCodexBinary(),
     codexBinary: Boolean(findCodexBinary()),
     codexAuth: hasCodexAuth(),
+    codexProvider: codexProviderName(),
+    codexModel: codexUsesGonka ? codexGonkaModel : "",
+    codexProviderAdapter: codexUsesGonka ? "gonka-chat-completions-via-local-responses-adapter" : "",
     codexMode: canRunCodexBrain() ? (codexFullLocalTools ? "server-stock-cli-full-local-tools" : "server-stock-cli-bridge") : "server-relay-only",
     codexSessionMode,
     codexRuntimeContext: "clean-codex+memory-plane+computer-use-plane",
@@ -12805,6 +13435,20 @@ function safeHttpBaseUrl(value) {
       return "";
     }
     return url.origin;
+  } catch {
+    return "";
+  }
+}
+
+function safeHttpApiBaseUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      return "";
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/u, "");
   } catch {
     return "";
   }
