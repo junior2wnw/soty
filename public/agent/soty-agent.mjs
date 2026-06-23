@@ -5599,10 +5599,18 @@ function recoverFinalTextFromCodexEvent(event) {
 
 function recoverFailureTextFromCodexEvent(event) {
   const payload = codexCommandOperatorPayload(event);
-  if (!payload || payload.ok !== false) {
-    return "";
+  if (payload?.ok === false) {
+    return formatRecoveredOperatorFailureText(payload.text, payload.exitCode);
   }
-  return formatRecoveredOperatorFailureText(payload.text, payload.exitCode);
+  const item = event?.item && typeof event.item === "object" ? event.item : null;
+  if (event?.type === "item.completed" && item?.type === "command_execution" && item.status === "failed") {
+    const exitCode = Number.isSafeInteger(item.exit_code) ? item.exit_code : 1;
+    const output = String(item.aggregated_output || "").trim();
+    if (output) {
+      return formatRecoveredOperatorFailureText(output, exitCode);
+    }
+  }
+  return "";
 }
 
 function codexCommandOperatorPayload(event) {
@@ -5675,7 +5683,7 @@ function formatRecoveredOperatorFailureText(value, exitCode = 1) {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .find((line) => !/^(at |строка:|char:|\+ |categoryinfo|fullyqualifiederrorid)/iu.test(line));
+    .find((line) => !/^(at |file:\/\/|строка:|char:|\+ |categoryinfo|fullyqualifiederrorid)/iu.test(line));
   if (/parsererror|missingendparenthesis|expectedexpression|ошибк\w*\s+синтакс|ожидалось выражение|отсутствует/u.test(text)) {
     return "Не получилось выполнить команду: ошибка в сформированном PowerShell-скрипте.";
   }
@@ -6366,7 +6374,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- Gonka local-api route: MCP/Responses namespace tools are not available in this provider adapter. Do not search for a `computer` tool and do not read SOTY_ROUTES.md for ordinary file/system/process tasks.",
     "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
-    "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `desktop-write`, `desktop-read`, `desktop-delete`, `desktop-cycle <file> <text>`, `audio-get`, `audio-set <0-100>`, `time-status`, or `open-url <url>` before hand-written fetch commands.",
+    "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `desktop-write`, `desktop-read`, `desktop-delete`, `desktop-cycle <file> <text>`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
     "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
     "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
@@ -8061,6 +8069,8 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  await scriptPowerShell(`${desktopPathScript(name)}\\nSet-Content -LiteralPath $path -Value ${ps(text)} -Encoding UTF8\\n$content = (Get-Content -LiteralPath $path -Raw).Trim()\\nif ($content -ne ${ps(text)}) { throw 'verify-failed' }\\nRemove-Item -LiteralPath $path -Force\\nif (Test-Path -LiteralPath $path) { throw 'delete-failed' }\\n'desktop-file-cycle ok ' + $path`, { name: 'desktop-cycle' });",
     "} else if (op === 'time-status') {",
     "  await scriptPowerShell(`$now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss K'\\n$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\\nWrite-Output ('time=' + $now + '; admin=' + $isAdmin.ToString().ToLowerInvariant())`, { name: 'time-status' });",
+    "} else if (op === 'system-resources') {",
+    "  await scriptPowerShell(`$ErrorActionPreference = 'Stop'\\ntry { $cpu = [math]::Round((Get-Counter '\\\\Processor(_Total)\\\\% Processor Time').CounterSamples.CookedValue, 1) } catch { $cpu = 'n/a' }\\n$os = Get-CimInstance Win32_OperatingSystem\\n$ramUsedGb = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 2)\\n$ramTotalGb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)\\n$ramPct = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)\\n$disk = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"\\n$diskFreeGb = [math]::Round($disk.FreeSpace / 1GB, 2)\\n$diskTotalGb = [math]::Round($disk.Size / 1GB, 2)\\n$diskPct = [math]::Round(($disk.FreeSpace / $disk.Size) * 100, 1)\\nWrite-Output (\\\"CPU: $cpu%; RAM: $ramUsedGb/$ramTotalGb GB ($ramPct%); Disk C: $diskFreeGb/$diskTotalGb GB free ($diskPct%)\\\")`, { name: 'system-resources' });",
     "} else if (op === 'open-url') {",
     "  const url = args.join(' ').trim();",
     "  if (!/^https?:\\/\\//i.test(url)) { console.error('usage: open-url <http-url>'); process.exit(2); }",
@@ -8076,7 +8086,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  if (!script.trim()) { console.error('usage: script-powershell <script-or-stdin>'); process.exit(2); }",
     "  await scriptPowerShell(script, { name: 'script-powershell' });",
     "} else {",
-    "  console.error('usage: node SOTY_LOCAL_API.mjs desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | open-url <url> | script-powershell [script-or-stdin]');",
+    "  console.error('usage: node SOTY_LOCAL_API.mjs desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | system-resources | open-url <url> | script-powershell [script-or-stdin]');",
     "  process.exit(2);",
     "}"
   ].join("\n");
@@ -8206,7 +8216,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: use its small commands first (`desktop-cycle` for create+verify+delete, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
+    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: use its small commands first (`desktop-cycle` for create+verify+delete, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
     "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [

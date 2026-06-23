@@ -1153,6 +1153,7 @@ async function runScenarios({ relayUrl } = {}) {
         "desktop-cycle",
         "audio-get",
         "time-status",
+        "system-resources",
         "open-url",
         "script-powershell <script-or-stdin>",
         "recoverFailureTextFromCodexEvent"
