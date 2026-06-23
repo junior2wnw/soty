@@ -227,7 +227,7 @@ async function runScenarios({ relayUrl } = {}) {
                 "",
                 "Soty runtime packet:",
                 "- session_mode: soty-clean-codex-memory-plane-v1",
-                "- task_family: plain-dialog",
+                "- task_family: source-scoped-dialog",
                 "- source_device: selftest (dev1)",
                 "- target: selftest-source (agent-source:dev1)",
                 "- target_source_device_id: dev1",
@@ -248,7 +248,7 @@ async function runScenarios({ relayUrl } = {}) {
         });
         assertEqual(universalDialogWithTarget.status, 200);
         assertEqual(gonkaRequests[1].tools.length, 1);
-        assert(gonkaRequests[1].messages.some((message) => String(message.content).includes("- task_family: plain-dialog")));
+        assert(gonkaRequests[1].messages.some((message) => String(message.content).includes("- task_family: source-scoped-dialog")));
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           input: "hello"

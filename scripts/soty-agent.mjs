@@ -5004,7 +5004,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
-  const activeTargetTurnKey = taskFamily === "plain-dialog" ? "" : codexActiveTargetTurnKey(safeSource, target);
+  const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
   const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
   if (activeTargetTurn && activeTargetTurn.done !== true) {
     if (isInterruptibleActiveCodexGuard(activeTargetTurn)) {
@@ -5821,8 +5821,6 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   const safeSource = sanitizeAgentSource(source);
   const sourceDeviceId = bridgeSourceDeviceId(target, safeSource);
   const sourceRelayId = safeRelayId(safeSource.sourceRelayId) || agentRelayId;
-  const family = cleanActionToken(taskFamily, "generic");
-  const attachSotyMcp = family !== "plain-dialog";
   const mcpArgs = [
     scriptPath,
     "mcp",
@@ -5838,15 +5836,13 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   if (targetId && sourceDeviceId) {
     mcpArgs.push("--target", targetId, "--source-device", sourceDeviceId);
   }
-  if (attachSotyMcp) {
-    args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
-    args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-    const approvedMcpTools = process.env.SOTY_MCP_EXPOSE_LEGACY_TOOLS === "1"
-      ? [...sotyMcpPublicTools, ...sotyMcpLegacyTools]
-      : sotyMcpPublicTools;
-    for (const tool of approvedMcpTools) {
-      args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
-    }
+  args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
+  args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
+  const approvedMcpTools = process.env.SOTY_MCP_EXPOSE_LEGACY_TOOLS === "1"
+    ? [...sotyMcpPublicTools, ...sotyMcpLegacyTools]
+    : sotyMcpPublicTools;
+  for (const tool of approvedMcpTools) {
+    args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
   }
   if (outPath) {
     args.push("-o", outPath);
@@ -6185,9 +6181,9 @@ function classifyTaskFamily(text, target = null) {
     return family;
   }
   if (isMemoryRecallOrFollowupPrompt(text)) {
-    return target?.id ? "source-scoped-dialog" : "plain-dialog";
+    return "source-scoped-dialog";
   }
-  return target?.id ? "source-scoped-dialog" : "plain-dialog";
+  return "source-scoped-dialog";
 }
 
 function usableCodexSessionRecord(value) {
@@ -7919,7 +7915,7 @@ function sanitizeAgentSource(value) {
     deviceId: clean(value.deviceId),
     deviceNick: clean(value.deviceNick),
     appOrigin: clean(value.appOrigin),
-    localAgent: sanitizeSourceLocalAgent(value.localAgent),
+    localAgent: sanitizeSourceLocalAgent(value),
     sourceRelayId: safeRelayId(value.sourceRelayId),
     preferredTargetId: clean(value.preferredTargetId) || selectedTarget.id,
     preferredTargetLabel: clean(value.preferredTargetLabel) || selectedTarget.label,
@@ -7932,21 +7928,32 @@ function sanitizeSourceLocalAgent(value) {
   if (!value || typeof value !== "object") {
     return {};
   }
+  const nested = value.localAgent && typeof value.localAgent === "object" ? value.localAgent : null;
+  const suffix = (name) => `localAgent${name[0].toUpperCase()}${name.slice(1)}`;
+  const flatNames = ["Ok", "Version", "Scope", "Platform", "ExecutionPlane", "InteractiveTaskBridge", "Companion", "SourceWorker", "AutoUpdate", "System", "Relay", "Codex"];
+  const directNames = ["ok", "version", "scope", "platform", "executionPlane", "interactiveTaskBridge", "companion", "sourceWorker", "autoUpdate", "system", "relay", "codex"];
+  const hasDirect = directNames.some((name) => value[name] !== undefined);
+  const hasFlat = flatNames.some((name) => value[`localAgent${name}`] !== undefined);
+  if (!nested && !hasDirect && !hasFlat) {
+    return {};
+  }
+  const source = nested || value;
   const clean = (field, max = 80) => String(field || "").trim().slice(0, max);
   const readBoolean = (field) => field === true || field === "true" || field === "1";
+  const read = (name) => source[name] ?? value[suffix(name)];
   return {
-    ok: readBoolean(value.ok),
-    version: clean(value.version, 40),
-    scope: clean(value.scope, 40),
-    platform: clean(value.platform, 40),
-    executionPlane: clean(value.executionPlane, 80),
-    interactiveTaskBridge: readBoolean(value.interactiveTaskBridge),
-    companion: readBoolean(value.companion),
-    sourceWorker: readBoolean(value.sourceWorker),
-    autoUpdate: readBoolean(value.autoUpdate),
-    system: readBoolean(value.system),
-    relay: readBoolean(value.relay),
-    codex: readBoolean(value.codex)
+    ok: readBoolean(read("ok")),
+    version: clean(read("version"), 40),
+    scope: clean(read("scope"), 40),
+    platform: clean(read("platform"), 40),
+    executionPlane: clean(read("executionPlane"), 80),
+    interactiveTaskBridge: readBoolean(read("interactiveTaskBridge")),
+    companion: readBoolean(read("companion")),
+    sourceWorker: readBoolean(read("sourceWorker")),
+    autoUpdate: readBoolean(read("autoUpdate")),
+    system: readBoolean(read("system")),
+    relay: readBoolean(read("relay")),
+    codex: readBoolean(read("codex"))
   };
 }
 
