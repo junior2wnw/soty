@@ -59,6 +59,7 @@ const audioWarmupTimeoutMs = 45_000;
 const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIMEOUT_MS, 25_000, 120_000);
 const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 7000, 120_000);
 const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
+const codexMcpTaskNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_MCP_TASK_NO_PROGRESS_TIMEOUT_MS, 60_000, 180_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -950,8 +951,9 @@ function gonkaAdapterSystemInstruction() {
   return [
     "Soty Codex is using a local Responses-to-Chat adapter for Gonka AI.",
     "Only ordinary function tools are available through this adapter; Responses namespace/MCP tools are not passed to Gonka.",
-    `If the user's computer must be controlled and no direct computer function tool is available, use shell_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
+    `If the user's computer must be controlled and no direct computer function tool is available, use shell_command/exec_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
     "Useful local routes: GET /operator/targets, GET /operator/source-status, GET /operator/toolkits, POST /operator/run, POST /operator/script, POST /operator/action, GET /operator/action/<jobId>.",
+    "Use Node.js fetch from shell_command/exec_command for these local HTTP calls; do not rely on curl or wget being installed in the container.",
     "Prefer POST /operator/action for durable computer work and POST /operator/script for precise diagnostics. Keep user-facing answers brief and verify important actions with returned proof."
   ].join("\n");
 }
@@ -5123,8 +5125,14 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     source: safeSource,
     outPath,
     threadId: sessionRecord?.threadId || "",
-    taskFamily
+    taskFamily,
+    attachMcp: !codexUsesGonka
   });
+  const mcpAttached = args.some((item) => String(item).includes("mcp_servers.soty"));
+  const turnNoProgressTimeoutMs = codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached);
+  const codexRouteName = target?.id
+    ? (mcpAttached ? "codex.exec.resume+soty-mcp" : "codex.exec.resume+soty-local-api")
+    : "codex.exec.resume";
   if (trace?.doc) {
     trace.doc.codex.spawned = true;
     trace.doc.codex.args = traceValue(args, 8000, 3);
@@ -5134,7 +5142,8 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     args,
     outPath,
     reasoningEffort: codexReasoningEffortForTask(taskFamily, target),
-    mcpAttached: args.some((item) => String(item).includes("mcp_servers.soty"))
+    mcpAttached,
+    noProgressTimeoutMs: turnNoProgressTimeoutMs
   });
   const state = {
     threadId: "",
@@ -5148,7 +5157,9 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   };
   let result;
   try {
-    result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal);
+    result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal, {
+      noProgressTimeoutMs: turnNoProgressTimeoutMs
+    });
     if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
       const freshState = {
         threadId: "",
@@ -5166,11 +5177,14 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         source: safeSource,
         outPath,
         threadId: "",
-        taskFamily
+        taskFamily,
+        attachMcp: mcpAttached
       });
       delete persistedCodexSessions[sessionKey];
       await saveCodexSessions();
-      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal);
+      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal, {
+        noProgressTimeoutMs: turnNoProgressTimeoutMs
+      });
       state.threadId = freshState.threadId;
       state.lastMessage = freshState.lastMessage;
       state.messages = freshState.messages;
@@ -5179,7 +5193,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.learningMarkers = freshState.learningMarkers;
       state.usage = freshState.usage;
     }
-    if (shouldRetryCodexWithoutMcp(result, state, args, signal)) {
+    if (shouldRetryCodexWithoutMcp(result, state, args, signal, { taskFamily, target })) {
       const fallbackState = {
         threadId: "",
         lastMessage: "",
@@ -5200,7 +5214,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         taskFamily,
         attachMcp: false
       });
-      const fallbackPrompt = `${prompt}\n\nRuntime recovery note: the first Codex run exited before reaching the model while Soty computer-control MCP was attached. In this retry, do not claim that any selected-computer action was completed unless a tool result is present. If the user requested computer control, report a brief retry/blocker; if the user asked a plain dialog question, answer normally.`;
+      const fallbackPrompt = `${prompt}\n\nRuntime recovery note: the first Codex run exited before reaching the model while Soty computer-control MCP was attached. In this retry, use ordinary function tools. If the user requested selected-computer control, use shell_command/exec_command with Node.js fetch to call the local Soty HTTP API; do not rely on curl or wget. Do not claim that any selected-computer action was completed unless a tool/API result is present. If the user asked a plain dialog question, answer normally.`;
       traceStep(trace, "codex.retry-without-mcp", {
         reason: "empty-before-model",
         firstExitCode: result.exitCode,
@@ -5245,14 +5259,14 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       kind: "codex-turn",
       family: taskFamily,
       result: "cancelled",
-      route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+      route: codexRouteName,
       taskSig: taskSignature(text),
       proof: "exitCode=130; user-cancelled",
       exitCode: 130,
       durationMs: Date.now() - startedAt,
       ...learningContext
     });
-    traceRouting(trace, { finalRoute: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume" });
+    traceRouting(trace, { finalRoute: codexRouteName });
     traceStep(trace, "codex.cancelled", {
       messages: messages.length,
       terminal: state.terminal.length
@@ -5288,7 +5302,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         kind: "codex-turn",
         family: taskFamily === "generic" ? "no-final-assistant-message" : taskFamily,
         result: "failed",
-        route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+        route: codexRouteName,
         taskSig: taskSignature(text),
         proof: `exitCode=0; messages=${messages.length}; stdout=${result.stdout ? "nonempty" : "empty"}; stderr=${result.stderr ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
         exitCode: 125,
@@ -5296,7 +5310,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         ...learningContext
       });
       recordAgentLearningMarkers(state.learningMarkers, {
-        route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+        route: codexRouteName,
         taskSig: taskSignature(text),
         durationMs: Date.now() - startedAt,
         ...learningContext
@@ -5360,7 +5374,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       kind: "codex-turn",
       family: taskFamily,
       result: codexTurnResult,
-      route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+      route: codexRouteName,
       taskSig: taskSignature(text),
       proof: `exitCode=${codexTurnExitCode}; messages=${messages.length}; final=nonempty; postCodexGuard=${postCodexGuardPayload ? cleanProofToken(postCodexGuardPayload.status || postCodexGuardPayload.blocker || postCodexGuardPayload.terminalReason || "set") : "none"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
       exitCode: codexTurnExitCode,
@@ -5368,7 +5382,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       ...learningContext
     });
     recordAgentLearningMarkers(state.learningMarkers, {
-      route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+      route: codexRouteName,
       taskSig: taskSignature(text),
       durationMs: Date.now() - startedAt,
       ...learningContext
@@ -5376,7 +5390,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     if (trace?.doc) {
       trace.doc.codex.usage = state.usage;
     }
-    traceRouting(trace, { finalRoute: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume" });
+    traceRouting(trace, { finalRoute: codexRouteName });
     traceStep(trace, "codex.ok", {
       messages: messages.length,
       terminal: state.terminal.length,
@@ -5394,7 +5408,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   if (trace?.doc) {
     trace.doc.codex.usage = state.usage;
   }
-  traceRouting(trace, { finalRoute: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume" });
+  traceRouting(trace, { finalRoute: codexRouteName });
   traceStep(trace, "codex.nonzero", {
     exitCode: result.exitCode || 1,
     stdout: Boolean(result.stdout),
@@ -5406,7 +5420,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     kind: "codex-turn",
     family: taskFamily === "generic" ? "codex-cli-nonzero" : taskFamily,
     result: result.exitCode === 124 ? "timeout" : "failed",
-    route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+    route: codexRouteName,
     taskSig: taskSignature(text),
     proof: `exitCode=${result.exitCode || 1}; stderr=${result.stderr ? "nonempty" : "empty"}; stdout=${result.stdout ? "nonempty" : "empty"}; final=${finalText ? "nonempty" : "empty"}; ${codexUsageProof(state.usage, prompt, finalText)}`,
     exitCode: result.exitCode || 1,
@@ -5414,7 +5428,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     ...learningContext
   });
   recordAgentLearningMarkers(state.learningMarkers, {
-    route: target?.id ? "codex.exec.resume+soty-mcp" : "codex.exec.resume",
+    route: codexRouteName,
     taskSig: taskSignature(text),
     durationMs: Date.now() - startedAt,
     ...learningContext
@@ -5899,8 +5913,11 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   return args;
 }
 
-function shouldRetryCodexWithoutMcp(result, state, args, signal = null) {
+function shouldRetryCodexWithoutMcp(result, state, args, signal = null, options = {}) {
   if (signal?.aborted || !Array.isArray(args) || !args.some((item) => String(item).includes("mcp_servers.soty"))) {
+    return false;
+  }
+  if (codexTaskNeedsSotyMcpTools(options?.taskFamily, options?.target)) {
     return false;
   }
   if (!result || ![0, 124].includes(result.exitCode)) {
@@ -5910,6 +5927,41 @@ function shouldRetryCodexWithoutMcp(result, state, args, signal = null) {
     return false;
   }
   return true;
+}
+
+function codexNoProgressTimeoutForTurn(taskFamily, target = null, mcpAttached = true) {
+  if (mcpAttached && codexTaskNeedsSotyMcpTools(taskFamily, target)) {
+    return codexMcpTaskNoProgressTimeoutMs;
+  }
+  return mcpAttached ? codexNoProgressTimeoutMs : codexFallbackNoProgressTimeoutMs;
+}
+
+function codexTaskNeedsSotyMcpTools(taskFamily, target = null) {
+  if (!target?.id) {
+    return false;
+  }
+  const family = cleanActionToken(taskFamily, "");
+  return [
+    "audio-mute",
+    "audio-volume",
+    "browser",
+    "console",
+    "driver-check",
+    "durable-action",
+    "file-work",
+    "identity-probe",
+    "lifecycle",
+    "package-install",
+    "power-check",
+    "program-control",
+    "script-task",
+    "service-check",
+    "software",
+    "software-check",
+    "system-check",
+    "web-lookup",
+    "windows-reinstall"
+  ].includes(family);
 }
 
 function pushCodexProviderArgs(args) {
@@ -6422,6 +6474,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     } else {
       signal?.addEventListener?.("abort", cancelCodexRun, { once: true });
     }
+    armNoProgressTimer();
     startupTimer = setTimeout(() => {
       if (done || sawStartupActivity) {
         return;
@@ -7103,13 +7156,14 @@ function bridgeSourceDeviceId(target, source) {
 }
 
 function cleanAgentChatReply(value) {
-  return String(value || "")
+  const text = String(value || "")
     .replace(/\r\n?/gu, "\n")
     .split("\n")
     .filter((line) => !isInternalAgentReceiptLine(line))
     .join("\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
+  return isLikelyInternalCodexReasoningReply(text) ? "" : text;
 }
 
 function cleanTerminalTranscript(value) {
@@ -7137,6 +7191,18 @@ function internalAgentReceiptText(line) {
     .replace(/^`{1,3}\s*/u, "")
     .replace(/\s*`{1,3}$/u, "")
     .trim();
+}
+
+function isLikelyInternalCodexReasoningReply(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return false;
+  }
+  const lower = text.toLowerCase();
+  const startsLikeHiddenReasoning = /^(?:пользователь\s+(?:просит|хочет|попросил)|the\s+user\s+(?:asks|wants|requested)|нужно\s+|надо\s+|давайте\s+|подождите\b|лучше\s+|сначала\s+нужно\b)/iu.test(lower);
+  const mentionsInternalTooling = /(?:\btools?\b|tool-call|function tools?|exec_command|shell_command|computer capability|доступн\w*\s+tools?|инструкци|payload|route profiles?|operator\/(?:toolkits|action|script|run)|http:\/\/127\.0\.0\.1)/iu.test(lower);
+  const narratesAttempt = /(?:давайте\s+(?:попробуем|посмотрим)|смотрим\s+инструкции|какой\s+payload|я\s+не\s+знаю\s+точн\w*\s+формат|но\s+в\s+списке\s+доступных|в\s+компактном\s+контексте)/iu.test(lower);
+  return startsLikeHiddenReasoning && (mentionsInternalTooling || narratesAttempt || text.length > 900);
 }
 
 async function askCodexRelayFallback(text, context, source = {}, onMessage = null, onTerminal = null, options = {}) {
