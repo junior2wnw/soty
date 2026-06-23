@@ -678,7 +678,7 @@ function bearerTokenFromRequest(request) {
 
 function gonkaChatCompletionPayload(payload) {
   const messages = responsesInputToChatMessages(payload);
-  const tools = gonkaPromptDisablesTools(messages) ? [] : responsesToolsToChatTools(payload?.tools);
+  const tools = responsesToolsToChatTools(payload?.tools);
   const body = {
     model: codexGonkaModel || safeCodexModelId(payload?.model) || "moonshotai/Kimi-K2.6",
     messages,
@@ -695,32 +695,100 @@ function gonkaChatCompletionPayload(payload) {
   return body;
 }
 
-function gonkaPromptDisablesTools(messages) {
-  return gonkaPromptHasNoTarget(messages) || gonkaPromptIsPlainDialog(messages);
-}
-
-function gonkaPromptHasNoTarget(messages) {
-  return messages.some((message) => /\btarget:\s*none\b/iu.test(String(message?.content || "")));
-}
-
-function gonkaPromptIsPlainDialog(messages) {
-  return messages.some((message) => /\btask_family:\s*plain-dialog\b/iu.test(String(message?.content || "")));
-}
-
 function responsesToolsToChatTools(tools) {
   return Array.isArray(tools)
     ? tools
       .filter((tool) => tool?.type === "function" && safeChatToolName(tool.name))
-      .map((tool) => ({
-        type: "function",
-        function: {
-          name: safeChatToolName(tool.name),
-          description: String(tool.description || "").slice(0, 4000),
-          parameters: tool.parameters && typeof tool.parameters === "object" ? tool.parameters : { type: "object", properties: {} },
-          ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {})
-        }
-      }))
+      .map((tool) => compactChatToolForGonka(tool))
+      .filter(Boolean)
     : [];
+}
+
+function compactChatToolForGonka(tool) {
+  const name = safeChatToolName(tool?.name);
+  if (!name) {
+    return null;
+  }
+  return {
+    type: "function",
+    function: {
+      name,
+      description: compactToolDescriptionForGonka(name, tool.description),
+      parameters: compactToolParametersForGonka(name, tool.parameters),
+      ...(typeof tool.strict === "boolean" ? { strict: tool.strict } : {})
+    }
+  };
+}
+
+function compactToolDescriptionForGonka(name, value) {
+  const text = String(value || "").replace(/\s+/gu, " ").trim();
+  const defaults = {
+    exec_command: "Run a shell command for the current Codex workspace when direct terminal inspection is needed.",
+    write_stdin: "Send input to an active command.",
+    update_plan: "Update the visible task plan.",
+    apply_patch: "Apply a focused file patch.",
+    computer: "Use the selected Soty computer capability for files, shell/script, browser, desktop, jobs, artifacts, apps, APIs, transactions, audio, and OS tasks. Prefer this for the user's computer."
+  };
+  const prefix = defaults[name] || text;
+  return (prefix || "Use this tool only when it directly helps satisfy the user's request.").slice(0, 700);
+}
+
+function compactToolParametersForGonka(name, parameters) {
+  const source = parameters && typeof parameters === "object" ? parameters : { type: "object", properties: {} };
+  const compact = compactJsonSchemaForGonka(source, { depth: 0, maxDepth: name === "computer" ? 5 : 4 });
+  if (!compact || typeof compact !== "object") {
+    return { type: "object", properties: {}, additionalProperties: true };
+  }
+  if (!compact.type) {
+    compact.type = "object";
+  }
+  if (compact.type === "object" && !compact.properties) {
+    compact.properties = {};
+  }
+  return compact;
+}
+
+function compactJsonSchemaForGonka(schema, options = {}) {
+  if (!schema || typeof schema !== "object") {
+    return {};
+  }
+  const depth = Number.isSafeInteger(options.depth) ? options.depth : 0;
+  const maxDepth = Number.isSafeInteger(options.maxDepth) ? options.maxDepth : 4;
+  if (depth > maxDepth) {
+    return {};
+  }
+  const out = {};
+  for (const key of ["type", "format", "pattern", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "additionalProperties"]) {
+    if (schema[key] !== undefined) {
+      out[key] = schema[key];
+    }
+  }
+  if (typeof schema.description === "string") {
+    out.description = schema.description.replace(/\s+/gu, " ").trim().slice(0, depth === 0 ? 500 : 220);
+  }
+  if (Array.isArray(schema.enum)) {
+    out.enum = schema.enum.slice(0, 80);
+  }
+  if (Array.isArray(schema.required)) {
+    out.required = schema.required.slice(0, 80);
+  }
+  if (schema.items && typeof schema.items === "object") {
+    out.items = compactJsonSchemaForGonka(schema.items, { ...options, depth: depth + 1 });
+  }
+  if (schema.properties && typeof schema.properties === "object") {
+    out.type = out.type || "object";
+    out.properties = {};
+    for (const [prop, propSchema] of Object.entries(schema.properties).slice(0, 80)) {
+      out.properties[prop] = compactJsonSchemaForGonka(propSchema, { ...options, depth: depth + 1 });
+    }
+  }
+  if (Array.isArray(schema.anyOf) && depth < maxDepth) {
+    out.anyOf = schema.anyOf.slice(0, 8).map((item) => compactJsonSchemaForGonka(item, { ...options, depth: depth + 1 }));
+  }
+  if (Array.isArray(schema.oneOf) && depth < maxDepth) {
+    out.oneOf = schema.oneOf.slice(0, 8).map((item) => compactJsonSchemaForGonka(item, { ...options, depth: depth + 1 }));
+  }
+  return out;
 }
 
 function safeChatToolName(value) {
@@ -6009,18 +6077,6 @@ function isLowContextCodexFollowup(text) {
     || /^erase internal disk\b/iu.test(lower);
 }
 
-function isSmallTalkPrompt(text) {
-  const value = String(text || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[!?.,;:\u2026]+$/gu, "")
-    .replace(/\s+/gu, " ");
-  if (!value || value.length > 80) {
-    return false;
-  }
-  return /^(?:hi|hey|hello|yo|sup|howdy|gm|gn|thanks|thank you|ok|okay|help|help me|who are you|what can you do|what do you do|what are your capabilities|capabilities|\u0445\u0430\u0439|\u0445\u0435\u0439|\u043f\u0440\u0438\u0432\u0435\u0442|\u0437\u0434\u0430\u0440\u043e\u0432\u0430|\u0437\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439|\u0437\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435|\u043a\u0430\u043a \u0434\u0435\u043b\u0430|\u0441\u043f\u0430\u0441\u0438\u0431\u043e|\u0441\u043f\u0441|\u043e\u043a|\u043e\u043a\u0435\u0439|\u0434\u0430|\u043a\u0442\u043e \u0442\u044b|\u0447\u0442\u043e \u0442\u044b \u043c\u043e\u0436\u0435\u0448\u044c(?: \u0434\u0435\u043b\u0430\u0442\u044c|\u0441\u0434\u0435\u043b\u0430\u0442\u044c)?|\u0447\u0442\u043e \u043c\u043e\u0436\u0435\u0448\u044c(?: \u0434\u0435\u043b\u0430\u0442\u044c|\u0441\u0434\u0435\u043b\u0430\u0442\u044c)?|\u0447\u0442\u043e \u0442\u044b \u0443\u043c\u0435\u0435\u0448\u044c|\u0447\u0442\u043e \u0443\u043c\u0435\u0435\u0448\u044c|\u043f\u043e\u043c\u043e\u0449\u044c|\u043f\u043e\u043c\u043e\u0433\u0438|\u0440\u0430\u0441\u0441\u043a\u0430\u0436\u0438 \u043e \u0441\u0435\u0431\u0435)(?:\s+(?:agent|\u0430\u0433\u0435\u043d\u0442|\u0433\u0435\u043d\u0438\u0439))?$/iu.test(value);
-}
-
 function recentCodexSessionFamilyForTarget(source, target = null) {
   const prefix = codexSessionKeyPrefix(source, target);
   if (!prefix) {
@@ -6055,9 +6111,6 @@ function recentCodexSessionFamilyForTarget(source, target = null) {
 
 function resolveCodexTaskFamily(text, source, target = null) {
   const classified = classifyTaskFamily(text, target);
-  if (classified === "plain-dialog" && isSmallTalkPrompt(text)) {
-    return classified;
-  }
   if (!target?.id) {
     return classified;
   }
@@ -6130,9 +6183,6 @@ function classifyTaskFamily(text, target = null) {
   const family = classifySourceCommand(text);
   if (family !== "generic") {
     return family;
-  }
-  if (isSmallTalkPrompt(text)) {
-    return "plain-dialog";
   }
   if (isMemoryRecallOrFollowupPrompt(text)) {
     return target?.id ? "source-scoped-dialog" : "plain-dialog";

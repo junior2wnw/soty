@@ -153,8 +153,15 @@ async function runScenarios({ relayUrl } = {}) {
           tools: [{
             type: "function",
             name: "exec_command",
-            description: "Run a shell command",
-            parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] }
+            description: `Run a shell command. ${"Long internal tool prose. ".repeat(120)}`,
+            parameters: {
+              type: "object",
+              properties: {
+                command: { type: "string", description: "Command to run. ".repeat(80) },
+                sandbox_permissions: { type: "string", enum: ["use_default", "require_escalated"] }
+              },
+              required: ["command"]
+            }
           }],
           input: [{
             type: "message",
@@ -194,10 +201,13 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(gonkaRequests[0].stream, false);
         assert(gonkaRequests[0].messages[0].content.includes("Gonka AI Chat Completions adapter"));
         assert(gonkaRequests[0].messages[0].content.length < 700);
-        assertEqual(gonkaRequests[0].tools, undefined);
+        assertEqual(gonkaRequests[0].tools.length, 1);
+        assertEqual(gonkaRequests[0].tools[0].function.name, "exec_command");
+        assert(gonkaRequests[0].tools[0].function.description.length < 700);
+        assert(gonkaRequests[0].tools[0].function.parameters.properties.command.description.length < 240);
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("Compact Soty runtime packet")));
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("- target: none (none)")));
-        const plainDialogWithTarget = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
+        const universalDialogWithTarget = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           stream: true,
           tools: [{
@@ -236,8 +246,8 @@ async function runScenarios({ relayUrl } = {}) {
           "Authorization": "Bearer selftest-key",
           "Content-Type": "application/json"
         });
-        assertEqual(plainDialogWithTarget.status, 200);
-        assertEqual(gonkaRequests[1].tools, undefined);
+        assertEqual(universalDialogWithTarget.status, 200);
+        assertEqual(gonkaRequests[1].tools.length, 1);
         assert(gonkaRequests[1].messages.some((message) => String(message.content).includes("- task_family: plain-dialog")));
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
