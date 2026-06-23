@@ -6115,17 +6115,19 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   }
   const targetId = promptInline(runtime?.target?.id || "");
   const sourceDeviceId = promptInline(runtime?.target?.sourceDeviceId || runtime?.source?.deviceId || "");
+  const sourceRelayId = promptInline(runtime?.source?.sourceRelayId || "");
   return [
     "- Gonka local-api route: MCP/Responses namespace tools are not available in this provider adapter. Do not search for a `computer` tool and do not read SOTY_ROUTES.md for ordinary file/system/process tasks.",
     "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
-    `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"}.`,
-    "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
+    `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
+    "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
     "- Shell command cookbook:",
     "```sh",
     "node - <<'NODE'",
     "const payload = {",
     `  target: ${JSON.stringify(targetId || "<target-id>")},`,
     `  sourceDeviceId: ${JSON.stringify(sourceDeviceId || "<source-device-id>")},`,
+    `  sourceRelayId: ${JSON.stringify(sourceRelayId || "<source-relay-id>")},`,
     "  shell: \"powershell\",",
     "  timeoutMs: 60000,",
     "  script: \"$p = Join-Path $env:USERPROFILE 'Desktop\\\\rrr.txt'; if (Test-Path -LiteralPath $p) { 'exists ' + $p } else { 'missing ' + $p }\"",
@@ -7435,6 +7437,7 @@ async function buildAgentRuntimeContext({ text, context = "", source = {}, targe
       deviceId: promptInline(safeSource.deviceId),
       deviceNick: promptInline(safeSource.deviceNick),
       appOrigin: promptInline(safeSource.appOrigin),
+      sourceRelayId: promptInline(safeSource.sourceRelayId),
       localAgentOk: safeSource.localAgent?.ok === true,
       localAgentSourceWorker: safeSource.localAgent?.sourceWorker === true,
       localAgentExecutionPlane: promptInline(safeSource.localAgent?.executionPlane || "")
