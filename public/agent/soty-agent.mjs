@@ -5255,6 +5255,15 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const lastFromFile = cleanAgentChatReply(lastFileRaw);
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
+  const recoveredFinalText = recoverFinalTextFromCodexCommandOutput(result.stdout);
+  if (!finalText && recoveredFinalText) {
+    finalText = recoveredFinalText;
+    messages = compactCodexMessages([finalText]);
+    result.exitCode = 0;
+    traceStep(trace, "codex.recovered-final-from-command-output", {
+      textChars: finalText.length
+    });
+  }
   if (result.exitCode === 130 || signal?.aborted) {
     recordLearningReceipt({
       kind: "codex-turn",
@@ -5436,10 +5445,62 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   });
   return {
     ok: false,
-    text: agentFailureText(`${result.stderr}\n${result.stdout}\n${finalText}`),
+    text: agentFailureText(finalText || result.stderr || (state.terminal.length > 0 ? state.terminal.join("\n") : result.stdout)),
     ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
     exitCode: result.exitCode || 1
   };
+}
+
+function recoverFinalTextFromCodexCommandOutput(stdout) {
+  const text = String(stdout || "");
+  if (!text.trim()) {
+    return "";
+  }
+  const lines = text.split(/\r?\n/u);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].trim();
+    if (!line) {
+      continue;
+    }
+    let event = null;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const item = event?.item && typeof event.item === "object" ? event.item : null;
+    if (event?.type !== "item.completed" || item?.type !== "command_execution" || item.status !== "completed") {
+      continue;
+    }
+    const output = String(item.aggregated_output || "").trim();
+    const payload = parseJsonObjectLoose(output);
+    if (!payload?.ok || typeof payload.text !== "string") {
+      continue;
+    }
+    const clean = formatRecoveredOperatorText(payload.text);
+    if (clean) {
+      return cleanAgentChatReply(clean).slice(0, maxChatChars);
+    }
+  }
+  return "";
+}
+
+function formatRecoveredOperatorText(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  const single = text.replace(/\s+/gu, " ").trim();
+  const missing = single.match(/^missing\s+(.+)$/iu);
+  if (missing) {
+    return `Файл не найден: ${missing[1]}`;
+  }
+  const exists = single.match(/^exists\s+(.+)$/iu);
+  if (exists) {
+    return `Файл найден: ${exists[1]}`;
+  }
+  const written = single.match(/^written\s+(.+)$/iu);
+  if (written) {
+    return `Готово, файл записан: ${written[1]}`;
+  }
+  return text;
 }
 
 function parseJsonObjectLoose(value) {
