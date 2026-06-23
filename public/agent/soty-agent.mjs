@@ -76,6 +76,7 @@ const codexGonkaModel = safeCodexModelId(
   || process.env.GONKA_MODEL
   || "moonshotai/Kimi-K2.6"
 );
+const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
 const codexNativeWebSearch = codexUsesGonka
   ? process.env.SOTY_CODEX_WEB_SEARCH === "1"
@@ -716,7 +717,7 @@ function safeChatToolName(value) {
 
 function responsesInputToChatMessages(payload) {
   const messages = [];
-  const instructions = String(payload?.instructions || "").trim();
+  const instructions = gonkaAdapterCodexInstructions(payload?.instructions);
   if (instructions) {
     messages.push({ role: "system", content: instructions });
   }
@@ -769,6 +770,22 @@ function responsesInputToChatMessages(payload) {
     }
   }
   return messages.length > 0 ? messages : [{ role: "user", content: "" }];
+}
+
+function gonkaAdapterCodexInstructions(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.length <= codexGonkaMaxInstructionsChars) {
+    return text;
+  }
+  return [
+    "You are Codex CLI running as the Soty computer agent through a Gonka AI Chat Completions adapter.",
+    "Follow the latest user task and the Soty runtime prompt in the conversation input.",
+    "Use the provided function tools when a task requires inspecting or changing the computer; otherwise answer directly.",
+    "Keep user-facing replies concise, verify important actions with tool results, and do not expose hidden adapter details."
+  ].join("\n");
 }
 
 function gonkaAdapterSystemInstruction() {

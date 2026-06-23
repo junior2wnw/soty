@@ -81,17 +81,27 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.automationToolkits.routeProfiles.schema, "soty.route-profiles.v1");
     }],
     ["gonka codex provider exposes local responses adapter", async () => {
+      const gonkaRequests = [];
       const gonkaUpstream = createServer((request, response) => {
         if (request.url === "/v1/chat/completions" && request.method === "POST") {
-          response.writeHead(200, { "Content-Type": "application/json" });
-          response.end(JSON.stringify({
-            id: "chatcmpl_selftest",
-            object: "chat.completion",
-            created: 123,
-            model: "moonshotai/Kimi-K2.6",
-            choices: [{ index: 0, message: { role: "assistant", content: "adapter ok" }, finish_reason: "stop" }],
-            usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }
-          }));
+          const chunks = [];
+          request.on("data", (chunk) => chunks.push(chunk));
+          request.on("end", () => {
+            try {
+              gonkaRequests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            } catch {
+              gonkaRequests.push(null);
+            }
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({
+              id: "chatcmpl_selftest",
+              object: "chat.completion",
+              created: 123,
+              model: "moonshotai/Kimi-K2.6",
+              choices: [{ index: 0, message: { role: "assistant", content: "adapter ok" }, finish_reason: "stop" }],
+              usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }
+            }));
+          });
           return;
         }
         response.writeHead(404, { "Content-Type": "application/json" });
@@ -138,6 +148,7 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(models.body.models[0].supported_in_api, true);
         const proxied = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
+          instructions: "long codex instructions ".repeat(300),
           stream: true,
           input: [{
             type: "message",
@@ -152,6 +163,9 @@ async function runScenarios({ relayUrl } = {}) {
         const proxiedText = String(proxied.body.text || JSON.stringify(proxied.body));
         assert(proxiedText.includes("response.output_text.delta"), proxiedText.slice(0, 1200));
         assert(proxiedText.includes("adapter ok"), proxiedText.slice(0, 1200));
+        assertEqual(gonkaRequests[0].stream, false);
+        assert(gonkaRequests[0].messages[0].content.includes("Gonka AI Chat Completions adapter"));
+        assert(gonkaRequests[0].messages[0].content.length < 700);
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           input: "hello"
