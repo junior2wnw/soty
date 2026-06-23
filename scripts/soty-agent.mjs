@@ -5838,12 +5838,6 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   }
   args.push("-c", `mcp_servers.soty.command=${JSON.stringify(process.execPath)}`);
   args.push("-c", `mcp_servers.soty.args=${JSON.stringify(mcpArgs)}`);
-  const approvedMcpTools = process.env.SOTY_MCP_EXPOSE_LEGACY_TOOLS === "1"
-    ? [...sotyMcpPublicTools, ...sotyMcpLegacyTools]
-    : sotyMcpPublicTools;
-  for (const tool of approvedMcpTools) {
-    args.push("-c", `mcp_servers.soty.tools.${tool}.approval_mode="approve"`);
-  }
   if (outPath) {
     args.push("-o", outPath);
   }
