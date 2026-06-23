@@ -3416,6 +3416,9 @@ function classifyRoutineSourceTask(lower) {
   if (/(?:\bport\b|listener|listen|tcp|udp|netstat|порт|слуша|соединен)/u.test(text)) {
     return "system-check";
   }
+  if (/(?:system\s+(?:time|date)|set-date|get-date|timezone|time\s+zone|date\/time|системн\w*\s+врем|системн\w*\s+дат|текущ\w*\s+врем|измен\w*\s+врем|часов\w*\s+пояс|дата\s+и\s+врем)/iu.test(text)) {
+    return "system-time";
+  }
   if (hasExplicitEventLogIntent(text)) {
     return "system-check";
   }
@@ -3500,7 +3503,7 @@ function isMemoryRecallOrFollowupPrompt(text) {
 }
 
 function isRoutineAgentTaskFamily(family) {
-  return ["program-control", "file-work", "system-check", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(cleanActionToken(family, ""));
+  return ["program-control", "file-work", "system-check", "system-time", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(cleanActionToken(family, ""));
 }
 
 function classifySourceCommand(command) {
@@ -3517,6 +3520,9 @@ function classifySourceCommand(command) {
   }
   if (/volume|mute|audio|sound|endpointvolume|nircmd|sndvol|speaker|mic|микрофон|звук|громк/u.test(lower)) {
     return /mute|muted|выключ/u.test(lower) ? "audio-mute" : "audio-volume";
+  }
+  if (/(?:system\s+(?:time|date)|set-date|get-date|timezone|time\s+zone|date\/time|системн\w*\s+врем|системн\w*\s+дат|текущ\w*\s+врем|измен\w*\s+врем|часов\w*\s+пояс|дата\s+и\s+врем)/iu.test(lower)) {
+    return "system-time";
   }
   if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
     return "driver-check";
@@ -5306,6 +5312,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
   const recoveredFinalText = cleanAgentChatReply(state.recoverableFinalText) || recoverFinalTextFromCodexCommandOutput(result.stdout);
+  const recoveredFailureText = cleanAgentChatReply(state.recoverableFailureText) || recoverFailureTextFromCodexCommandOutput(result.stdout);
   const shouldUseRecoveredFinalText = Boolean(
     recoveredFinalText
       && (!finalText || isLikelyInternalCodexReasoningReply(finalText) || result.exitCode === 124)
@@ -5317,6 +5324,29 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     traceStep(trace, "codex.recovered-final-from-command-output", {
       textChars: finalText.length
     });
+  }
+  if (!finalText && recoveredFailureText) {
+    traceRouting(trace, { finalRoute: codexRouteName });
+    traceStep(trace, "codex.recovered-failure-from-command-output", {
+      textChars: recoveredFailureText.length
+    });
+    recordLearningReceipt({
+      kind: "codex-turn",
+      family: taskFamily,
+      result: "failed",
+      route: codexRouteName,
+      taskSig: taskSignature(text),
+      proof: `exitCode=${result.exitCode || 1}; recoveredFailure=nonempty; ${codexUsageProof(state.usage, prompt, recoveredFailureText)}`,
+      exitCode: result.exitCode || 1,
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
+    return {
+      ok: false,
+      text: recoveredFailureText.slice(0, maxChatChars),
+      ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
+      exitCode: result.exitCode || 1
+    };
   }
   if (result.exitCode === 130 || signal?.aborted) {
     recordLearningReceipt({
@@ -5530,17 +5560,61 @@ function recoverFinalTextFromCodexCommandOutput(stdout) {
   return "";
 }
 
-function recoverFinalTextFromCodexEvent(event) {
-  const item = event?.item && typeof event.item === "object" ? event.item : null;
-  if (event?.type !== "item.completed" || item?.type !== "command_execution" || item.status !== "completed") {
+function recoverFailureTextFromCodexCommandOutput(stdout) {
+  const text = String(stdout || "");
+  if (!text.trim()) {
     return "";
+  }
+  const lines = text.split(/\r?\n/u);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].trim();
+    if (!line) {
+      continue;
+    }
+    let event = null;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const clean = recoverFailureTextFromCodexEvent(event);
+    if (clean) {
+      return cleanAgentChatReply(clean).slice(0, maxChatChars);
+    }
+  }
+  return "";
+}
+
+function recoverFinalTextFromCodexEvent(event) {
+  const payload = codexCommandOperatorPayload(event);
+  if (!payload?.ok) {
+    return "";
+  }
+  if (typeof payload.text !== "string") {
+    return "";
+  }
+  return formatRecoveredOperatorText(payload.text) || "Готово.";
+}
+
+function recoverFailureTextFromCodexEvent(event) {
+  const payload = codexCommandOperatorPayload(event);
+  if (!payload || payload.ok !== false) {
+    return "";
+  }
+  return formatRecoveredOperatorFailureText(payload.text, payload.exitCode);
+}
+
+function codexCommandOperatorPayload(event) {
+  const item = event?.item && typeof event.item === "object" ? event.item : null;
+  if (event?.type !== "item.completed" || item?.type !== "command_execution" || !["completed", "failed"].includes(String(item.status || ""))) {
+    return null;
   }
   const output = String(item.aggregated_output || "").trim();
   const payload = parseJsonObjectLoose(output);
-  if (!payload?.ok || typeof payload.text !== "string") {
-    return "";
+  if (!payload || typeof payload !== "object") {
+    return null;
   }
-  return formatRecoveredOperatorText(payload.text);
+  return payload;
 }
 
 function formatRecoveredOperatorText(value) {
@@ -5558,7 +5632,43 @@ function formatRecoveredOperatorText(value) {
   if (written) {
     return `Готово, файл записан: ${written[1]}`;
   }
+  const deleted = single.match(/^deleted\s+(.+)$/iu);
+  if (deleted) {
+    return `Готово, файл удален: ${deleted[1]}`;
+  }
+  const fileCycle = single.match(/^desktop-file-cycle\s+ok\s+(.+)$/iu);
+  if (fileCycle) {
+    return `Готово: файл создан, проверен и удален: ${fileCycle[1]}`;
+  }
+  const opened = single.match(/^opened\s+(.+)$/iu);
+  if (opened) {
+    return `Открыл: ${opened[1]}`;
+  }
+  const volume = single.match(/^volume=([0-9]{1,3});\s*muted=(true|false)$/iu);
+  if (volume) {
+    return `Громкость: ${volume[1]}%, звук ${volume[2].toLowerCase() === "true" ? "выключен" : "включен"}.`;
+  }
+  const time = single.match(/^time=(.+?);\s*admin=(true|false)$/iu);
+  if (time) {
+    return `Текущее системное время: ${time[1]}. Изменение времени требует подтверждения${time[2].toLowerCase() === "true" ? "." : " и прав администратора."}`;
+  }
   return text;
+}
+
+function formatRecoveredOperatorFailureText(value, exitCode = 1) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  const firstMeaningful = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .find((line) => !/^(at |строка:|char:|\+ |categoryinfo|fullyqualifiederrorid)/iu.test(line));
+  if (/parsererror|missingendparenthesis|expectedexpression|ошибк\w*\s+синтакс|ожидалось выражение|отсутствует/u.test(text)) {
+    return "Не получилось выполнить команду: ошибка в сформированном PowerShell-скрипте.";
+  }
+  if (firstMeaningful) {
+    return `Не получилось выполнить команду${Number.isSafeInteger(exitCode) ? ` (код ${exitCode})` : ""}: ${firstMeaningful}`.slice(0, maxChatChars);
+  }
+  return `Не получилось выполнить команду${Number.isSafeInteger(exitCode) ? ` (код ${exitCode})` : ""}.`;
 }
 
 function parseJsonObjectLoose(value) {
@@ -6242,7 +6352,8 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- Gonka local-api route: MCP/Responses namespace tools are not available in this provider adapter. Do not search for a `computer` tool and do not read SOTY_ROUTES.md for ordinary file/system/process tasks.",
     "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
-    "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `node SOTY_LOCAL_API.mjs desktop-write rrr.txt \"text\"`, or `node SOTY_LOCAL_API.mjs script-powershell \"<PowerShell>\"` before hand-written fetch commands.",
+    "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `desktop-write`, `desktop-read`, `desktop-delete`, `desktop-cycle <file> <text>`, `audio-get`, `audio-set <0-100>`, `time-status`, or `open-url <url>` before hand-written fetch commands.",
+    "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
     "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
     "- Shell command cookbook:",
     "```sh",
@@ -6746,6 +6857,10 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
   const recoveredFinalText = cleanAgentChatReply(recoverFinalTextFromCodexEvent(event));
   if (recoveredFinalText) {
     state.recoverableFinalText = recoveredFinalText.slice(0, maxChatChars);
+  }
+  const recoveredFailureText = cleanAgentChatReply(recoverFailureTextFromCodexEvent(event));
+  if (recoveredFailureText) {
+    state.recoverableFailureText = recoveredFailureText.slice(0, maxChatChars);
   }
   const threadId = codexEventThreadId(event);
   if (threadId) {
@@ -7896,6 +8011,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "const [, , op = '', ...args] = process.argv;",
     "function ps(value) { return `'${String(value ?? '').replace(/'/g, \"''\")}'`; }",
     "function desktopPathScript(name) { return `$path = Join-Path ([Environment]::GetFolderPath('Desktop')) ${ps(name)}`; }",
+    "async function readStdin() { let data = ''; for await (const chunk of process.stdin) data += chunk; return data; }",
     "async function post(path, body) {",
     "  const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });",
     "  const data = await res.json().catch(async () => ({ ok: false, text: await res.text(), exitCode: res.status }));",
@@ -7910,17 +8026,42 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  const name = args.join(' ').trim();",
     "  if (!name) { console.error('usage: desktop-exists <file-name>'); process.exit(2); }",
     "  await scriptPowerShell(`${desktopPathScript(name)}\\nif (Test-Path -LiteralPath $path) { 'exists ' + $path } else { 'missing ' + $path }`, { name: 'desktop-exists' });",
+    "} else if (op === 'desktop-read') {",
+    "  const name = args.join(' ').trim();",
+    "  if (!name) { console.error('usage: desktop-read <file-name>'); process.exit(2); }",
+    "  await scriptPowerShell(`${desktopPathScript(name)}\\nif (Test-Path -LiteralPath $path) { 'read ' + $path; Get-Content -LiteralPath $path -Raw } else { 'missing ' + $path }`, { name: 'desktop-read' });",
+    "} else if (op === 'desktop-delete') {",
+    "  const name = args.join(' ').trim();",
+    "  if (!name) { console.error('usage: desktop-delete <file-name>'); process.exit(2); }",
+    "  await scriptPowerShell(`${desktopPathScript(name)}\\nif (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force; 'deleted ' + $path } else { 'missing ' + $path }`, { name: 'desktop-delete' });",
     "} else if (op === 'desktop-write') {",
     "  const name = String(args.shift() || '').trim();",
     "  const text = args.join(' ');",
     "  if (!name) { console.error('usage: desktop-write <file-name> <text>'); process.exit(2); }",
     "  await scriptPowerShell(`${desktopPathScript(name)}\\nSet-Content -LiteralPath $path -Value ${ps(text)} -Encoding UTF8\\nif (Test-Path -LiteralPath $path) { 'written ' + $path }`, { name: 'desktop-write' });",
+    "} else if (op === 'desktop-cycle') {",
+    "  const name = String(args.shift() || '').trim();",
+    "  const text = args.join(' ');",
+    "  if (!name) { console.error('usage: desktop-cycle <file-name> <text>'); process.exit(2); }",
+    "  await scriptPowerShell(`${desktopPathScript(name)}\\nSet-Content -LiteralPath $path -Value ${ps(text)} -Encoding UTF8\\n$content = (Get-Content -LiteralPath $path -Raw).Trim()\\nif ($content -ne ${ps(text)}) { throw 'verify-failed' }\\nRemove-Item -LiteralPath $path -Force\\nif (Test-Path -LiteralPath $path) { throw 'delete-failed' }\\n'desktop-file-cycle ok ' + $path`, { name: 'desktop-cycle' });",
+    "} else if (op === 'time-status') {",
+    "  await scriptPowerShell(`$now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss K'\\n$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\\nWrite-Output ('time=' + $now + '; admin=' + $isAdmin.ToString().ToLowerInvariant())`, { name: 'time-status' });",
+    "} else if (op === 'open-url') {",
+    "  const url = args.join(' ').trim();",
+    "  if (!/^https?:\\/\\//i.test(url)) { console.error('usage: open-url <http-url>'); process.exit(2); }",
+    "  await scriptPowerShell(`Start-Process ${ps(url)}\\n'opened ' + ${ps(url)}`, { name: 'open-url' });",
+    "} else if (op === 'audio-get' || op === 'audio-set') {",
+    "  const raw = op === 'audio-set' ? Number(args[0]) : -1;",
+    "  const volume = Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : -1;",
+    "  const template = " + JSON.stringify(windowsAudioScript(-1, -1)) + ";",
+    "  const script = template.replace('[SotyAudio.Endpoint]::Apply(-1, -1)', `[SotyAudio.Endpoint]::Apply(${volume}, ${volume >= 0 ? 0 : -1})`);",
+    "  await scriptPowerShell(script, { name: op });",
     "} else if (op === 'script-powershell') {",
-    "  const script = args.join(' ');",
-    "  if (!script.trim()) { console.error('usage: script-powershell <script>'); process.exit(2); }",
+    "  const script = args.length ? args.join(' ') : await readStdin();",
+    "  if (!script.trim()) { console.error('usage: script-powershell <script-or-stdin>'); process.exit(2); }",
     "  await scriptPowerShell(script, { name: 'script-powershell' });",
     "} else {",
-    "  console.error('usage: node SOTY_LOCAL_API.mjs desktop-exists <file> | desktop-write <file> <text> | script-powershell <script>');",
+    "  console.error('usage: node SOTY_LOCAL_API.mjs desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | open-url <url> | script-powershell [script-or-stdin]');",
     "  process.exit(2);",
     "}"
   ].join("\n");
@@ -8050,7 +8191,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `node SOTY_LOCAL_API.mjs desktop-write rrr.txt \"text\"`, or `node SOTY_LOCAL_API.mjs script-powershell \"Get-Process\"`.",
+    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: use its small commands first (`desktop-*`, `audio-get`, `audio-set`, `time-status`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
     "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [

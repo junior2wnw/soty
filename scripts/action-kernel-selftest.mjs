@@ -1145,7 +1145,21 @@ async function runScenarios({ relayUrl } = {}) {
     ["identity command is classified", async () => expectFamily(await action(sourceRun("whoami SELFTEST_OK")), "identity-probe")],
     ["audio volume command is classified", async () => expectFamily(await action(sourceRun("set volume SELFTEST_OK")), "audio-volume")],
     ["audio mute command is classified", async () => expectFamily(await action(sourceRun("mute audio SELFTEST_OK")), "audio-mute")],
+    ["system time command is classified separately", async () => expectFamily(await action(sourceRun("Get-Date SELFTEST_OK")), "system-time")],
     ["driver command is classified", async () => expectFamily(await action(sourceRun("pnputil /enum-drivers SELFTEST_OK")), "driver-check")],
+    ["gonka local helper exposes safe ordinary task shortcuts", async () => {
+      const source = await readFile(sourceAgentPath, "utf8");
+      for (const needle of [
+        "desktop-cycle",
+        "audio-get",
+        "time-status",
+        "open-url",
+        "script-powershell <script-or-stdin>",
+        "recoverFailureTextFromCodexEvent"
+      ]) {
+        assert(source.includes(needle), `missing helper needle ${needle}`);
+      }
+    }],
     ["driver prompt goes through Codex dialog instead of prewritten fast route", async () => {
       const before = mock.count("Win32_PnPEntity");
       const response = await agentReply("check drivers");
