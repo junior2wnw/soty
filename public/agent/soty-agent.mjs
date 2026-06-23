@@ -60,6 +60,7 @@ const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIME
 const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 7000, 120_000);
 const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexMcpTaskNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_MCP_TASK_NO_PROGRESS_TIMEOUT_MS, 60_000, 180_000);
+const codexGonkaNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_GONKA_NO_PROGRESS_TIMEOUT_MS, 15_000, 120_000);
 const codexIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 90_000, 600_000);
 const codexRecoverableIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_RECOVERABLE_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 7_000, 60_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
@@ -5242,6 +5243,54 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.usage = fallbackState.usage;
       outPath = fallbackOutPath;
     }
+    if (shouldRetryCodexAfterNoProgress(result, state, signal)) {
+      const noProgressRetryState = {
+        threadId: "",
+        lastMessage: "",
+        messages: [],
+        terminal: [],
+        terminalKeys: new Set(),
+        learningMarkers: [],
+        usage: emptyCodexUsage(),
+        trace
+      };
+      const noProgressRetryOutPath = join(jobDir, `last-message-${randomUUID()}-retry.txt`);
+      const noProgressRetryArgs = codexSotySessionArgs({
+        jobDir,
+        target,
+        source: safeSource,
+        outPath: noProgressRetryOutPath,
+        threadId: "",
+        taskFamily,
+        attachMcp: mcpAttached
+      });
+      const retryPrompt = `${prompt}\n\nRuntime recovery note: the previous Codex turn started but produced no model content before timeout. Retry fresh, answer normally, and do not mention the retry unless a real user-facing blocker remains.`;
+      traceStep(trace, "codex.retry-after-no-progress", {
+        firstExitCode: result.exitCode,
+        firstStdout: Boolean(result.stdout),
+        firstStderr: Boolean(result.stderr),
+        mcpAttached
+      });
+      await traceWriteJson(trace, "codex-no-progress-retry-args.json", {
+        file: basename(codexBin),
+        args: noProgressRetryArgs,
+        outPath: noProgressRetryOutPath,
+        reason: "no-progress-before-model-content",
+        mcpAttached
+      });
+      result = await runCodexForSotyChat(codexBin, noProgressRetryArgs, childEnv, retryPrompt, noProgressRetryState, jobDir, codexOnMessage, onTerminal, signal, {
+        noProgressTimeoutMs: turnNoProgressTimeoutMs
+      });
+      state.threadId = noProgressRetryState.threadId;
+      state.lastMessage = noProgressRetryState.lastMessage;
+      state.messages = noProgressRetryState.messages;
+      state.terminal = noProgressRetryState.terminal;
+      state.terminalKeys = noProgressRetryState.terminalKeys;
+      state.learningMarkers = noProgressRetryState.learningMarkers;
+      state.usage = noProgressRetryState.usage;
+      state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
+      outPath = noProgressRetryOutPath;
+    }
   } finally {
     if (activeTurn) {
       activeTurn.done = true;
@@ -6004,6 +6053,9 @@ function codexNoProgressTimeoutForTurn(taskFamily, target = null, mcpAttached = 
   if (mcpAttached && codexTaskNeedsSotyMcpTools(taskFamily, target)) {
     return codexMcpTaskNoProgressTimeoutMs;
   }
+  if (codexUsesGonka && !mcpAttached) {
+    return codexGonkaNoProgressTimeoutMs;
+  }
   return mcpAttached ? codexNoProgressTimeoutMs : codexFallbackNoProgressTimeoutMs;
 }
 
@@ -6219,6 +6271,17 @@ function shouldRetryCodexWithoutResume(result, state) {
   }
   const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
   return /resume|session|thread|conversation|not found|missing|invalid|no such/u.test(details);
+}
+
+function shouldRetryCodexAfterNoProgress(result, state, signal = null) {
+  if (signal?.aborted || !result || result.exitCode !== 124) {
+    return false;
+  }
+  if (state?.usage?.actual || state?.messages?.length || state?.terminal?.length || cleanAgentChatReply(state?.lastMessage || "")) {
+    return false;
+  }
+  const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
+  return /codex no-progress timeout/u.test(details);
 }
 
 function codexSessionKey(source, target = null, taskFamily = "generic") {
