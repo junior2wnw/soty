@@ -1165,6 +1165,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!String(response.body.text || "").includes("готово"));
       assertEqual(mock.count("windows-reinstall-preflight"), beforePreflight);
     }],
+    ["capability meta prompt returns immediate universal agent summary", async () => {
+      const response = await agentReply("что умеешь");
+      assertEqual(response.status, 200);
+      assertEqual(response.body.ok, true);
+      assert(String(response.body.text || "").includes("универсальный агент"));
+      assert(String(response.body.text || "").includes("компьютеру"));
+    }],
     ["repeated prompt is not swallowed by duplicate shortcut", async () => {
       await agentReply("repeat smoke no duplicate shortcut");
       const response = await agentReply("repeat smoke no duplicate shortcut");

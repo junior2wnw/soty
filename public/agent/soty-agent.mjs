@@ -4748,6 +4748,13 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       codexProbe: hasCodexBinary(),
       relayFallback: codexRelayFallback
     });
+    const capabilityReply = agentCapabilityMetaReply(text);
+    if (capabilityReply) {
+      traceRouting(trace, { finalRoute: "agent.capability-summary" });
+      traceStep(trace, "agent.capability-summary", { reason: "capability-meta-question" });
+      await finishAgentTrace(trace, capabilityReply);
+      return withTraceId(capabilityReply, trace);
+    }
     const codexBin = hasCodexBinary() ? findCodexBinary() : "";
     if (!codexBin) {
       traceStep(trace, "codex.missing", { codexDisabled, localCodexDisabled, codexBrain: canRunCodexBrain(), relayFallback: codexRelayFallback });
@@ -6178,6 +6185,43 @@ function classifyTaskFamily(text, target = null) {
     return "source-scoped-dialog";
   }
   return "source-scoped-dialog";
+}
+
+function agentCapabilityMetaReply(text) {
+  if (!isAgentCapabilityMetaQuestion(text)) {
+    return null;
+  }
+  return {
+    ok: true,
+    text: [
+      "Я могу работать как универсальный агент по компьютеру: проверять систему, файлы, приложения, браузер, терминал, пакеты, сервисы, драйверы и сеть.",
+      "Могу запускать и сопровождать долгие задачи, автоматизировать повторяемые действия, чинить сбои, переносить файлы и возвращать проверяемый результат.",
+      "Для рискованных действий сначала подготовлю безопасный план и попрошу подтверждение. Скажи, что сделать."
+    ].join("\n"),
+    exitCode: 0
+  };
+}
+
+function isAgentCapabilityMetaQuestion(text) {
+  const value = String(text || "").trim().toLowerCase()
+    .replace(/[?!.,;:()[\]{}"'`«»]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!value || value.length > 260) {
+    return false;
+  }
+  return [
+    /^что\s+(?:ты\s+)?умеешь(?:\s+делать)?(?:\s+(?:на|с)\s+[\p{L}\d _-]{1,80})?$/iu,
+    /^что\s+(?:ты\s+)?можешь(?:\s+делать)?(?:\s+(?:на|с)\s+[\p{L}\d _-]{1,80})?$/iu,
+    /^на\s+что\s+(?:ты\s+)?способен$/iu,
+    /^(?:какие|каковы)\s+(?:у\s+тебя\s+)?возможности$/iu,
+    /^твои\s+возможности$/iu,
+    /^перечисли\s+(?:свои\s+)?возможности(?:\s+агента)?$/iu,
+    /^что\s+может\s+(?:этот\s+)?агент$/iu,
+    /^what\s+can\s+you\s+do$/iu,
+    /^what\s+are\s+your\s+capabilities$/iu,
+    /^capabilities(?:\s+summary)?$/iu
+  ].some((pattern) => pattern.test(value));
 }
 
 function usableCodexSessionRecord(value) {
