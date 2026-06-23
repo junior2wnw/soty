@@ -678,7 +678,7 @@ function bearerTokenFromRequest(request) {
 
 function gonkaChatCompletionPayload(payload) {
   const messages = responsesInputToChatMessages(payload);
-  const tools = gonkaPromptHasNoTarget(messages) ? [] : responsesToolsToChatTools(payload?.tools);
+  const tools = gonkaPromptDisablesTools(messages) ? [] : responsesToolsToChatTools(payload?.tools);
   const body = {
     model: codexGonkaModel || safeCodexModelId(payload?.model) || "moonshotai/Kimi-K2.6",
     messages,
@@ -695,8 +695,16 @@ function gonkaChatCompletionPayload(payload) {
   return body;
 }
 
+function gonkaPromptDisablesTools(messages) {
+  return gonkaPromptHasNoTarget(messages) || gonkaPromptIsPlainDialog(messages);
+}
+
 function gonkaPromptHasNoTarget(messages) {
   return messages.some((message) => /\btarget:\s*none\b/iu.test(String(message?.content || "")));
+}
+
+function gonkaPromptIsPlainDialog(messages) {
+  return messages.some((message) => /\btask_family:\s*plain-dialog\b/iu.test(String(message?.content || "")));
 }
 
 function responsesToolsToChatTools(tools) {
@@ -806,6 +814,7 @@ function compactSotyRuntimePromptForGonka(text) {
   const keepNeedles = [
     "session_mode:",
     "session_resumed:",
+    "task_family:",
     "source_device:",
     "target:",
     "target_source_device_id:",
@@ -4927,7 +4936,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
-  const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
+  const activeTargetTurnKey = taskFamily === "plain-dialog" ? "" : codexActiveTargetTurnKey(safeSource, target);
   const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
   if (activeTargetTurn && activeTargetTurn.done !== true) {
     if (isInterruptibleActiveCodexGuard(activeTargetTurn)) {
@@ -5745,7 +5754,7 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   const sourceDeviceId = bridgeSourceDeviceId(target, safeSource);
   const sourceRelayId = safeRelayId(safeSource.sourceRelayId) || agentRelayId;
   const family = cleanActionToken(taskFamily, "generic");
-  const attachSotyMcp = !(family === "plain-dialog" && !targetId);
+  const attachSotyMcp = family !== "plain-dialog";
   const mcpArgs = [
     scriptPath,
     "mcp",
@@ -6000,6 +6009,18 @@ function isLowContextCodexFollowup(text) {
     || /^erase internal disk\b/iu.test(lower);
 }
 
+function isSmallTalkPrompt(text) {
+  const value = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.,;:\u2026]+$/gu, "")
+    .replace(/\s+/gu, " ");
+  if (!value || value.length > 80) {
+    return false;
+  }
+  return /^(?:hi|hey|hello|yo|sup|howdy|gm|gn|thanks|thank you|ok|okay|\u0445\u0430\u0439|\u0445\u0435\u0439|\u043f\u0440\u0438\u0432\u0435\u0442|\u0437\u0434\u0430\u0440\u043e\u0432\u0430|\u0437\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439|\u0437\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435|\u043a\u0430\u043a \u0434\u0435\u043b\u0430|\u0441\u043f\u0430\u0441\u0438\u0431\u043e|\u0441\u043f\u0441|\u043e\u043a|\u043e\u043a\u0435\u0439|\u0434\u0430)(?:\s+(?:agent|\u0430\u0433\u0435\u043d\u0442|\u0433\u0435\u043d\u0438\u0439))?$/iu.test(value);
+}
+
 function recentCodexSessionFamilyForTarget(source, target = null) {
   const prefix = codexSessionKeyPrefix(source, target);
   if (!prefix) {
@@ -6034,6 +6055,9 @@ function recentCodexSessionFamilyForTarget(source, target = null) {
 
 function resolveCodexTaskFamily(text, source, target = null) {
   const classified = classifyTaskFamily(text, target);
+  if (classified === "plain-dialog" && isSmallTalkPrompt(text)) {
+    return classified;
+  }
   if (!target?.id) {
     return classified;
   }
@@ -6106,6 +6130,9 @@ function classifyTaskFamily(text, target = null) {
   const family = classifySourceCommand(text);
   if (family !== "generic") {
     return family;
+  }
+  if (isSmallTalkPrompt(text)) {
+    return "plain-dialog";
   }
   if (isMemoryRecallOrFollowupPrompt(text)) {
     return target?.id ? "source-scoped-dialog" : "plain-dialog";
@@ -7569,6 +7596,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     `session_mode: ${runtimeContext.session.mode}`,
     `session_resumed: ${runtimeContext.session.resumed ? "true" : "false"}`,
+    `task_family: ${runtimeContext.taskFamily || "generic"}`,
     `source_device: ${runtimeContext.source.deviceNick || "unknown"} (${runtimeContext.source.deviceId || "no-id"})`,
     `target: ${runtimeContext.target.label || "none"} (${runtimeContext.target.id || "none"})`,
     `target_source_device_id: ${runtimeContext.target.sourceDeviceId || "none"}`,
@@ -7612,6 +7640,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "Soty runtime packet:",
     `- session_mode: ${runtime.session?.mode || codexSessionMode}`,
     `- session_resumed: ${runtime.session?.resumed ? "true" : "false"}`,
+    `- task_family: ${runtime.taskFamily || "generic"}`,
     `- source_device: ${runtime.source?.deviceNick || "unknown"} (${runtime.source?.deviceId || "no-id"})`,
     `- target: ${runtime.target?.label || "none"} (${runtime.target?.id || "none"})`,
     `- target_source_device_id: ${runtime.target?.sourceDeviceId || "none"}`,

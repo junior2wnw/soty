@@ -197,6 +197,48 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(gonkaRequests[0].tools, undefined);
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("Compact Soty runtime packet")));
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("- target: none (none)")));
+        const plainDialogWithTarget = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
+          model: "moonshotai/Kimi-K2.6",
+          stream: true,
+          tools: [{
+            type: "function",
+            name: "exec_command",
+            description: "Run a shell command",
+            parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] }
+          }],
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{
+              type: "input_text",
+              text: [
+                "Current user request (authoritative):",
+                "hi",
+                "",
+                "Soty runtime packet:",
+                "- session_mode: soty-clean-codex-memory-plane-v1",
+                "- task_family: plain-dialog",
+                "- source_device: selftest (dev1)",
+                "- target: selftest-source (agent-source:dev1)",
+                "- target_source_device_id: dev1",
+                "",
+                "Visible Soty shared-text context:",
+                "selftest",
+                "",
+                "User message to satisfy now:",
+                "hi",
+                "",
+                "Use the user message above as the task."
+              ].join("\n")
+            }]
+          }]
+        }), {
+          "Authorization": "Bearer selftest-key",
+          "Content-Type": "application/json"
+        });
+        assertEqual(plainDialogWithTarget.status, 200);
+        assertEqual(gonkaRequests[1].tools, undefined);
+        assert(gonkaRequests[1].messages.some((message) => String(message.content).includes("- task_family: plain-dialog")));
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           input: "hello"
