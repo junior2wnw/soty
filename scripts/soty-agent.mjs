@@ -4749,6 +4749,13 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       codexProbe: hasCodexBinary(),
       relayFallback: codexRelayFallback
     });
+    const quickDialogReply = agentQuickDialogReply(text);
+    if (quickDialogReply) {
+      traceRouting(trace, { finalRoute: "agent.quick-dialog" });
+      traceStep(trace, "agent.quick-dialog", { reason: "simple-greeting" });
+      await finishAgentTrace(trace, quickDialogReply);
+      return withTraceId(quickDialogReply, trace);
+    }
     const capabilityReply = agentCapabilityMetaReply(text);
     if (capabilityReply) {
       traceRouting(trace, { finalRoute: "agent.capability-summary" });
@@ -6261,6 +6268,28 @@ function agentCapabilityMetaReply(text) {
     ].join("\n"),
     exitCode: 0
   };
+}
+
+function agentQuickDialogReply(text) {
+  if (!isSimpleGreetingPrompt(text)) {
+    return null;
+  }
+  return {
+    ok: true,
+    text: "Привет! Готов помочь. Что сделаем?",
+    exitCode: 0
+  };
+}
+
+function isSimpleGreetingPrompt(text) {
+  const value = String(text || "").trim().toLowerCase()
+    .replace(/[?!.,;:()[\]{}"'`«»]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!value || value.length > 80) {
+    return false;
+  }
+  return /^(?:хай|hi|hello|hey|привет|приветик|здравствуй|здравствуйте|доброе\s+утро|добрый\s+день|добрый\s+вечер|ку)$/iu.test(value);
 }
 
 function isAgentCapabilityMetaQuestion(text) {

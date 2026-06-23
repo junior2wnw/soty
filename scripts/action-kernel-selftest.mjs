@@ -1172,6 +1172,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(String(response.body.text || "").includes("универсальный агент"));
       assert(String(response.body.text || "").includes("компьютеру"));
     }],
+    ["simple greeting returns immediate agent reply", async () => {
+      const response = await agentReply("хай");
+      assertEqual(response.status, 200);
+      assertEqual(response.body.ok, true);
+      assert(String(response.body.text || "").includes("Готов помочь"));
+    }],
     ["repeated prompt is not swallowed by duplicate shortcut", async () => {
       await agentReply("repeat smoke no duplicate shortcut");
       const response = await agentReply("repeat smoke no duplicate shortcut");
