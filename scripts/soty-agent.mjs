@@ -58,6 +58,7 @@ const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
 const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIMEOUT_MS, 25_000, 120_000);
 const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 7000, 120_000);
+const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -5213,7 +5214,9 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         reason: "empty-before-model",
         mcpAttached: false
       });
-      result = await runCodexForSotyChat(codexBin, fallbackArgs, childEnv, fallbackPrompt, fallbackState, jobDir, codexOnMessage, onTerminal, signal);
+      result = await runCodexForSotyChat(codexBin, fallbackArgs, childEnv, fallbackPrompt, fallbackState, jobDir, codexOnMessage, onTerminal, signal, {
+        noProgressTimeoutMs: codexFallbackNoProgressTimeoutMs
+      });
       state.threadId = fallbackState.threadId;
       state.lastMessage = fallbackState.lastMessage;
       state.messages = fallbackState.messages;
@@ -6320,8 +6323,11 @@ function quoteWindowsCommandArg(value) {
   return `"${text.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
 }
 
-function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = null, onTerminal = null, signal = null) {
+function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = null, onTerminal = null, signal = null, options = {}) {
   return new Promise((resolve, reject) => {
+    const noProgressTimeoutMs = Number.isSafeInteger(options?.noProgressTimeoutMs)
+      ? Math.max(5000, options.noProgressTimeoutMs)
+      : codexNoProgressTimeoutMs;
     traceStep(state?.trace, "codex.spawn", {
       file: basename(file || ""),
       cwd: jobDir || process.cwd(),
@@ -6358,7 +6364,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
       clearTimeout(noProgressTimer);
     };
     const armNoProgressTimer = () => {
-      if (done || sawModelProgress || noProgressTimer || codexNoProgressTimeoutMs <= 0) {
+      if (done || sawModelProgress || noProgressTimer || noProgressTimeoutMs <= 0) {
         return;
       }
       noProgressTimer = setTimeout(() => {
@@ -6368,13 +6374,13 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
         forcedExitCode = 124;
         stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! codex no-progress timeout\n`.slice(-24_000);
         traceStep(state?.trace, "codex.no-progress-timeout", {
-          timeoutMs: codexNoProgressTimeoutMs,
+          timeoutMs: noProgressTimeoutMs,
           stdoutChars: stdout.length,
           stderrChars: stderr.length,
           usage: state?.usage || emptyCodexUsage()
         });
         killProcessTree(child);
-      }, Math.max(5000, codexNoProgressTimeoutMs));
+      }, noProgressTimeoutMs);
     };
     const finish = (exitCode) => {
       if (done) {
