@@ -605,6 +605,7 @@ function handleGonkaModelsProxy(response, headers) {
     slug: model,
     name: model,
     display_name: model,
+    supported_in_api: true,
     supported_reasoning_levels: [],
     shell_type: "default",
     visibility: "list"
@@ -661,7 +662,11 @@ async function handleGonkaResponsesProxy(request, response, headers) {
     return;
   }
   const body = await upstream.json().catch(() => null);
-  streamGonkaChatCompletionObject(body, response, headers, payload?.model || codexGonkaModel);
+  if (payload?.stream === true) {
+    streamGonkaChatCompletionObject(body, response, headers, payload?.model || codexGonkaModel);
+    return;
+  }
+  sendJson(response, 200, headers, gonkaChatCompletionResponseObject(body, payload?.model || codexGonkaModel));
 }
 
 function bearerTokenFromRequest(request) {
@@ -716,6 +721,12 @@ function responsesInputToChatMessages(payload) {
     messages.push({ role: "system", content: instructions });
   }
   messages.push({ role: "system", content: gonkaAdapterSystemInstruction() });
+  if (typeof payload?.input === "string") {
+    const content = payload.input.trim();
+    if (content) {
+      messages.push({ role: "user", content });
+    }
+  }
   for (const item of Array.isArray(payload?.input) ? payload.input : []) {
     if (item?.type === "message") {
       const content = responseContentText(item.content);
@@ -895,6 +906,60 @@ function streamGonkaChatCompletionObject(body, response, headers, model) {
     writer.usage(body.usage);
   }
   writer.complete();
+}
+
+function gonkaChatCompletionResponseObject(body, model) {
+  const now = Number.isFinite(body?.created) ? body.created : Math.floor(Date.now() / 1000);
+  const responseId = `resp_${randomUUID().replace(/-/gu, "")}`;
+  const choice = Array.isArray(body?.choices) ? body.choices[0] : null;
+  const message = choice?.message || {};
+  const output = [];
+  if (typeof message.content === "string" && message.content) {
+    output.push({
+      id: `msg_${randomUUID().replace(/-/gu, "")}`,
+      type: "message",
+      status: "completed",
+      role: "assistant",
+      content: [{ type: "output_text", text: message.content, annotations: [] }]
+    });
+  }
+  if (Array.isArray(message.tool_calls)) {
+    for (const call of message.tool_calls) {
+      const fn = call?.function || {};
+      const name = safeChatToolName(fn.name);
+      if (!name) {
+        continue;
+      }
+      output.push({
+        id: `fc_${randomUUID().replace(/-/gu, "")}`,
+        type: "function_call",
+        status: "completed",
+        call_id: safeToolCallId(call.id) || `call_${randomUUID().replace(/-/gu, "")}`,
+        name,
+        arguments: String(fn.arguments || "{}")
+      });
+    }
+  }
+  return {
+    id: responseId,
+    object: "response",
+    created_at: now,
+    status: "completed",
+    model,
+    output,
+    parallel_tool_calls: true,
+    usage: chatUsageToResponsesUsage(body?.usage),
+    error: null,
+    incomplete_details: null
+  };
+}
+
+function chatUsageToResponsesUsage(nextUsage) {
+  return {
+    input_tokens: Number.isFinite(nextUsage?.prompt_tokens) ? nextUsage.prompt_tokens : 0,
+    output_tokens: Number.isFinite(nextUsage?.completion_tokens) ? nextUsage.completion_tokens : 0,
+    total_tokens: Number.isFinite(nextUsage?.total_tokens) ? nextUsage.total_tokens : 0
+  };
 }
 
 function responsesSseWriter(response, headers, model) {
@@ -7861,8 +7926,14 @@ function agentFailureText(details) {
 }
 
 async function preparePersistentStockCodexHome() {
-  const target = join(agentDir, "codex-stock-home");
+  const target = join(agentDir, codexUsesGonka ? "codex-gonka-home" : "codex-stock-home");
   await mkdir(target, { recursive: true });
+  if (codexUsesGonka) {
+    await rm(join(target, "auth.json"), { force: true }).catch(() => undefined);
+    await rm(join(target, "cap_sid"), { force: true }).catch(() => undefined);
+    await ensureCodexInstallationId(target);
+    return target;
+  }
   const authHome = chooseCodexAuthHome();
   for (const file of ["auth.json", "cap_sid", "installation_id", "version.json"]) {
     const source = authHome ? join(authHome, file) : "";
@@ -7871,6 +7942,21 @@ async function preparePersistentStockCodexHome() {
     }
   }
   return target;
+}
+
+async function ensureCodexInstallationId(target) {
+  const targetPath = join(target, "installation_id");
+  if (existsSync(targetPath)) {
+    return;
+  }
+  const authHome = chooseCodexAuthHome();
+  const source = authHome ? join(authHome, "installation_id") : "";
+  if (source && existsSync(source)) {
+    await copyFile(source, targetPath).catch(() => undefined);
+  }
+  if (!existsSync(targetPath)) {
+    await writeFile(targetPath, `${randomUUID()}\n`, "utf8").catch(() => undefined);
+  }
 }
 
 function chooseCodexAuthHome() {

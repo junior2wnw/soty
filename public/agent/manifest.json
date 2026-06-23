@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "079eb292934b4cc82ff185ef7a5ab88eac6fb7660790696365377f40b8a00bd8",
+  "sha256": "5db7c186ac8073bd667f66272e5fe27d5f48524dc3a323d71d5a1ae3800a493a",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [

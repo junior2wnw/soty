@@ -83,14 +83,15 @@ async function runScenarios({ relayUrl } = {}) {
     ["gonka codex provider exposes local responses adapter", async () => {
       const gonkaUpstream = createServer((request, response) => {
         if (request.url === "/v1/chat/completions" && request.method === "POST") {
-          response.writeHead(200, {
-            "Content-Type": "text/event-stream; charset=utf-8",
-            "Cache-Control": "no-store"
-          });
-          response.write(`data: ${JSON.stringify({
-            choices: [{ delta: { content: "adapter ok" } }]
-          })}\n\n`);
-          response.end("data: [DONE]\n\n");
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({
+            id: "chatcmpl_selftest",
+            object: "chat.completion",
+            created: 123,
+            model: "moonshotai/Kimi-K2.6",
+            choices: [{ index: 0, message: { role: "assistant", content: "adapter ok" }, finish_reason: "stop" }],
+            usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 }
+          }));
           return;
         }
         response.writeHead(404, { "Content-Type": "application/json" });
@@ -134,6 +135,7 @@ async function runScenarios({ relayUrl } = {}) {
         const models = await requestPort(gonkaPort, "GET", "/codex-gonka/v1/models");
         assertEqual(models.status, 200);
         assertEqual(models.body.models[0].id, "moonshotai/Kimi-K2.6");
+        assertEqual(models.body.models[0].supported_in_api, true);
         const proxied = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           stream: true,
@@ -150,6 +152,17 @@ async function runScenarios({ relayUrl } = {}) {
         const proxiedText = String(proxied.body.text || JSON.stringify(proxied.body));
         assert(proxiedText.includes("response.output_text.delta"), proxiedText.slice(0, 1200));
         assert(proxiedText.includes("adapter ok"), proxiedText.slice(0, 1200));
+        const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
+          model: "moonshotai/Kimi-K2.6",
+          input: "hello"
+        }), {
+          "Authorization": "Bearer selftest-key",
+          "Content-Type": "application/json"
+        });
+        assertEqual(nonStream.status, 200);
+        assertEqual(nonStream.body.object, "response");
+        assertEqual(nonStream.body.output[0].content[0].text, "adapter ok");
+        assertEqual(nonStream.body.usage.total_tokens, 5);
       } finally {
         if (child.exitCode === null) {
           child.kill();
