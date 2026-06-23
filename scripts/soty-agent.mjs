@@ -640,7 +640,7 @@ async function handleGonkaResponsesProxy(request, response, headers) {
       method: "POST",
       cache: "no-store",
       headers: {
-        Accept: "text/event-stream",
+        Accept: "application/json",
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
@@ -675,7 +675,7 @@ function gonkaChatCompletionPayload(payload) {
   const body = {
     model: codexGonkaModel || safeCodexModelId(payload?.model) || "moonshotai/Kimi-K2.6",
     messages: responsesInputToChatMessages(payload),
-    stream: true
+    stream: false
   };
   if (tools.length > 0) {
     body.tools = tools;
