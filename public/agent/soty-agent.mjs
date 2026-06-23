@@ -5316,6 +5316,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const shouldUseRecoveredFinalText = Boolean(
     recoveredFinalText
       && (!finalText || isLikelyInternalCodexReasoningReply(finalText) || result.exitCode === 124)
+      && recoveredFinalCoversUserRequest(recoveredFinalText, text)
   );
   if (shouldUseRecoveredFinalText) {
     finalText = recoveredFinalText;
@@ -5653,6 +5654,19 @@ function formatRecoveredOperatorText(value) {
     return `Текущее системное время: ${time[1]}. Изменение времени требует подтверждения${time[2].toLowerCase() === "true" ? "." : " и прав администратора."}`;
   }
   return text;
+}
+
+function recoveredFinalCoversUserRequest(finalText, userText) {
+  const finalLower = String(finalText || "").toLowerCase();
+  const userLower = String(userText || "").toLowerCase();
+  if (!finalLower || !userLower) {
+    return true;
+  }
+  const onlyWritten = /(?:^|\b)(?:готово,\s*)?файл записан:/iu.test(finalLower);
+  if (onlyWritten && /(?:delete|remove|cleanup|check|verify|read back|удал|сотри|проверь|провер|убедись|прочитай|сверь)/iu.test(userLower)) {
+    return false;
+  }
+  return true;
 }
 
 function formatRecoveredOperatorFailureText(value, exitCode = 1) {
@@ -6353,6 +6367,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `desktop-write`, `desktop-read`, `desktop-delete`, `desktop-cycle <file> <text>`, `audio-get`, `audio-set <0-100>`, `time-status`, or `open-url <url>` before hand-written fetch commands.",
+    "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
     "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
     "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
     "- Shell command cookbook:",
@@ -8191,7 +8206,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: use its small commands first (`desktop-*`, `audio-get`, `audio-set`, `time-status`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
+    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: use its small commands first (`desktop-cycle` for create+verify+delete, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
     "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [
