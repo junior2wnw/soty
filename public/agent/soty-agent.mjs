@@ -6120,6 +6120,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- Gonka local-api route: MCP/Responses namespace tools are not available in this provider adapter. Do not search for a `computer` tool and do not read SOTY_ROUTES.md for ordinary file/system/process tasks.",
     "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
+    "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `node SOTY_LOCAL_API.mjs desktop-write rrr.txt \"text\"`, or `node SOTY_LOCAL_API.mjs script-powershell \"<PowerShell>\"` before hand-written fetch commands.",
     "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
     "- Shell command cookbook:",
     "```sh",
@@ -7740,6 +7741,42 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     return;
   }
   await mkdir(jobDir, { recursive: true });
+  const localApiHelper = [
+    "const target = " + JSON.stringify(runtimeContext.target?.id || "") + ";",
+    "const sourceDeviceId = " + JSON.stringify(runtimeContext.target?.sourceDeviceId || runtimeContext.source?.deviceId || "") + ";",
+    "const sourceRelayId = " + JSON.stringify(runtimeContext.source?.sourceRelayId || "") + ";",
+    "const base = 'http://127.0.0.1:" + port + "';",
+    "const [, , op = '', ...args] = process.argv;",
+    "function ps(value) { return `'${String(value ?? '').replace(/'/g, \"''\")}'`; }",
+    "function desktopPathScript(name) { return `$path = Join-Path ([Environment]::GetFolderPath('Desktop')) ${ps(name)}`; }",
+    "async function post(path, body) {",
+    "  const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });",
+    "  const data = await res.json().catch(async () => ({ ok: false, text: await res.text(), exitCode: res.status }));",
+    "  console.log(JSON.stringify(data, null, 2));",
+    "  if (!res.ok || data.ok === false || (Number.isInteger(data.exitCode) && data.exitCode !== 0)) process.exitCode = data.exitCode || res.status || 1;",
+    "}",
+    "async function scriptPowerShell(script, { timeoutMs = 60000, name = 'soty-script' } = {}) {",
+    "  await post('/operator/script', { target, sourceDeviceId, sourceRelayId, shell: 'powershell', timeoutMs, name, script });",
+    "}",
+    "if (!target || !sourceDeviceId || !sourceRelayId) { console.error('missing target/sourceDeviceId/sourceRelayId'); process.exit(2); }",
+    "if (op === 'desktop-exists') {",
+    "  const name = args.join(' ').trim();",
+    "  if (!name) { console.error('usage: desktop-exists <file-name>'); process.exit(2); }",
+    "  await scriptPowerShell(`${desktopPathScript(name)}\\nif (Test-Path -LiteralPath $path) { 'exists ' + $path } else { 'missing ' + $path }`, { name: 'desktop-exists' });",
+    "} else if (op === 'desktop-write') {",
+    "  const name = String(args.shift() || '').trim();",
+    "  const text = args.join(' ');",
+    "  if (!name) { console.error('usage: desktop-write <file-name> <text>'); process.exit(2); }",
+    "  await scriptPowerShell(`${desktopPathScript(name)}\\nSet-Content -LiteralPath $path -Value ${ps(text)} -Encoding UTF8\\nif (Test-Path -LiteralPath $path) { 'written ' + $path }`, { name: 'desktop-write' });",
+    "} else if (op === 'script-powershell') {",
+    "  const script = args.join(' ');",
+    "  if (!script.trim()) { console.error('usage: script-powershell <script>'); process.exit(2); }",
+    "  await scriptPowerShell(script, { name: 'script-powershell' });",
+    "} else {",
+    "  console.error('usage: node SOTY_LOCAL_API.mjs desktop-exists <file> | desktop-write <file> <text> | script-powershell <script>');",
+    "  process.exit(2);",
+    "}"
+  ].join("\n");
   const routes = [
     "# Soty Tool Routes",
     "",
@@ -7866,7 +7903,8 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_ROUTES.md contains exact high-signal computer routes, including Windows reinstall status/prepare and generated-image artifact transfer."
+    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `node SOTY_LOCAL_API.mjs desktop-write rrr.txt \"text\"`, or `node SOTY_LOCAL_API.mjs script-powershell \"Get-Process\"`.",
+    "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [
     "# Soty Runtime Packet",
@@ -7897,6 +7935,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
   await writeFile(join(jobDir, "AGENTS.md"), `${agents}\n`, "utf8");
   await writeFile(join(jobDir, "SOTY_CONTEXT.md"), `${context}\n`, "utf8");
   await writeFile(join(jobDir, "SOTY_ROUTES.md"), `${routes}\n`, "utf8");
+  await writeFile(join(jobDir, "SOTY_LOCAL_API.mjs"), `${localApiHelper}\n`, "utf8");
 }
 
 function buildAgentPrompt(text, context = "", runtimeContext = null) {
