@@ -1038,7 +1038,7 @@ function inferLinkTextFromText(text) {
   if (quoted) {
     return quoted[1].trim();
   }
-  const labeled = value.match(/(?:link|button|ссыл\w*|кнопк\w*)\s+([A-Za-z0-9][A-Za-z0-9 _.,:\/-]{1,120}?)(?:\s+(?:и|and|then|после|чтобы|скажи|прочитай)\b|[.?!]|$)/iu);
+  const labeled = value.match(/(?:link|button|ссыл\w*|кнопк\w*)\s+([A-Za-z0-9][A-Za-z0-9 _.,:\/-]{1,120}?)(?:\s+(?:и|and|then|после|чтобы|скажи|прочитай)(?:\s|$)|[.?!]|$)/iu);
   if (labeled) {
     return labeled[1].trim().replace(/[.,:;]+$/u, "");
   }
@@ -6086,10 +6086,36 @@ async function polishGonkaRecoveredFinalText({ userText = "", toolText = "", tas
     }
     const body = await response.json().catch(() => null);
     const content = Array.isArray(body?.choices) ? body.choices[0]?.message?.content : "";
-    return cleanAgentChatReply(content || "").slice(0, maxChatChars);
+    return cleanAgentChatReply(stripGonkaScratchpad(content || "")).slice(0, maxChatChars);
   } catch {
     return "";
   }
+}
+
+function stripGonkaScratchpad(value) {
+  let text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  if (!text) {
+    return "";
+  }
+  const marker = /(?:final answer(?: in russian)?|concise answer(?: in russian)?|итоговый ответ)\s*:\s*/giu;
+  let match;
+  let lastIndex = -1;
+  while ((match = marker.exec(text))) {
+    lastIndex = marker.lastIndex;
+  }
+  if (lastIndex >= 0) {
+    text = text.slice(lastIndex).trim();
+  }
+  const scratch = text.search(/\n\s*(?:Wait\b|Actually\b|However\b|But\b|Let me\b|Another thought\b|I think\b|So the best\b|Alternatively\b|Is that one sentence\b|That's concise\b)/u);
+  if (scratch > 0) {
+    text = text.slice(0, scratch).trim();
+  }
+  const lines = text.split(/\n+/u).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 0 && /^(?:["'“”«»]*)(?:Wait\b|Actually\b|However\b|But\b|Let me\b|Another thought\b|I think\b|So the best\b|Alternatively\b)/u.test(lines[0])) {
+    const quoted = text.match(/[«"“]([^"”»\n]{8,500})["”»]/u);
+    return quoted ? quoted[1].trim() : "";
+  }
+  return text.replace(/^["'“”«]+|["'“”»]+$/gu, "").trim();
 }
 
 function recoverFinalTextFromCodexEvent(event) {
