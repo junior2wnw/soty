@@ -1470,6 +1470,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("fallbackGonkaComputerToolCalls"));
       assert(agent.includes("immediateGonkaComputerToolResponse"));
       assert(agent.includes("responsesPayloadHasToolResult"));
+      assert(agent.includes("responsesInputItemHasToolResult"));
       assert(agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("inferLinkTextFromText"));
       assert(agent.includes("enrichGonkaComputerToolArguments"));

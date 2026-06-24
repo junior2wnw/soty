@@ -801,14 +801,32 @@ function streamImmediateGonkaToolResponse(body, response, headers, model) {
 }
 
 function responsesPayloadHasToolResult(payload) {
+  let hasToolResultAfterLatestUser = false;
   for (const item of Array.isArray(payload?.input) ? payload.input : []) {
-    const type = String(item?.type || "").toLowerCase();
-    if (type === "function_call_output" || type === "tool_result" || type === "function_result") {
-      return true;
+    if (responsesInputItemIsUserMessage(item)) {
+      hasToolResultAfterLatestUser = false;
+      continue;
     }
-    if (Array.isArray(item?.content) && item.content.some((part) => /tool|function/u.test(String(part?.type || "").toLowerCase()) && typeof part?.output === "string")) {
-      return true;
+    if (responsesInputItemHasToolResult(item)) {
+      hasToolResultAfterLatestUser = true;
     }
+  }
+  return hasToolResultAfterLatestUser;
+}
+
+function responsesInputItemIsUserMessage(item) {
+  const role = String(item?.role || "").toLowerCase();
+  const type = String(item?.type || "").toLowerCase();
+  return role === "user" || (type === "message" && (!role || role === "user"));
+}
+
+function responsesInputItemHasToolResult(item) {
+  const type = String(item?.type || "").toLowerCase();
+  if (type === "function_call_output" || type === "tool_result" || type === "function_result") {
+    return true;
+  }
+  if (Array.isArray(item?.content) && item.content.some((part) => /tool|function/u.test(String(part?.type || "").toLowerCase()) && typeof part?.output === "string")) {
+    return true;
   }
   return false;
 }
