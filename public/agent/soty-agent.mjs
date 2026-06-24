@@ -836,15 +836,15 @@ function inferGonkaComputerArguments(payload) {
   const userText = responsesPayloadUserText(payload) || allText;
   const family = (allText.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
   const args = {};
-  const explicitOperation = firstKeyValue(allText, ["operation", "op", "capability"]);
-  const explicitAction = firstKeyValue(allText, ["action"]);
+  const explicitOperation = firstKeyValue(userText, ["operation", "op", "capability"]);
+  const explicitAction = firstKeyValue(userText, ["action"]);
   if (explicitOperation) {
     args.operation = normalizeGonkaComputerOperation(explicitOperation);
   }
   if (explicitAction) {
     args.action = explicitAction;
   }
-  const url = firstHttpUrl(userText) || firstHttpUrl(allText);
+  const url = firstHttpUrl(userText) || (!userText ? firstHttpUrl(allText) : "");
   if (url) {
     args.url = url;
   }
@@ -852,31 +852,31 @@ function inferGonkaComputerArguments(payload) {
   if (linkText && !args.text) {
     args.text = linkText;
   }
-  const query = firstKeyValue(allText, ["query", "q"]);
+  const query = firstKeyValue(userText, ["query", "q"]);
   if (query) {
     args.query = query;
   }
-  const maxChars = firstIntegerValue(allText, ["maxChars", "max_chars", "limit"]);
+  const maxChars = firstIntegerValue(userText, ["maxChars", "max_chars", "limit"]);
   if (maxChars) {
     args.maxChars = Math.max(1000, Math.min(maxChars, 12000));
   }
-  const timeoutMs = firstIntegerValue(allText, ["timeoutMs", "timeout_ms"]);
+  const timeoutMs = firstIntegerValue(userText, ["timeoutMs", "timeout_ms"]);
   if (timeoutMs) {
     args.timeoutMs = Math.max(1000, Math.min(timeoutMs, 120000));
   }
-  const volume = firstIntegerValue(allText, ["volumePercent", "volume", "громкость", "звук"]);
+  const volume = firstIntegerValue(userText, ["volumePercent", "volume", "громкость", "звук"]);
   if (Number.isFinite(volume)) {
     args.volumePercent = Math.max(0, Math.min(volume, 100));
   }
-  const path = firstKeyValue(allText, ["path", "file", "filename", "файл"]);
+  const path = firstKeyValue(userText, ["path", "file", "filename", "файл"]);
   if (path) {
     args.path = path;
   }
-  const content = firstKeyValue(allText, ["content", "text", "value", "содержимое", "текст"]);
+  const content = firstKeyValue(userText, ["content", "text", "value", "содержимое", "текст"]);
   if (content) {
     args.content = content;
   }
-  const command = firstKeyValue(allText, ["command", "cmd", "script"]);
+  const command = firstKeyValue(userText, ["command", "cmd", "script"]);
   if (command) {
     args.script = command;
   }
@@ -912,18 +912,41 @@ function inferGonkaComputerArguments(payload) {
 
 function responsesPayloadUserText(payload) {
   if (typeof payload?.input === "string") {
-    return payload.input;
+    return extractAuthoritativeUserRequest(payload.input) || payload.input;
   }
   let last = "";
   for (const item of Array.isArray(payload?.input) ? payload.input : []) {
     if (item?.type === "message" && chatRoleForResponseRole(item.role) === "user") {
       const text = responseContentText(item.content);
       if (text) {
-        last = text;
+        last = extractAuthoritativeUserRequest(text) || text;
       }
     }
   }
   return last;
+}
+
+function extractAuthoritativeUserRequest(text) {
+  const value = String(text || "").replace(/\r\n?/gu, "\n");
+  const patterns = [
+    /(?:^|\n)User message to satisfy now:\s*\n([\s\S]*?)(?:\n\s*Use the user message above\b|\n\s*\n|$)/iu,
+    /(?:^|\n)Current user request \(authoritative\):\s*\n([\s\S]*?)(?:\n\s*\n|$)/iu
+  ];
+  let best = "";
+  let bestIndex = -1;
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(value))) {
+      if (match.index >= bestIndex) {
+        best = String(match[1] || "").trim();
+        bestIndex = match.index;
+      }
+      if (!pattern.global) {
+        break;
+      }
+    }
+  }
+  return best;
 }
 
 function firstKeyValue(text, keys) {
