@@ -203,10 +203,11 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(gonkaRequests[0].stream, false);
         assert(gonkaRequests[0].messages[0].content.includes("Gonka AI Chat Completions adapter"));
         assert(gonkaRequests[0].messages[0].content.length < 700);
-        assertEqual(gonkaRequests[0].tools.length, 1);
-        assertEqual(gonkaRequests[0].tools[0].function.name, "exec_command");
+        assertEqual(gonkaRequests[0].tools.length, 2);
+        assertEqual(gonkaRequests[0].tools[0].function.name, "computer");
+        assertEqual(gonkaRequests[0].tools[1].function.name, "exec_command");
         assert(gonkaRequests[0].tools[0].function.description.length < 700);
-        assert(gonkaRequests[0].tools[0].function.parameters.properties.command.description.length < 240);
+        assert(gonkaRequests[0].tools[1].function.parameters.properties.command.description.length < 240);
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("Compact Soty runtime packet")));
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("- target: none (none)")));
         const universalDialogWithTarget = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({

@@ -712,12 +712,7 @@ function gonkaToolsWithInjectedComputer(tools, payload) {
 }
 
 function shouldInjectGonkaComputerTool(payload) {
-  const text = responsesPayloadPlainText(payload).slice(0, 30_000);
-  const targetLine = text.match(/(?:^|\n)\s*-?\s*target:\s*([^\n]+)/iu)?.[1]?.trim() || "";
-  if (!targetLine || /^none\s*\(none\)?$/iu.test(targetLine) || /\(none\)/iu.test(targetLine)) {
-    return false;
-  }
-  return /\([^)]{3,}\)/u.test(targetLine) || /agent-source:[A-Za-z0-9_.:-]+/u.test(targetLine);
+  return true;
 }
 
 function responsesPayloadPlainText(payload) {
