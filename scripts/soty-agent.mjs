@@ -895,6 +895,9 @@ function inferGonkaComputerArguments(payload) {
   if (!args.operation) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
   }
+  if (args.url && String(args.text || args.linkText || args.selector || args.target || "").trim() && /click|press|follow|link|button|нажми|клик|перейди|ссыл\w*|кнопк\w*/iu.test(userText)) {
+    args.operation = "browser";
+  }
   if (!args.action) {
     args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
   }
@@ -1596,7 +1599,10 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   if (linkText && !currentTarget && clickIntent && (args.url || operation === "browser" || operation === "open-url" || operation === "open")) {
     args.text = linkText;
   }
-  if (String(args.text || args.linkText || args.selector || args.target || "").trim() && args.url && (operation === "open-url" || operation === "open" || operation === "browser" || !operation)) {
+  const hasBrowserTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
+  if (hasBrowserTarget && args.url && clickIntent) {
+    args.operation = "browser";
+  } else if (hasBrowserTarget && args.url && (operation === "open-url" || operation === "open" || operation === "browser" || !operation)) {
     args.operation = "browser";
   }
   return JSON.stringify(args);
