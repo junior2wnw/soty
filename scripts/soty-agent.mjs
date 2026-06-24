@@ -5753,11 +5753,17 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       && recoveredFinalCoversUserRequest(recoveredFinalText, text)
   );
   if (shouldUseRecoveredFinalText) {
-    finalText = recoveredFinalText;
+    const polishedRecoveredFinalText = await polishGonkaRecoveredFinalText({
+      userText: text,
+      toolText: recoveredFinalText,
+      taskFamily
+    });
+    finalText = polishedRecoveredFinalText || recoveredFinalText;
     messages = compactCodexMessages([finalText]);
     result.exitCode = 0;
     traceStep(trace, "codex.recovered-final-from-command-output", {
-      textChars: finalText.length
+      textChars: finalText.length,
+      modelPolished: Boolean(polishedRecoveredFinalText)
     });
   }
   if (!finalText && recoveredFailureText) {
@@ -6018,6 +6024,52 @@ function recoverFailureTextFromCodexCommandOutput(stdout) {
     }
   }
   return "";
+}
+
+async function polishGonkaRecoveredFinalText({ userText = "", toolText = "", taskFamily = "" } = {}) {
+  if (!codexUsesGonka || !toolText || !codexGonkaApiKey()) {
+    return "";
+  }
+  try {
+    const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
+    const response = await fetch(upstreamUrl, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${codexGonkaApiKey()}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: codexGonkaModel || "moonshotai/Kimi-K2.6",
+        messages: [
+          {
+            role: "system",
+            content: "You are the Soty computer agent. Write the final user-facing answer in the user's language. Use the tool result as proof. Be concise, do not expose JSON, tool names, transport, relay, or internal routing."
+          },
+          {
+            role: "user",
+            content: [
+              `task_family: ${String(taskFamily || "generic").slice(0, 80)}`,
+              `user_request: ${String(userText || "").slice(0, 4000)}`,
+              `tool_result: ${String(toolText || "").slice(0, 8000)}`,
+              "final_answer: one short sentence unless details are necessary."
+            ].join("\n")
+          }
+        ],
+        stream: false,
+        tool_choice: "none"
+      })
+    });
+    if (!response.ok) {
+      return "";
+    }
+    const body = await response.json().catch(() => null);
+    const content = Array.isArray(body?.choices) ? body.choices[0]?.message?.content : "";
+    return cleanAgentChatReply(content || "").slice(0, maxChatChars);
+  } catch {
+    return "";
+  }
 }
 
 function recoverFinalTextFromCodexEvent(event) {

@@ -1471,6 +1471,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("immediateGonkaComputerToolResponse"));
       assert(agent.includes("responsesPayloadHasToolResult"));
       assert(agent.includes("inferGonkaComputerArguments"));
+      assert(agent.includes("polishGonkaRecoveredFinalText"));
+      assert(agent.includes("modelPolished"));
       assert(agent.includes("mapGonkaToolCallForCodex"));
       assert(agent.includes('cmd: `node SOTY_LOCAL_API.mjs computer'));
       assert(agent.includes("function filePowerShell(req)"));
