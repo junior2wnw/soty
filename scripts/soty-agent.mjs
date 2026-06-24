@@ -5831,6 +5831,18 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
       outPath = noProgressRetryOutPath;
     }
+    if (shouldRetryCodexAfterNoProgress(result, state, signal)) {
+      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
+      if (direct) {
+        result = direct;
+        state.recoverableFinalText = direct.text;
+        state.terminal.push({
+          key: "direct-computer-fallback",
+          text: direct.text,
+          exitCode: direct.exitCode
+        });
+      }
+    }
   } finally {
     if (activeTurn) {
       activeTurn.done = true;
@@ -7287,6 +7299,112 @@ function spawnCommand(file, args, options) {
 function quoteWindowsCommandArg(value) {
   const text = String(value ?? "");
   return `"${text.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
+}
+
+async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace = null, signal = null } = {}) {
+  if (signal?.aborted) {
+    return null;
+  }
+  const payload = {
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
+    }]
+  };
+  const args = inferGonkaComputerArguments(payload);
+  const operation = normalizeGonkaComputerOperation(args?.operation || "");
+  if (!args || !["browser", "web", "fetch", "search", "open-url", "file", "audio", "time", "time-status", "system-resources", "status"].includes(operation)) {
+    return null;
+  }
+  traceStep(trace, "codex.direct-computer-fallback", { operation, action: args.action || "", hasUrl: Boolean(args.url), hasPath: Boolean(args.path) });
+  await traceWriteJson(trace, "direct-computer-fallback.json", { args });
+  const run = await runSimpleProcess(process.execPath, ["SOTY_LOCAL_API.mjs", "computer", JSON.stringify(args)], {
+    cwd: jobDir,
+    env: childEnv,
+    timeoutMs: Math.max(1000, Math.min(Number(args.timeoutMs) || 120000, 180000)),
+    signal
+  });
+  const finalText = formatDirectComputerFallbackText(args, run.stdout, run.stderr)
+    || (run.exitCode === 0 ? "Готово." : `! computer: ${sourceFailureProof(run.stderr || run.stdout)}`);
+  return {
+    ok: run.exitCode === 0,
+    text: finalText.slice(0, maxChatChars),
+    exitCode: run.exitCode,
+    stdout: run.stdout,
+    stderr: run.stderr
+  };
+}
+
+function runSimpleProcess(file, args, { cwd, env, timeoutMs = 120000, signal = null } = {}) {
+  return new Promise((resolve) => {
+    const child = spawnCommand(file, args, { cwd, env, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (exitCode) => {
+      if (done) {
+        return;
+      }
+      done = true;
+      clearTimeout(timer);
+      resolve({ exitCode, stdout: stdout.slice(-24000), stderr: stderr.slice(-24000) });
+    };
+    const timer = setTimeout(() => {
+      stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! direct-computer timeout\n`;
+      child.kill("SIGTERM");
+      finish(124);
+    }, timeoutMs);
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! cancelled\n`;
+        child.kill("SIGTERM");
+        finish(130);
+      }, { once: true });
+    }
+    child.stdout?.on("data", (chunk) => {
+      stdout = `${stdout}${chunk}`.slice(-24000);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-24000);
+    });
+    child.on("error", (error) => {
+      stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}${error instanceof Error ? error.message : String(error)}\n`;
+      finish(1);
+    });
+    child.on("close", (code) => {
+      finish(Number.isInteger(code) ? code : 1);
+    });
+  });
+}
+
+function formatDirectComputerFallbackText(args, stdout, stderr = "") {
+  const wrapper = parseJsonMaybe(stdout);
+  const raw = typeof wrapper?.text === "string" ? wrapper.text : String(stdout || "").trim();
+  const inner = parseJsonMaybe(raw);
+  const operation = normalizeGonkaComputerOperation(args?.operation || inner?.action || "");
+  if (operation === "browser" && inner && typeof inner === "object") {
+    if (inner.clicked === false && args?.text) {
+      return `Не смог нажать «${args.text}». Текущий заголовок: ${inner.title || "неизвестно"}.`;
+    }
+    return inner.title ? String(inner.title) : formatRecoveredOperatorText(raw);
+  }
+  if ((operation === "web" || operation === "fetch" || operation === "search") && inner && typeof inner === "object") {
+    return inner.title ? String(inner.title) : cleanActionText(inner.text || raw, maxChatChars);
+  }
+  return formatRecoveredOperatorText(raw) || formatRecoveredOperatorFailureText(stderr, Number(wrapper?.exitCode));
+}
+
+function parseJsonMaybe(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = null, onTerminal = null, signal = null, options = {}) {
