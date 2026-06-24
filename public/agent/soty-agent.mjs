@@ -3935,6 +3935,9 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 
 function classifyRoutineSourceTask(lower) {
   const text = normalizeRoutineIntentText(lower);
+  if (/(?:https?:\/\/|www\.)/iu.test(text) && /(?:click|press|follow|link|button|нажми|клик|перейди|ссыл\w*|кнопк\w*)/iu.test(text)) {
+    return "browser";
+  }
   if (hasDriverCheckIntent(text)) {
     return "driver-check";
   }
