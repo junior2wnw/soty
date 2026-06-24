@@ -642,6 +642,15 @@ async function handleGonkaResponsesProxy(request, response, headers) {
     sendJson(response, 400, headers, { error: { message: "Invalid Responses payload" } });
     return;
   }
+  const immediateToolResponse = immediateGonkaComputerToolResponse(payload, payload?.model || codexGonkaModel);
+  if (immediateToolResponse) {
+    if (payload?.stream === true) {
+      streamImmediateGonkaToolResponse(immediateToolResponse, response, headers, payload?.model || codexGonkaModel);
+    } else {
+      sendJson(response, 200, headers, immediateToolResponse);
+    }
+    return;
+  }
   const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
   let upstream;
   try {
@@ -745,7 +754,7 @@ function shouldForceGonkaComputerFromPayload(payload) {
 }
 
 function fallbackGonkaComputerToolCalls(payload, message = {}) {
-  if (!shouldForceGonkaComputerFromPayload(payload) || Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
+  if (responsesPayloadHasToolResult(payload) || !shouldForceGonkaComputerFromPayload(payload) || Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
     return [];
   }
   const args = inferGonkaComputerArguments(payload);
@@ -760,6 +769,48 @@ function fallbackGonkaComputerToolCalls(payload, message = {}) {
       arguments: JSON.stringify(args)
     }
   }];
+}
+
+function immediateGonkaComputerToolResponse(payload, model) {
+  const calls = fallbackGonkaComputerToolCalls(payload, {});
+  if (calls.length === 0) {
+    return null;
+  }
+  return gonkaChatCompletionResponseObject({
+    created: Math.floor(Date.now() / 1000),
+    choices: [{ message: { tool_calls: calls } }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  }, model, null);
+}
+
+function streamImmediateGonkaToolResponse(body, response, headers, model) {
+  const writer = responsesSseWriter(response, headers, model);
+  for (const item of Array.isArray(body?.output) ? body.output : []) {
+    if (item?.type === "function_call") {
+      writer.tool({
+        id: item.call_id,
+        type: "function",
+        function: {
+          name: item.name,
+          arguments: item.arguments
+        }
+      });
+    }
+  }
+  writer.complete();
+}
+
+function responsesPayloadHasToolResult(payload) {
+  for (const item of Array.isArray(payload?.input) ? payload.input : []) {
+    const type = String(item?.type || "").toLowerCase();
+    if (type === "function_call_output" || type === "tool_result" || type === "function_result") {
+      return true;
+    }
+    if (Array.isArray(item?.content) && item.content.some((part) => /tool|function/u.test(String(part?.type || "").toLowerCase()) && typeof part?.output === "string")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function inferGonkaComputerArguments(payload) {
