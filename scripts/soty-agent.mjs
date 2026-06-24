@@ -1044,6 +1044,10 @@ function inferGonkaComputerActionFromText(text, operation, args) {
     return args.url && !args.query ? "fetch" : "search";
   }
   if (operation === "file") {
+    const wantsWrite = args.content !== undefined || /созда[йть]|запиши|напиши|write|create/iu.test(lower);
+    const wantsRead = /прочита[йть]|считай|проверь|verify|read|show/iu.test(lower);
+    const wantsDelete = /удали|удалить|delete|remove/iu.test(lower);
+    if (args.path && args.content !== undefined && wantsWrite && wantsRead && wantsDelete) return "cycle";
     if (/удали|delete|remove/iu.test(lower)) return "delete";
     if (/добавь|append/iu.test(lower)) return "append";
     if (/прочитай|read|show|открой/iu.test(lower) && !args.content) return "read";
@@ -7392,6 +7396,19 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
   if ((operation === "web" || operation === "fetch" || operation === "search") && inner && typeof inner === "object") {
     return inner.title ? String(inner.title) : cleanActionText(inner.text || raw, maxChatChars);
   }
+  if (operation === "file" && inner && typeof inner === "object") {
+    const action = String(inner.action || args?.action || "").toLowerCase();
+    if (action === "cycle" && inner.deleted === true) {
+      const text = String(inner.text || "").trim();
+      return `Файл создан, прочитан и удалён. Прочитанный текст: ${text ? `\`${text}\`` : "(пусто)"}.`;
+    }
+    if (action === "read") {
+      return cleanActionText(inner.text || "", maxChatChars);
+    }
+    if (action === "delete") {
+      return "Файл удалён.";
+    }
+  }
   return formatRecoveredOperatorText(raw) || formatRecoveredOperatorFailureText(stderr, Number(wrapper?.exitCode));
 }
 
@@ -8791,7 +8808,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "}",
     "function filePowerShell(req) {",
     "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
-    "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
+    "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append' -or $action -eq 'cycle') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'cycle' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; $text = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim(); if ($text -ne ([string]$req.content)) { throw 'verify-failed' }; Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text; deleted=$true } | ConvertTo-Json -Compress; return }\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
     "}",
     "function browserPowerShell(req) {",
     "  const encoded = Buffer.from(JSON.stringify({ url: String(req.url || ''), text: String(req.text || req.linkText || req.selector || ''), maxChars: Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000)) }), 'utf8').toString('base64');",
