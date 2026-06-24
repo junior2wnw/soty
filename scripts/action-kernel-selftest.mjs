@@ -1473,6 +1473,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("responsesInputItemHasToolResult"));
       assert(agent.includes("extractAuthoritativeUserRequest"));
       assert(agent.includes("inferGonkaComputerArguments"));
+      assert(agent.includes("download-image-wallpaper"));
+      assert(agent.includes("hasWallpaperIntent"));
+      assert(agent.includes("inferWallpaperQuery"));
+      assert(agent.includes("wallpaperPowerShell"));
+      assert(agent.includes("ResolveWallpaperImageUrl"));
+      assert(agent.includes("operation === 'wallpaper'"));
+      assert(agent.includes("shouldRecoverProoflessComputerAction"));
+      assert(agent.includes("finalTextLooksLikeActionProof"));
       assert(agent.includes("inferLinkTextFromText"));
       assert(agent.includes("enrichGonkaComputerToolArguments"));
       assert(agent.includes("function browserPowerShell(req)"));
@@ -2028,7 +2036,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes('downloadAgentInstallerForDevice('));
       assert(ui.includes('"machine",'));
       assert(ui.includes('remoteButton.innerHTML = needsAgent'));
-      assert(ui.includes('mode === "update" ? "UPDATE" : "DOWNLOAD"'));
+      assert(ui.includes('mode === "update" ? "'));
+      assert(ui.includes('icon("download")'));
       assert(ui.includes('remoteButton.classList.toggle("needs-agent", needsAgent)'));
       assert(!ui.includes('downloadAgentInstallerForDevice("user"'));
       assert(!ui.includes("renderAgentInstall"));

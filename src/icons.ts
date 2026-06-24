@@ -1,9 +1,13 @@
-export type IconName = "install" | "qr" | "scan" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
+export type IconName = "install" | "qr" | "scan" | "search" | "reply" | "edit" | "pin" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
   qr: "M3 3h8v8H3V3Zm2 2v4h4V5H5Zm8-2h8v8h-8V3Zm2 2v4h4V5h-4ZM3 13h8v8H3v-8Zm2 2v4h4v-4H5Zm10-2h2v2h-2v-2Zm2 2h2v2h-2v-2Zm-4 2h2v2h-2v-2Zm2 2h2v2h-2v-2Zm4-2h2v4h-4v-2h2v-2Zm-6-4h2v2h-2v-2Zm6 0h2v2h-2v-2Z",
   scan: "M4 4h5v2H6v3H4V4Zm11 0h5v5h-2V6h-3V4ZM4 15h2v3h3v2H4v-5Zm14 0h2v5h-5v-2h3v-3ZM8 8h8v8H8V8Zm2 2v4h4v-4h-4Z",
+  search: "M9.5 3a6.5 6.5 0 0 1 5.1 10.55l5.42 5.43-1.42 1.42-5.42-5.43A6.5 6.5 0 1 1 9.5 3Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z",
+  reply: "M10 5v4.2c5.7.6 9.2 3.7 10 9.3-2.1-2.8-5.2-4.2-10-4.5V19l-8-7 8-7Z",
+  edit: "M4 17.3V21h3.7L18.6 10.1l-3.7-3.7L4 17.3Zm16.7-10c.4-.4.4-1 0-1.4l-2.6-2.6a1 1 0 0 0-1.4 0l-1.4 1.4L19 8.4l1.7-1.1Z",
+  pin: "M14 2 22 10l-2 2-2-2-4.8 4.8.3 3.7-1.5 1.5-4.2-4.2L3 20l-1-1 4.2-4.8L2 10l1.5-1.5 3.7.3L12 4l-2-2 2-2Z",
   close: "M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6 6.4 5Z",
   check: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7 19.6 5.6 9 16.2Z",
   person: "M12 12c2.2 0 4-1.8 4-4s-1.8-4-4-4-4 1.8-4 4 1.8 4 4 4Zm0 2c-2.7 0-8 1.4-8 4v2h16v-2c0-2.6-5.3-4-8-4Z",

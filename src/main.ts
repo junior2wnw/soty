@@ -135,6 +135,7 @@ const chessStoreKey = "soty:chess:v1";
 const terminalCollapsedKey = "soty:terminal-collapsed:v1";
 const textSnapshotsKey = "soty:text-snapshots:v1";
 const chatScrollKey = "soty:chat-scroll:v1";
+const chatPinsKey = "soty:chat-pins:v1";
 const autoDownloadedFilesKey = "soty:auto-downloaded-files:v1";
 const quickActions: readonly QuickAction[] = [
   {
@@ -216,7 +217,7 @@ const quickActions: readonly QuickAction[] = [
   {
     id: "agent-repair",
     title: "Починить агент",
-    label: "AGENT",
+    label: "Агент",
     summary: "Проверить установку, обновление, автозапуск и связь агента.",
     tags: ["агент", "установить", "обновить", "починить", "bridge", "relay"],
     agentCard: {
@@ -293,7 +294,39 @@ type LiveDraftState = LiveDraft & {
   readonly color: string;
 };
 
+type ChatMessageRef = {
+  readonly id: string;
+  readonly tunnelId: string;
+  readonly nick: string;
+  readonly time: string;
+  readonly text: string;
+  readonly side: string;
+  readonly className: string;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+};
+
+type ChatRenderBubble = {
+  key: string;
+  side: string;
+  nick: string;
+  color: string;
+  time: string;
+  className: string;
+  lines: string[];
+  live: WriterActivity | null;
+  id: string;
+  lineStart: number;
+  lineEnd: number;
+};
+
 const writerLines = new Map<string, Map<number, WriterLine>>();
+const renderedChatRefs = new Map<string, Map<string, ChatMessageRef>>();
+const chatSearches = new Map<string, string>();
+const chatReplyTargets = new Map<string, ChatMessageRef>();
+const chatEditTargets = new Map<string, ChatMessageRef>();
+const chatEditReturnDrafts = new Map<string, string>();
+let chatPins = loadChatPins();
 const activeActivities = new Map<string, WriterActivity>();
 const activeActivityTicks = new Map<string, number>();
 const activeNoticeKeys = new Set<string>();
@@ -759,6 +792,74 @@ function scheduleTextSnapshot(tunnelId: string, text: string): void {
   textSnapshotTimers.set(tunnelId, timer);
 }
 
+function loadChatPins(): Map<string, ChatMessageRef> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(chatPinsKey) || "{}");
+    if (!isRecord(parsed)) {
+      return new Map();
+    }
+    const pins = new Map<string, ChatMessageRef>();
+    for (const [tunnelId, value] of Object.entries(parsed)) {
+      const ref = normalizeStoredChatRef(value, tunnelId);
+      if (ref) {
+        pins.set(tunnelId, ref);
+      }
+    }
+    return pins;
+  } catch {
+    return new Map();
+  }
+}
+
+function saveChatPins(): void {
+  try {
+    const payload = Object.fromEntries([...chatPins].slice(-80));
+    localStorage.setItem(chatPinsKey, JSON.stringify(payload));
+  } catch {
+    // Pins are a local convenience; losing them must never block chat.
+  }
+}
+
+function clearChatUiState(tunnelId: string): void {
+  chatSearches.delete(tunnelId);
+  chatReplyTargets.delete(tunnelId);
+  chatEditTargets.delete(tunnelId);
+  chatEditReturnDrafts.delete(tunnelId);
+  renderedChatRefs.delete(tunnelId);
+  if (chatPins.delete(tunnelId)) {
+    saveChatPins();
+  }
+}
+
+function normalizeStoredChatRef(value: unknown, fallbackTunnelId = ""): ChatMessageRef | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const id = typeof value.id === "string" ? value.id : "";
+  const tunnelId = typeof value.tunnelId === "string" ? value.tunnelId : fallbackTunnelId;
+  const nick = typeof value.nick === "string" ? value.nick : "";
+  const time = typeof value.time === "string" ? value.time : "";
+  const text = typeof value.text === "string" ? value.text : "";
+  const side = typeof value.side === "string" ? value.side : "surface";
+  const className = typeof value.className === "string" ? value.className : "is-user-line";
+  const lineStart = typeof value.lineStart === "number" && Number.isFinite(value.lineStart) ? Math.max(0, Math.round(value.lineStart)) : 0;
+  const lineEnd = typeof value.lineEnd === "number" && Number.isFinite(value.lineEnd) ? Math.max(lineStart, Math.round(value.lineEnd)) : lineStart;
+  if (!id || !tunnelId || !text.trim()) {
+    return null;
+  }
+  return {
+    id,
+    tunnelId,
+    nick: cleanNick(nick) || counterpartyLabelForSelected(),
+    time,
+    text: text.slice(0, 4000),
+    side,
+    className,
+    lineStart,
+    lineEnd
+  };
+}
+
 function loadChatScroll(): Record<string, number> {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(chatScrollKey) || "{}");
@@ -960,7 +1061,7 @@ function quickActionAgentMessage(action: QuickAction, comment: string, tunnel: T
 function appendUserMessageToDialog(tunnelId: string, message: string): void {
   const sync = syncs.get(tunnelId);
   const current = texts.get(tunnelId) ?? textarea?.value ?? "";
-  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const separator = chatMessageSeparator(current);
   const next = `${current}${separator}${message}\n`;
   if (tunnelId === selectedId && textarea) {
     textarea.value = next;
@@ -1217,7 +1318,7 @@ function renderApp(): void {
           <span class="retro-brand-mark">S</span>
           <span>
             <b>SOTY</b>
-            <small>LIVE TUNNELS</small>
+            <small>Чаты</small>
           </span>
         </div>
         <button class="agent-open retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
@@ -1235,12 +1336,24 @@ function renderApp(): void {
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
+          <div class="chat-tools" role="toolbar" aria-label="chat tools">
+            <label class="chat-search-box">
+              <span>${icon("search")}</span>
+              <input class="chat-search-input" type="search" autocomplete="off" spellcheck="false" aria-label="search messages" />
+              <small class="chat-search-count"></small>
+            </label>
+            <button class="chat-copy-button retro-icon-button" type="button" aria-label="copy chat" data-tooltip="Copy chat">${icon("copy")}</button>
+            <button class="chat-bottom-button retro-icon-button" type="button" aria-label="scroll bottom" data-tooltip="Scroll bottom">${icon("download")}</button>
+          </div>
+          <div class="chat-pin-host"></div>
           <div class="chat-scroll">
             <div class="text-paint" aria-live="polite"><div class="text-paint-inner chat-stream"></div></div>
           </div>
           <div class="line-gutter" aria-hidden="true"></div>
           <div class="line-meta" aria-hidden="true"></div>
           <textarea class="dialog-buffer" spellcheck="false" autocapitalize="sentences" aria-hidden="true" tabindex="-1"></textarea>
+          <div class="chat-status-bar" aria-live="polite"></div>
+          <div class="composer-mode-host"></div>
           <form class="composer-bar">
             <button class="composer-attach retro-icon-button" type="button" aria-label="attach" data-tooltip="Прикрепить файл">${icon("clip")}</button>
             <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
@@ -1286,23 +1399,23 @@ function renderApp(): void {
       </main>
       <aside class="side-panel">
         <section class="side-block live-block">
-          <h2>LIVE</h2>
+          <h2>Активность</h2>
           <div class="writer-pop"></div>
         </section>
         <section class="side-block file-block">
-          <h2>FILES</h2>
+          <h2>Файлы</h2>
           <div class="file-rail"></div>
         </section>
         <section class="side-block action-block">
-          <h2>TOOLS</h2>
+          <h2>Действия</h2>
           <div class="side-actions">
-            <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>FILE</span></button>
-            <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>PING</span></button>
-            <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>AGENT</span></button>
-            <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>DO</span></button>
-            <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>LINK</span></button>
-            <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>DROP</span></button>
-            <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>CHESS</span></button>
+            <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>Файл</span></button>
+            <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>Позвать</span></button>
+            <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>Агент</span></button>
+            <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>Задачи</span></button>
+            <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>Доступ</span></button>
+            <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>Закрыть</span></button>
+            <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>Шахматы</span></button>
           </div>
         </section>
       </aside>
@@ -1317,7 +1430,40 @@ function renderApp(): void {
   fileInput = app.querySelector(".file-input");
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
+    updateChatBottomButton();
   }, { passive: true });
+  app.querySelector<HTMLInputElement>(".chat-search-input")?.addEventListener("input", (event) => {
+    const input = event.currentTarget;
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+    const value = input.value;
+    if (selectedId) {
+      if (value) {
+        chatSearches.set(selectedId, value);
+      } else {
+        chatSearches.delete(selectedId);
+      }
+    }
+    renderTextPaint();
+  });
+  app.querySelector<HTMLInputElement>(".chat-search-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      clearChatSearch();
+      composer?.focus();
+    }
+  });
+  app.querySelector<HTMLElement>(".dialog-shell")?.addEventListener("keydown", handleDialogKeyboard);
+  app.querySelector<HTMLElement>(".editor")?.addEventListener("click", (event) => {
+    void handleChatEditorClick(event);
+  });
+  app.querySelector<HTMLButtonElement>(".chat-copy-button")?.addEventListener("click", () => {
+    void copyText(texts.get(selectedId) || textarea?.value || "");
+  });
+  app.querySelector<HTMLButtonElement>(".chat-bottom-button")?.addEventListener("click", () => {
+    scrollChatToBottom();
+  });
   app.querySelector<HTMLButtonElement>(".qr-open")?.addEventListener("click", () => {
     void showQr();
   });
@@ -1333,6 +1479,9 @@ function renderApp(): void {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       finalizeComposerDraft();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelChatComposerMode();
     }
   });
   app.querySelector<HTMLFormElement>(".composer-bar")?.addEventListener("submit", (event) => {
@@ -1506,7 +1655,7 @@ function renderEmptyHiveActions(field: HTMLDivElement): void {
   actions.innerHTML = `
     <button class="empty-hive-action empty-agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">
       ${icon("person")}
-      <span>AGENT</span>
+      <span>Агент</span>
     </button>
     <button class="empty-hive-action empty-qr-action" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">
       ${icon("qr")}
@@ -1985,6 +2134,7 @@ function clearCurrentDialog(tunnelId: string): void {
   texts.set(tunnelId, "");
   saveTextSnapshotNow(tunnelId, "");
   localDrafts.delete(tunnelId);
+  clearChatUiState(tunnelId);
   writerLines.delete(tunnelId);
   activeActivities.delete(tunnelId);
   activeActivityTicks.delete(tunnelId);
@@ -2161,17 +2311,11 @@ function renderDialogChrome(): void {
     name.textContent = label;
   }
   if (state) {
-    const remote = mode === "download"
-      ? "AGENT SETUP"
-      : mode === "update"
-        ? "AGENT UPDATE"
-        : remoteAccess.has(selectedId) ? "REMOTE READY" : remoteEnabled.has(selectedId) ? "HOST LINK" : "LIVE TEXT";
-    const syncState = selectedId ? syncStates.get(selectedId) : "";
-    const syncSuffix = syncState === "connecting" ? " / SYNCING" : syncState === "closed" ? " / OFFLINE" : "";
-    state.textContent = `${remote}${syncSuffix}`;
+    state.textContent = friendlyChatState(mode);
   }
   if (id) {
     id.textContent = selectedId ? selectedId.slice(0, 8).toUpperCase() : "NO LINK";
+    id.title = selectedId ? `ID: ${selectedId}` : "";
   }
   if (sendButton) {
     const stopping = agentThinking.has(selectedId);
@@ -2187,8 +2331,8 @@ function renderDialogChrome(): void {
     remoteButton.classList.toggle("needs-agent", needsAgent);
     remoteButton.setAttribute("aria-label", needsAgent ? "download" : "remote");
     remoteButton.innerHTML = needsAgent
-      ? `${icon("download")}<span>${mode === "update" ? "UPDATE" : "DOWNLOAD"}</span>`
-      : `${icon("remote")}<span>LINK</span>`;
+      ? `${icon("download")}<span>${mode === "update" ? "Обновить" : "Скачать"}</span>`
+      : `${icon("remote")}<span>Доступ</span>`;
     remoteButton.dataset.tooltip = needsAgent
       ? (mode === "update" ? "Download current Soty Agent" : "Download Soty Agent")
       : remoteEnabled.has(selectedId)
@@ -2197,6 +2341,91 @@ function renderDialogChrome(): void {
           ? "Open remote commands"
           : "Enable remote link";
   }
+  renderChatStatusBar();
+}
+
+function friendlyChatState(mode: AgentButtonMode = agentButtonMode()): string {
+  if (!selectedId) {
+    return "Нет выбранного чата";
+  }
+  if (agentThinking.has(selectedId)) {
+    return "Агент отвечает";
+  }
+  const draft = latestLiveDraft(selectedId);
+  if (draft) {
+    const nick = cleanNick(draft.nick) || counterpartyLabelForSelected();
+    return `${nick} печатает`;
+  }
+  const active = activeActivities.get(selectedId);
+  if (active) {
+    const nick = cleanNick(active.nick) || counterpartyLabelForSelected();
+    return `${nick} ${friendlyActivityVerb(active.action)}`;
+  }
+  const syncState = syncStates.get(selectedId);
+  if (syncState === "connecting") {
+    return "Подключение";
+  }
+  if (syncState === "closed") {
+    return "Нет связи";
+  }
+  if (mode === "download") {
+    return "Нужен агент";
+  }
+  if (mode === "update") {
+    return "Доступно обновление";
+  }
+  return "Готов к сообщениям";
+}
+
+function renderChatStatusBar(mode: AgentButtonMode = agentButtonMode()): void {
+  const host = app.querySelector<HTMLDivElement>(".chat-status-bar");
+  if (!host) {
+    return;
+  }
+  const syncState = selectedId ? syncStates.get(selectedId) : "";
+  const tone = syncState === "closed" ? "off" : (agentThinking.has(selectedId) || syncState === "connecting" ? "busy" : "ok");
+  const technical = technicalChatStatus(mode, syncState);
+  host.innerHTML = `
+    <span class="chat-status-main ${tone}">
+      <i aria-hidden="true"></i>
+      <b>${escapeHtml(friendlyChatState(mode))}</b>
+    </span>
+    <span class="chat-status-meta">${technical.map((item, index) => `<small>${index > 0 ? " · " : ""}${escapeHtml(item)}</small>`).join("")}</span>
+  `;
+}
+
+function technicalChatStatus(mode: AgentButtonMode, syncState: string | undefined): string[] {
+  const items: string[] = [];
+  if (syncState === "connecting") {
+    items.push("синхронизация");
+  } else if (syncState === "closed") {
+    items.push("офлайн");
+  } else if (selectedId) {
+    items.push("онлайн");
+  }
+  if (mode === "download") {
+    items.push("агент не установлен");
+  } else if (mode === "update") {
+    items.push("агент устарел");
+  } else if (remoteEnabled.has(selectedId)) {
+    items.push("доступ к этому компьютеру");
+  } else if (remoteAccess.has(selectedId)) {
+    items.push("доступ разрешен");
+  }
+  if (selectedId) {
+    items.push(`id ${selectedId.slice(0, 8).toUpperCase()}`);
+  }
+  return items;
+}
+
+function friendlyActivityVerb(action: WriterActivity["action"]): string {
+  if (action === "erase") {
+    return "удаляет";
+  }
+  if (action === "edit") {
+    return "редактирует";
+  }
+  return "печатает";
 }
 
 function ensureSync(tunnel: TunnelRecord): void {
@@ -3386,7 +3615,7 @@ async function runOperatorAgentMessage(message: {
   selectedId = tunnel.id;
   saveSelectedTunnelId(tunnel.id);
   const current = texts.get(tunnel.id) || "";
-  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
+  const separator = chatMessageSeparator(current);
   const next = `${current}${separator}${body}\n`;
   texts.set(tunnel.id, next);
   sync.setText(next);
@@ -4777,6 +5006,8 @@ async function finalizeComposerDraft(): Promise<void> {
   primeAgentDoneSound();
   const draft = composer.value || localDrafts.get(tunnelId) || "";
   const message = normalizeChatMessage(draft);
+  const editTarget = chatEditTargets.get(tunnelId);
+  const replyTarget = chatReplyTargets.get(tunnelId);
   if (!message) {
     if (draft) {
       composer.value = "";
@@ -4784,9 +5015,28 @@ async function finalizeComposerDraft(): Promise<void> {
     }
     return;
   }
+  if (editTarget && replaceChatMessageText(tunnelId, editTarget, message)) {
+    chatEditTargets.delete(tunnelId);
+    chatEditReturnDrafts.delete(tunnelId);
+    localDrafts.delete(tunnelId);
+    composer.value = "";
+    const pendingLiveDraftTimer = liveDraftSendTimers.get(tunnelId);
+    if (pendingLiveDraftTimer) {
+      window.clearTimeout(pendingLiveDraftTimer);
+      liveDraftSendTimers.delete(tunnelId);
+    }
+    void sync.sendLiveDraft("");
+    touchSelected();
+    resizeComposer();
+    renderTiles();
+    renderTextPaint();
+    renderWriterPop();
+    return;
+  }
+  const outboundMessage = replyTarget ? formatReplyChatMessage(replyTarget, message) : message;
   const current = texts.get(tunnelId) ?? textarea.value;
-  const separator = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-  const next = `${current}${separator}${message}\n`;
+  const separator = chatMessageSeparator(current);
+  const next = `${current}${separator}${outboundMessage}\n`;
   textarea.value = next;
   texts.set(tunnelId, next);
   sync.setText(next);
@@ -4799,10 +5049,13 @@ async function finalizeComposerDraft(): Promise<void> {
   void sync.sendLiveDraft("");
   if (tunnel && isAgentTunnel(tunnel)) {
     await prepareAgentSourceForDialog(tunnelId, tunnel);
-    void sendAgentDialogMessage(tunnelId, message);
-  } else if (tunnel && containsAgentInvocation(message)) {
-    void sendAgentDialogMessage(tunnelId, message, { explicitMention: true });
+    void sendAgentDialogMessage(tunnelId, outboundMessage);
+  } else if (tunnel && containsAgentInvocation(outboundMessage)) {
+    void sendAgentDialogMessage(tunnelId, outboundMessage, { explicitMention: true });
   }
+  chatReplyTargets.delete(tunnelId);
+  chatEditTargets.delete(tunnelId);
+  chatEditReturnDrafts.delete(tunnelId);
   localDrafts.delete(tunnelId);
   composer.value = "";
   touchSelected();
@@ -5127,7 +5380,7 @@ function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
     return false;
   }
   const before = texts.get(tunnelId) || "";
-  const separator = before.length > 0 && !before.endsWith("\n") ? "\n" : "";
+  const separator = chatMessageSeparator(before);
   const firstLine = message.split(/\r?\n/u, 1)[0]?.trim() || "";
   const displayText = isOperatorHeader(firstLine) ? message : formatOperatorChat(message, "sysadmin");
   const insertText = `${separator}${displayText}\n`;
@@ -5231,6 +5484,19 @@ function normalizeChatMessage(value: string): string {
     .join("\n")
     .replace(/\n{2,}/gu, "\n")
     .trim();
+}
+
+function chatMessageSeparator(current: string): string {
+  if (!current) {
+    return "";
+  }
+  if (current.endsWith("\n\n")) {
+    return "";
+  }
+  if (current.endsWith("\n")) {
+    return "\n";
+  }
+  return "\n\n";
 }
 
 function shouldOfferAgentInstall(reply: LocalAgentReply): boolean {
@@ -5641,6 +5907,8 @@ function renderTextPaint(): void {
   const hasAgentThinking = agentThinking.has(selectedId);
   textPaint.style.transform = "";
   if (!text.trim() && drafts.length === 0 && !hasAgentThinking) {
+    renderedChatRefs.set(selectedId, new Map());
+    renderChatMessengerChrome(0);
     textPaint.innerHTML = `
       <div class="chat-empty">
         <span>READY</span>
@@ -5651,16 +5919,8 @@ function renderTextPaint(): void {
   }
   let operatorBlock = false;
   let operatorBlockNick = "";
-  const bubbles: {
-    key: string;
-    side: string;
-    nick: string;
-    color: string;
-    time: string;
-    className: string;
-    lines: string[];
-    live: WriterActivity | null;
-  }[] = [];
+  let bubbleBreak = false;
+  const bubbles: ChatRenderBubble[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     const label = labels.get(index);
@@ -5682,9 +5942,7 @@ function renderTextPaint(): void {
     if (!line.trim()) {
       operatorBlock = false;
       operatorBlockNick = "";
-      if (bubbles.length > 0) {
-        bubbles[bubbles.length - 1]?.lines.push("");
-      }
+      bubbleBreak = true;
       continue;
     }
     const speaker = speakerForLine(line, state.className, label, operatorBlockNick);
@@ -5694,10 +5952,12 @@ function renderTextPaint(): void {
     const live = active && index === activeLine ? active : null;
     const key = `${speaker.side}:${speaker.nick}:${speaker.deviceId}:${state.className}`;
     const current = bubbles[bubbles.length - 1];
-    if (current && current.key === key && !live) {
+    if (current && current.key === key && !live && !bubbleBreak) {
       current.lines.push(line);
+      current.lineEnd = index;
       continue;
     }
+    bubbleBreak = false;
     bubbles.push({
       key,
       side: speaker.side,
@@ -5706,7 +5966,10 @@ function renderTextPaint(): void {
       time: label?.time || clock(),
       className: state.className,
       lines: [line],
-      live
+      live,
+      id: chatBubbleId(index, line, speaker.nick, state.className),
+      lineStart: index,
+      lineEnd: index
     });
   }
   if (hasAgentThinking) {
@@ -5718,7 +5981,10 @@ function renderTextPaint(): void {
       time: clock(),
       className: "is-agent-thinking",
       lines: ["думаю"],
-      live: null
+      live: null,
+      id: `thinking:${selectedId}`,
+      lineStart: -1,
+      lineEnd: -1
     });
   }
   for (const draft of drafts) {
@@ -5738,38 +6004,650 @@ function renderTextPaint(): void {
         local: draft.deviceId === device?.id,
         action: "write",
         preview: draft.text
-      }
+      },
+      id: `draft:${draft.deviceId || nick}:${draft.at}`,
+      lineStart: draft.index,
+      lineEnd: draft.index + lineBreakCount(draft.text)
     });
   }
   const visibleBubbles = bubbles.filter((bubble) =>
     bubble.className === "is-agent-thinking" || bubble.live || bubble.lines.some((line) => line.trim())
   );
+  const query = chatSearches.get(selectedId)?.trim() || "";
+  const refs = new Map<string, ChatMessageRef>();
+  const matchCount = query ? countChatSearchMatches(visibleBubbles, query) : 0;
+  renderChatMessengerChrome(matchCount);
   textPaint.innerHTML = visibleBubbles.map((bubble) => {
+    const ref = chatRefFromBubble(bubble);
+    const actionable = bubble.className !== "is-agent-thinking" && bubble.className !== "is-live-draft" && ref.text.trim();
+    if (actionable) {
+      refs.set(ref.id, ref);
+    }
+    const pinned = chatPins.get(selectedId);
+    const isPinned = Boolean(pinned && pinned.id === ref.id);
+    const actions = actionable ? chatBubbleActionsHtml(ref, isPinned) : "";
+    const status = chatBubbleStatusHtml(bubble);
     const body = bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
-      : bubble.lines
-        .map((line) => line ? `<span>${escapeHtml(line)}</span>` : "<br>")
-        .join("");
+      : renderChatBody(bubble.lines, query);
     const live = bubble.live
       ? `<em class="live-chip">${escapeHtml(activityCode(bubble.live.action))}${bubble.live.preview ? ` ${escapeHtml(compactPreview(bubble.live.preview))}` : ""}</em>`
       : "";
+    const hasQuery = query && ref.text.toLocaleLowerCase().includes(query.toLocaleLowerCase());
     return `
-      <article class="chat-bubble ${bubble.side} ${bubble.className}" style="--bubble-color:${bubble.color}">
+      <article class="chat-bubble ${bubble.side} ${bubble.className}${hasQuery ? " is-search-hit" : ""}${isPinned ? " is-pinned" : ""}" data-chat-message-id="${escapeHtml(ref.id)}" style="--bubble-color:${bubble.color}">
+        ${actions}
         <div class="bubble-meta">
           <span>${escapeHtml(initials(bubble.nick))}</span>
           <b>${escapeHtml(bubble.nick)}</b>
           <small>${escapeHtml(bubble.time)}</small>
           ${live}
+          ${status}
         </div>
         <p>${body}</p>
       </article>
     `;
   }).join("");
+  renderedChatRefs.set(selectedId, refs);
   if (scroll && stickToBottom) {
     window.setTimeout(() => {
       scroll.scrollTop = scroll.scrollHeight;
+      updateChatBottomButton();
     }, 0);
+  } else {
+    updateChatBottomButton();
   }
+  renderChatStatusBar();
+}
+
+function chatBubbleId(lineStart: number, line: string, nick: string, className: string): string {
+  return `${lineStart}:${hashCompact(`${nick}\n${className}\n${line}`)}`;
+}
+
+function hashCompact(value: string): string {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function chatRefFromBubble(bubble: ChatRenderBubble): ChatMessageRef {
+  return {
+    id: bubble.id,
+    tunnelId: selectedId,
+    nick: bubble.nick,
+    time: bubble.time,
+    text: bubble.lines.join("\n").trim(),
+    side: bubble.side,
+    className: bubble.className,
+    lineStart: bubble.lineStart,
+    lineEnd: bubble.lineEnd
+  };
+}
+
+function chatBubbleActionsHtml(ref: ChatMessageRef, isPinned: boolean): string {
+  const id = escapeHtml(ref.id);
+  const edit = ref.side === "local"
+    ? `<button type="button" data-chat-action="edit" data-message-id="${id}" aria-label="edit" data-tooltip="Edit">${icon("edit")}</button>`
+    : "";
+  const retry = ref.side === "local"
+    ? `<button type="button" data-chat-action="retry" data-message-id="${id}" aria-label="retry" data-tooltip="Retry">${icon("refresh")}</button>`
+    : "";
+  return `
+    <div class="bubble-actions" aria-label="message actions">
+      <button type="button" data-chat-action="reply" data-message-id="${id}" aria-label="reply" data-tooltip="Reply">${icon("reply")}</button>
+      <button type="button" data-chat-action="copy" data-message-id="${id}" aria-label="copy" data-tooltip="Copy">${icon("copy")}</button>
+      <button type="button" data-chat-action="${isPinned ? "unpin" : "pin"}" data-message-id="${id}" aria-label="${isPinned ? "unpin" : "pin"}" data-tooltip="${isPinned ? "Unpin" : "Pin"}">${icon("pin")}</button>
+      ${edit}
+      ${retry}
+    </div>
+  `;
+}
+
+function chatBubbleStatusHtml(bubble: ChatRenderBubble): string {
+  if (bubble.side !== "local" || bubble.className === "is-live-draft" || bubble.className === "is-agent-thinking") {
+    return "";
+  }
+  return `<span class="bubble-status" aria-label="sent">${icon("check")}</span>`;
+}
+
+function renderChatMessengerChrome(matchCount: number): void {
+  const query = chatSearches.get(selectedId) || "";
+  const search = app.querySelector<HTMLInputElement>(".chat-search-input");
+  if (search && document.activeElement !== search && search.value !== query) {
+    search.value = query;
+  }
+  const count = app.querySelector<HTMLElement>(".chat-search-count");
+  if (count) {
+    count.textContent = query ? String(matchCount) : "";
+  }
+  renderChatPinHost();
+  renderComposerModeHost();
+  updateChatBottomButton();
+}
+
+function renderChatPinHost(): void {
+  const host = app.querySelector<HTMLDivElement>(".chat-pin-host");
+  if (!host) {
+    return;
+  }
+  const pin = chatPins.get(selectedId);
+  if (!pin) {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML = `
+    <div class="chat-pin-strip">
+      <button class="chat-pin-jump" type="button" data-chat-action="jump-pin" data-message-id="${escapeHtml(pin.id)}">
+        <span>${icon("pin")}</span>
+        <b>${escapeHtml(pin.nick)}</b>
+        <small>${escapeHtml(compactChatPreview(pin.text, 132))}</small>
+      </button>
+      <button class="chat-pin-clear retro-icon-button" type="button" data-chat-action="clear-pin" aria-label="unpin" data-tooltip="Unpin">${icon("close")}</button>
+    </div>
+  `;
+}
+
+function renderComposerModeHost(): void {
+  const host = app.querySelector<HTMLDivElement>(".composer-mode-host");
+  if (!host) {
+    return;
+  }
+  const edit = chatEditTargets.get(selectedId);
+  const reply = chatReplyTargets.get(selectedId);
+  const target = edit ?? reply;
+  if (!target) {
+    host.innerHTML = "";
+    return;
+  }
+  const mode = edit ? "Правка" : "Ответ";
+  const action = edit ? "cancel-edit" : "cancel-reply";
+  host.innerHTML = `
+    <div class="composer-mode ${edit ? "is-edit" : "is-reply"}">
+      <span>${icon(edit ? "edit" : "reply")}</span>
+      <button class="composer-mode-text" type="button" data-chat-action="focus-composer">
+        <b>${mode} · ${escapeHtml(target.nick)}</b>
+        <small>${escapeHtml(compactChatPreview(target.text, 132))}</small>
+      </button>
+      <button class="composer-mode-clear retro-icon-button" type="button" data-chat-action="${action}" aria-label="cancel" data-tooltip="Cancel">${icon("close")}</button>
+    </div>
+  `;
+}
+
+async function handleChatEditorClick(event: MouseEvent): Promise<void> {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const element = target.closest("button[data-chat-action]");
+  if (!(element instanceof HTMLButtonElement)) {
+    return;
+  }
+  const action = element.dataset.chatAction || "";
+  const ref = chatMessageRefForButton(element);
+  if (action === "focus-composer") {
+    composer?.focus();
+    return;
+  }
+  if (action === "cancel-reply") {
+    chatReplyTargets.delete(selectedId);
+    renderChatMessengerChrome(currentSearchMatchCount());
+    composer?.focus();
+    return;
+  }
+  if (action === "cancel-edit") {
+    cancelChatComposerMode();
+    return;
+  }
+  if (action === "clear-pin") {
+    chatPins.delete(selectedId);
+    saveChatPins();
+    renderTextPaint();
+    return;
+  }
+  if (action === "jump-pin") {
+    scrollChatMessageIntoView(element.dataset.messageId || chatPins.get(selectedId)?.id || "");
+    return;
+  }
+  if (!ref) {
+    return;
+  }
+  if (action === "copy") {
+    await copyText(ref.text);
+  } else if (action === "reply") {
+    chatReplyTargets.set(selectedId, ref);
+    chatEditTargets.delete(selectedId);
+    renderChatMessengerChrome(currentSearchMatchCount());
+    composer?.focus();
+  } else if (action === "edit" && ref.side === "local") {
+    startChatEdit(ref);
+  } else if (action === "retry") {
+    await retryChatMessage(ref);
+  } else if (action === "pin") {
+    chatPins.set(selectedId, ref);
+    saveChatPins();
+    renderTextPaint();
+  } else if (action === "unpin") {
+    chatPins.delete(selectedId);
+    saveChatPins();
+    renderTextPaint();
+  }
+}
+
+function chatMessageRefForButton(button: HTMLButtonElement): ChatMessageRef | null {
+  const id = button.dataset.messageId || "";
+  if (!id) {
+    return null;
+  }
+  const rendered = renderedChatRefs.get(selectedId)?.get(id);
+  if (rendered) {
+    return rendered;
+  }
+  const pin = chatPins.get(selectedId);
+  return pin && pin.id === id ? pin : null;
+}
+
+function startChatEdit(ref: ChatMessageRef): void {
+  if (!composer || !selectedId) {
+    return;
+  }
+  chatEditReturnDrafts.set(selectedId, composer.value || localDrafts.get(selectedId) || "");
+  chatEditTargets.set(selectedId, ref);
+  chatReplyTargets.delete(selectedId);
+  composer.value = ref.text;
+  localDrafts.set(selectedId, ref.text);
+  resizeComposer();
+  renderChatMessengerChrome(currentSearchMatchCount());
+  composer.focus();
+  composer.setSelectionRange(composer.value.length, composer.value.length);
+}
+
+async function retryChatMessage(ref: ChatMessageRef): Promise<void> {
+  if (isAgentTunnelId(ref.tunnelId)) {
+    void sendAgentDialogMessage(ref.tunnelId, ref.text);
+    return;
+  }
+  if (containsAgentInvocation(ref.text)) {
+    void sendAgentDialogMessage(ref.tunnelId, ref.text, { explicitMention: true });
+    return;
+  }
+  if (composer) {
+    composer.value = ref.text;
+    rememberComposerDraft();
+    composer.focus();
+  }
+}
+
+function cancelChatComposerMode(): boolean {
+  if (!selectedId) {
+    return false;
+  }
+  const hadEdit = chatEditTargets.delete(selectedId);
+  const hadReply = chatReplyTargets.delete(selectedId);
+  if (hadEdit && composer) {
+    const restore = chatEditReturnDrafts.get(selectedId) || "";
+    composer.value = restore;
+    if (restore) {
+      localDrafts.set(selectedId, restore);
+    } else {
+      localDrafts.delete(selectedId);
+    }
+    chatEditReturnDrafts.delete(selectedId);
+    resizeComposer();
+  }
+  if (hadEdit || hadReply) {
+    renderChatMessengerChrome(currentSearchMatchCount());
+    return true;
+  }
+  return false;
+}
+
+function handleDialogKeyboard(event: KeyboardEvent): void {
+  const key = event.key.toLowerCase();
+  if ((event.ctrlKey || event.metaKey) && key === "f") {
+    event.preventDefault();
+    focusChatSearch();
+    return;
+  }
+  if (event.key === "Escape") {
+    if (cancelChatComposerMode()) {
+      event.preventDefault();
+      composer?.focus();
+      return;
+    }
+    if (chatSearches.has(selectedId)) {
+      event.preventDefault();
+      clearChatSearch();
+      composer?.focus();
+    }
+  }
+}
+
+function focusChatSearch(): void {
+  const search = app.querySelector<HTMLInputElement>(".chat-search-input");
+  if (!search) {
+    return;
+  }
+  search.focus();
+  search.select();
+}
+
+function clearChatSearch(): void {
+  if (!selectedId) {
+    return;
+  }
+  chatSearches.delete(selectedId);
+  const search = app.querySelector<HTMLInputElement>(".chat-search-input");
+  if (search) {
+    search.value = "";
+  }
+  renderTextPaint();
+}
+
+function currentSearchMatchCount(): number {
+  const query = chatSearches.get(selectedId)?.trim() || "";
+  if (!query || !textarea) {
+    return 0;
+  }
+  return countTextMatches(textarea.value, query);
+}
+
+function countChatSearchMatches(bubbles: readonly ChatRenderBubble[], query: string): number {
+  return bubbles.reduce((total, bubble) => total + countTextMatches(bubble.lines.join("\n"), query), 0);
+}
+
+function countTextMatches(value: string, query: string): number {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) {
+    return 0;
+  }
+  const haystack = value.toLocaleLowerCase();
+  let count = 0;
+  let cursor = 0;
+  while (cursor < haystack.length) {
+    const index = haystack.indexOf(needle, cursor);
+    if (index === -1) {
+      break;
+    }
+    count += 1;
+    cursor = index + Math.max(needle.length, 1);
+  }
+  return count;
+}
+
+function renderChatBody(lines: readonly string[], query: string): string {
+  const html: string[] = [];
+  let codeLines: string[] = [];
+  let inCode = false;
+  const flushCode = () => {
+    html.push(`<pre class="chat-code-block"><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    codeLines = [];
+  };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        inCode = true;
+        codeLines = [];
+      }
+      continue;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+    if (!line) {
+      html.push("<br>");
+      continue;
+    }
+    const list = line.match(/^(\s*)([-*]|\d+[.)])\s+(.+)$/u);
+    if (list) {
+      html.push(`<span class="chat-list-line"><i aria-hidden="true"></i><span>${renderInlineChatMarkdown(list[3] || "", query)}</span></span>`);
+      continue;
+    }
+    html.push(`<span>${renderInlineChatMarkdown(line, query)}</span>`);
+  }
+  if (inCode) {
+    flushCode();
+  }
+  return html.join("");
+}
+
+function renderInlineChatMarkdown(value: string, query: string): string {
+  const tokenPatterns: { readonly kind: "link" | "code" | "strong" | "em"; readonly regex: RegExp }[] = [
+    { kind: "link", regex: /\[([^\]\n]{1,160})\]\(([^)\s]{1,500})\)/gu },
+    { kind: "code", regex: /`([^`\n]{1,240})`/gu },
+    { kind: "strong", regex: /\*\*([^*\n]{1,500})\*\*/gu },
+    { kind: "em", regex: /(?<!\*)\*([^*\n]{1,300})\*(?!\*)/gu }
+  ];
+  let cursor = 0;
+  let html = "";
+  while (cursor < value.length) {
+    let best: { readonly kind: "link" | "code" | "strong" | "em"; readonly match: RegExpExecArray } | null = null;
+    for (const pattern of tokenPatterns) {
+      pattern.regex.lastIndex = cursor;
+      const match = pattern.regex.exec(value);
+      if (!match) {
+        continue;
+      }
+      if (!best || match.index < best.match.index) {
+        best = { kind: pattern.kind, match };
+      }
+    }
+    if (!best) {
+      html += renderAutoLinkedText(value.slice(cursor), query);
+      break;
+    }
+    if (best.match.index > cursor) {
+      html += renderAutoLinkedText(value.slice(cursor, best.match.index), query);
+    }
+    html += renderMarkdownToken(best.kind, best.match, query);
+    cursor = best.match.index + best.match[0].length;
+  }
+  return html;
+}
+
+function renderMarkdownToken(kind: "link" | "code" | "strong" | "em", match: RegExpExecArray, query: string): string {
+  if (kind === "code") {
+    return `<code class="chat-inline-code">${escapeHtml(match[1] || "")}</code>`;
+  }
+  if (kind === "strong") {
+    return `<strong>${highlightChatMatches(match[1] || "", query)}</strong>`;
+  }
+  if (kind === "em") {
+    return `<em>${highlightChatMatches(match[1] || "", query)}</em>`;
+  }
+  const label = match[1] || "";
+  const href = safeChatHref(match[2] || "");
+  if (!href) {
+    return highlightChatMatches(match[0] || "", query);
+  }
+  return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${highlightChatMatches(label, query)}</a>`;
+}
+
+function renderAutoLinkedText(value: string, query: string): string {
+  const urlPattern = /https?:\/\/[^\s<>"']{3,500}/giu;
+  let cursor = 0;
+  let html = "";
+  for (const match of value.matchAll(urlPattern)) {
+    const index = match.index ?? 0;
+    const raw = match[0] || "";
+    if (index > cursor) {
+      html += highlightChatMatches(value.slice(cursor, index), query);
+    }
+    const href = safeChatHref(raw);
+    html += href
+      ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${highlightChatMatches(raw, query)}</a>`
+      : highlightChatMatches(raw, query);
+    cursor = index + raw.length;
+  }
+  if (cursor < value.length) {
+    html += highlightChatMatches(value.slice(cursor), query);
+  }
+  return html;
+}
+
+function safeChatHref(value: string): string {
+  try {
+    const url = new URL(value, window.location.origin);
+    if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") {
+      return url.href;
+    }
+  } catch {
+    // Plain text fallback below.
+  }
+  return "";
+}
+
+function highlightChatMatches(line: string, query: string): string {
+  const needle = query.trim();
+  if (!needle) {
+    return escapeHtml(line);
+  }
+  const lowerLine = line.toLocaleLowerCase();
+  const lowerNeedle = needle.toLocaleLowerCase();
+  let cursor = 0;
+  let html = "";
+  while (cursor < line.length) {
+    const index = lowerLine.indexOf(lowerNeedle, cursor);
+    if (index === -1) {
+      html += escapeHtml(line.slice(cursor));
+      break;
+    }
+    html += escapeHtml(line.slice(cursor, index));
+    html += `<mark class="chat-mark">${escapeHtml(line.slice(index, index + needle.length))}</mark>`;
+    cursor = index + needle.length;
+  }
+  return html;
+}
+
+function formatReplyChatMessage(target: ChatMessageRef, message: string): string {
+  return normalizeChatMessage(`↪ ${target.nick}: ${compactChatPreview(target.text, 96)}\n${message}`);
+}
+
+function replaceChatMessageText(tunnelId: string, target: ChatMessageRef, replacementRaw: string): boolean {
+  const sync = syncs.get(tunnelId);
+  const replacement = normalizeChatMessage(replacementRaw);
+  if (!sync || !replacement) {
+    return false;
+  }
+  const current = texts.get(tunnelId) ?? (tunnelId === selectedId && textarea ? textarea.value : "");
+  const hadTrailingBreak = current.endsWith("\n");
+  const lines = hadTrailingBreak ? current.slice(0, -1).split("\n") : current.split("\n");
+  const oldLines = target.text.split("\n");
+  const start = findChatLineBlock(lines, oldLines, target.lineStart);
+  if (start === -1) {
+    return false;
+  }
+  const replacementLines = replacement.split("\n");
+  const nextTarget: ChatMessageRef = {
+    ...target,
+    id: chatBubbleId(start, replacementLines[0] || replacement, target.nick, target.className),
+    text: replacement,
+    lineStart: start,
+    lineEnd: start + replacementLines.length - 1
+  };
+  const nextLines = [
+    ...lines.slice(0, start),
+    ...replacementLines,
+    ...lines.slice(start + oldLines.length)
+  ];
+  const next = `${nextLines.join("\n")}${hadTrailingBreak ? "\n" : ""}`;
+  const index = indexFromLine(current, start);
+  sync.setText(next);
+  texts.set(tunnelId, next);
+  saveTextSnapshotNow(tunnelId, next);
+  rememberWriter(tunnelId, {
+    deviceId: device?.id || "",
+    nick: cleanNick(device?.nick || "") || "Me",
+    index,
+    local: true,
+    action: "edit",
+    preview: replacement.replace(/\s+/gu, " ").trim().slice(0, 48),
+    insertText: replacement,
+    deleteCount: oldLines.join("\n").length,
+    startLine: start,
+    startColumn: 0,
+    lineDelta: lineBreakCount(replacement) - lineBreakCount(oldLines.join("\n"))
+  });
+  if (tunnelId === selectedId && textarea) {
+    textarea.value = next;
+    textarea.setSelectionRange(next.length, next.length);
+  }
+  if (chatPins.get(tunnelId)?.id === target.id) {
+    chatPins.set(tunnelId, nextTarget);
+    saveChatPins();
+  }
+  return true;
+}
+
+function findChatLineBlock(lines: readonly string[], needle: readonly string[], preferredStart: number): number {
+  const matchesAt = (start: number) => start >= 0
+    && start + needle.length <= lines.length
+    && lines.slice(start, start + needle.length).join("\n").trim() === needle.join("\n").trim();
+  if (matchesAt(preferredStart)) {
+    return preferredStart;
+  }
+  for (let index = 0; index <= lines.length - needle.length; index += 1) {
+    if (matchesAt(index)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function indexFromLine(text: string, line: number): number {
+  let cursor = 0;
+  for (let current = 0; current < line; current += 1) {
+    const nextBreak = text.indexOf("\n", cursor);
+    if (nextBreak === -1) {
+      return text.length;
+    }
+    cursor = nextBreak + 1;
+  }
+  return cursor;
+}
+
+function compactChatPreview(value: string, max = 96): string {
+  const clean = value.replace(/\s+/gu, " ").trim();
+  if (clean.length <= max) {
+    return clean;
+  }
+  return `${clean.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function scrollChatMessageIntoView(messageId: string): void {
+  if (!messageId) {
+    return;
+  }
+  const element = app.querySelector<HTMLElement>(`[data-chat-message-id="${CSS.escape(messageId)}"]`);
+  element?.scrollIntoView({ block: "center", behavior: "smooth" });
+  element?.classList.add("is-jump-target");
+  window.setTimeout(() => element?.classList.remove("is-jump-target"), 900);
+}
+
+function scrollChatToBottom(): void {
+  const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
+  if (!scroll) {
+    return;
+  }
+  scroll.scrollTo({ top: scroll.scrollHeight, behavior: "smooth" });
+  window.setTimeout(updateChatBottomButton, 180);
+}
+
+function updateChatBottomButton(): void {
+  const button = app.querySelector<HTMLButtonElement>(".chat-bottom-button");
+  const scroll = app.querySelector<HTMLDivElement>(".chat-scroll");
+  if (!button || !scroll) {
+    return;
+  }
+  const away = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 180;
+  button.classList.toggle("is-alert", away);
 }
 
 function liveDraftsForSelected(): LiveDraftState[] {
@@ -5850,12 +6728,12 @@ function isAgentTunnelId(tunnelId: string): boolean {
 
 function activityCode(action: WriterActivity["action"]): string {
   if (action === "erase") {
-    return "DEL";
+    return "Удаляет";
   }
   if (action === "edit") {
-    return "EDIT";
+    return "Правит";
   }
-  return "TYPE";
+  return "Печатает";
 }
 
 function compactPreview(value: string): string {

@@ -720,15 +720,18 @@ function gonkaForcedToolChoice(payload, tools) {
   }
   const text = responsesPayloadPlainText(payload).slice(0, 20_000);
   const family = (text.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
-  const wantsComputer = /function tool\s+`?computer`?|operation\s*=\s*(?:web|fetch|search|file|audio|browser|script|run)|компьютерн\w*\s+инструмент/iu.test(text);
+  const wantsComputer = /function tool\s+`?computer`?|operation\s*=\s*(?:web|fetch|search|file|audio|browser|desktop|wallpaper|script|run)|computer-use|компьютерн\w*\s+инструмент|рабоч\w*\s+стол|обои|скачай|загрузи|поставь|установи/iu.test(text);
   const toolFamilies = new Set([
     "audio-mute",
     "audio-volume",
     "browser",
     "console",
+    "desktop",
     "driver-check",
     "durable-action",
     "file-work",
+    "download-image-wallpaper",
+    "generated-image-wallpaper",
     "identity-probe",
     "lifecycle",
     "package-install",
@@ -740,6 +743,7 @@ function gonkaForcedToolChoice(payload, tools) {
     "software-check",
     "system-check",
     "system-time",
+    "wallpaper",
     "web-lookup",
     "windows-reinstall"
   ]);
@@ -835,6 +839,7 @@ function inferGonkaComputerArguments(payload) {
   const allText = responsesPayloadPlainText(payload);
   const userText = responsesPayloadUserText(payload) || allText;
   const family = (allText.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
+  const actionText = recentActionIntentText(userText, allText);
   const args = {};
   const explicitOperation = firstKeyValue(userText, ["operation", "op", "capability"]);
   const explicitAction = firstKeyValue(userText, ["action"]);
@@ -855,6 +860,13 @@ function inferGonkaComputerArguments(payload) {
   const query = firstKeyValue(userText, ["query", "q"]);
   if (query) {
     args.query = query;
+  }
+  const wallpaperIntent = hasWallpaperIntent(userText) || hasWallpaperIntent(actionText) || /(?:wallpaper|desktop|download-image-wallpaper)/iu.test(family);
+  if (wallpaperIntent && !args.query && !args.url && !args.path) {
+    const wallpaperQuery = inferWallpaperQuery(actionText || userText || allText);
+    if (wallpaperQuery) {
+      args.query = wallpaperQuery;
+    }
   }
   const maxChars = firstIntegerValue(userText, ["maxChars", "max_chars", "limit"]);
   if (maxChars) {
@@ -894,6 +906,9 @@ function inferGonkaComputerArguments(payload) {
   }
   if (!args.operation) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
+  }
+  if (wallpaperIntent && !isGeneratedImageIntent(actionText || userText)) {
+    args.operation = "wallpaper";
   }
   if (args.url && String(args.text || args.linkText || args.selector || args.target || "").trim() && /click|press|follow|link|button|нажми|клик|перейди|ссыл\w*|кнопк\w*/iu.test(userText)) {
     args.operation = "browser";
@@ -1004,6 +1019,11 @@ function normalizeGonkaComputerOperation(value) {
     resources: "system-resources",
     status: "system-resources",
     download: "download",
+    desktop: "desktop",
+    screen: "desktop",
+    wallpaper: "wallpaper",
+    "set-wallpaper": "wallpaper",
+    "desktop-wallpaper": "wallpaper",
     run: "script",
     shell: "script"
   };
@@ -1012,6 +1032,12 @@ function normalizeGonkaComputerOperation(value) {
 
 function inferGonkaComputerOperationFromText(text, family, args) {
   const lower = String(text || "").toLowerCase();
+  if ((hasWallpaperIntent(lower) || /(?:wallpaper|desktop|download-image-wallpaper)/iu.test(String(family || ""))) && !isGeneratedImageIntent(lower)) {
+    return "wallpaper";
+  }
+  if (isGeneratedImageIntent(lower) && hasWallpaperIntent(lower)) {
+    return "image";
+  }
   if (args.url && args.text) {
     return "browser";
   }
@@ -1044,6 +1070,9 @@ function inferGonkaComputerOperationFromText(text, family, args) {
 
 function inferGonkaComputerActionFromText(text, operation, args) {
   const lower = String(text || "").toLowerCase();
+  if (operation === "wallpaper") {
+    return "wallpaper";
+  }
   if (operation === "web") {
     return args.url && !args.query ? "fetch" : "search";
   }
@@ -1085,6 +1114,54 @@ function inferQuotedContent(text) {
     .map((match) => match[1].trim())
     .filter((part) => part && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(part));
   return matches[0] || "";
+}
+
+function hasWallpaperIntent(text) {
+  const value = String(text || "").toLowerCase();
+  return /wallpaper|desktop background|рабоч\w*\s+стол|обои|фон\s+(?:рабочего\s+)?стола|поставь\s+(?:на\s+)?(?:рабочий\s+стол|обои)|установи\s+(?:на\s+)?(?:рабочий\s+стол|обои)/iu.test(value);
+}
+
+function isGeneratedImageIntent(text) {
+  return /generate|create\s+(?:an?\s+)?image|draw|сгенерир|создай\s+(?:картин|изображ|фот)|нарисуй/iu.test(String(text || ""));
+}
+
+function recentActionIntentText(userText, allText) {
+  const current = String(userText || "").trim();
+  if (current && !/^(?:да|ок|окей|делай|сделай|продолжай|yes|ok|go|do it)$/iu.test(current)) {
+    return current;
+  }
+  const lines = String(allText || "")
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-120)
+    .reverse();
+  for (const line of lines) {
+    if (!hasWallpaperIntent(line) && !/(?:скачай|загрузи|download|photo|фото|картин|изображ)/iu.test(line)) {
+      continue;
+    }
+    if (/(?:route|profile|operation|computer|soty|mcp|json|schema|native|openai|tool|policy|capability)/iu.test(line)) {
+      continue;
+    }
+    return line.slice(0, 1000);
+  }
+  return current || String(allText || "").slice(-2000);
+}
+
+function inferWallpaperQuery(text) {
+  let value = String(text || "").replace(/\s+/gu, " ").trim();
+  if (!value) {
+    return "";
+  }
+  value = value
+    .replace(/["'`]/gu, " ")
+    .replace(/\b(?:please|pls|yes|ok|okay|do it|download|find|set|put|apply|wallpaper|desktop|background|photo|picture|image|for|on|the|a|an)\b/giu, " ")
+    .replace(/\b(?:да|ок|окей|делай|сделай|скачай|загрузи|найди|поищи|поставь|установи|примени|фото|фотку|картинку|картинк[ауи]|изображение|обои|фон|рабочий|рабочего|стол|стола|на|и|для|мне|пожалуйста|прямо|сейчас)\b/giu, " ")
+    .replace(/[,:;.!?()[\]{}<>]+/gu, " ")
+    .replace(/\s{2,}/gu, " ")
+    .trim();
+  return value.slice(0, 180);
 }
 
 function inferLinkTextFromText(text) {
@@ -1146,18 +1223,19 @@ function gonkaComputerChatTool() {
     type: "function",
     function: {
       name: "computer",
-      description: "Use the selected Soty computer for source-device work: web fetch/search, shell/script, files, browser/open_url, audio, time, system resources, jobs, and OS checks. Prefer this before exec_command for the user's computer.",
+      description: "Use the selected Soty computer for source-device work: web fetch/search, shell/script, files, browser/open_url, desktop/wallpaper, audio, time, system resources, jobs, and OS checks. Prefer this before exec_command for the user's computer.",
       parameters: {
         type: "object",
         properties: {
-          operation: { type: "string", description: "web, fetch, search, run, script, open_url, browser, audio, time_status, system_resources, file, or status." },
+          operation: { type: "string", description: "web, fetch, search, run, script, open_url, browser, desktop, wallpaper, audio, time_status, system_resources, file, or status." },
           action: { type: "string", description: "Optional operation-specific action, for example fetch, search, open, read, write, status." },
-          url: { type: "string", description: "HTTP/HTTPS URL for web/browser/open_url work." },
-          query: { type: "string", description: "Web search query." },
+          url: { type: "string", description: "HTTP/HTTPS URL for web/browser/open_url/wallpaper download work." },
+          query: { type: "string", description: "Web search query, including wallpaper image searches." },
           command: { type: "string", description: "Shell/PowerShell command for run/script fallback." },
           script: { type: "string", description: "PowerShell script body." },
-          path: { type: "string", description: "File path for simple file operations." },
+          path: { type: "string", description: "File path for simple file operations or an existing wallpaper image." },
           content: { type: "string", description: "File content for write operations." },
+          fit: { type: "string", description: "Wallpaper fit mode: fill, fit, stretch, center, tile, or span." },
           volumePercent: { type: "integer", description: "Output volume, 0-100." },
           maxChars: { type: "integer", description: "Maximum returned text, 1000-12000." },
           timeoutMs: { type: "integer", description: "Timeout in milliseconds." }
@@ -3955,6 +4033,12 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
 
 function classifyRoutineSourceTask(lower) {
   const text = normalizeRoutineIntentText(lower);
+  if (hasWallpaperIntent(text) && isGeneratedImageIntent(text)) {
+    return "generated-image-wallpaper";
+  }
+  if (hasWallpaperIntent(text) || /wallpaper|desktop background|обои|рабоч\w*\s+стол/u.test(text)) {
+    return "download-image-wallpaper";
+  }
   if (/(?:https?:\/\/|www\.)/iu.test(text) && /(?:click|press|follow|link|button|нажми|клик|перейди|ссыл\w*|кнопк\w*)/iu.test(text)) {
     return "browser";
   }
@@ -4057,7 +4141,7 @@ function isMemoryRecallOrFollowupPrompt(text) {
 }
 
 function isRoutineAgentTaskFamily(family) {
-  return ["program-control", "file-work", "system-check", "system-time", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute"].includes(cleanActionToken(family, ""));
+  return ["program-control", "file-work", "system-check", "system-time", "service-check", "identity-probe", "script-task", "web-lookup", "power-check", "driver-check", "software-check", "audio-volume", "audio-mute", "download-image-wallpaper", "generated-image-wallpaper", "wallpaper", "desktop"].includes(cleanActionToken(family, ""));
 }
 
 function classifySourceCommand(command) {
@@ -5989,6 +6073,43 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         exitCode: 125
       };
     }
+    if (shouldRecoverProoflessComputerAction({ taskFamily, text, target, finalText, state })) {
+      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
+      if (direct) {
+        state.terminal.push({
+          key: "direct-computer-fallback-proofless-final",
+          text: direct.text,
+          exitCode: direct.exitCode
+        });
+        if (direct.exitCode === 0) {
+          finalText = cleanAgentChatReply(direct.text) || finalText;
+          messages = compactCodexMessages([finalText]);
+          result.exitCode = 0;
+          traceStep(trace, "codex.recovered-proofless-action-final", {
+            taskFamily,
+            textChars: finalText.length
+          });
+        } else {
+          recordLearningReceipt({
+            kind: "codex-turn",
+            family: taskFamily,
+            result: "failed",
+            route: `${codexRouteName}+direct-proofless-recovery`,
+            taskSig: taskSignature(text),
+            proof: `exitCode=${direct.exitCode || 1}; prooflessFinal=true; directFallback=failed`,
+            exitCode: direct.exitCode || 1,
+            durationMs: Date.now() - startedAt,
+            ...learningContext
+          });
+          return {
+            ok: false,
+            text: agentFailureText(direct.text || finalText),
+            ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
+            exitCode: direct.exitCode || 1
+          };
+        }
+      }
+    }
     let postCodexGuardPayload = null;
     if (taskFamily === "windows-reinstall" && target?.id) {
       const guardOnMessage = (message) => {
@@ -6848,9 +6969,12 @@ function codexTaskNeedsSotyMcpTools(taskFamily, target = null) {
     "audio-volume",
     "browser",
     "console",
+    "desktop",
     "driver-check",
+    "download-image-wallpaper",
     "durable-action",
     "file-work",
+    "generated-image-wallpaper",
     "identity-probe",
     "lifecycle",
     "package-install",
@@ -6861,6 +6985,7 @@ function codexTaskNeedsSotyMcpTools(taskFamily, target = null) {
     "software",
     "software-check",
     "system-check",
+    "wallpaper",
     "web-lookup",
     "windows-reinstall"
   ].includes(family);
@@ -6891,6 +7016,10 @@ function codexReasoningPolicyForTask(family, target = null) {
     "driver-check",
     "program-control",
     "file-work",
+    "download-image-wallpaper",
+    "generated-image-wallpaper",
+    "wallpaper",
+    "desktop",
     "script-task",
     "system-check",
     "service-check",
@@ -7225,6 +7354,9 @@ function codexSessionFamilyBucket(taskFamily) {
   if (family.includes("browser") || family.includes("pwa")) {
     return "browser";
   }
+  if (family.includes("wallpaper") || family.includes("desktop")) {
+    return family.includes("generated") ? "generated-image-wallpaper" : "download-image-wallpaper";
+  }
   if (family.includes("install") || family.includes("repair") || family.includes("lifecycle")) {
     return "lifecycle";
   }
@@ -7334,7 +7466,7 @@ async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childE
   };
   const args = inferGonkaComputerArguments(payload);
   const operation = normalizeGonkaComputerOperation(args?.operation || "");
-  if (!args || !["browser", "web", "fetch", "search", "open-url", "download", "file", "audio", "time", "time-status", "system-resources", "status"].includes(operation)) {
+  if (!args || !["browser", "web", "fetch", "search", "open-url", "download", "file", "audio", "time", "time-status", "system-resources", "status", "wallpaper", "desktop"].includes(operation)) {
     return null;
   }
   traceStep(trace, "codex.direct-computer-fallback", { operation, action: args.action || "", hasUrl: Boolean(args.url), hasPath: Boolean(args.path) });
@@ -7418,6 +7550,13 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
       ? `Скачал, проверил и удалил. Размер: ${bytes}.`
       : `Скачал файл: ${inner.path || "Downloads"}. Размер: ${bytes}.`;
   }
+  if ((operation === "wallpaper" || operation === "desktop") && inner && typeof inner === "object" && String(inner.action || args?.action || "").toLowerCase() === "wallpaper") {
+    if (inner.ok === true) {
+      const bytes = Number.isFinite(Number(inner.bytes)) ? `, ${Number(inner.bytes)} байт` : "";
+      return `Готово: обои установлены${bytes}.`;
+    }
+    return cleanActionText(inner.error || raw, maxChatChars);
+  }
   if (operation === "file" && inner && typeof inner === "object") {
     const action = String(inner.action || args?.action || "").toLowerCase();
     if (action === "cycle" && inner.deleted === true) {
@@ -7432,6 +7571,56 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
     }
   }
   return formatRecoveredOperatorText(raw) || formatRecoveredOperatorFailureText(stderr, Number(wrapper?.exitCode));
+}
+
+function shouldRecoverProoflessComputerAction({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
+  if (!target?.id || !finalText || state?.terminal?.length > 0) {
+    return false;
+  }
+  if (!computerActionRequiresProof(taskFamily, text)) {
+    return false;
+  }
+  if (finalTextLooksLikeActionProof(finalText)) {
+    return false;
+  }
+  const payload = {
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
+    }]
+  };
+  return Boolean(inferGonkaComputerArguments(payload));
+}
+
+function computerActionRequiresProof(taskFamily, text) {
+  const family = codexSessionFamilyBucket(taskFamily);
+  if ([
+    "audio",
+    "browser",
+    "download-image-wallpaper",
+    "file-work",
+    "generated-image-wallpaper",
+    "system-time",
+    "wallpaper"
+  ].includes(family)) {
+    return true;
+  }
+  return /(?:скачай|загрузи|поставь|установи|создай|запиши|удали|открой|нажми|клик|измени|сделай|set|download|install|create|write|delete|open|click|change|run)/iu.test(String(text || ""));
+}
+
+function finalTextLooksLikeActionProof(text) {
+  const value = String(text || "").toLowerCase();
+  if (!value.trim()) {
+    return false;
+  }
+  if (/(?:sha-?256|байт|bytes|currentwallpaper|requestedwallpaper|verification|exitcode=0|c:\\|\/users\/|готово|сделано|установлен|скачан|создан|удал[её]н|открыт|нажал|измен[её]н)/iu.test(value)) {
+    return true;
+  }
+  if (/^(?:начинаю|сейчас|сделаю|выполняю|попробую|скачаю|установлю|открою|i(?:'|’)ll|i will|starting|working on it)\b/iu.test(value)) {
+    return false;
+  }
+  return false;
 }
 
 function parseJsonMaybe(value) {
@@ -8832,6 +9021,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
     "  return `$ErrorActionPreference = 'Stop'\\n$ProgressPreference = 'SilentlyContinue'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$url = [string]$req.url\\nif ([string]::IsNullOrWhiteSpace($url)) { throw 'download requires url' }\\n$name = ([string]$req.path).Trim()\\nif ([string]::IsNullOrWhiteSpace($name)) { $name = Split-Path ([Uri]$url).AbsolutePath -Leaf; if ([string]::IsNullOrWhiteSpace($name)) { $name = 'download.bin' } }\\n$downloads = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'\\nif ([IO.Path]::IsPathRooted($name)) { $path = $name } else { $path = Join-Path $downloads $name }\\n$parent = Split-Path -Parent $path\\nif ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\\nInvoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 60 -OutFile $path\\n$item = Get-Item -LiteralPath $path -Force\\nif ($item.Length -le 0) { throw 'download-empty' }\\n$action = ([string]$req.action).ToLowerInvariant()\\n$deleted = $false\\nif ($action -eq 'cycle' -or $action -eq 'delete-after-verify') { Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; $deleted = $true }\\n[pscustomobject]@{ ok=$true; action=if($deleted){'cycle'}else{'save'}; url=$url; path=$path; bytes=[int64]$item.Length; deleted=$deleted } | ConvertTo-Json -Compress`;",
     "}",
+    "function wallpaperPowerShell(req) {",
+    "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
+    "  return `$ErrorActionPreference = 'Stop'\\n$ProgressPreference = 'SilentlyContinue'\\ntry { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch {}\\nAdd-Type -AssemblyName System.Windows.Forms\\nAdd-Type -AssemblyName System.Drawing\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\nfunction Emit($v) { $v | ConvertTo-Json -Depth 6 -Compress }\\nfunction SafeName([string]$value) { $name = if ([string]::IsNullOrWhiteSpace($value)) { 'wallpaper' } else { $value }; $name = $name -replace '[\\\\/:*?\\\"<>|]+', '_'; if ($name.Length -gt 80) { $name = $name.Substring(0,80) }; $name = $name.Trim(' ', '.'); if (-not $name) { $name = 'wallpaper' }; return $name }\\nfunction NormalizePath([string]$value) { if ([string]::IsNullOrWhiteSpace($value)) { return '' }; try { return ([IO.Path]::GetFullPath($value)).TrimEnd('\\\\') } catch { return $value.Trim() } }\\nfunction FirstImageUrl { $direct = ([string]$req.url).Trim(); if ($direct -match '^https?://') { return $direct }; $query = ([string]$req.query).Trim(); if (-not $query) { $query = ([string]$req.text).Trim() }; if (-not $query) { throw 'wallpaper requires path, url, or query' }; $queries = @($query, ($query + ' wallpaper photo'), ($query + ' high resolution photo')) | Where-Object { $_ } | Select-Object -Unique; foreach ($q in $queries) { $enc = [Uri]::EscapeDataString($q); try { $api = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=' + $enc + '&gsrlimit=10&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*'; $json = Invoke-RestMethod -Uri $api -TimeoutSec 25 -Headers @{ 'User-Agent'='Mozilla/5.0 SotyAgent' }; if ($json.query.pages) { foreach ($p in $json.query.pages.PSObject.Properties.Value) { $info = @($p.imageinfo)[0]; $u = [string]$info.url; $mime = [string]$info.mime; if ($u -match '^https?://' -and $mime -match 'image/(jpeg|png)') { return $u } } } } catch {} }; foreach ($q in $queries) { $enc = [Uri]::EscapeDataString($q); try { $html = (Invoke-WebRequest -Uri ('https://www.bing.com/images/search?q=' + $enc + '&qft=+filterui:imagesize-wallpaper') -UseBasicParsing -TimeoutSec 25 -Headers @{ 'User-Agent'='Mozilla/5.0 SotyAgent' }).Content; foreach ($m in [regex]::Matches($html, '\\\"murl\\\":\\\"([^\\\"]+)\\\"')) { $u = $m.Groups[1].Value -replace '\\\\\\\\/', '/'; $u = [regex]::Unescape($u); if ($u -match '^https?://' -and $u -match '\\\\.(jpe?g|png)(\\\\?|$)') { return $u } } } catch {} }; throw 'image-url-not-found' }\\nfunction DownloadImage([string]$url) { $dir = Join-Path $env:PUBLIC 'Pictures'; if ([string]::IsNullOrWhiteSpace($env:PUBLIC)) { $dir = Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Soty' }; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $tmp = Join-Path $dir ('soty-wallpaper-' + $stamp + '.tmp'); Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 60 -OutFile $tmp -Headers @{ 'User-Agent'='Mozilla/5.0 SotyAgent'; 'Accept'='image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' }; $item = Get-Item -LiteralPath $tmp -Force; if ($item.Length -lt 1024) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw 'download-empty' }; $img = $null; try { $img = [Drawing.Image]::FromFile($tmp); $width = [int]$img.Width; $height = [int]$img.Height } finally { if ($img) { $img.Dispose() } }; $ext = if ($url -match '\\\\.png(\\\\?|$)') { '.png' } else { '.jpg' }; $name = SafeName(([string]$req.query)); $path = Join-Path $dir ($name + '-' + $stamp + $ext); Move-Item -LiteralPath $tmp -Destination $path -Force; return [pscustomobject]@{ path=$path; sourceUrl=$url; width=$width; height=$height } }\\n$imagePath = ([string]$req.path).Trim(); $sourceUrl = ''; $download = $null; if (-not $imagePath) { $sourceUrl = FirstImageUrl; $download = DownloadImage $sourceUrl; $imagePath = [string]$download.path }\\nif ([string]::IsNullOrWhiteSpace($imagePath)) { throw 'empty wallpaper path' }\\n$item = Get-Item -LiteralPath $imagePath -ErrorAction Stop\\n$fit = ([string]$req.fit).Trim().ToLowerInvariant(); if (-not $fit) { $fit = 'fill' }\\n$style = '10'; $tile = '0'; switch ($fit) { 'fit' { $style='6'; $tile='0' } 'stretch' { $style='2'; $tile='0' } 'center' { $style='0'; $tile='0' } 'tile' { $style='0'; $tile='1' } 'span' { $style='22'; $tile='0' } default { $style='10'; $tile='0' } }\\n$desktopKey = 'HKCU:\\\\Control Panel\\\\Desktop'; if (-not (Test-Path -LiteralPath $desktopKey)) { New-Item -Path $desktopKey -Force | Out-Null }\\nSet-ItemProperty -Path $desktopKey -Name WallpaperStyle -Value $style\\nSet-ItemProperty -Path $desktopKey -Name TileWallpaper -Value $tile\\nSet-ItemProperty -Path $desktopKey -Name Wallpaper -Value $item.FullName\\nif (-not ('SotyWallpaper' -as [type])) { Add-Type 'using System; using System.Runtime.InteropServices; public class SotyWallpaper { [DllImport(\"user32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni); }' }\\n$ok = [SotyWallpaper]::SystemParametersInfo(20, 0, $item.FullName, 3)\\nStart-Sleep -Milliseconds 250\\n$current = (Get-ItemProperty -Path $desktopKey -Name Wallpaper -ErrorAction SilentlyContinue).Wallpaper\\n$requestedPath = NormalizePath $item.FullName\\n$currentPath = NormalizePath ([string]$current)\\n$applied = [bool]$ok -and $requestedPath -and ($currentPath -ieq $requestedPath)\\n$hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()\\n$virtual = [System.Windows.Forms.SystemInformation]::VirtualScreen\\nEmit ([pscustomobject]@{ ok=[bool]$applied; action='wallpaper'; path=$item.FullName; sourceUrl=$sourceUrl; query=[string]$req.query; bytes=[int64]$item.Length; sha256=$hash; fit=$fit; currentWallpaper=[string]$current; requestedWallpaper=[string]$item.FullName; verification='registry-current-wallpaper-matches-path'; display=[pscustomobject]@{ width=$virtual.Width; height=$virtual.Height }; downloaded=$download; exitCode=if($applied){0}else{42} })\\nif (-not $applied) { exit 42 }`;",
+    "}",
     "function filePowerShell(req) {",
     "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
     "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append' -or $action -eq 'cycle') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'cycle' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; $text = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim(); if ($text -ne ([string]$req.content)) { throw 'verify-failed' }; Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text; deleted=$true } | ConvertTo-Json -Compress; return }\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
@@ -8915,6 +9108,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "async function computer(argsText) {",
     "  const req = JSON.parse(argsText || '{}');",
     "  const operation = String(req.operation || req.action || '').toLowerCase().replace(/_/g, '-');",
+    "  if (operation === 'wallpaper' || operation === 'desktop-wallpaper' || (operation === 'desktop' && String(req.action || '').toLowerCase() === 'wallpaper')) {",
+    "    await scriptPowerShell(wallpaperPowerShell(req), { name: 'computer-wallpaper', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 120000, 240000)) });",
+    "    return;",
+    "  }",
     "  if (['web', 'fetch', 'web-fetch', 'search', 'web-search', 'internet'].includes(operation) || req.query) {",
     "    await scriptPowerShell(webPowerShell(req), { name: 'computer-web', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
     "    return;",
@@ -13402,6 +13599,8 @@ function sourceDesktopScript(args) {
     text: String(args.text || "").slice(0, 4000),
     keys: String(args.keys || "").slice(0, 200),
     path: String(args.path || "").slice(0, 2000),
+    url: String(args.url || "").slice(0, 4000),
+    query: String(args.query || args.prompt || args.pattern || "").slice(0, 500),
     fit: String(args.fit || "fill").slice(0, 40)
   }), "utf8").toString("base64");
   return `
@@ -13409,6 +13608,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')) | ConvertFrom-Json
 $action = ([string]$req.action).Trim().ToLowerInvariant()
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch {}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 function Emit($Value) { $Value | ConvertTo-Json -Depth 6 -Compress }
@@ -13418,6 +13618,75 @@ function CurrentIdentityName {
 function NormalizePathForCompare([string]$Value) {
   if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
   try { return ([System.IO.Path]::GetFullPath($Value)).TrimEnd('\') } catch { return ([string]$Value).Trim() }
+}
+function SafeWallpaperName([string]$Value) {
+  $name = if ([string]::IsNullOrWhiteSpace($Value)) { 'wallpaper' } else { $Value }
+  $name = $name -replace '[\\/:*?"<>|]+', '_'
+  if ($name.Length -gt 80) { $name = $name.Substring(0, 80) }
+  $name = $name.Trim(' ', '.')
+  if ([string]::IsNullOrWhiteSpace($name)) { $name = 'wallpaper' }
+  return $name
+}
+function ResolveWallpaperImageUrl {
+  $direct = ([string]$req.url).Trim()
+  if ($direct -match '^https?://') { return $direct }
+  $query = ([string]$req.query).Trim()
+  if (-not $query) { $query = ([string]$req.text).Trim() }
+  if (-not $query) { throw 'wallpaper requires path, url, or query' }
+  $queries = @($query, ($query + ' wallpaper photo'), ($query + ' high resolution photo')) | Where-Object { $_ } | Select-Object -Unique
+  foreach ($q in $queries) {
+    $enc = [Uri]::EscapeDataString($q)
+    try {
+      $api = 'https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=' + $enc + '&gsrlimit=10&prop=imageinfo&iiprop=url|mime|size&format=json&origin=*'
+      $json = Invoke-RestMethod -Uri $api -TimeoutSec 25 -Headers @{ 'User-Agent' = 'Mozilla/5.0 SotyAgent' }
+      if ($json.query.pages) {
+        foreach ($p in $json.query.pages.PSObject.Properties.Value) {
+          $info = @($p.imageinfo)[0]
+          $u = [string]$info.url
+          $mime = [string]$info.mime
+          if ($u -match '^https?://' -and $mime -match 'image/(jpeg|png)') { return $u }
+        }
+      }
+    } catch {}
+  }
+  foreach ($q in $queries) {
+    $enc = [Uri]::EscapeDataString($q)
+    try {
+      $html = (Invoke-WebRequest -Uri ('https://www.bing.com/images/search?q=' + $enc + '&qft=+filterui:imagesize-wallpaper') -UseBasicParsing -TimeoutSec 25 -Headers @{ 'User-Agent' = 'Mozilla/5.0 SotyAgent' }).Content
+      foreach ($m in [regex]::Matches($html, '"murl":"([^"]+)"')) {
+        $u = $m.Groups[1].Value -replace '\\/', '/'
+        $u = [regex]::Unescape($u)
+        if ($u -match '^https?://' -and $u -match '\.(jpe?g|png)(\?|$)') { return $u }
+      }
+    } catch {}
+  }
+  throw 'image-url-not-found'
+}
+function DownloadWallpaperImage([string]$Url) {
+  $dir = Join-Path $env:PUBLIC 'Pictures'
+  if ([string]::IsNullOrWhiteSpace($env:PUBLIC)) { $dir = Join-Path ([Environment]::GetFolderPath('MyPictures')) 'Soty' }
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  $tmp = Join-Path $dir ('soty-wallpaper-' + $stamp + '.tmp')
+  Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 60 -OutFile $tmp -Headers @{ 'User-Agent' = 'Mozilla/5.0 SotyAgent'; 'Accept' = 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8' }
+  $item = Get-Item -LiteralPath $tmp -Force
+  if ($item.Length -lt 1024) {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    throw 'download-empty'
+  }
+  $img = $null
+  try {
+    $img = [System.Drawing.Image]::FromFile($tmp)
+    $width = [int]$img.Width
+    $height = [int]$img.Height
+  } finally {
+    if ($img) { $img.Dispose() }
+  }
+  $ext = if ($Url -match '\.png(\?|$)') { '.png' } else { '.jpg' }
+  $name = SafeWallpaperName ([string]$req.query)
+  $path = Join-Path $dir ($name + '-' + $stamp + $ext)
+  Move-Item -LiteralPath $tmp -Destination $path -Force
+  return [pscustomobject]@{ path=$path; sourceUrl=$Url; width=$width; height=$height }
 }
 switch ($action) {
   'display' {
@@ -13502,6 +13771,13 @@ switch ($action) {
       throw 'desktop action is running as SYSTEM; retry through the selected interactive user route'
     }
     $imagePath = [string]$req.path
+    $sourceUrl = ''
+    $download = $null
+    if ([string]::IsNullOrWhiteSpace($imagePath)) {
+      $sourceUrl = ResolveWallpaperImageUrl
+      $download = DownloadWallpaperImage $sourceUrl
+      $imagePath = [string]$download.path
+    }
     if ([string]::IsNullOrWhiteSpace($imagePath)) { throw 'empty wallpaper path' }
     $item = Get-Item -LiteralPath $imagePath -ErrorAction Stop
     $fit = ([string]$req.fit).Trim().ToLowerInvariant()
@@ -13546,6 +13822,8 @@ public class SotyWallpaper {
       ok=[bool]$applied
       action=$action
       path=$item.FullName
+      sourceUrl=$sourceUrl
+      query=[string]$req.query
       bytes=[int64]$item.Length
       sha256=$hash
       fit=$fit
@@ -13556,6 +13834,7 @@ public class SotyWallpaper {
       currentWallpaper=[string]$current
       requestedWallpaper=[string]$item.FullName
       display=[pscustomobject]@{ x=$virtual.Left; y=$virtual.Top; width=$virtual.Width; height=$virtual.Height }
+      downloaded=$download
       user=$env:USERNAME
       identity=$identityName
       exitCode=$exitCode
