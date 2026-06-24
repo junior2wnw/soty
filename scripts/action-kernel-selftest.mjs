@@ -1475,7 +1475,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("function filePowerShell(req)"));
       assert(agent.includes("function timeSetPowerShell(req)"));
       assert(agent.includes("If the `computer` tool is present, use it first"));
-      assert(agent.includes("attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)"));
+      assert(agent.includes("attachMcp: !codexUsesGonka && codexTaskNeedsSotyMcpTools(taskFamily, target)"));
       assert(agent.includes("Gonka tool route: use the `computer` function tool first"));
       assert(agent.includes("sourceWebScript"));
       assert(agent.includes("openAiToolPlaneStatus"));

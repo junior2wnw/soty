@@ -5569,7 +5569,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     outPath,
     threadId: sessionRecord?.threadId || "",
     taskFamily,
-    attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)
+    attachMcp: !codexUsesGonka && codexTaskNeedsSotyMcpTools(taskFamily, target)
   });
   const mcpAttached = args.some((item) => String(item).includes("mcp_servers.soty"));
   const turnNoProgressTimeoutMs = codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached);
