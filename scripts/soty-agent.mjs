@@ -907,8 +907,8 @@ function responsesPayloadUserText(payload) {
 function firstKeyValue(text, keys) {
   for (const key of keys) {
     const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    const match = String(text || "").match(new RegExp(`(?:^|[\\s,;])${escaped}\\s*[:=]\\s*(?:"([^"]*)"|'([^']*)'|\\\`([^\\\`]*)\\\`|([^\\s,;]+))`, "iu"));
-    const value = match ? (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "") : "";
+    const match = String(text || "").match(new RegExp(`(?:^|[\\s,;])${escaped}\\s*[:=]\\s*(?:"([^"]*)"|'([^']*)'|([^\\s,;]+))`, "iu"));
+    const value = match ? (match[1] ?? match[2] ?? match[3] ?? "") : "";
     if (value) {
       return value.trim();
     }
