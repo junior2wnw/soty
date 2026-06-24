@@ -685,7 +685,7 @@ function bearerTokenFromRequest(request) {
 
 function gonkaChatCompletionPayload(payload) {
   const messages = responsesInputToChatMessages(payload);
-  const tools = responsesToolsToChatTools(payload?.tools);
+  const tools = gonkaToolsWithInjectedComputer(responsesToolsToChatTools(payload?.tools), payload);
   const body = {
     model: codexGonkaModel || safeCodexModelId(payload?.model) || "moonshotai/Kimi-K2.6",
     messages,
@@ -700,6 +700,67 @@ function gonkaChatCompletionPayload(payload) {
     }
   }
   return body;
+}
+
+function gonkaToolsWithInjectedComputer(tools, payload) {
+  const list = Array.isArray(tools) ? [...tools] : [];
+  if (!shouldInjectGonkaComputerTool(payload) || list.some((tool) => tool?.function?.name === "computer")) {
+    return list;
+  }
+  list.unshift(gonkaComputerChatTool());
+  return list.sort((left, right) => gonkaToolPriority(left) - gonkaToolPriority(right));
+}
+
+function shouldInjectGonkaComputerTool(payload) {
+  const text = responsesPayloadPlainText(payload).slice(0, 30_000);
+  const targetLine = text.match(/(?:^|\n)\s*-?\s*target:\s*([^\n]+)/iu)?.[1]?.trim() || "";
+  if (!targetLine || /^none\s*\(none\)?$/iu.test(targetLine) || /\(none\)/iu.test(targetLine)) {
+    return false;
+  }
+  return /\([^)]{3,}\)/u.test(targetLine) || /agent-source:[A-Za-z0-9_.:-]+/u.test(targetLine);
+}
+
+function responsesPayloadPlainText(payload) {
+  const parts = [];
+  if (typeof payload?.instructions === "string") {
+    parts.push(payload.instructions);
+  }
+  if (typeof payload?.input === "string") {
+    parts.push(payload.input);
+  }
+  for (const item of Array.isArray(payload?.input) ? payload.input : []) {
+    if (item?.type === "message") {
+      parts.push(responseContentText(item.content));
+    }
+  }
+  return parts.join("\n");
+}
+
+function gonkaComputerChatTool() {
+  return {
+    type: "function",
+    function: {
+      name: "computer",
+      description: "Use the selected Soty computer for source-device work: web fetch/search, shell/script, files, browser/open_url, audio, time, system resources, jobs, and OS checks. Prefer this before exec_command for the user's computer.",
+      parameters: {
+        type: "object",
+        properties: {
+          operation: { type: "string", description: "web, fetch, search, run, script, open_url, browser, audio, time_status, system_resources, file, or status." },
+          action: { type: "string", description: "Optional operation-specific action, for example fetch, search, open, read, write, status." },
+          url: { type: "string", description: "HTTP/HTTPS URL for web/browser/open_url work." },
+          query: { type: "string", description: "Web search query." },
+          command: { type: "string", description: "Shell/PowerShell command for run/script fallback." },
+          script: { type: "string", description: "PowerShell script body." },
+          path: { type: "string", description: "File path for simple file operations." },
+          content: { type: "string", description: "File content for write operations." },
+          volumePercent: { type: "integer", description: "Output volume, 0-100." },
+          maxChars: { type: "integer", description: "Maximum returned text, 1000-12000." },
+          timeoutMs: { type: "integer", description: "Timeout in milliseconds." }
+        },
+        additionalProperties: true
+      }
+    }
+  };
 }
 
 function responsesToolsToChatTools(tools) {
@@ -1092,13 +1153,33 @@ function streamGonkaChatCompletionObject(body, response, headers, model) {
   }
   if (Array.isArray(message.tool_calls)) {
     for (const call of message.tool_calls) {
-      writer.tool(call);
+      writer.tool(mapGonkaToolCallForCodex(call));
     }
   }
   if (body?.usage) {
     writer.usage(body.usage);
   }
   writer.complete();
+}
+
+function mapGonkaToolCallForCodex(call) {
+  const fn = call?.function || {};
+  if (safeChatToolName(fn.name) !== "computer") {
+    return call;
+  }
+  return {
+    ...call,
+    function: {
+      name: "exec_command",
+      arguments: JSON.stringify({
+        command: `node SOTY_LOCAL_API.mjs computer ${shellSingleQuote(String(fn.arguments || "{}"))}`
+      })
+    }
+  };
+}
+
+function shellSingleQuote(value) {
+  return `'${String(value || "").replace(/'/gu, "'\\''")}'`;
 }
 
 function gonkaChatCompletionResponseObject(body, model) {
@@ -1118,7 +1199,8 @@ function gonkaChatCompletionResponseObject(body, model) {
   }
   if (Array.isArray(message.tool_calls)) {
     for (const call of message.tool_calls) {
-      const fn = call?.function || {};
+      const mappedCall = mapGonkaToolCallForCodex(call);
+      const fn = mappedCall?.function || {};
       const name = safeChatToolName(fn.name);
       if (!name) {
         continue;
@@ -1127,7 +1209,7 @@ function gonkaChatCompletionResponseObject(body, model) {
         id: `fc_${randomUUID().replace(/-/gu, "")}`,
         type: "function_call",
         status: "completed",
-        call_id: safeToolCallId(call.id) || `call_${randomUUID().replace(/-/gu, "")}`,
+        call_id: safeToolCallId(mappedCall.id) || `call_${randomUUID().replace(/-/gu, "")}`,
         name,
         arguments: String(fn.arguments || "{}")
       });
@@ -6393,7 +6475,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- Gonka tool route: use the `computer` function tool first when it is available. It is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
     "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
-    "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `desktop-write`, `desktop-read`, `desktop-delete`, `desktop-cycle <file> <text>`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
+    "- Fast helper in the current workspace: if a `computer` tool call is bridged to shell, it runs `node SOTY_LOCAL_API.mjs computer <json>`. For manual fallback prefer `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
     "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
     "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
@@ -8063,8 +8145,60 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "async function scriptPowerShell(script, { timeoutMs = 60000, name = 'soty-script' } = {}) {",
     "  await post('/operator/script', { target, sourceDeviceId, sourceRelayId, shell: 'powershell', timeoutMs, name, script });",
     "}",
+    "function webPowerShell(req) {",
+    "  const action = String(req.action || req.operation || '').toLowerCase();",
+    "  const url = String(req.url || '').trim();",
+    "  const query = String(req.query || req.text || req.pattern || '').trim();",
+    "  const maxChars = Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000));",
+    "  if ((action === 'search' || (!url && query)) && query) {",
+    "    const searchUrl = 'https://duckduckgo.com/html/?q=' + encodeURIComponent(query);",
+    "    return `$ProgressPreference='SilentlyContinue'\\n$r = Invoke-WebRequest -Uri ${ps(searchUrl)} -UseBasicParsing -TimeoutSec 30\\n$text = ($r.Content -replace '<script[\\\\s\\\\S]*?</script>',' ' -replace '<style[\\\\s\\\\S]*?</style>',' ' -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim()\\n[pscustomobject]@{ ok=$true; action='search'; status=[int]$r.StatusCode; url=${ps(searchUrl)}; text=$text.Substring(0, [Math]::Min($text.Length, ${maxChars})) } | ConvertTo-Json -Compress`;",
+    "  }",
+    "  if (!/^https?:\\/\\//i.test(url)) { throw new Error('computer web requires http url or query'); }",
+    "  return `$ProgressPreference='SilentlyContinue'\\n$r = Invoke-WebRequest -Uri ${ps(url)} -UseBasicParsing -TimeoutSec 30\\n$title = ''\\nif ($r.Content -match '<title[^>]*>([\\\\s\\\\S]*?)</title>') { $title = (($Matches[1] -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim()) }\\n$text = (($r.Content -replace '<script[\\\\s\\\\S]*?</script>',' ' -replace '<style[\\\\s\\\\S]*?</style>',' ' -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim())\\n[pscustomobject]@{ ok=$true; action='fetch'; status=[int]$r.StatusCode; statusDescription=$r.StatusDescription; contentType=[string]$r.Headers['Content-Type']; title=$title; url=${ps(url)}; text=$text.Substring(0, [Math]::Min($text.Length, ${maxChars})) } | ConvertTo-Json -Compress`;",
+    "}",
+    "async function computer(argsText) {",
+    "  const req = JSON.parse(argsText || '{}');",
+    "  const operation = String(req.operation || req.action || '').toLowerCase().replace(/_/g, '-');",
+    "  if (['web', 'fetch', 'web-fetch', 'search', 'web-search', 'internet'].includes(operation) || req.query) {",
+    "    await scriptPowerShell(webPowerShell(req), { name: 'computer-web', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
+    "    return;",
+    "  }",
+    "  if (operation === 'open-url' || operation === 'open' || operation === 'browser') {",
+    "    const url = String(req.url || '').trim();",
+    "    if (!/^https?:\\/\\//i.test(url)) throw new Error('computer open_url requires http url');",
+    "    await scriptPowerShell(`Start-Process ${ps(url)}\\n'opened ' + ${ps(url)}`, { name: 'computer-open-url' });",
+    "    return;",
+    "  }",
+    "  if (operation === 'audio' || operation === 'volume') {",
+    "    const raw = Number(req.volumePercent ?? req.volume);",
+    "    const volume = Number.isFinite(raw) ? Math.max(0, Math.min(100, Math.round(raw))) : -1;",
+    "    const template = " + JSON.stringify(windowsAudioScript(-1, -1)) + ";",
+    "    const script = template.replace('[SotyAudio.Endpoint]::Apply(-1, -1)', `[SotyAudio.Endpoint]::Apply(${volume}, ${volume >= 0 ? 0 : -1})`);",
+    "    await scriptPowerShell(script, { name: 'computer-audio' });",
+    "    return;",
+    "  }",
+    "  if (operation === 'time' || operation === 'time-status' || operation === 'date') {",
+    "    await scriptPowerShell(`$now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss K'\\n$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\\nWrite-Output ('time=' + $now + '; admin=' + $isAdmin.ToString().ToLowerInvariant())`, { name: 'computer-time' });",
+    "    return;",
+    "  }",
+    "  if (operation === 'resources' || operation === 'system-resources' || operation === 'status') {",
+    "    await scriptPowerShell(`$ErrorActionPreference = 'Stop'\\ntry { $cpu = [math]::Round((Get-Counter '\\\\Processor(_Total)\\\\% Processor Time').CounterSamples.CookedValue, 1) } catch { $cpu = 'n/a' }\\n$os = Get-CimInstance Win32_OperatingSystem\\n$ramUsedGb = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 2)\\n$ramTotalGb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)\\n$ramPct = [math]::Round((($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / $os.TotalVisibleMemorySize) * 100, 1)\\n$disk = Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID='C:'\\\"\\n$diskFreeGb = [math]::Round($disk.FreeSpace / 1GB, 2)\\n$diskTotalGb = [math]::Round($disk.Size / 1GB, 2)\\n$diskPct = [math]::Round(($disk.FreeSpace / $disk.Size) * 100, 1)\\nWrite-Output (\\\"CPU: $cpu%; RAM: $ramUsedGb/$ramTotalGb GB ($ramPct%); Disk C: $diskFreeGb/$diskTotalGb GB free ($diskPct%)\\\")`, { name: 'computer-resources' });",
+    "    return;",
+    "  }",
+    "  const script = String(req.script || req.command || '').trim();",
+    "  if (script) {",
+    "    await scriptPowerShell(script, { name: 'computer-script', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
+    "    return;",
+    "  }",
+    "  throw new Error('unsupported computer operation: ' + operation);",
+    "}",
     "if (!target || !sourceDeviceId || !sourceRelayId) { console.error('missing target/sourceDeviceId/sourceRelayId'); process.exit(2); }",
-    "if (op === 'desktop-exists') {",
+    "if (op === 'computer') {",
+    "  const argsText = args.length ? args.join(' ') : await readStdin();",
+    "  if (!argsText.trim()) { console.error('usage: computer <json-or-stdin>'); process.exit(2); }",
+    "  await computer(argsText);",
+    "} else if (op === 'desktop-exists') {",
     "  const name = args.join(' ').trim();",
     "  if (!name) { console.error('usage: desktop-exists <file-name>'); process.exit(2); }",
     "  await scriptPowerShell(`${desktopPathScript(name)}\\nif (Test-Path -LiteralPath $path) { 'exists ' + $path } else { 'missing ' + $path }`, { name: 'desktop-exists' });",
@@ -8105,7 +8239,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  if (!script.trim()) { console.error('usage: script-powershell <script-or-stdin>'); process.exit(2); }",
     "  await scriptPowerShell(script, { name: 'script-powershell' });",
     "} else {",
-    "  console.error('usage: node SOTY_LOCAL_API.mjs desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | system-resources | open-url <url> | script-powershell [script-or-stdin]');",
+    "  console.error('usage: node SOTY_LOCAL_API.mjs computer <json> | desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | system-resources | open-url <url> | script-powershell [script-or-stdin]');",
     "  process.exit(2);",
     "}"
   ].join("\n");
@@ -8235,7 +8369,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_LOCAL_API.mjs is the fallback route for Gonka source-device work when `computer` is unavailable: use its small commands (`desktop-cycle` for create+verify+delete, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
+    "- SOTY_LOCAL_API.mjs is the fallback route for Gonka source-device work when native tool execution is unavailable: `computer <json>` is the generic bridge; small commands include `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`; for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
     "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [

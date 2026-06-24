@@ -249,7 +249,9 @@ async function runScenarios({ relayUrl } = {}) {
           "Content-Type": "application/json"
         });
         assertEqual(universalDialogWithTarget.status, 200);
-        assertEqual(gonkaRequests[1].tools.length, 1);
+        assertEqual(gonkaRequests[1].tools.length, 2);
+        assertEqual(gonkaRequests[1].tools[0].function.name, "computer");
+        assertEqual(gonkaRequests[1].tools[1].function.name, "exec_command");
         assert(gonkaRequests[1].messages.some((message) => String(message.content).includes("- task_family: source-scoped-dialog")));
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
@@ -1154,6 +1156,8 @@ async function runScenarios({ relayUrl } = {}) {
       const source = await readFile(sourceAgentPath, "utf8");
       for (const needle of [
         "desktop-cycle",
+        "computer <json>",
+        "SOTY_LOCAL_API.mjs computer",
         "audio-get",
         "time-status",
         "system-resources",
@@ -1460,6 +1464,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
       assert(agent.includes("gonkaToolPriority"));
+      assert(agent.includes("gonkaToolsWithInjectedComputer"));
+      assert(agent.includes("mapGonkaToolCallForCodex"));
       assert(agent.includes("If the `computer` tool is present, use it first"));
       assert(agent.includes("attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)"));
       assert(agent.includes("Gonka tool route: use the `computer` function tool first"));
