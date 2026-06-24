@@ -1467,7 +1467,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
       assert(agent.includes("gonkaForcedToolChoice"));
+      assert(agent.includes("fallbackGonkaComputerToolCalls"));
+      assert(agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("mapGonkaToolCallForCodex"));
+      assert(agent.includes("function filePowerShell(req)"));
+      assert(agent.includes("function timeSetPowerShell(req)"));
       assert(agent.includes("If the `computer` tool is present, use it first"));
       assert(agent.includes("attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)"));
       assert(agent.includes("Gonka tool route: use the `computer` function tool first"));

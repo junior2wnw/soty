@@ -666,15 +666,15 @@ async function handleGonkaResponsesProxy(request, response, headers) {
   }
   const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("text/event-stream")) {
-    await streamGonkaChatCompletions(upstream, response, headers, payload?.model || codexGonkaModel);
+    await streamGonkaChatCompletions(upstream, response, headers, payload?.model || codexGonkaModel, payload);
     return;
   }
   const body = await upstream.json().catch(() => null);
   if (payload?.stream === true) {
-    streamGonkaChatCompletionObject(body, response, headers, payload?.model || codexGonkaModel);
+    streamGonkaChatCompletionObject(body, response, headers, payload?.model || codexGonkaModel, payload);
     return;
   }
-  sendJson(response, 200, headers, gonkaChatCompletionResponseObject(body, payload?.model || codexGonkaModel));
+  sendJson(response, 200, headers, gonkaChatCompletionResponseObject(body, payload?.model || codexGonkaModel, payload));
 }
 
 function bearerTokenFromRequest(request) {
@@ -738,6 +738,248 @@ function gonkaForcedToolChoice(payload, tools) {
     return null;
   }
   return { type: "function", function: { name: "computer" } };
+}
+
+function shouldForceGonkaComputerFromPayload(payload) {
+  return Boolean(gonkaForcedToolChoice(payload, [gonkaComputerChatTool()]));
+}
+
+function fallbackGonkaComputerToolCalls(payload, message = {}) {
+  if (!shouldForceGonkaComputerFromPayload(payload) || Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
+    return [];
+  }
+  const args = inferGonkaComputerArguments(payload);
+  if (!args) {
+    return [];
+  }
+  return [{
+    id: `call_${randomUUID().replace(/-/gu, "")}`,
+    type: "function",
+    function: {
+      name: "computer",
+      arguments: JSON.stringify(args)
+    }
+  }];
+}
+
+function inferGonkaComputerArguments(payload) {
+  const allText = responsesPayloadPlainText(payload);
+  const userText = responsesPayloadUserText(payload) || allText;
+  const family = (allText.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
+  const args = {};
+  const explicitOperation = firstKeyValue(allText, ["operation", "op", "capability"]);
+  const explicitAction = firstKeyValue(allText, ["action"]);
+  if (explicitOperation) {
+    args.operation = normalizeGonkaComputerOperation(explicitOperation);
+  }
+  if (explicitAction) {
+    args.action = explicitAction;
+  }
+  const url = firstHttpUrl(userText) || firstHttpUrl(allText);
+  if (url) {
+    args.url = url;
+  }
+  const query = firstKeyValue(allText, ["query", "q"]);
+  if (query) {
+    args.query = query;
+  }
+  const maxChars = firstIntegerValue(allText, ["maxChars", "max_chars", "limit"]);
+  if (maxChars) {
+    args.maxChars = Math.max(1000, Math.min(maxChars, 12000));
+  }
+  const timeoutMs = firstIntegerValue(allText, ["timeoutMs", "timeout_ms"]);
+  if (timeoutMs) {
+    args.timeoutMs = Math.max(1000, Math.min(timeoutMs, 120000));
+  }
+  const volume = firstIntegerValue(allText, ["volumePercent", "volume", "громкость", "звук"]);
+  if (Number.isFinite(volume)) {
+    args.volumePercent = Math.max(0, Math.min(volume, 100));
+  }
+  const path = firstKeyValue(allText, ["path", "file", "filename", "файл"]);
+  if (path) {
+    args.path = path;
+  }
+  const content = firstKeyValue(allText, ["content", "text", "value", "содержимое", "текст"]);
+  if (content) {
+    args.content = content;
+  }
+  const command = firstKeyValue(allText, ["command", "cmd", "script"]);
+  if (command) {
+    args.script = command;
+  }
+  if (!args.path) {
+    const namedFile = inferMentionedFileName(userText);
+    if (namedFile) {
+      args.path = namedFile;
+    }
+  }
+  if (!args.content) {
+    const quotedContent = inferQuotedContent(userText);
+    if (quotedContent) {
+      args.content = quotedContent;
+    }
+  }
+  if (!args.operation) {
+    args.operation = inferGonkaComputerOperationFromText(userText, family, args);
+  }
+  if (!args.action) {
+    args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
+  }
+  if ((args.operation === "web" || args.operation === "search") && !args.url && !args.query) {
+    args.query = compactComputerQuery(userText);
+  }
+  if (args.operation === "file" && !args.path) {
+    return null;
+  }
+  if (args.operation === "script" && !args.script) {
+    return null;
+  }
+  return args.operation ? args : null;
+}
+
+function responsesPayloadUserText(payload) {
+  if (typeof payload?.input === "string") {
+    return payload.input;
+  }
+  let last = "";
+  for (const item of Array.isArray(payload?.input) ? payload.input : []) {
+    if (item?.type === "message" && chatRoleForResponseRole(item.role) === "user") {
+      const text = responseContentText(item.content);
+      if (text) {
+        last = text;
+      }
+    }
+  }
+  return last;
+}
+
+function firstKeyValue(text, keys) {
+  for (const key of keys) {
+    const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const match = String(text || "").match(new RegExp(`(?:^|[\\s,;])${escaped}\\s*[:=]\\s*(?:"([^"]*)"|'([^']*)'|\\\`([^\\\`]*)\\\`|([^\\s,;]+))`, "iu"));
+    const value = match ? (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "") : "";
+    if (value) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function firstIntegerValue(text, keys) {
+  const value = firstKeyValue(text, keys);
+  if (value) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+  for (const key of keys) {
+    const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    const match = String(text || "").match(new RegExp(`${escaped}[^0-9-]{0,24}(-?\\d{1,4})`, "iu"));
+    if (match) {
+      const parsed = Number.parseInt(match[1], 10);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return NaN;
+}
+
+function firstHttpUrl(text) {
+  const match = String(text || "").match(/https?:\/\/[^\s"'<>),]+/iu);
+  return match ? match[0] : "";
+}
+
+function normalizeGonkaComputerOperation(value) {
+  const clean = String(value || "").trim().toLowerCase().replace(/_/gu, "-");
+  const aliases = {
+    fetch: "web",
+    "web-fetch": "web",
+    internet: "web",
+    search: "web",
+    "web-search": "web",
+    open: "open-url",
+    browser: "open-url",
+    volume: "audio",
+    "time-status": "time",
+    date: "time",
+    resources: "system-resources",
+    status: "system-resources",
+    run: "script",
+    shell: "script"
+  };
+  return aliases[clean] || clean;
+}
+
+function inferGonkaComputerOperationFromText(text, family, args) {
+  const lower = String(text || "").toLowerCase();
+  if (args.volumePercent !== undefined || /громк|звук|volume|mute|unmute/iu.test(lower)) {
+    return "audio";
+  }
+  if (/ресурс|cpu|ram|memory|памят|диск|disk|нагруз/iu.test(lower) || family === "system-check") {
+    return "system-resources";
+  }
+  if (/время|дат[ау]|time|date/iu.test(lower) || family === "system-time") {
+    return "time";
+  }
+  if (args.url && /открой|open|browser|браузер/iu.test(lower)) {
+    return "open-url";
+  }
+  if (args.url || args.query || /интернет|сайт|url|fetch|search|найди|поищи|загугл|web/iu.test(lower) || family === "web-lookup") {
+    return "web";
+  }
+  if (args.path || /файл|папк|desktop|рабоч|read file|write file|create file|delete file|list files/iu.test(lower) || family === "file-work") {
+    return "file";
+  }
+  if (args.script || /powershell|cmd|команд|скрипт|terminal|console|запусти/iu.test(lower) || family === "script-task") {
+    return "script";
+  }
+  return "system-resources";
+}
+
+function inferGonkaComputerActionFromText(text, operation, args) {
+  const lower = String(text || "").toLowerCase();
+  if (operation === "web") {
+    return args.url && !args.query ? "fetch" : "search";
+  }
+  if (operation === "file") {
+    if (/удали|delete|remove/iu.test(lower)) return "delete";
+    if (/добавь|append/iu.test(lower)) return "append";
+    if (/прочитай|read|show|открой/iu.test(lower) && !args.content) return "read";
+    if (/список|list|ls|покажи файлы/iu.test(lower)) return "list";
+    if (/статус|stat|exists|существ/iu.test(lower)) return "stat";
+    return args.content !== undefined ? "write" : "stat";
+  }
+  if (operation === "time") {
+    return /установ|set|измен/iu.test(lower) ? "set" : "status";
+  }
+  if (operation === "audio") {
+    return args.volumePercent !== undefined ? "set" : "status";
+  }
+  return args.action || "status";
+}
+
+function inferMentionedFileName(text) {
+  const value = String(text || "");
+  const quoted = value.match(/["'`](.+?\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))["'`]/iu);
+  if (quoted) return quoted[1].trim();
+  const plain = value.match(/\b([A-Za-zА-Яа-яЁё0-9_. -]{1,80}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/iu);
+  return plain ? plain[1].trim() : "";
+}
+
+function inferQuotedContent(text) {
+  const value = String(text || "");
+  const matches = [...value.matchAll(/["'`]([^"'`]{1,1000})["'`]/gu)]
+    .map((match) => match[1].trim())
+    .filter((part) => part && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(part));
+  return matches[0] || "";
+}
+
+function compactComputerQuery(text) {
+  return String(text || "")
+    .replace(/task_family:[^\n]+/giu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, 500);
 }
 
 function gonkaToolsWithInjectedComputer(tools, payload) {
@@ -1108,7 +1350,7 @@ function safeToolCallId(value) {
   return /^[A-Za-z0-9_.:-]{1,160}$/u.test(text) ? text : "";
 }
 
-async function streamGonkaChatCompletions(upstream, response, headers, model) {
+async function streamGonkaChatCompletions(upstream, response, headers, model, payload = null) {
   const writer = responsesSseWriter(response, headers, model);
   const reader = upstream.body?.getReader?.();
   if (!reader) {
@@ -1136,6 +1378,10 @@ async function streamGonkaChatCompletions(upstream, response, headers, model) {
     }
     if (buffer.trim()) {
       processGonkaSsePacket(buffer, writer);
+    }
+    const fallbackCalls = fallbackGonkaComputerToolCalls(payload, {});
+    for (const call of fallbackCalls) {
+      writer.tool(mapGonkaToolCallForCodex(call));
     }
     writer.complete();
   } catch (error) {
@@ -1177,15 +1423,18 @@ function processGonkaSsePacket(packet, writer) {
   return false;
 }
 
-function streamGonkaChatCompletionObject(body, response, headers, model) {
+function streamGonkaChatCompletionObject(body, response, headers, model, payload = null) {
   const writer = responsesSseWriter(response, headers, model);
   const choice = Array.isArray(body?.choices) ? body.choices[0] : null;
   const message = choice?.message || {};
-  if (typeof message.content === "string" && message.content) {
+  const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+    ? message.tool_calls
+    : fallbackGonkaComputerToolCalls(payload, message);
+  if (toolCalls.length === 0 && typeof message.content === "string" && message.content) {
     writer.text(message.content);
   }
-  if (Array.isArray(message.tool_calls)) {
-    for (const call of message.tool_calls) {
+  if (toolCalls.length > 0) {
+    for (const call of toolCalls) {
       writer.tool(mapGonkaToolCallForCodex(call));
     }
   }
@@ -1215,13 +1464,16 @@ function shellSingleQuote(value) {
   return `'${String(value || "").replace(/'/gu, "'\\''")}'`;
 }
 
-function gonkaChatCompletionResponseObject(body, model) {
+function gonkaChatCompletionResponseObject(body, model, payload = null) {
   const now = Number.isFinite(body?.created) ? body.created : Math.floor(Date.now() / 1000);
   const responseId = `resp_${randomUUID().replace(/-/gu, "")}`;
   const choice = Array.isArray(body?.choices) ? body.choices[0] : null;
   const message = choice?.message || {};
+  const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
+    ? message.tool_calls
+    : fallbackGonkaComputerToolCalls(payload, message);
   const output = [];
-  if (typeof message.content === "string" && message.content) {
+  if (toolCalls.length === 0 && typeof message.content === "string" && message.content) {
     output.push({
       id: `msg_${randomUUID().replace(/-/gu, "")}`,
       type: "message",
@@ -1230,8 +1482,8 @@ function gonkaChatCompletionResponseObject(body, model) {
       content: [{ type: "output_text", text: message.content, annotations: [] }]
     });
   }
-  if (Array.isArray(message.tool_calls)) {
-    for (const call of message.tool_calls) {
+  if (toolCalls.length > 0) {
+    for (const call of toolCalls) {
       const mappedCall = mapGonkaToolCallForCodex(call);
       const fn = mappedCall?.function || {};
       const name = safeChatToolName(fn.name);
@@ -8190,11 +8442,24 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  if (!/^https?:\\/\\//i.test(url)) { throw new Error('computer web requires http url or query'); }",
     "  return `$ProgressPreference='SilentlyContinue'\\n$r = Invoke-WebRequest -Uri ${ps(url)} -UseBasicParsing -TimeoutSec 30\\n$title = ''\\nif ($r.Content -match '<title[^>]*>([\\\\s\\\\S]*?)</title>') { $title = (($Matches[1] -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim()) }\\n$text = (($r.Content -replace '<script[\\\\s\\\\S]*?</script>',' ' -replace '<style[\\\\s\\\\S]*?</style>',' ' -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim())\\n[pscustomobject]@{ ok=$true; action='fetch'; status=[int]$r.StatusCode; statusDescription=$r.StatusDescription; contentType=[string]$r.Headers['Content-Type']; title=$title; url=${ps(url)}; text=$text.Substring(0, [Math]::Min($text.Length, ${maxChars})) } | ConvertTo-Json -Compress`;",
     "}",
+    "function filePowerShell(req) {",
+    "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
+    "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
+    "}",
+    "function timeSetPowerShell(req) {",
+    "  const value = String(req.value || req.time || req.datetime || req.date || '').trim();",
+    "  if (!value) throw new Error('computer time set requires value');",
+    "  return `$ErrorActionPreference = 'Stop'\\nSet-Date -Date ${ps(value)}\\nGet-Date -Format 'yyyy-MM-dd HH:mm:ss K'`;",
+    "}",
     "async function computer(argsText) {",
     "  const req = JSON.parse(argsText || '{}');",
     "  const operation = String(req.operation || req.action || '').toLowerCase().replace(/_/g, '-');",
     "  if (['web', 'fetch', 'web-fetch', 'search', 'web-search', 'internet'].includes(operation) || req.query) {",
     "    await scriptPowerShell(webPowerShell(req), { name: 'computer-web', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
+    "    return;",
+    "  }",
+    "  if (operation === 'file' || operation === 'filesystem') {",
+    "    await scriptPowerShell(filePowerShell(req), { name: 'computer-file', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
     "    return;",
     "  }",
     "  if (operation === 'open-url' || operation === 'open' || operation === 'browser') {",
@@ -8212,6 +8477,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    return;",
     "  }",
     "  if (operation === 'time' || operation === 'time-status' || operation === 'date') {",
+    "    if (String(req.action || '').toLowerCase() === 'set' || req.value || req.datetime) {",
+    "      await scriptPowerShell(timeSetPowerShell(req), { name: 'computer-time-set' });",
+    "      return;",
+    "    }",
     "    await scriptPowerShell(`$now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss K'\\n$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\\nWrite-Output ('time=' + $now + '; admin=' + $isAdmin.ToString().ToLowerInvariant())`, { name: 'computer-time' });",
     "    return;",
     "  }",
