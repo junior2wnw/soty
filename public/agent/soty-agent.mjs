@@ -899,6 +899,12 @@ function inferGonkaComputerArguments(payload) {
     }
   }
   if (!args.content) {
+    const inlineContent = inferInlineFileContent(userText);
+    if (inlineContent) {
+      args.content = inlineContent;
+    }
+  }
+  if (!args.content) {
     const quotedContent = inferQuotedContent(userText);
     if (quotedContent) {
       args.content = quotedContent;
@@ -1114,6 +1120,17 @@ function inferQuotedContent(text) {
     .map((match) => match[1].trim())
     .filter((part) => part && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(part));
   return matches[0] || "";
+}
+
+function inferInlineFileContent(text) {
+  const value = String(text || "").replace(/\r\n?/gu, "\n").trim();
+  const match = value.match(/(?:^|[\s,;])(?:content|text|with\s+text|с\s+текстом|текстом|со\s+строкой|строкой)\s*[:=-]\s*([\s\S]{1,2000})$/iu);
+  if (!match) {
+    return "";
+  }
+  return String(match[1] || "")
+    .replace(/^["'`«“]+|["'`»”]+$/gu, "")
+    .trim();
 }
 
 function hasWallpaperIntent(text) {
@@ -7614,7 +7631,10 @@ function finalTextLooksLikeActionProof(text) {
   if (!value.trim()) {
     return false;
   }
-  if (/(?:sha-?256|байт|bytes|currentwallpaper|requestedwallpaper|verification|exitcode=0|c:\\|\/users\/|готово|сделано|установлен|скачан|создан|удал[её]н|открыт|нажал|измен[её]н)/iu.test(value)) {
+  if (/(?:sha-?256|bytes|currentwallpaper|requestedwallpaper|verification|exitcode\s*=\s*0|registry-current-wallpaper-matches-path|desktop-file-cycle\s+ok|volume=\d{1,3};\s*muted=|time=.+;\s*admin=|[a-z]:\\|\/users\/|\/home\/)/iu.test(value)) {
+    return true;
+  }
+  if (/(?:^\s*\{[\s\S]*"ok"\s*:\s*true|^written\s+.+|^deleted\s+.+|^opened\s+https?:\/\/)/iu.test(value.trim())) {
     return true;
   }
   if (/^(?:начинаю|сейчас|сделаю|выполняю|попробую|скачаю|установлю|открою|i(?:'|’)ll|i will|starting|working on it)\b/iu.test(value)) {
