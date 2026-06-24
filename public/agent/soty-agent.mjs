@@ -801,17 +801,17 @@ function streamImmediateGonkaToolResponse(body, response, headers, model) {
 }
 
 function responsesPayloadHasToolResult(payload) {
-  let hasToolResultAfterLatestUser = false;
-  for (const item of Array.isArray(payload?.input) ? payload.input : []) {
-    if (responsesInputItemIsUserMessage(item)) {
-      hasToolResultAfterLatestUser = false;
-      continue;
-    }
+  const items = Array.isArray(payload?.input) ? payload.input : [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
     if (responsesInputItemHasToolResult(item)) {
-      hasToolResultAfterLatestUser = true;
+      return true;
+    }
+    if (responsesInputItemIsUserMessage(item) || item?.type === "message" || typeof item === "string") {
+      return false;
     }
   }
-  return hasToolResultAfterLatestUser;
+  return false;
 }
 
 function responsesInputItemIsUserMessage(item) {
