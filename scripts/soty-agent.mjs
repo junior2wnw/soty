@@ -693,13 +693,51 @@ function gonkaChatCompletionPayload(payload) {
   };
   if (tools.length > 0) {
     body.tools = tools;
-    if (typeof payload?.tool_choice === "string" && ["auto", "none", "required"].includes(payload.tool_choice)) {
+    const forcedToolChoice = gonkaForcedToolChoice(payload, tools);
+    if (forcedToolChoice) {
+      body.tool_choice = forcedToolChoice;
+    } else if (typeof payload?.tool_choice === "string" && ["auto", "none", "required"].includes(payload.tool_choice)) {
       body.tool_choice = payload.tool_choice;
     } else {
       body.tool_choice = "auto";
     }
   }
   return body;
+}
+
+function gonkaForcedToolChoice(payload, tools) {
+  if (!Array.isArray(tools) || !tools.some((tool) => tool?.function?.name === "computer")) {
+    return null;
+  }
+  const text = responsesPayloadPlainText(payload).slice(0, 20_000);
+  const family = (text.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
+  const wantsComputer = /function tool\s+`?computer`?|operation\s*=\s*(?:web|fetch|search|file|audio|browser|script|run)|компьютерн\w*\s+инструмент/iu.test(text);
+  const toolFamilies = new Set([
+    "audio-mute",
+    "audio-volume",
+    "browser",
+    "console",
+    "driver-check",
+    "durable-action",
+    "file-work",
+    "identity-probe",
+    "lifecycle",
+    "package-install",
+    "power-check",
+    "program-control",
+    "script-task",
+    "service-check",
+    "software",
+    "software-check",
+    "system-check",
+    "system-time",
+    "web-lookup",
+    "windows-reinstall"
+  ]);
+  if (!wantsComputer && !toolFamilies.has(family)) {
+    return null;
+  }
+  return { type: "function", function: { name: "computer" } };
 }
 
 function gonkaToolsWithInjectedComputer(tools, payload) {
