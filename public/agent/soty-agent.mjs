@@ -1606,6 +1606,15 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   const linkText = inferLinkTextFromText(userText);
   const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
   const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
+  const audioIntent = /громк|звук|mute|unmute|volume/iu.test(userText);
+  if (audioIntent && (operation === "script" || operation === "run" || operation === "shell" || !operation)) {
+    args.operation = "audio";
+    args.action = args.volumePercent !== undefined || args.volume !== undefined ? "set" : "status";
+    delete args.script;
+    delete args.command;
+    delete args.cmd;
+    delete args.shell;
+  }
   const clickIntent = /click|press|follow|link|button|нажми|клик|перейди|ссыл\w*|кнопк\w*/iu.test(userText);
   if (linkText && !currentTarget && clickIntent && (args.url || operation === "browser" || operation === "open-url" || operation === "open")) {
     args.text = linkText;
