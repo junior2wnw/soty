@@ -3429,6 +3429,9 @@ function classifyRoutineSourceTask(lower) {
   if (/script|powershell-скрипт|\.ps1|скрипт/u.test(text)) {
     return "script-task";
   }
+  if (/https?:\/\/|www\.|интернет|веб|браузер|сайт|ссылк|заголов/iu.test(text)) {
+    return "web-lookup";
+  }
   if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)
     && /(official|официальн|релиз|release|lts|stable|стабиль|ссылк|link|github)/u.test(text)) {
     return "web-lookup";
@@ -5136,7 +5139,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     outPath,
     threadId: sessionRecord?.threadId || "",
     taskFamily,
-    attachMcp: !codexUsesGonka || Boolean(target?.id)
+    attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)
   });
   const mcpAttached = args.some((item) => String(item).includes("mcp_servers.soty"));
   const turnNoProgressTimeoutMs = codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached);
@@ -6185,6 +6188,9 @@ function shouldRetryCodexWithoutMcp(result, state, args, signal = null, options 
 function codexNoProgressTimeoutForTurn(taskFamily, target = null, mcpAttached = true) {
   if (mcpAttached && codexTaskNeedsSotyMcpTools(taskFamily, target)) {
     return codexMcpTaskNoProgressTimeoutMs;
+  }
+  if (codexUsesGonka && mcpAttached) {
+    return Math.max(codexGonkaNoProgressTimeoutMs, 30_000);
   }
   if (codexUsesGonka && !mcpAttached) {
     return codexGonkaNoProgressTimeoutMs;

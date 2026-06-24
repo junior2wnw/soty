@@ -1149,6 +1149,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["audio mute command is classified", async () => expectFamily(await action(sourceRun("mute audio SELFTEST_OK")), "audio-mute")],
     ["system time command is classified separately", async () => expectFamily(await action(sourceRun("Get-Date SELFTEST_OK")), "system-time")],
     ["driver command is classified", async () => expectFamily(await action(sourceRun("pnputil /enum-drivers SELFTEST_OK")), "driver-check")],
+    ["russian internet url task is classified for tools", async () => expectFamily(await action(sourceRun("проверь интернет https://example.com SELFTEST_OK")), "web-lookup")],
     ["gonka local helper exposes safe ordinary task shortcuts", async () => {
       const source = await readFile(sourceAgentPath, "utf8");
       for (const needle of [
@@ -1458,7 +1459,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiBuiltInTools"));
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
-      assert(agent.includes("attachMcp: !codexUsesGonka || Boolean(target?.id)"));
+      assert(agent.includes("attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)"));
       assert(agent.includes("Gonka tool route: use the `computer` function tool first"));
       assert(agent.includes("sourceWebScript"));
       assert(agent.includes("openAiToolPlaneStatus"));
