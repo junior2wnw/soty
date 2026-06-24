@@ -1505,7 +1505,7 @@ function mapGonkaToolCallForCodex(call) {
     function: {
       name: "exec_command",
       arguments: JSON.stringify({
-        command: `node SOTY_LOCAL_API.mjs computer ${shellSingleQuote(String(fn.arguments || "{}"))}`
+        cmd: `node SOTY_LOCAL_API.mjs computer ${shellSingleQuote(String(fn.arguments || "{}"))}`
       })
     }
   };

@@ -1472,6 +1472,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("responsesPayloadHasToolResult"));
       assert(agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("mapGonkaToolCallForCodex"));
+      assert(agent.includes('cmd: `node SOTY_LOCAL_API.mjs computer'));
       assert(agent.includes("function filePowerShell(req)"));
       assert(agent.includes("function timeSetPowerShell(req)"));
       assert(agent.includes("If the `computer` tool is present, use it first"));
