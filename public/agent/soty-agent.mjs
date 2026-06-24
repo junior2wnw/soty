@@ -1444,7 +1444,7 @@ async function streamGonkaChatCompletions(upstream, response, headers, model, pa
       const packets = buffer.split(/\r?\n\r?\n/u);
       buffer = packets.pop() || "";
       for (const packet of packets) {
-        const donePacket = processGonkaSsePacket(packet, writer);
+        const donePacket = processGonkaSsePacket(packet, writer, payload);
         if (donePacket) {
           writer.complete();
           return;
@@ -1452,11 +1452,11 @@ async function streamGonkaChatCompletions(upstream, response, headers, model, pa
       }
     }
     if (buffer.trim()) {
-      processGonkaSsePacket(buffer, writer);
+      processGonkaSsePacket(buffer, writer, payload);
     }
     const fallbackCalls = fallbackGonkaComputerToolCalls(payload, {});
     for (const call of fallbackCalls) {
-      writer.tool(mapGonkaToolCallForCodex(call));
+      writer.tool(mapGonkaToolCallForCodex(call, payload));
     }
     writer.complete();
   } catch (error) {
@@ -1464,7 +1464,7 @@ async function streamGonkaChatCompletions(upstream, response, headers, model, pa
   }
 }
 
-function processGonkaSsePacket(packet, writer) {
+function processGonkaSsePacket(packet, writer, payload = null) {
   const dataLines = String(packet || "")
     .split(/\r?\n/u)
     .filter((line) => line.startsWith("data:"))
@@ -1489,7 +1489,7 @@ function processGonkaSsePacket(packet, writer) {
   }
   if (Array.isArray(delta.tool_calls)) {
     for (const call of delta.tool_calls) {
-      writer.tool(call);
+      writer.tool(mapGonkaToolCallForCodex(call, payload));
     }
   }
   if (event?.usage) {
@@ -1510,7 +1510,7 @@ function streamGonkaChatCompletionObject(body, response, headers, model, payload
   }
   if (toolCalls.length > 0) {
     for (const call of toolCalls) {
-      writer.tool(mapGonkaToolCallForCodex(call));
+      writer.tool(mapGonkaToolCallForCodex(call, payload));
     }
   }
   if (body?.usage) {
@@ -1519,20 +1519,46 @@ function streamGonkaChatCompletionObject(body, response, headers, model, payload
   writer.complete();
 }
 
-function mapGonkaToolCallForCodex(call) {
+function mapGonkaToolCallForCodex(call, payload = null) {
   const fn = call?.function || {};
   if (safeChatToolName(fn.name) !== "computer") {
     return call;
   }
+  const argumentsText = enrichGonkaComputerToolArguments(String(fn.arguments || "{}"), payload);
   return {
     ...call,
     function: {
       name: "exec_command",
       arguments: JSON.stringify({
-        cmd: `node SOTY_LOCAL_API.mjs computer ${shellSingleQuote(String(fn.arguments || "{}"))}`
+        cmd: `node SOTY_LOCAL_API.mjs computer ${shellSingleQuote(argumentsText)}`
       })
     }
   };
+}
+
+function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
+  let args;
+  try {
+    args = JSON.parse(String(argumentsText || "{}"));
+  } catch {
+    return String(argumentsText || "{}");
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return String(argumentsText || "{}");
+  }
+  const allText = responsesPayloadPlainText(payload);
+  const userText = responsesPayloadUserText(payload) || allText;
+  const linkText = inferLinkTextFromText(userText);
+  const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
+  const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
+  const clickIntent = /click|press|follow|link|button|нажми|клик|перейди|ссыл\w*|кнопк\w*/iu.test(userText);
+  if (linkText && !currentTarget && clickIntent && (args.url || operation === "browser" || operation === "open-url" || operation === "open")) {
+    args.text = linkText;
+  }
+  if (String(args.text || args.linkText || args.selector || args.target || "").trim() && args.url && (operation === "open-url" || operation === "open" || operation === "browser" || !operation)) {
+    args.operation = "browser";
+  }
+  return JSON.stringify(args);
 }
 
 function shellSingleQuote(value) {
@@ -1559,7 +1585,7 @@ function gonkaChatCompletionResponseObject(body, model, payload = null) {
   }
   if (toolCalls.length > 0) {
     for (const call of toolCalls) {
-      const mappedCall = mapGonkaToolCallForCodex(call);
+      const mappedCall = mapGonkaToolCallForCodex(call, payload);
       const fn = mappedCall?.function || {};
       const name = safeChatToolName(fn.name);
       if (!name) {

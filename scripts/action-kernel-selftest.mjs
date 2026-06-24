@@ -1472,6 +1472,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("responsesPayloadHasToolResult"));
       assert(agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("inferLinkTextFromText"));
+      assert(agent.includes("enrichGonkaComputerToolArguments"));
       assert(agent.includes("function browserPowerShell(req)"));
       assert(agent.includes("name: 'computer-browser'"));
       assert(agent.includes("Learn more"));
@@ -2089,7 +2090,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("controller-browser-downloads"));
       assert(agentSource.includes("action=download means source device -> controller/current computer Downloads"));
       assert(agentSource.includes("mcpToolJsonText(result)"));
-      assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('operation === "browser"'));
+      assert(agentSource.indexOf('["run", "script", "action", "execute", "shell"') < agentSource.indexOf('if (operation === "browser" || key.includes("browser"))'));
       assert(ui.includes("agentReplyControllers"));
       assert(ui.includes("stopAgentDialogReply"));
       assert(ui.includes("restorePendingAgentDialogSelection"));
