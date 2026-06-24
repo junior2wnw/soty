@@ -1484,6 +1484,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("ResolveWallpaperImageUrl"));
       assert(agent.includes("operation === 'wallpaper'"));
       assert(agent.includes("shouldRecoverProoflessComputerAction"));
+      assert(agent.includes("shouldRecoverNoProgressComputerAction"));
+      assert(agent.includes("idle after progress"));
       assert(agent.includes("finalTextLooksLikeActionProof"));
       assert(agent.includes("inferLinkTextFromText"));
       assert(agent.includes("enrichGonkaComputerToolArguments"));

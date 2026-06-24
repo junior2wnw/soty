@@ -5972,7 +5972,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
       outPath = noProgressRetryOutPath;
     }
-    if (shouldRetryCodexAfterNoProgress(result, state, signal)) {
+    if (shouldRetryCodexAfterNoProgress(result, state, signal) || shouldRecoverNoProgressComputerAction({ result, state, taskFamily, text, target, signal })) {
       const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
       if (direct) {
         result = direct;
@@ -7228,7 +7228,27 @@ function shouldRetryCodexAfterNoProgress(result, state, signal = null) {
     return false;
   }
   const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
-  return /codex no-progress timeout/u.test(details);
+  return /codex (?:no-progress|idle after progress) timeout/u.test(details);
+}
+
+function shouldRecoverNoProgressComputerAction({ result = null, state = null, taskFamily = "", text = "", target = null, signal = null } = {}) {
+  if (signal?.aborted || !target?.id || !result || result.exitCode !== 124) {
+    return false;
+  }
+  if (state?.terminal?.length > 0) {
+    return false;
+  }
+  if (!computerActionRequiresProof(taskFamily, text)) {
+    return false;
+  }
+  const payload = {
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
+    }]
+  };
+  return Boolean(inferGonkaComputerArguments(payload));
 }
 
 function codexSessionKey(source, target = null, taskFamily = "generic") {
