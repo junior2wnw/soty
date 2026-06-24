@@ -1481,6 +1481,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("normalizeGonkaComputerFilePathArg"));
       assert(agent.includes("%USERNAME%"));
       assert(!agent.includes(".Replace('${env:USERPROFILE}'"));
+      assert(!agent.includes("$raw -match '^(?i)([a-z]:\\\\users"));
       assert(agent.includes("wallpaperPowerShell"));
       assert(agent.includes("ResolveWallpaperImageUrl"));
       assert(agent.includes("operation === 'wallpaper'"));
