@@ -1156,9 +1156,9 @@ function inferWallpaperQuery(text) {
   }
   value = value
     .replace(/["'`]/gu, " ")
+    .replace(/[,:;.!?()[\]{}<>]+/gu, " ")
     .replace(/\b(?:please|pls|yes|ok|okay|do it|download|find|set|put|apply|wallpaper|desktop|background|photo|picture|image|for|on|the|a|an)\b/giu, " ")
     .replace(/(^|\s)(?:да|ок|окей|делай|сделай|скачай|загрузи|найди|поищи|поставь|установи|примени|фото|фотку|картинку|картинк[ауи]|изображение|обои|фон|рабочий|рабочего|стол|стола|на|и|для|мне|пожалуйста|прямо|сейчас)(?=\s|$)/giu, " ")
-    .replace(/[,:;.!?()[\]{}<>]+/gu, " ")
     .replace(/\s{2,}/gu, " ")
     .trim();
   return value.slice(0, 180);
