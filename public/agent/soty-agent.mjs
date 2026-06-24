@@ -1003,6 +1003,7 @@ function normalizeGonkaComputerOperation(value) {
     date: "time",
     resources: "system-resources",
     status: "system-resources",
+    download: "download",
     run: "script",
     shell: "script"
   };
@@ -1013,6 +1014,9 @@ function inferGonkaComputerOperationFromText(text, family, args) {
   const lower = String(text || "").toLowerCase();
   if (args.url && args.text) {
     return "browser";
+  }
+  if (args.url && /скачай|загрузи|download|save\s+(?:it|file)|сохрани/iu.test(lower)) {
+    return "download";
   }
   if (args.volumePercent !== undefined || /громк|звук|volume|mute|unmute/iu.test(lower)) {
     return "audio";
@@ -1042,6 +1046,9 @@ function inferGonkaComputerActionFromText(text, operation, args) {
   const lower = String(text || "").toLowerCase();
   if (operation === "web") {
     return args.url && !args.query ? "fetch" : "search";
+  }
+  if (operation === "download") {
+    return /удали|удалить|delete|remove|cleanup|clean up/iu.test(lower) ? "cycle" : "save";
   }
   if (operation === "file") {
     const wantsWrite = args.content !== undefined || /созда[йть]|запиши|напиши|write|create/iu.test(lower);
@@ -7318,7 +7325,7 @@ async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childE
   };
   const args = inferGonkaComputerArguments(payload);
   const operation = normalizeGonkaComputerOperation(args?.operation || "");
-  if (!args || !["browser", "web", "fetch", "search", "open-url", "file", "audio", "time", "time-status", "system-resources", "status"].includes(operation)) {
+  if (!args || !["browser", "web", "fetch", "search", "open-url", "download", "file", "audio", "time", "time-status", "system-resources", "status"].includes(operation)) {
     return null;
   }
   traceStep(trace, "codex.direct-computer-fallback", { operation, action: args.action || "", hasUrl: Boolean(args.url), hasPath: Boolean(args.path) });
@@ -7395,6 +7402,12 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
   }
   if ((operation === "web" || operation === "fetch" || operation === "search") && inner && typeof inner === "object") {
     return inner.title ? String(inner.title) : cleanActionText(inner.text || raw, maxChatChars);
+  }
+  if (operation === "download" && inner && typeof inner === "object") {
+    const bytes = Number.isFinite(Number(inner.bytes)) ? `${Number(inner.bytes)} байт` : "размер проверен";
+    return inner.deleted === true
+      ? `Скачал, проверил и удалил. Размер: ${bytes}.`
+      : `Скачал файл: ${inner.path || "Downloads"}. Размер: ${bytes}.`;
   }
   if (operation === "file" && inner && typeof inner === "object") {
     const action = String(inner.action || args?.action || "").toLowerCase();
@@ -8806,6 +8819,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  if (!/^https?:\\/\\//i.test(url)) { throw new Error('computer web requires http url or query'); }",
     "  return `$ProgressPreference='SilentlyContinue'\\n$r = Invoke-WebRequest -Uri ${ps(url)} -UseBasicParsing -TimeoutSec 30\\n$title = ''\\nif ($r.Content -match '<title[^>]*>([\\\\s\\\\S]*?)</title>') { $title = (($Matches[1] -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim()) }\\n$text = (($r.Content -replace '<script[\\\\s\\\\S]*?</script>',' ' -replace '<style[\\\\s\\\\S]*?</style>',' ' -replace '<[^>]+>',' ' -replace '\\\\s+',' ').Trim())\\n[pscustomobject]@{ ok=$true; action='fetch'; status=[int]$r.StatusCode; statusDescription=$r.StatusDescription; contentType=[string]$r.Headers['Content-Type']; title=$title; url=${ps(url)}; text=$text.Substring(0, [Math]::Min($text.Length, ${maxChars})) } | ConvertTo-Json -Compress`;",
     "}",
+    "function downloadPowerShell(req) {",
+    "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
+    "  return `$ErrorActionPreference = 'Stop'\\n$ProgressPreference = 'SilentlyContinue'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$url = [string]$req.url\\nif ([string]::IsNullOrWhiteSpace($url)) { throw 'download requires url' }\\n$name = ([string]$req.path).Trim()\\nif ([string]::IsNullOrWhiteSpace($name)) { $name = Split-Path ([Uri]$url).AbsolutePath -Leaf; if ([string]::IsNullOrWhiteSpace($name)) { $name = 'download.bin' } }\\n$downloads = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'\\nif ([IO.Path]::IsPathRooted($name)) { $path = $name } else { $path = Join-Path $downloads $name }\\n$parent = Split-Path -Parent $path\\nif ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\\nInvoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 60 -OutFile $path\\n$item = Get-Item -LiteralPath $path -Force\\nif ($item.Length -le 0) { throw 'download-empty' }\\n$action = ([string]$req.action).ToLowerInvariant()\\n$deleted = $false\\nif ($action -eq 'cycle' -or $action -eq 'delete-after-verify') { Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; $deleted = $true }\\n[pscustomobject]@{ ok=$true; action=if($deleted){'cycle'}else{'save'}; url=$url; path=$path; bytes=[int64]$item.Length; deleted=$deleted } | ConvertTo-Json -Compress`;",
+    "}",
     "function filePowerShell(req) {",
     "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
     "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append' -or $action -eq 'cycle') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'cycle' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; $text = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim(); if ($text -ne ([string]$req.content)) { throw 'verify-failed' }; Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text; deleted=$true } | ConvertTo-Json -Compress; return }\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
@@ -8905,6 +8922,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    const url = String(req.url || '').trim();",
     "    if (!/^https?:\\/\\//i.test(url)) throw new Error('computer open_url requires http url');",
     "    await scriptPowerShell(`Start-Process ${ps(url)}\\n'opened ' + ${ps(url)}`, { name: 'computer-open-url' });",
+    "    return;",
+    "  }",
+    "  if (operation === 'download') {",
+    "    await scriptPowerShell(downloadPowerShell(req), { name: 'computer-download', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 90000, 180000)) });",
     "    return;",
     "  }",
     "  if (operation === 'audio' || operation === 'volume') {",
