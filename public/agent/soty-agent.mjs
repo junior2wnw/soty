@@ -1720,7 +1720,27 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   } else if (hasBrowserTarget && args.url && (operation === "open-url" || operation === "open" || operation === "browser" || !operation)) {
     args.operation = "browser";
   }
+  if (typeof args.path === "string" && args.path.trim()) {
+    args.path = normalizeGonkaComputerFilePathArg(args.path);
+  }
   return JSON.stringify(args);
+}
+
+function normalizeGonkaComputerFilePathArg(value) {
+  let text = String(value || "").trim();
+  if (!text) {
+    return text;
+  }
+  text = text
+    .replace(/%USERPROFILE%/giu, "__USERPROFILE__")
+    .replace(/%USERNAME%/giu, "__USERNAME__")
+    .replace(/\$\{?env:USERPROFILE\}?/giu, "__USERPROFILE__")
+    .replace(/\$HOME/giu, "__USERPROFILE__");
+  const desktop = text.match(/^(?:(?:[a-z]:\\users\\(?:[^\\]+|__USERNAME__)(?:\\onedrive)?)|__USERPROFILE__)\\desktop\\(.+)$/iu);
+  if (desktop) {
+    return desktop[1].trim();
+  }
+  return String(value || "").trim();
 }
 
 function shellSingleQuote(value) {
@@ -9047,7 +9067,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "}",
     "function filePowerShell(req) {",
     "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
-    "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append' -or $action -eq 'cycle') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'cycle' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; $text = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim(); if ($text -ne ([string]$req.content)) { throw 'verify-failed' }; Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text; deleted=$true } | ConvertTo-Json -Compress; return }\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
+    "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\n$raw = [Environment]::ExpandEnvironmentVariables($raw.Trim())\\n$raw = $raw.Replace('${env:USERPROFILE}', $env:USERPROFILE).Replace('$env:USERPROFILE', $env:USERPROFILE).Replace('$HOME', $HOME)\\n$desktopRoot = [Environment]::GetFolderPath('Desktop')\\nif ($raw -match '^(?i)([a-z]:\\\\users\\\\[^\\\\]+(?:\\\\onedrive)?\\\\desktop)\\\\(.+)$') { $path = Join-Path $desktopRoot $Matches[2] } elseif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path $desktopRoot $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append' -or $action -eq 'cycle') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'cycle' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; $text = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim(); if ($text -ne ([string]$req.content)) { throw 'verify-failed' }; Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text; deleted=$true } | ConvertTo-Json -Compress; return }\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
     "}",
     "function browserPowerShell(req) {",
     "  const encoded = Buffer.from(JSON.stringify({ url: String(req.url || ''), text: String(req.text || req.linkText || req.selector || ''), maxChars: Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000)) }), 'utf8').toString('base64');",
