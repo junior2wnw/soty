@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "806c772ec9f94dd0a2bd5dbc1cc164ca39d5bf9fa5b9e53e825dfccbfd6c9662",
+  "sha256": "a1972c19e1e4bd81d7d7722c5a83d97b101c10785527c85b58f904b29e81dc2d",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "builtInTools": [
@@ -23,7 +23,7 @@
       "shell_snapshot",
       "workspace_dependencies"
     ],
-    "webSearch": "native --search",
+    "webSearch": "native --search or computer.operation=web fallback",
     "mcp": {
       "server": "soty",
       "entryTool": "computer",
@@ -78,6 +78,8 @@
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "web",
+      "network",
       "browser",
       "desktop",
       "screen",
@@ -592,7 +594,7 @@
           "shell_snapshot",
           "workspace_dependencies"
         ],
-        "webSearch": "native --search",
+        "webSearch": "native --search or computer.operation=web fallback",
         "mcp": {
           "server": "soty",
           "entryTool": "computer",

@@ -116,6 +116,7 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_script",
   "soty_file",
   "soty_artifact",
+  "soty_web",
   "soty_browser",
   "soty_desktop",
   "soty_open_url",
@@ -733,7 +734,7 @@ function compactToolDescriptionForGonka(name, value) {
     write_stdin: "Send input to an active command.",
     update_plan: "Update the visible task plan.",
     apply_patch: "Apply a focused file patch.",
-    computer: "Use the selected Soty computer capability for files, shell/script, browser, desktop, jobs, artifacts, apps, APIs, transactions, audio, and OS tasks. Prefer this for the user's computer."
+    computer: "Use the selected Soty computer capability for files, shell/script, web fetch/search, browser, desktop, jobs, artifacts, apps, APIs, transactions, audio, and OS tasks. Prefer this for the user's computer."
   };
   const prefix = defaults[name] || text;
   return (prefix || "Use this tool only when it directly helps satisfy the user's request.").slice(0, 700);
@@ -5135,7 +5136,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     outPath,
     threadId: sessionRecord?.threadId || "",
     taskFamily,
-    attachMcp: !codexUsesGonka
+    attachMcp: !codexUsesGonka || Boolean(target?.id)
   });
   const mcpAttached = args.some((item) => String(item).includes("mcp_servers.soty"));
   const turnNoProgressTimeoutMs = codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached);
@@ -6371,8 +6372,8 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   const sourceDeviceId = promptInline(runtime?.target?.sourceDeviceId || runtime?.source?.deviceId || "");
   const sourceRelayId = promptInline(runtime?.source?.sourceRelayId || "");
   return [
-    "- Gonka local-api route: MCP/Responses namespace tools are not available in this provider adapter. Do not search for a `computer` tool and do not read SOTY_ROUTES.md for ordinary file/system/process tasks.",
-    "- For selected-computer work, call `exec_command`/shell with Node.js fetch to the local Soty API first, then final-answer from the API proof. Do not emit a user-facing plan before the tool call.",
+    "- Gonka tool route: use the `computer` function tool first when it is available. It is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
+    "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: prefer `node SOTY_LOCAL_API.mjs desktop-exists rrr.txt`, `desktop-write`, `desktop-read`, `desktop-delete`, `desktop-cycle <file> <text>`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
@@ -8196,7 +8197,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Principle: the installed agent is a local capability runtime. TrustLink Kernel owns the reusable runtime contract (`node_modules/trustlink-kernel/docs/agent-runtime.md`); Soty owns the adapter and user-facing orchestration.",
     "",
-    "Capability families: console, filesystem, process, service, package, browser, desktop, screen, keyboard, mouse, clipboard, network, app, api, job, artifact, audio, os, transaction, and device. Prefer a first-class adapter or durable job over ad-hoc shell when the action is repeated, long, state-changing, or touches a specific program.",
+    "Capability families: console, filesystem, process, service, package, web, browser, desktop, screen, keyboard, mouse, clipboard, network, app, api, job, artifact, audio, os, transaction, and device. Prefer a first-class adapter or durable job over ad-hoc shell when the action is repeated, long, state-changing, or touches a specific program.",
     "",
     "Transaction rule: use `transaction.prepare`/`transaction.preview` before `transaction.submit`. Submit/cancel/payment/order/destructive OS actions are critical risk and need explicit confirmation plus proof. Keep credentials, exchange sessions, browser profiles, API keys, and secrets in the local approved app/platform store, not in prompts or logs.",
     "",
@@ -8216,7 +8217,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_LOCAL_API.mjs is the shortest route for Gonka/local-api source-device work: use its small commands first (`desktop-cycle` for create+verify+delete, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
+    "- SOTY_LOCAL_API.mjs is the fallback route for Gonka source-device work when `computer` is unavailable: use its small commands (`desktop-cycle` for create+verify+delete, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`); for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
     "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [
@@ -9022,12 +9023,12 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools, not Soty MCP tools. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, web fetch/search, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are fast routes, not barriers to normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools when the runtime exposes them; operation=web is the Soty source-device internet fallback. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
@@ -9049,6 +9050,7 @@ function runMcpServer() {
             mimeType: { type: "string", description: "Optional MIME type for file action=download/publish." },
             maxBytes: { type: "integer", description: "Maximum bytes for file publish/download. Default and hard cap are 512000000." },
             pattern: { type: "string", description: "Search text or regular expression." },
+            query: { type: "string", description: "Web search query for operation=web/search." },
             url: { type: "string", description: "URL for browser/open_url work." },
             text: { type: "string", description: "Text for browser/desktop typing or click-by-text." },
             selector: { type: "string", description: "CSS selector for browser helper actions." },
@@ -9316,6 +9318,21 @@ function runMcpServer() {
         }
       },
       {
+        name: "soty_web",
+        description: "Legacy alias for web fetch/search from the current Soty Agent LINK source device. Prefer the public `computer` tool with operation=web, operation=fetch, or operation=search.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "fetch or search." },
+            url: { type: "string", description: "HTTP/HTTPS URL for fetch." },
+            query: { type: "string", description: "Search query for search." },
+            maxChars: { type: "integer", description: "Maximum text characters returned, 1000-12000." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-120000." }
+          },
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_browser",
         description: "Seamless browser automation on the current Soty Agent LINK source device. Uses installed Edge/Chrome through a local DevTools session when possible; no separate user confirmation is shown beyond the active LINK. Use for opening pages, reading title/text, JavaScript eval, click-by-text, typing into selectors, and saving screenshots.",
         inputSchema: {
@@ -9390,6 +9407,10 @@ function runMcpServer() {
       shell: "soty_action",
       filesystem: "soty_file",
       file: "soty_file",
+      web: "soty_web",
+      internet: "soty_web",
+      fetch: "soty_web",
+      search: "soty_web",
       browser: "soty_browser",
       desktop: "soty_desktop",
       audio: "soty_audio"
@@ -9515,6 +9536,9 @@ function runMcpServer() {
     }
     if (name === "soty_artifact") {
       return await callSotyArtifactTool(args);
+    }
+    if (name === "soty_web") {
+      return await callSotyWebTool(args);
     }
     if (name === "soty_browser") {
       const action = String(args.action || "").trim().toLowerCase();
@@ -9734,6 +9758,11 @@ function runMcpServer() {
     if (operation === "artifact" || capability === "artifact" || args.localPath || args.targetPath) {
       return "soty_artifact";
     }
+    if (["web", "internet", "web-fetch", "web_fetch", "fetch", "fetch-url", "fetch_url", "web-search", "web_search", "search"].includes(operation)
+      || ["web", "internet", "network", "web-search"].includes(capability)
+      || args.query) {
+      return "soty_web";
+    }
     if (operation === "image" || operation === "generate-image" || capability === "image" || args.prompt) {
       return "native_openai_image_required";
     }
@@ -9785,6 +9814,11 @@ function runMcpServer() {
       next.action = ["open", "goto", "title", "text", "eval", "click_text", "type", "screenshot"].includes(operation)
         ? operation
         : "text";
+    }
+    if (alias === "soty_web" && !next.action) {
+      next.action = ["search", "web-search", "web_search"].includes(operation)
+        ? "search"
+        : "fetch";
     }
     if (alias === "soty_desktop" && !next.action) {
       next.action = operation === "screen" ? "display" : operation;
@@ -9841,6 +9875,8 @@ function runMcpServer() {
         "filesystem",
         "soty-room-file-download",
         "artifact",
+        "web",
+        "network",
         "browser",
         "desktop",
         "screen",
@@ -9857,6 +9893,22 @@ function runMcpServer() {
 
   function mcpSourceUnavailableResult() {
     return mcpToolText("! agent-source: current Soty Agent LINK source is not attached", true);
+  }
+
+  async function callSotyWebTool(args) {
+    if (!mcpTarget || !mcpSourceDeviceId) {
+      return mcpSourceUnavailableResult();
+    }
+    const result = await mcpPostOperator("/operator/script", {
+      target: mcpTarget,
+      sourceDeviceId: mcpSourceDeviceId,
+      script: sourceWebScript(args),
+      shell: "node",
+      name: "soty-web",
+      runAs: "user",
+      timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+    });
+    return mcpToolJsonText(result);
   }
 
   async function callSotyArtifactTool(args) {
@@ -12136,6 +12188,104 @@ try {
 `.trim();
 }
 
+function sourceWebScript(args) {
+  const payload = Buffer.from(JSON.stringify({
+    action: String(args.action || args.operation || "").slice(0, 40),
+    url: String(args.url || "").slice(0, 4000),
+    query: String(args.query || args.text || args.pattern || "").slice(0, 500),
+    maxChars: Number.isSafeInteger(args.maxChars) ? Math.max(1000, Math.min(args.maxChars, 12000)) : 9000,
+    timeoutMs: Number.isSafeInteger(args.timeoutMs) ? Math.max(1000, Math.min(args.timeoutMs, 120000)) : 30000
+  }), "utf8").toString("base64");
+  return `
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const emit = (value) => console.log(JSON.stringify(value));
+const maxChars = Math.max(1000, Math.min(Number(req.maxChars) || 9000, 12000));
+const timeoutMs = Math.max(1000, Math.min(Number(req.timeoutMs) || 30000, 120000));
+const userAgent = "Mozilla/5.0 (compatible; SotyAgent/1.0; +https://xn--n1afe0b.online)";
+function decodeEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\\d+);/g, (_, code) => String.fromCodePoint(Number(code) || 32));
+}
+function stripHtml(value) {
+  return decodeEntities(String(value || "")
+    .replace(/<script[\\s\\S]*?<\\/script>/gi, " ")
+    .replace(/<style[\\s\\S]*?<\\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\\s+/g, " ")
+    .trim());
+}
+function titleFromHtml(value) {
+  const match = String(value || "").match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);
+  return match ? stripHtml(match[1]).slice(0, 240) : "";
+}
+function absoluteHttpUrl(value, base) {
+  const url = new URL(String(value || ""), base);
+  if (!/^https?:$/i.test(url.protocol)) throw new Error("unsupported url protocol");
+  return url.toString();
+}
+async function getText(url) {
+  const res = await fetch(url, {
+    headers: { "user-agent": userAgent, accept: "text/html,application/xhtml+xml,application/xml,text/plain;q=0.9,*/*;q=0.8" },
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const text = await res.text();
+  return { res, text };
+}
+function duckDuckGoResults(html, baseUrl) {
+  const results = [];
+  const re = /<a[^>]+class=["'][^"']*result__a[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi;
+  let match;
+  while ((match = re.exec(html)) && results.length < 8) {
+    let href = decodeEntities(match[1]);
+    try {
+      const parsed = new URL(href, baseUrl);
+      href = parsed.hostname.includes("duckduckgo.com") && parsed.searchParams.get("uddg")
+        ? parsed.searchParams.get("uddg")
+        : parsed.toString();
+    } catch {}
+    results.push({ title: stripHtml(match[2]).slice(0, 180), url: href });
+  }
+  return results;
+}
+const action = String(req.action || "").toLowerCase();
+if (action === "search" || action === "web-search" || action === "web_search" || (!req.url && req.query)) {
+  const query = String(req.query || "").trim();
+  if (!query) throw new Error("empty query");
+  const searchUrl = "https://duckduckgo.com/html/?q=" + encodeURIComponent(query);
+  const { res, text } = await getText(searchUrl);
+  emit({
+    ok: true,
+    action: "search",
+    query,
+    status: res.status,
+    url: searchUrl,
+    results: duckDuckGoResults(text, searchUrl),
+    text: stripHtml(text).slice(0, maxChars)
+  });
+} else {
+  const url = absoluteHttpUrl(req.url, "https://example.com/");
+  const { res, text } = await getText(url);
+  const type = String(res.headers.get("content-type") || "");
+  const body = type.includes("html") ? stripHtml(text) : text.replace(/\\s+/g, " ").trim();
+  emit({
+    ok: res.ok,
+    action: "fetch",
+    url: res.url || url,
+    status: res.status,
+    contentType: type,
+    title: type.includes("html") ? titleFromHtml(text) : "",
+    text: body.slice(0, maxChars)
+  });
+  if (!res.ok) process.exitCode = 1;
+}
+`.trim();
+}
+
 function sourceBrowserScript(args) {
   const request = Buffer.from(JSON.stringify({
     action: String(args.action || "").slice(0, 40),
@@ -13934,7 +14084,7 @@ function openAiToolPlaneStatus() {
     schema: "openai.responses-tools+mcp.v1",
     builtInTools: [...openAiBuiltInTools],
     codexCliFeatureFlags: [...codexNativeOpenAiToolFeatures],
-    webSearch: codexNativeWebSearch ? "native --search" : "disabled-by-env",
+    webSearch: codexNativeWebSearch ? "native --search" : (codexUsesGonka ? "computer.operation=web fallback" : "disabled-by-env"),
     mcp: {
       server: "soty",
       entryTool: "computer",
@@ -13967,6 +14117,7 @@ function agentRuntimeStatus() {
       { family: "mouse", actions: ["move", "click"], risk: "high", proof: ["status", "result"] },
       { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
       { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
+      { family: "web", actions: ["fetch", "search"], risk: "low", proof: ["status", "title", "url", "text"] },
       { family: "app", actions: ["discover", "launch", "focus", "connect", "read", "write", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
       { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
       { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },
@@ -14081,6 +14232,8 @@ function runtimeComputerUsePlaneStatus() {
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "web",
+      "network",
       "browser",
       "desktop",
       "screen",

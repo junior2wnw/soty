@@ -63,6 +63,8 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.computerUsePlane.routeProfiles.schema, "soty.route-profiles.v1");
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-windows-reinstall-managed-fast-lane"));
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
+      assert(health.body.computerUsePlane.capabilities.includes("web"));
+      assert(health.body.computerUsePlane.capabilities.includes("network"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
       assert(health.body.computerUsePlane.capabilities.includes("wallpaper"));
       assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
@@ -1456,6 +1458,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiBuiltInTools"));
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
+      assert(agent.includes("attachMcp: !codexUsesGonka || Boolean(target?.id)"));
+      assert(agent.includes("Gonka tool route: use the `computer` function tool first"));
+      assert(agent.includes("sourceWebScript"));
       assert(agent.includes("openAiToolPlaneStatus"));
       assert(agent.includes("standardTools: [...sotyMcpPublicTools]"));
       assert(!agent.includes('name: "image_gen"'));
@@ -1837,6 +1842,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!manifest.computerUsePlane.standardTools.includes("image_gen"));
       assert(manifest.computerUsePlane.openAiBuiltInTools.includes("image_generation"));
       assertEqual(manifest.computerUsePlane.imagePipeline, "openai.image_generation+computer.artifact-save-apply-verify");
+      assert(manifest.computerUsePlane.capabilities.includes("web"));
+      assert(manifest.computerUsePlane.capabilities.includes("network"));
       assert(manifest.computerUsePlane.capabilities.includes("wallpaper"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");

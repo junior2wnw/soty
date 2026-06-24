@@ -98,6 +98,8 @@ const manifest = {
       "filesystem",
       "soty-room-file-download",
       "artifact",
+      "web",
+      "network",
       "browser",
       "desktop",
       "screen",
@@ -178,7 +180,7 @@ function buildOpenAiToolPlane() {
       "shell_snapshot",
       "workspace_dependencies"
     ],
-    webSearch: "native --search",
+    webSearch: "native --search or computer.operation=web fallback",
     mcp: {
       server: "soty",
       entryTool: "computer",
