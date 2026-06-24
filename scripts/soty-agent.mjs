@@ -708,7 +708,19 @@ function responsesToolsToChatTools(tools) {
       .filter((tool) => tool?.type === "function" && safeChatToolName(tool.name))
       .map((tool) => compactChatToolForGonka(tool))
       .filter(Boolean)
+      .sort((left, right) => gonkaToolPriority(left) - gonkaToolPriority(right))
     : [];
+}
+
+function gonkaToolPriority(tool) {
+  const name = safeChatToolName(tool?.function?.name || tool?.name);
+  if (name === "computer") {
+    return 0;
+  }
+  if (name === "exec_command" || name === "shell_command") {
+    return 20;
+  }
+  return 10;
 }
 
 function compactChatToolForGonka(tool) {
@@ -954,7 +966,7 @@ function gonkaAdapterCodexInstructions(value) {
 function gonkaAdapterSystemInstruction() {
   return [
     "Soty Codex is using a local Responses-to-Chat adapter for Gonka AI.",
-    "Only ordinary function tools are available through this adapter; Responses namespace/MCP tools are not passed to Gonka.",
+    "MCP and Responses tools are compacted to ordinary function tools when this adapter receives them. If the `computer` tool is present, use it first for selected-computer work.",
     `If the user's computer must be controlled and no direct computer function tool is available, use shell_command/exec_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
     "Useful local routes: GET /operator/targets, GET /operator/source-status, GET /operator/toolkits, POST /operator/run, POST /operator/script, POST /operator/action, GET /operator/action/<jobId>.",
     "Use Node.js fetch from shell_command/exec_command for these local HTTP calls; do not rely on curl or wget being installed in the container.",

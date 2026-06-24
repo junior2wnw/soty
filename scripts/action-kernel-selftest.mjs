@@ -1459,6 +1459,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiBuiltInTools"));
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
+      assert(agent.includes("gonkaToolPriority"));
+      assert(agent.includes("If the `computer` tool is present, use it first"));
       assert(agent.includes("attachMcp: !codexUsesGonka || codexTaskNeedsSotyMcpTools(taskFamily, target)"));
       assert(agent.includes("Gonka tool route: use the `computer` function tool first"));
       assert(agent.includes("sourceWebScript"));
