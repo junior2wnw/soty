@@ -1471,6 +1471,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("immediateGonkaComputerToolResponse"));
       assert(agent.includes("responsesPayloadHasToolResult"));
       assert(agent.includes("inferGonkaComputerArguments"));
+      assert(agent.includes("inferLinkTextFromText"));
+      assert(agent.includes("function browserPowerShell(req)"));
+      assert(agent.includes("name: 'computer-browser'"));
       assert(agent.includes("polishGonkaRecoveredFinalText"));
       assert(agent.includes("modelPolished"));
       assert(agent.includes("mapGonkaToolCallForCodex"));

@@ -830,6 +830,10 @@ function inferGonkaComputerArguments(payload) {
   if (url) {
     args.url = url;
   }
+  const linkText = inferLinkTextFromText(userText);
+  if (linkText && !args.text) {
+    args.text = linkText;
+  }
   const query = firstKeyValue(allText, ["query", "q"]);
   if (query) {
     args.query = query;
@@ -949,7 +953,7 @@ function normalizeGonkaComputerOperation(value) {
     search: "web",
     "web-search": "web",
     open: "open-url",
-    browser: "open-url",
+    browser: "browser",
     volume: "audio",
     "time-status": "time",
     date: "time",
@@ -963,6 +967,9 @@ function normalizeGonkaComputerOperation(value) {
 
 function inferGonkaComputerOperationFromText(text, family, args) {
   const lower = String(text || "").toLowerCase();
+  if (args.url && args.text) {
+    return "browser";
+  }
   if (args.volumePercent !== undefined || /громк|звук|volume|mute|unmute/iu.test(lower)) {
     return "audio";
   }
@@ -1023,6 +1030,19 @@ function inferQuotedContent(text) {
     .map((match) => match[1].trim())
     .filter((part) => part && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(part));
   return matches[0] || "";
+}
+
+function inferLinkTextFromText(text) {
+  const value = String(text || "").replace(/\s+/gu, " ").trim();
+  const quoted = value.match(/(?:click|press|open|follow|link|button|ссыл\w*|кнопк\w*|нажми|перейди)\s+(?:на\s+)?[«"']([^»"']{1,120})[»"']/iu);
+  if (quoted) {
+    return quoted[1].trim();
+  }
+  const labeled = value.match(/(?:link|button|ссыл\w*|кнопк\w*)\s+([A-Za-z0-9][A-Za-z0-9 _.,:\/-]{1,120}?)(?:\s+(?:и|and|then|после|чтобы|скажи|прочитай)\b|[.?!]|$)/iu);
+  if (labeled) {
+    return labeled[1].trim().replace(/[.,:;]+$/u, "");
+  }
+  return "";
 }
 
 function compactComputerQuery(text) {
@@ -8549,6 +8569,67 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  const encoded = Buffer.from(JSON.stringify(req || {}), 'utf8').toString('base64');",
     "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path ([Environment]::GetFolderPath('Desktop')) $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
     "}",
+    "function browserPowerShell(req) {",
+    "  const encoded = Buffer.from(JSON.stringify({ url: String(req.url || ''), text: String(req.text || req.linkText || req.selector || ''), maxChars: Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000)) }), 'utf8').toString('base64');",
+    "  return [",
+    "    \"$ErrorActionPreference = 'Stop'\",",
+    "    \"Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes\",",
+    "    `$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,",
+    "    \"$url = [string]$req.url\",",
+    "    \"$needle = ([string]$req.text).Trim()\",",
+    "    \"$maxChars = [Math]::Max(1000, [Math]::Min([int]$req.maxChars, 12000))\",",
+    "    \"if ($url) { Start-Process $url; Start-Sleep -Seconds 3 }\",",
+    "    \"$root = [System.Windows.Automation.AutomationElement]::RootElement\",",
+    "    \"function Get-ChromeWindow {\",",
+    "    \"  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)\",",
+    "    \"  $best = $null\",",
+    "    \"  for ($i = 0; $i -lt $wins.Count; $i++) {\",",
+    "    \"    $w = $wins.Item($i)\",",
+    "    \"    if ($w.Current.ClassName -eq 'Chrome_WidgetWin_1' -and $w.Current.Name -like '*Google Chrome*') { $best = $w }\",",
+    "    \"  }\",",
+    "    \"  return $best\",",
+    "    \"}\",",
+    "    \"$chrome = Get-ChromeWindow\",",
+    "    \"if (-not $chrome) { throw 'chrome window not found' }\",",
+    "    \"$clicked = $false\",",
+    "    \"if ($needle) {\",",
+    "    \"  $all = $chrome.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\",",
+    "    \"  $target = $null\",",
+    "    \"  $needleLower = $needle.ToLowerInvariant()\",",
+    "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
+    "    \"    $e = $all.Item($i)\",",
+    "    \"    $name = ([string]$e.Current.Name).Trim()\",",
+    "    \"    if ($name -and $name.ToLowerInvariant().Contains($needleLower)) { $target = $e; break }\",",
+    "    \"  }\",",
+    "    \"  if (-not $target) { throw ('browser target not found: ' + $needle) }\",",
+    "    \"  try { $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $clicked = $true }\",",
+    "    \"  catch {\",",
+    "    \"    $rect = $target.Current.BoundingRectangle\",",
+    "    \"    if ($rect.Width -le 0 -or $rect.Height -le 0) { throw }\",",
+    "    \"    Add-Type -AssemblyName System.Windows.Forms\",",
+    "    \"    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($rect.X + $rect.Width / 2), [int]($rect.Y + $rect.Height / 2))\",",
+    "    \"    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')\",",
+    "    \"    $clicked = $true\",",
+    "    \"  }\",",
+    "    \"  Start-Sleep -Seconds 3\",",
+    "    \"  $chrome = Get-ChromeWindow\",",
+    "    \"}\",",
+    "    \"$title = ([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', ''\",",
+    "    \"$texts = New-Object System.Collections.Generic.List[string]\",",
+    "    \"$seen = @{}\",",
+    "    \"$all2 = $chrome.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\",",
+    "    \"for ($i = 0; $i -lt $all2.Count; $i++) {\",",
+    "    \"  $e = $all2.Item($i)\",",
+    "    \"  $ct = $e.Current.ControlType.ProgrammaticName\",",
+    "    \"  if ($ct -notmatch 'Text|Hyperlink|Document') { continue }\",",
+    "    \"  $name = ([string]$e.Current.Name).Trim()\",",
+    "    \"  if (-not $name -or $seen.ContainsKey($name)) { continue }\",",
+    "    \"  $seen[$name] = $true; [void]$texts.Add($name)\",",
+    "    \"}\",",
+    "    \"$body = (($texts -join ' ') -replace '\\\\s+', ' ').Trim()\",",
+    "    \"[pscustomobject]@{ ok=$true; action='browser'; url=$url; clicked=$clicked; target=$needle; title=$title; text=$body.Substring(0, [Math]::Min($body.Length, $maxChars)) } | ConvertTo-Json -Compress\"",
+    "  ].join('\\n');",
+    "}",
     "function timeSetPowerShell(req) {",
     "  const value = String(req.value || req.time || req.datetime || req.date || '').trim();",
     "  if (!value) throw new Error('computer time set requires value');",
@@ -8565,7 +8646,11 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    await scriptPowerShell(filePowerShell(req), { name: 'computer-file', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
     "    return;",
     "  }",
-    "  if (operation === 'open-url' || operation === 'open' || operation === 'browser') {",
+    "  if (operation === 'browser') {",
+    "    await scriptPowerShell(browserPowerShell(req), { name: 'computer-browser', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
+    "    return;",
+    "  }",
+    "  if (operation === 'open-url' || operation === 'open') {",
     "    const url = String(req.url || '').trim();",
     "    if (!/^https?:\\/\\//i.test(url)) throw new Error('computer open_url requires http url');",
     "    await scriptPowerShell(`Start-Process ${ps(url)}\\n'opened ' + ${ps(url)}`, { name: 'computer-open-url' });",
