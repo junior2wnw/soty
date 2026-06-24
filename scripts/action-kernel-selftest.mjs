@@ -1474,6 +1474,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("inferLinkTextFromText"));
       assert(agent.includes("function browserPowerShell(req)"));
       assert(agent.includes("name: 'computer-browser'"));
+      assert(agent.includes("Learn more"));
       assert(agent.includes("polishGonkaRecoveredFinalText"));
       assert(agent.includes("stripGonkaScratchpad"));
       assert(agent.includes("modelPolished"));

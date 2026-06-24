@@ -1042,6 +1042,10 @@ function inferLinkTextFromText(text) {
   if (labeled) {
     return labeled[1].trim().replace(/[.,:;]+$/u, "");
   }
+  const latinBeforeNextAction = value.match(/\b([A-Z][A-Za-z0-9]+(?:\s+[A-Za-z0-9]+){0,5})\s+(?:и|and|then|после|чтобы|скажи|прочитай)(?:\s|$)/u);
+  if (latinBeforeNextAction) {
+    return latinBeforeNextAction[1].trim().replace(/[.,:;]+$/u, "");
+  }
   return "";
 }
 
@@ -8621,11 +8625,13 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"if ($needle) {\",",
     "    \"  $all = $chrome.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\",",
     "    \"  $target = $null\",",
-    "    \"  $needleLower = $needle.ToLowerInvariant()\",",
+    "    \"  $needles = @($needle)\",",
+    "    \"  if ($needle -match '(?i)more information') { $needles += 'Learn more' }\",",
     "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
     "    \"    $e = $all.Item($i)\",",
     "    \"    $name = ([string]$e.Current.Name).Trim()\",",
-    "    \"    if ($name -and $name.ToLowerInvariant().Contains($needleLower)) { $target = $e; break }\",",
+    "    \"    foreach ($candidate in $needles) { if ($name -and $name.ToLowerInvariant().Contains(([string]$candidate).ToLowerInvariant())) { $target = $e; break } }\",",
+    "    \"    if ($target) { break }\",",
     "    \"  }\",",
     "    \"  if (-not $target) { throw ('browser target not found: ' + $needle) }\",",
     "    \"  try { $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $clicked = $true }\",",
