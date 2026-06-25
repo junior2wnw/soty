@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.78";
+const agentVersion = "0.4.79";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -3698,7 +3698,14 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
 
 async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "", options = {}) {
   if (isAgentSourceTarget(target)) {
-    return { target, sourceDeviceId, sourceRelayId };
+    const deviceId = agentSourceDeviceId(target) || sourceDeviceId || "";
+    let nextRelayId = safeRelayId(sourceRelayId);
+    if (!nextRelayId && deviceId) {
+      const sourceTargets = await activeAgentSourceTargets("", deviceId);
+      const sourceTarget = operatorHttpAgentSourceTarget(target, deviceId, sourceTargets);
+      nextRelayId = safeRelayId(sourceTarget?.relayId || "");
+    }
+    return { target, sourceDeviceId, sourceRelayId: nextRelayId || sourceRelayId };
   }
   const operatorTarget = operatorTargetByText(target);
   const fallbackDeviceId = operatorHttpTargetDeviceId(target, sourceDeviceId);

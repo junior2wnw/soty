@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.78");
+      assertEqual(health.body.version, "0.4.79");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1106,6 +1106,16 @@ async function runScenarios({ relayUrl } = {}) {
       }
     }],
     ["source script succeeds", async () => expectStatus(await action(sourceScript("SELFTEST_OK script")), "ok")],
+    ["agent-source target adopts diagnostic source relay", async () => {
+      const response = await action({
+        target: "agent-source:dev-alt-relay",
+        sourceDeviceId: "dev-alt-relay",
+        command: "SELFTEST_ALT_RELAY_REQUIRED"
+      });
+      expectStatus(response, "ok");
+      assertEqual(response.body.route, "agent-source.run");
+      assertEqual(mock.lastRelayFor("SELFTEST_ALT_RELAY_REQUIRED"), "selftest_alt_relay_0000000000000001");
+    }],
     ["source run failure is captured", async () => {
       const response = await action(sourceRun("SELFTEST_FAIL"));
       expectStatus(response, "failed");
@@ -1881,7 +1891,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.78");
+      assertEqual(manifest.version, "0.4.79");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2028,7 +2038,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.78"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.79"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2093,7 +2103,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.78"'));
+      assert(agentSource.includes('const agentVersion = "0.4.79"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2224,14 +2234,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.78";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.79";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.78",
+            version: "0.4.79",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -2590,6 +2600,7 @@ async function expectDetachedRisk(response, risk) {
 
 function createMockRelay() {
   const calls = [];
+  const sourceStarts = [];
   const cancels = [];
   const sourceJobs = new Map();
   const directSourcePolls = [];
@@ -2606,7 +2617,12 @@ function createMockRelay() {
       const payload = JSON.parse(body || "{}");
       const text = String(payload.command || payload.script || "");
       calls.push(text);
+      sourceStarts.push({ relayId: String(payload.relayId || ""), deviceId: String(payload.deviceId || ""), text });
       if (payload.deviceId === "dev-way") {
+        json(response, 404, mockSourceMissing(payload));
+        return;
+      }
+      if (text.includes("SELFTEST_ALT_RELAY_REQUIRED") && payload.relayId !== "selftest_alt_relay_0000000000000001") {
         json(response, 404, mockSourceMissing(payload));
         return;
       }
@@ -2728,6 +2744,17 @@ function createMockRelay() {
           connected: true,
           lastSeenAt: new Date().toISOString()
         }]
+        : requestedDeviceId === "dev-alt-relay"
+          ? [{
+            relayId: "selftest_alt_relay_0000000000000001",
+            deviceId: "dev-alt-relay",
+            deviceNick: "selftest-alt-relay",
+            access: true,
+            connected: true,
+            lastSeenAt: new Date().toISOString(),
+            lastSeenAgeMs: 10,
+            sourceConnectedMs: 90000
+          }]
         : [];
       json(response, 200, {
         ok: true,
@@ -2824,6 +2851,7 @@ function createMockRelay() {
   return {
     server,
     count: (needle) => calls.filter((item) => item.includes(needle)).length,
+    lastRelayFor: (needle) => [...sourceStarts].reverse().find((item) => item.text.includes(needle))?.relayId || "",
     cancelCount: (id) => cancels.filter((item) => item === id).length,
     lastCommandWith: (needle) => [...calls].reverse().find((item) => item.includes(needle)) || "",
     directPolls: () => directSourcePolls.slice(),
