@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.76";
+const agentVersion = "0.4.77";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -60,9 +60,10 @@ const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIME
 const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 7000, 120_000);
 const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexMcpTaskNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_MCP_TASK_NO_PROGRESS_TIMEOUT_MS, 60_000, 180_000);
-const codexGonkaNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_GONKA_NO_PROGRESS_TIMEOUT_MS, 15_000, 120_000);
+const codexGonkaNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_GONKA_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 90_000, 600_000);
 const codexRecoverableIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_RECOVERABLE_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 7_000, 60_000);
+const codexActionRecoverableIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_ACTION_RECOVERABLE_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 120_000, 600_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -5854,7 +5855,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   let result;
   try {
     result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal, {
-      noProgressTimeoutMs: turnNoProgressTimeoutMs
+      ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached, noProgressTimeoutMs: turnNoProgressTimeoutMs })
     });
     if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
       const freshState = {
@@ -5879,7 +5880,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       delete persistedCodexSessions[sessionKey];
       await saveCodexSessions();
       result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal, {
-        noProgressTimeoutMs: turnNoProgressTimeoutMs
+        ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached, noProgressTimeoutMs: turnNoProgressTimeoutMs })
       });
       state.threadId = freshState.threadId;
       state.lastMessage = freshState.lastMessage;
@@ -5925,7 +5926,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         mcpAttached: false
       });
       result = await runCodexForSotyChat(codexBin, fallbackArgs, childEnv, fallbackPrompt, fallbackState, jobDir, codexOnMessage, onTerminal, signal, {
-        noProgressTimeoutMs: codexFallbackNoProgressTimeoutMs
+        ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached: false, noProgressTimeoutMs: codexFallbackNoProgressTimeoutMs })
       });
       state.threadId = fallbackState.threadId;
       state.lastMessage = fallbackState.lastMessage;
@@ -5972,7 +5973,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         mcpAttached
       });
       result = await runCodexForSotyChat(codexBin, noProgressRetryArgs, childEnv, retryPrompt, noProgressRetryState, jobDir, codexOnMessage, onTerminal, signal, {
-        noProgressTimeoutMs: turnNoProgressTimeoutMs
+        ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached, noProgressTimeoutMs: turnNoProgressTimeoutMs })
       });
       state.threadId = noProgressRetryState.threadId;
       state.lastMessage = noProgressRetryState.lastMessage;
@@ -6015,7 +6016,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const shouldUseRecoveredFinalText = Boolean(
     recoveredFinalText
       && (!finalText || isLikelyInternalCodexReasoningReply(finalText) || result.exitCode === 124)
-      && recoveredFinalCoversUserRequest(recoveredFinalText, text)
+      && recoveredFinalCoversUserRequest(recoveredFinalText, text, taskFamily, target)
   );
   if (shouldUseRecoveredFinalText) {
     const polishedRecoveredFinalText = await polishGonkaRecoveredFinalText({
@@ -6120,6 +6121,36 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         text: agentFailureText("Codex CLI exited successfully but did not produce a final assistant message."),
         ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
         exitCode: 125
+      };
+    }
+    if (shouldRejectProoflessComputerFinal({ taskFamily, text, target, finalText, state })) {
+      traceStep(trace, "codex.proofless-action-final-rejected", {
+        taskFamily,
+        terminal: state.terminal.length,
+        textChars: finalText.length
+      });
+      recordLearningReceipt({
+        kind: "codex-turn",
+        family: taskFamily,
+        result: "failed",
+        route: `${codexRouteName}+proof-required`,
+        taskSig: taskSignature(text),
+        proof: `exitCode=126; prooflessFinal=true; terminal=${state.terminal.length}; ${codexUsageProof(state.usage, prompt, finalText)}`,
+        exitCode: 126,
+        durationMs: Date.now() - startedAt,
+        ...learningContext
+      });
+      recordAgentLearningMarkers(state.learningMarkers, {
+        route: `${codexRouteName}+proof-required`,
+        taskSig: taskSignature(text),
+        durationMs: Date.now() - startedAt,
+        ...learningContext
+      });
+      return {
+        ok: false,
+        text: agentFailureText("Codex produced a final answer without proof that the requested computer action was completed."),
+        ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
+        exitCode: 126
       };
     }
     if (codexDirectComputerRecovery && shouldRecoverProoflessComputerAction({ taskFamily, text, target, finalText, state })) {
@@ -6478,17 +6509,32 @@ function formatRecoveredOperatorText(value) {
   return text;
 }
 
-function recoveredFinalCoversUserRequest(finalText, userText) {
+function recoveredFinalCoversUserRequest(finalText, userText, taskFamily = "generic", target = null) {
   const finalLower = String(finalText || "").toLowerCase();
   const userLower = String(userText || "").toLowerCase();
   if (!finalLower || !userLower) {
     return true;
+  }
+  if (target?.id && computerActionRequiresProof(taskFamily, userText) && !finalTextLooksLikeActionProof(finalText)) {
+    return false;
   }
   const onlyWritten = /(?:^|\b)(?:готово,\s*)?файл записан:/iu.test(finalLower);
   if (onlyWritten && /(?:delete|remove|cleanup|check|verify|read back|удал|сотри|проверь|провер|убедись|прочитай|сверь)/iu.test(userLower)) {
     return false;
   }
   return true;
+}
+
+function shouldRejectProoflessComputerFinal({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
+  if (!target?.id || !finalText || !computerActionRequiresProof(taskFamily, text)) {
+    return false;
+  }
+  return !computerActionHasProof(finalText, state);
+}
+
+function computerActionHasProof(finalText = "", state = null) {
+  const terminal = compactTerminalMessages(state?.terminal || []).join("\n");
+  return finalTextLooksLikeActionProof(`${finalText}\n${terminal}`);
 }
 
 function formatRecoveredOperatorFailureText(value, exitCode = 1) {
@@ -7005,6 +7051,19 @@ function codexNoProgressTimeoutForTurn(taskFamily, target = null, mcpAttached = 
   return mcpAttached ? codexNoProgressTimeoutMs : codexFallbackNoProgressTimeoutMs;
 }
 
+function codexRunTimeoutOptions({ taskFamily = "generic", target = null, text = "", mcpAttached = true, noProgressTimeoutMs = 0 } = {}) {
+  const actionNeedsProof = Boolean(target?.id && computerActionRequiresProof(taskFamily, text));
+  return {
+    noProgressTimeoutMs: noProgressTimeoutMs || codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached),
+    idleAfterProgressTimeoutMs: actionNeedsProof
+      ? Math.max(codexIdleAfterProgressTimeoutMs, codexActionRecoverableIdleAfterProgressTimeoutMs)
+      : codexIdleAfterProgressTimeoutMs,
+    recoverableIdleAfterProgressTimeoutMs: actionNeedsProof
+      ? Math.max(codexRecoverableIdleAfterProgressTimeoutMs, codexActionRecoverableIdleAfterProgressTimeoutMs)
+      : codexRecoverableIdleAfterProgressTimeoutMs
+  };
+}
+
 function codexTaskNeedsSotyMcpTools(taskFamily, target = null) {
   if (!target?.id) {
     return false;
@@ -7328,11 +7387,12 @@ function isLowContextCodexFollowup(text) {
     || /^erase internal disk\b/iu.test(lower);
 }
 
-function recentCodexSessionFamilyForTarget(source, target = null) {
+function recentCodexSessionFamilyForTarget(source, target = null, options = {}) {
   const prefix = codexSessionKeyPrefix(source, target);
   if (!prefix) {
     return "";
   }
+  const includeRoutine = options?.includeRoutine === true;
   const now = Date.now();
   let best = null;
   for (const [key, record] of Object.entries(persistedCodexSessions || {})) {
@@ -7340,13 +7400,13 @@ function recentCodexSessionFamilyForTarget(source, target = null) {
       continue;
     }
     let family = codexSessionFamilyFromKey(key, record);
-    if (!family || isDialogCodexSessionFamily(family) || isRoutineAgentTaskFamily(family)) {
+    if (!family || isDialogCodexSessionFamily(family) || (!includeRoutine && isRoutineAgentTaskFamily(family))) {
       const inferred = inferCodexSessionFamilyFromWorkspace(record);
-      if (inferred && !isDialogCodexSessionFamily(inferred) && !isRoutineAgentTaskFamily(inferred)) {
+      if (inferred && !isDialogCodexSessionFamily(inferred) && (includeRoutine || !isRoutineAgentTaskFamily(inferred))) {
         family = inferred;
       }
     }
-    if (!family || isDialogCodexSessionFamily(family) || isRoutineAgentTaskFamily(family)) {
+    if (!family || isDialogCodexSessionFamily(family) || (!includeRoutine && isRoutineAgentTaskFamily(family))) {
       continue;
     }
     const updatedAt = Date.parse(record?.updatedAt || "");
@@ -7366,6 +7426,9 @@ function resolveCodexTaskFamily(text, source, target = null) {
     return classified;
   }
   const bucket = codexSessionFamilyBucket(classified);
+  if (isDialogCodexSessionFamily(bucket) && isActionFollowupPrompt(text)) {
+    return recentCodexSessionFamilyForTarget(source, target, { includeRoutine: true }) || classified;
+  }
   if (!isDialogCodexSessionFamily(bucket) && !isRoutineAgentTaskFamily(bucket)) {
     return classified;
   }
@@ -7373,6 +7436,14 @@ function resolveCodexTaskFamily(text, source, target = null) {
     return classified;
   }
   return recentCodexSessionFamilyForTarget(source, target) || classified;
+}
+
+function isActionFollowupPrompt(text) {
+  const value = String(text || "").trim().toLowerCase();
+  if (!value) {
+    return false;
+  }
+  return /(?:\b(?:do it|continue|go on|why didn't you|you refusing|not doing|finish it|actually do|make it happen)\b|делай|сделай|продолж|дальше|почему\s+не\s+сделал|почему\s+не\s+делаешь|ты\s+отказываешься|отказываешься\s+делать|не\s+делаешь|не\s+сделал|выполняй|закончи|доведи)/iu.test(value);
 }
 
 function codexActiveTargetTurnKey(source, target = null) {
@@ -7690,7 +7761,7 @@ function finalTextLooksLikeActionProof(text) {
   if (!value.trim()) {
     return false;
   }
-  if (/(?:sha-?256|bytes|currentwallpaper|requestedwallpaper|verification|exitcode\s*=\s*0|registry-current-wallpaper-matches-path|desktop-file-cycle\s+ok|volume=\d{1,3};\s*muted=|time=.+;\s*admin=|[a-z]:\\|\/users\/|\/home\/)/iu.test(value)) {
+  if (/(?:sha-?256|artifactsha256|"\s*(?:bytes|path|targetpath|localpath|currentwallpaper|requestedwallpaper|wallpaperpath|deleted|written|volumepercent|muted|sha256|artifactsha256)"\s*:|bytes|currentwallpaper|requestedwallpaper|verification|exitcode\s*=\s*0|registry-current-wallpaper-matches-path|desktop-file-cycle\s+ok|volume=\d{1,3};\s*muted=|time=.+;\s*admin=|[a-z]:\\|\/users\/|\/home\/)/iu.test(value)) {
     return true;
   }
   if (/(?:^\s*\{[\s\S]*"ok"\s*:\s*true|^written\s+.+|^deleted\s+.+|^opened\s+https?:\/\/)/iu.test(value.trim())) {
