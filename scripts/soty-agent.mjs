@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.81";
+const agentVersion = "0.4.82";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6446,7 +6446,7 @@ async function polishGonkaRecoveredFinalText({ userText = "", toolText = "", tas
 }
 
 function stripGonkaScratchpad(value) {
-  let text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  let text = stripHiddenReasoningBlocks(value).replace(/\r\n?/gu, "\n").trim();
   if (!text) {
     return "";
   }
@@ -8761,7 +8761,7 @@ function bridgeSourceDeviceId(target, source) {
 }
 
 function cleanAgentChatReply(value) {
-  const text = String(value || "")
+  const text = stripHiddenReasoningBlocks(value)
     .replace(/\r\n?/gu, "\n")
     .split("\n")
     .filter((line) => !isInternalAgentReceiptLine(line))
@@ -8769,6 +8769,25 @@ function cleanAgentChatReply(value) {
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
   return isLikelyInternalCodexReasoningReply(text) ? "" : text;
+}
+
+function stripHiddenReasoningBlocks(value) {
+  let text = String(value || "");
+  const tags = "(?:think|thinking|reasoning|analysis|scratchpad)";
+  text = text.replace(new RegExp(`<${tags}\\b[^>]*>[\\s\\S]*?<\\/${tags}>`, "giu"), "");
+  text = text.replace(new RegExp(`^\\s*<\\/${tags}>\\s*`, "giu"), "");
+  const openAtStart = text.match(new RegExp(`^\\s*<${tags}\\b[^>]*>`, "iu"));
+  if (openAtStart) {
+    const rest = text.slice(openAtStart[0].length);
+    const close = rest.search(new RegExp(`<\\/${tags}>`, "iu"));
+    if (close >= 0) {
+      text = rest.slice(close).replace(new RegExp(`^<\\/${tags}>`, "iu"), "");
+    } else {
+      const paragraphBreak = rest.search(/\n\s*\n/u);
+      text = paragraphBreak >= 0 ? rest.slice(paragraphBreak) : "";
+    }
+  }
+  return text;
 }
 
 function cleanTerminalTranscript(value) {
