@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.79";
+const agentVersion = "0.4.80";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -30,8 +30,11 @@ const mcpInlineToolBudgetMs = 95_000;
 const turnkeyStatusRecoveryWindowMs = 30 * 60_000;
 const requestedShell = arg("--shell") || process.env.SOTY_AGENT_SHELL || "";
 const updateManifestUrl = arg("--update-url") || process.env.SOTY_AGENT_UPDATE_URL || "https://xn--n1afe0b.online/agent/manifest.json";
-let agentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || persistedAgentConfig.relayId || "");
-let agentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
+const envAgentRelayId = safeRelayId(arg("--relay-id") || process.env.SOTY_AGENT_RELAY_ID || "");
+const envAgentRelayBaseUrl = safeHttpBaseUrl(process.env.SOTY_AGENT_RELAY_URL || "");
+let agentRelayId = safeRelayId(envAgentRelayId || persistedAgentConfig.relayId || "");
+let agentRelayBaseUrl = safeHttpBaseUrl(envAgentRelayBaseUrl || persistedAgentConfig.relayBaseUrl || originFromUrl(updateManifestUrl) || "https://xn--n1afe0b.online");
+const lockManagedRelayToEnv = shouldLockManagedRelayToEnv(envAgentRelayId, envAgentRelayBaseUrl, updateManifestUrl);
 const agentInstallId = safeInstallId(persistedAgentConfig.installId) || randomUUID();
 const agentAutoUpdate = process.env.SOTY_AGENT_AUTO_UPDATE === "1"
   || (managed && process.env.SOTY_AGENT_AUTO_UPDATE !== "0");
@@ -5268,6 +5271,16 @@ async function handleAgentRelayBind(request, response, headers) {
   const deviceNick = safeSourceText(payload?.deviceNick || "");
   if (!relayId || !relayBaseUrl) {
     sendJson(response, 400, headers, { ok: false });
+    return;
+  }
+  if (lockManagedRelayToEnv && (relayId !== envAgentRelayId || !sameHttpOrigin(relayBaseUrl, envAgentRelayBaseUrl))) {
+    sendJson(response, 200, headers, {
+      ok: true,
+      rebound: false,
+      ignoredRelayBind: true,
+      currentRelayBaseUrl: agentRelayBaseUrl,
+      ...runtimeHealth()
+    });
     return;
   }
   const previousDeviceId = agentDeviceId;
@@ -15954,6 +15967,23 @@ function originAllowed(origin) {
   return !origin
     || allowedOrigins.has(origin)
     || localDevOrigin(origin);
+}
+
+function shouldLockManagedRelayToEnv(relayId, relayBaseUrl, manifestUrl) {
+  if (process.env.SOTY_AGENT_ALLOW_DEV_RELAY_BIND === "1") {
+    return false;
+  }
+  if (!managed || !relayId || !relayBaseUrl || localDevOrigin(relayBaseUrl)) {
+    return false;
+  }
+  const manifestOrigin = safeHttpBaseUrl(originFromUrl(manifestUrl) || "");
+  return !manifestOrigin || !localDevOrigin(manifestOrigin);
+}
+
+function sameHttpOrigin(left, right) {
+  const leftOrigin = safeHttpBaseUrl(left);
+  const rightOrigin = safeHttpBaseUrl(right);
+  return Boolean(leftOrigin && rightOrigin && leftOrigin === rightOrigin);
 }
 
 function localDevOrigin(origin) {

@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.79");
+      assertEqual(health.body.version, "0.4.80");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -339,6 +339,54 @@ async function runScenarios({ relayUrl } = {}) {
         const health = await requestPort(managedPort, "GET", "/health");
         assertEqual(health.body.deviceId, "dev-empty-profile");
         assertEqual(health.body.deviceNick, "empty-profile");
+      } finally {
+        child.kill();
+        await onceExit(child).catch(() => undefined);
+        await rm(managedDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }],
+    ["managed agent ignores dev relay bind when env relay is locked", async () => {
+      const managedPort = await freePort();
+      const managedDir = await mkdtemp(join(tmpdir(), "soty-managed-relay-lock-selftest-"));
+      const lockedRelayId = "selftest_locked_relay_000000000001";
+      const child = spawn(process.execPath, [
+        agentPath,
+        "--port",
+        String(managedPort),
+        "--update-url",
+        "https://xn--n1afe0b.online/agent/manifest.json"
+      ], {
+        cwd: managedDir,
+        env: {
+          ...process.env,
+          SOTY_AGENT_MANAGED: "1",
+          SOTY_AGENT_AUTO_UPDATE: "0",
+          SOTY_AGENT_RELAY_ID: lockedRelayId,
+          SOTY_AGENT_RELAY_URL: "https://xn--n1afe0b.online",
+          SOTY_AGENT_DEVICE_ID: "dev-managed-locked",
+          SOTY_AGENT_DEVICE_NICK: "managed-locked",
+          SOTY_AGENT_ACTION_JOBS_DIR: join(managedDir, "jobs"),
+          SOTY_AGENT_TRACE_DIR: join(managedDir, "traces"),
+          SOTY_CODEX_DISABLED: "1",
+          SOTY_CODEX_RELAY_FALLBACK: "0"
+        },
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      try {
+        await waitForAgentHealth(managedPort);
+        const bind = await requestPort(managedPort, "POST", "/agent/relay", JSON.stringify({
+          relayId: "selftest_dev_relay_0000000000001",
+          relayBaseUrl: "http://127.0.0.1:5188",
+          deviceId: "dev-local-test",
+          deviceNick: "local-test"
+        }), { "Content-Type": "application/json" });
+        assertEqual(bind.status, 200);
+        assertEqual(bind.body.ok, true);
+        assertEqual(bind.body.ignoredRelayBind, true);
+        assertEqual(bind.body.currentRelayBaseUrl, "https://xn--n1afe0b.online");
+        const health = await requestPort(managedPort, "GET", "/health");
+        assertEqual(health.body.deviceId, "dev-managed-locked");
+        assertEqual(health.body.deviceNick, "managed-locked");
       } finally {
         child.kill();
         await onceExit(child).catch(() => undefined);
@@ -1891,7 +1939,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.79");
+      assertEqual(manifest.version, "0.4.80");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2038,7 +2086,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.79"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.80"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2103,7 +2151,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.79"'));
+      assert(agentSource.includes('const agentVersion = "0.4.80"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2234,14 +2282,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.79";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.80";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.79",
+            version: "0.4.80",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
