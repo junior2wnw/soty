@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.84";
+const agentVersion = "0.4.85";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -6031,8 +6031,9 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
       outPath = noProgressRetryOutPath;
     }
-    if (codexDirectComputerRecovery && (shouldRetryCodexAfterNoProgress(result, state, signal) || shouldRecoverNoProgressComputerAction({ result, state, taskFamily, text, target, signal }))) {
-      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
+    const forceNoProgressComputerRecovery = shouldForceDirectComputerRecoveryAfterNoProgress({ result, state, taskFamily, text, target, signal });
+    if ((codexDirectComputerRecovery && (shouldRetryCodexAfterNoProgress(result, state, signal) || shouldRecoverNoProgressComputerAction({ result, state, taskFamily, text, target, signal }))) || forceNoProgressComputerRecovery) {
+      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal, force: forceNoProgressComputerRecovery });
       if (direct) {
         result = direct;
         state.recoverableFinalText = direct.text;
@@ -7524,6 +7525,32 @@ function shouldRecoverNoProgressComputerAction({ result = null, state = null, ta
     }]
   };
   return Boolean(inferGonkaComputerArguments(payload));
+}
+
+function shouldForceDirectComputerRecoveryAfterNoProgress({ result = null, state = null, taskFamily = "", text = "", target = null, signal = null } = {}) {
+  if (signal?.aborted || !target?.id || !result || result.exitCode !== 124) {
+    return false;
+  }
+  if (state?.usage?.actual || state?.messages?.length || state?.terminal?.length || cleanAgentChatReply(state?.lastMessage || "")) {
+    return false;
+  }
+  if (!computerActionRequiresProof(taskFamily, text)) {
+    return false;
+  }
+  const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
+  if (!/codex (?:no-progress|idle after progress) timeout/u.test(details)) {
+    return false;
+  }
+  const payload = {
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
+    }]
+  };
+  const args = inferGonkaComputerArguments(payload);
+  const operation = normalizeGonkaComputerOperation(args?.operation || "");
+  return Boolean(args && ["file", "download", "audio", "time", "time-status", "system-resources", "status", "open-url", "web", "fetch", "search"].includes(operation));
 }
 
 function codexSessionKey(source, target = null, taskFamily = "generic") {
