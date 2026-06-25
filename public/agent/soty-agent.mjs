@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.83";
+const agentVersion = "0.4.84";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -907,7 +907,7 @@ function inferGonkaComputerArguments(payload) {
   }
   const content = firstKeyValue(userText, ["content", "text", "value", "содержимое", "текст"]);
   if (content) {
-    args.content = content;
+    args.content = cleanInferredFileContent(content);
   }
   const command = firstKeyValue(userText, ["command", "cmd", "script"]);
   if (command) {
@@ -1150,8 +1150,13 @@ function inferInlineFileContent(text) {
   if (!loose) {
     return "";
   }
-  return String(loose[1] || "")
+  return cleanInferredFileContent(loose[1]);
+}
+
+function cleanInferredFileContent(value) {
+  return String(value || "")
     .replace(/^["'`«“]+|["'`»”]+$/gu, "")
+    .replace(/\s*[,.;]\s*(?:проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply)\b[\s\S]*$/iu, "")
     .trim();
 }
 
