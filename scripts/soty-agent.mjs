@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.85";
+const agentVersion = "0.4.86";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1154,9 +1154,10 @@ function inferInlineFileContent(text) {
 }
 
 function cleanInferredFileContent(value) {
+  const stopWords = "проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply";
   return String(value || "")
     .replace(/^["'`«“]+|["'`»”]+$/gu, "")
-    .replace(/\s*[,.;]\s*(?:проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply)\b[\s\S]*$/iu, "")
+    .replace(new RegExp(`\\s*[,.;]\\s*(?:${stopWords})(?:\\s|$)[\\s\\S]*$`, "iu"), "")
     .trim();
 }
 
@@ -6037,6 +6038,11 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       if (direct) {
         result = direct;
         state.recoverableFinalText = direct.text;
+        const directMessage = cleanAgentChatReply(direct.text);
+        if (direct.exitCode === 0 && directMessage) {
+          state.lastMessage = directMessage;
+          state.messages.push(directMessage);
+        }
         state.terminal.push({
           key: "direct-computer-fallback",
           text: direct.text,
