@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.86";
+const agentVersion = "0.4.87";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7361,7 +7361,12 @@ function gonkaUpstreamModel(payloadModel = "") {
 }
 
 function shouldUseGonkaFallbackModel(model) {
-  return /^moonshotai\/Kimi-K2\.6$/iu.test(String(model || "").trim());
+  const normalized = String(model || "")
+    .trim()
+    .replace(/^moonshotai\//iu, "")
+    .replace(/^MoonshotAI\//u, "");
+  return /^Kimi[-_.]?K2\.6(?:[-_.]?(?:Online|Thinking|Preview))?$/iu.test(normalized)
+    || /^kimi[-_.]?k2\.6(?:[-_.]?(?:online|thinking|preview))?$/iu.test(normalized);
 }
 
 function firstNonEmptyEnv(names) {
