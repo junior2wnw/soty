@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.77";
+const agentVersion = "0.4.78";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1252,12 +1252,12 @@ function gonkaComputerChatTool() {
     type: "function",
     function: {
       name: "computer",
-      description: "Use the selected Soty computer for source-device work: web fetch/search, shell/script, files, browser/open_url, desktop/wallpaper, audio, time, system resources, jobs, and OS checks. Prefer this before exec_command for the user's computer.",
+      description: "Use the selected Soty computer for source-device work. Prefer specialized operations (file, browser, desktop/wallpaper, audio, web/search/fetch, jobs) before run/script; use run/script only as a fallback.",
       parameters: {
         type: "object",
         properties: {
-          operation: { type: "string", description: "web, fetch, search, run, script, open_url, browser, desktop, wallpaper, audio, time_status, system_resources, file, or status." },
-          action: { type: "string", description: "Optional operation-specific action, for example fetch, search, open, read, write, status." },
+          operation: { type: "string", description: "file, browser, desktop, wallpaper, audio, web, fetch, search, open_url, job_status, jobs, run, script, time_status, system_resources, or status." },
+          action: { type: "string", description: "Operation-specific action. File: stat/list/read/write/append/mkdir/search/move/copy/delete/download/publish/cycle. Browser: open/goto/title/text/eval/click_text/type/screenshot. Desktop: display/screenshot/wallpaper/click/type." },
           url: { type: "string", description: "HTTP/HTTPS URL for web/browser/open_url/wallpaper download work." },
           query: { type: "string", description: "Web search query, including wallpaper image searches." },
           command: { type: "string", description: "Shell/PowerShell command for run/script fallback." },
@@ -2705,8 +2705,23 @@ async function runActionJob(job, action) {
     actionControllers.delete(job.id);
   }
   const finished = Date.now();
-  const exitCode = Number.isSafeInteger(execution.exitCode) ? execution.exitCode : (execution.ok ? 0 : 1);
-  const status = execution.ok && exitCode === 0
+  const rawExitCode = Number.isSafeInteger(execution.exitCode) ? execution.exitCode : (execution.ok ? 0 : 1);
+  const text = String(execution.text || "").slice(-1_000_000);
+  const commandFailureInOutput = execution.ok && rawExitCode === 0 && operatorTextLooksLikeCommandFailure(text);
+  const exitCode = commandFailureInOutput ? 1 : rawExitCode;
+  const normalizedExecution = commandFailureInOutput
+    ? {
+        ...execution,
+        ok: false,
+        exitCode,
+        diagnostic: {
+          ...(execution.diagnostic && typeof execution.diagnostic === "object" ? execution.diagnostic : {}),
+          kind: "command-output-failure",
+          reason: "tool-output-contained-shell-error"
+        }
+      }
+    : { ...execution, exitCode };
+  const status = normalizedExecution.ok && exitCode === 0
     ? "ok"
     : exitCode === 130
       ? "cancelled"
@@ -2716,9 +2731,8 @@ async function runActionJob(job, action) {
           ? "blocked"
           : "failed";
   const durationMs = Math.max(0, finished - started);
-  const text = String(execution.text || "").slice(-1_000_000);
-  const route = cleanActionText(execution.route || `operator-action.${action.mode}`, 120);
-  const proof = appendActionMetaProof(action, enrichActionProof(action, text, buildActionProof({ action, execution: { ...execution, exitCode, route, text }, status })));
+  const route = cleanActionText(normalizedExecution.route || `operator-action.${action.mode}`, 120);
+  const proof = appendActionMetaProof(action, enrichActionProof(action, text, buildActionProof({ action, execution: { ...normalizedExecution, exitCode, route, text }, status })));
   const resultDoc = {
     schema: "soty.action.result.v1",
     jobId: job.id,
@@ -2731,8 +2745,8 @@ async function runActionJob(job, action) {
     kind: action.actionType,
     risk: action.risk,
     idempotencyKey: action.idempotencyKey,
-    target: cleanActionText(execution.target || action.target, 160),
-    sourceDeviceId: cleanActionText(execution.sourceDeviceId || action.sourceDeviceId, maxSourceChars),
+    target: cleanActionText(normalizedExecution.target || action.target, 160),
+    sourceDeviceId: cleanActionText(normalizedExecution.sourceDeviceId || action.sourceDeviceId, maxSourceChars),
     route,
     exitCode,
     durationMs,
@@ -2748,7 +2762,7 @@ async function runActionJob(job, action) {
       shape: sourceOutputShape(text),
       tail: text.slice(-12_000)
     },
-    ...(execution.diagnostic && typeof execution.diagnostic === "object" ? { diagnostic: execution.diagnostic } : {}),
+    ...(normalizedExecution.diagnostic && typeof normalizedExecution.diagnostic === "object" ? { diagnostic: normalizedExecution.diagnostic } : {}),
     startedAt: current.startedAt,
     finishedAt: new Date(finished).toISOString()
   };
@@ -2795,7 +2809,7 @@ async function runActionJob(job, action) {
       route,
       proof,
       text: text.slice(-maxChatChars),
-      ...(execution.diagnostic && typeof execution.diagnostic === "object" ? { diagnostic: execution.diagnostic } : {}),
+      ...(normalizedExecution.diagnostic && typeof normalizedExecution.diagnostic === "object" ? { diagnostic: normalizedExecution.diagnostic } : {}),
       exitCode,
       durationMs,
       statusPath: `/operator/action/${job.id}`,
@@ -6439,6 +6453,9 @@ function recoverFinalTextFromCodexEvent(event) {
   if (typeof payload.text !== "string") {
     return "";
   }
+  if (operatorTextLooksLikeCommandFailure(payload.text)) {
+    return "";
+  }
   return formatRecoveredOperatorText(payload.text) || "Готово.";
 }
 
@@ -6446,6 +6463,9 @@ function recoverFailureTextFromCodexEvent(event) {
   const payload = codexCommandOperatorPayload(event);
   if (payload?.ok === false) {
     return formatRecoveredOperatorFailureText(payload.text, payload.exitCode);
+  }
+  if (payload?.ok === true && operatorTextLooksLikeCommandFailure(payload.text)) {
+    return formatRecoveredOperatorFailureText(payload.text, 1);
   }
   const item = event?.item && typeof event.item === "object" ? event.item : null;
   if (event?.type === "item.completed" && item?.type === "command_execution" && item.status === "failed") {
@@ -6469,6 +6489,50 @@ function codexCommandOperatorPayload(event) {
     return null;
   }
   return payload;
+}
+
+function operatorTextLooksLikeCommandFailure(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  if (!text) {
+    return false;
+  }
+  if (/(^|\n)\s*(?:ParserError|CategoryInfo|FullyQualifiedErrorId|CommandNotFoundException|RuntimeException|ParseException)\s*:/iu.test(text)) {
+    return true;
+  }
+  if (/(^|\n)\s*(?:SyntaxError|ReferenceError|TypeError)\s*:/u.test(text) && /(?:\n\s+at\s+|\nfile:\/\/|\bnode:)/u.test(text)) {
+    return true;
+  }
+  if (/(?:You must provide a value expression|Unexpected token|The string is missing the terminator|The term .+ is not recognized|is not recognized as|Access is denied|Permission denied|No such file or directory)/iu.test(text)
+    && /(?:ParserError|CategoryInfo|FullyQualifiedErrorId|\n\s+at\s+|\nfile:\/\/|\bnode:|At line:\d+ char:\d+)/iu.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function operatorPayloadLooksLikeCommandFailure(value) {
+  if (typeof value === "string") {
+    return operatorTextLooksLikeCommandFailure(value);
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const output = value.output && typeof value.output === "object" ? value.output : null;
+  const candidates = [
+    value.text,
+    value.error,
+    value.stderr,
+    value.stderrTail,
+    value.stdout,
+    value.stdoutTail,
+    value.tail,
+    output?.text,
+    output?.stderr,
+    output?.stderrTail,
+    output?.stdout,
+    output?.stdoutTail,
+    output?.tail
+  ];
+  return candidates.some((item) => operatorTextLooksLikeCommandFailure(item));
 }
 
 function formatRecoveredOperatorText(value) {
@@ -6544,7 +6608,7 @@ function formatRecoveredOperatorFailureText(value, exitCode = 1) {
     .map((line) => line.trim())
     .filter(Boolean)
     .find((line) => !/^(at |file:\/\/|строка:|char:|\+ |categoryinfo|fullyqualifiederrorid)/iu.test(line));
-  if (/parsererror|missingendparenthesis|expectedexpression|ошибк\w*\s+синтакс|ожидалось выражение|отсутствует/u.test(text)) {
+  if (/parsererror|missingendparenthesis|expectedexpression|ошибк\w*\s+синтакс|ожидалось выражение|отсутствует/u.test(text) || operatorTextLooksLikeCommandFailure(text)) {
     return "Не получилось выполнить команду: ошибка в сформированном PowerShell-скрипте.";
   }
   if (firstMeaningful) {
@@ -7257,7 +7321,10 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: if a `computer` tool call is bridged to shell, it runs `node SOTY_LOCAL_API.mjs computer <json>`. For manual fallback prefer `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
+    "- For normal file tasks, call `computer` with operation=\"file\" and action=\"write\"/\"read\"/\"delete\"/\"copy\"/\"search\"/\"cycle\". Avoid operation=\"run\" for file work unless the file tool cannot express the task.",
+    "- For browser and web tasks, use operation=\"web\"/\"search\"/\"fetch\" for internet lookup and operation=\"browser\" with action=\"open\"/\"text\"/\"click_text\"/\"type\" for live page work. Do not only describe sources when the user asked you to act.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
+    "- If a tool returns an error, repair the command or switch to the safer specialized operation and continue. Only final-answer a real blocker after the available tool path is exhausted.",
     "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
     "- Preferred simple route: POST http://127.0.0.1:49424/operator/script with JSON { target, sourceDeviceId, sourceRelayId, shell:\"powershell\", script, timeoutMs }. Use /operator/action only for durable long work.",
     "- Shell command cookbook:",
@@ -11029,6 +11096,11 @@ function runMcpServer() {
     if (operation === "artifact" || capability === "artifact" || args.localPath || args.targetPath) {
       return "soty_artifact";
     }
+    const fileOperation = ["file", "filesystem", "read", "write", "append", "list", "stat", "mkdir", "move", "copy", "delete", "publish", "cycle"].includes(operation)
+      || (["search", "download"].includes(operation) && (args.path || args.pattern || args.glob));
+    if ((fileOperation && (args.path || operation === "file" || operation === "filesystem")) || key.includes("filesystem") || key.includes("file")) {
+      return "soty_file";
+    }
     if (["web", "internet", "web-fetch", "web_fetch", "fetch", "fetch-url", "fetch_url", "web-search", "web_search", "search"].includes(operation)
       || ["web", "internet", "network", "web-search"].includes(capability)
       || args.query) {
@@ -11048,9 +11120,6 @@ function runMcpServer() {
     }
     if (operation === "browser" || key.includes("browser")) {
       return "soty_browser";
-    }
-    if (operation === "file" || operation === "filesystem" || key.includes("filesystem") || key.includes("file")) {
-      return "soty_file";
     }
     if (operation === "audio" || key.includes("audio") || key.includes("volume") || key.includes("mute")) {
       return "soty_audio";
@@ -11077,7 +11146,7 @@ function runMcpServer() {
       return next;
     }
     if (alias === "soty_file" && !next.action) {
-      next.action = ["read", "write", "append", "list", "stat", "mkdir", "search", "move", "copy", "delete", "download", "publish"].includes(operation)
+      next.action = ["read", "write", "append", "list", "stat", "mkdir", "search", "move", "copy", "delete", "download", "publish", "cycle"].includes(operation)
         ? operation
         : "stat";
     }
@@ -12796,8 +12865,20 @@ function runMcpServer() {
   }
 
   function mcpToolOperatorResult(result, fallbackText = "") {
-    if (result.ok) {
+    const commandFailure = result?.ok && operatorPayloadLooksLikeCommandFailure(result.payload || result.text || "");
+    if (result.ok && !commandFailure) {
       return mcpToolText(result.text || fallbackText, false, result.exitCode);
+    }
+    if (commandFailure) {
+      const rawText = String(result.text || result.payload?.text || result.payload?.output?.tail || "").trim();
+      return mcpToolJson({
+        ...(result.payload && typeof result.payload === "object" ? result.payload : {}),
+        ok: false,
+        error: "command-output-failure",
+        text: formatRecoveredOperatorFailureText(rawText, 1),
+        outputTail: cleanActionText(rawText, 4000),
+        agentGuidance: "The tool transport completed, but the command output contains a shell/runtime error. Correct the command or switch to a safer specialized operation; do not report success."
+      }, true, result.exitCode || 1);
     }
     return mcpToolJson(result.payload || result, true, result.exitCode);
   }
@@ -12872,12 +12953,22 @@ function runMcpServer() {
     const text = String(result?.text || "").trim();
     const parsed = parseJsonObject(text);
     if (parsed) {
-      return mcpToolJson(parsed, !result.ok || parsed.ok === false, result.exitCode);
+      const commandFailure = operatorPayloadLooksLikeCommandFailure(parsed) || operatorTextLooksLikeCommandFailure(text);
+      const payload = commandFailure
+        ? {
+            ...parsed,
+            ok: false,
+            error: parsed.error || "command-output-failure",
+            agentGuidance: "The tool transport completed, but the command output contains a shell/runtime error. Correct the command or switch to a safer specialized operation; do not report success."
+          }
+        : parsed;
+      return mcpToolJson(payload, !result.ok || payload.ok === false || commandFailure, commandFailure ? (result.exitCode || 1) : result.exitCode);
     }
     if (!result?.ok && result?.payload && typeof result.payload === "object") {
       return mcpToolJson(result.payload, true, result.exitCode);
     }
-    return mcpToolText(text, !result.ok, result.exitCode);
+    const commandFailure = result?.ok && operatorTextLooksLikeCommandFailure(text);
+    return mcpToolText(text, !result.ok || commandFailure, commandFailure ? (result.exitCode || 1) : result.exitCode);
   }
 
   function parseJsonObject(value) {
@@ -13414,6 +13505,13 @@ try {
     if (action === "write") fs.writeFileSync(fullPath, String(req.content || ""), "utf8");
     else fs.appendFileSync(fullPath, String(req.content || ""), "utf8");
     emit({ ok: true, action, path: fullPath, bytes: Buffer.byteLength(String(req.content || ""), "utf8") });
+  } else if (action === "cycle") {
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    const content = String(req.content || "");
+    fs.writeFileSync(fullPath, content, "utf8");
+    const text = fs.readFileSync(fullPath, "utf8").slice(0, maxChars);
+    fs.rmSync(fullPath, { force: true });
+    emit({ ok: true, action, path: fullPath, bytes: Buffer.byteLength(content, "utf8"), text, written: true, read: true, deleted: true });
   } else if (action === "mkdir") {
     fs.mkdirSync(fullPath, { recursive: true });
     emit({ ok: true, action, path: fullPath });

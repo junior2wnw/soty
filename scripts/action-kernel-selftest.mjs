@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.77");
+      assertEqual(health.body.version, "0.4.78");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1111,6 +1111,13 @@ async function runScenarios({ relayUrl } = {}) {
       expectStatus(response, "failed");
       assertEqual(response.body.exitCode, 7);
     }],
+    ["source parser error with zero transport exit is captured", async () => {
+      const response = await action(sourceRun("SELFTEST_PARSERERROR"));
+      expectStatus(response, "failed");
+      assertEqual(response.body.exitCode, 1);
+      assertEqual(response.body.diagnostic.kind, "command-output-failure");
+      assert(String(response.body.text || "").includes("ParserError"));
+    }],
     ["source timeout is captured", async () => expectStatus(await action(sourceRun("SELFTEST_TIMEOUT")), "timeout")],
     ["bad relay json is captured", async () => expectStatus(await action(sourceRun("SELFTEST_BAD_JSON")), "failed")],
     ["relay http error is captured", async () => {
@@ -1171,7 +1178,8 @@ async function runScenarios({ relayUrl } = {}) {
         "system-resources",
         "open-url",
         "script-powershell <script-or-stdin>",
-        "recoverFailureTextFromCodexEvent"
+        "recoverFailureTextFromCodexEvent",
+        "operatorTextLooksLikeCommandFailure"
       ]) {
         assert(source.includes(needle), `missing helper needle ${needle}`);
       }
@@ -1476,6 +1484,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("codexActionRecoverableIdleAfterProgressTimeoutMs"));
       assert(agent.includes("isActionFollowupPrompt"));
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
+      assert(agent.includes("command-output-failure"));
+      assert(agent.includes('operation=\\"file\\"'));
+      assert(agent.includes('action === "cycle"'));
       assert(agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
       assert(agent.includes("gonkaForcedToolChoice"));
@@ -1870,7 +1881,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.77");
+      assertEqual(manifest.version, "0.4.78");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2017,7 +2028,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.77"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.78"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2082,7 +2093,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.77"'));
+      assert(agentSource.includes('const agentVersion = "0.4.78"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2213,14 +2224,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.77";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.78";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.77",
+            version: "0.4.78",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
@@ -2851,6 +2862,15 @@ function mockSourceJob(id, text) {
   }
   if (text.includes("SELFTEST_FAIL")) {
     return { id, text: "", finalText: "! mock-fail", finishAt: Date.now() + delay, finalExitCode: 7 };
+  }
+  if (text.includes("SELFTEST_PARSERERROR")) {
+    return {
+      id,
+      text: "",
+      finalText: "ParserError:\nLine |\n   1 | 'x' + .Trim()\n     |       ~\nYou must provide a value expression following the '+' operator.\nCategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException\nFullyQualifiedErrorId : ExpectedValueExpression",
+      finishAt: Date.now() + delay,
+      finalExitCode: 0
+    };
   }
   const output = text.includes("SELFTEST_LARGE")
     ? `SELFTEST_LARGE ${"x".repeat(20_000)} volume=22 muted=false`
