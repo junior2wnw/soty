@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.82";
+const agentVersion = "0.4.83";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1146,10 +1146,11 @@ function inferQuotedContent(text) {
 function inferInlineFileContent(text) {
   const value = String(text || "").replace(/\r\n?/gu, "\n").trim();
   const match = value.match(/(?:^|[\s,;])(?:content|text|with\s+text|с\s+текстом|текстом|со\s+строкой|строкой)\s*[:=-]\s*([\s\S]{1,2000})$/iu);
-  if (!match) {
+  const loose = match || value.match(/(?:^|[\s,;])(?:with\s+text|text|с\s+текстом|текстом|со\s+строкой|строкой)\s+([\s\S]{1,2000}?)(?:[,.;]\s*(?:проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply)\b|$)/iu);
+  if (!loose) {
     return "";
   }
-  return String(match[1] || "")
+  return String(loose[1] || "")
     .replace(/^["'`«“]+|["'`»”]+$/gu, "")
     .trim();
 }
@@ -6163,6 +6164,25 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         exitCode: 125
       };
     }
+    if (shouldRepairMissingDeletionProof({ taskFamily, text, target, finalText, state })) {
+      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal, force: true });
+      if (direct) {
+        state.terminal.push({
+          key: "direct-computer-fallback-missing-delete-proof",
+          text: `${direct.text || ""}\n${direct.stdout || ""}`.trim(),
+          exitCode: direct.exitCode
+        });
+        if (direct.exitCode === 0 && computerActionHasDeletionProof(`${direct.text || ""}\n${direct.stdout || ""}`)) {
+          finalText = finalText || cleanAgentChatReply(direct.text);
+          messages = compactCodexMessages([finalText]);
+          result.exitCode = 0;
+          traceStep(trace, "codex.repaired-missing-delete-proof", {
+            taskFamily,
+            textChars: finalText.length
+          });
+        }
+      }
+    }
     if (shouldRejectProoflessComputerFinal({ taskFamily, text, target, finalText, state })) {
       traceStep(trace, "codex.proofless-action-final-rejected", {
         taskFamily,
@@ -6644,12 +6664,33 @@ function shouldRejectProoflessComputerFinal({ taskFamily = "", text = "", target
   if (!target?.id || !finalText || !computerActionRequiresProof(taskFamily, text)) {
     return false;
   }
-  return !computerActionHasProof(finalText, state);
+  return !computerActionHasProof(finalText, state, text);
 }
 
-function computerActionHasProof(finalText = "", state = null) {
+function computerActionHasProof(finalText = "", state = null, userText = "") {
   const terminal = compactTerminalMessages(state?.terminal || []).join("\n");
+  if (computerActionNeedsDeletionProof(userText) && !computerActionHasDeletionProof(`${finalText}\n${terminal}`)) {
+    return false;
+  }
   return finalTextLooksLikeActionProof(`${finalText}\n${terminal}`);
+}
+
+function computerActionNeedsDeletionProof(text) {
+  const value = String(text || "");
+  return /(?:\bdelete\b|\bremove\b|cleanup|clean up|удал|сотри)/iu.test(value)
+    && /(?:\bfile\b|\bfolder\b|desktop|файл|папк|рабоч)/iu.test(value);
+}
+
+function computerActionHasDeletionProof(text) {
+  const value = String(text || "");
+  return /(?:"action"\s*:\s*"(?:delete|cycle)"|"deleted"\s*:\s*true|"exists"\s*:\s*false|^deleted\s+|desktop-file-cycle\s+ok|missing\s+[a-z]:\\|missing\s+\/|файл\s+удал[её]н|удал[её]н[ао]?)/imu.test(value);
+}
+
+function shouldRepairMissingDeletionProof({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
+  if (!target?.id || !finalText || !computerActionRequiresProof(taskFamily, text) || !computerActionNeedsDeletionProof(text)) {
+    return false;
+  }
+  return !computerActionHasDeletionProof(`${finalText}\n${compactTerminalMessages(state?.terminal || []).join("\n")}`);
 }
 
 function formatRecoveredOperatorFailureText(value, exitCode = 1) {
@@ -7751,8 +7792,8 @@ function quoteWindowsCommandArg(value) {
   return `"${text.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
 }
 
-async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace = null, signal = null } = {}) {
-  if (!codexDirectComputerRecovery) {
+async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace = null, signal = null, force = false } = {}) {
+  if (!force && !codexDirectComputerRecovery) {
     return null;
   }
   if (signal?.aborted) {
@@ -8496,7 +8537,7 @@ function compactTerminalMessages(value) {
     return [];
   }
   return value
-    .map((item) => cleanTerminalTranscript(item))
+    .map((item) => cleanTerminalTranscript(typeof item === "string" ? item : (item?.text || JSON.stringify(item || ""))))
     .filter(Boolean)
     .slice(-maxCodexDialogMessages);
 }
