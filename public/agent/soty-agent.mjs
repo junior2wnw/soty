@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.75";
+const agentVersion = "0.4.76";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -84,6 +84,8 @@ const codexGonkaModel = safeCodexModelId(
 );
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
+const codexGonkaAdapterHeuristics = process.env.SOTY_GONKA_ADAPTER_HEURISTICS === "1";
+const codexDirectComputerRecovery = process.env.SOTY_CODEX_DIRECT_COMPUTER_RECOVERY === "1";
 const codexNativeWebSearch = codexUsesGonka
   ? process.env.SOTY_CODEX_WEB_SEARCH === "1"
   : process.env.SOTY_CODEX_WEB_SEARCH !== "0";
@@ -715,6 +717,9 @@ function gonkaChatCompletionPayload(payload) {
 }
 
 function gonkaForcedToolChoice(payload, tools) {
+  if (!codexGonkaAdapterHeuristics) {
+    return null;
+  }
   if (!Array.isArray(tools) || !tools.some((tool) => tool?.function?.name === "computer")) {
     return null;
   }
@@ -758,6 +763,9 @@ function shouldForceGonkaComputerFromPayload(payload) {
 }
 
 function fallbackGonkaComputerToolCalls(payload, message = {}) {
+  if (!codexGonkaAdapterHeuristics) {
+    return [];
+  }
   if (responsesPayloadHasToolResult(payload) || !shouldForceGonkaComputerFromPayload(payload) || Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
     return [];
   }
@@ -776,6 +784,9 @@ function fallbackGonkaComputerToolCalls(payload, message = {}) {
 }
 
 function immediateGonkaComputerToolResponse(payload, model) {
+  if (!codexGonkaAdapterHeuristics) {
+    return null;
+  }
   const calls = fallbackGonkaComputerToolCalls(payload, {});
   if (calls.length === 0) {
     return null;
@@ -1526,8 +1537,9 @@ function gonkaAdapterCodexInstructions(value) {
 
 function gonkaAdapterSystemInstruction() {
   return [
-    "Soty Codex is using a local Responses-to-Chat adapter for Gonka AI.",
-    "MCP and Responses tools are compacted to ordinary function tools when this adapter receives them. If the `computer` tool is present, use it first for selected-computer work.",
+    "Soty Codex is using a local Responses-to-Chat adapter only as Gonka AI model-provider transport.",
+    "Codex CLI remains the central solver; the adapter must not invent user actions or synthetic tool calls unless explicit diagnostics flags enable that legacy recovery path.",
+    "MCP and Responses tools are compacted to ordinary function tools when this adapter receives them. If the `computer` tool is present, use it for selected-computer work instead of merely promising future action.",
     `If the user's computer must be controlled and no direct computer function tool is available, use shell_command/exec_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
     "Useful local routes: GET /operator/targets, GET /operator/source-status, GET /operator/toolkits, POST /operator/run, POST /operator/script, POST /operator/action, GET /operator/action/<jobId>.",
     "Use Node.js fetch from shell_command/exec_command for these local HTTP calls; do not rely on curl or wget being installed in the container.",
@@ -5810,7 +5822,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     outPath,
     threadId: sessionRecord?.threadId || "",
     taskFamily,
-    attachMcp: !codexUsesGonka && codexTaskNeedsSotyMcpTools(taskFamily, target)
+    attachMcp: codexTaskNeedsSotyMcpTools(taskFamily, target)
   });
   const mcpAttached = args.some((item) => String(item).includes("mcp_servers.soty"));
   const turnNoProgressTimeoutMs = codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached);
@@ -5972,7 +5984,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
       outPath = noProgressRetryOutPath;
     }
-    if (shouldRetryCodexAfterNoProgress(result, state, signal) || shouldRecoverNoProgressComputerAction({ result, state, taskFamily, text, target, signal })) {
+    if (codexDirectComputerRecovery && (shouldRetryCodexAfterNoProgress(result, state, signal) || shouldRecoverNoProgressComputerAction({ result, state, taskFamily, text, target, signal }))) {
       const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
       if (direct) {
         result = direct;
@@ -6110,7 +6122,7 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         exitCode: 125
       };
     }
-    if (shouldRecoverProoflessComputerAction({ taskFamily, text, target, finalText, state })) {
+    if (codexDirectComputerRecovery && shouldRecoverProoflessComputerAction({ taskFamily, text, target, finalText, state })) {
       const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
       if (direct) {
         state.terminal.push({
@@ -6971,9 +6983,6 @@ function shouldRetryCodexWithoutMcp(result, state, args, signal = null, options 
   if (signal?.aborted || !Array.isArray(args) || !args.some((item) => String(item).includes("mcp_servers.soty"))) {
     return false;
   }
-  if (codexTaskNeedsSotyMcpTools(options?.taskFamily, options?.target)) {
-    return false;
-  }
   if (!result || ![0, 124].includes(result.exitCode)) {
     return false;
   }
@@ -7184,7 +7193,8 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   const sourceDeviceId = promptInline(runtime?.target?.sourceDeviceId || runtime?.source?.deviceId || "");
   const sourceRelayId = promptInline(runtime?.source?.sourceRelayId || "");
   return [
-    "- Gonka tool route: use the `computer` function tool first when it is available. It is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
+    "- Gonka model-provider transport: Codex remains the central solver. When Codex presents the `computer` function tool, use it for selected-computer work instead of only describing a plan.",
+    "- The `computer` tool is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
     "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: if a `computer` tool call is bridged to shell, it runs `node SOTY_LOCAL_API.mjs computer <json>`. For manual fallback prefer `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
@@ -7232,6 +7242,9 @@ function shouldRetryCodexAfterNoProgress(result, state, signal = null) {
 }
 
 function shouldRecoverNoProgressComputerAction({ result = null, state = null, taskFamily = "", text = "", target = null, signal = null } = {}) {
+  if (!codexDirectComputerRecovery) {
+    return false;
+  }
   if (signal?.aborted || !target?.id || !result || result.exitCode !== 124) {
     return false;
   }
@@ -7511,6 +7524,9 @@ function quoteWindowsCommandArg(value) {
 }
 
 async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace = null, signal = null } = {}) {
+  if (!codexDirectComputerRecovery) {
+    return null;
+  }
   if (signal?.aborted) {
     return null;
   }
@@ -7631,6 +7647,9 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
 }
 
 function shouldRecoverProoflessComputerAction({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
+  if (!codexDirectComputerRecovery) {
+    return false;
+  }
   if (!target?.id || !finalText || state?.terminal?.length > 0) {
     return false;
   }
@@ -9458,6 +9477,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "",
     "Codex capability policy:",
+    "- Codex CLI is the central solver and instruction follower. Soty exposes context, memory, MCP/tool gateways, and execution proof; it must not replace the model's decision loop with local heuristics.",
     "- Optimize for the best verified outcome, not the shortest response. Use the full available Codex toolset: native search/image/computer/browser/shell/patch tools plus Soty `computer` for the selected user's device.",
     "- For coding and repository work, inspect the relevant files first, preserve unrelated user changes, make focused patches, and run the narrowest useful verification before final answer.",
     "- Do not downshift effort for routine-looking code, file, script, or system tasks; simple wording can still hide complex state.",
@@ -15344,6 +15364,7 @@ function shellName() {
 function openAiToolPlaneStatus() {
   return {
     schema: "openai.responses-tools+mcp.v1",
+    centralResolver: "stock-codex-cli",
     builtInTools: [...openAiBuiltInTools],
     codexCliFeatureFlags: [...codexNativeOpenAiToolFeatures],
     webSearch: codexNativeWebSearch ? "native --search" : (codexUsesGonka ? "computer.operation=web fallback" : "disabled-by-env"),
@@ -15352,6 +15373,11 @@ function openAiToolPlaneStatus() {
       entryTool: "computer",
       publicTools: [...sotyMcpPublicTools],
       legacyAliasesHidden: process.env.SOTY_MCP_EXPOSE_LEGACY_TOOLS !== "1"
+    },
+    gonkaAdapter: {
+      purpose: "model-provider-transport",
+      syntheticToolCalls: codexGonkaAdapterHeuristics,
+      directComputerRecovery: codexDirectComputerRecovery
     },
     rule: "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
   };
@@ -15413,6 +15439,11 @@ function runtimeHealth() {
     codexProvider: codexProviderName(),
     codexModel: codexUsesGonka ? codexGonkaModel : "",
     codexProviderAdapter: codexUsesGonka ? "gonka-chat-completions-via-local-responses-adapter" : "",
+    codexCentralResolver: canRunCodexBrain() ? "stock-codex-cli" : "server-relay-only",
+    codexAdapterRole: codexUsesGonka ? "model-provider-transport" : "native-provider",
+    codexAdapterHeuristics: codexGonkaAdapterHeuristics ? "enabled" : "disabled",
+    codexDirectComputerRecovery,
+    codexMcpComputer: "attached-for-computer-tasks",
     codexMode: canRunCodexBrain() ? (codexFullLocalTools ? "server-stock-cli-full-local-tools" : "server-stock-cli-bridge") : "server-relay-only",
     codexSessionMode,
     codexRuntimeContext: "clean-codex+memory-plane+computer-use-plane",

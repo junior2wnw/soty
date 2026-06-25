@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.75");
+      assertEqual(health.body.version, "0.4.76");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -56,6 +56,9 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.computerUsePlane.entryTool, "computer");
       assertEqual(health.body.computerUsePlane.legacyEntrypoint, "soty_computer");
       assert(health.body.openAiToolPlane.builtInTools.includes("image_generation"));
+      assertEqual(health.body.openAiToolPlane.centralResolver, "stock-codex-cli");
+      assertEqual(health.body.openAiToolPlane.gonkaAdapter.syntheticToolCalls, false);
+      assertEqual(health.body.openAiToolPlane.gonkaAdapter.directComputerRecovery, false);
       assert(health.body.openAiToolPlane.mcp.publicTools.includes("computer"));
       assert(!health.body.openAiToolPlane.mcp.publicTools.includes("image_gen"));
       assert(health.body.computerUsePlane.standardTools.includes("computer"));
@@ -143,6 +146,10 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(health.body.codexModel, "moonshotai/Kimi-K2.6");
         assertEqual(health.body.codexAuth, true);
         assert(health.body.codexProviderAdapter.includes("gonka-chat-completions"));
+        assertEqual(health.body.codexCentralResolver, "server-relay-only");
+        assertEqual(health.body.codexAdapterRole, "model-provider-transport");
+        assertEqual(health.body.codexAdapterHeuristics, "disabled");
+        assertEqual(health.body.codexDirectComputerRecovery, false);
         assertEqual(health.body.openAiToolPlane.codexCliFeatureFlags.length, 0);
         const models = await requestPort(gonkaPort, "GET", "/codex-gonka/v1/models");
         assertEqual(models.status, 200);
@@ -1464,6 +1471,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiBuiltInTools"));
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
+      assert(agent.includes("codexGonkaAdapterHeuristics"));
+      assert(agent.includes("codexDirectComputerRecovery"));
       assert(agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
       assert(agent.includes("gonkaForcedToolChoice"));
@@ -1501,9 +1510,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes('cmd: `node SOTY_LOCAL_API.mjs computer'));
       assert(agent.includes("function filePowerShell(req)"));
       assert(agent.includes("function timeSetPowerShell(req)"));
-      assert(agent.includes("If the `computer` tool is present, use it first"));
-      assert(agent.includes("attachMcp: !codexUsesGonka && codexTaskNeedsSotyMcpTools(taskFamily, target)"));
-      assert(agent.includes("Gonka tool route: use the `computer` function tool first"));
+      assert(agent.includes("Codex CLI is the central solver and instruction follower"));
+      assert(agent.includes("attachMcp: codexTaskNeedsSotyMcpTools(taskFamily, target)"));
+      assert(agent.includes("Gonka model-provider transport: Codex remains the central solver"));
+      assert(agent.includes("Codex CLI remains the central solver"));
       assert(agent.includes("sourceWebScript"));
       assert(agent.includes("openAiToolPlaneStatus"));
       assert(agent.includes("standardTools: [...sotyMcpPublicTools]"));
@@ -1857,9 +1867,13 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.75");
+      assertEqual(manifest.version, "0.4.76");
       assertEqual(manifest.schema, "soty.agent.release.v2");
+      assertEqual(manifest.architecture, "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
+      assertEqual(manifest.openAiToolPlane.centralResolver, "stock-codex-cli");
+      assertEqual(manifest.openAiToolPlane.providerAdapter.syntheticToolCallsDefault, false);
+      assertEqual(manifest.openAiToolPlane.providerAdapter.directComputerRecoveryDefault, false);
       assert(manifest.openAiToolPlane.builtInTools.includes("image_generation"));
       assertEqual(manifest.openAiToolPlane.mcp.entryTool, "computer");
       assert(!manifest.openAiToolPlane.mcp.publicTools.includes("image_gen"));
@@ -1891,6 +1905,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(manifest.computerUsePlane.capabilities.includes("wallpaper"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
+      assertEqual(manifest.automationToolkits.policy.centralResolver, "stock-codex-cli");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
       assertEqual(manifest.automationToolkits.policy.fallbackKernel, "jobs");
       assertEqual(manifest.automationToolkits.policy.routeProfiles, "soty.route-profiles.v1");
@@ -1999,7 +2014,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.75"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.76"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2064,7 +2079,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.75"'));
+      assert(agentSource.includes('const agentVersion = "0.4.76"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2195,14 +2210,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.75";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.76";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.75",
+            version: "0.4.76",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

@@ -61,7 +61,7 @@ const openAiToolPlane = buildOpenAiToolPlane();
 const manifest = {
   version,
   schema: "soty.agent.release.v2",
-  architecture: "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
+  architecture: "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane",
   agentUrl: "/agent/soty-agent.mjs",
   sha256: sha256(sourceText),
   openAiToolPlane,
@@ -170,6 +170,7 @@ async function publishWindowsReinstallScripts() {
 function buildOpenAiToolPlane() {
   return {
     schema: "openai.responses-tools+mcp.v1",
+    centralResolver: "stock-codex-cli",
     builtInTools: ["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"],
     codexCliFeatureFlags: [
       "image_generation",
@@ -186,6 +187,11 @@ function buildOpenAiToolPlane() {
       entryTool: "computer",
       publicTools: ["computer"],
       legacyAliasesHidden: true
+    },
+    providerAdapter: {
+      role: "model-provider-transport",
+      syntheticToolCallsDefault: false,
+      directComputerRecoveryDefault: false
     },
     rule: "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
   };
@@ -295,8 +301,9 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
   const openAiToolPlane = buildOpenAiToolPlane();
   return {
     schema: "soty.automation-toolkits.v2",
-    architecture: "openai-built-in-tools+soty-mcp-computer",
+    architecture: "stock-codex-cli-central-solver+openai-built-in-tools+soty-mcp-computer",
     policy: {
+      centralResolver: "stock-codex-cli",
       entrypoint: "computer",
       legacyEntrypoint: "soty_computer",
       route: "computer-use-plane-with-memory-hints",

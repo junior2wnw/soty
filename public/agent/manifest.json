@@ -1,11 +1,12 @@
 {
-  "version": "0.4.75",
+  "version": "0.4.76",
   "schema": "soty.agent.release.v2",
-  "architecture": "server-codex-brain+openai-built-in-tools+soty-mcp-computer+memory-plane",
+  "architecture": "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "13ff0e56fa57d16e2d560181768c33236df19d80d289b32e04330160f032b780",
+  "sha256": "e9574b594a34df9da4dac68b083bfa153676339b0e11d4c2bd2a697aeba41dd6",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
+    "centralResolver": "stock-codex-cli",
     "builtInTools": [
       "web_search",
       "image_generation",
@@ -31,6 +32,11 @@
         "computer"
       ],
       "legacyAliasesHidden": true
+    },
+    "providerAdapter": {
+      "role": "model-provider-transport",
+      "syntheticToolCallsDefault": false,
+      "directComputerRecoveryDefault": false
     },
     "rule": "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
   },
@@ -557,8 +563,9 @@
   },
   "automationToolkits": {
     "schema": "soty.automation-toolkits.v2",
-    "architecture": "openai-built-in-tools+soty-mcp-computer",
+    "architecture": "stock-codex-cli-central-solver+openai-built-in-tools+soty-mcp-computer",
     "policy": {
+      "centralResolver": "stock-codex-cli",
       "entrypoint": "computer",
       "legacyEntrypoint": "soty_computer",
       "route": "computer-use-plane-with-memory-hints",
@@ -577,6 +584,7 @@
       },
       "openAiToolPlane": {
         "schema": "openai.responses-tools+mcp.v1",
+        "centralResolver": "stock-codex-cli",
         "builtInTools": [
           "web_search",
           "image_generation",
@@ -602,6 +610,11 @@
             "computer"
           ],
           "legacyAliasesHidden": true
+        },
+        "providerAdapter": {
+          "role": "model-provider-transport",
+          "syntheticToolCallsDefault": false,
+          "directComputerRecoveryDefault": false
         },
         "rule": "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
       },
