@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.80");
+      assertEqual(health.body.version, "0.4.81");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -136,6 +136,7 @@ async function runScenarios({ relayUrl } = {}) {
           SOTY_GONKA_API_KEY: "selftest-key",
           SOTY_GONKA_BASE_URL: `http://127.0.0.1:${gonkaUpstream.address().port}/v1`,
           SOTY_CODEX_MODEL: "moonshotai/Kimi-K2.6",
+          SOTY_GONKA_FALLBACK_MODEL: "MiniMaxAI/MiniMax-M2.7",
           SOTY_CODEX_RELAY_FALLBACK: "0"
         },
         stdio: ["ignore", "pipe", "pipe"]
@@ -144,6 +145,8 @@ async function runScenarios({ relayUrl } = {}) {
         const health = await waitForAgentHealth(gonkaPort);
         assertEqual(health.body.codexProvider, "gonka");
         assertEqual(health.body.codexModel, "moonshotai/Kimi-K2.6");
+        assertEqual(health.body.codexUpstreamModel, "MiniMaxAI/MiniMax-M2.7");
+        assertEqual(health.body.codexFallbackModel, "MiniMaxAI/MiniMax-M2.7");
         assertEqual(health.body.codexAuth, true);
         assert(health.body.codexProviderAdapter.includes("gonka-chat-completions"));
         assertEqual(health.body.codexCentralResolver, "server-relay-only");
@@ -154,6 +157,7 @@ async function runScenarios({ relayUrl } = {}) {
         const models = await requestPort(gonkaPort, "GET", "/codex-gonka/v1/models");
         assertEqual(models.status, 200);
         assertEqual(models.body.models[0].id, "moonshotai/Kimi-K2.6");
+        assertEqual(models.body.models[1].id, "MiniMaxAI/MiniMax-M2.7");
         assertEqual(models.body.models[0].supported_in_api, true);
         const proxied = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
@@ -217,6 +221,7 @@ async function runScenarios({ relayUrl } = {}) {
         assert(gonkaRequests[0].tools[1].function.parameters.properties.command.description.length < 240);
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("Compact Soty runtime packet")));
         assert(gonkaRequests[0].messages.some((message) => String(message.content).includes("- target: none (none)")));
+        assertEqual(gonkaRequests[0].model, "MiniMaxAI/MiniMax-M2.7");
         const universalDialogWithTarget = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           stream: true,
@@ -261,6 +266,7 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(gonkaRequests[1].tools[0].function.name, "computer");
         assertEqual(gonkaRequests[1].tools[1].function.name, "exec_command");
         assert(gonkaRequests[1].messages.some((message) => String(message.content).includes("- task_family: source-scoped-dialog")));
+        assertEqual(gonkaRequests[1].model, "MiniMaxAI/MiniMax-M2.7");
         const nonStream = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           input: "hello"
@@ -272,6 +278,7 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(nonStream.body.object, "response");
         assertEqual(nonStream.body.output[0].content[0].text, "adapter ok");
         assertEqual(nonStream.body.usage.total_tokens, 5);
+        assertEqual(gonkaRequests[2].model, "MiniMaxAI/MiniMax-M2.7");
       } finally {
         if (child.exitCode === null) {
           child.kill();
@@ -1939,7 +1946,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.80");
+      assertEqual(manifest.version, "0.4.81");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2086,7 +2093,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.80"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.81"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2151,7 +2158,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.80"'));
+      assert(agentSource.includes('const agentVersion = "0.4.81"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2282,14 +2289,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.80";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.81";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.80",
+            version: "0.4.81",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
