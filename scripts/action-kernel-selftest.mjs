@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.88");
+      assertEqual(health.body.version, "0.4.89");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -92,10 +92,23 @@ async function runScenarios({ relayUrl } = {}) {
           const chunks = [];
           request.on("data", (chunk) => chunks.push(chunk));
           request.on("end", () => {
+            let body = null;
             try {
-              gonkaRequests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+              body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+              gonkaRequests.push(body);
             } catch {
               gonkaRequests.push(null);
+            }
+            if (body?.model === "moonshotai/Kimi-K2.6" && JSON.stringify(body.messages || []).includes("rate-limit-probe")) {
+              response.writeHead(429, { "Content-Type": "application/json" });
+              response.end(JSON.stringify({
+                error: {
+                  message: "Модель \"moonshotai/Kimi-K2.6\" сейчас перегружена в сети Gonka (rate limit).",
+                  type: "rate_limit_exceeded",
+                  code: "upstream_rate_limited"
+                }
+              }));
+              return;
             }
             response.writeHead(200, { "Content-Type": "application/json" });
             response.end(JSON.stringify({
@@ -279,6 +292,17 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(nonStream.body.output[0].content[0].text, "adapter ok");
         assertEqual(nonStream.body.usage.total_tokens, 5);
         assertEqual(gonkaRequests[2].model, "moonshotai/Kimi-K2.6");
+        const rateLimited = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
+          model: "moonshotai/Kimi-K2.6",
+          input: "rate-limit-probe"
+        }), {
+          "Authorization": "Bearer selftest-key",
+          "Content-Type": "application/json"
+        });
+        assertEqual(rateLimited.status, 200);
+        assertEqual(rateLimited.body.output[0].content[0].text, "adapter ok");
+        assertEqual(gonkaRequests[3].model, "moonshotai/Kimi-K2.6");
+        assertEqual(gonkaRequests[4].model, "MiniMaxAI/MiniMax-M2.7");
       } finally {
         if (child.exitCode === null) {
           child.kill();
@@ -1949,7 +1973,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.88");
+      assertEqual(manifest.version, "0.4.89");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2096,7 +2120,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.88"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.89"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2161,7 +2185,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.88"'));
+      assert(agentSource.includes('const agentVersion = "0.4.89"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2292,14 +2316,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.88";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.89";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.88",
+            version: "0.4.89",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

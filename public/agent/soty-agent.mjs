@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.88";
+const agentVersion = "0.4.89";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -665,27 +665,33 @@ async function handleGonkaResponsesProxy(request, response, headers) {
     }
     return;
   }
-  const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
-  let upstream;
+  let upstreamResult;
   try {
-    upstream = await fetch(upstreamUrl, {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(gonkaChatCompletionPayload(payload))
-    });
+    upstreamResult = await fetchGonkaChatCompletion(payload, apiKey);
   } catch (error) {
     sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
     return;
   }
+  let upstream = upstreamResult.response;
   if (!upstream.ok) {
     const text = await upstream.text().catch(() => "");
-    sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, text || upstream.statusText || "Gonka request failed");
-    return;
+    if (shouldRetryGonkaFallback(upstreamResult.model, upstream.status, text)) {
+      try {
+        upstreamResult = await fetchGonkaChatCompletion(payload, apiKey, codexGonkaFallbackModel);
+        upstream = upstreamResult.response;
+      } catch (error) {
+        sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
+        return;
+      }
+      if (!upstream.ok) {
+        const fallbackText = await upstream.text().catch(() => "");
+        sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, fallbackText || text || upstream.statusText || "Gonka request failed");
+        return;
+      }
+    } else {
+      sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, text || upstream.statusText || "Gonka request failed");
+      return;
+    }
   }
   const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("text/event-stream")) {
@@ -693,6 +699,32 @@ async function handleGonkaResponsesProxy(request, response, headers) {
     return;
   }
   const body = await upstream.json().catch(() => null);
+  if (body?.error && shouldRetryGonkaFallback(upstreamResult.model, 429, JSON.stringify(body.error))) {
+    try {
+      upstreamResult = await fetchGonkaChatCompletion(payload, apiKey, codexGonkaFallbackModel);
+      upstream = upstreamResult.response;
+    } catch (error) {
+      sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (!upstream.ok) {
+      const fallbackText = await upstream.text().catch(() => "");
+      sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, fallbackText || "Gonka request failed");
+      return;
+    }
+    const fallbackContentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+    if (fallbackContentType.includes("text/event-stream")) {
+      await streamGonkaChatCompletions(upstream, response, headers, responseModel, payload);
+      return;
+    }
+    const fallbackBody = await upstream.json().catch(() => null);
+    if (payload?.stream === true) {
+      streamGonkaChatCompletionObject(fallbackBody, response, headers, responseModel, payload);
+      return;
+    }
+    sendJson(response, 200, headers, gonkaChatCompletionResponseObject(fallbackBody, responseModel, payload));
+    return;
+  }
   if (payload?.stream === true) {
     streamGonkaChatCompletionObject(body, response, headers, responseModel, payload);
     return;
@@ -706,11 +738,27 @@ function bearerTokenFromRequest(request) {
   return match ? match[1].trim() : "";
 }
 
-function gonkaChatCompletionPayload(payload) {
+async function fetchGonkaChatCompletion(payload, apiKey, modelOverride = "") {
+  const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
+  const body = gonkaChatCompletionPayload(payload, modelOverride);
+  const response = await fetch(upstreamUrl, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  return { response, model: body.model };
+}
+
+function gonkaChatCompletionPayload(payload, modelOverride = "") {
   const messages = responsesInputToChatMessages(payload);
   const tools = gonkaToolsWithInjectedComputer(responsesToolsToChatTools(payload?.tools), payload);
   const body = {
-    model: gonkaUpstreamModel(payload?.model),
+    model: safeCodexModelId(modelOverride) || gonkaUpstreamModel(payload?.model),
     messages,
     stream: false
   };
@@ -7364,6 +7412,19 @@ function gonkaUpstreamModel(payloadModel = "") {
     return codexGonkaFallbackModel;
   }
   return requested || codexGonkaFallbackModel || codexGonkaDefaultModel;
+}
+
+function shouldRetryGonkaFallback(model, status, text) {
+  const fallback = safeCodexModelId(codexGonkaFallbackModel);
+  const current = safeCodexModelId(model);
+  if (!fallback || !current || current.toLowerCase() === fallback.toLowerCase()) {
+    return false;
+  }
+  const message = String(text || "");
+  if (!/(?:rate[_ -]?limit|rate_limit_exceeded|upstream_rate_limited|too many requests|overloaded|overload|capacity|перегруж)/iu.test(message)) {
+    return false;
+  }
+  return [400, 408, 409, 425, 429, 500, 502, 503, 504].includes(Number(status) || 0);
 }
 
 function normalizedGonkaModelName(model) {
