@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.87";
+const agentVersion = "0.4.88";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -80,7 +80,9 @@ const codexGonkaUpstreamBaseUrl = safeHttpApiBaseUrl(
   || process.env.JOIN_GONKA_BASE_URL
   || "https://gate.joingonka.ai/v1"
 );
-const codexGonkaDefaultModel = "MiniMaxAI/MiniMax-M2.7";
+const codexGonkaDefaultModel = "moonshotai/Kimi-K2.6";
+const codexGonkaKimiModel = "moonshotai/Kimi-K2.6";
+const codexGonkaFallbackDefaultModel = "MiniMaxAI/MiniMax-M2.7";
 const codexGonkaModel = safeCodexModelId(
   process.env.SOTY_CODEX_MODEL
   || process.env.SOTY_GONKA_MODEL
@@ -90,7 +92,7 @@ const codexGonkaModel = safeCodexModelId(
 const codexGonkaFallbackModel = safeCodexModelId(
   process.env.SOTY_GONKA_FALLBACK_MODEL
   || process.env.SOTY_CODEX_FALLBACK_MODEL
-  || codexGonkaDefaultModel
+  || codexGonkaFallbackDefaultModel
 );
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
@@ -7347,6 +7349,7 @@ function gonkaResponseModel(payloadModel = "") {
 function gonkaAdvertisedModels() {
   return [...new Set([
     gonkaPrimaryModel(),
+    codexGonkaKimiModel,
     codexGonkaFallbackModel,
     codexGonkaDefaultModel
   ].map(safeCodexModelId).filter(Boolean))];
@@ -7354,19 +7357,33 @@ function gonkaAdvertisedModels() {
 
 function gonkaUpstreamModel(payloadModel = "") {
   const requested = gonkaResponseModel(payloadModel);
+  if (shouldUseGonkaKimiModel(requested)) {
+    return codexGonkaKimiModel;
+  }
   if (codexGonkaFallbackModel && shouldUseGonkaFallbackModel(requested)) {
     return codexGonkaFallbackModel;
   }
   return requested || codexGonkaFallbackModel || codexGonkaDefaultModel;
 }
 
-function shouldUseGonkaFallbackModel(model) {
-  const normalized = String(model || "")
+function normalizedGonkaModelName(model) {
+  return String(model || "")
     .trim()
-    .replace(/^moonshotai\//iu, "")
-    .replace(/^MoonshotAI\//u, "");
-  return /^Kimi[-_.]?K2\.6(?:[-_.]?(?:Online|Thinking|Preview))?$/iu.test(normalized)
-    || /^kimi[-_.]?k2\.6(?:[-_.]?(?:online|thinking|preview))?$/iu.test(normalized);
+    .replace(/^moonshotai\//iu, "");
+}
+
+function shouldUseGonkaKimiModel(model) {
+  const normalized = normalizedGonkaModelName(model);
+  return /^Kimi[-_.]?K2\.6$/iu.test(normalized)
+    || /^Kimi[-_.]?K2\.6[-_.]?Online$/iu.test(normalized);
+}
+
+function shouldUseGonkaFallbackModel(model) {
+  const normalized = normalizedGonkaModelName(model);
+  if (/^Kimi[-_.]?K2\.6(?:[-_.]?Online)?$/iu.test(normalized)) {
+    return false;
+  }
+  return /^Kimi[-_.]?K2\.6[-_.]?(?:Thinking|Preview)$/iu.test(normalized);
 }
 
 function firstNonEmptyEnv(names) {
