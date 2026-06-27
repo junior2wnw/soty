@@ -1,9 +1,9 @@
 {
-  "version": "0.4.89",
+  "version": "0.4.90",
   "schema": "soty.agent.release.v2",
   "architecture": "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "03ef9d4224075e813ef2946aa6a88301ad7b64fd055075e75fb5c5d04707ad5e",
+  "sha256": "df09eb927f7042bae1e98287a95b6723b7bdde691a5578efe934d6c9f5baf650",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "centralResolver": "stock-codex-cli",

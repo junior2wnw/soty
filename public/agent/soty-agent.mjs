@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.89";
+const agentVersion = "0.4.90";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -94,6 +94,7 @@ const codexGonkaFallbackModel = safeCodexModelId(
   || process.env.SOTY_CODEX_FALLBACK_MODEL
   || codexGonkaFallbackDefaultModel
 );
+const codexGonkaRequestTimeoutMs = safeDurationMs(process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS, 30_000, 180_000);
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
 const codexGonkaAdapterHeuristics = process.env.SOTY_GONKA_ADAPTER_HEURISTICS === "1";
@@ -669,7 +670,20 @@ async function handleGonkaResponsesProxy(request, response, headers) {
   try {
     upstreamResult = await fetchGonkaChatCompletion(payload, apiKey);
   } catch (error) {
-    sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
+    if (shouldRetryGonkaFallbackTransport(gonkaUpstreamModel(payload?.model), error)) {
+      try {
+        upstreamResult = await fetchGonkaChatCompletion(payload, apiKey, codexGonkaFallbackModel);
+      } catch (fallbackError) {
+        sendGonkaAdapterErrorSse(response, headers, 502, fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
+        return;
+      }
+    } else {
+      sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
+      return;
+    }
+  }
+  if (!upstreamResult?.response) {
+    sendGonkaAdapterErrorSse(response, headers, 502, "Gonka request failed");
     return;
   }
   let upstream = upstreamResult.response;
@@ -741,17 +755,29 @@ function bearerTokenFromRequest(request) {
 async function fetchGonkaChatCompletion(payload, apiKey, modelOverride = "") {
   const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
   const body = gonkaChatCompletionPayload(payload, modelOverride);
-  const response = await fetch(upstreamUrl, {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  return { response, model: body.model };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), codexGonkaRequestTimeoutMs);
+  try {
+    const response = await fetch(upstreamUrl, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    return { response, model: body.model };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Gonka request timed out after ${codexGonkaRequestTimeoutMs}ms for ${body.model}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function gonkaChatCompletionPayload(payload, modelOverride = "") {
@@ -7425,6 +7451,15 @@ function shouldRetryGonkaFallback(model, status, text) {
     return false;
   }
   return [400, 408, 409, 425, 429, 500, 502, 503, 504].includes(Number(status) || 0);
+}
+
+function shouldRetryGonkaFallbackTransport(model, error) {
+  const fallback = safeCodexModelId(codexGonkaFallbackModel);
+  const current = safeCodexModelId(model);
+  if (!fallback || !current || current.toLowerCase() === fallback.toLowerCase()) {
+    return false;
+  }
+  return /(?:timeout|timed out|abort|fetch failed|network|socket|stream disconnected|disconnect|econnreset|etimedout)/iu.test(String(error?.message || error || ""));
 }
 
 function normalizedGonkaModelName(model) {
