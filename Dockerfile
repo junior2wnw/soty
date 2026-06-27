@@ -1,7 +1,9 @@
 FROM node:24-trixie-slim AS build
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN corepack enable && corepack prepare pnpm@10.30.0 --activate && pnpm install --frozen-lockfile
+RUN corepack enable \
+  && corepack prepare pnpm@10.30.0 --activate \
+  && PNPM_CONFIG_DANGEROUSLY_ALLOW_ALL_BUILDS=true pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm run build
 RUN pnpm prune --prod
