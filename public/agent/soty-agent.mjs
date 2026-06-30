@@ -8283,8 +8283,7 @@ async function runGonkaDirectSotySessionTurn({
       toolCalls: toolCalls.length
     });
     if (toolCalls.length === 0) {
-      finalText = assistantText;
-      if (!finalText && needsComputer && terminal.length === 0) {
+      if (needsComputer && terminal.length === 0) {
         const inferred = await runInferredGonkaDirectComputerAction({ text, taskFamily, jobDir, childEnv, trace, signal });
         if (inferred) {
           terminal.push(inferred.terminal);
@@ -8293,6 +8292,9 @@ async function runGonkaDirectSotySessionTurn({
             || inferred.userText;
           exitCode = inferred.exitCode;
         }
+      }
+      if (!finalText) {
+        finalText = assistantText;
       }
       break;
     }
