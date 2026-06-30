@@ -61,7 +61,7 @@ const openAiToolPlane = buildOpenAiToolPlane();
 const manifest = {
   version,
   schema: "soty.agent.release.v2",
-  architecture: "stock-codex-cli-central-solver+provider-transport+soty-mcp-computer+memory-plane",
+  architecture: "gonka-direct-chat-completions+computer-tools+memory-plane",
   agentUrl: "/agent/soty-agent.mjs",
   sha256: sha256(sourceText),
   openAiToolPlane,
@@ -170,17 +170,9 @@ async function publishWindowsReinstallScripts() {
 function buildOpenAiToolPlane() {
   return {
     schema: "openai.responses-tools+mcp.v1",
-    centralResolver: "stock-codex-cli",
+    centralResolver: "gonka-direct-chat-completions",
     builtInTools: ["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"],
-    codexCliFeatureFlags: [
-      "image_generation",
-      "tool_search",
-      "computer_use",
-      "browser_use",
-      "shell_tool",
-      "shell_snapshot",
-      "workspace_dependencies"
-    ],
+    codexCliFeatureFlags: [],
     webSearch: "native --search or computer.operation=web fallback",
     mcp: {
       server: "soty",
@@ -189,9 +181,11 @@ function buildOpenAiToolPlane() {
       legacyAliasesHidden: true
     },
     providerAdapter: {
-      role: "model-provider-transport",
+      role: "direct-agent-transport",
       syntheticToolCallsDefault: false,
-      directComputerRecoveryDefault: false
+      directComputerRecoveryDefault: false,
+      directAgentDefault: true,
+      codexCliBypassedDefault: true
     },
     rule: "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
   };
@@ -301,9 +295,9 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
   const openAiToolPlane = buildOpenAiToolPlane();
   return {
     schema: "soty.automation-toolkits.v2",
-    architecture: "stock-codex-cli-central-solver+openai-built-in-tools+soty-mcp-computer",
+    architecture: "gonka-direct-chat-completions+computer-use-plane",
     policy: {
-      centralResolver: "stock-codex-cli",
+      centralResolver: "gonka-direct-chat-completions",
       entrypoint: "computer",
       legacyEntrypoint: "soty_computer",
       route: "computer-use-plane-with-memory-hints",

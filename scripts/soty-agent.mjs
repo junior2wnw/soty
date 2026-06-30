@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.90";
+const agentVersion = "0.4.91";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -98,6 +98,9 @@ const codexGonkaRequestTimeoutMs = safeDurationMs(process.env.SOTY_GONKA_REQUEST
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
 const codexGonkaAdapterHeuristics = process.env.SOTY_GONKA_ADAPTER_HEURISTICS === "1";
+const gonkaDirectAgent = codexUsesGonka && process.env.SOTY_GONKA_DIRECT_AGENT !== "0";
+const gonkaDirectMaxToolTurns = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_GONKA_DIRECT_MAX_TOOL_TURNS || "4", 10) || 4, 8));
+const gonkaDirectToolResultChars = safeAgentLimit(process.env.SOTY_GONKA_DIRECT_TOOL_RESULT_CHARS, 6000, 32_000);
 const codexDirectComputerRecovery = process.env.SOTY_CODEX_DIRECT_COMPUTER_RECOVERY === "1";
 const codexNativeWebSearch = codexUsesGonka
   ? process.env.SOTY_CODEX_WEB_SEARCH === "1"
@@ -1630,8 +1633,8 @@ function gonkaAdapterCodexInstructions(value) {
 
 function gonkaAdapterSystemInstruction() {
   return [
-    "Soty Codex is using a local Responses-to-Chat adapter only as Gonka AI model-provider transport.",
-    "Codex CLI remains the central solver; the adapter must not invent user actions or synthetic tool calls unless explicit diagnostics flags enable that legacy recovery path.",
+    "Soty uses Gonka AI Chat Completions as the direct model transport for the computer agent by default.",
+    "The legacy Responses-to-Chat adapter is only a compatibility fallback; it must not invent user actions or synthetic tool calls unless explicit diagnostics flags enable that recovery path.",
     "MCP and Responses tools are compacted to ordinary function tools when this adapter receives them. If the `computer` tool is present, use it for selected-computer work instead of merely promising future action.",
     `If the user's computer must be controlled and no direct computer function tool is available, use shell_command/exec_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
     "Useful local routes: GET /operator/targets, GET /operator/source-status, GET /operator/toolkits, POST /operator/run, POST /operator/script, POST /operator/action, GET /operator/action/<jobId>.",
@@ -5570,8 +5573,35 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       localCodexDisabled,
       codexBrain: canRunCodexBrain(),
       codexProbe: hasCodexBinary(),
+      gonkaDirectAgent,
       relayFallback: codexRelayFallback
     });
+    if (gonkaDirectAgent) {
+      const childEnv = withAgentToolPath(cleanChildProcessEnv({
+        ...codexNetworkProxyEnv(),
+        ...codexProviderEnv()
+      }));
+      traceStep(trace, "gonka.direct.ready", {
+        provider: codexProviderName(),
+        model: gonkaPrimaryModel(),
+        upstreamModel: gonkaUpstreamModel(gonkaPrimaryModel()),
+        fallbackModel: codexGonkaFallbackModel,
+        codexCli: "bypassed"
+      });
+      const direct = await runCodexSotySessionTurn({
+        codexBin: "",
+        childEnv,
+        text,
+        context,
+        source,
+        onMessage,
+        onTerminal,
+        trace,
+        signal
+      });
+      await finishAgentTrace(trace, direct);
+      return withTraceId(direct, trace);
+    }
     const codexBin = hasCodexBinary() ? findCodexBinary() : "";
     if (!codexBin) {
       traceStep(trace, "codex.missing", { codexDisabled, localCodexDisabled, codexBrain: canRunCodexBrain(), relayFallback: codexRelayFallback });
@@ -5910,6 +5940,32 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   await traceWriteJson(trace, "runtime-context.json", runtimeContext);
   if (agentTraceFullPrompt) {
     await traceWriteText(trace, "prompt.txt", prompt, maxAgentRuntimePromptChars + 2000);
+  }
+  if (gonkaDirectAgent) {
+    const direct = await runGonkaDirectSotySessionTurn({
+      text,
+      context,
+      runtimeContext,
+      taskFamily,
+      target,
+      jobDir,
+      childEnv,
+      onMessage,
+      onTerminal,
+      trace,
+      signal,
+      startedAt,
+      learningContext
+    });
+    await traceWriteText(trace, "last-message.txt", direct.text || "", maxChatChars + 2000);
+    traceRouting(trace, {
+      finalRoute: "gonka.direct",
+      taskFamily,
+      targetId: target?.id || "",
+      targetLabel: target?.label || "",
+      codexCli: "bypassed"
+    });
+    return direct;
   }
   const activeTurn = activeTargetTurnKey
     ? {
@@ -7566,7 +7622,9 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   const sourceDeviceId = promptInline(runtime?.target?.sourceDeviceId || runtime?.source?.deviceId || "");
   const sourceRelayId = promptInline(runtime?.source?.sourceRelayId || "");
   return [
-    "- Gonka model-provider transport: Codex remains the central solver. When Codex presents the `computer` function tool, use it for selected-computer work instead of only describing a plan.",
+    gonkaDirectAgent
+      ? "- Gonka direct agent: Gonka is the central solver and the Soty `computer` function is the selected-computer action gateway. Use it instead of only describing a plan."
+      : "- Legacy Gonka adapter path: if explicitly enabled, the compatibility runner must use the `computer` function tool for selected-computer work instead of only describing a plan.",
     "- The `computer` tool is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
     "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
@@ -8137,6 +8195,471 @@ function parseJsonMaybe(value) {
   } catch {
     return null;
   }
+}
+
+async function runGonkaDirectSotySessionTurn({
+  text,
+  context = "",
+  runtimeContext = {},
+  taskFamily = "generic",
+  target = null,
+  jobDir = process.cwd(),
+  childEnv = process.env,
+  onMessage = null,
+  onTerminal = null,
+  trace = null,
+  signal = null,
+  startedAt = Date.now(),
+  learningContext = {}
+} = {}) {
+  if (signal?.aborted) {
+    return { ok: false, text: "! cancelled", exitCode: 130 };
+  }
+  const apiKey = codexGonkaApiKey();
+  if (!apiKey) {
+    return { ok: false, text: "! gonka: API key is not configured", exitCode: 126 };
+  }
+  const needsComputer = directGonkaTaskNeedsComputerTool(taskFamily, target, text);
+  const messages = [
+    { role: "system", content: buildGonkaDirectSystemPrompt(runtimeContext, taskFamily, target) },
+    { role: "user", content: buildGonkaDirectUserPrompt(text, context, runtimeContext, taskFamily, target) }
+  ];
+  const terminal = [];
+  const toolResults = [];
+  let finalText = "";
+  let exitCode = 0;
+  let usedModel = gonkaUpstreamModel(gonkaPrimaryModel());
+  traceRouting(trace, {
+    route: "gonka.direct",
+    taskFamily,
+    targetId: target?.id || "",
+    targetLabel: target?.label || "",
+    model: gonkaPrimaryModel(),
+    upstreamModel: usedModel,
+    codexCli: "bypassed"
+  });
+  await traceWriteJson(trace, "gonka-direct-request.json", {
+    model: gonkaPrimaryModel(),
+    upstreamModel: usedModel,
+    taskFamily,
+    targetId: target?.id || "",
+    needsComputer,
+    maxToolTurns: gonkaDirectMaxToolTurns,
+    toolResultChars: gonkaDirectToolResultChars
+  });
+  for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
+    if (signal?.aborted) {
+      return { ok: false, text: "! cancelled", ...(terminal.length > 0 ? { terminal } : {}), exitCode: 130 };
+    }
+    const response = await fetchGonkaDirectChatWithFallback({
+      model: gonkaPrimaryModel(),
+      messages,
+      tools: [gonkaComputerChatTool()],
+      tool_choice: needsComputer && turn === 0 ? "auto" : "auto"
+    }, apiKey, trace);
+    usedModel = response.model || usedModel;
+    if (!response.ok) {
+      const failureText = agentFailureText(response.error || "Gonka request failed");
+      recordLearningReceipt({
+        kind: "gonka-direct-turn",
+        family: taskFamily,
+        result: "failed",
+        route: "gonka.direct",
+        taskSig: taskSignature(text),
+        proof: `status=${response.status || 0}; model=${cleanProofToken(usedModel)}; error=${cleanProofToken(response.error || "")}`,
+        exitCode: response.status || 1,
+        durationMs: Date.now() - startedAt,
+        ...learningContext
+      });
+      return { ok: false, text: failureText, ...(terminal.length > 0 ? { terminal } : {}), exitCode: response.status || 1 };
+    }
+    const message = response.message || {};
+    const assistantText = cleanAgentChatReply(stripGonkaScratchpad(message.content || ""));
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls.filter((call) => safeChatToolName(call?.function?.name) === "computer") : [];
+    traceStep(trace, "gonka.direct.model", {
+      turn,
+      model: usedModel,
+      textChars: assistantText.length,
+      toolCalls: toolCalls.length
+    });
+    if (toolCalls.length === 0) {
+      finalText = assistantText;
+      if (!finalText && needsComputer && terminal.length === 0) {
+        const inferred = await runInferredGonkaDirectComputerAction({ text, taskFamily, jobDir, childEnv, trace, signal });
+        if (inferred) {
+          terminal.push(inferred.terminal);
+          toolResults.push(inferred.toolText);
+          finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
+            || inferred.userText;
+          exitCode = inferred.exitCode;
+        }
+      }
+      break;
+    }
+    const normalizedToolCalls = toolCalls.map((call) => ({
+      ...call,
+      id: String(call.id || `call_${randomUUID().replace(/-/gu, "")}`).slice(0, 80),
+      function: {
+        ...call.function,
+        name: "computer",
+        arguments: String(call?.function?.arguments || "{}")
+      }
+    }));
+    messages.push({
+      role: "assistant",
+      content: assistantText || "",
+      tool_calls: normalizedToolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: {
+          name: "computer",
+          arguments: call.function.arguments
+        }
+      }))
+    });
+    for (const call of normalizedToolCalls) {
+      const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
+      terminal.push(executed.terminal);
+      toolResults.push(executed.toolText);
+      exitCode = executed.exitCode || exitCode;
+      if (typeof onTerminal === "function") {
+        onTerminal(executed.terminal.text);
+      }
+      messages.push({
+        role: "tool",
+        tool_call_id: call.id || executed.callId,
+        name: "computer",
+        content: executed.modelText
+      });
+    }
+  }
+  if (!finalText && toolResults.length > 0) {
+    finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
+      || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
+      || "Готово.";
+  }
+  if (!finalText) {
+    finalText = "! gonka: model did not produce a final answer";
+    exitCode = exitCode || 125;
+  }
+  finalText = cleanAgentChatReply(finalText).slice(0, maxChatChars);
+  if (finalText && !finalText.startsWith("!")) {
+    if (typeof onMessage === "function") {
+      onMessage(finalText);
+    }
+    recordLearningReceipt({
+      kind: "gonka-direct-turn",
+      family: taskFamily,
+      result: exitCode === 0 ? "succeeded" : "partial",
+      route: "gonka.direct",
+      taskSig: taskSignature(text),
+      proof: `exitCode=${exitCode}; model=${cleanProofToken(usedModel)}; toolCalls=${terminal.length}; finalChars=${finalText.length}`,
+      exitCode,
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
+    return {
+      ok: exitCode === 0,
+      text: finalText,
+      messages: [finalText],
+      ...(terminal.length > 0 ? { terminal } : {}),
+      exitCode
+    };
+  }
+  recordLearningReceipt({
+    kind: "gonka-direct-turn",
+    family: taskFamily,
+    result: "failed",
+    route: "gonka.direct",
+    taskSig: taskSignature(text),
+    proof: `exitCode=${exitCode || 1}; model=${cleanProofToken(usedModel)}; toolCalls=${terminal.length}; finalFailure=true`,
+    exitCode: exitCode || 1,
+    durationMs: Date.now() - startedAt,
+    ...learningContext
+  });
+  return {
+    ok: false,
+    text: finalText,
+    ...(terminal.length > 0 ? { terminal } : {}),
+    exitCode: exitCode || 1
+  };
+}
+
+function buildGonkaDirectSystemPrompt(runtimeContext = {}, taskFamily = "generic", target = null) {
+  const memory = String(runtimeContext.memory || "").slice(0, 3000);
+  const targetLine = target?.id
+    ? `Selected computer: ${target.label || "source"} (${target.id}).`
+    : "No selected computer is attached unless the user only needs conversation.";
+  return [
+    "You are Агент, the Soty computer agent.",
+    "You are running directly on Gonka Chat Completions. Codex CLI is not in this execution path.",
+    "Use the `computer` function for any task that needs the selected user's computer, files, browser, desktop, web fallback, audio, system state, or actions.",
+    "After a tool result, finish with a short useful answer in the user's language. Do not expose internal transport, relay, worker, MCP, Codex, or tool-loop details.",
+    "If a command/action succeeded, summarize the verified outcome. If it failed, repair once when obvious; otherwise state the concrete blocker.",
+    "For routine system checks, prefer compact scripts/results over broad inventories. Ask the user only for credentials, final destructive confirmation, or physical action.",
+    targetLine,
+    `Task family: ${taskFamily || "generic"}.`,
+    memory ? `Memory hints:\n${memory}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function buildGonkaDirectUserPrompt(text, context = "", runtimeContext = {}, taskFamily = "generic", target = null) {
+  return [
+    "Current user request (authoritative):",
+    String(text || "").trim(),
+    "",
+    `task_family: ${taskFamily || "generic"}`,
+    target?.id ? `target: ${target.label || "source"} (${target.id})` : "target: none",
+    runtimeContext?.source?.deviceNick ? `source_device: ${runtimeContext.source.deviceNick}` : "",
+    context ? `Visible chat context:\n${String(context).slice(-4000)}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function directGonkaTaskNeedsComputerTool(taskFamily, target = null, text = "") {
+  if (!target?.id) {
+    return false;
+  }
+  const family = cleanActionToken(taskFamily, "");
+  if (codexTaskNeedsSotyMcpTools(family, target)) {
+    return true;
+  }
+  return computerActionRequiresProof(family, text);
+}
+
+async function fetchGonkaDirectChatWithFallback(body, apiKey, trace = null) {
+  const primary = await fetchGonkaDirectChatBody(body, apiKey).catch((error) => ({
+    ok: false,
+    status: 0,
+    model: safeCodexModelId(body?.model),
+    error: error instanceof Error ? error.message : String(error)
+  }));
+  if (primary.ok || !codexGonkaFallbackModel) {
+    return primary;
+  }
+  const shouldFallback = primary.status === 0
+    ? shouldRetryGonkaFallbackTransport(primary.model, new Error(primary.error || "Gonka request failed"))
+    : shouldRetryGonkaFallback(primary.model, primary.status, primary.error || "");
+  if (!shouldFallback) {
+    return primary;
+  }
+  traceStep(trace, "gonka.direct.fallback-model", {
+    from: primary.model || "",
+    to: codexGonkaFallbackModel,
+    status: primary.status || 0,
+    error: String(primary.error || "").slice(0, 300)
+  });
+  return await fetchGonkaDirectChatBody({ ...body, model: codexGonkaFallbackModel }, apiKey).catch((error) => ({
+    ok: false,
+    status: 0,
+    model: codexGonkaFallbackModel,
+    error: error instanceof Error ? error.message : String(error)
+  }));
+}
+
+async function fetchGonkaDirectChatBody(body, apiKey) {
+  const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
+  const requestBody = {
+    ...body,
+    model: gonkaUpstreamModel(body?.model || gonkaPrimaryModel()),
+    stream: false
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), codexGonkaRequestTimeoutMs);
+  try {
+    const response = await fetch(upstreamUrl, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
+    }
+    if (!response.ok || data?.error) {
+      return {
+        ok: false,
+        status: response.status,
+        model: requestBody.model,
+        error: String(data?.error?.message || data?.message || text || response.statusText || "Gonka request failed").slice(0, 2000)
+      };
+    }
+    const choice = Array.isArray(data?.choices) ? data.choices[0] : null;
+    return {
+      ok: true,
+      status: response.status,
+      model: requestBody.model,
+      message: choice?.message || {},
+      usage: data?.usage || null
+    };
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Gonka request timed out after ${codexGonkaRequestTimeoutMs}ms for ${requestBody.model}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = "", jobDir, childEnv, trace = null, signal = null } = {}) {
+  const callId = String(call?.id || `call_${randomUUID().replace(/-/gu, "")}`).slice(0, 80);
+  let argumentsText = String(call?.function?.arguments || "{}");
+  const payload = gonkaDirectSyntheticPayload(text, taskFamily);
+  argumentsText = enrichGonkaComputerToolArguments(argumentsText, payload);
+  let args = parseJsonMaybe(argumentsText);
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    args = inferGonkaComputerArguments(payload) || {};
+  }
+  args = normalizeGonkaDirectComputerArgs(args, taskFamily);
+  traceStep(trace, "gonka.direct.tool-call", {
+    callId,
+    operation: args.operation || "",
+    action: args.action || "",
+    hasScript: Boolean(args.script || args.command),
+    hasPath: Boolean(args.path),
+    hasUrl: Boolean(args.url)
+  });
+  const run = await runSimpleProcess(process.execPath, ["SOTY_LOCAL_API.mjs", "computer", JSON.stringify(args)], {
+    cwd: jobDir,
+    env: childEnv,
+    timeoutMs: Math.max(1000, Math.min(Number(args.timeoutMs) || 120000, 240000)),
+    signal
+  });
+  const modelText = compactGonkaDirectToolResult(args, run);
+  const userText = formatDirectComputerFallbackText(args, run.stdout, run.stderr)
+    || formatRecoveredOperatorText(run.stdout)
+    || formatRecoveredOperatorFailureText(run.stderr || run.stdout, run.exitCode)
+    || modelText;
+  return {
+    callId,
+    args,
+    exitCode: run.exitCode,
+    modelText,
+    toolText: `${run.stdout || ""}\n${run.stderr || ""}`.trim(),
+    userText: cleanAgentChatReply(userText).slice(0, maxChatChars),
+    terminal: {
+      key: `gonka-direct-computer-${callId}`,
+      text: `${run.stdout || ""}\n${run.stderr || ""}`.trim().slice(0, maxChatChars),
+      exitCode: run.exitCode
+    }
+  };
+}
+
+async function runInferredGonkaDirectComputerAction({ text = "", taskFamily = "", jobDir, childEnv, trace = null, signal = null } = {}) {
+  const payload = gonkaDirectSyntheticPayload(text, taskFamily);
+  const args = inferGonkaComputerArguments(payload);
+  if (!args) {
+    return null;
+  }
+  return runGonkaDirectComputerToolCall({
+    call: { id: `inferred_${randomUUID().replace(/-/gu, "")}`, function: { name: "computer", arguments: JSON.stringify(args) } },
+    text,
+    taskFamily,
+    jobDir,
+    childEnv,
+    trace,
+    signal
+  });
+}
+
+function gonkaDirectSyntheticPayload(text, taskFamily = "") {
+  return {
+    input: [{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
+    }]
+  };
+}
+
+function normalizeGonkaDirectComputerArgs(args, taskFamily = "") {
+  const out = { ...(args || {}) };
+  out.operation = normalizeGonkaComputerOperation(out.operation || out.op || out.capability || "");
+  if (!out.operation && out.script) {
+    out.operation = "script";
+  }
+  if (!out.operation) {
+    out.operation = "system-resources";
+  }
+  if (!out.maxChars) {
+    out.maxChars = Math.min(gonkaDirectToolResultChars, 8000);
+  }
+  if (!out.timeoutMs) {
+    out.timeoutMs = 90000;
+  }
+  if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
+    out.operation = "script";
+    out.action = "status";
+    out.script = driverCheckCompactPowerShell();
+    out.timeoutMs = 90000;
+  }
+  return out;
+}
+
+function compactGonkaDirectToolResult(args, run) {
+  const stdout = String(run?.stdout || "");
+  const stderr = String(run?.stderr || "");
+  const raw = `${stdout}\n${stderr}`.trim();
+  const parsed = parseJsonMaybe(stdout) || parseJsonMaybe(raw);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const compact = {
+      ok: parsed.ok !== undefined ? Boolean(parsed.ok) : run.exitCode === 0,
+      operation: args?.operation || "",
+      action: parsed.action || args?.action || "",
+      exitCode: Number.isSafeInteger(Number(parsed.exitCode)) ? Number(parsed.exitCode) : run.exitCode,
+      status: parsed.status || parsed.diagnostic?.reason || "",
+      text: String(parsed.text || parsed.output || "").slice(0, gonkaDirectToolResultChars),
+      path: parsed.path || parsed.targetPath || parsed.localPath || "",
+      url: parsed.url || parsed.sourceUrl || "",
+      bytes: parsed.bytes,
+      sha256: parsed.sha256 || parsed.artifactSha256 || "",
+      jobId: parsed.sourceJobId || parsed.jobId || parsed.diagnostic?.job?.id || ""
+    };
+    return JSON.stringify(compact);
+  }
+  return JSON.stringify({
+    ok: run.exitCode === 0,
+    operation: args?.operation || "",
+    action: args?.action || "",
+    exitCode: run.exitCode,
+    text: raw.slice(0, gonkaDirectToolResultChars)
+  });
+}
+
+async function finalTextFromGonkaDirectToolResults({ text = "", taskFamily = "", toolResults = [], trace = null, signal = null } = {}) {
+  const toolText = String(toolResults.filter(Boolean).slice(-2).join("\n\n")).slice(0, gonkaDirectToolResultChars);
+  if (!toolText) {
+    return "";
+  }
+  if (signal?.aborted) {
+    return "";
+  }
+  const polished = await polishGonkaRecoveredFinalText({ userText: text, toolText, taskFamily });
+  if (polished) {
+    traceStep(trace, "gonka.direct.polished-tool-final", { textChars: polished.length });
+    return polished;
+  }
+  return cleanActionText(formatRecoveredOperatorText(toolText) || toolText, maxChatChars);
+}
+
+function driverCheckCompactPowerShell() {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "$problemsAll = @(Get-PnpDevice | Where-Object { $_.Status -and $_.Status -ne 'OK' })",
+    "$problems = @($problemsAll | Select-Object -First 20 Status,Class,FriendlyName,InstanceId)",
+    "$classes = @('DISPLAY','MEDIA','NET','Bluetooth','HDC','SCSIAdapter')",
+    "$drivers = @(Get-CimInstance Win32_PnPSignedDriver | Where-Object { $classes -contains $_.DeviceClass } | Sort-Object DeviceName | Select-Object -First 40 DeviceName,DeviceClass,DriverVersion,Manufacturer)",
+    "[pscustomobject]@{ ok=$true; action='driver-check'; problemCount=$problemsAll.Count; problems=$problems; importantDrivers=$drivers } | ConvertTo-Json -Depth 5 -Compress"
+  ].join("\n");
 }
 
 function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = null, onTerminal = null, signal = null, options = {}) {
@@ -9920,9 +10443,13 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     ...sotyRuntimeHints(),
     ...agentResponseStylePromptLines(activeAgentResponseStyle),
     "",
-    "Codex capability policy:",
-    "- Codex CLI is the central solver and instruction follower. Soty exposes context, memory, MCP/tool gateways, and execution proof; it must not replace the model's decision loop with local heuristics.",
-    "- Optimize for the best verified outcome, not the shortest response. Use the full available Codex toolset: native search/image/computer/browser/shell/patch tools plus Soty `computer` for the selected user's device.",
+    gonkaDirectAgent ? "Gonka capability policy:" : "Codex capability policy:",
+    gonkaDirectAgent
+      ? "- Gonka is the central solver and instruction follower. Soty exposes context, memory, the `computer` gateway, and execution proof; it must not replace the model's decision loop with local heuristics."
+      : "- Legacy Codex CLI fallback is available only when explicitly enabled. Soty exposes context, memory, MCP/tool gateways, and execution proof; it must not replace the model's decision loop with local heuristics.",
+    gonkaDirectAgent
+      ? "- Optimize for the best verified outcome, not the shortest response. Use Soty `computer` for selected-device search, browser, files, shell/script, desktop, audio, jobs, and verification."
+      : "- Optimize for the best verified outcome, not the shortest response. Use the full available Codex toolset: native search/image/computer/browser/shell/patch tools plus Soty `computer` for the selected user's device.",
     "- For coding and repository work, inspect the relevant files first, preserve unrelated user changes, make focused patches, and run the narrowest useful verification before final answer.",
     "- Do not downshift effort for routine-looking code, file, script, or system tasks; simple wording can still hide complex state.",
     "",
@@ -15837,11 +16364,12 @@ function shellName() {
 }
 
 function openAiToolPlaneStatus() {
+  const direct = Boolean(gonkaDirectAgent);
   return {
     schema: "openai.responses-tools+mcp.v1",
-    centralResolver: "stock-codex-cli",
+    centralResolver: direct ? "gonka-direct-chat-completions" : "stock-codex-cli",
     builtInTools: [...openAiBuiltInTools],
-    codexCliFeatureFlags: [...codexNativeOpenAiToolFeatures],
+    codexCliFeatureFlags: direct ? [] : [...codexNativeOpenAiToolFeatures],
     webSearch: codexNativeWebSearch ? "native --search" : (codexUsesGonka ? "computer.operation=web fallback" : "disabled-by-env"),
     mcp: {
       server: "soty",
@@ -15850,9 +16378,11 @@ function openAiToolPlaneStatus() {
       legacyAliasesHidden: process.env.SOTY_MCP_EXPOSE_LEGACY_TOOLS !== "1"
     },
     gonkaAdapter: {
-      purpose: "model-provider-transport",
+      purpose: direct ? "direct-agent-transport" : "model-provider-transport",
       syntheticToolCalls: codexGonkaAdapterHeuristics,
-      directComputerRecovery: codexDirectComputerRecovery
+      directComputerRecovery: codexDirectComputerRecovery,
+      directAgent: direct,
+      codexCliBypassed: direct
     },
     rule: "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
   };
@@ -15894,6 +16424,7 @@ function agentRuntimeStatus() {
 }
 
 function runtimeHealth() {
+  const directGonka = Boolean(gonkaDirectAgent);
   return {
     managed,
     scope: agentScope,
@@ -15915,13 +16446,15 @@ function runtimeHealth() {
     codexModel: codexUsesGonka ? gonkaPrimaryModel() : "",
     codexUpstreamModel: codexUsesGonka ? gonkaUpstreamModel(gonkaPrimaryModel()) : "",
     codexFallbackModel: codexUsesGonka ? codexGonkaFallbackModel : "",
-    codexProviderAdapter: codexUsesGonka ? "gonka-chat-completions-via-local-responses-adapter" : "",
-    codexCentralResolver: canRunCodexBrain() ? "stock-codex-cli" : "server-relay-only",
-    codexAdapterRole: codexUsesGonka ? "model-provider-transport" : "native-provider",
+    codexProviderAdapter: codexUsesGonka ? (directGonka ? "gonka-direct-chat-completions" : "gonka-chat-completions-via-local-responses-adapter") : "",
+    codexCentralResolver: directGonka ? "gonka-direct-chat-completions" : (canRunCodexBrain() ? "stock-codex-cli" : "server-relay-only"),
+    codexAdapterRole: codexUsesGonka ? (directGonka ? "direct-agent-transport" : "model-provider-transport") : "native-provider",
     codexAdapterHeuristics: codexGonkaAdapterHeuristics ? "enabled" : "disabled",
     codexDirectComputerRecovery,
+    gonkaDirectAgent: directGonka,
+    codexCliBypassed: directGonka,
     codexMcpComputer: "attached-for-computer-tasks",
-    codexMode: canRunCodexBrain() ? (codexFullLocalTools ? "server-stock-cli-full-local-tools" : "server-stock-cli-bridge") : "server-relay-only",
+    codexMode: directGonka ? "server-gonka-direct-computer-tools" : (canRunCodexBrain() ? (codexFullLocalTools ? "server-stock-cli-full-local-tools" : "server-stock-cli-bridge") : "server-relay-only"),
     codexSessionMode,
     codexRuntimeContext: "clean-codex+memory-plane+computer-use-plane",
     executionPlane: runtimeExecutionPlane(),
