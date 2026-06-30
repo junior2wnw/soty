@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.100";
+const agentVersion = "0.4.101";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1041,6 +1041,7 @@ function inferGonkaComputerArguments(payload) {
   if (!args.action) {
     args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
   }
+  Object.assign(args, applyExactFileCycleArgs(args, userText || allText));
   if (args.operation === "file" && hasCreateReadDeleteFileIntent(userText || allText) && args.path && args.content !== undefined) {
     args.action = "cycle";
   }
@@ -1301,6 +1302,29 @@ function applyCriticalDestructiveSafety(args, text) {
     return args;
   }
   return safetyComputerArgs();
+}
+
+function applyExactFileCycleArgs(args, text) {
+  if (!hasCreateReadDeleteFileIntent(text)) {
+    return args;
+  }
+  const exactPath = inferMentionedFileName(text);
+  const exactContent = inferStrictInlineFileContent(text) || inferQuotedContent(text) || inferInlineFileContent(text);
+  if (!exactPath || exactContent === "") {
+    return args;
+  }
+  const out = {
+    ...(args || {}),
+    operation: "file",
+    action: "cycle",
+    path: exactPath,
+    content: exactContent
+  };
+  delete out.script;
+  delete out.command;
+  delete out.cmd;
+  delete out.shell;
+  return out;
 }
 
 function inferStrictInlineFileContent(value) {
@@ -1909,6 +1933,7 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   if (args.operation === "safety") {
     return JSON.stringify(args);
   }
+  args = applyExactFileCycleArgs(args, userText || allText);
   const linkText = inferLinkTextFromText(userText);
   const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
   const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
@@ -8769,19 +8794,7 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
       }
     }
   }
-  if (out.operation === "file" && hasCreateReadDeleteFileIntent(text)) {
-    const exactPath = inferMentionedFileName(text);
-    const exactContent = inferStrictInlineFileContent(text) || inferInlineFileContent(text) || inferQuotedContent(text);
-    if (exactPath) {
-      out.path = exactPath;
-    }
-    if (exactContent) {
-      out.content = exactContent;
-    }
-    if (out.path && out.content !== undefined) {
-      out.action = "cycle";
-    }
-  }
+  Object.assign(out, applyExactFileCycleArgs(out, text));
   if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
     out.operation = "script";
     out.action = "status";
