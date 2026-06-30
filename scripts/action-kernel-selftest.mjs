@@ -44,7 +44,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.93");
+      assertEqual(health.body.version, "0.4.94");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1990,7 +1990,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.93");
+      assertEqual(manifest.version, "0.4.94");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "gonka-direct-chat-completions+computer-tools+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2139,7 +2139,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.93"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.94"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2204,10 +2204,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.93"'));
+      assert(agentSource.includes('const agentVersion = "0.4.94"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
+      assert(agentSource.includes("hasScreenshotIntent"));
+      assert(agentSource.includes("Resolve-ScreenshotPath"));
+      assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
+      assert(agentSource.includes("answer with the path instead of page text or raw JSON"));
       assert(ui.includes('if (message.type === "operator.terminal")'));
       assert(ui.includes("redactVisibleTerminalSecrets"));
       assert(!ui.includes("appendAgentTerminalTranscript"));
@@ -2335,14 +2339,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(sourceAgentPath, "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.93";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.94";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.93",
+            version: "0.4.94",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

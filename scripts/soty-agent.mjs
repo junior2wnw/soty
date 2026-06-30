@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.93";
+const agentVersion = "0.4.94";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1013,6 +1013,16 @@ function inferGonkaComputerArguments(payload) {
   if (!args.operation) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
   }
+  if (hasScreenshotIntent(userText || allText)) {
+    args.operation = hasBrowserPageIntent(userText || allText) ? "browser" : "desktop";
+    args.action = "screenshot";
+    if (!args.url) {
+      args.url = inferKnownBrowserUrlFromText(userText || allText);
+    }
+    if (!args.path) {
+      args.path = inferScreenshotPathFromText(userText || allText, args.operation);
+    }
+  }
   if (wallpaperIntent && !isGeneratedImageIntent(actionText || userText)) {
     args.operation = "wallpaper";
   }
@@ -1138,6 +1148,9 @@ function normalizeGonkaComputerOperation(value) {
 
 function inferGonkaComputerOperationFromText(text, family, args) {
   const lower = String(text || "").toLowerCase();
+  if (hasScreenshotIntent(lower)) {
+    return hasBrowserPageIntent(lower) ? "browser" : "desktop";
+  }
   if ((hasWallpaperIntent(lower) || /(?:wallpaper|desktop|download-image-wallpaper)/iu.test(String(family || ""))) && !isGeneratedImageIntent(lower)) {
     return "wallpaper";
   }
@@ -1176,6 +1189,9 @@ function inferGonkaComputerOperationFromText(text, family, args) {
 
 function inferGonkaComputerActionFromText(text, operation, args) {
   const lower = String(text || "").toLowerCase();
+  if (hasScreenshotIntent(lower) && (operation === "browser" || operation === "desktop")) {
+    return "screenshot";
+  }
   if (operation === "wallpaper") {
     return "wallpaper";
   }
@@ -1301,6 +1317,31 @@ function inferLinkTextFromText(text) {
   const latinBeforeNextAction = value.match(/\b([A-Z][A-Za-z0-9]+(?:\s+[A-Za-z0-9]+){0,5})\s+(?:и|and|then|после|чтобы|скажи|прочитай)(?:\s|$)/u);
   if (latinBeforeNextAction) {
     return latinBeforeNextAction[1].trim().replace(/[.,:;]+$/u, "");
+  }
+  return "";
+}
+
+function hasScreenshotIntent(value) {
+  return /(?:screenshot|screen\s*shot|capture\s+(?:the\s+)?screen|screen\s+capture|\u0441\u043a\u0440\u0438\u043d|\u0441\u043d\u0438\u043c\u043e\u043a\s+\u044d\u043a\u0440\u0430\u043d|\u0441\u0444\u043e\u0442\u043a\u0430\u0439\s+\u044d\u043a\u0440\u0430\u043d)/iu.test(String(value || ""));
+}
+
+function hasBrowserPageIntent(value) {
+  return /(?:https?:\/\/|www\.|\bbrowser\b|\bpage\b|\bsite\b|\bweb\b|\bvk\b|vk\.com|\u0432\u043a\b|\u0432\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u0435|\u0431\u0440\u0430\u0443\u0437\u0435\u0440|\u0441\u0430\u0439\u0442|\u0441\u0442\u0440\u0430\u043d\u0438\u0446)/iu.test(String(value || ""));
+}
+
+function inferKnownBrowserUrlFromText(value) {
+  const text = String(value || "");
+  if (/(?:\bvk\b|vk\.com|\u0432\u043a\b|\u0432\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u0435)/iu.test(text)) {
+    return "https://vk.com/";
+  }
+  return "";
+}
+
+function inferScreenshotPathFromText(value, operation = "browser") {
+  const text = String(value || "");
+  const extension = operation === "browser" ? "png" : "png";
+  if (/(?:\bc:\\|drive\s+c|\bdisk\s+c|\u0434\u0438\u0441\u043a\w*\s+c|\u0434\u0438\u0441\u043a\u0435\s+c)/iu.test(text)) {
+    return `C:\\Users\\Public\\Pictures\\soty-${operation || "screen"}-screenshot.${extension}`;
   }
   return "";
 }
@@ -7630,7 +7671,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: if a `computer` tool call is bridged to shell, it runs `node SOTY_LOCAL_API.mjs computer <json>`. For manual fallback prefer `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
     "- For normal file tasks, call `computer` with operation=\"file\" and action=\"write\"/\"read\"/\"delete\"/\"copy\"/\"search\"/\"cycle\". Avoid operation=\"run\" for file work unless the file tool cannot express the task.",
-    "- For browser and web tasks, use operation=\"web\"/\"search\"/\"fetch\" for internet lookup and operation=\"browser\" with action=\"open\"/\"text\"/\"click_text\"/\"type\" for live page work. Do not only describe sources when the user asked you to act.",
+    "- For browser and web tasks, use operation=\"web\"/\"search\"/\"fetch\" for internet lookup and operation=\"browser\" with action=\"open\"/\"text\"/\"click_text\"/\"type\"/\"screenshot\" for live page work. If the user asks for a screenshot, save the screenshot file and answer with the path instead of page text or raw JSON.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
     "- If a tool returns an error, repair the command or switch to the safer specialized operation and continue. Only final-answer a real blocker after the available tool path is exhausted.",
     "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
@@ -8090,7 +8131,17 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
   const wrapper = parseJsonMaybe(stdout);
   const raw = typeof wrapper?.text === "string" ? wrapper.text : String(stdout || "").trim();
   const inner = parseJsonMaybe(raw);
-  const operation = normalizeGonkaComputerOperation(args?.operation || inner?.action || "");
+  const action = String(inner?.action || args?.action || "").toLowerCase();
+  let operation = normalizeGonkaComputerOperation(args?.operation || inner?.operation || inner?.capability || "");
+  if (!operation && action === "screenshot") {
+    operation = "browser";
+  }
+  if (action === "screenshot" && inner && typeof inner === "object") {
+    const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
+    return inner.path
+      ? `\u0421\u043a\u0440\u0438\u043d\u0448\u043e\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d: ${inner.path}${bytes}.`
+      : "\u0421\u043a\u0440\u0438\u043d\u0448\u043e\u0442 \u0441\u0434\u0435\u043b\u0430\u043d.";
+  }
   if (operation === "browser" && inner && typeof inner === "object") {
     if (inner.clicked === false && args?.text) {
       return `Не смог нажать «${args.text}». Текущий заголовок: ${inner.title || "неизвестно"}.`;
@@ -8127,6 +8178,22 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
     }
   }
   return formatRecoveredOperatorText(raw) || formatRecoveredOperatorFailureText(stderr, Number(wrapper?.exitCode));
+}
+
+function recoverRawDirectComputerJsonFinal(finalText) {
+  const text = String(finalText || "").trim();
+  if (!text || !/^[{[]/u.test(text)) {
+    return "";
+  }
+  const parsed = parseJsonMaybe(text);
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+  const formatted = formatDirectComputerFallbackText({}, text, "");
+  if (!formatted || formatted.trim() === text || /^[{[]/u.test(formatted.trim())) {
+    return "";
+  }
+  return cleanActionText(formatted, maxChatChars);
 }
 
 function shouldRecoverProoflessComputerAction({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
@@ -8345,6 +8412,9 @@ async function runGonkaDirectSotySessionTurn({
     exitCode = exitCode || 125;
   }
   finalText = cleanAgentChatReply(finalText).slice(0, maxChatChars);
+  if (toolResults.length > 0) {
+    finalText = recoverRawDirectComputerJsonFinal(finalText) || finalText;
+  }
   if (finalText && !finalText.startsWith("!")) {
     if (typeof onMessage === "function") {
       onMessage(finalText);
@@ -8521,7 +8591,7 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     args = inferGonkaComputerArguments(payload) || {};
   }
-  args = normalizeGonkaDirectComputerArgs(args, taskFamily);
+  args = normalizeGonkaDirectComputerArgs(args, taskFamily, text);
   traceStep(trace, "gonka.direct.tool-call", {
     callId,
     operation: args.operation || "",
@@ -8583,7 +8653,7 @@ function gonkaDirectSyntheticPayload(text, taskFamily = "") {
   };
 }
 
-function normalizeGonkaDirectComputerArgs(args, taskFamily = "") {
+function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   const out = { ...(args || {}) };
   out.operation = normalizeGonkaComputerOperation(out.operation || out.op || out.capability || "");
   if (!out.operation && out.script) {
@@ -8597,6 +8667,20 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "") {
   }
   if (!out.timeoutMs) {
     out.timeoutMs = 90000;
+  }
+  if (hasScreenshotIntent(text)) {
+    if (!out.operation || out.operation === "web" || out.operation === "open-url" || out.operation === "system-resources") {
+      out.operation = hasBrowserPageIntent(text) ? "browser" : "desktop";
+    }
+    if (out.operation === "browser" || out.operation === "desktop") {
+      out.action = "screenshot";
+      if (!out.url && out.operation === "browser") {
+        out.url = inferKnownBrowserUrlFromText(text);
+      }
+      if (!out.path) {
+        out.path = inferScreenshotPathFromText(text, out.operation);
+      }
+    }
   }
   if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
     out.operation = "script";
@@ -10078,13 +10162,16 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n$raw = [string]$req.path\\nif ([string]::IsNullOrWhiteSpace($raw)) { throw 'computer file requires path' }\\n$raw = [Environment]::ExpandEnvironmentVariables($raw.Trim())\\n$raw = $raw.Replace('$' + '{env:USERPROFILE}', $env:USERPROFILE).Replace('$env:USERPROFILE', $env:USERPROFILE).Replace('$HOME', $HOME)\\n$desktopRoot = [Environment]::GetFolderPath('Desktop')\\nif ([IO.Path]::IsPathRooted($raw)) { $path = $raw } else { $path = Join-Path $desktopRoot $raw }\\n$action = ([string]$req.action).ToLowerInvariant()\\nif (-not $action) { $action = 'stat' }\\nif ($action -eq 'write' -or $action -eq 'append' -or $action -eq 'cycle') { $parent = Split-Path -Parent $path; if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null } }\\nswitch ($action) {\\n  'cycle' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; $text = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim(); if ($text -ne ([string]$req.content)) { throw 'verify-failed' }; Remove-Item -LiteralPath $path -Force; if (Test-Path -LiteralPath $path) { throw 'delete-failed' }; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text; deleted=$true } | ConvertTo-Json -Compress; return }\\n  'write' { Set-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'append' { Add-Content -LiteralPath $path -Value ([string]$req.content) -Encoding UTF8; break }\\n  'delete' { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }; break }\\n  'read' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $text = Get-Content -LiteralPath $path -Raw -ErrorAction Stop; [pscustomobject]@{ ok=$true; action=$action; path=$path; text=$text } | ConvertTo-Json -Compress; return }\\n  'list' { if (-not (Test-Path -LiteralPath $path)) { throw 'missing ' + $path }; $items = Get-ChildItem -LiteralPath $path -Force | Select-Object Name,FullName,Length,Mode,LastWriteTime; [pscustomobject]@{ ok=$true; action=$action; path=$path; items=$items } | ConvertTo-Json -Depth 4 -Compress; return }\\n  'stat' { }\\n  default { throw 'unsupported file action: ' + $action }\\n}\\n$exists = Test-Path -LiteralPath $path\\n$item = if ($exists) { Get-Item -LiteralPath $path -Force } else { $null }\\n[pscustomobject]@{ ok=$true; action=$action; path=$path; exists=$exists; length=if($item){$item.Length}else{$null}; mode=if($item){$item.Mode}else{$null}; lastWriteTime=if($item){$item.LastWriteTime}else{$null} } | ConvertTo-Json -Compress`;",
     "}",
     "function browserPowerShell(req) {",
-    "  const encoded = Buffer.from(JSON.stringify({ url: String(req.url || ''), text: String(req.text || req.linkText || req.selector || ''), maxChars: Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000)) }), 'utf8').toString('base64');",
+    "  const encoded = Buffer.from(JSON.stringify({ action: String(req.action || '').slice(0, 40), url: String(req.url || ''), text: String(req.text || req.linkText || req.selector || ''), path: String(req.path || req.targetPath || ''), maxChars: Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000)) }), 'utf8').toString('base64');",
     "  return [",
     "    \"$ErrorActionPreference = 'Stop'\",",
     "    \"Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes\",",
+    "    \"Add-Type -AssemblyName System.Windows.Forms,System.Drawing\",",
     "    `$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,",
+    "    \"$action = ([string]$req.action).Trim().ToLowerInvariant()\",",
     "    \"$url = [string]$req.url\",",
     "    \"$needle = ([string]$req.text).Trim()\",",
+    "    \"$requestedPath = ([string]$req.path).Trim()\",",
     "    \"$maxChars = [Math]::Max(1000, [Math]::Min([int]$req.maxChars, 12000))\",",
     "    \"if ($url) { Start-Process $url; Start-Sleep -Seconds 3 }\",",
     "    \"$root = [System.Windows.Automation.AutomationElement]::RootElement\",",
@@ -10099,6 +10186,33 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"}\",",
     "    \"$chrome = Get-ChromeWindow\",",
     "    \"if (-not $chrome) { throw 'chrome window not found' }\",",
+    "    \"function Resolve-ScreenshotPath([string]$raw) {\",",
+    "    \"  $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()\",",
+    "    \"  if ([string]::IsNullOrWhiteSpace($raw)) { $dir = Join-Path $env:TEMP 'soty-browser'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; return (Join-Path $dir ('screenshot-' + $stamp + '.png')) }\",",
+    "    \"  $expanded = [Environment]::ExpandEnvironmentVariables($raw.Trim())\",",
+    "    \"  if ($expanded -match '^[A-Za-z]:\\\\?$') { $expanded = (Join-Path ($expanded.TrimEnd('\\\\') + '\\\\') ('soty-browser-screenshot-' + $stamp + '.png')) }\",",
+    "    \"  elseif (-not [IO.Path]::IsPathRooted($expanded)) { $dir = Join-Path $env:TEMP 'soty-browser'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $expanded = Join-Path $dir $expanded }\",",
+    "    \"  elseif ([string]::IsNullOrWhiteSpace([IO.Path]::GetExtension($expanded))) { $expanded = Join-Path $expanded ('soty-browser-screenshot-' + $stamp + '.png') }\",",
+    "    \"  $parent = Split-Path -Parent $expanded\",",
+    "    \"  if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\",",
+    "    \"  return $expanded\",",
+    "    \"}\",",
+    "    \"if ($action -eq 'screenshot') {\",",
+    "    \"  $title = ([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', ''\",",
+    "    \"  $rect = $chrome.Current.BoundingRectangle\",",
+    "    \"  if ($rect.Width -lt 1 -or $rect.Height -lt 1) { throw 'chrome window has empty bounds' }\",",
+    "    \"  $width = [Math]::Max(1, [int][Math]::Round($rect.Width))\",",
+    "    \"  $height = [Math]::Max(1, [int][Math]::Round($rect.Height))\",",
+    "    \"  $bmp = New-Object System.Drawing.Bitmap $width, $height\",",
+    "    \"  $graphics = [System.Drawing.Graphics]::FromImage($bmp)\",",
+    "    \"  $graphics.CopyFromScreen([int][Math]::Round($rect.X), [int][Math]::Round($rect.Y), 0, 0, (New-Object System.Drawing.Size($width, $height)))\",",
+    "    \"  $path = Resolve-ScreenshotPath $requestedPath\",",
+    "    \"  $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)\",",
+    "    \"  $graphics.Dispose(); $bmp.Dispose()\",",
+    "    \"  $item = Get-Item -LiteralPath $path -Force\",",
+    "    \"  [pscustomobject]@{ ok=$true; action='screenshot'; url=$url; title=$title; path=$item.FullName; bytes=[int64]$item.Length; width=$width; height=$height } | ConvertTo-Json -Compress\",",
+    "    \"  return\",",
+    "    \"}\",",
     "    \"$clicked = $false\",",
     "    \"$titleBeforeClick = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '')\",",
     "    \"if ($needle) {\",",
