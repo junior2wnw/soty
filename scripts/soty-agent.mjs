@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.92";
+const agentVersion = "0.4.93";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -8323,7 +8323,7 @@ async function runGonkaDirectSotySessionTurn({
       const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
       terminal.push(executed.terminal);
       toolResults.push(executed.toolText);
-      exitCode = executed.exitCode || exitCode;
+      exitCode = Number.isFinite(executed.exitCode) ? executed.exitCode : exitCode;
       if (typeof onTerminal === "function") {
         onTerminal(executed.terminal.text);
       }
