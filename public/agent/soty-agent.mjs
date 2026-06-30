@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.102";
+const agentVersion = "0.4.103";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -8458,7 +8458,10 @@ async function runGonkaDirectSotySessionTurn({
       toolCalls: toolCalls.length
     });
     if (toolCalls.length === 0) {
-      if (needsComputer && terminal.length === 0) {
+      const textToolCallSignal = /<minimax:tool_call\b|<invoke\s+name=["']?computer["']?/iu.test(assistantText);
+      const shouldInferComputer = terminal.length === 0
+        && (needsComputer || textToolCallSignal || computerActionRequiresProof(taskFamily, text));
+      if (shouldInferComputer) {
         const inferred = await runInferredGonkaDirectComputerAction({ text, taskFamily, jobDir, childEnv, trace, signal });
         if (inferred) {
           terminal.push(inferred.terminal);
