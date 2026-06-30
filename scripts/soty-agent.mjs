@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.96";
+const agentVersion = "0.4.97";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1010,6 +1010,12 @@ function inferGonkaComputerArguments(payload) {
       args.content = quotedContent;
     }
   }
+  if (!args.content) {
+    const strictInlineContent = inferStrictInlineFileContent(userText);
+    if (strictInlineContent) {
+      args.content = strictInlineContent;
+    }
+  }
   if (!args.operation) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
   }
@@ -1031,6 +1037,9 @@ function inferGonkaComputerArguments(payload) {
   }
   if (!args.action) {
     args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
+  }
+  if (args.operation === "file" && hasCreateReadDeleteFileIntent(userText || allText) && args.path && args.content !== undefined) {
+    args.action = "cycle";
   }
   if ((args.operation === "web" || args.operation === "search") && !args.url && !args.query) {
     args.query = compactComputerQuery(userText);
@@ -1253,6 +1262,24 @@ function cleanInferredFileContent(value) {
   return String(value || "")
     .replace(/^["'`«“]+|["'`»”]+$/gu, "")
     .replace(new RegExp(`\\s*[,.;]\\s*(?:${stopWords})(?:\\s|$)[\\s\\S]*$`, "iu"), "")
+    .trim();
+}
+
+function hasCreateReadDeleteFileIntent(value) {
+  const text = String(value || "");
+  return /(?:\bcreate\b|\bwrite\b|\bmake\b|\u0441\u043e\u0437\u0434\u0430|\u0437\u0430\u043f\u0438\u0448|\u043d\u0430\u043f\u0438\u0448)/iu.test(text)
+    && /(?:\bread\b|\bverify\b|\bcheck\b|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u0440\u043e\u0432\u0435\u0440|\u0443\u0431\u0435\u0434|\u0441\u0432\u0435\u0440)/iu.test(text)
+    && /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(text);
+}
+
+function inferStrictInlineFileContent(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  const match = text.match(/(?:\bcontent\b|\btext\b|\bwith\s+text\b|\u0441\s+\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0441\u043e\s+\u0441\u0442\u0440\u043e\u043a\u043e\u0439|\u0441\u0442\u0440\u043e\u043a\u043e\u0439)\s*[:=-]?\s*([\s\S]{1,1000}?)(?:[,.;]\s*(?:\bread\b|\bverify\b|\bcheck\b|\bdelete\b|\bremove\b|\breply\b|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u0440\u043e\u0432\u0435\u0440|\u0443\u0431\u0435\u0434|\u0441\u0432\u0435\u0440|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440|\u043e\u0442\u0432\u0435\u0442|\u0441\u043a\u0430\u0436)(?:\s|$)|$)/iu);
+  if (!match) {
+    return "";
+  }
+  return String(match[1] || "")
+    .replace(/^["'`\u00ab\u201c]+|["'`\u00bb\u201d]+$/gu, "")
     .trim();
 }
 
@@ -7671,6 +7698,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: if a `computer` tool call is bridged to shell, it runs `node SOTY_LOCAL_API.mjs computer <json>`. For manual fallback prefer `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
     "- For normal file tasks, call `computer` with operation=\"file\" and action=\"write\"/\"read\"/\"delete\"/\"copy\"/\"search\"/\"cycle\". Avoid operation=\"run\" for file work unless the file tool cannot express the task.",
+    "- For create+read/verify+delete file tasks, use one `computer` call with operation=\"file\" and action=\"cycle\". Preserve the user's exact filename and exact text content.",
     "- For browser and web tasks, use operation=\"web\"/\"search\"/\"fetch\" for internet lookup and operation=\"browser\" with action=\"open\"/\"text\"/\"click_text\"/\"type\"/\"screenshot\" for live page work. If the user asks for a screenshot, save the screenshot file and answer with the path instead of page text or raw JSON.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
     "- If a tool returns an error, repair the command or switch to the safer specialized operation and continue. Only final-answer a real blocker after the available tool path is exhausted.",
@@ -8680,6 +8708,19 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
       if (!out.path) {
         out.path = inferScreenshotPathFromText(text, out.operation);
       }
+    }
+  }
+  if (out.operation === "file" && hasCreateReadDeleteFileIntent(text)) {
+    const exactPath = inferMentionedFileName(text);
+    const exactContent = inferStrictInlineFileContent(text) || inferInlineFileContent(text) || inferQuotedContent(text);
+    if (exactPath) {
+      out.path = exactPath;
+    }
+    if (exactContent) {
+      out.content = exactContent;
+    }
+    if (out.path && out.content !== undefined) {
+      out.action = "cycle";
     }
   }
   if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
