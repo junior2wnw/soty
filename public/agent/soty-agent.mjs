@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.97";
+const agentVersion = "0.4.98";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -7682,6 +7682,19 @@ function agentResponseStyleStatus(profile = activeAgentResponseStyle) {
   };
 }
 
+function universalComputerUseContractPromptLines() {
+  return [
+    "- universal_action_contract: goal -> choose capability -> act -> verify proof -> repair once when obvious -> final.",
+    "- Treat every computer-use request as an action to complete, not a topic to discuss. Do not ask the user to say `continue` after you already have the needed computer capability.",
+    "- Prefer small reliable adapters over clever broad scripts: file/browser/desktop/audio/web first, shell/script only when the adapter cannot express the task.",
+    "- Never final-answer a completed action without proof from the selected computer: saved path, bytes, title/text, status, exit code, job state, or explicit blocker.",
+    "- If a tool result is raw JSON or overly technical, translate it into a short user-facing outcome and keep internal transport/tool names hidden.",
+    "- For multi-step ordinary tasks, combine steps into the smallest atomic capability call when available, then verify the terminal state instead of narrating intermediate work.",
+    "- If the first route fails, repair the route or switch to the next safer capability once. Only then report the concrete blocker and the next user action, if any.",
+    "- Dangerous, irreversible, credential, payment, publishing, reboot, reinstall, or external-submit actions require a visible preview plus explicit confirmation before submit."
+  ];
+}
+
 function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   if (!codexUsesGonka) {
     return [];
@@ -7694,6 +7707,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
       ? "- Gonka direct agent: Gonka is the central solver and the Soty `computer` function is the selected-computer action gateway. Use it instead of only describing a plan."
       : "- Legacy Gonka adapter path: if explicitly enabled, the compatibility runner must use the `computer` function tool for selected-computer work instead of only describing a plan.",
     "- The `computer` tool is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
+    ...universalComputerUseContractPromptLines(),
     "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
     "- Fast helper in the current workspace: if a `computer` tool call is bridged to shell, it runs `node SOTY_LOCAL_API.mjs computer <json>`. For manual fallback prefer `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set <0-100>`, `time-status`, `system-resources`, or `open-url <url>` before hand-written fetch commands.",
@@ -10655,6 +10669,7 @@ function buildAgentPrompt(text, context = "", runtimeContext = null) {
     "",
     "Computer-use plane:",
     "- When a source device target is present, use `computer` as one computer-use plane: discover/status when health is unclear, then invoke the needed capability. Legacy `soty_*` names are hidden compatibility aliases behind that plane; do not assume the visible list is the limit of the device.",
+    ...universalComputerUseContractPromptLines(),
     ...gonkaLocalApiComputerUsePromptLines(runtime),
     "- Full access model: managed capabilities are preferred routes, not walls. You may still use shell/script/file/terminal directly on the selected device when that is the right way to solve, inspect, or repair the task.",
     "- For repeated lifecycle work, ask `computer` discover/route_profiles only when needed, then follow the best route profile through the first-class capability. Memory chooses and improves routes; capabilities execute them.",
