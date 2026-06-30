@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.103";
+const agentVersion = "0.4.104";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -995,6 +995,17 @@ function inferGonkaComputerArguments(payload) {
   if (command) {
     args.script = command;
   }
+  const appName = firstKeyValue(userText, ["app", "application", "window", "title"]);
+  if (appName) {
+    args.app = appName;
+  }
+  const appTarget = firstKeyValue(userText, ["target", "element", "label", "button"]);
+  if (appTarget) {
+    args.target = appTarget;
+    if (!args.text) {
+      args.text = appTarget;
+    }
+  }
   if (!args.path) {
     const namedFile = inferMentionedFileName(userText);
     if (namedFile) {
@@ -1021,6 +1032,17 @@ function inferGonkaComputerArguments(payload) {
   }
   if (!args.operation) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
+  }
+  if (args.operation === "app") {
+    if (!args.app) {
+      args.app = inferAppNameFromText(userText);
+    }
+    if (args.target && !args.text) {
+      args.text = args.target;
+    }
+    if (!args.maxElements) {
+      args.maxElements = 60;
+    }
   }
   if (hasScreenshotIntent(userText || allText)) {
     args.operation = hasBrowserPageIntent(userText || allText) ? "browser" : "desktop";
@@ -1153,10 +1175,42 @@ function normalizeGonkaComputerOperation(value) {
     wallpaper: "wallpaper",
     "set-wallpaper": "wallpaper",
     "desktop-wallpaper": "wallpaper",
+    app: "app",
+    apps: "app",
+    application: "app",
+    applications: "app",
+    window: "app",
+    windows: "app",
+    gui: "app",
+    ui: "app",
     run: "script",
     shell: "script"
   };
   return aliases[clean] || clean;
+}
+
+function hasAppWindowIntent(value) {
+  return /(?:\bapp(?:lication)?s?\b|\bwindow(?:s)?\b|\bgui\b|\bui\b|\bnotepad\b|\bcalc(?:ulator)?\b|\bmspaint\b|\bpaint\b|\bexplorer\b|\u043e\u043a\u043d|\u043f\u0440\u0438\u043b\u043e\u0436|\u043f\u0440\u043e\u0433\u0440\u0430\u043c|\u0431\u043b\u043e\u043a\u043d\u043e\u0442|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a|\u043f\u0435\u0439\u043d\u0442)/iu.test(String(value || ""));
+}
+
+function inferAppNameFromText(text) {
+  const value = String(text || "");
+  const keyed = firstKeyValue(value, ["app", "application", "window", "title"]);
+  if (keyed) return keyed;
+  const known = [
+    [/notepad|\u0431\u043b\u043e\u043a\u043d\u043e\u0442/iu, "notepad"],
+    [/calc(?:ulator)?|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442/iu, "calculator"],
+    [/mspaint|paint|\u043f\u0435\u0439\u043d\u0442/iu, "paint"],
+    [/explorer|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a/iu, "explorer"],
+    [/chrome|\u0445\u0440\u043e\u043c/iu, "chrome"],
+    [/edge|\u044d\u0434\u0436/iu, "edge"]
+  ];
+  for (const [pattern, name] of known) {
+    if (pattern.test(value)) {
+      return name;
+    }
+  }
+  return "";
 }
 
 function inferGonkaComputerOperationFromText(text, family, args) {
@@ -1191,6 +1245,9 @@ function inferGonkaComputerOperationFromText(text, family, args) {
   if (args.url || args.query || /интернет|сайт|url|fetch|search|найди|поищи|загугл|web/iu.test(lower) || family === "web-lookup") {
     return "web";
   }
+  if (hasAppWindowIntent(text) || family === "app" || family === "computer-use") {
+    return "app";
+  }
   if (args.path || /файл|папк|desktop|рабоч|read file|write file|create file|delete file|list files/iu.test(lower) || family === "file-work") {
     return "file";
   }
@@ -1213,6 +1270,13 @@ function inferGonkaComputerActionFromText(text, operation, args) {
   }
   if (operation === "download") {
     return /удали|удалить|delete|remove|cleanup|clean up/iu.test(lower) ? "cycle" : "save";
+  }
+  if (operation === "app") {
+    if (/launch|start|open\s+(?:app|program|window)|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0442\u043a\u0440/iu.test(lower) && (args.app || inferAppNameFromText(text))) return "launch";
+    if (/click|press|invoke|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a/iu.test(lower) || args.target || args.text) return "click";
+    if (/type|input|enter|write|\u0432\u0432\u0435\u0434|\u043d\u0430\u043f\u0435\u0447|\u043d\u0430\u043f\u0438\u0448/iu.test(lower) && (args.content || args.value || args.text)) return "type";
+    if (/inspect|snapshot|read|elements|controls|\u044d\u043b\u0435\u043c|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u043e\u0441\u043c\u043e\u0442\u0440/iu.test(lower) || args.app || args.window || args.title) return "snapshot";
+    return "list";
   }
   if (operation === "file") {
     const wantsWrite = args.content !== undefined || /созда[йть]|запиши|напиши|write|create/iu.test(lower);
@@ -1470,17 +1534,19 @@ function gonkaComputerChatTool() {
     type: "function",
     function: {
       name: "computer",
-      description: "Use the selected Soty computer for source-device work. Prefer specialized operations (file, browser, desktop/wallpaper, audio, web/search/fetch, jobs) before run/script; use run/script only as a fallback.",
+      description: "Use the selected Soty computer for source-device work. Prefer specialized operations (file, browser, app/window, desktop/wallpaper, audio, web/search/fetch, jobs) before run/script; use run/script only as a fallback.",
       parameters: {
         type: "object",
         properties: {
-          operation: { type: "string", description: "file, browser, desktop, wallpaper, audio, web, fetch, search, open_url, job_status, jobs, run, script, time_status, system_resources, or status." },
-          action: { type: "string", description: "Operation-specific action. File: stat/list/read/write/append/mkdir/search/move/copy/delete/download/publish/cycle. Browser: open/goto/title/text/eval/click_text/type/screenshot. Desktop: display/screenshot/wallpaper/click/type." },
+          operation: { type: "string", description: "file, browser, app/window, desktop, wallpaper, audio, web, fetch, search, open_url, job_status, jobs, run, script, time_status, system_resources, or status." },
+          action: { type: "string", description: "Operation-specific action. File: stat/list/read/write/append/mkdir/search/move/copy/delete/download/publish/cycle. Browser: open/goto/title/text/eval/click_text/type/screenshot. App/window: list/launch/snapshot/click/type. Desktop: display/screenshot/wallpaper/click/type." },
           url: { type: "string", description: "HTTP/HTTPS URL for web/browser/open_url/wallpaper download work." },
           query: { type: "string", description: "Web search query, including wallpaper image searches." },
           command: { type: "string", description: "Shell/PowerShell command for run/script fallback." },
           script: { type: "string", description: "PowerShell script body." },
           path: { type: "string", description: "File path for simple file operations or an existing wallpaper image." },
+          app: { type: "string", description: "Application/window name or app alias for app/window operations, such as notepad, calculator, paint, explorer, chrome, or part of a window title." },
+          target: { type: "string", description: "Visible element label/name for app/window click/type operations." },
           content: { type: "string", description: "File content for write operations." },
           fit: { type: "string", description: "Wallpaper fit mode: fill, fit, stretch, center, tile, or span." },
           volumePercent: { type: "integer", description: "Output volume, 0-100." },
@@ -7747,6 +7813,8 @@ function universalComputerUseContractPromptLines() {
     "- universal_action_contract: goal -> choose capability -> act -> verify proof -> repair once when obvious -> final.",
     "- Treat every computer-use request as an action to complete, not a topic to discuss. Do not ask the user to say `continue` after you already have the needed computer capability.",
     "- Prefer small reliable adapters over clever broad scripts: file/browser/desktop/audio/web first, shell/script only when the adapter cannot express the task.",
+    "- For GUI app work, use the app/window adapter: list or snapshot first, then click/type by UI element name/index, and verify state after the action.",
+    "- Prefer UI Automation patterns (Invoke/Value/Selection/Toggle) over raw pointer control. Use pointer/focus fallbacks only when the structured app/browser route cannot express the task.",
     "- Never final-answer a completed action without proof from the selected computer: saved path, bytes, title/text, status, exit code, job state, or explicit blocker.",
     "- If a tool result is raw JSON or overly technical, translate it into a short user-facing outcome and keep internal transport/tool names hidden.",
     "- For multi-step ordinary tasks, combine steps into the smallest atomic capability call when available, then verify the terminal state instead of narrating intermediate work.",
@@ -7766,7 +7834,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     gonkaDirectAgent
       ? "- Gonka direct agent: Gonka is the central solver and the Soty `computer` function is the selected-computer action gateway. Use it instead of only describing a plan."
       : "- Legacy Gonka adapter path: if explicitly enabled, the compatibility runner must use the `computer` function tool for selected-computer work instead of only describing a plan.",
-    "- The `computer` tool is the compact Soty gateway for files, shell/script, browser, desktop, audio, web fetch/search, jobs, artifacts, apps, APIs, transactions, and OS tasks on the selected computer.",
+    "- The `computer` tool is the compact Soty gateway for files, shell/script, browser, app/window UI automation, desktop, audio, web fetch/search, jobs, artifacts, APIs, transactions, and OS tasks on the selected computer.",
     ...universalComputerUseContractPromptLines(),
     "- If `computer` is unavailable in this turn, use `exec_command`/shell with SOTY_LOCAL_API.mjs or Node.js fetch to the local Soty API, then final-answer from returned proof. Do not emit a user-facing plan before the tool call.",
     `- Current local API defaults: target=${targetId || "<target-id>"} sourceDeviceId=${sourceDeviceId || "<source-device-id>"} sourceRelayId=${sourceRelayId || "<source-relay-id>"}.`,
@@ -7774,6 +7842,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- For normal file tasks, call `computer` with operation=\"file\" and action=\"write\"/\"read\"/\"delete\"/\"copy\"/\"search\"/\"cycle\". Avoid operation=\"run\" for file work unless the file tool cannot express the task.",
     "- For create+read/verify+delete file tasks, use one `computer` call with operation=\"file\" and action=\"cycle\". Preserve the user's exact filename and exact text content.",
     "- For browser and web tasks, use operation=\"web\"/\"search\"/\"fetch\" for internet lookup and operation=\"browser\" with action=\"open\"/\"text\"/\"click_text\"/\"type\"/\"screenshot\" for live page work. If the user asks for a screenshot, save the screenshot file and answer with the path instead of page text or raw JSON.",
+    "- For native GUI app tasks, use operation=\"app\" with action=\"list\"/\"snapshot\"/\"launch\"/\"click\"/\"type\". Inspect/snapshot before uncertain clicks, prefer visible labels, and return concise proof: window title, element target, and action status.",
     "- For create+verify+delete Desktop file tasks, use one command: `node SOTY_LOCAL_API.mjs desktop-cycle <file> <text>`.",
     "- If a tool returns an error, repair the command or switch to the safer specialized operation and continue. Only final-answer a real blocker after the available tool path is exhausted.",
     "- For custom PowerShell, avoid shell-quoting variables: use `node SOTY_LOCAL_API.mjs script-powershell <<'PS'` with a heredoc, then the script, then `PS`.",
@@ -8255,6 +8324,36 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
       return `Не смог нажать «${args.text}». Текущий заголовок: ${inner.title || "неизвестно"}.`;
     }
     return inner.title ? String(inner.title) : formatRecoveredOperatorText(raw);
+  }
+  if (operation === "app" && inner && typeof inner === "object") {
+    const windowTitle = String(inner.window?.name || inner.window?.title || inner.title || inner.app || "").trim();
+    const elements = Array.isArray(inner.elements) ? inner.elements : [];
+    const windows = Array.isArray(inner.windows) ? inner.windows : [];
+    if (action === "list") {
+      const names = windows
+        .map((item, index) => `${index + 1}. ${String(item?.name || item?.className || "window").trim()}`)
+        .filter(Boolean)
+        .slice(0, 12)
+        .join("; ");
+      return names ? `\u041e\u043a\u043d\u0430: ${names}.` : "\u041e\u043a\u043d\u0430 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d\u044b.";
+    }
+    if (action === "snapshot") {
+      const sample = elements
+        .map((item) => String(item?.name || item?.automationId || item?.controlType || "").trim())
+        .filter(Boolean)
+        .slice(0, 8)
+        .join("; ");
+      return `\u041e\u043a\u043d\u043e: ${windowTitle || "\u043d\u0430\u0439\u0434\u0435\u043d\u043e"}. \u042d\u043b\u0435\u043c\u0435\u043d\u0442\u043e\u0432: ${elements.length}${sample ? `. ${sample}` : ""}.`;
+    }
+    if (action === "launch") {
+      return `\u0417\u0430\u043f\u0443\u0441\u0442\u0438\u043b: ${windowTitle || inner.app || args?.app || "app"}.`;
+    }
+    if (action === "click") {
+      return `\u041d\u0430\u0436\u0430\u043b: ${String(inner.target?.name || args?.target || args?.text || "element").trim()}${windowTitle ? ` \u0432 \u043e\u043a\u043d\u0435 ${windowTitle}` : ""}.`;
+    }
+    if (action === "type") {
+      return `\u0412\u0432\u0435\u043b \u0442\u0435\u043a\u0441\u0442: ${String(inner.target?.name || args?.target || "input").trim()}${windowTitle ? ` \u0432 \u043e\u043a\u043d\u0435 ${windowTitle}` : ""}.`;
+    }
   }
   if ((operation === "web" || operation === "fetch" || operation === "search") && inner && typeof inner === "object") {
     return inner.title ? String(inner.title) : cleanActionText(inner.text || raw, maxChatChars);
@@ -8797,6 +8896,23 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
       }
     }
   }
+  if ((out.operation === "system-resources" || out.operation === "status") && hasAppWindowIntent(text)) {
+    out.operation = "app";
+  }
+  if (out.operation === "app") {
+    if (!out.app) {
+      out.app = inferAppNameFromText(text);
+    }
+    if (out.target && !out.text) {
+      out.text = out.target;
+    }
+    if (!out.action) {
+      out.action = inferGonkaComputerActionFromText(text, "app", out);
+    }
+    if (!out.maxElements) {
+      out.maxElements = 60;
+    }
+  }
   Object.assign(out, applyExactFileCycleArgs(out, text));
   if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
     out.operation = "script";
@@ -8823,6 +8939,14 @@ function compactGonkaDirectToolResult(args, run) {
       text: String(parsed.text || parsed.output || "").slice(0, gonkaDirectToolResultChars),
       path: parsed.path || parsed.targetPath || parsed.localPath || "",
       url: parsed.url || parsed.sourceUrl || "",
+      app: parsed.app || "",
+      window: parsed.window || null,
+      target: parsed.target || "",
+      windows: Array.isArray(parsed.windows) ? parsed.windows.slice(0, 12) : undefined,
+      elements: Array.isArray(parsed.elements) ? parsed.elements.slice(0, 24) : undefined,
+      clicked: parsed.clicked,
+      typed: parsed.typed,
+      method: parsed.method || "",
       bytes: parsed.bytes,
       deleted: parsed.deleted,
       sha256: parsed.sha256 || parsed.artifactSha256 || "",
@@ -10441,6 +10565,158 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"[pscustomobject]@{ ok=$true; action='browser'; url=$url; clicked=$clicked; target=$needle; title=$title; text=$body } | ConvertTo-Json -Compress\"",
     "  ].join('\\n');",
     "}",
+    "function appPowerShell(req) {",
+    "  const encoded = Buffer.from(JSON.stringify({",
+    "    action: String(req.action || '').slice(0, 40),",
+    "    app: String(req.app || req.window || req.title || req.name || ''),",
+    "    target: String(req.target || req.text || req.label || req.selector || ''),",
+    "    value: String(req.content ?? req.value ?? req.input ?? ''),",
+    "    command: String(req.command || req.path || ''),",
+    "    processId: Number.isFinite(Number(req.processId)) ? Number(req.processId) : -1,",
+    "    elementIndex: Number.isFinite(Number(req.elementIndex ?? req.index)) ? Number(req.elementIndex ?? req.index) : -1,",
+    "    maxElements: Math.max(10, Math.min(Number(req.maxElements) || Number(req.maxChars) || 60, 300)),",
+    "    allowFocus: Boolean(req.allowFocus || req.focusFallback),",
+    "    allowPointer: Boolean(req.allowPointer || req.pointerFallback)",
+    "  }), 'utf8').toString('base64');",
+    "  return [",
+    "    \"$ErrorActionPreference = 'Stop'\",",
+    "    \"Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes\",",
+    "    \"Add-Type -AssemblyName System.Windows.Forms,System.Drawing\",",
+    "    `$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,",
+    "    \"$root = [System.Windows.Automation.AutomationElement]::RootElement\",",
+    "    \"$trueCondition = [System.Windows.Automation.Condition]::TrueCondition\",",
+    "    \"$treeChildren = [System.Windows.Automation.TreeScope]::Children\",",
+    "    \"$treeDescendants = [System.Windows.Automation.TreeScope]::Descendants\",",
+    "    \"$action = ([string]$req.action).Trim().ToLowerInvariant()\",",
+    "    \"if ([string]::IsNullOrWhiteSpace($action)) { $action = 'list' }\",",
+    "    \"$needleWindow = ([string]$req.app).Trim()\",",
+    "    \"$needleElement = ([string]$req.target).Trim()\",",
+    "    \"$inputValue = [string]$req.value\",",
+    "    \"$maxElements = [Math]::Max(10, [Math]::Min([int]$req.maxElements, 300))\",",
+    "    \"$elementIndex = [int]$req.elementIndex\",",
+    "    \"$processId = [int]$req.processId\",",
+    "    \"$allowFocus = [bool]$req.allowFocus\",",
+    "    \"$allowPointer = [bool]$req.allowPointer\",",
+    "    \"function App-Short([string]$value, [int]$limit = 220) { if ([string]::IsNullOrWhiteSpace($value)) { return '' }; $clean = (($value -replace '\\\\s+', ' ').Trim()); if ($clean.Length -gt $limit) { return $clean.Substring(0, $limit) }; return $clean }\",",
+    "    \"function App-Rect($element) { $r = $element.Current.BoundingRectangle; return [pscustomobject]@{ x=[int][Math]::Round($r.X); y=[int][Math]::Round($r.Y); width=[int][Math]::Round($r.Width); height=[int][Math]::Round($r.Height) } }\",",
+    "    \"function App-ControlType($element) { return (([string]$element.Current.ControlType.ProgrammaticName) -replace '^ControlType\\\\.', '') }\",",
+    "    \"function App-Info($element, [int]$index) { [pscustomobject]@{ index=$index; name=(App-Short ([string]$element.Current.Name)); controlType=(App-ControlType $element); automationId=(App-Short ([string]$element.Current.AutomationId) 120); className=(App-Short ([string]$element.Current.ClassName) 120); processId=[int]$element.Current.ProcessId; enabled=[bool]$element.Current.IsEnabled; rect=(App-Rect $element) } }\",",
+    "    \"function App-Windows {\",",
+    "    \"  $wins = $root.FindAll($treeChildren, $trueCondition)\",",
+    "    \"  $out = @(); $index = 0\",",
+    "    \"  for ($i = 0; $i -lt $wins.Count; $i++) {\",",
+    "    \"    $w = $wins.Item($i)\",",
+    "    \"    $r = $w.Current.BoundingRectangle\",",
+    "    \"    $name = App-Short ([string]$w.Current.Name)\",",
+    "    \"    $className = App-Short ([string]$w.Current.ClassName) 120\",",
+    "    \"    if (($r.Width -lt 1 -or $r.Height -lt 1) -and -not $name -and -not $className) { continue }\",",
+    "    \"    $out += App-Info $w $index; $index++\",",
+    "    \"    if ($index -ge 80) { break }\",",
+    "    \"  }\",",
+    "    \"  return @($out)\",",
+    "    \"}\",",
+    "    \"function App-ProcessName($pid) { try { return ([Diagnostics.Process]::GetProcessById([int]$pid)).ProcessName } catch { return '' } }\",",
+    "    \"function App-FindWindow([string]$needle, [int]$pid) {\",",
+    "    \"  $windows = $root.FindAll($treeChildren, $trueCondition)\",",
+    "    \"  if ($pid -gt 0) { for ($i = 0; $i -lt $windows.Count; $i++) { $w = $windows.Item($i); if ([int]$w.Current.ProcessId -eq $pid) { return $w } } }\",",
+    "    \"  $needleLower = $needle.ToLowerInvariant()\",",
+    "    \"  if ($needleLower) {\",",
+    "    \"    for ($i = 0; $i -lt $windows.Count; $i++) {\",",
+    "    \"      $w = $windows.Item($i)\",",
+    "    \"      $hay = ((([string]$w.Current.Name) + ' ' + ([string]$w.Current.ClassName) + ' ' + (App-ProcessName $w.Current.ProcessId))).ToLowerInvariant()\",",
+    "    \"      if ($hay.Contains($needleLower)) { return $w }\",",
+    "    \"    }\",",
+    "    \"  }\",",
+    "    \"  try {\",",
+    "    \"    $node = [System.Windows.Automation.AutomationElement]::FocusedElement\",",
+    "    \"    $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker\",",
+    "    \"    while ($node) { if ((App-ControlType $node) -eq 'Window') { return $node }; $node = $walker.GetParent($node) }\",",
+    "    \"  } catch {}\",",
+    "    \"  for ($i = 0; $i -lt $windows.Count; $i++) { $w = $windows.Item($i); $r = $w.Current.BoundingRectangle; if ($r.Width -gt 0 -and $r.Height -gt 0) { return $w } }\",",
+    "    \"  return $null\",",
+    "    \"}\",",
+    "    \"function App-Collect($window, [int]$limit) {\",",
+    "    \"  $all = $window.FindAll($treeDescendants, $trueCondition)\",",
+    "    \"  $out = @(); $index = 0\",",
+    "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
+    "    \"    $e = $all.Item($i)\",",
+    "    \"    $ct = App-ControlType $e\",",
+    "    \"    $name = App-Short ([string]$e.Current.Name)\",",
+    "    \"    $aid = App-Short ([string]$e.Current.AutomationId) 120\",",
+    "    \"    $className = App-Short ([string]$e.Current.ClassName) 120\",",
+    "    \"    if (-not $name -and -not $aid -and $ct -notmatch 'Button|Edit|Document|Hyperlink|ListItem|MenuItem|TabItem|TreeItem|ComboBox|CheckBox|RadioButton') { continue }\",",
+    "    \"    $out += App-Info $e $index; $index++\",",
+    "    \"    if ($index -ge $limit) { break }\",",
+    "    \"  }\",",
+    "    \"  return @($out)\",",
+    "    \"}\",",
+    "    \"function App-FindElement($window, [string]$needle, [int]$index) {\",",
+    "    \"  $all = $window.FindAll($treeDescendants, $trueCondition)\",",
+    "    \"  $needleLower = $needle.ToLowerInvariant()\",",
+    "    \"  $visibleIndex = 0\",",
+    "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
+    "    \"    $e = $all.Item($i)\",",
+    "    \"    $ct = App-ControlType $e\",",
+    "    \"    $name = App-Short ([string]$e.Current.Name)\",",
+    "    \"    $aid = App-Short ([string]$e.Current.AutomationId) 120\",",
+    "    \"    $className = App-Short ([string]$e.Current.ClassName) 120\",",
+    "    \"    if (-not $name -and -not $aid -and $ct -notmatch 'Button|Edit|Document|Hyperlink|ListItem|MenuItem|TabItem|TreeItem|ComboBox|CheckBox|RadioButton') { continue }\",",
+    "    \"    if ($index -ge 0 -and $visibleIndex -eq $index) { return $e }\",",
+    "    \"    if ($needleLower) { $hay = ($name + ' ' + $aid + ' ' + $className + ' ' + $ct).ToLowerInvariant(); if ($hay.Contains($needleLower)) { return $e } }\",",
+    "    \"    $visibleIndex++\",",
+    "    \"  }\",",
+    "    \"  return $null\",",
+    "    \"}\",",
+    "    \"function App-LaunchName([string]$value) {\",",
+    "    \"  $clean = $value.Trim().ToLowerInvariant()\",",
+    "    \"  $aliases = @{ notepad='notepad.exe'; calc='calc.exe'; calculator='calc.exe'; paint='mspaint.exe'; mspaint='mspaint.exe'; explorer='explorer.exe'; chrome='chrome.exe'; edge='msedge.exe' }\",",
+    "    \"  if ($aliases.ContainsKey($clean)) { return $aliases[$clean] }\",",
+    "    \"  return $value\",",
+    "    \"}\",",
+    "    \"if ($action -eq 'list' -or $action -eq 'windows' -or $action -eq 'discover') { [pscustomobject]@{ ok=$true; operation='app'; action='list'; windows=(App-Windows) } | ConvertTo-Json -Depth 6 -Compress; return }\",",
+    "    \"if ($action -eq 'launch' -or $action -eq 'start' -or $action -eq 'open') {\",",
+    "    \"  $launch = ([string]$req.command).Trim(); if (-not $launch) { $launch = $needleWindow }\",",
+    "    \"  if (-not $launch) { throw 'app launch requires app or command' }\",",
+    "    \"  $exe = App-LaunchName $launch\",",
+    "    \"  Start-Process -FilePath $exe | Out-Null\",",
+    "    \"  Start-Sleep -Milliseconds 1600\",",
+    "    \"  $win = App-FindWindow $launch $processId\",",
+    "    \"  $snapshot = if ($win) { App-Info $win 0 } else { $null }\",",
+    "    \"  [pscustomobject]@{ ok=$true; operation='app'; action='launch'; app=$launch; command=$exe; window=$snapshot; windows=(App-Windows | Select-Object -First 12) } | ConvertTo-Json -Depth 6 -Compress; return\",",
+    "    \"}\",",
+    "    \"$window = App-FindWindow $needleWindow $processId\",",
+    "    \"if (-not $window) { throw ('app window not found: ' + $needleWindow) }\",",
+    "    \"$windowInfo = App-Info $window 0\",",
+    "    \"if ($action -eq 'snapshot' -or $action -eq 'inspect' -or $action -eq 'read' -or $action -eq 'elements') { [pscustomobject]@{ ok=$true; operation='app'; action='snapshot'; window=$windowInfo; elements=(App-Collect $window $maxElements) } | ConvertTo-Json -Depth 7 -Compress; return }\",",
+    "    \"if ($action -eq 'click' -or $action -eq 'press' -or $action -eq 'invoke' -or $action -eq 'click-text') {\",",
+    "    \"  $target = App-FindElement $window $needleElement $elementIndex\",",
+    "    \"  if (-not $target) { throw ('app element not found: ' + $needleElement) }\",",
+    "    \"  $method = ''\",",
+    "    \"  try { $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $method = 'invoke' }\",",
+    "    \"  catch { try { $target.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); $method = 'select' }\",",
+    "    \"  catch { try { $target.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Toggle(); $method = 'toggle' }\",",
+    "    \"  catch { try { $target.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand(); $method = 'expand' }\",",
+    "    \"  catch { if ($allowFocus) { $target.SetFocus(); [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); $method = 'focus-enter' } elseif ($allowPointer) { $r = $target.Current.BoundingRectangle; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)); [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); $method = 'pointer-enter' } else { throw } } } } }\",",
+    "    \"  Start-Sleep -Milliseconds 500\",",
+    "    \"  [pscustomobject]@{ ok=$true; operation='app'; action='click'; clicked=$true; method=$method; window=$windowInfo; target=(App-Info $target $elementIndex); elements=(App-Collect $window ([Math]::Min($maxElements, 40))) } | ConvertTo-Json -Depth 7 -Compress; return\",",
+    "    \"}\",",
+    "    \"if ($action -eq 'type' -or $action -eq 'write' -or $action -eq 'input' -or $action -eq 'enter') {\",",
+    "    \"  $target = App-FindElement $window $needleElement $elementIndex\",",
+    "    \"  if (-not $target) { throw ('app input element not found: ' + $needleElement) }\",",
+    "    \"  if ([string]::IsNullOrEmpty($inputValue)) { throw 'app type requires content/value/input' }\",",
+    "    \"  $method = ''\",",
+    "    \"  try { $target.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($inputValue); $method = 'value-pattern' }\",",
+    "    \"  catch {\",",
+    "    \"    if (-not $allowFocus) { throw }\",",
+    "    \"    $old = ''; try { $old = [System.Windows.Forms.Clipboard]::GetText() } catch {}\",",
+    "    \"    $target.SetFocus(); [System.Windows.Forms.Clipboard]::SetText($inputValue); [System.Windows.Forms.SendKeys]::SendWait('^a'); [System.Windows.Forms.SendKeys]::SendWait('^v'); if ($old) { try { [System.Windows.Forms.Clipboard]::SetText($old) } catch {} }; $method = 'focus-clipboard'\",",
+    "    \"  }\",",
+    "    \"  Start-Sleep -Milliseconds 500\",",
+    "    \"  [pscustomobject]@{ ok=$true; operation='app'; action='type'; typed=$true; method=$method; window=$windowInfo; target=(App-Info $target $elementIndex); elements=(App-Collect $window ([Math]::Min($maxElements, 40))) } | ConvertTo-Json -Depth 7 -Compress; return\",",
+    "    \"}\",",
+    "    \"throw ('unsupported app action: ' + $action)\"",
+    "  ].join('\\n');",
+    "}",
     "function timeSetPowerShell(req) {",
     "  const value = String(req.value || req.time || req.datetime || req.date || '').trim();",
     "  if (!value) throw new Error('computer time set requires value');",
@@ -10459,6 +10735,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  }",
     "  if (operation === 'wallpaper' || operation === 'desktop-wallpaper' || (operation === 'desktop' && String(req.action || '').toLowerCase() === 'wallpaper')) {",
     "    await scriptPowerShell(wallpaperPowerShell(req), { name: 'computer-wallpaper', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 120000, 240000)) });",
+    "    return;",
+    "  }",
+    "  if (operation === 'app' || operation === 'window' || operation === 'windows' || operation === 'gui' || operation === 'ui' || operation === 'application') {",
+    "    await scriptPowerShell(appPowerShell(req), { name: 'computer-app', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
     "    return;",
     "  }",
     "  if (['web', 'fetch', 'web-fetch', 'search', 'web-search', 'internet'].includes(operation) || req.query) {",
@@ -10519,6 +10799,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  const argsText = args.length ? args.join(' ') : await readStdin();",
     "  if (!argsText.trim()) { console.error('usage: computer <json-or-stdin>'); process.exit(2); }",
     "  await computer(argsText);",
+    "} else if (op === 'app-list') {",
+    "  await computer(JSON.stringify({ operation: 'app', action: 'list' }));",
+    "} else if (op === 'app-snapshot') {",
+    "  await computer(JSON.stringify({ operation: 'app', action: 'snapshot', app: args.join(' ').trim() }));",
     "} else if (op === 'desktop-exists') {",
     "  const name = args.join(' ').trim();",
     "  if (!name) { console.error('usage: desktop-exists <file-name>'); process.exit(2); }",
@@ -10560,7 +10844,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  if (!script.trim()) { console.error('usage: script-powershell <script-or-stdin>'); process.exit(2); }",
     "  await scriptPowerShell(script, { name: 'script-powershell' });",
     "} else {",
-    "  console.error('usage: node SOTY_LOCAL_API.mjs computer <json> | desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | system-resources | open-url <url> | script-powershell [script-or-stdin]');",
+    "  console.error('usage: node SOTY_LOCAL_API.mjs computer <json> | app-list | app-snapshot [window] | desktop-exists/read/delete/write/cycle <file> [text] | audio-get | audio-set <0-100> | time-status | system-resources | open-url <url> | script-powershell [script-or-stdin]');",
     "  process.exit(2);",
     "}"
   ].join("\n");
@@ -10690,7 +10974,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "",
     "Useful local files:",
     "- SOTY_CONTEXT.md contains the last runtime packet and sanitized shared-text context for this turn.",
-    "- SOTY_LOCAL_API.mjs is the fallback route for Gonka source-device work when native tool execution is unavailable: `computer <json>` is the generic bridge; small commands include `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`; for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
+    "- SOTY_LOCAL_API.mjs is the fallback route for Gonka source-device work when native tool execution is unavailable: `computer <json>` is the generic bridge; small commands include `app-list`, `app-snapshot`, `desktop-cycle`, other `desktop-*`, `audio-get`, `audio-set`, `time-status`, `system-resources`, `open-url`; for custom PowerShell, pass a single-quoted heredoc to `script-powershell`.",
     "- SOTY_ROUTES.md contains exact high-signal computer routes for special cases such as Windows reinstall and generated-image artifact transfer. Do not read it before ordinary file/system/process tasks."
   ].join("\n");
   const context = [
@@ -16719,7 +17003,7 @@ function agentRuntimeStatus() {
       { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
       { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
       { family: "web", actions: ["fetch", "search"], risk: "low", proof: ["status", "title", "url", "text"] },
-      { family: "app", actions: ["discover", "launch", "focus", "connect", "read", "write", "submit"], risk: "high", proof: ["target", "stateBefore", "stateAfter", "result"] },
+      { family: "app", actions: ["list", "snapshot", "launch", "focus", "click", "type", "connect", "read", "write", "submit"], risk: "high", proof: ["window", "elements", "target", "stateBefore", "stateAfter", "result"] },
       { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
       { family: "job", actions: ["start", "status", "stop"], risk: "medium", proof: ["jobId", "status", "resultPath"] },
       { family: "artifact", actions: ["push", "pull", "verify"], risk: "medium", proof: ["status", "result"] },

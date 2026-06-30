@@ -18,6 +18,7 @@
     "agent:selftest": "node scripts/action-kernel-selftest.mjs",
     "agent:eval": "node scripts/soty-agent-eval.mjs",
     "agent:eval:computer": "node scripts/soty-agent-eval.mjs --live --operator --suite=computer-safe",
+    "agent:eval:cua": "node scripts/soty-agent-eval.mjs --live --operator --suite=cua-safe",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
