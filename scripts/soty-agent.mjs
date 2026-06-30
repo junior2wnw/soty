@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.101";
+const agentVersion = "0.4.102";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1262,7 +1262,7 @@ function inferInlineFileContent(text) {
 }
 
 function cleanInferredFileContent(value) {
-  const stopWords = "проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply|\u043f\u0440\u043e\u0432\u0435\u0440\\w*|\u043f\u0440\u043e\u0447\u0438\u0442\\w*|\u0443\u0431\u0435\u0434\\w*|\u0441\u0432\u0435\u0440\\w*|\u0443\u0434\u0430\u043b\\w*|\u0441\u043e\u0442\u0440\\w*|\u043e\u0442\u0432\u0435\u0442\\w*|\u0441\u043a\u0430\u0436\\w*";
+  const stopWords = "проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply|\u043f\u0440\u043e\u0432\u0435\u0440[\\p{L}\\p{N}_-]*|\u043f\u0440\u043e\u0447\u0438\u0442[\\p{L}\\p{N}_-]*|\u0443\u0431\u0435\u0434[\\p{L}\\p{N}_-]*|\u0441\u0432\u0435\u0440[\\p{L}\\p{N}_-]*|\u0443\u0434\u0430\u043b[\\p{L}\\p{N}_-]*|\u0441\u043e\u0442\u0440[\\p{L}\\p{N}_-]*|\u043e\u0442\u0432\u0435\u0442[\\p{L}\\p{N}_-]*|\u0441\u043a\u0430\u0436[\\p{L}\\p{N}_-]*";
   return String(value || "")
     .replace(/^["'`«“]+|["'`»”]+$/gu, "")
     .replace(new RegExp(`\\s*[,.;]\\s*(?:${stopWords})(?:\\s|$)[\\s\\S]*$`, "iu"), "")
@@ -1329,7 +1329,7 @@ function applyExactFileCycleArgs(args, text) {
 
 function inferStrictInlineFileContent(value) {
   const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
-  const match = text.match(/(?:\bcontent\b|\btext\b|\bwith\s+text\b|\u0441\s+\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0441\u043e\s+\u0441\u0442\u0440\u043e\u043a\u043e\u0439|\u0441\u0442\u0440\u043e\u043a\u043e\u0439)\s*[:=-]?\s*([\s\S]{1,1000}?)(?:[,.;]\s*(?:\bread\b|\bverify\b|\bcheck\b|\bdelete\b|\bremove\b|\breply\b|\u043f\u0440\u043e\u0447\u0438\u0442\w*|\u043f\u0440\u043e\u0432\u0435\u0440\w*|\u0443\u0431\u0435\u0434\w*|\u0441\u0432\u0435\u0440\w*|\u0443\u0434\u0430\u043b\w*|\u0441\u043e\u0442\u0440\w*|\u043e\u0442\u0432\u0435\u0442\w*|\u0441\u043a\u0430\u0436\w*)(?:\s|$)|$)/iu);
+  const match = text.match(/(?:\bcontent\b|\btext\b|\bwith\s+text\b|\u0441\s+\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0441\u043e\s+\u0441\u0442\u0440\u043e\u043a\u043e\u0439|\u0441\u0442\u0440\u043e\u043a\u043e\u0439)\s*[:=-]?\s*([\s\S]{1,1000}?)(?:[,.;]\s*(?:\bread\b|\bverify\b|\bcheck\b|\bdelete\b|\bremove\b|\breply\b|\u043f\u0440\u043e\u0447\u0438\u0442[\p{L}\p{N}_-]*|\u043f\u0440\u043e\u0432\u0435\u0440[\p{L}\p{N}_-]*|\u0443\u0431\u0435\u0434[\p{L}\p{N}_-]*|\u0441\u0432\u0435\u0440[\p{L}\p{N}_-]*|\u0443\u0434\u0430\u043b[\p{L}\p{N}_-]*|\u0441\u043e\u0442\u0440[\p{L}\p{N}_-]*|\u043e\u0442\u0432\u0435\u0442[\p{L}\p{N}_-]*|\u0441\u043a\u0430\u0436[\p{L}\p{N}_-]*)(?:\s|$)|$)/iu);
   if (!match) {
     return "";
   }
