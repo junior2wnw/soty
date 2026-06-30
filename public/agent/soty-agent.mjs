@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.99";
+const agentVersion = "0.4.100";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1002,9 +1002,9 @@ function inferGonkaComputerArguments(payload) {
     }
   }
   if (!args.content) {
-    const inlineContent = inferInlineFileContent(userText);
-    if (inlineContent) {
-      args.content = inlineContent;
+    const strictInlineContent = inferStrictInlineFileContent(userText);
+    if (strictInlineContent) {
+      args.content = strictInlineContent;
     }
   }
   if (!args.content) {
@@ -1014,9 +1014,9 @@ function inferGonkaComputerArguments(payload) {
     }
   }
   if (!args.content) {
-    const strictInlineContent = inferStrictInlineFileContent(userText);
-    if (strictInlineContent) {
-      args.content = strictInlineContent;
+    const inlineContent = inferInlineFileContent(userText);
+    if (inlineContent) {
+      args.content = inlineContent;
     }
   }
   if (!args.operation) {
@@ -1261,7 +1261,7 @@ function inferInlineFileContent(text) {
 }
 
 function cleanInferredFileContent(value) {
-  const stopWords = "проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply";
+  const stopWords = "проверь|провер|прочитай|сверь|убедись|удали|удалить|сотри|ответь|скажи|then|and\\s+(?:verify|read|delete|remove|reply)|verify|read|delete|remove|reply|\u043f\u0440\u043e\u0432\u0435\u0440\\w*|\u043f\u0440\u043e\u0447\u0438\u0442\\w*|\u0443\u0431\u0435\u0434\\w*|\u0441\u0432\u0435\u0440\\w*|\u0443\u0434\u0430\u043b\\w*|\u0441\u043e\u0442\u0440\\w*|\u043e\u0442\u0432\u0435\u0442\\w*|\u0441\u043a\u0430\u0436\\w*";
   return String(value || "")
     .replace(/^["'`«“]+|["'`»”]+$/gu, "")
     .replace(new RegExp(`\\s*[,.;]\\s*(?:${stopWords})(?:\\s|$)[\\s\\S]*$`, "iu"), "")
@@ -8831,12 +8831,34 @@ async function finalTextFromGonkaDirectToolResults({ text = "", taskFamily = "",
   if (signal?.aborted) {
     return "";
   }
+  const proofText = recoverDirectComputerProofText(toolResults);
+  if (proofText && (hasCreateReadDeleteFileIntent(text) || hasCriticalDestructiveIntent(text))) {
+    return proofText;
+  }
   const polished = await polishGonkaRecoveredFinalText({ userText: text, toolText, taskFamily });
   if (polished) {
+    if (proofText && isTinyCompletionReply(polished)) {
+      return proofText;
+    }
     traceStep(trace, "gonka.direct.polished-tool-final", { textChars: polished.length });
     return polished;
   }
-  return cleanActionText(formatRecoveredOperatorText(toolText) || toolText, maxChatChars);
+  return proofText || cleanActionText(formatRecoveredOperatorText(toolText) || toolText, maxChatChars);
+}
+
+function recoverDirectComputerProofText(toolResults = []) {
+  for (const item of toolResults.filter(Boolean).slice().reverse()) {
+    const formatted = formatDirectComputerFallbackText({}, item, "");
+    const clean = cleanActionText(formatted || "", maxChatChars);
+    if (clean && !/^\s*[{[]/u.test(clean) && !/"\s*ok\s*"\s*:/iu.test(clean)) {
+      return clean;
+    }
+  }
+  return "";
+}
+
+function isTinyCompletionReply(value) {
+  return /^(?:done|ok|completed|complete|ready|готово|сделано|ок)\.?$/iu.test(String(value || "").trim());
 }
 
 function driverCheckCompactPowerShell() {
