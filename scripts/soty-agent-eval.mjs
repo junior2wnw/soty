@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -225,7 +225,7 @@ async function runOperatorEval() {
       "-TimeoutSec",
       String(operatorTimeoutSec)
     ], "", (operatorTimeoutSec + 20) * 1000);
-    const trace = await readLatestTrace();
+    const trace = await readLatestTrace(before);
     const text = (run.stdout || run.stderr || "").trim();
     const body = { ok: run.exitCode === 0, text };
     results.push({
@@ -348,7 +348,7 @@ function scoreReply(task, body, ms, trace = null) {
   return "inspect";
 }
 
-async function readLatestTrace() {
+async function readLatestTrace(sinceMs = 0) {
   const entries = await readdir(traceDir, { withFileTypes: true }).catch(() => []);
   const dirs = entries
     .filter((entry) => entry.isDirectory() && /^[0-9]{14}-/u.test(entry.name))
@@ -356,8 +356,22 @@ async function readLatestTrace() {
     .sort()
     .reverse();
   for (const name of dirs) {
-    const trace = await readJson(join(traceDir, name, "trace.json"));
+    const file = join(traceDir, name, "trace.json");
+    const trace = await readJson(file);
     if (trace) {
+      if (sinceMs > 0) {
+        const startedMs = Date.parse(String(trace.startedAt || ""));
+        if (Number.isFinite(startedMs)) {
+          if (startedMs + 5000 < sinceMs) {
+            continue;
+          }
+        } else {
+          const info = await stat(file).catch(() => null);
+          if (info && info.mtimeMs + 5000 < sinceMs) {
+            continue;
+          }
+        }
+      }
       trace.name = name;
       return trace;
     }

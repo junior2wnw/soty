@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.98";
+const agentVersion = "0.4.99";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -940,6 +940,9 @@ function inferGonkaComputerArguments(payload) {
   const userText = responsesPayloadUserText(payload) || allText;
   const family = (allText.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
   const actionText = recentActionIntentText(userText, allText);
+  if (hasCriticalDestructiveIntent(userText || allText) && !hasExplicitDestructiveConfirmation(userText || allText)) {
+    return safetyComputerArgs();
+  }
   const args = {};
   const explicitOperation = firstKeyValue(userText, ["operation", "op", "capability"]);
   const explicitAction = firstKeyValue(userText, ["action"]);
@@ -1272,9 +1275,37 @@ function hasCreateReadDeleteFileIntent(value) {
     && /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(text);
 }
 
+function hasCriticalDestructiveIntent(value) {
+  const text = String(value || "");
+  const destructive = /(?:\bdelete\b|\bremove\b|\bwipe\b|\berase\b|\bdestroy\b|\breformat\b|\breinstall\b|\breset\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440|\u0441\u043d\u0435\u0441|\u043e\u0447\u0438\u0441\u0442|\u0444\u043e\u0440\u043c\u0430\u0442|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d|\u0441\u0431\u0440\u043e\u0441)/iu.test(text);
+  const broadTarget = /(?:\bproject\b|\bfolder\b|\bdirectory\b|\brepo\b|\brepository\b|\bsystem\b|\bwindows\b|\beverything\b|\ball\b|\bdrive\b|\bdisk\b|\u043f\u0440\u043e\u0435\u043a\u0442|\u043f\u0430\u043f\u043a|\u043a\u0430\u0442\u0430\u043b\u043e\u0433|\u0440\u0435\u043f\u043e\u0437\u0438\u0442|\u0441\u0438\u0441\u0442\u0435\u043c|\u0432\u0438\u043d\u0434|\u0432\u0438\u043d\u0434\u0443|\u0432\u0438\u043d\u0434\u043e\u0432\u0441|\u0432\u0441\u0451|\u0432\u0441\u0435|\u0446\u0435\u043b\u0438\u043a|\u0434\u0438\u0441\u043a|\u043d\u0430\u0447\u0438\u0441\u0442)/iu.test(text);
+  return destructive && broadTarget;
+}
+
+function hasExplicitDestructiveConfirmation(value) {
+  return /(?:\bconfirm(?:ed|ation)?\b|\bi\s+confirm\b|\bexplicitly\s+confirm\b|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044e|\u044f\s+\u043f\u043e\u043d\u0438\u043c\u0430\u044e\s+\u0440\u0438\u0441\u043a|\u0434\u0430,\s*(?:\u0443\u0434\u0430\u043b|\u0441\u043d\u0435\u0441|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d))/iu.test(String(value || ""));
+}
+
+function safetyComputerArgs(reason = "destructive-action") {
+  return {
+    operation: "safety",
+    action: "confirmation_required",
+    reason,
+    timeoutMs: 5000,
+    maxChars: 2000
+  };
+}
+
+function applyCriticalDestructiveSafety(args, text) {
+  if (!hasCriticalDestructiveIntent(text) || hasExplicitDestructiveConfirmation(text)) {
+    return args;
+  }
+  return safetyComputerArgs();
+}
+
 function inferStrictInlineFileContent(value) {
   const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
-  const match = text.match(/(?:\bcontent\b|\btext\b|\bwith\s+text\b|\u0441\s+\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0441\u043e\s+\u0441\u0442\u0440\u043e\u043a\u043e\u0439|\u0441\u0442\u0440\u043e\u043a\u043e\u0439)\s*[:=-]?\s*([\s\S]{1,1000}?)(?:[,.;]\s*(?:\bread\b|\bverify\b|\bcheck\b|\bdelete\b|\bremove\b|\breply\b|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u0440\u043e\u0432\u0435\u0440|\u0443\u0431\u0435\u0434|\u0441\u0432\u0435\u0440|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440|\u043e\u0442\u0432\u0435\u0442|\u0441\u043a\u0430\u0436)(?:\s|$)|$)/iu);
+  const match = text.match(/(?:\bcontent\b|\btext\b|\bwith\s+text\b|\u0441\s+\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0442\u0435\u043a\u0441\u0442\u043e\u043c|\u0441\u043e\s+\u0441\u0442\u0440\u043e\u043a\u043e\u0439|\u0441\u0442\u0440\u043e\u043a\u043e\u0439)\s*[:=-]?\s*([\s\S]{1,1000}?)(?:[,.;]\s*(?:\bread\b|\bverify\b|\bcheck\b|\bdelete\b|\bremove\b|\breply\b|\u043f\u0440\u043e\u0447\u0438\u0442\w*|\u043f\u0440\u043e\u0432\u0435\u0440\w*|\u0443\u0431\u0435\u0434\w*|\u0441\u0432\u0435\u0440\w*|\u0443\u0434\u0430\u043b\w*|\u0441\u043e\u0442\u0440\w*|\u043e\u0442\u0432\u0435\u0442\w*|\u0441\u043a\u0430\u0436\w*)(?:\s|$)|$)/iu);
   if (!match) {
     return "";
   }
@@ -1874,6 +1905,10 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   }
   const allText = responsesPayloadPlainText(payload);
   const userText = responsesPayloadUserText(payload) || allText;
+  args = applyCriticalDestructiveSafety(args, userText || allText);
+  if (args.operation === "safety") {
+    return JSON.stringify(args);
+  }
   const linkText = inferLinkTextFromText(userText);
   const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
   const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
@@ -8105,7 +8140,7 @@ async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childE
   };
   const args = inferGonkaComputerArguments(payload);
   const operation = normalizeGonkaComputerOperation(args?.operation || "");
-  if (!args || !["browser", "web", "fetch", "search", "open-url", "download", "file", "audio", "time", "time-status", "system-resources", "status", "wallpaper", "desktop"].includes(operation)) {
+  if (!args || !["browser", "web", "fetch", "search", "open-url", "download", "file", "audio", "time", "time-status", "system-resources", "status", "wallpaper", "desktop", "safety"].includes(operation)) {
     return null;
   }
   traceStep(trace, "codex.direct-computer-fallback", { operation, action: args.action || "", hasUrl: Boolean(args.url), hasPath: Boolean(args.path) });
@@ -8175,8 +8210,14 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
   const inner = parseJsonMaybe(raw);
   const action = String(inner?.action || args?.action || "").toLowerCase();
   let operation = normalizeGonkaComputerOperation(args?.operation || inner?.operation || inner?.capability || "");
+  if (!operation && ["cycle", "write", "append", "read", "delete", "list", "stat"].includes(action) && (inner?.path || args?.path)) {
+    operation = "file";
+  }
   if (!operation && action === "screenshot") {
     operation = "browser";
+  }
+  if ((operation === "safety" || action === "confirmation_required") && inner && typeof inner === "object") {
+    return "\u042d\u0442\u043e \u043e\u043f\u0430\u0441\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435. \u042f \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438 \u044f\u0432\u043d\u043e \u0442\u043e\u0447\u043d\u0443\u044e \u0446\u0435\u043b\u044c \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u044f/\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438, \u0438 \u044f \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043f\u043e\u043a\u0430\u0436\u0443 \u043f\u043b\u0430\u043d.";
   }
   if (action === "screenshot" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
@@ -8710,6 +8751,10 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   if (!out.timeoutMs) {
     out.timeoutMs = 90000;
   }
+  const safeOut = applyCriticalDestructiveSafety(out, text);
+  if (safeOut.operation === "safety") {
+    return safeOut;
+  }
   if (hasScreenshotIntent(text)) {
     if (!out.operation || out.operation === "web" || out.operation === "open-url" || out.operation === "system-resources") {
       out.operation = hasBrowserPageIntent(text) ? "browser" : "desktop";
@@ -8754,14 +8799,16 @@ function compactGonkaDirectToolResult(args, run) {
   if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
     const compact = {
       ok: parsed.ok !== undefined ? Boolean(parsed.ok) : run.exitCode === 0,
-      operation: args?.operation || "",
+      operation: args?.operation || parsed.operation || parsed.capability || "",
       action: parsed.action || args?.action || "",
       exitCode: Number.isSafeInteger(Number(parsed.exitCode)) ? Number(parsed.exitCode) : run.exitCode,
       status: parsed.status || parsed.diagnostic?.reason || "",
+      reason: parsed.reason || parsed.diagnostic?.reason || "",
       text: String(parsed.text || parsed.output || "").slice(0, gonkaDirectToolResultChars),
       path: parsed.path || parsed.targetPath || parsed.localPath || "",
       url: parsed.url || parsed.sourceUrl || "",
       bytes: parsed.bytes,
+      deleted: parsed.deleted,
       sha256: parsed.sha256 || parsed.artifactSha256 || "",
       jobId: parsed.sourceJobId || parsed.jobId || parsed.diagnostic?.job?.id || ""
     };
@@ -10361,9 +10408,17 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  if (!value) throw new Error('computer time set requires value');",
     "  return `$ErrorActionPreference = 'Stop'\\nSet-Date -Date ${ps(value)}\\nGet-Date -Format 'yyyy-MM-dd HH:mm:ss K'`;",
     "}",
+    "function safetyPowerShell(req) {",
+    "  const encoded = Buffer.from(JSON.stringify({ reason: String(req.reason || 'destructive-action').slice(0, 120) }), 'utf8').toString('base64');",
+    "  return `$ErrorActionPreference = 'Stop'\\n$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json\\n[pscustomobject]@{ ok=$true; operation='safety'; action='confirmation_required'; status='blocked'; reason=[string]$req.reason; text='Dangerous action requires explicit confirmation. No changes made.' } | ConvertTo-Json -Compress`;",
+    "}",
     "async function computer(argsText) {",
     "  const req = JSON.parse(argsText || '{}');",
     "  const operation = String(req.operation || req.action || '').toLowerCase().replace(/_/g, '-');",
+    "  if (operation === 'safety' || operation === 'confirmation-required' || operation === 'confirm') {",
+    "    await scriptPowerShell(safetyPowerShell(req), { name: 'computer-safety', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 5000, 10000)) });",
+    "    return;",
+    "  }",
     "  if (operation === 'wallpaper' || operation === 'desktop-wallpaper' || (operation === 'desktop' && String(req.action || '').toLowerCase() === 'wallpaper')) {",
     "    await scriptPowerShell(wallpaperPowerShell(req), { name: 'computer-wallpaper', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 120000, 240000)) });",
     "    return;",
