@@ -9664,7 +9664,12 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   }
   repairBrowserUrlFromText(out, text);
   if (hasScreenshotIntent(text)) {
-    if (!out.operation || out.operation === "web" || out.operation === "open-url" || out.operation === "system-resources") {
+    if (!out.operation
+      || out.operation === "web"
+      || out.operation === "open-url"
+      || out.operation === "system-resources"
+      || out.operation === "status"
+      || (!hasExplicitScriptIntent(text) && ["script", "run", "shell"].includes(out.operation))) {
       out.operation = hasBrowserPageIntent(text) ? "browser" : "desktop";
     }
     if (out.operation === "browser" || out.operation === "desktop") {

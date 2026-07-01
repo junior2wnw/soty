@@ -2327,6 +2327,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("hasDesktopSurfaceIntent"));
       assert(agentSource.includes("hasScreenshotIntent"));
       assert(agentSource.includes("Resolve-ScreenshotPath"));
+      assert(agentSource.includes('["script", "run", "shell"].includes(out.operation)'));
       assert(agentSource.includes("xn--n1afe0b"));
       assert(agentSource.includes("titleChanged"));
       assert(agentSource.includes("%USERPROFILE%\\\\Desktop"));
