@@ -154,6 +154,12 @@ export function createSourceTaskClassifier(dependencies = {}) {
     if (/\b(whoami|hostname)\b|computername|username/u.test(lower)) {
       return "identity-probe";
     }
+    if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
+      return "driver-check";
+    }
+    if (hasSecurityCheckIntent(normalizeRoutineIntentText(lower))) {
+      return "security-check";
+    }
     if (/volume|mute|audio|sound|endpointvolume|nircmd|sndvol|speaker|mic|микрофон|звук|громк/u.test(lower)) {
       return /mute|muted|выключ/u.test(lower) ? "audio-mute" : "audio-volume";
     }
