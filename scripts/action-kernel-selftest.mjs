@@ -63,8 +63,8 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(health.body.computerUsePlane.legacyEntrypoint, "soty_computer");
       assert(health.body.openAiToolPlane.builtInTools.includes("image_generation"));
       assertEqual(health.body.openAiToolPlane.centralResolver, "stock-codex-cli");
-      assertEqual(health.body.openAiToolPlane.gonkaAdapter.syntheticToolCalls, false);
-      assertEqual(health.body.openAiToolPlane.gonkaAdapter.directComputerRecovery, false);
+      assert(health.body.openAiToolPlane.gonkaAdapter?.syntheticToolCalls !== true);
+      assert(health.body.openAiToolPlane.gonkaAdapter?.directComputerRecovery !== true);
       assert(health.body.openAiToolPlane.mcp.publicTools.includes("computer"));
       assert(!health.body.openAiToolPlane.mcp.publicTools.includes("image_gen"));
       assert(health.body.computerUsePlane.standardTools.includes("computer"));
@@ -178,8 +178,8 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(health.body.codexAdapterRole, "direct-agent-transport");
         assertEqual(health.body.gonkaDirectAgent, true);
         assertEqual(health.body.codexCliBypassed, true);
-        assertEqual(health.body.codexAdapterHeuristics, "disabled");
-        assertEqual(health.body.codexDirectComputerRecovery, false);
+        assert(!Object.hasOwn(health.body, "codexAdapterHeuristics"));
+        assert(!Object.hasOwn(health.body, "codexDirectComputerRecovery"));
         assertEqual(health.body.openAiToolPlane.codexCliFeatureFlags.length, 0);
         const models = await requestPort(gonkaPort, "GET", "/codex-gonka/v1/models");
         assertEqual(models.status, 200);
@@ -1357,7 +1357,6 @@ async function runScenarios({ relayUrl } = {}) {
       for (const needle of [
         "desktop-cycle",
         "cleanInferredFileContent",
-        "shouldForceDirectComputerRecoveryAfterNoProgress",
         "computer <json>",
         "SOTY_LOCAL_API.mjs computer",
         "audio-get",
@@ -1685,8 +1684,6 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiBuiltInTools"));
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
-      assert(agent.includes("codexGonkaAdapterHeuristics"));
-      assert(agent.includes("codexDirectComputerRecovery"));
       assert(agent.includes("codexActionRecoverableIdleAfterProgressTimeoutMs"));
       assert(agent.includes("isActionFollowupPrompt"));
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
@@ -1695,11 +1692,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(contentAdapters.includes('action === "cycle"'));
       assert(agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
-      assert(agent.includes("gonkaForcedToolChoice"));
-      assert(agent.includes("fallbackGonkaComputerToolCalls"));
-      assert(agent.includes("immediateGonkaComputerToolResponse"));
-      assert(agent.includes("responsesPayloadHasToolResult"));
-      assert(agent.includes("responsesInputItemHasToolResult"));
+      assert(agent.includes("explicitGonkaToolChoice"));
+      assert(!agent.includes("codexGonkaAdapterHeuristics"));
+      assert(!agent.includes("codexDirectComputerRecovery"));
+      assert(!agent.includes("gonkaForcedToolChoice"));
+      assert(!agent.includes("fallbackGonkaComputerToolCalls"));
+      assert(!agent.includes("immediateGonkaComputerToolResponse"));
+      assert(!agent.includes("runDirectGonkaComputerFallback"));
+      assert(!agent.includes("responsesPayloadHasToolResult"));
+      assert(!agent.includes("responsesInputItemHasToolResult"));
       assert(agent.includes("extractAuthoritativeUserRequest"));
       assert(agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("safeDirectComputerToolTimeoutMs"));
@@ -1725,8 +1726,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("wallpaperPowerShell"));
       assert(agent.includes("ResolveWallpaperImageUrl"));
       assert(agent.includes("operation === 'wallpaper'"));
-      assert(agent.includes("shouldRecoverProoflessComputerAction"));
-      assert(agent.includes("shouldRecoverNoProgressComputerAction"));
+      assert(!agent.includes("shouldRecoverProoflessComputerAction"));
+      assert(!agent.includes("shouldRecoverNoProgressComputerAction"));
+      assert(!agent.includes("shouldForceDirectComputerRecoveryAfterNoProgress"));
       assert(agent.includes("idle after progress"));
       assert(agent.includes("finalTextLooksLikeActionProof"));
       assert(agent.includes("inferLinkTextFromText"));

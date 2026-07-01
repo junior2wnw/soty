@@ -102,11 +102,9 @@ const codexGonkaFallbackModel = safeCodexModelId(
 const codexGonkaRequestTimeoutMs = safeGonkaRequestTimeoutMs(process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS);
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
-const codexGonkaAdapterHeuristics = process.env.SOTY_GONKA_ADAPTER_HEURISTICS === "1";
 const gonkaDirectAgent = codexUsesGonka && process.env.SOTY_GONKA_DIRECT_AGENT !== "0";
 const gonkaDirectMaxToolTurns = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_GONKA_DIRECT_MAX_TOOL_TURNS || "4", 10) || 4, 8));
 const gonkaDirectToolResultChars = safeAgentLimit(process.env.SOTY_GONKA_DIRECT_TOOL_RESULT_CHARS, 6000, 32_000);
-const codexDirectComputerRecovery = process.env.SOTY_CODEX_DIRECT_COMPUTER_RECOVERY === "1";
 const codexNativeWebSearch = codexUsesGonka
   ? process.env.SOTY_CODEX_WEB_SEARCH === "1"
   : process.env.SOTY_CODEX_WEB_SEARCH !== "0";
@@ -668,15 +666,6 @@ async function handleGonkaResponsesProxy(request, response, headers) {
     return;
   }
   const responseModel = gonkaResponseModel(payload?.model);
-  const immediateToolResponse = immediateGonkaComputerToolResponse(payload, responseModel);
-  if (immediateToolResponse) {
-    if (payload?.stream === true) {
-      streamImmediateGonkaToolResponse(immediateToolResponse, response, headers, responseModel);
-    } else {
-      sendJson(response, 200, headers, immediateToolResponse);
-    }
-    return;
-  }
   let upstreamResult;
   try {
     upstreamResult = await fetchGonkaChatCompletion(payload, apiKey);
@@ -801,9 +790,9 @@ function gonkaChatCompletionPayload(payload, modelOverride = "") {
   };
   if (tools.length > 0) {
     body.tools = tools;
-    const forcedToolChoice = gonkaForcedToolChoice(payload, tools);
-    if (forcedToolChoice) {
-      body.tool_choice = forcedToolChoice;
+    const explicitToolChoice = explicitGonkaToolChoice(payload?.tool_choice, tools);
+    if (explicitToolChoice) {
+      body.tool_choice = explicitToolChoice;
     } else if (typeof payload?.tool_choice === "string" && ["auto", "none", "required"].includes(payload.tool_choice)) {
       body.tool_choice = payload.tool_choice;
     } else {
@@ -813,136 +802,15 @@ function gonkaChatCompletionPayload(payload, modelOverride = "") {
   return body;
 }
 
-function gonkaForcedToolChoice(payload, tools) {
-  if (!codexGonkaAdapterHeuristics) {
+function explicitGonkaToolChoice(toolChoice, tools) {
+  if (!toolChoice || typeof toolChoice !== "object") {
     return null;
   }
-  if (!Array.isArray(tools) || !tools.some((tool) => tool?.function?.name === "computer")) {
+  const requestedName = safeChatToolName(toolChoice?.function?.name || toolChoice?.name || "");
+  if (!requestedName || !Array.isArray(tools) || !tools.some((tool) => safeChatToolName(tool?.function?.name) === requestedName)) {
     return null;
   }
-  const text = responsesPayloadPlainText(payload).slice(0, 20_000);
-  const family = (text.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
-  const wantsComputer = hasDesktopSurfaceIntent(text)
-    || /function tool\s+`?computer`?|operation\s*=\s*(?:web|fetch|search|file|audio|browser|desktop|wallpaper|script|run)|computer-use|компьютерн[\p{L}\p{N}_-]*\s+инструмент|обои|скачай|загрузи|поставь|установи/iu.test(text);
-  const toolFamilies = new Set([
-    "audio-mute",
-    "audio-volume",
-    "browser",
-    "console",
-    "desktop",
-    "driver-check",
-    "durable-action",
-    "file-work",
-    "download-image-wallpaper",
-    "generated-image-wallpaper",
-    "identity-probe",
-    "lifecycle",
-    "package-install",
-    "power-check",
-    "program-control",
-    "security-check",
-    "script-task",
-    "service-check",
-    "software",
-    "software-check",
-    "system-check",
-    "system-time",
-    "wallpaper",
-    "web-lookup",
-    "windows-reinstall"
-  ]);
-  if (!wantsComputer && !toolFamilies.has(family)) {
-    return null;
-  }
-  return { type: "function", function: { name: "computer" } };
-}
-
-function shouldForceGonkaComputerFromPayload(payload) {
-  return Boolean(gonkaForcedToolChoice(payload, [gonkaComputerChatTool()]));
-}
-
-function fallbackGonkaComputerToolCalls(payload, message = {}) {
-  if (!codexGonkaAdapterHeuristics) {
-    return [];
-  }
-  if (responsesPayloadHasToolResult(payload) || !shouldForceGonkaComputerFromPayload(payload) || Array.isArray(message?.tool_calls) && message.tool_calls.length > 0) {
-    return [];
-  }
-  const args = inferGonkaComputerArguments(payload);
-  if (!args) {
-    return [];
-  }
-  return [{
-    id: `call_${randomUUID().replace(/-/gu, "")}`,
-    type: "function",
-    function: {
-      name: "computer",
-      arguments: JSON.stringify(args)
-    }
-  }];
-}
-
-function immediateGonkaComputerToolResponse(payload, model) {
-  if (!codexGonkaAdapterHeuristics) {
-    return null;
-  }
-  const calls = fallbackGonkaComputerToolCalls(payload, {});
-  if (calls.length === 0) {
-    return null;
-  }
-  return gonkaChatCompletionResponseObject({
-    created: Math.floor(Date.now() / 1000),
-    choices: [{ message: { tool_calls: calls } }],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-  }, model, null);
-}
-
-function streamImmediateGonkaToolResponse(body, response, headers, model) {
-  const writer = responsesSseWriter(response, headers, model);
-  for (const item of Array.isArray(body?.output) ? body.output : []) {
-    if (item?.type === "function_call") {
-      writer.tool({
-        id: item.call_id,
-        type: "function",
-        function: {
-          name: item.name,
-          arguments: item.arguments
-        }
-      });
-    }
-  }
-  writer.complete();
-}
-
-function responsesPayloadHasToolResult(payload) {
-  const items = Array.isArray(payload?.input) ? payload.input : [];
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (responsesInputItemHasToolResult(item)) {
-      return true;
-    }
-    if (responsesInputItemIsUserMessage(item) || item?.type === "message" || typeof item === "string") {
-      return false;
-    }
-  }
-  return false;
-}
-
-function responsesInputItemIsUserMessage(item) {
-  const role = String(item?.role || "").toLowerCase();
-  const type = String(item?.type || "").toLowerCase();
-  return role === "user" || (type === "message" && (!role || role === "user"));
-}
-
-function responsesInputItemHasToolResult(item) {
-  const type = String(item?.type || "").toLowerCase();
-  if (type === "function_call_output" || type === "tool_result" || type === "function_result") {
-    return true;
-  }
-  if (Array.isArray(item?.content) && item.content.some((part) => /tool|function/u.test(String(part?.type || "").toLowerCase()) && typeof part?.output === "string")) {
-    return true;
-  }
-  return false;
+  return { type: "function", function: { name: requestedName } };
 }
 
 function inferGonkaComputerArguments(payload) {
@@ -2081,10 +1949,6 @@ async function streamGonkaChatCompletions(upstream, response, headers, model, pa
     if (buffer.trim()) {
       processGonkaSsePacket(buffer, writer, payload);
     }
-    const fallbackCalls = fallbackGonkaComputerToolCalls(payload, {});
-    for (const call of fallbackCalls) {
-      writer.tool(mapGonkaToolCallForCodex(call, payload));
-    }
     writer.complete();
   } catch (error) {
     writer.error(502, error instanceof Error ? error.message : String(error));
@@ -2131,7 +1995,7 @@ function streamGonkaChatCompletionObject(body, response, headers, model, payload
   const message = choice?.message || {};
   const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     ? message.tool_calls
-    : fallbackGonkaComputerToolCalls(payload, message);
+    : [];
   if (toolCalls.length === 0 && typeof message.content === "string" && message.content) {
     writer.text(message.content);
   }
@@ -2254,7 +2118,7 @@ function gonkaChatCompletionResponseObject(body, model, payload = null) {
   const message = choice?.message || {};
   const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
     ? message.tool_calls
-    : fallbackGonkaComputerToolCalls(payload, message);
+    : [];
   const output = [];
   if (toolCalls.length === 0 && typeof message.content === "string" && message.content) {
     output.push({
@@ -6413,24 +6277,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
       state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
       outPath = noProgressRetryOutPath;
     }
-    const forceNoProgressComputerRecovery = shouldForceDirectComputerRecoveryAfterNoProgress({ result, state, taskFamily, text, target, signal });
-    if ((codexDirectComputerRecovery && (shouldRetryCodexAfterNoProgress(result, state, signal) || shouldRecoverNoProgressComputerAction({ result, state, taskFamily, text, target, signal }))) || forceNoProgressComputerRecovery) {
-      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal, force: forceNoProgressComputerRecovery });
-      if (direct) {
-        result = direct;
-        state.recoverableFinalText = direct.text;
-        const directMessage = cleanAgentChatReply(direct.text);
-        if (direct.exitCode === 0 && directMessage) {
-          state.lastMessage = directMessage;
-          state.messages.push(directMessage);
-        }
-        state.terminal.push({
-          key: "direct-computer-fallback",
-          text: direct.text,
-          exitCode: direct.exitCode
-        });
-      }
-    }
   } finally {
     if (activeTurn) {
       activeTurn.done = true;
@@ -6557,25 +6403,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         exitCode: 125
       };
     }
-    if (shouldRepairMissingDeletionProof({ taskFamily, text, target, finalText, state })) {
-      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal, force: true });
-      if (direct) {
-        state.terminal.push({
-          key: "direct-computer-fallback-missing-delete-proof",
-          text: `${direct.text || ""}\n${direct.stdout || ""}`.trim(),
-          exitCode: direct.exitCode
-        });
-        if (direct.exitCode === 0 && computerActionHasDeletionProof(`${direct.text || ""}\n${direct.stdout || ""}`)) {
-          finalText = finalText || cleanAgentChatReply(direct.text);
-          messages = compactCodexMessages([finalText]);
-          result.exitCode = 0;
-          traceStep(trace, "codex.repaired-missing-delete-proof", {
-            taskFamily,
-            textChars: finalText.length
-          });
-        }
-      }
-    }
     if (shouldRejectProoflessComputerFinal({ taskFamily, text, target, finalText, state })) {
       traceStep(trace, "codex.proofless-action-final-rejected", {
         taskFamily,
@@ -6605,43 +6432,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
         ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
         exitCode: 126
       };
-    }
-    if (codexDirectComputerRecovery && shouldRecoverProoflessComputerAction({ taskFamily, text, target, finalText, state })) {
-      const direct = await runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace, signal });
-      if (direct) {
-        state.terminal.push({
-          key: "direct-computer-fallback-proofless-final",
-          text: direct.text,
-          exitCode: direct.exitCode
-        });
-        if (direct.exitCode === 0) {
-          finalText = cleanAgentChatReply(direct.text) || finalText;
-          messages = compactCodexMessages([finalText]);
-          result.exitCode = 0;
-          traceStep(trace, "codex.recovered-proofless-action-final", {
-            taskFamily,
-            textChars: finalText.length
-          });
-        } else {
-          recordLearningReceipt({
-            kind: "codex-turn",
-            family: taskFamily,
-            result: "failed",
-            route: `${codexRouteName}+direct-proofless-recovery`,
-            taskSig: taskSignature(text),
-            proof: `exitCode=${direct.exitCode || 1}; prooflessFinal=true; directFallback=failed`,
-            exitCode: direct.exitCode || 1,
-            durationMs: Date.now() - startedAt,
-            ...learningContext
-          });
-          return {
-            ok: false,
-            text: agentFailureText(direct.text || finalText),
-            ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
-            exitCode: direct.exitCode || 1
-          };
-        }
-      }
     }
     let postCodexGuardPayload = null;
     if (taskFamily === "windows-reinstall" && target?.id) {
@@ -7099,13 +6889,6 @@ function computerActionNeedsDeletionProof(text) {
 function computerActionHasDeletionProof(text) {
   const value = String(text || "");
   return /(?:"action"\s*:\s*"(?:delete|cycle)"|"deleted"\s*:\s*true|"exists"\s*:\s*false|^deleted\s+|desktop-file-cycle\s+ok|missing\s+[a-z]:\\|missing\s+\/|файл\s+удал[её]н|удал[её]н[ао]?)/imu.test(value);
-}
-
-function shouldRepairMissingDeletionProof({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
-  if (!target?.id || !finalText || !computerActionRequiresProof(taskFamily, text) || !computerActionNeedsDeletionProof(text)) {
-    return false;
-  }
-  return !computerActionHasDeletionProof(`${finalText}\n${compactTerminalMessages(state?.terminal || []).join("\n")}`);
 }
 
 function formatRecoveredOperatorFailureText(value, exitCode = 1) {
@@ -7978,55 +7761,6 @@ function codexOutputHasNonRetryableProviderError(value) {
   return /(?:model\s+["']?[^"'\n]+["']?\s+not\s+found|model_not_found|unknown\s+model|invalid\s+model|available:\s*[a-z0-9/_., -]+)/u.test(text);
 }
 
-function shouldRecoverNoProgressComputerAction({ result = null, state = null, taskFamily = "", text = "", target = null, signal = null } = {}) {
-  if (!codexDirectComputerRecovery) {
-    return false;
-  }
-  if (signal?.aborted || !target?.id || !result || result.exitCode !== 124) {
-    return false;
-  }
-  if (state?.terminal?.length > 0) {
-    return false;
-  }
-  if (!computerActionRequiresProof(taskFamily, text)) {
-    return false;
-  }
-  const payload = {
-    input: [{
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
-    }]
-  };
-  return Boolean(inferGonkaComputerArguments(payload));
-}
-
-function shouldForceDirectComputerRecoveryAfterNoProgress({ result = null, state = null, taskFamily = "", text = "", target = null, signal = null } = {}) {
-  if (signal?.aborted || !target?.id || !result || result.exitCode !== 124) {
-    return false;
-  }
-  if (state?.usage?.actual || state?.messages?.length || state?.terminal?.length || cleanAgentChatReply(state?.lastMessage || "")) {
-    return false;
-  }
-  if (!computerActionRequiresProof(taskFamily, text)) {
-    return false;
-  }
-  const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
-  if (!/codex (?:no-progress|idle after progress) timeout/u.test(details)) {
-    return false;
-  }
-  const payload = {
-    input: [{
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
-    }]
-  };
-  const args = inferGonkaComputerArguments(payload);
-  const operation = normalizeGonkaComputerOperation(args?.operation || "");
-  return Boolean(args && ["file", "download", "audio", "time", "time-status", "system-resources", "status", "open-url", "web", "fetch", "search"].includes(operation));
-}
-
 function codexSessionKey(source, target = null, taskFamily = "generic") {
   const safe = sanitizeAgentSource(source);
   const targetId = String(target?.id || safe.preferredTargetId || "").trim();
@@ -8295,44 +8029,6 @@ function quoteWindowsCommandArg(value) {
   return `"${text.replace(/(\\*)"/gu, "$1$1\\\"").replace(/(\\+)$/u, "$1$1")}"`;
 }
 
-async function runDirectGonkaComputerFallback({ text, taskFamily, jobDir, childEnv, trace = null, signal = null, force = false } = {}) {
-  if (!force && !codexDirectComputerRecovery) {
-    return null;
-  }
-  if (signal?.aborted) {
-    return null;
-  }
-  const payload = {
-    input: [{
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
-    }]
-  };
-  const args = inferGonkaComputerArguments(payload);
-  const operation = normalizeGonkaComputerOperation(args?.operation || "");
-  if (!args || !["browser", "web", "fetch", "search", "open-url", "download", "file", "audio", "time", "time-status", "system-resources", "status", "wallpaper", "desktop", "safety"].includes(operation)) {
-    return null;
-  }
-  traceStep(trace, "codex.direct-computer-fallback", { operation, action: args.action || "", hasUrl: Boolean(args.url), hasPath: Boolean(args.path) });
-  await traceWriteJson(trace, "direct-computer-fallback.json", { args });
-  const run = await runSimpleProcess(process.execPath, ["SOTY_LOCAL_API.mjs", "computer", JSON.stringify(args)], {
-    cwd: jobDir,
-    env: childEnv,
-    timeoutMs: Math.max(1000, Math.min(Number(args.timeoutMs) || 120000, 180000)),
-    signal
-  });
-  const finalText = formatDirectComputerFallbackText(args, run.stdout, run.stderr)
-    || (run.exitCode === 0 ? "Готово." : `! computer: ${sourceFailureProof(run.stderr || run.stdout)}`);
-  return {
-    ok: run.exitCode === 0,
-    text: finalText.slice(0, maxChatChars),
-    exitCode: run.exitCode,
-    stdout: run.stdout,
-    stderr: run.stderr
-  };
-}
-
 function runSimpleProcess(file, args, { cwd, env, timeoutMs = 120000, signal = null } = {}) {
   return new Promise((resolve) => {
     const child = spawnCommand(file, args, { cwd, env, windowsHide: true });
@@ -8375,7 +8071,7 @@ function runSimpleProcess(file, args, { cwd, env, timeoutMs = 120000, signal = n
   });
 }
 
-function formatDirectComputerFallbackText(args, stdout, stderr = "") {
+function formatDirectComputerToolText(args, stdout, stderr = "") {
   const wrapper = parseJsonMaybe(stdout);
   const raw = typeof wrapper?.text === "string" ? wrapper.text : String(stdout || "").trim();
   const inner = parseJsonMaybe(raw);
@@ -8526,34 +8222,11 @@ function recoverRawDirectComputerJsonFinal(finalText) {
   if (!parsed || typeof parsed !== "object") {
     return "";
   }
-  const formatted = formatDirectComputerFallbackText({}, text, "");
+  const formatted = formatDirectComputerToolText({}, text, "");
   if (!formatted || formatted.trim() === text || /^[{[]/u.test(formatted.trim())) {
     return "";
   }
   return cleanActionText(formatted, maxChatChars);
-}
-
-function shouldRecoverProoflessComputerAction({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
-  if (!codexDirectComputerRecovery) {
-    return false;
-  }
-  if (!target?.id || !finalText || state?.terminal?.length > 0) {
-    return false;
-  }
-  if (!computerActionRequiresProof(taskFamily, text)) {
-    return false;
-  }
-  if (finalTextLooksLikeActionProof(finalText)) {
-    return false;
-  }
-  const payload = {
-    input: [{
-      type: "message",
-      role: "user",
-      content: [{ type: "input_text", text: `Current user request (authoritative):\n${String(text || "").trim()}\n\n- task_family: ${taskFamily || "generic"}` }]
-    }]
-  };
-  return Boolean(inferGonkaComputerArguments(payload));
 }
 
 function computerActionRequiresProof(taskFamily, text) {
@@ -8788,7 +8461,7 @@ async function runGonkaDirectSotySessionTurn({
         && (callIndex === normalizedToolCalls.length - 1 || shouldSingleSuccessfulDirectToolSuffice(executed.args, text, taskFamily))
         && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
         finalText = executed.userText
-          || formatDirectComputerFallbackText(executed.args, executed.toolText, "")
+          || formatDirectComputerToolText(executed.args, executed.toolText, "")
           || formatRecoveredOperatorText(executed.toolText)
           || "";
         exitCode = 0;
@@ -9599,7 +9272,7 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
   const logicalExitCode = directComputerRunExitCode(run);
   const logicalRun = { ...run, exitCode: logicalExitCode };
   const modelText = compactGonkaDirectToolResult(args, logicalRun);
-  const userText = formatDirectComputerFallbackText(args, run.stdout, run.stderr)
+  const userText = formatDirectComputerToolText(args, run.stdout, run.stderr)
     || formatRecoveredOperatorText(run.stdout)
     || formatRecoveredOperatorFailureText(run.stderr || run.stdout, logicalExitCode)
     || modelText;
@@ -9811,7 +9484,7 @@ async function finalTextFromGonkaDirectToolResults({ text = "", taskFamily = "",
 
 function recoverDirectComputerProofText(toolResults = []) {
   for (const item of toolResults.filter(Boolean).slice().reverse()) {
-    const formatted = formatDirectComputerFallbackText({}, item, "");
+    const formatted = formatDirectComputerToolText({}, item, "");
     const clean = cleanActionText(formatted || "", maxChatChars);
     if (clean && !/^\s*[{[]/u.test(clean) && !/"\s*ok\s*"\s*:/iu.test(clean)) {
       return clean;
@@ -17520,8 +17193,7 @@ function openAiToolPlaneStatus() {
     },
     gonkaAdapter: {
       purpose: direct ? "direct-agent-transport" : "model-provider-transport",
-      syntheticToolCalls: codexGonkaAdapterHeuristics,
-      directComputerRecovery: codexDirectComputerRecovery,
+      syntheticToolCalls: false,
       directAgent: direct,
       codexCliBypassed: direct
     },
@@ -17590,8 +17262,6 @@ function runtimeHealth() {
     codexProviderAdapter: codexUsesGonka ? (directGonka ? "gonka-direct-chat-completions" : "gonka-chat-completions-via-local-responses-adapter") : "",
     codexCentralResolver: directGonka ? "gonka-direct-chat-completions" : (canRunCodexBrain() ? "stock-codex-cli" : "server-relay-only"),
     codexAdapterRole: codexUsesGonka ? (directGonka ? "direct-agent-transport" : "model-provider-transport") : "native-provider",
-    codexAdapterHeuristics: codexGonkaAdapterHeuristics ? "enabled" : "disabled",
-    codexDirectComputerRecovery,
     gonkaDirectAgent: directGonka,
     codexCliBypassed: directGonka,
     codexMcpComputer: "attached-for-computer-tasks",
