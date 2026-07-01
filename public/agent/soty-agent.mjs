@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.104";
+const agentVersion = "0.4.105";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1034,15 +1034,7 @@ function inferGonkaComputerArguments(payload) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
   }
   if (args.operation === "app") {
-    if (!args.app) {
-      args.app = inferAppNameFromText(userText);
-    }
-    if (args.target && !args.text) {
-      args.text = args.target;
-    }
-    if (!args.maxElements) {
-      args.maxElements = 60;
-    }
+    applyAppComputerDefaults(args, userText);
   }
   if (hasScreenshotIntent(userText || allText)) {
     args.operation = hasBrowserPageIntent(userText || allText) ? "browser" : "desktop";
@@ -1062,6 +1054,9 @@ function inferGonkaComputerArguments(payload) {
   }
   if (!args.action) {
     args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
+  }
+  if (args.operation === "app") {
+    applyAppComputerDefaults(args, userText);
   }
   Object.assign(args, applyExactFileCycleArgs(args, userText || allText));
   if (args.operation === "file" && hasCreateReadDeleteFileIntent(userText || allText) && args.path && args.content !== undefined) {
@@ -1190,7 +1185,11 @@ function normalizeGonkaComputerOperation(value) {
 }
 
 function hasAppWindowIntent(value) {
-  return /(?:\bapp(?:lication)?s?\b|\bwindow(?:s)?\b|\bgui\b|\bui\b|\bnotepad\b|\bcalc(?:ulator)?\b|\bmspaint\b|\bpaint\b|\bexplorer\b|\u043e\u043a\u043d|\u043f\u0440\u0438\u043b\u043e\u0436|\u043f\u0440\u043e\u0433\u0440\u0430\u043c|\u0431\u043b\u043e\u043a\u043d\u043e\u0442|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a|\u043f\u0435\u0439\u043d\u0442)/iu.test(String(value || ""));
+  return /(?:\bapp(?:lication)?s?\b|\bwindow(?:s)?\b|\bgui\b|\bui\b|\bnotepad\b|\bcalc(?:ulator)?\b|\bmspaint\b|\bpaint\b|\bexplorer\b|\bcodex\b|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441|\u043e\u043a\u043d|\u043f\u0440\u0438\u043b\u043e\u0436|\u043f\u0440\u043e\u0433\u0440\u0430\u043c|\u0431\u043b\u043e\u043a\u043d\u043e\u0442|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a|\u043f\u0435\u0439\u043d\u0442)/iu.test(String(value || ""));
+}
+
+function hasExplicitScriptIntent(value) {
+  return /(?:powershell|cmd(?:\.exe)?|\bterminal\b|\bconsole\b|\bshell\b|\bscript\b|\bcommand\b|get-process|\bprocess(?:es)?\b|\u043f\u0440\u043e\u0446\u0435\u0441|\u0442\u0435\u0440\u043c\u0438\u043d\u0430\u043b|\u043a\u043e\u043d\u0441\u043e\u043b|\u043a\u043e\u043c\u0430\u043d\u0434|\u0441\u043a\u0440\u0438\u043f\u0442)/iu.test(String(value || ""));
 }
 
 function inferAppNameFromText(text) {
@@ -1202,6 +1201,7 @@ function inferAppNameFromText(text) {
     [/calc(?:ulator)?|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442/iu, "calculator"],
     [/mspaint|paint|\u043f\u0435\u0439\u043d\u0442/iu, "paint"],
     [/explorer|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a/iu, "explorer"],
+    [/codex|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441/iu, "codex"],
     [/chrome|\u0445\u0440\u043e\u043c/iu, "chrome"],
     [/edge|\u044d\u0434\u0436/iu, "edge"]
   ];
@@ -1211,6 +1211,50 @@ function inferAppNameFromText(text) {
     }
   }
   return "";
+}
+
+function applyAppComputerDefaults(args, text) {
+  const out = args || {};
+  if (!out.app) {
+    out.app = inferAppNameFromText(text);
+  }
+  if (out.target && !out.text) {
+    out.text = out.target;
+  }
+  if (!out.content) {
+    const content = inferQuotedContent(text) || inferStrictInlineFileContent(text) || inferInlineFileContent(text);
+    if (content) {
+      out.content = content;
+    }
+  }
+  if (!out.action) {
+    out.action = inferGonkaComputerActionFromText(text, "app", out);
+  }
+  if (["type", "write", "input", "enter", "send", "submit"].includes(String(out.action || "").toLowerCase())) {
+    out.action = "type";
+    out.allowFocus = out.allowFocus !== false;
+    if (out.submit === undefined && shouldSubmitAppText(text, out)) {
+      out.submit = true;
+    }
+    delete out.script;
+    delete out.command;
+    delete out.cmd;
+    delete out.shell;
+  }
+  if (!out.maxElements) {
+    out.maxElements = 60;
+  }
+  return out;
+}
+
+function shouldSubmitAppText(text, args = {}) {
+  const value = String(text || "");
+  const app = String(args.app || "").toLowerCase();
+  if (args.submit !== undefined || args.send !== undefined || args.pressEnter !== undefined || args.enterAfterType !== undefined) {
+    return false;
+  }
+  return /(?:\bsend\b|\bsubmit\b|\bmessage\b|\bchat\b|\bdialog\b|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449\u0435\u043d|\u0434\u0438\u0430\u043b\u043e\u0433|\u0447\u0430\u0442|\u043d\u0430\u043f\u0438\u0448\u0438\s+(?:\u0435\u043c\u0443|\u0435\u0439|\u0438\u043c|\u0432\s+(?:\u0447\u0430\u0442|\u0434\u0438\u0430\u043b\u043e\u0433)))/iu.test(value)
+    || (app === "codex" && /(?:write|type|\u043d\u0430\u043f\u0438\u0448|\u0432\u0432\u0435\u0434)/iu.test(value));
 }
 
 function inferGonkaComputerOperationFromText(text, family, args) {
@@ -1273,8 +1317,8 @@ function inferGonkaComputerActionFromText(text, operation, args) {
   }
   if (operation === "app") {
     if (/launch|start|open\s+(?:app|program|window)|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0442\u043a\u0440/iu.test(lower) && (args.app || inferAppNameFromText(text))) return "launch";
+    if (/(?:type|input|enter|write|send|submit|message|\u0432\u0432\u0435\u0434|\u043d\u0430\u043f\u0435\u0447|\u043d\u0430\u043f\u0438\u0448|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449)/iu.test(lower) && (args.content || args.value || args.input || (!args.target && args.text))) return "type";
     if (/click|press|invoke|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a/iu.test(lower) || args.target || args.text) return "click";
-    if (/type|input|enter|write|\u0432\u0432\u0435\u0434|\u043d\u0430\u043f\u0435\u0447|\u043d\u0430\u043f\u0438\u0448/iu.test(lower) && (args.content || args.value || args.text)) return "type";
     if (/inspect|snapshot|read|elements|controls|\u044d\u043b\u0435\u043c|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u043e\u0441\u043c\u043e\u0442\u0440/iu.test(lower) || args.app || args.window || args.title) return "snapshot";
     return "list";
   }
@@ -6946,6 +6990,10 @@ function operatorPayloadLooksLikeCommandFailure(value) {
 
 function formatRecoveredOperatorText(value) {
   const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  const rawProcessTable = formatRawProcessWindowTableLeak(text);
+  if (rawProcessTable) {
+    return rawProcessTable;
+  }
   const single = text.replace(/\s+/gu, " ").trim();
   const missing = single.match(/^missing\s+(.+)$/iu);
   if (missing) {
@@ -6980,6 +7028,24 @@ function formatRecoveredOperatorText(value) {
     return `Текущее системное время: ${time[1]}. Изменение времени требует подтверждения${time[2].toLowerCase() === "true" ? "." : " и прав администратора."}`;
   }
   return text;
+}
+
+function formatRawProcessWindowTableLeak(value) {
+  const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  const single = text.replace(/\s+/gu, " ").trim();
+  if (!single) {
+    return "";
+  }
+  const looksLikeProcessTable = /\b(?:Id\s+ProcessName\s+MainWindowTitle|ProcessName\s+Id\s+MainWindowTitle|ProcessName\s+MainWindowTitle|MainWindowTitle)\b/iu.test(single)
+    && /(?:-{2,}\s+-{2,}|\b\d{2,}\s+(?:codex|chrome|powershell|cmd|cursor|code|explorer|notepad|msedge|soty)\b)/iu.test(single);
+  if (!looksLikeProcessTable) {
+    return "";
+  }
+  const names = Array.from(new Set((single.match(/\b(?:codex(?:-command-runner-[\w.]+)?|chrome|msedge|powershell|cmd|cursor|code|explorer|notepad|soty)\b/giu) || [])
+    .map((item) => item.toLowerCase())))
+    .slice(0, 6)
+    .join(", ");
+  return `\u042d\u0442\u043e \u0431\u044b\u043b \u0442\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432/\u043e\u043a\u043e\u043d${names ? ` (${names})` : ""}, \u0430 \u043d\u0435 \u043f\u0440\u0443\u0444 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f. \u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0432 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0438 \u043d\u0443\u0436\u043d\u043e \u0434\u0435\u043b\u0430\u0442\u044c \u0447\u0435\u0440\u0435\u0437 app/window-\u0430\u0434\u0430\u043f\u0442\u0435\u0440.`;
 }
 
 function recoveredFinalCoversUserRequest(finalText, userText, taskFamily = "generic", target = null) {
@@ -7814,6 +7880,7 @@ function universalComputerUseContractPromptLines() {
     "- Treat every computer-use request as an action to complete, not a topic to discuss. Do not ask the user to say `continue` after you already have the needed computer capability.",
     "- Prefer small reliable adapters over clever broad scripts: file/browser/desktop/audio/web first, shell/script only when the adapter cannot express the task.",
     "- For GUI app work, use the app/window adapter: list or snapshot first, then click/type by UI element name/index, and verify state after the action.",
+    "- For trusted desktop chat/composer apps such as Codex, Cursor, browser chats, or Soty itself: when the user asks to write/send a message to that app, use operation=\"app\" action=\"type\" with app name and submit=true; never answer with a Get-Process/window table.",
     "- Prefer UI Automation patterns (Invoke/Value/Selection/Toggle) over raw pointer control. Use pointer/focus fallbacks only when the structured app/browser route cannot express the task.",
     "- Never final-answer a completed action without proof from the selected computer: saved path, bytes, title/text, status, exit code, job state, or explicit blocker.",
     "- If a tool result is raw JSON or overly technical, translate it into a short user-facing outcome and keep internal transport/tool names hidden.",
@@ -8352,7 +8419,8 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
       return `\u041d\u0430\u0436\u0430\u043b: ${String(inner.target?.name || args?.target || args?.text || "element").trim()}${windowTitle ? ` \u0432 \u043e\u043a\u043d\u0435 ${windowTitle}` : ""}.`;
     }
     if (action === "type") {
-      return `\u0412\u0432\u0435\u043b \u0442\u0435\u043a\u0441\u0442: ${String(inner.target?.name || args?.target || "input").trim()}${windowTitle ? ` \u0432 \u043e\u043a\u043d\u0435 ${windowTitle}` : ""}.`;
+      const verb = inner.submitted === true ? "\u0412\u0432\u0435\u043b \u0438 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043b \u0442\u0435\u043a\u0441\u0442" : "\u0412\u0432\u0435\u043b \u0442\u0435\u043a\u0441\u0442";
+      return `${verb}: ${String(inner.target?.name || args?.target || "input").trim()}${windowTitle ? ` \u0432 \u043e\u043a\u043d\u0435 ${windowTitle}` : ""}.`;
     }
   }
   if ((operation === "web" || operation === "fetch" || operation === "search") && inner && typeof inner === "object") {
@@ -8896,22 +8964,19 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
       }
     }
   }
+  const inferredTextOperation = inferGonkaComputerOperationFromText(text, codexSessionFamilyBucket(taskFamily), out);
+  if ((out.operation === "script" || out.operation === "run" || out.operation === "system-resources" || out.operation === "status") && inferredTextOperation === "app" && !hasExplicitScriptIntent(text)) {
+    out.operation = "app";
+    delete out.script;
+    delete out.command;
+    delete out.cmd;
+    delete out.shell;
+  }
   if ((out.operation === "system-resources" || out.operation === "status") && hasAppWindowIntent(text)) {
     out.operation = "app";
   }
   if (out.operation === "app") {
-    if (!out.app) {
-      out.app = inferAppNameFromText(text);
-    }
-    if (out.target && !out.text) {
-      out.text = out.target;
-    }
-    if (!out.action) {
-      out.action = inferGonkaComputerActionFromText(text, "app", out);
-    }
-    if (!out.maxElements) {
-      out.maxElements = 60;
-    }
+    applyAppComputerDefaults(out, text);
   }
   Object.assign(out, applyExactFileCycleArgs(out, text));
   if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
@@ -9838,7 +9903,8 @@ function cleanAgentChatReply(value) {
     .join("\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
-  return isLikelyInternalCodexReasoningReply(text) ? "" : text;
+  const clean = formatRawProcessWindowTableLeak(text) || text;
+  return isLikelyInternalCodexReasoningReply(clean) ? "" : clean;
 }
 
 function stripHiddenReasoningBlocks(value) {
@@ -10576,7 +10642,8 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    elementIndex: Number.isFinite(Number(req.elementIndex ?? req.index)) ? Number(req.elementIndex ?? req.index) : -1,",
     "    maxElements: Math.max(10, Math.min(Number(req.maxElements) || Number(req.maxChars) || 60, 300)),",
     "    allowFocus: Boolean(req.allowFocus || req.focusFallback),",
-    "    allowPointer: Boolean(req.allowPointer || req.pointerFallback)",
+    "    allowPointer: Boolean(req.allowPointer || req.pointerFallback),",
+    "    submit: Boolean(req.submit || req.send || req.pressEnter || req.enterAfterType)",
     "  }), 'utf8').toString('base64');",
     "  return [",
     "    \"$ErrorActionPreference = 'Stop'\",",
@@ -10597,6 +10664,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"$processId = [int]$req.processId\",",
     "    \"$allowFocus = [bool]$req.allowFocus\",",
     "    \"$allowPointer = [bool]$req.allowPointer\",",
+    "    \"$submit = [bool]$req.submit\",",
     "    \"function App-Short([string]$value, [int]$limit = 220) { if ([string]::IsNullOrWhiteSpace($value)) { return '' }; $clean = (($value -replace '\\\\s+', ' ').Trim()); if ($clean.Length -gt $limit) { return $clean.Substring(0, $limit) }; return $clean }\",",
     "    \"function App-Rect($element) { $r = $element.Current.BoundingRectangle; return [pscustomobject]@{ x=[int][Math]::Round($r.X); y=[int][Math]::Round($r.Y); width=[int][Math]::Round($r.Width); height=[int][Math]::Round($r.Height) } }\",",
     "    \"function App-ControlType($element) { return (([string]$element.Current.ControlType.ProgrammaticName) -replace '^ControlType\\\\.', '') }\",",
@@ -10667,6 +10735,23 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"  }\",",
     "    \"  return $null\",",
     "    \"}\",",
+    "    \"function App-FindInputElement($window) {\",",
+    "    \"  $all = $window.FindAll($treeDescendants, $trueCondition)\",",
+    "    \"  $best = $null\",",
+    "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
+    "    \"    $e = $all.Item($i)\",",
+    "    \"    try { $null = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $r = $e.Current.BoundingRectangle; if ($e.Current.IsEnabled -and $r.Width -ge 1 -and $r.Height -ge 1) { $best = $e } } catch {}\",",
+    "    \"  }\",",
+    "    \"  if ($best) { return $best }\",",
+    "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
+    "    \"    $e = $all.Item($i)\",",
+    "    \"    $ct = App-ControlType $e\",",
+    "    \"    $name = (App-Short ([string]$e.Current.Name)).ToLowerInvariant()\",",
+    "    \"    $aid = (App-Short ([string]$e.Current.AutomationId) 120).ToLowerInvariant()\",",
+    "    \"    if ($ct -match 'Edit|Document' -or $name -match 'input|message|chat|prompt|compose|editor|write|type|ввод|сообщ|чат|промпт|редактор' -or $aid -match 'input|message|chat|prompt|compose|editor') { return $e }\",",
+    "    \"  }\",",
+    "    \"  return $null\",",
+    "    \"}\",",
     "    \"function App-LaunchName([string]$value) {\",",
     "    \"  $clean = $value.Trim().ToLowerInvariant()\",",
     "    \"  $aliases = @{ notepad='notepad.exe'; calc='calc.exe'; calculator='calc.exe'; paint='mspaint.exe'; mspaint='mspaint.exe'; explorer='explorer.exe'; chrome='chrome.exe'; edge='msedge.exe' }\",",
@@ -10700,8 +10785,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"  Start-Sleep -Milliseconds 500\",",
     "    \"  [pscustomobject]@{ ok=$true; operation='app'; action='click'; clicked=$true; method=$method; window=$windowInfo; target=(App-Info $target $elementIndex); elements=(App-Collect $window ([Math]::Min($maxElements, 40))) } | ConvertTo-Json -Depth 7 -Compress; return\",",
     "    \"}\",",
-    "    \"if ($action -eq 'type' -or $action -eq 'write' -or $action -eq 'input' -or $action -eq 'enter') {\",",
+    "    \"if ($action -eq 'type' -or $action -eq 'write' -or $action -eq 'input' -or $action -eq 'enter' -or $action -eq 'send' -or $action -eq 'submit') {\",",
     "    \"  $target = App-FindElement $window $needleElement $elementIndex\",",
+    "    \"  if (-not $target -and -not $needleElement -and $elementIndex -lt 0) { $target = App-FindInputElement $window }\",",
     "    \"  if (-not $target) { throw ('app input element not found: ' + $needleElement) }\",",
     "    \"  if ([string]::IsNullOrEmpty($inputValue)) { throw 'app type requires content/value/input' }\",",
     "    \"  $method = ''\",",
@@ -10711,8 +10797,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"    $old = ''; try { $old = [System.Windows.Forms.Clipboard]::GetText() } catch {}\",",
     "    \"    $target.SetFocus(); [System.Windows.Forms.Clipboard]::SetText($inputValue); [System.Windows.Forms.SendKeys]::SendWait('^a'); [System.Windows.Forms.SendKeys]::SendWait('^v'); if ($old) { try { [System.Windows.Forms.Clipboard]::SetText($old) } catch {} }; $method = 'focus-clipboard'\",",
     "    \"  }\",",
+    "    \"  $submitted = $false\",",
+    "    \"  if ($submit) { try { $target.SetFocus() } catch {}; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}'); $submitted = $true; Start-Sleep -Milliseconds 500 }\",",
     "    \"  Start-Sleep -Milliseconds 500\",",
-    "    \"  [pscustomobject]@{ ok=$true; operation='app'; action='type'; typed=$true; method=$method; window=$windowInfo; target=(App-Info $target $elementIndex); elements=(App-Collect $window ([Math]::Min($maxElements, 40))) } | ConvertTo-Json -Depth 7 -Compress; return\",",
+    "    \"  [pscustomobject]@{ ok=$true; operation='app'; action='type'; typed=$true; submitted=$submitted; method=$method; window=$windowInfo; target=(App-Info $target $elementIndex); elements=(App-Collect $window ([Math]::Min($maxElements, 40))) } | ConvertTo-Json -Depth 7 -Compress; return\",",
     "    \"}\",",
     "    \"throw ('unsupported app action: ' + $action)\"",
     "  ].join('\\n');",

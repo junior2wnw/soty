@@ -1,9 +1,9 @@
 {
-  "version": "0.4.104",
+  "version": "0.4.105",
   "schema": "soty.agent.release.v2",
   "architecture": "gonka-direct-chat-completions+computer-tools+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "94ae943d2d575680ea69996a6f8b7026c18052d3429e91c479ad7648891bde99",
+  "sha256": "c63e5abe825348a79582789d5bea5a85571c3d0d3667e2679f016d49f0adbeda",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "centralResolver": "gonka-direct-chat-completions",
