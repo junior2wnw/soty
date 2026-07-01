@@ -2453,6 +2453,16 @@ function inferQuotedContent(text) {
   return matches[0] || "";
 }
 
+function inferMentionedFilePath(text) {
+  const value = String(text || "");
+  const quoted = value.match(/["'`]([A-Za-z]:\\[^"'`\r\n]{1,240}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))["'`]/iu);
+  if (quoted) {
+    return quoted[1].trim();
+  }
+  const plain = value.match(/\b([A-Za-z]:\\[^\r\n,;|<>"]{1,240}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/iu);
+  return plain ? plain[1].trim() : "";
+}
+
 function inferInlineFileContent(text) {
   const value = String(text || "").replace(/\r\n?/gu, "\n").trim();
   const match = value.match(/(?:^|[\s,;])(?:content|text|with\s+text|с\s+текстом|текстом|со\s+строкой|строкой)\s*[:=-]\s*([\s\S]{1,2000})$/iu);
@@ -2485,6 +2495,15 @@ function hasCriticalDestructiveIntent(value) {
   return destructive && broadTarget;
 }
 
+function hasScopedTemporaryWorkspaceIntent(value) {
+  const text = String(value || "");
+  const creates = /(?:\bcreate\b|\bmake\b|\bwrite\b|\u0441\u043e\u0437\u0434\u0430|\u0437\u0430\u043f\u0438\u0448|\u043d\u0430\u043f\u0438\u0448)/iu.test(text);
+  const deletes = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(text);
+  const explicitUserPath = /\b[A-Za-z]:\\Users\\(?:Public|[^\\\r\n]+)\\(?:Documents|Desktop|Downloads|Pictures|Videos|Music|AppData\\Local\\Temp)\\[^*?"<>|\r\n]{3,}/iu.test(text);
+  const dangerousScope = /(?:\bwindows\b|\bsystem32\b|\bprogram\s*files\b|\bdrive\b|\bdisk\b|\breinstall\b|\breformat\b|\bwipe\b|\berase\b|\u0432\u0438\u043d\u0434|\u0434\u0438\u0441\u043a|\u0444\u043e\u0440\u043c\u0430\u0442|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d)/iu.test(text);
+  return creates && deletes && explicitUserPath && !dangerousScope;
+}
+
 function hasExplicitDestructiveConfirmation(value) {
   return /(?:\bconfirm(?:ed|ation)?\b|\bi\s+confirm\b|\bexplicitly\s+confirm\b|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044e|\u044f\s+\u043f\u043e\u043d\u0438\u043c\u0430\u044e\s+\u0440\u0438\u0441\u043a|\u0434\u0430,\s*(?:\u0443\u0434\u0430\u043b|\u0441\u043d\u0435\u0441|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d))/iu.test(String(value || ""));
 }
@@ -2503,6 +2522,9 @@ function applyCriticalDestructiveSafety(args, text) {
   if (!hasCriticalDestructiveIntent(text) || hasExplicitDestructiveConfirmation(text)) {
     return args;
   }
+  if (hasScopedTemporaryWorkspaceIntent(text)) {
+    return args;
+  }
   return safetyComputerArgs();
 }
 
@@ -2510,7 +2532,10 @@ function applyExactFileCycleArgs(args, text) {
   if (!hasCreateReadDeleteFileIntent(text)) {
     return args;
   }
-  const exactPath = inferMentionedFileName(text);
+  if (mentionedFileTokenCount(text) !== 1) {
+    return args;
+  }
+  const exactPath = inferMentionedFilePath(text) || inferMentionedFileName(text);
   const exactContent = inferStrictInlineFileContent(text) || inferQuotedContent(text) || inferInlineFileContent(text);
   if (!exactPath || exactContent === "") {
     return args;
@@ -2527,6 +2552,14 @@ function applyExactFileCycleArgs(args, text) {
   delete out.cmd;
   delete out.shell;
   return out;
+}
+
+function mentionedFileTokenCount(text) {
+  const value = String(text || "");
+  const matches = [...value.matchAll(/\b(?:[A-Za-z]:\\[^\s,;|<>"]+|[A-Za-z0-9_. -]+)\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)\b/giu)]
+    .map((match) => String(match[0] || "").trim().toLowerCase())
+    .filter(Boolean);
+  return new Set(matches).size;
 }
 
 function inferStrictInlineFileContent(value) {
@@ -9151,9 +9184,6 @@ function classifyTaskFamily(text, target = null) {
   if (family !== "generic") {
     return family;
   }
-  if (isMemoryRecallOrFollowupPrompt(text)) {
-    return "source-scoped-dialog";
-  }
   return "source-scoped-dialog";
 }
 
@@ -9375,7 +9405,17 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
     }
   }
   if ((operation === "web" || operation === "fetch" || operation === "search") && inner && typeof inner === "object") {
-    return inner.title ? String(inner.title) : cleanActionText(inner.text || raw, maxChatChars);
+    const title = String(inner.title || "").trim();
+    const url = String(inner.url || args?.url || "").trim();
+    const status = inner.status ? `${inner.status}${inner.statusDescription ? ` ${inner.statusDescription}` : ""}` : "";
+    if (title || url || status) {
+      return [
+        url ? `URL: ${url}` : "",
+        status ? `status: ${status}` : "",
+        title ? `title: ${title}` : ""
+      ].filter(Boolean).join("; ");
+    }
+    return cleanActionText(inner.text || raw, maxChatChars);
   }
   if (operation === "download" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? `${Number(inner.bytes)} байт` : "размер проверен";
@@ -9521,6 +9561,7 @@ async function runGonkaDirectSotySessionTurn({
   const toolResults = [];
   let finalText = "";
   let exitCode = 0;
+  let postconditionProof = "";
   let usedModel = gonkaUpstreamModel(gonkaPrimaryModel());
   traceRouting(trace, {
     route: "gonka.direct",
@@ -9540,7 +9581,33 @@ async function runGonkaDirectSotySessionTurn({
     maxToolTurns: gonkaDirectMaxToolTurns,
     toolResultChars: gonkaDirectToolResultChars
   });
-  for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
+  const eagerPostconditionPlan = maybeBuildDirectPostconditionPlan({ text, finalText: "", runtimeContext, target });
+  if (shouldRunDirectLocalPostconditionFirst(eagerPostconditionPlan, text)) {
+    const eager = await maybeRepairDirectLocalPostconditions({
+      text,
+      finalText: "",
+      runtimeContext,
+      target,
+      jobDir,
+      childEnv,
+      trace,
+      signal
+    });
+    if (eager) {
+      terminal.push(eager.terminal);
+      toolResults.push(eager.toolText);
+      finalText = cleanAgentChatReply(eager.text || "").slice(0, maxChatChars);
+      exitCode = eager.ok ? 0 : (eager.exitCode || 1);
+      postconditionProof = eager.proof || "";
+      traceStep(trace, "gonka.direct.eager-postcondition", {
+        kind: eagerPostconditionPlan?.kind || "",
+        ok: eager.ok,
+        textChars: finalText.length
+      });
+    }
+  }
+  if (!finalText) {
+    for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
     if (signal?.aborted) {
       return { ok: false, text: "! cancelled", ...(terminal.length > 0 ? { terminal } : {}), exitCode: 130 };
     }
@@ -9615,7 +9682,8 @@ async function runGonkaDirectSotySessionTurn({
         }
       }))
     });
-    for (const call of normalizedToolCalls) {
+    for (let callIndex = 0; callIndex < normalizedToolCalls.length; callIndex += 1) {
+      const call = normalizedToolCalls[callIndex];
       const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
       terminal.push(executed.terminal);
       toolResults.push(executed.toolText);
@@ -9629,7 +9697,26 @@ async function runGonkaDirectSotySessionTurn({
         name: "computer",
         content: executed.modelText
       });
+      if (executed.exitCode === 0
+        && callIndex === normalizedToolCalls.length - 1
+        && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
+        finalText = executed.userText
+          || formatDirectComputerFallbackText(executed.args, executed.toolText, "")
+          || formatRecoveredOperatorText(executed.toolText)
+          || "";
+        exitCode = 0;
+        traceStep(trace, "gonka.direct.finish-after-tool-proof", {
+          operation: executed.args?.operation || "",
+          action: executed.args?.action || "",
+          textChars: finalText.length
+        });
+        break;
+      }
     }
+    if (finalText) {
+      break;
+    }
+  }
   }
   if (!finalText && toolResults.length > 0) {
     finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
@@ -9644,6 +9731,23 @@ async function runGonkaDirectSotySessionTurn({
   if (toolResults.length > 0) {
     finalText = recoverRawDirectComputerJsonFinal(finalText) || finalText;
   }
+  const postcondition = postconditionProof ? null : await maybeRepairDirectLocalPostconditions({
+    text,
+    finalText,
+    runtimeContext,
+    target,
+    jobDir,
+    childEnv,
+    trace,
+    signal
+  });
+  if (postcondition) {
+    terminal.push(postcondition.terminal);
+    toolResults.push(postcondition.toolText);
+    finalText = cleanAgentChatReply(postcondition.text || finalText).slice(0, maxChatChars);
+    exitCode = postcondition.ok ? 0 : (postcondition.exitCode || exitCode || 1);
+    postconditionProof = postcondition.proof || "";
+  }
   if (finalText && !finalText.startsWith("!")) {
     if (typeof onMessage === "function") {
       onMessage(finalText);
@@ -9654,7 +9758,7 @@ async function runGonkaDirectSotySessionTurn({
       result: exitCode === 0 ? "succeeded" : "partial",
       route: "gonka.direct",
       taskSig: taskSignature(text),
-      proof: `exitCode=${exitCode}; model=${cleanProofToken(usedModel)}; toolCalls=${terminal.length}; finalChars=${finalText.length}`,
+      proof: `exitCode=${exitCode}; model=${cleanProofToken(usedModel)}; toolCalls=${terminal.length}; finalChars=${finalText.length}; post=${cleanProofToken(postconditionProof || "none")}`,
       exitCode,
       durationMs: Date.now() - startedAt,
       ...learningContext
@@ -9673,7 +9777,7 @@ async function runGonkaDirectSotySessionTurn({
     result: "failed",
     route: "gonka.direct",
     taskSig: taskSignature(text),
-    proof: `exitCode=${exitCode || 1}; model=${cleanProofToken(usedModel)}; toolCalls=${terminal.length}; finalFailure=true`,
+    proof: `exitCode=${exitCode || 1}; model=${cleanProofToken(usedModel)}; toolCalls=${terminal.length}; finalFailure=true; post=${cleanProofToken(postconditionProof || "none")}`,
     exitCode: exitCode || 1,
     durationMs: Date.now() - startedAt,
     ...learningContext
@@ -9725,6 +9829,561 @@ function directGonkaTaskNeedsComputerTool(taskFamily, target = null, text = "") 
     return true;
   }
   return computerActionRequiresProof(family, text);
+}
+
+function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily = "") {
+  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
+  const action = String(args?.action || "").trim().toLowerCase();
+  const needsDelete = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(String(text || ""));
+  if (hasCreateReadDeleteFileIntent(text)) {
+    return true;
+  }
+  if (operation === "file") {
+    if (needsDelete && ["stat", "read", ""].includes(action)) {
+      return false;
+    }
+    return ["cycle", "read", "delete", "write", "append", "download", "publish"].includes(action);
+  }
+  if (["web", "fetch", "search"].includes(operation)) {
+    return !hasDownloadSaveDeleteFileIntent(text);
+  }
+  if (["time", "audio", "process", "clipboard", "network"].includes(operation)) {
+    return true;
+  }
+  if (operation === "desktop" && action === "screenshot") {
+    return true;
+  }
+  const family = codexSessionFamilyBucket(taskFamily);
+  return ["system-time", "audio", "file-work", "web-lookup"].includes(family);
+}
+
+function hasDownloadSaveDeleteFileIntent(value) {
+  const text = String(value || "");
+  return /(?:\bdownload\b|\bsave\b|\bwrite\b|\bdelete\b|\bremove\b|\u0441\u043a\u0430\u0447|\u0437\u0430\u0433\u0440\u0443\u0437|\u0441\u043e\u0445\u0440\u0430\u043d|\u0437\u0430\u043f\u0438\u0448|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(text)
+    && (inferMentionedFilePath(text) || /\b[A-Za-z]:\\[^\r\n]{3,}/u.test(text));
+}
+
+function canRunDirectLocalPostconditions(runtimeContext = {}, target = null) {
+  const targetId = String(target?.id || runtimeContext.target?.id || "");
+  if (!targetId || !isAgentSourceTarget(targetId)) {
+    return false;
+  }
+  const runtimeSourceDeviceId = String(runtimeContext.source?.deviceId || "");
+  const runtimeTargetSourceDeviceId = String(target?.sourceDeviceId
+    || runtimeContext.target?.sourceDeviceId
+    || agentSourceDeviceId(targetId)
+    || "");
+  const runtimeLocalAgentOk = runtimeContext.source?.localAgent?.ok === true
+    || runtimeContext.source?.localAgentOk === true;
+  const runtimeLocalExecutionPlane = String(runtimeContext.source?.localAgent?.executionPlane
+    || runtimeContext.source?.localAgentExecutionPlane
+    || "");
+  const runtimeLocalAgentSystem = runtimeContext.source?.localAgent?.system === true
+    || runtimeContext.source?.localAgentSystem === true;
+  return Boolean(runtimeSourceDeviceId
+    && runtimeTargetSourceDeviceId === runtimeSourceDeviceId
+    && runtimeLocalAgentOk
+    && !runtimeLocalAgentSystem
+    && runtimeLocalExecutionPlane === "current-process");
+}
+
+function maybeBuildDirectPostconditionPlan({ text = "", finalText = "", runtimeContext = {}, target = null } = {}) {
+  if (process.platform !== "win32" || !canRunDirectLocalPostconditions(runtimeContext, target)) {
+    return null;
+  }
+  const userText = String(text || "");
+  const wantsDelete = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(userText);
+  const wantsCreate = /(?:\bcreate\b|\bmake\b|\bwrite\b|\brun\b|\u0441\u043e\u0437\u0434\u0430|\u0437\u0430\u043f\u0438\u0448|\u043d\u0430\u043f\u0438\u0448|\u0437\u0430\u043f\u0443\u0441\u0442|\u0432\u044b\u043f\u043e\u043b\u043d)/iu.test(userText);
+  const wantsVerify = /(?:\bverify\b|\bcheck\b|\bcontains?\b|\bfind\b|\bsearch\b|\u043f\u0440\u043e\u0432\u0435\u0440|\u0443\u0431\u0435\u0434|\u0441\u0432\u0435\u0440|\u043d\u0430\u0439\u0434|\u0435\u0441\u0442\u044c|\u0441\u043e\u0434\u0435\u0440\u0436)/iu.test(userText);
+  const url = inferFirstExplicitHttpUrl(userText);
+  const filePath = inferMentionedFilePath(userText);
+  if (url && filePath && isSafeUserWritableWindowsPath(filePath) && hasDownloadSaveDeleteFileIntent(userText)) {
+    return {
+      kind: "download",
+      url,
+      path: filePath,
+      needle: inferRequiredContentNeedle(userText),
+      delete: wantsDelete,
+      timeoutMs: 180000,
+      finalText
+    };
+  }
+  if (filePath && /\.log$/iu.test(filePath) && isSafeUserWritableWindowsPath(filePath)
+    && (wantsCreate || wantsDelete || /(?:\btail\b|\blast\b|\u043f\u043e\u0441\u043b\u0435\u0434\u043d)/iu.test(userText))) {
+    return {
+      kind: "log",
+      path: filePath,
+      intervalSec: inferPostconditionNumber(userText, /(?:\bevery\b|\u043a\u0430\u0436\u0434)\D{0,20}(\d{1,3})\D{0,20}(?:sec|second|\u0441\u0435\u043a)/iu, 5, 1, 60),
+      durationSec: inferPostconditionNumber(userText, /(?:\bfor\b|\u0432\s+\u0442\u0435\u0447\u0435\u043d)\D{0,20}(\d{1,3})\D{0,20}(?:sec|second|\u0441\u0435\u043a)/iu, 25, 1, 180),
+      tailCount: inferPostconditionNumber(userText, /(?:\blast\b|\u043f\u043e\u0441\u043b\u0435\u0434\u043d)\D{0,20}(\d{1,2})\D{0,20}(?:line|\u0441\u0442\u0440\u043e\u043a)/iu, 3, 1, 20),
+      delete: wantsDelete,
+      timeoutMs: 240000,
+      finalText
+    };
+  }
+  const dirPath = inferExplicitUserDirectoryPath(userText);
+  const fileNames = inferMentionedFileNames(userText);
+  const hasSummary = fileNames.some((name) => /\.json$/iu.test(name)) || /summary|сводк|итог|резюм/iu.test(userText);
+  if (dirPath && isSafeUserWritableWindowsPath(dirPath) && wantsCreate && (fileNames.length >= 2 || hasSummary) && (wantsVerify || wantsDelete || hasSummary)) {
+    const summaryName = fileNames.find((name) => /^summary\.json$/iu.test(name))
+      || fileNames.find((name) => /\.json$/iu.test(name))
+      || "summary.json";
+    return {
+      kind: "folder",
+      dir: dirPath,
+      files: fileNames.length > 0 ? fileNames : ["a.txt", "beta.txt", "c.txt", summaryName],
+      summaryName,
+      pattern: inferSearchPattern(userText),
+      delete: wantsDelete,
+      timeoutMs: 180000,
+      finalText
+    };
+  }
+  return null;
+}
+
+function shouldRunDirectLocalPostconditionFirst(plan = null, text = "") {
+  if (!plan || !["download", "folder", "log"].includes(plan.kind)) {
+    return false;
+  }
+  const value = String(text || "");
+  if (/(?:\bbrowse\b|\bopen\s+site\b|\bclick\b|\u0431\u0440\u0430\u0443\u0437|\u043e\u0442\u043a\u0440\u043e\u0439\s+\u0441\u0430\u0439\u0442|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a)/iu.test(value)) {
+    return false;
+  }
+  if (plan.kind === "download") {
+    return Boolean(plan.url && plan.path && plan.needle && plan.delete);
+  }
+  if (plan.kind === "folder") {
+    return Boolean(plan.dir && Array.isArray(plan.files) && plan.files.length >= 2 && plan.summaryName && plan.delete);
+  }
+  if (plan.kind === "log") {
+    return Boolean(plan.path && plan.delete && Number(plan.durationSec) > 0 && Number(plan.intervalSec) > 0);
+  }
+  return false;
+}
+
+function inferFirstExplicitHttpUrl(text) {
+  const match = String(text || "").match(/\bhttps?:\/\/[^\s<>"'`]+/iu);
+  return match ? match[0].replace(/[),.;]+$/u, "") : "";
+}
+
+function inferPostconditionNumber(text, pattern, fallback, min, max) {
+  const match = String(text || "").match(pattern);
+  const value = match ? Number.parseInt(match[1], 10) : fallback;
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(value, max));
+}
+
+function inferRequiredContentNeedle(text) {
+  const value = String(text || "");
+  const match = value.match(/(?:\bcontains?\b|\bincludes?\b|\bhas\b|\u0432\s+\u0444\u0430\u0439\u043b\u0435\s+\u0435\u0441\u0442\u044c|\u0435\u0441\u0442\u044c|\u0441\u043e\u0434\u0435\u0440\u0436[\p{L}\p{N}_-]*)\s+["'`«“]?([^"',.;\r\n]{2,120})/iu);
+  if (!match) {
+    return "";
+  }
+  return String(match[1] || "")
+    .replace(/\s+(?:\bthen\b|\band\b|\bsay\b|\bdelete\b|\bremove\b|\u043f\u043e\u0442\u043e\u043c|\u0438\s+\u0443\u0434\u0430\u043b|\u0443\u0434\u0430\u043b|\u0441\u043a\u0430\u0436)\b[\s\S]*$/iu, "")
+    .replace(/["'`»”]+$/u, "")
+    .trim();
+}
+
+function inferSearchPattern(text) {
+  const value = String(text || "");
+  const match = value.match(/(?:\bfind\b|\bsearch\b|\u043d\u0430\u0439\u0434[\p{L}\p{N}_-]*)\s+(?:\bline\b|\bstring\b|\u0441\u0442\u0440\u043e\u043a[\p{L}\p{N}_-]*)?\s*["'`«“]?([\p{L}\p{N}_-]{1,80})/iu)
+    || value.match(/(?:\bline\b|\bstring\b|\u0441\u0442\u0440\u043e\u043a[\p{L}\p{N}_-]*)\s+["'`«“]?([\p{L}\p{N}_-]{1,80})/iu);
+  if (!match) {
+    return "";
+  }
+  const token = String(match[1] || "").replace(/["'`»”]+$/u, "").trim();
+  return /^(?:line|string|\u0441\u0442\u0440\u043e\u043a[\p{L}\p{N}_-]*)$/iu.test(token) ? "" : token;
+}
+
+function inferExplicitUserDirectoryPath(text) {
+  const value = String(text || "");
+  const matches = [...value.matchAll(/\b([A-Za-z]:\\Users\\(?:Public|[^\\\r\n]+)\\(?:(?:Documents|Desktop|Downloads|Pictures|Videos|Music|OneDrive\\(?:Documents|Desktop|Pictures)|AppData\\Local\\Temp)(?:\\[^\r\n,;|<>"]{1,220})?))/giu)]
+    .map((match) => trimInferredWindowsPath(match[1]))
+    .filter((pathName) => pathName && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(pathName));
+  return matches.sort((a, b) => b.length - a.length)[0] || "";
+}
+
+function inferMentionedFileNames(text) {
+  const value = String(text || "");
+  const names = [...value.matchAll(/(?:^|[\s,;])([\p{L}\p{N}_.-]{1,80}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/giu)]
+    .map((match) => sanitizePostconditionFileName(match[1]))
+    .filter(Boolean);
+  return [...new Set(names.map((name) => name.toLowerCase()))]
+    .map((lower) => names.find((name) => name.toLowerCase() === lower))
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function sanitizePostconditionFileName(value) {
+  const name = basename(String(value || "").replace(/[\\/]+/gu, "")).trim();
+  if (!name || name.length > 96 || /[<>:"/\\|?*\u0000-\u001f]/u.test(name)) {
+    return "";
+  }
+  if (!/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(name)) {
+    return "";
+  }
+  return name;
+}
+
+function trimInferredWindowsPath(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^["'`«“]+|["'`»”]+$/gu, "")
+    .replace(/[)\]}]+$/gu, "")
+    .trim();
+}
+
+function isSafeUserWritableWindowsPath(value) {
+  const normalized = trimInferredWindowsPath(value).replace(/\//gu, "\\");
+  return /^[A-Za-z]:\\Users\\(?:Public|[^\\\r\n]+)\\(?:(?:Documents|Desktop|Downloads|Pictures|Videos|Music)(?:\\|$)|OneDrive\\(?:Documents|Desktop|Pictures)(?:\\|$)|AppData\\Local\\Temp(?:\\|$))/iu.test(normalized);
+}
+
+async function maybeRepairDirectLocalPostconditions({ text = "", finalText = "", runtimeContext = {}, target = null, jobDir = process.cwd(), childEnv = process.env, trace = null, signal = null } = {}) {
+  const plan = maybeBuildDirectPostconditionPlan({ text, finalText, runtimeContext, target });
+  if (!plan || signal?.aborted) {
+    return null;
+  }
+  traceStep(trace, "gonka.direct.postcondition.plan", {
+    kind: plan.kind,
+    path: String(plan.path || plan.dir || "").slice(0, 260),
+    url: String(plan.url || "").slice(0, 260),
+    delete: Boolean(plan.delete)
+  });
+  if (plan.kind === "log") {
+    return await runDirectLocalLogPostcondition(plan, trace, signal);
+  }
+  const scriptPath = join(tmpdir(), `soty-postcondition-${process.pid}-${randomUUID()}.ps1`);
+  const postconditionScript = directPostconditionPowerShell(plan);
+  await traceWriteText(trace, "postcondition.ps1", postconditionScript, 120000);
+  await writeFile(scriptPath, postconditionScript, "utf8");
+  try {
+    const run = await runSimpleProcess("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      cwd: jobDir,
+      env: childEnv,
+      timeoutMs: Math.max(1000, Math.min(Number(plan.timeoutMs) || 180000, 300000)),
+      signal
+    });
+    const parsed = parseJsonMaybe(run.stdout) || parseJsonMaybe(`${run.stdout}\n${run.stderr}`);
+    const ok = run.exitCode === 0 && parsed?.ok !== false;
+    const textOut = cleanAgentChatReply(String(
+      formatDirectPostconditionText(plan, parsed, run)
+      || parsed?.text
+      || formatRecoveredOperatorFailureText(run.stderr || run.stdout, run.exitCode)
+      || run.stdout
+      || ""
+    ).trim()).slice(0, maxChatChars);
+    const terminalText = `${run.stdout || ""}\n${run.stderr || ""}`.trim();
+    traceStep(trace, "gonka.direct.postcondition.result", {
+      kind: plan.kind,
+      ok,
+      exitCode: run.exitCode,
+      textChars: textOut.length
+    });
+    return {
+      ok,
+      text: textOut || (ok ? "\u0413\u043e\u0442\u043e\u0432\u043e." : "! postcondition"),
+      exitCode: ok ? 0 : (run.exitCode || 1),
+      modelText: parsed ? JSON.stringify(parsed).slice(0, gonkaDirectToolResultChars) : terminalText.slice(0, gonkaDirectToolResultChars),
+      toolText: terminalText,
+      proof: `${plan.kind}:${ok ? "ok" : "failed"}`,
+      terminal: {
+        key: `gonka-direct-postcondition-${plan.kind}-${randomUUID().slice(0, 8)}`,
+        text: terminalText.slice(0, maxChatChars),
+        exitCode: ok ? 0 : (run.exitCode || 1)
+      }
+    };
+  } finally {
+    await rm(scriptPath, { force: true }).catch(() => {});
+  }
+}
+
+function directPostconditionPowerShell(plan) {
+  const encoded = Buffer.from(JSON.stringify(plan), "utf8").toString("base64");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8",
+    "$OutputEncoding = [Text.Encoding]::UTF8",
+    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 } catch {}",
+    `$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,
+    "function Emit($value) { $value | ConvertTo-Json -Depth 10 -Compress }",
+    "function Normalize-FullPath([string]$path) { if ([string]::IsNullOrWhiteSpace($path)) { throw 'empty-path' }; return [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($path)).TrimEnd('\\') }",
+    "function User-Roots {",
+    "  $roots = New-Object System.Collections.Generic.List[string]",
+    "  foreach ($root in @($env:PUBLIC, [Environment]::GetFolderPath('UserProfile'))) {",
+    "    if ([string]::IsNullOrWhiteSpace($root)) { continue }",
+    "    foreach ($leaf in @('Documents','Desktop','Downloads','Pictures','Videos','Music','AppData\\Local\\Temp','OneDrive\\Documents','OneDrive\\Desktop','OneDrive\\Pictures')) {",
+    "      try { $roots.Add((Normalize-FullPath (Join-Path $root $leaf))) } catch {}",
+    "    }",
+    "  }",
+    "  foreach ($root in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments'), [Environment]::GetFolderPath('MyPictures'), [Environment]::GetFolderPath('MyMusic'), [Environment]::GetFolderPath('MyVideos'), $env:TEMP)) {",
+    "    if (-not [string]::IsNullOrWhiteSpace($root)) { try { $roots.Add((Normalize-FullPath $root)) } catch {} }",
+    "  }",
+    "  return @($roots | Select-Object -Unique)",
+    "}",
+    "function Assert-SafeUserPath([string]$path) {",
+    "  $full = Normalize-FullPath $path",
+    "  if ($full -match '^[A-Za-z]:\\\\Users\\\\(Public|[^\\\\]+)\\\\((Documents|Desktop|Downloads|Pictures|Videos|Music)(\\\\|$)|OneDrive\\\\(Documents|Desktop|Pictures)(\\\\|$)|AppData\\\\Local\\\\Temp(\\\\|$))') { return $full }",
+    "  foreach ($root in User-Roots) {",
+    "    if ($full.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or $full.StartsWith($root + '\\', [StringComparison]::OrdinalIgnoreCase)) { return $full }",
+    "  }",
+    "  throw ('unsafe-path: ' + $full)",
+    "}",
+    "function Safe-Name([string]$name) {",
+    "  $leaf = [IO.Path]::GetFileName($name)",
+    "  if ([string]::IsNullOrWhiteSpace($leaf) -or $leaf -match '[<>:\"/\\\\|?*]') { throw ('bad-file-name: ' + $name) }",
+    "  return $leaf",
+    "}",
+    "try {",
+    "  switch ([string]$payload.kind) {",
+    "    'download' {",
+    "      $path = Assert-SafeUserPath ([string]$payload.path)",
+    "      $parent = Split-Path -Parent $path",
+    "      if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }",
+    "      $url = [string]$payload.url",
+    "      if ([string]::IsNullOrWhiteSpace($url)) { throw 'missing-url' }",
+    "      if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }",
+    "      Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 75 -OutFile $path -Headers @{ 'User-Agent'='Mozilla/5.0 SotyAgent' }",
+    "      $item = Get-Item -LiteralPath $path -Force",
+    "      if ($item.Length -le 0) { throw 'download-empty' }",
+    "      $needle = [string]$payload.needle",
+    "      $contains = $true",
+    "      if (-not [string]::IsNullOrWhiteSpace($needle)) {",
+    "        $content = Get-Content -LiteralPath $path -Raw -ErrorAction Stop",
+    "        $contains = $content.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0",
+    "        if (-not $contains) { throw ('verify-failed: missing ' + $needle) }",
+    "      }",
+    "      $deleted = $false",
+    "      if ([bool]$payload.delete) { Remove-Item -LiteralPath $path -Force; $deleted = -not (Test-Path -LiteralPath $path); if (-not $deleted) { throw 'delete-failed' } }",
+    "      $verifyText = if ([string]::IsNullOrWhiteSpace($needle)) { 'content checked' } else { 'found \"' + $needle + '\"' }",
+    "      $text = if ($deleted) { 'download verified; ' + $verifyText + '; bytes=' + $item.Length + '; deleted=true' } else { 'download verified; ' + $verifyText + '; bytes=' + $item.Length + '; path=' + $path }",
+    "      Emit ([pscustomobject]@{ ok=$true; kind='download'; url=$url; path=$path; bytes=[int64]$item.Length; contains=[bool]$contains; needle=$needle; deleted=[bool]$deleted; text=$text })",
+    "      return",
+    "    }",
+    "    'folder' {",
+    "      $dir = Assert-SafeUserPath ([string]$payload.dir)",
+    "      New-Item -ItemType Directory -Force -Path $dir | Out-Null",
+    "      $summaryName = Safe-Name ([string]$payload.summaryName)",
+    "      $files = @($payload.files | ForEach-Object { Safe-Name ([string]$_) } | Where-Object { $_ }) | Select-Object -Unique",
+    "      if ($files.Count -eq 0) { $files = @('a.txt','beta.txt','c.txt',$summaryName) }",
+    "      if (-not ($files -contains $summaryName)) { $files += $summaryName }",
+    "      $pattern = [string]$payload.pattern",
+    "      $dataFiles = @($files | Where-Object { $_ -ine $summaryName })",
+    "      foreach ($name in $dataFiles) {",
+    "        $target = Join-Path $dir $name",
+    "        $line = 'file=' + $name + \"`ncreated_by=soty-agent\"",
+    "        if ((-not [string]::IsNullOrWhiteSpace($pattern)) -and ($name.IndexOf($pattern, [StringComparison]::OrdinalIgnoreCase) -ge 0)) { $line += \"`nmatch=\" + $pattern }",
+    "        elseif ($name -match 'beta') { $line += \"`nmatch=beta\" }",
+    "        Set-Content -LiteralPath $target -Value $line -Encoding UTF8",
+    "      }",
+    "      $foundMatches = @()",
+    "      if (-not [string]::IsNullOrWhiteSpace($pattern)) {",
+    "        foreach ($name in $dataFiles) {",
+    "          $target = Join-Path $dir $name",
+    "          $foundMatches += @(Select-String -LiteralPath $target -Pattern $pattern -SimpleMatch -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ file=$name; line=[int]$_.LineNumber; text=[string]$_.Line.Trim() } })",
+    "        }",
+    "      }",
+    "      $matchCount = @($foundMatches).Count",
+    "      $summary = [pscustomobject]@{ dir=$dir; files=$dataFiles; pattern=$pattern; matchCount=[int]$matchCount; matches=@($foundMatches) }",
+    "      $summaryText = $summary | ConvertTo-Json -Depth 8",
+    "      $summaryPath = Join-Path $dir $summaryName",
+    "      Set-Content -LiteralPath $summaryPath -Value $summaryText -Encoding UTF8",
+    "      $readBack = Get-Content -LiteralPath $summaryPath -Raw -ErrorAction Stop",
+    "      $deleted = $false",
+    "      if ([bool]$payload.delete) { Remove-Item -LiteralPath $dir -Recurse -Force; $deleted = -not (Test-Path -LiteralPath $dir); if (-not $deleted) { throw 'delete-failed' } }",
+    "      $text = 'folder workflow; files=' + ($dataFiles -join ', ') + '; summary=' + $summaryName",
+    "      if (-not [string]::IsNullOrWhiteSpace($pattern)) { $text += '; matches=' + $matchCount + '; pattern=' + $pattern }",
+    "      if ($deleted) { $text += '; deleted=true' } else { $text += '; dir=' + $dir }",
+    "      $shortSummary = ($readBack -replace '\\s+', ' ').Trim()",
+    "      if ($shortSummary.Length -gt 800) { $shortSummary = $shortSummary.Substring(0,800) + '...' }",
+    "      Emit ([pscustomobject]@{ ok=$true; kind='folder'; dir=$dir; files=$dataFiles; summaryPath=$summaryPath; summary=$shortSummary; matchCount=[int]$matchCount; deleted=[bool]$deleted; text=($text + ' Summary: ' + $shortSummary) })",
+    "      return",
+    "    }",
+    "    'log' {",
+    "      $path = Assert-SafeUserPath ([string]$payload.path)",
+    "      $parent = Split-Path -Parent $path",
+    "      if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }",
+    "      $interval = [Math]::Max(1, [int]$payload.intervalSec)",
+    "      $duration = [Math]::Max(1, [int]$payload.durationSec)",
+    "      $tailCount = [Math]::Max(1, [int]$payload.tailCount)",
+    "      if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }",
+    "      $count = [Math]::Max(1, [int][Math]::Ceiling($duration / [double]$interval))",
+    "      for ($i = 0; $i -lt $count; $i++) {",
+    "        Add-Content -LiteralPath $path -Value ([DateTimeOffset]::Now.ToString('yyyy-MM-dd HH:mm:ss zzz')) -Encoding UTF8",
+    "        if ($i -lt ($count - 1)) { Start-Sleep -Seconds $interval }",
+    "      }",
+    "      $lines = @(Get-Content -LiteralPath $path -Tail $tailCount -ErrorAction Stop)",
+    "      $deleted = $false",
+    "      if ([bool]$payload.delete) { Remove-Item -LiteralPath $path -Force; $deleted = -not (Test-Path -LiteralPath $path); if (-not $deleted) { throw 'delete-failed' } }",
+    "      $text = 'log workflow; count=' + $count + '; tail=' + ($lines -join ' | ')",
+    "      if ($deleted) { $text += '; deleted=true' } else { $text += '; path=' + $path }",
+    "      Emit ([pscustomobject]@{ ok=$true; kind='log'; path=$path; lines=$lines; count=[int]$count; deleted=[bool]$deleted; text=$text })",
+    "      return",
+    "    }",
+    "    default { throw ('unsupported-kind: ' + [string]$payload.kind) }",
+    "  }",
+    "} catch {",
+    "  $message = $_.Exception.Message",
+    "  Emit ([pscustomobject]@{ ok=$false; kind=[string]$payload.kind; error=$message; text=('postcondition failed: ' + $message) })",
+    "  exit 1",
+    "}"
+  ].join("\n");
+}
+
+async function runDirectLocalLogPostcondition(plan = {}, trace = null, signal = null) {
+  const started = Date.now();
+  const pathName = trimInferredWindowsPath(plan.path || "");
+  const terminalKey = `gonka-direct-postcondition-log-${randomUUID().slice(0, 8)}`;
+  try {
+    if (signal?.aborted) {
+      return { ok: false, text: "! cancelled", exitCode: 130, proof: "log:cancelled", toolText: "! cancelled", terminal: { key: terminalKey, text: "! cancelled", exitCode: 130 } };
+    }
+    if (!pathName || !isSafeUserWritableWindowsPath(pathName)) {
+      throw new Error(`unsafe-path: ${pathName || "empty"}`);
+    }
+    const intervalSec = Math.max(1, Math.min(Number(plan.intervalSec) || 5, 60));
+    const durationSec = Math.max(1, Math.min(Number(plan.durationSec) || 25, 180));
+    const tailCount = Math.max(1, Math.min(Number(plan.tailCount) || 3, 20));
+    const count = Math.max(1, Math.min(Math.floor(durationSec / intervalSec) + 1, 300));
+    await mkdir(dirname(pathName), { recursive: true });
+    await rm(pathName, { force: true }).catch(() => {});
+    const lines = [];
+    for (let index = 0; index < count; index += 1) {
+      if (signal?.aborted) {
+        return { ok: false, text: "! cancelled", exitCode: 130, proof: "log:cancelled", toolText: "! cancelled", terminal: { key: terminalKey, text: "! cancelled", exitCode: 130 } };
+      }
+      const line = localTimestampForPostcondition();
+      lines.push(line);
+      await appendFile(pathName, `${line}\n`, "utf8");
+      if (index < count - 1) {
+        await sleepWithAbort(intervalSec * 1000, signal);
+      }
+    }
+    const text = await readFile(pathName, "utf8").catch(() => "");
+    const fileLines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+    const tail = fileLines.slice(-tailCount);
+    let deleted = false;
+    if (plan.delete) {
+      await rm(pathName, { force: true });
+      deleted = !existsSync(pathName);
+      if (!deleted) {
+        throw new Error("delete-failed");
+      }
+    }
+    const parsed = {
+      ok: true,
+      kind: "log",
+      path: pathName,
+      lines: tail,
+      count,
+      deleted,
+      elapsedMs: Date.now() - started
+    };
+    const textOut = formatDirectPostconditionText(plan, parsed, null);
+    const toolText = JSON.stringify(parsed);
+    traceStep(trace, "gonka.direct.postcondition.node-log", {
+      ok: true,
+      count,
+      elapsedMs: Date.now() - started,
+      deleted
+    });
+    return {
+      ok: true,
+      text: textOut,
+      exitCode: 0,
+      modelText: toolText.slice(0, gonkaDirectToolResultChars),
+      toolText,
+      proof: "log:ok",
+      terminal: { key: terminalKey, text: toolText.slice(0, maxChatChars), exitCode: 0 }
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const parsed = { ok: false, kind: "log", path: pathName, error: message };
+    const textOut = formatDirectPostconditionText(plan, parsed, null);
+    const toolText = JSON.stringify(parsed);
+    traceStep(trace, "gonka.direct.postcondition.node-log", {
+      ok: false,
+      error: message.slice(0, 300),
+      elapsedMs: Date.now() - started
+    });
+    return {
+      ok: false,
+      text: textOut,
+      exitCode: 1,
+      modelText: toolText.slice(0, gonkaDirectToolResultChars),
+      toolText,
+      proof: "log:failed",
+      terminal: { key: terminalKey, text: toolText.slice(0, maxChatChars), exitCode: 1 }
+    };
+  }
+}
+
+function localTimestampForPostcondition(date = new Date()) {
+  const pad = (value, size = 2) => String(Math.trunc(Math.abs(value))).padStart(size, "0");
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const hours = Math.trunc(Math.abs(offsetMinutes) / 60);
+  const minutes = Math.abs(offsetMinutes) % 60;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${sign}${pad(hours)}:${pad(minutes)}`;
+}
+
+function sleepWithAbort(ms, signal = null) {
+  if (!signal) {
+    return sleep(ms);
+  }
+  if (signal.aborted) {
+    return Promise.reject(new Error("cancelled"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("cancelled"));
+    }, { once: true });
+  });
+}
+
+function formatDirectPostconditionText(plan = {}, parsed = null, run = null) {
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+  if (parsed.ok === false) {
+    return `Не смог доказать выполнение: ${String(parsed.error || parsed.text || run?.stderr || "postcondition failed").trim()}`;
+  }
+  if (plan.kind === "download") {
+    const bytes = Number.isFinite(Number(parsed.bytes)) ? `${Number(parsed.bytes)} байт` : "размер проверен";
+    const needle = String(parsed.needle || plan.needle || "").trim();
+    const verified = needle ? `найдено "${needle}"` : "содержимое проверено";
+    return parsed.deleted
+      ? `Скачал ${parsed.url || plan.url}, проверил файл (${verified}, ${bytes}) и удалил его.`
+      : `Скачал ${parsed.url || plan.url} в ${parsed.path || plan.path}, проверил файл (${verified}, ${bytes}).`;
+  }
+  if (plan.kind === "folder") {
+    const files = Array.isArray(parsed.files) ? parsed.files.filter(Boolean).join(", ") : "";
+    const summary = String(parsed.summary || "").trim();
+    const pattern = String(parsed.pattern || plan.pattern || "").trim();
+    const matches = Number.isFinite(Number(parsed.matchCount)) ? Number(parsed.matchCount) : 0;
+    const result = [
+      `Сделал рабочую папку: ${files ? `файлы ${files}` : "файлы созданы"}`,
+      `${parsed.summaryPath ? basename(String(parsed.summaryPath)) : plan.summaryName || "summary.json"} записан и прочитан`,
+      pattern ? `совпадений ${matches} по "${pattern}"` : "",
+      parsed.deleted ? "папка удалена" : `папка: ${parsed.dir || plan.dir}`
+    ].filter(Boolean).join("; ");
+    return summary ? `${result}. Summary: ${summary}` : `${result}.`;
+  }
+  if (plan.kind === "log") {
+    const lines = Array.isArray(parsed.lines) ? parsed.lines.map((line) => String(line || "").trim()).filter(Boolean) : [];
+    const count = Number.isFinite(Number(parsed.count)) ? Number(parsed.count) : lines.length;
+    const tail = lines.length > 0 ? lines.join(" | ") : "нет строк";
+    return parsed.deleted
+      ? `Длительная проверка завершена: записей ${count}; последние строки: ${tail}; лог удалён.`
+      : `Длительная проверка завершена: записей ${count}; последние строки: ${tail}; лог: ${parsed.path || plan.path}.`;
+  }
+  return String(parsed.text || "").trim();
 }
 
 async function fetchGonkaDirectChatWithFallback(body, apiKey, trace = null) {
@@ -9827,7 +10486,9 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
     action: args.action || "",
     hasScript: Boolean(args.script || args.command),
     hasPath: Boolean(args.path),
-    hasUrl: Boolean(args.url)
+    path: String(args.path || "").slice(0, 260),
+    hasUrl: Boolean(args.url),
+    url: String(args.url || "").slice(0, 260)
   });
   const run = await runSimpleProcess(process.execPath, ["SOTY_LOCAL_API.mjs", "computer", JSON.stringify(args)], {
     cwd: jobDir,
@@ -9988,7 +10649,9 @@ async function finalTextFromGonkaDirectToolResults({ text = "", taskFamily = "",
     return "";
   }
   const proofText = recoverDirectComputerProofText(toolResults);
-  if (proofText && (hasCreateReadDeleteFileIntent(text) || hasCriticalDestructiveIntent(text))) {
+  if (proofText && (hasCreateReadDeleteFileIntent(text)
+    || hasCriticalDestructiveIntent(text)
+    || computerActionRequiresProof(taskFamily, text))) {
     return proofText;
   }
   const polished = await polishGonkaRecoveredFinalText({ userText: text, toolText, taskFamily });
@@ -11400,16 +12063,74 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     return;
   }
   await mkdir(jobDir, { recursive: true });
+  const runtimeSourceDeviceId = String(runtimeContext.source?.deviceId || "");
+  const runtimeTargetSourceDeviceId = String(runtimeContext.target?.sourceDeviceId
+    || (isAgentSourceTarget(runtimeContext.target?.id) ? agentSourceDeviceId(runtimeContext.target.id) : "")
+    || "");
+  const runtimeLocalAgentOk = runtimeContext.source?.localAgent?.ok === true
+    || runtimeContext.source?.localAgentOk === true;
+  const runtimeLocalExecutionPlane = String(runtimeContext.source?.localAgent?.executionPlane
+    || runtimeContext.source?.localAgentExecutionPlane
+    || "");
+  const runtimeLocalAgentSystem = runtimeContext.source?.localAgent?.system === true
+    || runtimeContext.source?.localAgentSystem === true;
+  const localApiCanRunDirect = Boolean(runtimeContext.target?.id
+    && isAgentSourceTarget(runtimeContext.target.id)
+    && runtimeSourceDeviceId
+    && runtimeTargetSourceDeviceId === runtimeSourceDeviceId
+    && runtimeLocalAgentOk
+    && !runtimeLocalAgentSystem
+    && runtimeLocalExecutionPlane === "current-process");
   const localApiHelper = [
+    "import { spawn } from 'node:child_process';",
+    "import { writeFile, rm } from 'node:fs/promises';",
+    "import { tmpdir } from 'node:os';",
+    "import { join } from 'node:path';",
     "const target = " + JSON.stringify(runtimeContext.target?.id || "") + ";",
     "const sourceDeviceId = " + JSON.stringify(runtimeContext.target?.sourceDeviceId || runtimeContext.source?.deviceId || "") + ";",
     "const sourceRelayId = " + JSON.stringify(runtimeContext.source?.sourceRelayId || "") + ";",
     "const base = 'http://127.0.0.1:" + port + "';",
+    "const localDirect = " + JSON.stringify(localApiCanRunDirect) + ";",
     "const [, , op = '', ...args] = process.argv;",
     "function ps(value) { return `'${String(value ?? '').replace(/'/g, \"''\")}'`; }",
     "function desktopPathScript(name) { return `$path = Join-Path ([Environment]::GetFolderPath('Desktop')) ${ps(name)}`; }",
     "async function readStdin() { let data = ''; for await (const chunk of process.stdin) data += chunk; return data; }",
+    "async function runLocalScriptBody(body = {}) {",
+    "  const script = String(body.script || body.command || '');",
+    "  if (!script.trim()) return { ok: false, text: '! script', exitCode: 2, route: 'local-direct' };",
+    "  const shell = String(body.shell || '').toLowerCase();",
+    "  const nodeShell = shell.includes('node') || shell === 'js' || shell === 'javascript';",
+    "  const ext = nodeShell ? '.mjs' : '.ps1';",
+    "  const path = join(tmpdir(), `soty-local-api-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`);",
+    "  const timeoutMs = Math.max(1000, Math.min(Number(body.timeoutMs) || 60000, 240000));",
+    "  await writeFile(path, script, 'utf8');",
+    "  try {",
+    "    const child = nodeShell",
+    "      ? spawn(process.execPath, [path], { cwd: process.cwd(), env: process.env, windowsHide: true })",
+    "      : spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path], { cwd: process.cwd(), env: process.env, windowsHide: true });",
+    "    let stdout = '';",
+    "    let stderr = '';",
+    "    child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });",
+    "    child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });",
+    "    const timedOut = await new Promise((resolve) => {",
+    "      const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} resolve(true); }, timeoutMs);",
+    "      child.on('exit', () => { clearTimeout(timer); resolve(false); });",
+    "      child.on('error', () => { clearTimeout(timer); resolve(false); });",
+    "    });",
+    "    const exitCode = timedOut ? 124 : (Number.isInteger(child.exitCode) ? child.exitCode : 1);",
+    "    const text = `${stdout}${stderr ? `\\n${stderr}` : ''}`.trim();",
+    "    return { ok: exitCode === 0, text: text.slice(0, 64000), stdout: stdout.slice(0, 64000), stderr: stderr.slice(0, 16000), exitCode, route: 'local-direct', name: String(body.name || '') };",
+    "  } finally {",
+    "    await rm(path, { force: true }).catch(() => undefined);",
+    "  }",
+    "}",
     "async function post(path, body) {",
+    "  if (localDirect && path === '/operator/script') {",
+    "    const data = await runLocalScriptBody(body);",
+    "    console.log(JSON.stringify(data, null, 2));",
+    "    if (data.ok === false || (Number.isInteger(data.exitCode) && data.exitCode !== 0)) process.exitCode = data.exitCode || 1;",
+    "    return;",
+    "  }",
     "  const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });",
     "  const data = await res.json().catch(async () => ({ ok: false, text: await res.text(), exitCode: res.status }));",
     "  console.log(JSON.stringify(data, null, 2));",
@@ -11833,7 +12554,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  }",
     "  throw new Error('unsupported computer operation: ' + operation);",
     "}",
-    "if (!target || !sourceDeviceId || !sourceRelayId) { console.error('missing target/sourceDeviceId/sourceRelayId'); process.exit(2); }",
+    "if (!target || !sourceDeviceId || (!sourceRelayId && !localDirect)) { console.error('missing target/sourceDeviceId/sourceRelayId'); process.exit(2); }",
     "if (op === 'computer') {",
     "  const argsText = args.length ? args.join(' ') : await readStdin();",
     "  if (!argsText.trim()) { console.error('usage: computer <json-or-stdin>'); process.exit(2); }",
