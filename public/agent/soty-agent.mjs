@@ -975,7 +975,7 @@ function createSourceTaskClassifier(dependencies = {}) {
     if (hasWallpaperIntent(text) && isGeneratedImageIntent(text)) {
       return "generated-image-wallpaper";
     }
-    if (hasWallpaperIntent(text) || /wallpaper|desktop background|обои|рабоч\w*\s+стол/u.test(text)) {
+    if (hasWallpaperIntent(text) || /wallpaper|desktop background|\u043e\u0431\u043e\u0438|\u0444\u043e\u043d\s+(?:\u0440\u0430\u0431\u043e\u0447\u0435\u0433\u043e\s+)?\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*|(?:\u043f\u043e\u0441\u0442\u0430\u0432[\u044c\u0438\u0442\u0435]*|\u0443\u0441\u0442\u0430\u043d\u043e\u0432[\u0438\u0442\u0435]*|\u043f\u0440\u0438\u043c\u0435\u043d[\u0438\u0442\u0435]*)\s+(?:\u043d\u0430\s+)?(?:\u0440\u0430\u0431\u043e\u0447[\u0430-\u044f\u0451]*\s+\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*|\u043e\u0431\u043e\u0438)/u.test(text)) {
       return "download-image-wallpaper";
     }
     if (hasBrowserAutomationIntent(text)) {
@@ -1176,7 +1176,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.125";
+const agentVersion = "0.4.126";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1985,7 +1985,8 @@ function gonkaForcedToolChoice(payload, tools) {
   }
   const text = responsesPayloadPlainText(payload).slice(0, 20_000);
   const family = (text.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
-  const wantsComputer = /function tool\s+`?computer`?|operation\s*=\s*(?:web|fetch|search|file|audio|browser|desktop|wallpaper|script|run)|computer-use|компьютерн\w*\s+инструмент|рабоч\w*\s+стол|обои|скачай|загрузи|поставь|установи/iu.test(text);
+  const wantsComputer = hasDesktopSurfaceIntent(text)
+    || /function tool\s+`?computer`?|operation\s*=\s*(?:web|fetch|search|file|audio|browser|desktop|wallpaper|script|run)|computer-use|компьютерн[\p{L}\p{N}_-]*\s+инструмент|обои|скачай|загрузи|поставь|установи/iu.test(text);
   const toolFamilies = new Set([
     "audio-mute",
     "audio-volume",
@@ -2605,9 +2606,13 @@ function inferStrictInlineFileContent(value) {
     .trim();
 }
 
+function hasDesktopSurfaceIntent(value) {
+  return /(?:\bdesktop\b|\u0440\u0430\u0431\u043e\u0447[\u0430-\u044f\u0451]*\s+\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*)/iu.test(String(value || ""));
+}
+
 function hasWallpaperIntent(text) {
   const value = String(text || "").toLowerCase();
-  return /wallpaper|desktop background|рабоч\w*\s+стол|обои|фон\s+(?:рабочего\s+)?стола|поставь\s+(?:на\s+)?(?:рабочий\s+стол|обои)|установи\s+(?:на\s+)?(?:рабочий\s+стол|обои)/iu.test(value);
+  return /wallpaper|desktop background|\u043e\u0431\u043e\u0438|\u0444\u043e\u043d\s+(?:\u0440\u0430\u0431\u043e\u0447\u0435\u0433\u043e\s+)?\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*|(?:\u043f\u043e\u0441\u0442\u0430\u0432[\u044c\u0438\u0442\u0435]*|\u0443\u0441\u0442\u0430\u043d\u043e\u0432[\u0438\u0438\u0442\u0435]*|\u043f\u0440\u0438\u043c\u0435\u043d[\u0438\u0438\u0442\u0435]*)\s+(?:\u043d\u0430\s+)?(?:\u0440\u0430\u0431\u043e\u0447[\u0430-\u044f\u0451]*\s+\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*|\u043e\u0431\u043e\u0438)/iu.test(value);
 }
 
 function isGeneratedImageIntent(text) {
@@ -2693,7 +2698,7 @@ function inferScreenshotPathFromText(value, operation = "browser") {
     || text.match(/\b([A-Za-z0-9_.-]+\.png)\b/u);
   if (named) {
     const fileName = String(named[1] || "").replace(/[\\/:*?"<>|]+/gu, "").slice(0, 120) || `soty-${operation || "screen"}-screenshot.${extension}`;
-    if (/(?:desktop|\u0440\u0430\u0431\u043e\u0447\w*\s+\u0441\u0442\u043e\u043b)/iu.test(text)) {
+    if (hasDesktopSurfaceIntent(text)) {
       return `%USERPROFILE%\\Desktop\\${fileName}`;
     }
     return `C:\\Users\\Public\\Pictures\\${fileName}`;
