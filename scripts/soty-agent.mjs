@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.109";
+const agentVersion = "0.4.110";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1202,11 +1202,73 @@ const computerIntentPatterns = Object.freeze({
   appClick: /(?:click|press|invoke|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a)/iu,
   appSnapshot: /(?:inspect|snapshot|read|elements|controls|\u044d\u043b\u0435\u043c|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u043e\u0441\u043c\u043e\u0442\u0440)/iu,
   appList: /(?:\blist\b|\bwindows\b|\bapps\b|\u0441\u043f\u0438\u0441|\u043e\u043a\u043d\u0430|\u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d)/iu,
-  appSubmit: /(?:\bsend\b|\bsubmit\b|\bmessage\b|\bchat\b|\bdialog\b|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449\u0435\u043d|\u0434\u0438\u0430\u043b\u043e\u0433|\u0447\u0430\u0442|\u043d\u0430\u043f\u0438\u0448\u0438\s+(?:\u0435\u043c\u0443|\u0435\u0439|\u0438\u043c|\u0432\s+(?:\u0447\u0430\u0442|\u0434\u0438\u0430\u043b\u043e\u0433)))/iu
+  appSubmit: /(?:\bsend\b|\bsubmit\b|\bmessage\b|\bchat\b|\bdialog\b|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449\u0435\u043d|\u0434\u0438\u0430\u043b\u043e\u0433|\u0447\u0430\u0442|\u043d\u0430\u043f\u0438\u0448\u0438\s+(?:\u0435\u043c\u0443|\u0435\u0439|\u0438\u043c|\u0432\s+(?:\u0447\u0430\u0442|\u0434\u0438\u0430\u043b\u043e\u0433)))/iu,
+  wallpaperFamily: /(?:wallpaper|desktop|download-image-wallpaper)/iu,
+  download: /(?:\u0441\u043a\u0430\u0447\u0430\u0439|\u0437\u0430\u0433\u0440\u0443\u0437\u0438|download|save\s+(?:it|file)|\u0441\u043e\u0445\u0440\u0430\u043d\u0438)/iu,
+  audio: /(?:\u0433\u0440\u043e\u043c\u043a|\u0437\u0432\u0443\u043a|volume|mute|unmute)/iu,
+  systemResources: /(?:\u0440\u0435\u0441\u0443\u0440\u0441|cpu|ram|memory|\u043f\u0430\u043c\u044f\u0442|\u0434\u0438\u0441\u043a|disk|\u043d\u0430\u0433\u0440\u0443\u0437)/iu,
+  time: /(?:\u0432\u0440\u0435\u043c\u044f|\u0434\u0430\u0442[\u0430\u0443]|time|date)/iu,
+  openUrl: /(?:\u043e\u0442\u043a\u0440\u043e\u0439|open|browser|\u0431\u0440\u0430\u0443\u0437\u0435\u0440)/iu,
+  web: /(?:\u0438\u043d\u0442\u0435\u0440\u043d\u0435\u0442|\u0441\u0430\u0439\u0442|url|fetch|search|\u043d\u0430\u0439\u0434\u0438|\u043f\u043e\u0438\u0449\u0438|\u0437\u0430\u0433\u0443\u0433\u043b|web)/iu,
+  file: /(?:\u0444\u0430\u0439\u043b|\u043f\u0430\u043f\u043a|desktop|\u0440\u0430\u0431\u043e\u0447|read file|write file|create file|delete file|list files)/iu,
+  downloadCycle: /(?:\u0443\u0434\u0430\u043b\u0438|\u0443\u0434\u0430\u043b\u0438\u0442\u044c|delete|remove|cleanup|clean up)/iu,
+  fileWrite: /(?:\u0441\u043e\u0437\u0434\u0430[\u0439\u0442\u044c]|\u0437\u0430\u043f\u0438\u0448\u0438|\u043d\u0430\u043f\u0438\u0448\u0438|write|create)/iu,
+  fileRead: /(?:\u043f\u0440\u043e\u0447\u0438\u0442\u0430[\u0439\u0442\u044c]|\u0441\u0447\u0438\u0442\u0430\u0439|\u043f\u0440\u043e\u0432\u0435\u0440\u044c|verify|read|show)/iu,
+  fileDelete: /(?:\u0443\u0434\u0430\u043b\u0438|\u0443\u0434\u0430\u043b\u0438\u0442\u044c|delete|remove)/iu,
+  fileAppend: /(?:\u0434\u043e\u0431\u0430\u0432\u044c|append)/iu,
+  fileList: /(?:\u0441\u043f\u0438\u0441\u043e\u043a|list|ls|\u043f\u043e\u043a\u0430\u0436\u0438\s+\u0444\u0430\u0439\u043b\u044b)/iu,
+  fileStat: /(?:\u0441\u0442\u0430\u0442\u0443\u0441|stat|exists|\u0441\u0443\u0449\u0435\u0441\u0442\u0432)/iu,
+  timeSet: /(?:\u0443\u0441\u0442\u0430\u043d\u043e\u0432|set|\u0438\u0437\u043c\u0435\u043d)/iu,
+  script: /(?:powershell|cmd|\u043a\u043e\u043c\u0430\u043d\u0434|\u0441\u043a\u0440\u0438\u043f\u0442|terminal|console|\u0437\u0430\u043f\u0443\u0441\u0442\u0438)/iu
 });
 
 const appTypeActionAliases = Object.freeze(["type", "write", "input", "enter", "send", "submit"]);
 const appClickActionAliases = Object.freeze(["click", "press", "invoke"]);
+
+const computerOperationRules = Object.freeze([
+  { operation: ({ lower }) => hasBrowserPageIntent(lower) ? "browser" : "desktop", when: ({ lower }) => hasScreenshotIntent(lower) },
+  { operation: "wallpaper", when: ({ lower, family }) => (hasWallpaperIntent(lower) || hasComputerIntent("wallpaperFamily", family)) && !isGeneratedImageIntent(lower) },
+  { operation: "image", when: ({ lower }) => isGeneratedImageIntent(lower) && hasWallpaperIntent(lower) },
+  { operation: "browser", when: ({ args }) => Boolean(args.url && args.text) },
+  { operation: "download", when: ({ args, lower }) => Boolean(args.url && hasComputerIntent("download", lower)) },
+  { operation: "audio", when: ({ args, lower }) => args.volumePercent !== undefined || hasComputerIntent("audio", lower) },
+  { operation: "system-resources", when: ({ lower, family }) => hasComputerIntent("systemResources", lower) || family === "system-check" },
+  { operation: "time", when: ({ lower, family }) => hasComputerIntent("time", lower) || family === "system-time" },
+  { operation: "open-url", when: ({ args, lower }) => Boolean(args.url && hasComputerIntent("openUrl", lower)) },
+  { operation: "web", when: ({ args, lower, family }) => Boolean(args.url || args.query || hasComputerIntent("web", lower) || family === "web-lookup") },
+  { operation: "app", when: ({ text, family }) => hasAppWindowIntent(text) || family === "app" || family === "computer-use" },
+  { operation: "file", when: ({ args, lower, family }) => Boolean(args.path || hasComputerIntent("file", lower) || family === "file-work") },
+  { operation: "script", when: ({ args, lower, family }) => Boolean(args.script || hasComputerIntent("script", lower) || family === "script-task") }
+]);
+
+const computerActionResolvers = Object.freeze({
+  browser: ({ lower }) => hasScreenshotIntent(lower) ? "screenshot" : "status",
+  desktop: ({ lower }) => hasScreenshotIntent(lower) ? "screenshot" : "status",
+  wallpaper: () => "wallpaper",
+  web: ({ args }) => args.url && !args.query ? "fetch" : "search",
+  download: ({ lower }) => hasComputerIntent("downloadCycle", lower) ? "cycle" : "save",
+  app: ({ text, lower, args }) => {
+    if (hasComputerIntent("appLaunch", lower) && (args.app || inferAppNameFromText(text))) return "launch";
+    if (hasComputerIntent("appType", lower) && (args.content || args.value || args.input || (!args.target && args.text))) return "type";
+    if (hasComputerIntent("appClick", lower) || args.target || args.text) return "click";
+    if (hasComputerIntent("appSnapshot", lower) || args.app || args.window || args.title) return "snapshot";
+    return "list";
+  },
+  file: ({ lower, args }) => {
+    const wantsWrite = args.content !== undefined || hasComputerIntent("fileWrite", lower);
+    const wantsRead = hasComputerIntent("fileRead", lower);
+    const wantsDelete = hasComputerIntent("fileDelete", lower);
+    if (args.path && args.content !== undefined && wantsWrite && wantsRead && wantsDelete) return "cycle";
+    if (wantsDelete) return "delete";
+    if (hasComputerIntent("fileAppend", lower)) return "append";
+    if (hasComputerIntent("fileRead", lower) && !args.content) return "read";
+    if (hasComputerIntent("fileList", lower)) return "list";
+    if (hasComputerIntent("fileStat", lower)) return "stat";
+    return args.content !== undefined ? "write" : "stat";
+  },
+  time: ({ lower }) => hasComputerIntent("timeSet", lower) ? "set" : "status",
+  audio: ({ args }) => args.volumePercent !== undefined ? "set" : "status"
+});
 
 function hasComputerIntent(name, value) {
   const pattern = computerIntentPatterns[name];
@@ -1300,90 +1362,34 @@ function shouldSubmitAppText(text, args = {}) {
     || (app === "codex" && hasComputerIntent("appType", value));
 }
 
-function inferGonkaComputerOperationFromText(text, family, args) {
-  const lower = String(text || "").toLowerCase();
-  if (hasScreenshotIntent(lower)) {
-    return hasBrowserPageIntent(lower) ? "browser" : "desktop";
-  }
-  if ((hasWallpaperIntent(lower) || /(?:wallpaper|desktop|download-image-wallpaper)/iu.test(String(family || ""))) && !isGeneratedImageIntent(lower)) {
-    return "wallpaper";
-  }
-  if (isGeneratedImageIntent(lower) && hasWallpaperIntent(lower)) {
-    return "image";
-  }
-  if (args.url && args.text) {
-    return "browser";
-  }
-  if (args.url && /скачай|загрузи|download|save\s+(?:it|file)|сохрани/iu.test(lower)) {
-    return "download";
-  }
-  if (args.volumePercent !== undefined || /громк|звук|volume|mute|unmute/iu.test(lower)) {
-    return "audio";
-  }
-  if (/ресурс|cpu|ram|memory|памят|диск|disk|нагруз/iu.test(lower) || family === "system-check") {
-    return "system-resources";
-  }
-  if (/время|дат[ау]|time|date/iu.test(lower) || family === "system-time") {
-    return "time";
-  }
-  if (args.url && /открой|open|browser|браузер/iu.test(lower)) {
-    return "open-url";
-  }
-  if (args.url || args.query || /интернет|сайт|url|fetch|search|найди|поищи|загугл|web/iu.test(lower) || family === "web-lookup") {
-    return "web";
-  }
-  if (hasAppWindowIntent(text) || family === "app" || family === "computer-use") {
-    return "app";
-  }
-  if (args.path || /файл|папк|desktop|рабоч|read file|write file|create file|delete file|list files/iu.test(lower) || family === "file-work") {
-    return "file";
-  }
-  if (args.script || /powershell|cmd|команд|скрипт|terminal|console|запусти/iu.test(lower) || family === "script-task") {
-    return "script";
+function inferGonkaComputerOperationFromText(text, family, args = {}) {
+  const context = {
+    text: String(text || ""),
+    lower: String(text || "").toLowerCase(),
+    family: String(family || ""),
+    args: args || {}
+  };
+  for (const rule of computerOperationRules) {
+    if (rule.when(context)) {
+      return typeof rule.operation === "function" ? rule.operation(context) : rule.operation;
+    }
   }
   return "system-resources";
 }
 
 function inferGonkaComputerActionFromText(text, operation, args) {
-  const lower = String(text || "").toLowerCase();
-  if (hasScreenshotIntent(lower) && (operation === "browser" || operation === "desktop")) {
-    return "screenshot";
+  const actionArgs = args || {};
+  const normalizedOperation = String(operation || "");
+  const resolver = computerActionResolvers[normalizedOperation];
+  if (!resolver) {
+    return actionArgs.action || "status";
   }
-  if (operation === "wallpaper") {
-    return "wallpaper";
-  }
-  if (operation === "web") {
-    return args.url && !args.query ? "fetch" : "search";
-  }
-  if (operation === "download") {
-    return /удали|удалить|delete|remove|cleanup|clean up/iu.test(lower) ? "cycle" : "save";
-  }
-  if (operation === "app") {
-    if (hasComputerIntent("appLaunch", lower) && (args.app || inferAppNameFromText(text))) return "launch";
-    if (hasComputerIntent("appType", lower) && (args.content || args.value || args.input || (!args.target && args.text))) return "type";
-    if (hasComputerIntent("appClick", lower) || args.target || args.text) return "click";
-    if (hasComputerIntent("appSnapshot", lower) || args.app || args.window || args.title) return "snapshot";
-    return "list";
-  }
-  if (operation === "file") {
-    const wantsWrite = args.content !== undefined || /созда[йть]|запиши|напиши|write|create/iu.test(lower);
-    const wantsRead = /прочита[йть]|считай|проверь|verify|read|show/iu.test(lower);
-    const wantsDelete = /удали|удалить|delete|remove/iu.test(lower);
-    if (args.path && args.content !== undefined && wantsWrite && wantsRead && wantsDelete) return "cycle";
-    if (/удали|delete|remove/iu.test(lower)) return "delete";
-    if (/добавь|append/iu.test(lower)) return "append";
-    if (/прочитай|read|show|открой/iu.test(lower) && !args.content) return "read";
-    if (/список|list|ls|покажи файлы/iu.test(lower)) return "list";
-    if (/статус|stat|exists|существ/iu.test(lower)) return "stat";
-    return args.content !== undefined ? "write" : "stat";
-  }
-  if (operation === "time") {
-    return /установ|set|измен/iu.test(lower) ? "set" : "status";
-  }
-  if (operation === "audio") {
-    return args.volumePercent !== undefined ? "set" : "status";
-  }
-  return args.action || "status";
+  return resolver({
+    text: String(text || ""),
+    lower: String(text || "").toLowerCase(),
+    operation: normalizedOperation,
+    args: actionArgs
+  });
 }
 
 function inferMentionedFileName(text) {
