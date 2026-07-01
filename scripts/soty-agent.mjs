@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.115";
+const agentVersion = "0.4.116";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -99,7 +99,7 @@ const codexGonkaFallbackModel = safeCodexModelId(
   || process.env.SOTY_CODEX_FALLBACK_MODEL
   || codexGonkaFallbackDefaultModel
 );
-const codexGonkaRequestTimeoutMs = safeDurationMs(process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS, 30_000, 180_000);
+const codexGonkaRequestTimeoutMs = safeGonkaRequestTimeoutMs(process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS);
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
 const codexGonkaEnvKey = "SOTY_GONKA_API_KEY";
 const codexGonkaAdapterHeuristics = process.env.SOTY_GONKA_ADAPTER_HEURISTICS === "1";
@@ -16996,6 +16996,14 @@ function parseCtlTimeout(args) {
 function safeDurationMs(value, fallback, max = maxLongTaskTimeoutMs) {
   const timeoutMs = Number.parseInt(String(value || ""), 10);
   return Number.isSafeInteger(timeoutMs) ? Math.max(1000, Math.min(timeoutMs, max)) : fallback;
+}
+
+function safeGonkaRequestTimeoutMs(value) {
+  const timeoutMs = Number.parseInt(String(value || ""), 10);
+  if (!Number.isSafeInteger(timeoutMs)) {
+    return 120_000;
+  }
+  return Math.max(60_000, Math.min(timeoutMs, 600_000));
 }
 
 function safeAgentLimit(value, fallback, max) {
