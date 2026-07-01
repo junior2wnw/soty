@@ -8,9 +8,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createComputerTaskRouter } from "./agent-modules/computer-task-router.mjs";
+import { createMcpComputerRouter } from "./agent-modules/mcp-computer-router.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.112";
+const agentVersion = "0.4.113";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1201,6 +1202,14 @@ const {
   hasBrowserPageIntent,
   hasWallpaperIntent,
   isGeneratedImageIntent
+});
+
+const {
+  canonicalSotyMcpToolName,
+  computerToolAlias,
+  computerToolArguments
+} = createMcpComputerRouter({
+  cleanActionToken
 });
 
 function applyAppComputerDefaults(args, text) {
@@ -12027,32 +12036,6 @@ function runMcpServer() {
     return tools.filter((tool) => sotyMcpPublicTools.includes(tool.name));
   }
 
-  function canonicalSotyMcpToolName(value) {
-    const name = String(value || "").trim();
-    const normalized = name.toLowerCase().replace(/-/gu, "_");
-    const aliases = {
-      computer: "soty_computer",
-      artifact: "soty_artifact",
-      artifacts: "soty_artifact",
-      os_reinstall: "soty_reinstall",
-      reinstall: "soty_reinstall",
-      jobs: "soty_action_list",
-      job_status: "soty_action_status",
-      job_stop: "soty_action_stop",
-      shell: "soty_action",
-      filesystem: "soty_file",
-      file: "soty_file",
-      web: "soty_web",
-      internet: "soty_web",
-      fetch: "soty_web",
-      search: "soty_web",
-      browser: "soty_browser",
-      desktop: "soty_desktop",
-      audio: "soty_audio"
-    };
-    return aliases[normalized] || name;
-  }
-
   async function callSotyMcpTool(params) {
     const name = canonicalSotyMcpToolName(params.name);
     const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
@@ -12362,121 +12345,6 @@ function runMcpServer() {
       successCriteria: Boolean(successCriteria),
       agentGuidance: "Learning receipt saved as route guidance only. It is not a proof of task completion; still verify future work through the relevant capability/toolkit."
     });
-  }
-
-  function computerToolAlias(operation, capability, args = {}) {
-    const key = `${operation} ${capability}`.toLowerCase();
-    if (["discover", "describe", "capabilities", "tools", "plane", "route-profiles", "route_profiles", "profiles", "routes"].includes(operation)) {
-      return "";
-    }
-    if (["health", "link", "source", "source-status"].includes(operation)) {
-      return "soty_link_status";
-    }
-    if (operation === "status" && !args.jobId && !["windows-reinstall", "os-reinstall", "reinstall"].includes(capability)) {
-      return "soty_link_status";
-    }
-    if (["jobs", "list", "action-list"].includes(operation)) {
-      return "soty_action_list";
-    }
-    if (["job-status", "job_status", "result", "action-status"].includes(operation) || (operation === "status" && args.jobId)) {
-      return "soty_action_status";
-    }
-    if (["stop", "cancel", "job-stop", "job_stop", "action-stop"].includes(operation)) {
-      return "soty_action_stop";
-    }
-    if (operation === "toolkit" || operation === "toolkits" || capability === "capability-gateway") {
-      return "soty_toolkit";
-    }
-    if (operation === "reinstall" || ["windows-reinstall", "os-reinstall", "reinstall"].includes(capability)) {
-      return "soty_reinstall";
-    }
-    if (operation === "artifact" || capability === "artifact" || args.localPath || args.targetPath) {
-      return "soty_artifact";
-    }
-    const fileOperation = ["file", "filesystem", "read", "write", "append", "list", "stat", "mkdir", "move", "copy", "delete", "publish", "cycle"].includes(operation)
-      || (["search", "download"].includes(operation) && (args.path || args.pattern || args.glob));
-    if ((fileOperation && (args.path || operation === "file" || operation === "filesystem")) || key.includes("filesystem") || key.includes("file")) {
-      return "soty_file";
-    }
-    if (["web", "internet", "web-fetch", "web_fetch", "fetch", "fetch-url", "fetch_url", "web-search", "web_search", "search"].includes(operation)
-      || ["web", "internet", "network", "web-search"].includes(capability)
-      || args.query) {
-      return "soty_web";
-    }
-    if (operation === "image" || operation === "generate-image" || capability === "image" || args.prompt) {
-      return "native_openai_image_required";
-    }
-    if (operation === "open-url" || operation === "open_url" || capability === "url") {
-      return "soty_open_url";
-    }
-    if (["run", "script", "action", "execute", "shell", "terminal", "console", "long-job", "long_job"].includes(operation)
-      || /\b(?:shell|terminal|console|service|package|install|repair|diagnostic|probe|verify|long-job|long_job)\b/u.test(key)
-      || args.command
-      || args.script) {
-      return "soty_action";
-    }
-    if (operation === "browser" || key.includes("browser")) {
-      return "soty_browser";
-    }
-    if (operation === "audio" || key.includes("audio") || key.includes("volume") || key.includes("mute")) {
-      return "soty_audio";
-    }
-    if (["desktop", "screen", "display", "screenshot", "windows", "window", "focus", "click", "type", "key", "keyboard", "mouse", "wallpaper"].includes(operation)
-      || /\b(?:desktop|screen|display|screenshot|window|keyboard|mouse|wallpaper)\b/u.test(key)) {
-      return "soty_desktop";
-    }
-    if (operation === "run" && args.durable === false) {
-      return "soty_run";
-    }
-    if (operation === "script" && args.durable === false) {
-      return "soty_script";
-    }
-    return "";
-  }
-
-  function computerToolArguments(alias, args, operation, capability) {
-    const next = { ...args };
-    delete next.operation;
-    delete next.capability;
-    if (alias === "soty_toolkit") {
-      next.operation = operation === "toolkit" || operation === "toolkits" ? "describe" : operation;
-      return next;
-    }
-    if (alias === "soty_file" && !next.action) {
-      next.action = ["read", "write", "append", "list", "stat", "mkdir", "search", "move", "copy", "delete", "download", "publish", "cycle"].includes(operation)
-        ? operation
-        : "stat";
-    }
-    if (alias === "soty_browser" && !next.action) {
-      next.action = ["open", "goto", "title", "text", "eval", "click_text", "type", "screenshot"].includes(operation)
-        ? operation
-        : "text";
-    }
-    if (alias === "soty_web" && !next.action) {
-      next.action = ["search", "web-search", "web_search"].includes(operation)
-        ? "search"
-        : "fetch";
-    }
-    if (alias === "soty_desktop" && !next.action) {
-      next.action = operation === "screen" ? "display" : operation;
-    }
-    if (alias === "soty_reinstall" && !next.action) {
-      next.action = ["preflight", "prepare", "status", "repair", "cancel", "arm"].includes(operation)
-        ? operation
-        : (next.phase || (operation === "reinstall" ? "prepare" : "status"));
-    }
-    if (alias === "soty_action") {
-      if (!next.mode) {
-        next.mode = typeof next.script === "string" ? "script" : "run";
-      }
-      if (capability && !next.family && !next.toolkit) {
-        next.family = capability;
-      }
-      if (next.detached !== true && next.waitForCompletion !== false) {
-        next.waitForCompletion = true;
-      }
-    }
-    return next;
   }
 
   function computerUsePlaneStatus() {
