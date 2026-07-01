@@ -1167,7 +1167,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.117";
+const agentVersion = "0.4.118";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -9377,6 +9377,24 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
   if ((operation === "safety" || action === "confirmation_required") && inner && typeof inner === "object") {
     return "\u042d\u0442\u043e \u043e\u043f\u0430\u0441\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435. \u042f \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438 \u044f\u0432\u043d\u043e \u0442\u043e\u0447\u043d\u0443\u044e \u0446\u0435\u043b\u044c \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u044f/\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438, \u0438 \u044f \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043f\u043e\u043a\u0430\u0436\u0443 \u043f\u043b\u0430\u043d.";
   }
+  if ((action === "security-check" || inner?.action === "security-check") && inner && typeof inner === "object") {
+    const scan = inner.scanRequested === true
+      ? (inner.scanCompleted === true ? "scan completed" : "scan not completed")
+      : "scan not requested";
+    const threats = Number.isFinite(Number(inner.threatCount)) ? Number(inner.threatCount) : 0;
+    return [
+      `Defender available=${inner.defenderAvailable === true}`,
+      `antivirus=${inner.antivirusEnabled === true}`,
+      `real-time=${inner.realTimeProtectionEnabled === true}`,
+      `PUA=${String(inner.puaProtection || "unknown")}`,
+      `threats=${threats}`,
+      scan,
+      inner.signatureUpdated ? `signatures=${inner.signatureUpdated}` : "",
+      inner.quickScanEndTime ? `quickScanEndTime=${inner.quickScanEndTime}` : "",
+      inner.scanError ? `scanError=${inner.scanError}` : "",
+      "changedSettings=false"
+    ].filter(Boolean).join("; ");
+  }
   if (action === "screenshot" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
     return inner.path
@@ -10509,7 +10527,7 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
   const run = await runSimpleProcess(process.execPath, ["SOTY_LOCAL_API.mjs", "computer", JSON.stringify(args)], {
     cwd: jobDir,
     env: childEnv,
-    timeoutMs: Math.max(1000, Math.min(Number(args.timeoutMs) || 120000, 240000)),
+    timeoutMs: safeDirectComputerToolTimeoutMs(args.timeoutMs, taskFamily, args),
     signal
   });
   const modelText = compactGonkaDirectToolResult(args, run);
@@ -10613,13 +10631,57 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     out.script = driverCheckCompactPowerShell();
     out.timeoutMs = 90000;
   }
-  if (codexSessionFamilyBucket(taskFamily) === "security-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
+  if (shouldUseSecurityCheckCompactScript(out, taskFamily, text)) {
     out.operation = "script";
     out.action = "status";
     out.script = securityCheckCompactPowerShell({ quickScan: hasSecurityScanIntent(text) });
     out.timeoutMs = hasSecurityScanIntent(text) ? 900000 : 120000;
   }
   return out;
+}
+
+function safeDirectComputerToolTimeoutMs(value, taskFamily = "", args = null) {
+  const requested = Number.parseInt(String(value || ""), 10);
+  const fallback = codexSessionFamilyBucket(taskFamily) === "security-check" ? 120000 : 120000;
+  const max = directComputerToolMayRunLong(taskFamily, args) ? maxLongTaskTimeoutMs : 240000;
+  return Number.isSafeInteger(requested)
+    ? Math.max(1000, Math.min(requested, max))
+    : fallback;
+}
+
+function directComputerToolMayRunLong(taskFamily = "", args = null) {
+  const family = codexSessionFamilyBucket(taskFamily);
+  const operation = normalizeGonkaComputerOperation(args?.operation || "");
+  return family === "security-check"
+    || operation === "job_status"
+    || operation === "jobs"
+    || operation === "terminal"
+    || operation === "action"
+    || args?.waitForCompletion === true;
+}
+
+function shouldUseSecurityCheckCompactScript(out, taskFamily = "", text = "") {
+  if (codexSessionFamilyBucket(taskFamily) !== "security-check" || !hasDefenderSecurityIntent(text)) {
+    return false;
+  }
+  const script = String(out?.script || out?.command || out?.cmd || "");
+  if ((out.operation === "system-resources" || out.operation === "status") && !script) {
+    return true;
+  }
+  if (!script) {
+    return false;
+  }
+  return scriptHasEphemeralPowerShellJobPolling(script) || scriptLooksLikeAdHocDefenderCheck(script);
+}
+
+function scriptHasEphemeralPowerShellJobPolling(value) {
+  return /(?:\bStart-Job\b|\bGet-Job\b|\bReceive-Job\b|\bWait-Job\b|\bRemove-Job\b|\bSTILL_RUNNING\b)/iu.test(String(value || ""));
+}
+
+function scriptLooksLikeAdHocDefenderCheck(value) {
+  const text = String(value || "");
+  return /(?:Get-MpComputerStatus|Get-MpPreference|Get-MpThreatDetection|Start-MpScan|MpCmdRun\.exe)/iu.test(text)
+    && !/changedSettings\s*=\s*\$false|action='security-check'|action="security-check"/iu.test(text);
 }
 
 function compactGonkaDirectToolResult(args, run) {
@@ -10715,6 +10777,10 @@ function driverCheckCompactPowerShell() {
 
 function hasSecurityScanIntent(text) {
   return /(?:quick\s+scan|full\s+scan|scan|start-mpscan|\u0441\u043a\u0430\u043d|\u043f\u0440\u043e\u0432\u0435\u0440(?:\u044c|\u0438\u0442\u044c)\s+(?:\u0432\u0441\u0435|\u043a\u043e\u043c\u043f|\u043d\u0430\s+\u0432\u0438\u0440\u0443\u0441))/iu.test(String(text || ""));
+}
+
+function hasDefenderSecurityIntent(text) {
+  return /(?:defender|microsoft\s+defender|windows\s+security|anti-?virus|antivirus|malware|virus|threat|pua|get-mpcomputerstatus|start-mpscan|get-mpthreat|\u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d|\u0437\u0430\u0449\u0438\u0442|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0432\u0438\u0440\u0443\u0441|\u0443\u0433\u0440\u043e\u0437|\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441|\u0437\u0430\u0449\u0438\u0442\u043d\u0438\u043a)/iu.test(String(text || ""));
 }
 
 function securityCheckCompactPowerShell({ quickScan = false } = {}) {
