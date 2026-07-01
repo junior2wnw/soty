@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "gonka-direct-chat-completions+computer-tools+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "0ccd6602da8bba2ed804b81291c36ff74cf13bb99a2d9fa0b633fc5869f599bd",
+  "sha256": "acea45017c3952b27663636f7b3a00334368bfa10ac5bf8512c395d72663819e",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "centralResolver": "gonka-direct-chat-completions",

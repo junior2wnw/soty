@@ -10810,6 +10810,9 @@ function compactGonkaDirectToolResult(args, run) {
       text: String(parsed.text || parsed.output || "").slice(0, gonkaDirectToolResultChars),
       path: parsed.path || parsed.targetPath || parsed.localPath || "",
       url: parsed.url || parsed.sourceUrl || "",
+      title: parsed.title || "",
+      titleBeforeClick: parsed.titleBeforeClick || "",
+      titleChanged: parsed.titleChanged,
       app: parsed.app || "",
       window: parsed.window || null,
       target: parsed.target || "",
@@ -17067,16 +17070,46 @@ switch ($action) {
   }
   'screenshot' {
     $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-    $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+    $width = [Math]::Max(1, [int]$bounds.Width)
+    $height = [Math]::Max(1, [int]$bounds.Height)
+    $bmp = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bmp)
-    $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)
-    $dir = Join-Path $env:TEMP 'soty-desktop'
-    New-Item -ItemType Directory -Force -Path $dir | Out-Null
-    $path = Join-Path $dir ("screenshot-{0}.png" -f ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()))
-    $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-    $graphics.Dispose()
-    $bmp.Dispose()
-    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$path; width=$bounds.Width; height=$bounds.Height; bytes=(Get-Item -LiteralPath $path).Length })
+    $graphics.CopyFromScreen([int]$bounds.Left, [int]$bounds.Top, 0, 0, (New-Object System.Drawing.Size($width, $height)))
+    $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $raw = ([string]$req.path).Trim()
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+      $dir = Join-Path $env:PUBLIC 'Pictures'
+      if ([string]::IsNullOrWhiteSpace($env:PUBLIC)) { $dir = Join-Path $env:TEMP 'soty-desktop' }
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+      $path = Join-Path $dir ("soty-desktop-screenshot-{0}.png" -f $stamp)
+    } else {
+      $expanded = [Environment]::ExpandEnvironmentVariables($raw)
+      if ($expanded -match '^[A-Za-z]:\\?$') {
+        $dir = Join-Path ($expanded.TrimEnd('\') + '\') 'Users\Public\Pictures'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $path = Join-Path $dir ("soty-desktop-screenshot-{0}.png" -f $stamp)
+      } elseif ($expanded -match '^[A-Za-z]:\\[^\\]+\.png$') {
+        $dir = Join-Path ([IO.Path]::GetPathRoot($expanded)) 'Users\Public\Pictures'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $path = Join-Path $dir ([IO.Path]::GetFileName($expanded))
+      } elseif (-not [IO.Path]::IsPathRooted($expanded)) {
+        $dir = Join-Path $env:PUBLIC 'Pictures'
+        if ([string]::IsNullOrWhiteSpace($env:PUBLIC)) { $dir = Join-Path $env:TEMP 'soty-desktop' }
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $path = Join-Path $dir $expanded
+      } elseif ([string]::IsNullOrWhiteSpace([IO.Path]::GetExtension($expanded))) {
+        New-Item -ItemType Directory -Force -Path $expanded | Out-Null
+        $path = Join-Path $expanded ("soty-desktop-screenshot-{0}.png" -f $stamp)
+      } else {
+        $path = $expanded
+        $parent = Split-Path -Parent $path
+        if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+      }
+    }
+    $stream = [IO.File]::Open($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $bmp.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $stream.Dispose(); $graphics.Dispose(); $bmp.Dispose() }
+    $item = Get-Item -LiteralPath $path -Force
+    Emit ([pscustomobject]@{ ok=$true; action=$action; path=$item.FullName; width=$width; height=$height; bytes=[int64]$item.Length })
   }
   'wallpaper' {
     $identityName = CurrentIdentityName
