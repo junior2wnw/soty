@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import WebSocket from "ws";
 import { createMcpComputerRouter } from "./agent-modules/mcp-computer-router.mjs";
+import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-content-adapters.mjs";
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 import { attachAgentRelay } from "../server/agent-relay.js";
@@ -49,7 +50,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.114");
+      assertEqual(health.body.version, "0.4.115");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -1324,11 +1325,29 @@ async function runScenarios({ relayUrl } = {}) {
       assert(Array.isArray(processPayload.processes));
       assert(adapters.sourceClipboardScript({ action: "read" }).includes("Get-Clipboard"));
     }],
+    ["mcp source content adapters produce executable file cycle script", async () => {
+      const adapters = createMcpSourceContentAdapters();
+      const targetPath = join(tempRoot, "content-adapter-cycle.txt");
+      const scriptPath = join(tempRoot, "content-adapter-selftest.mjs");
+      await writeFile(scriptPath, adapters.sourceFileScript({ action: "cycle", path: targetPath, content: "CONTENT_ADAPTER_OK" }), "utf8");
+      const response = await runNode([scriptPath], process.env, tempRoot);
+      assertEqual(response.code, 0);
+      const payload = JSON.parse(response.stdout.trim());
+      assertEqual(payload.ok, true);
+      assertEqual(payload.action, "cycle");
+      assertEqual(payload.text, "CONTENT_ADAPTER_OK");
+      assertEqual(payload.written, true);
+      assertEqual(payload.read, true);
+      assertEqual(payload.deleted, true);
+      assert(adapters.sourceWebScript({ action: "fetch", url: "https://example.com" }).includes("duckDuckGoResults"));
+      assert(adapters.sourceOpenUrlScript("https://example.com").includes("detached: true"));
+    }],
     ["gonka local helper exposes safe ordinary task shortcuts", async () => {
       const source = [
         await readFile(sourceAgentPath, "utf8"),
         await readFile(join(sourceAgentModulesPath, "computer-task-router.mjs"), "utf8"),
         await readFile(join(sourceAgentModulesPath, "mcp-computer-router.mjs"), "utf8"),
+        await readFile(join(sourceAgentModulesPath, "mcp-source-content-adapters.mjs"), "utf8"),
         await readFile(join(sourceAgentModulesPath, "mcp-source-system-adapters.mjs"), "utf8"),
         await readFile(join(sourceAgentModulesPath, "source-task-classifier.mjs"), "utf8")
       ].join("\n");
@@ -1353,6 +1372,9 @@ async function runScenarios({ relayUrl } = {}) {
         "computerActionResolvers",
         "createMcpComputerRouter",
         "computerToolAlias",
+        "createMcpSourceContentAdapters",
+        "sourceFileScript",
+        "sourceWebScript",
         "createMcpSourceSystemAdapters",
         "sourceProcessScript",
         "sourceClipboardScript",
@@ -1624,6 +1646,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["windows reinstall scripts default to managed Cyrillic passwordless account", async () => {
       const agent = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const mcpRouter = await readFile(join(sourceAgentModulesPath, "mcp-computer-router.mjs"), "utf8");
+      const contentAdapters = await readFile(join(sourceAgentModulesPath, "mcp-source-content-adapters.mjs"), "utf8");
       const relay = await readFile(join(root, "server", "agent-relay.js"), "utf8");
       const main = await readFile(join(root, "src", "main.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
@@ -1666,7 +1689,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
       assert(agent.includes("command-output-failure"));
       assert(agent.includes('operation=\\"file\\"'));
-      assert(agent.includes('action === "cycle"'));
+      assert(contentAdapters.includes('action === "cycle"'));
       assert(agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
       assert(agent.includes("gonkaForcedToolChoice"));
@@ -1708,7 +1731,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("attachMcp: codexTaskNeedsSotyMcpTools(taskFamily, target)"));
       assert(agent.includes("Gonka direct agent: Gonka is the central solver"));
       assert(agent.includes("Codex CLI is not in this execution path"));
-      assert(agent.includes("sourceWebScript"));
+      assert(agent.includes("createMcpSourceContentAdapters"));
+      assert(contentAdapters.includes("sourceWebScript"));
       assert(agent.includes("openAiToolPlaneStatus"));
       assert(agent.includes("standardTools: [...sotyMcpPublicTools]"));
       assert(!agent.includes('name: "image_gen"'));
@@ -1778,9 +1802,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("action=download"));
       assert(agent.includes("Do not stage user artifacts under `C:\\\\Windows\\\\Temp`"));
       assert(agent.includes("C:\\\\ProgramData\\\\soty-agent\\\\artifacts"));
-      assert(agent.includes('emitSotyFileControl("BEGIN"'));
-      assert(agent.includes("SOTY_FILE_CHUNK"));
-      assert(agent.includes("room-file-rail"));
+      assert(contentAdapters.includes('emitSotyFileControl("BEGIN"'));
+      assert(contentAdapters.includes("SOTY_FILE_CHUNK"));
+      assert(contentAdapters.includes("room-file-rail"));
       assert(agent.includes("Never use 0x0.st, file.io, temp.sh, bashupload"));
       assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
       assert(agent.includes("SOTY_ROUTES.md"));
@@ -2061,7 +2085,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.114");
+      assertEqual(manifest.version, "0.4.115");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "gonka-direct-chat-completions+computer-tools+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2143,6 +2167,7 @@ async function runScenarios({ relayUrl } = {}) {
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const mcpRouter = await readFile(join(sourceAgentModulesPath, "mcp-computer-router.mjs"), "utf8");
+      const contentAdapters = await readFile(join(sourceAgentModulesPath, "mcp-source-content-adapters.mjs"), "utf8");
       const agentRelay = (await readFile(join(root, "server", "agent-relay.js"), "utf8")).replace(/\r\n/gu, "\n");
       const realtime = (await readFile(join(root, "server", "realtime.js"), "utf8")).replace(/\r\n/gu, "\n");
       const validators = (await readFile(join(root, "server", "validators.js"), "utf8")).replace(/\r\n/gu, "\n");
@@ -2213,7 +2238,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.114"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.115"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2278,7 +2303,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.114"'));
+      assert(agentSource.includes('const agentVersion = "0.4.115"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2337,7 +2362,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("sourceArtifactDownloadPowerShellScript"));
       assert(agentSource.includes("soty-relay-artifact"));
       assert(agentSource.includes("Cross-device file transfer"));
-      assert(agentSource.includes("controller-browser-downloads"));
+      assert(contentAdapters.includes("controller-browser-downloads"));
       assert(agentSource.includes("action=download means source device -> controller/current computer Downloads"));
       assert(agentSource.includes("mcpToolJsonText(result)"));
       assert(mcpRouter.indexOf('new Set(["run", "script"])') < mcpRouter.indexOf("if (actionOperations.has(operation)"));
@@ -2427,14 +2452,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(join(root, "public", "agent", "soty-agent.mjs"), "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.114";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.115";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.114",
+            version: "0.4.115",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });
