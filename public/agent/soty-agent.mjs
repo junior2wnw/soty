@@ -1176,7 +1176,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.124";
+const agentVersion = "0.4.125";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2689,6 +2689,15 @@ function inferKnownBrowserUrlFromText(value) {
 function inferScreenshotPathFromText(value, operation = "browser") {
   const text = String(value || "");
   const extension = operation === "browser" ? "png" : "png";
+  const named = text.match(/(?:\bas\b|\bto\b|\u043a\u0430\u043a|\u0432\s+\u0444\u0430\u0439\u043b)\s+["'`]?([^"'`\s<>|?*:]+\.png)\b/iu)
+    || text.match(/\b([A-Za-z0-9_.-]+\.png)\b/u);
+  if (named) {
+    const fileName = String(named[1] || "").replace(/[\\/:*?"<>|]+/gu, "").slice(0, 120) || `soty-${operation || "screen"}-screenshot.${extension}`;
+    if (/(?:desktop|\u0440\u0430\u0431\u043e\u0447\w*\s+\u0441\u0442\u043e\u043b)/iu.test(text)) {
+      return `%USERPROFILE%\\Desktop\\${fileName}`;
+    }
+    return `C:\\Users\\Public\\Pictures\\${fileName}`;
+  }
   if (/(?:\bc:\\|drive\s+c|\bdisk\s+c|\u0434\u0438\u0441\u043a\w*\s+c|\u0434\u0438\u0441\u043a\u0435\s+c)/iu.test(text)) {
     return `C:\\Users\\Public\\Pictures\\soty-${operation || "screen"}-screenshot.${extension}`;
   }
@@ -9947,7 +9956,7 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
   if (["time", "audio", "process", "clipboard", "network"].includes(operation)) {
     return true;
   }
-  if (operation === "desktop" && action === "screenshot") {
+  if ((operation === "desktop" || operation === "browser") && action === "screenshot") {
     return true;
   }
   const family = codexSessionFamilyBucket(taskFamily);
