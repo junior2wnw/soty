@@ -1389,14 +1389,6 @@ function inferMentionedFilePath(text) {
   if (quoted) {
     return quoted[1].trim();
   }
-  const clickTarget = value.match(/\b(?:click|press|follow|open)\s+(?:the\s+|a\s+|an\s+)?([A-Za-z0-9][A-Za-z0-9 _.'-]{1,120}?)(?:\s+(?:link|button)\b|\s*(?:,|\band\b|\bthen\b|$))/iu);
-  if (clickTarget) {
-    return clickTarget[1].trim().replace(/\s+(?:link|button)$/iu, "").replace(/[.,:;]+$/u, "");
-  }
-  const trailingLabel = value.match(/\b(?:click|press|open|follow)\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s+(?:and|then|after|to|so)\b|[.?!]|$)/iu);
-  if (trailingLabel) {
-    return trailingLabel[1].trim().replace(/^(?:the|a|an)\s+/iu, "").replace(/[.,:;]+$/u, "");
-  }
   const plain = value.match(/\b([A-Za-z]:\\[^\r\n,;|<>"]{1,240}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/iu);
   return plain ? plain[1].trim() : "";
 }
@@ -11234,6 +11226,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "const sourceRelayId = " + JSON.stringify(runtimeContext.source?.sourceRelayId || "") + ";",
     "const base = 'http://127.0.0.1:" + port + "';",
     "const localDirect = " + JSON.stringify(localApiCanRunDirect) + ";",
+    "const browserNode = " + sourceBrowserScript.toString() + ";",
     "const [, , op = '', ...args] = process.argv;",
     "function ps(value) { return `'${String(value ?? '').replace(/'/g, \"''\")}'`; }",
     "function desktopPathScript(name) { return `$path = Join-Path ([Environment]::GetFolderPath('Desktop')) ${ps(name)}`; }",
@@ -11281,6 +11274,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "}",
     "async function scriptPowerShell(script, { timeoutMs = 60000, name = 'soty-script' } = {}) {",
     "  await post('/operator/script', { target, sourceDeviceId, sourceRelayId, shell: 'powershell', timeoutMs, name, script });",
+    "}",
+    "async function scriptNode(script, { timeoutMs = 60000, name = 'soty-node' } = {}) {",
+    "  await post('/operator/script', { target, sourceDeviceId, sourceRelayId, shell: 'node', timeoutMs, name, script });",
     "}",
     "function webPowerShell(req) {",
     "  const action = String(req.action || req.operation || '').toLowerCase();",
@@ -11339,145 +11335,6 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"$graphics.Dispose(); $bmp.Dispose()\",",
     "    \"$item = Get-Item -LiteralPath $path -Force\",",
     "    \"[pscustomobject]@{ ok=$true; operation='desktop'; action='screenshot'; path=$item.FullName; bytes=[int64]$item.Length; width=$width; height=$height } | ConvertTo-Json -Compress\"",
-    "  ].join('\\n');",
-    "}",
-    "function browserPowerShell(req) {",
-    "  const encoded = Buffer.from(JSON.stringify({ action: String(req.action || '').slice(0, 40), url: String(req.url || ''), text: String(req.text || req.linkText || req.selector || ''), path: String(req.path || req.targetPath || ''), maxChars: Math.max(1000, Math.min(Number(req.maxChars) || 4000, 12000)) }), 'utf8').toString('base64');",
-    "  return [",
-    "    \"$ErrorActionPreference = 'Stop'\",",
-    "    \"Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes\",",
-    "    \"Add-Type -AssemblyName System.Windows.Forms,System.Drawing\",",
-    "    \"if (-not ('SotyWin32' -as [type])) { Add-Type 'using System; using System.Runtime.InteropServices; public class SotyWin32 { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); }' }\",",
-    "    `$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,",
-    "    \"$action = ([string]$req.action).Trim().ToLowerInvariant()\",",
-    "    \"$url = [string]$req.url\",",
-    "    \"$preferredHost = ''\",",
-    "    \"try { if ($url) { $preferredHost = ([Uri]$url).Host.ToLowerInvariant() } } catch {}\",",
-    "    \"$preferredBase = if ($preferredHost -and $preferredHost.Contains('.')) { $preferredHost.Split('.')[0] } else { $preferredHost }\",",
-    "    \"$needle = ([string]$req.text).Trim()\",",
-    "    \"$requestedPath = ([string]$req.path).Trim()\",",
-    "    \"$maxChars = [Math]::Max(1000, [Math]::Min([int]$req.maxChars, 12000))\",",
-    "    \"function Open-BrowserWindow([string]$targetUrl) {\",",
-    "    \"  if ([string]::IsNullOrWhiteSpace($targetUrl)) { return }\",",
-    "    \"  $opened = $false\",",
-    "    \"  foreach ($exe in @('chrome.exe','msedge.exe')) {\",",
-    "    \"    try { Start-Process -FilePath $exe -ArgumentList @('--new-window', $targetUrl); $opened = $true; break } catch {}\",",
-    "    \"  }\",",
-    "    \"  if (-not $opened) { Start-Process $targetUrl }\",",
-    "    \"  Start-Sleep -Seconds 3\",",
-    "    \"}\",",
-    "    \"if ($url) { Open-BrowserWindow $url }\",",
-    "    \"$root = [System.Windows.Automation.AutomationElement]::RootElement\",",
-    "    \"function Get-ChromeWindow {\",",
-    "    \"  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)\",",
-    "    \"  $foreground = [SotyWin32]::GetForegroundWindow().ToInt64()\",",
-    "    \"  $first = $null\",",
-    "    \"  $preferred = $null\",",
-    "    \"  $sotyFallback = $null\",",
-    "    \"  for ($i = 0; $i -lt $wins.Count; $i++) {\",",
-    "    \"    $w = $wins.Item($i)\",",
-    "    \"    $name = [string]$w.Current.Name\",",
-    "    \"    if ($w.Current.ClassName -eq 'Chrome_WidgetWin_1' -and $name -like '*Google Chrome*') {\",",
-    "    \"      $isSoty = $name -match '(?i)(soty|xn--n1afe0b|соты)'\",",
-    "    \"      $handle = [int64]$w.Current.NativeWindowHandle\",",
-    "    \"      if (-not $isSoty) {\",",
-    "    \"        if (-not $first) { $first = $w }\",",
-    "    \"        if ($handle -eq $foreground) { return $w }\",",
-    "    \"        $nameLower = $name.ToLowerInvariant()\",",
-    "    \"        if ($preferredHost -and $nameLower.Contains($preferredHost)) { return $w }\",",
-    "    \"        $badTitle = $false\",",
-    "    \"        if ($preferredBase) { $badTitle = $nameLower -match ('^' + [regex]::Escape($preferredBase) + '\\.\\s+-\\s+google chrome$') }\",",
-    "    \"        if (-not $preferred -and $preferredBase -and $nameLower.Contains($preferredBase) -and -not $badTitle -and $nameLower -notmatch '(?i)(err_name_not_resolved|не удается получить доступ|can''t be reached)') { $preferred = $w }\",",
-    "    \"      }\",",
-    "    \"      elseif (-not $sotyFallback) { $sotyFallback = $w }\",",
-    "    \"    }\",",
-    "    \"  }\",",
-    "    \"  if ($preferred) { return $preferred }\",",
-    "    \"  if ($first) { return $first }\",",
-    "    \"  return $sotyFallback\",",
-    "    \"}\",",
-    "    \"$chrome = Get-ChromeWindow\",",
-    "    \"if (-not $chrome) { throw 'chrome window not found' }\",",
-    "    \"function Resolve-ScreenshotPath([string]$raw) {\",",
-    "    \"  $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()\",",
-    "    \"  if ([string]::IsNullOrWhiteSpace($raw)) { $dir = Join-Path $env:TEMP 'soty-browser'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; return (Join-Path $dir ('screenshot-' + $stamp + '.png')) }\",",
-    "    \"  $expanded = [Environment]::ExpandEnvironmentVariables($raw.Trim())\",",
-    "    \"  if ($expanded -match '^[A-Za-z]:\\\\?$') { $expanded = (Join-Path ($expanded.TrimEnd('\\\\') + '\\\\') ('soty-browser-screenshot-' + $stamp + '.png')) }\",",
-    "    \"  elseif (-not [IO.Path]::IsPathRooted($expanded)) { $dir = Join-Path $env:TEMP 'soty-browser'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $expanded = Join-Path $dir $expanded }\",",
-    "    \"  elseif ([string]::IsNullOrWhiteSpace([IO.Path]::GetExtension($expanded))) { $expanded = Join-Path $expanded ('soty-browser-screenshot-' + $stamp + '.png') }\",",
-    "    \"  $parent = Split-Path -Parent $expanded\",",
-    "    \"  if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\",",
-    "    \"  return $expanded\",",
-    "    \"}\",",
-    "    \"function Collect-ChromeText($element, [int]$limit) {\",",
-    "    \"  if (-not $element) { return '' }\",",
-    "    \"  $texts = New-Object System.Collections.Generic.List[string]\",",
-    "    \"  $seen = @{}\",",
-    "    \"  $allText = $element.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\",",
-    "    \"  for ($i = 0; $i -lt $allText.Count; $i++) {\",",
-    "    \"    $e = $allText.Item($i)\",",
-    "    \"    $ct = $e.Current.ControlType.ProgrammaticName\",",
-    "    \"    if ($ct -notmatch 'Text|Hyperlink|Document') { continue }\",",
-    "    \"    $name = ([string]$e.Current.Name).Trim()\",",
-    "    \"    if (-not $name -or $seen.ContainsKey($name)) { continue }\",",
-    "    \"    $seen[$name] = $true; [void]$texts.Add($name)\",",
-    "    \"  }\",",
-    "    \"  $body = (($texts -join ' ') -replace '\\\\s+', ' ').Trim()\",",
-    "    \"  return $body.Substring(0, [Math]::Min($body.Length, $limit))\",",
-    "    \"}\",",
-    "    \"if ($action -eq 'screenshot') {\",",
-    "    \"  $title = ([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', ''\",",
-    "    \"  $pageText = Collect-ChromeText $chrome $maxChars\",",
-    "    \"  $rect = $chrome.Current.BoundingRectangle\",",
-    "    \"  if ($rect.Width -lt 1 -or $rect.Height -lt 1) { throw 'chrome window has empty bounds' }\",",
-    "    \"  $width = [Math]::Max(1, [int][Math]::Round($rect.Width))\",",
-    "    \"  $height = [Math]::Max(1, [int][Math]::Round($rect.Height))\",",
-    "    \"  $bmp = New-Object System.Drawing.Bitmap $width, $height\",",
-    "    \"  $graphics = [System.Drawing.Graphics]::FromImage($bmp)\",",
-    "    \"  $graphics.CopyFromScreen([int][Math]::Round($rect.X), [int][Math]::Round($rect.Y), 0, 0, (New-Object System.Drawing.Size($width, $height)))\",",
-    "    \"  $path = Resolve-ScreenshotPath $requestedPath\",",
-    "    \"  $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)\",",
-    "    \"  $graphics.Dispose(); $bmp.Dispose()\",",
-    "    \"  $item = Get-Item -LiteralPath $path -Force\",",
-    "    \"  [pscustomobject]@{ ok=$true; action='screenshot'; url=$url; title=$title; path=$item.FullName; bytes=[int64]$item.Length; width=$width; height=$height; text=$pageText } | ConvertTo-Json -Compress\",",
-    "    \"  return\",",
-    "    \"}\",",
-    "    \"$clicked = $false\",",
-    "    \"$titleBeforeClick = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '')\",",
-    "    \"if ($needle) {\",",
-    "    \"  $all = $chrome.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\",",
-    "    \"  $target = $null\",",
-    "    \"  $needles = @($needle)\",",
-    "    \"  $trimmedNeedle = ($needle -replace '(?i)\\\\s+(link|button)$', '').Trim()\",",
-    "    \"  if ($trimmedNeedle -and $trimmedNeedle -ne $needle) { $needles += $trimmedNeedle }\",",
-    "    \"  if ($needle -match '(?i)more information') { $needles += 'Learn more' }\",",
-    "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
-    "    \"    $e = $all.Item($i)\",",
-    "    \"    $name = ([string]$e.Current.Name).Trim()\",",
-    "    \"    foreach ($candidate in $needles) { if ($name -and $name.ToLowerInvariant().Contains(([string]$candidate).ToLowerInvariant())) { $target = $e; break } }\",",
-    "    \"    if ($target) { break }\",",
-    "    \"  }\",",
-    "    \"  if (-not $target) { throw ('browser target not found: ' + $needle) }\",",
-    "    \"  try { $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $clicked = $true }\",",
-    "    \"  catch {\",",
-    "    \"    $rect = $target.Current.BoundingRectangle\",",
-    "    \"    if ($rect.Width -le 0 -or $rect.Height -le 0) { throw }\",",
-    "    \"    Add-Type -AssemblyName System.Windows.Forms\",",
-    "    \"    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]($rect.X + $rect.Width / 2), [int]($rect.Y + $rect.Height / 2))\",",
-    "    \"    [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')\",",
-    "    \"    $clicked = $true\",",
-    "    \"  }\",",
-    "    \"  for ($wait = 0; $wait -lt 24; $wait++) {\",",
-    "    \"    Start-Sleep -Milliseconds 500\",",
-    "    \"    $currentTitle = ''\",",
-    "    \"    try { $currentTitle = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '') } catch { $chrome = Get-ChromeWindow; if ($chrome) { $currentTitle = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '') } }\",",
-    "    \"    if ($currentTitle -and $currentTitle -ne $titleBeforeClick -and $currentTitle -notmatch '^(https?://)?[A-Za-z0-9.-]+/.+') { break }\",",
-    "    \"  }\",",
-    "    \"  Start-Sleep -Milliseconds 500\",",
-    "    \"}\",",
-    "    \"$title = ([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', ''\",",
-    "    \"$body = Collect-ChromeText $chrome $maxChars\",",
-    "    \"[pscustomobject]@{ ok=$true; action='browser'; url=$url; clicked=$clicked; target=$needle; titleBeforeClick=$titleBeforeClick; title=$title; titleChanged=($title -ne $titleBeforeClick); text=$body } | ConvertTo-Json -Compress\"",
     "  ].join('\\n');",
     "}",
     "function appPowerShell(req) {",
@@ -11691,7 +11548,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    return;",
     "  }",
     "  if (operation === 'browser') {",
-    "    await scriptPowerShell(browserPowerShell(req), { name: 'computer-browser', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
+    "    await scriptNode(browserNode(req), { name: 'computer-browser', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 60000, 120000)) });",
     "    return;",
     "  }",
     "  if (operation === 'open-url' || operation === 'open') {",
@@ -15771,24 +15628,43 @@ async function evalText(client, expression) {
   const value = result.result ? result.result.value : null;
   return typeof value === "string" ? value : JSON.stringify(value);
 }
+async function waitForDocument(client, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const ready = await evalText(client, "document.readyState");
+      if (ready === "interactive" || ready === "complete") return;
+    } catch {}
+    await sleep(200);
+  }
+}
+async function pageState(client, maxChars = 4000) {
+  const expression = "JSON.stringify({ title: document.title || '', url: location.href || '', text: (document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').trim().slice(0, " + Number(maxChars) + ") })";
+  return JSON.parse(await evalText(client, expression));
+}
 (async () => {
   const action = String(req.action || "").toLowerCase();
   const maxChars = Math.max(1000, Math.min(12000, Number(req.maxChars) || 9000));
   if (action === "open" || action === "goto") {
     await withClient(async (client) => {
       if (req.url) await client.send("Page.navigate", { url: req.url }).catch(() => {});
-      await sleep(500);
-      const text = await evalText(client, "JSON.stringify({ title: document.title, url: location.href })");
-      console.log(text);
+      await waitForDocument(client);
+      console.log(JSON.stringify({ ok: true, action, ...(await pageState(client, maxChars)) }));
     });
     return;
   }
   if (action === "title") {
-    await withClient(async (client) => console.log(await evalText(client, "JSON.stringify({ title: document.title, url: location.href })")));
+    await withClient(async (client) => {
+      await waitForDocument(client);
+      console.log(JSON.stringify({ ok: true, action, ...(await pageState(client, maxChars)) }));
+    });
     return;
   }
   if (action === "text") {
-    await withClient(async (client) => console.log((await evalText(client, "document.body ? document.body.innerText : ''")).slice(0, maxChars)));
+    await withClient(async (client) => {
+      await waitForDocument(client);
+      console.log(JSON.stringify({ ok: true, action, ...(await pageState(client, maxChars)) }));
+    });
     return;
   }
   if (action === "eval") {
@@ -15797,8 +15673,20 @@ async function evalText(client, expression) {
   }
   if (action === "click_text") {
     const needle = JSON.stringify(req.text || "");
-    const expression = "(() => { const needle = " + needle + ".toLowerCase(); const all = [...document.querySelectorAll('button,a,input,textarea,select,[role=button],label,div,span')]; const el = all.find(e => (e.innerText || e.value || e.ariaLabel || '').toLowerCase().includes(needle)); if (!el) return { clicked:false }; el.scrollIntoView({block:'center', inline:'center'}); el.click(); return { clicked:true, text:(el.innerText || el.value || el.ariaLabel || '').slice(0,200) }; })()";
-    await withClient(async (client) => console.log(await evalText(client, expression)));
+    const expression = "(() => { const needle = " + needle + ".toLowerCase(); const visible = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; }; const label = e => (e.innerText || e.textContent || e.value || e.ariaLabel || e.getAttribute('aria-label') || e.title || '').replace(/\\s+/g, ' ').trim(); const all = [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link],label,summary')].filter(visible); const el = all.find(e => label(e).toLowerCase().includes(needle)); if (!el) return { clicked:false, target:" + needle + ", candidates: all.map(label).filter(Boolean).slice(0,20) }; el.scrollIntoView({block:'center', inline:'center'}); el.click(); return { clicked:true, target:" + needle + ", text: label(el).slice(0,200) }; })()";
+    await withClient(async (client) => {
+      await waitForDocument(client);
+      const before = await pageState(client, maxChars);
+      const clicked = JSON.parse(await evalText(client, expression));
+      for (let i = 0; i < 30; i += 1) {
+        await sleep(250);
+        const now = await pageState(client, maxChars);
+        if (now.url !== before.url || now.title !== before.title) break;
+      }
+      await waitForDocument(client, 8000);
+      const after = await pageState(client, maxChars);
+      console.log(JSON.stringify({ ok: clicked.clicked === true, action, clicked: clicked.clicked === true, target: clicked.target || req.text || "", clickedText: clicked.text || "", titleBeforeClick: before.title, title: after.title, url: after.url, titleChanged: after.title !== before.title, text: after.text, candidates: clicked.candidates || [] }));
+    });
     return;
   }
   if (action === "type") {
@@ -15810,12 +15698,23 @@ async function evalText(client, expression) {
   }
   if (action === "screenshot") {
     await withClient(async (client) => {
-      const shot = await client.send("Page.captureScreenshot", { format: "jpeg", quality: 60, captureBeyondViewport: false });
-      const dir = path.join(os.tmpdir(), "soty-browser");
-      fs.mkdirSync(dir, { recursive: true });
-      const out = path.join(dir, "screenshot-" + Date.now() + ".jpg");
+      await waitForDocument(client);
+      const shot = await client.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      let out = String(req.path || "").trim();
+      if (!out) {
+        const dir = path.join(os.tmpdir(), "soty-browser");
+        fs.mkdirSync(dir, { recursive: true });
+        out = path.join(dir, "screenshot-" + Date.now() + ".png");
+      } else if (!path.isAbsolute(out)) {
+        const dir = path.join(os.tmpdir(), "soty-browser");
+        fs.mkdirSync(dir, { recursive: true });
+        out = path.join(dir, out);
+      } else {
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+      }
+      if (!/\.png$/i.test(out)) out += ".png";
       fs.writeFileSync(out, Buffer.from(shot.data || "", "base64"));
-      console.log(JSON.stringify({ ok: true, action, path: out, bytes: fs.statSync(out).size }));
+      console.log(JSON.stringify({ ok: true, action, path: out, bytes: fs.statSync(out).size, ...(await pageState(client, maxChars)) }));
     });
     return;
   }
