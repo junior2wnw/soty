@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.106";
+const agentVersion = "0.4.107";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -10684,9 +10684,9 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"  return @($out)\",",
     "    \"}\",",
     "    \"function App-ProcessName($processIdValue) { try { return ([Diagnostics.Process]::GetProcessById([int]$processIdValue)).ProcessName } catch { return '' } }\",",
-    "    \"function App-FindWindow([string]$needle, [int]$pid) {\",",
+    "    \"function App-FindWindow([string]$needle, [int]$targetPid) {\",",
     "    \"  $windows = $root.FindAll($treeChildren, $trueCondition)\",",
-    "    \"  if ($pid -gt 0) { for ($i = 0; $i -lt $windows.Count; $i++) { $w = $windows.Item($i); if ([int]$w.Current.ProcessId -eq $pid) { return $w } } }\",",
+    "    \"  if ($targetPid -gt 0) { for ($i = 0; $i -lt $windows.Count; $i++) { $w = $windows.Item($i); if ([int]$w.Current.ProcessId -eq $targetPid) { return $w } } }\",",
     "    \"  $needleLower = $needle.ToLowerInvariant()\",",
     "    \"  if ($needleLower) {\",",
     "    \"    for ($i = 0; $i -lt $windows.Count; $i++) {\",",
