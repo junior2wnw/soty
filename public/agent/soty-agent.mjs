@@ -9011,7 +9011,7 @@ function agentResponseStyleStatus(profile = activeAgentResponseStyle) {
 
 function universalComputerUseContractPromptLines() {
   return [
-    "- universal_action_contract: goal -> choose capability -> act -> verify proof -> repair once when obvious -> final.",
+    "- universal_action_contract: goal -> choose capability -> act -> verify proof -> final; if proof shows a concrete blocker, choose the next appropriate capability or state that blocker.",
     "- Treat every computer-use request as an action to complete, not a topic to discuss. Do not ask the user to say `continue` after you already have the needed computer capability.",
     "- Prefer small reliable adapters over clever broad scripts: file/browser/desktop/audio/web first, shell/script only when the adapter cannot express the task.",
     "- For GUI app work, use the app/window adapter: list or snapshot first, then click/type by UI element name/index, and verify state after the action.",
@@ -9699,7 +9699,7 @@ function finalTextLooksLikeActionProof(text) {
   if (!value.trim()) {
     return false;
   }
-  if (/(?:sha-?256|artifactsha256|"\s*(?:bytes|path|targetpath|localpath|currentwallpaper|requestedwallpaper|wallpaperpath|deleted|written|volumepercent|muted|sha256|artifactsha256)"\s*:|bytes|currentwallpaper|requestedwallpaper|verification|exitcode\s*=\s*0|registry-current-wallpaper-matches-path|desktop-file-cycle\s+ok|volume=\d{1,3};\s*muted=|time=.+;\s*admin=|[a-z]:\\|\/users\/|\/home\/)/iu.test(value)) {
+  if (/(?:sha-?256|artifactsha256|"\s*(?:bytes|path|targetpath|localpath|currentwallpaper|requestedwallpaper|wallpaperpath|deleted|written|volumepercent|muted|sha256|artifactsha256)"\s*:|bytes|currentwallpaper|requestedwallpaper|verification|exitcode\s*=\s*0|registry-current-wallpaper-matches-path|desktop-file-cycle\s+ok|volume=\d{1,3};\s*muted=|time=.+;\s*admin=|clicked\s*[:=]|titlechanged\s*=\s*true|url:\s*https?:\/\/|title:\s*[^;\n]+|[a-z]:\\|\/users\/|\/home\/)/iu.test(value)) {
     return true;
   }
   if (/(?:^\s*\{[\s\S]*"ok"\s*:\s*true|^written\s+.+|^deleted\s+.+|^opened\s+https?:\/\/)/iu.test(value.trim())) {
@@ -9746,6 +9746,7 @@ async function runGonkaDirectSotySessionTurn({
     return { ok: false, text: "! gonka: API key is not configured", exitCode: 126 };
   }
   const needsComputer = directGonkaTaskNeedsComputerTool(taskFamily, target, text);
+  const proofRequired = Boolean(target?.id && computerActionRequiresProof(taskFamily, text));
   const messages = [
     { role: "system", content: buildGonkaDirectSystemPrompt(runtimeContext, taskFamily, target) },
     { role: "user", content: buildGonkaDirectUserPrompt(text, context, runtimeContext, taskFamily, target) }
@@ -9871,12 +9872,30 @@ async function runGonkaDirectSotySessionTurn({
         if (inferred) {
           terminal.push(inferred.terminal);
           toolResults.push(inferred.toolText);
-          finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
-            || inferred.userText;
+          const inferredProof = recoverDirectComputerProofText([inferred.toolText]) || inferred.userText || "";
+          finalText = proofRequired
+            ? inferredProof
+            : (await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal }) || inferredProof);
           exitCode = inferred.exitCode;
         }
       }
       if (!finalText) {
+        if (proofRequired && assistantText && !finalTextLooksLikeActionProof(assistantText)) {
+          if (turn < gonkaDirectMaxToolTurns) {
+            traceStep(trace, "gonka.direct.continue-missing-tool-proof", {
+              turn,
+              terminal: terminal.length,
+              textChars: assistantText.length
+            });
+            messages.push({ role: "assistant", content: assistantText });
+            messages.push({ role: "user", content: buildGonkaDirectMissingProofPrompt(text, taskFamily) });
+            continue;
+          }
+          const recoveredProof = recoverDirectComputerProofText(toolResults);
+          finalText = recoveredProof || agentFailureText("The action did not produce a verified computer-tool result.");
+          exitCode = recoveredProof ? (exitCode || 0) : (exitCode || 125);
+          break;
+        }
         finalText = assistantText;
       }
       break;
@@ -10023,7 +10042,7 @@ function buildGonkaDirectSystemPrompt(runtimeContext = {}, taskFamily = "generic
     "You are running directly on Gonka Chat Completions. Codex CLI is not in this execution path.",
     "Use the `computer` function for any task that needs the selected user's computer, files, browser, desktop, web fallback, audio, system state, or actions.",
     "After a tool result, finish with a short useful answer in the user's language. Do not expose internal transport, relay, worker, MCP, Codex, or tool-loop details.",
-    "If a command/action succeeded, summarize the verified outcome. If it failed, repair once when obvious; otherwise state the concrete blocker.",
+    "If a command/action succeeded, summarize the verified outcome. If proof shows a concrete blocker, choose the next appropriate capability or state that blocker.",
     "For routine system checks, prefer compact scripts/results over broad inventories. Ask the user only for credentials, final destructive confirmation, or physical action.",
     targetLine,
     `Task family: ${taskFamily || "generic"}.`,
@@ -10058,6 +10077,7 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
   const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
   const action = String(args?.action || "").trim().toLowerCase();
   const needsDelete = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(String(text || ""));
+  const needsBrowserClick = /(?:\bclick\b|\bpress\b|\bfollow\b|\blink\b|\bbutton\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u043f\u0435\u0440\u0435\u0439\u0434|\u0441\u0441\u044b\u043b|\u043a\u043d\u043e\u043f)/iu.test(String(text || ""));
   if (hasCreateReadDeleteFileIntent(text)) {
     return true;
   }
@@ -10069,6 +10089,14 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
   }
   if (["web", "fetch", "search"].includes(operation)) {
     return !hasDownloadSaveDeleteFileIntent(text);
+  }
+  if (operation === "browser") {
+    if (["click_text", "click"].includes(action)) {
+      return true;
+    }
+    if (["open", "goto", "title", "text"].includes(action)) {
+      return !needsBrowserClick;
+    }
   }
   if (["time", "audio", "process", "clipboard", "network"].includes(operation)) {
     return true;
@@ -10085,6 +10113,20 @@ function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamil
   const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
   const action = String(args?.action || "").trim().toLowerCase();
   return (family === "security-check" || family === "driver-check") && operation === "script" && (action === "status" || action === "security-check" || action === "driver-check");
+}
+
+function buildGonkaDirectMissingProofPrompt(text = "", taskFamily = "") {
+  return [
+    "The previous assistant message did not include a verified computer-tool result for this action task.",
+    "Continue the same user request now by calling the `computer` function for the missing action.",
+    "If the action is impossible, call a diagnostic computer operation first and then state the concrete blocker.",
+    "Do not finish with a plan, intention, or recommendation unless the tool result proves the requested outcome.",
+    "",
+    "Current user request (authoritative):",
+    String(text || "").trim(),
+    "",
+    `task_family: ${taskFamily || "generic"}`
+  ].join("\n");
 }
 
 function hasDownloadSaveDeleteFileIntent(value) {

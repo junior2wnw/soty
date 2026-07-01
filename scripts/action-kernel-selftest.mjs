@@ -2356,7 +2356,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("applyExactFileCycleArgs"));
       assert(agentSource.includes("textToolCallSignal"));
       assert(agentSource.includes("universal_action_contract"));
-      assert(agentSource.includes("act -> verify proof -> repair once"));
+      assert(agentSource.includes("act -> verify proof -> final"));
+      assert(agentSource.includes("buildGonkaDirectMissingProofPrompt"));
+      assert(agentSource.includes("gonka.direct.continue-missing-tool-proof"));
       assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
       assert(agentSource.includes("hasCriticalDestructiveIntent"));
       assert(agentSource.includes("safetyPowerShell"));
