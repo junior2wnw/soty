@@ -1073,6 +1073,9 @@ function createSourceTaskClassifier(dependencies = {}) {
 
   function hasDriverCheckIntent(text) {
     const value = String(text || "").toLowerCase();
+    if (/(?:\u0434\u0440\u0430\u0439\u0432\u0435\u0440|\u0434\u0438\u0441\u043f\u0435\u0442\u0447\u0435\u0440\s+\u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432|\u043f\u0440\u043e\u0431\u043b\u0435\u043c\u043d\w*\s+\u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432|\u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\w*\s+\u0441\s+\u043e\u0448\u0438\u0431)/iu.test(value)) {
+      return true;
+    }
     return /(?:\bdriver\b|\bdrivers\b|pnputil|devmgmt|device manager|problem device|pnp|драйвер|диспетчер\s+устройств|проблемн\w*\s+устройств|устройств\w*\s+с\s+ошиб)/iu.test(value);
   }
 
@@ -1173,7 +1176,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.121";
+const agentVersion = "0.4.122";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
