@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.118";
+const agentVersion = "0.4.119";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -8439,6 +8439,7 @@ async function runGonkaDirectSotySessionTurn({
   ];
   const terminal = [];
   const toolResults = [];
+  let lastToolUserText = "";
   let finalText = "";
   let exitCode = 0;
   let postconditionProof = "";
@@ -8499,6 +8500,32 @@ async function runGonkaDirectSotySessionTurn({
     }, apiKey, trace);
     usedModel = response.model || usedModel;
     if (!response.ok) {
+      if (toolResults.length > 0 || lastToolUserText) {
+        const recoveredText = lastToolUserText
+          || recoverDirectComputerProofText(toolResults)
+          || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
+          || "";
+        if (recoveredText) {
+          traceStep(trace, "gonka.direct.model-failure-after-tool-recovered", {
+            status: response.status || 0,
+            model: usedModel,
+            textChars: recoveredText.length,
+            toolCalls: terminal.length
+          });
+          recordLearningReceipt({
+            kind: "gonka-direct-turn",
+            family: taskFamily,
+            result: "recovered",
+            route: "gonka.direct",
+            taskSig: taskSignature(text),
+            proof: `status=${response.status || 0}; model=${cleanProofToken(usedModel)}; recoveredAfterTool=true; error=${cleanProofToken(response.error || "")}`,
+            exitCode: exitCode || 0,
+            durationMs: Date.now() - startedAt,
+            ...learningContext
+          });
+          return { ok: true, text: cleanAgentChatReply(recoveredText).slice(0, maxChatChars), ...(terminal.length > 0 ? { terminal } : {}), exitCode: exitCode || 0 };
+        }
+      }
       const failureText = agentFailureText(response.error || "Gonka request failed");
       recordLearningReceipt({
         kind: "gonka-direct-turn",
@@ -8567,6 +8594,9 @@ async function runGonkaDirectSotySessionTurn({
       const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
       terminal.push(executed.terminal);
       toolResults.push(executed.toolText);
+      if (executed.userText) {
+        lastToolUserText = executed.userText;
+      }
       exitCode = Number.isFinite(executed.exitCode) ? executed.exitCode : exitCode;
       if (typeof onTerminal === "function") {
         onTerminal(executed.terminal.text);
@@ -8578,7 +8608,7 @@ async function runGonkaDirectSotySessionTurn({
         content: executed.modelText
       });
       if (executed.exitCode === 0
-        && callIndex === normalizedToolCalls.length - 1
+        && (callIndex === normalizedToolCalls.length - 1 || shouldSingleSuccessfulDirectToolSuffice(executed.args, text, taskFamily))
         && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
         finalText = executed.userText
           || formatDirectComputerFallbackText(executed.args, executed.toolText, "")
@@ -8734,7 +8764,14 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
     return true;
   }
   const family = codexSessionFamilyBucket(taskFamily);
-  return ["system-time", "audio", "file-work", "web-lookup"].includes(family);
+  return ["system-time", "audio", "file-work", "web-lookup", "security-check"].includes(family);
+}
+
+function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamily = "") {
+  const family = codexSessionFamilyBucket(taskFamily);
+  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
+  const action = String(args?.action || "").trim().toLowerCase();
+  return family === "security-check" && operation === "script" && (action === "status" || action === "security-check");
 }
 
 function hasDownloadSaveDeleteFileIntent(value) {
