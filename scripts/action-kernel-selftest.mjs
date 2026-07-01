@@ -2180,6 +2180,9 @@ async function runScenarios({ relayUrl } = {}) {
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
+      const evalSource = await readFile(join(root, "scripts", "soty-agent-eval.mjs"), "utf8");
+      const packageSource = await readFile(join(root, "package.json"), "utf8");
+      const computerTaskRouter = await readFile(join(root, "scripts", "agent-modules", "computer-task-router.mjs"), "utf8");
       const mcpRouter = await readFile(join(sourceAgentModulesPath, "mcp-computer-router.mjs"), "utf8");
       const contentAdapters = await readFile(join(sourceAgentModulesPath, "mcp-source-content-adapters.mjs"), "utf8");
       const agentRelay = (await readFile(join(root, "server", "agent-relay.js"), "utf8")).replace(/\r\n/gu, "\n");
@@ -2330,6 +2333,15 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("titleChanged"));
       assert(agentSource.includes("%USERPROFILE%\\\\Desktop"));
       assert(agentSource.includes("title: ${title}"));
+      assert(agentSource.includes("applyBrowserClickDefaults"));
+      assert(agentSource.includes("click_text"));
+      assert(agentSource.includes("Users\\\\Public\\\\Pictures"));
+      assert(computerTaskRouter.includes('return "click_text"'));
+      assert(evalSource.includes('const strict = args.has("strict")'));
+      assert(evalSource.includes('id: "safe-browser-click-read"'));
+      assert(evalSource.includes("verifyPostConditions"));
+      assert(evalSource.includes("checkOperatorBridge"));
+      assert(packageSource.includes('"agent:eval:computer:strict"'));
       assert(agentSource.includes("Collect-ChromeText"));
       assert(agentSource.includes("desktopPowerShell"));
       assert(agentSource.includes("computer-desktop-screenshot"));

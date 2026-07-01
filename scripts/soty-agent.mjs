@@ -1065,6 +1065,7 @@ function inferGonkaComputerArguments(payload) {
   if (!args.action) {
     args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
   }
+  applyBrowserClickDefaults(args, userText || allText);
   if (args.operation === "app") {
     applyAppComputerDefaults(args, userText);
   }
@@ -1320,6 +1321,10 @@ function inferMentionedFilePath(text) {
   if (quoted) {
     return quoted[1].trim();
   }
+  const trailingLabel = value.match(/\b(?:click|press|open|follow)\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s+(?:and|then|after|to|so)\b|[.?!]|$)/iu);
+  if (trailingLabel) {
+    return trailingLabel[1].trim().replace(/^(?:the|a|an)\s+/iu, "").replace(/[.,:;]+$/u, "");
+  }
   const plain = value.match(/\b([A-Za-z]:\\[^\r\n,;|<>"]{1,240}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/iu);
   return plain ? plain[1].trim() : "";
 }
@@ -1510,6 +1515,30 @@ function inferLinkTextFromText(text) {
     return latinBeforeNextAction[1].trim().replace(/[.,:;]+$/u, "");
   }
   return "";
+}
+
+function applyBrowserClickDefaults(args, text) {
+  const value = String(text || "");
+  const clickIntent = /\b(?:click|press|follow)\b|РЅР°Р¶РјРё|РєР»РёРє|РїРµСЂРµР№РґРё|СЃСЃС‹Р»\w*|РєРЅРѕРїРє\w*/iu.test(value);
+  if (!clickIntent || hasScreenshotIntent(value)) {
+    return args;
+  }
+  const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
+  const linkText = inferLinkTextFromText(value);
+  const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
+  if (linkText && !currentTarget) {
+    args.text = linkText;
+  }
+  const hasBrowserTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
+  const browserLike = args.url || operation === "browser" || operation === "open-url" || operation === "open";
+  if (hasBrowserTarget && browserLike) {
+    args.operation = "browser";
+    const action = String(args.action || "").trim().toLowerCase();
+    if (!action || action === "status" || action === "open" || action === "goto" || action === "title" || action === "text" || action === "screenshot") {
+      args.action = "click_text";
+    }
+  }
+  return args;
 }
 
 function hasScreenshotIntent(value) {
@@ -9567,6 +9596,7 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     out.script = securityCheckCompactPowerShell({ quickScan: hasSecurityScanIntent(text) });
     out.timeoutMs = hasSecurityScanIntent(text) ? 900000 : 120000;
   }
+  applyBrowserClickDefaults(out, text);
   return out;
 }
 
@@ -11211,6 +11241,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"  if ([string]::IsNullOrWhiteSpace($raw)) { $dir = Join-Path $env:PUBLIC 'Pictures'; if ([string]::IsNullOrWhiteSpace($env:PUBLIC)) { $dir = Join-Path $env:TEMP 'soty-desktop' }; New-Item -ItemType Directory -Force -Path $dir | Out-Null; return (Join-Path $dir ('soty-desktop-screenshot-' + $stamp + '.png')) }\",",
     "    \"  $expanded = [Environment]::ExpandEnvironmentVariables($raw.Trim())\",",
     "    \"  if ($expanded -match '^[A-Za-z]:\\\\?$') { $dir = Join-Path ($expanded.TrimEnd('\\\\') + '\\\\') 'Users\\\\Public\\\\Pictures'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $expanded = Join-Path $dir ('soty-desktop-screenshot-' + $stamp + '.png') }\",",
+    "    \"  elseif ($expanded -match '^[A-Za-z]:\\\\[^\\\\]+\\.png$') { $file = [IO.Path]::GetFileName($expanded); $drive = [IO.Path]::GetPathRoot($expanded); $dir = Join-Path $drive 'Users\\\\Public\\\\Pictures'; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $expanded = Join-Path $dir $file }\",",
     "    \"  elseif (-not [IO.Path]::IsPathRooted($expanded)) { $dir = Join-Path $env:PUBLIC 'Pictures'; if ([string]::IsNullOrWhiteSpace($env:PUBLIC)) { $dir = Join-Path $env:TEMP 'soty-desktop' }; New-Item -ItemType Directory -Force -Path $dir | Out-Null; $expanded = Join-Path $dir $expanded }\",",
     "    \"  elseif ([string]::IsNullOrWhiteSpace([IO.Path]::GetExtension($expanded))) { $expanded = Join-Path $expanded ('soty-desktop-screenshot-' + $stamp + '.png') }\",",
     "    \"  $parent = Split-Path -Parent $expanded\",",
@@ -11224,7 +11255,8 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"$graphics = [System.Drawing.Graphics]::FromImage($bmp)\",",
     "    \"$graphics.CopyFromScreen([int]$screen.Left, [int]$screen.Top, 0, 0, (New-Object System.Drawing.Size($width, $height)))\",",
     "    \"$path = Resolve-ScreenshotPath $requestedPath\",",
-    "    \"$bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)\",",
+    "    \"$stream = [IO.File]::Open($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)\",",
+    "    \"try { $bmp.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $stream.Dispose() }\",",
     "    \"$graphics.Dispose(); $bmp.Dispose()\",",
     "    \"$item = Get-Item -LiteralPath $path -Force\",",
     "    \"[pscustomobject]@{ ok=$true; operation='desktop'; action='screenshot'; path=$item.FullName; bytes=[int64]$item.Length; width=$width; height=$height } | ConvertTo-Json -Compress\"",
@@ -11323,6 +11355,8 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"  $all = $chrome.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\",",
     "    \"  $target = $null\",",
     "    \"  $needles = @($needle)\",",
+    "    \"  $trimmedNeedle = ($needle -replace '(?i)\\\\s+(link|button)$', '').Trim()\",",
+    "    \"  if ($trimmedNeedle -and $trimmedNeedle -ne $needle) { $needles += $trimmedNeedle }\",",
     "    \"  if ($needle -match '(?i)more information') { $needles += 'Learn more' }\",",
     "    \"  for ($i = 0; $i -lt $all.Count; $i++) {\",",
     "    \"    $e = $all.Item($i)\",",

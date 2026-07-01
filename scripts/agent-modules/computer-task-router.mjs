@@ -90,7 +90,11 @@ export function createComputerTaskRouter(dependencies = {}) {
   ]);
 
   const computerActionResolvers = Object.freeze({
-    browser: ({ lower }) => hasScreenshotIntent(lower) ? "screenshot" : "status",
+    browser: ({ lower, args }) => {
+      if (hasScreenshotIntent(lower)) return "screenshot";
+      if (args.text || args.linkText || args.selector || args.target || hasComputerIntent("appClick", lower)) return "click_text";
+      return args.url ? "text" : "status";
+    },
     desktop: ({ lower }) => hasScreenshotIntent(lower) ? "screenshot" : "status",
     wallpaper: () => "wallpaper",
     web: ({ args }) => args.url && !args.query ? "fetch" : "search",
