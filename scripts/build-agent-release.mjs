@@ -2,12 +2,14 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildAgentRuntimeManifest, defaultAgentRuntimeCapabilities } from "trustlink-kernel";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const sourcePath = join(root, "scripts", "soty-agent.mjs");
+const sourceDir = dirname(sourcePath);
+const localAgentModulesDir = resolve(sourceDir, "agent-modules");
 const outputDir = join(root, "public", "agent");
 const outputPath = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
@@ -42,7 +44,7 @@ const windowsReinstallScriptSpecs = [
 const excludedRuntimeFamilies = new Set(["surface"]);
 
 const source = await readFile(sourcePath, "utf8");
-const sourceText = source.replace(/\r\n/g, "\n");
+const sourceText = await bundleAgentSource(source.replace(/\r\n/g, "\n"));
 const version = sourceText.match(/agentVersion\s*=\s*"([^"]+)"/u)?.[1];
 if (!version) {
   throw new Error("Agent version not found");
@@ -129,6 +131,61 @@ process.stdout.write(`windows-reinstall:${windowsReinstall.scripts.map((script) 
 
 async function removeRetiredOpsSkillArtifacts() {
   await Promise.all(retiredOpsSkillArtifacts.map((path) => rm(path, { force: true }).catch(() => undefined)));
+}
+
+async function bundleAgentSource(sourceText) {
+  const localModuleImport = /^import\s+\{\s*([^}]+?)\s*\}\s+from\s+["'](\.\/agent-modules\/[^"']+\.mjs)["'];\n?/gmu;
+  const seen = new Set();
+  let bundled = sourceText;
+  for (;;) {
+    let changed = false;
+    bundled = await replaceAsync(bundled, localModuleImport, async (statement, imports, specifier) => {
+      changed = true;
+      if (seen.has(specifier)) {
+        throw new Error(`Duplicate local agent module import: ${specifier}`);
+      }
+      seen.add(specifier);
+      const modulePath = resolve(sourceDir, specifier);
+      if (modulePath !== localAgentModulesDir && !modulePath.startsWith(`${localAgentModulesDir}${sep}`)) {
+        throw new Error(`Local agent module import is outside agent-modules: ${specifier}`);
+      }
+      const moduleSource = (await readFile(modulePath, "utf8")).replace(/\r\n/g, "\n");
+      if (/^import\s/mu.test(moduleSource)) {
+        throw new Error(`Nested imports are not supported in local agent module: ${specifier}`);
+      }
+      const exportedNames = [...moduleSource.matchAll(/^export\s+(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gmu)].map((match) => match[1]);
+      for (const name of imports.split(",").map((part) => part.trim()).filter(Boolean)) {
+        if (/\s+as\s+/u.test(name)) {
+          throw new Error(`Local agent module import aliases are not supported: ${statement.trim()}`);
+        }
+        const importedName = name.split(/\s+as\s+/u)[0]?.trim();
+        if (!exportedNames.includes(importedName)) {
+          throw new Error(`Local agent module ${specifier} does not export ${importedName}`);
+        }
+      }
+      const body = moduleSource.replace(/^export\s+(?=(?:function|const|let|var|class)\b)/gmu, "");
+      return `// bundled local agent module: ${specifier}\n${body}\n`;
+    });
+    if (!changed) {
+      break;
+    }
+  }
+  if (/^import\s+\{[^}]+?\}\s+from\s+["']\.\/agent-modules\//mu.test(bundled)) {
+    throw new Error("Unbundled local agent module import remains");
+  }
+  return bundled;
+}
+
+async function replaceAsync(value, pattern, replacer) {
+  const parts = [];
+  let lastIndex = 0;
+  for (const match of value.matchAll(pattern)) {
+    parts.push(value.slice(lastIndex, match.index));
+    parts.push(await replacer(...match));
+    lastIndex = match.index + match[0].length;
+  }
+  parts.push(value.slice(lastIndex));
+  return parts.join("");
 }
 
 async function updateWindowsMachineInstallerRevision(version) {
