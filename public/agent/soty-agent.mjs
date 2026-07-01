@@ -2556,6 +2556,10 @@ function inferMentionedFilePath(text) {
   if (quoted) {
     return quoted[1].trim();
   }
+  const clickTarget = value.match(/\b(?:click|press|follow|open)\s+(?:the\s+|a\s+|an\s+)?([A-Za-z0-9][A-Za-z0-9 _.'-]{1,120}?)(?:\s+(?:link|button)\b|\s*(?:,|\band\b|\bthen\b|$))/iu);
+  if (clickTarget) {
+    return clickTarget[1].trim().replace(/\s+(?:link|button)$/iu, "").replace(/[.,:;]+$/u, "");
+  }
   const trailingLabel = value.match(/\b(?:click|press|open|follow)\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s+(?:and|then|after|to|so)\b|[.?!]|$)/iu);
   if (trailingLabel) {
     return trailingLabel[1].trim().replace(/^(?:the|a|an)\s+/iu, "").replace(/[.,:;]+$/u, "");

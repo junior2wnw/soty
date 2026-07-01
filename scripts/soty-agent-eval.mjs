@@ -309,16 +309,35 @@ async function runOperatorEval() {
 }
 
 async function startOperatorDialog() {
-  const run = await runProcess("powershell", [
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    operatorScript,
-    "-Action",
-    "agent-new",
-    "-TimeoutSec",
-    "60"
-  ], "", 80_000);
+  let lastRun = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const run = await runProcess("powershell", [
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      operatorScript,
+      "-Action",
+      "agent-new",
+      "-TimeoutSec",
+      "60"
+    ], "", 80_000);
+    lastRun = run;
+    const text = (run.stdout || run.stderr || "").trim();
+    const agentId = text.match(/\bagent\s+([^\s]+)/iu)?.[1] || "";
+    if (run.exitCode === 0 && agentId) {
+      return {
+        ok: true,
+        agentId,
+        exitCode: run.exitCode,
+        text
+      };
+    }
+    if (!/(?:409|Conflict|Конфликт|РљРѕРЅС„Р»РёРєС‚)/iu.test(text)) {
+      break;
+    }
+    await sleep(1200 + attempt * 800);
+  }
+  const run = lastRun || { stdout: "", stderr: "", exitCode: 1 };
   const text = (run.stdout || run.stderr || "").trim();
   const agentId = text.match(/\bagent\s+([^\s]+)/iu)?.[1] || "";
   return {
@@ -747,6 +766,10 @@ function findCodexBinary() {
     }
   }
   return "";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function runProcess(file, procArgs, input, timeoutMs) {

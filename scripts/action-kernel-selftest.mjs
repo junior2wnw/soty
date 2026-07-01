@@ -2336,6 +2336,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("applyBrowserClickDefaults"));
       assert(agentSource.includes("firstUrlCandidate"));
       assert(agentSource.includes("repairBrowserUrlFromText"));
+      assert(agentSource.includes("clickTarget"));
       assert(agentSource.includes("$preferredHost"));
       assert(agentSource.includes("$sotyFallback"));
       assert(agentSource.includes("click_text"));
