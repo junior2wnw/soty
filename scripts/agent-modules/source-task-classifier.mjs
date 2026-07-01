@@ -19,6 +19,9 @@ export function createSourceTaskClassifier(dependencies = {}) {
     if (hasBrowserAutomationIntent(text)) {
       return "browser";
     }
+    if (hasSecurityCheckIntent(text)) {
+      return "security-check";
+    }
     if (hasDriverCheckIntent(text)) {
       return "driver-check";
     }
@@ -111,6 +114,11 @@ export function createSourceTaskClassifier(dependencies = {}) {
     return /(?:\bdriver\b|\bdrivers\b|pnputil|devmgmt|device manager|problem device|pnp|драйвер|диспетчер\s+устройств|проблемн\w*\s+устройств|устройств\w*\s+с\s+ошиб)/iu.test(value);
   }
 
+  function hasSecurityCheckIntent(text) {
+    const value = String(text || "").toLowerCase();
+    return /(?:defender|microsoft\s+defender|windows\s+security|anti-?virus|antivirus|malware|virus|threat|pua|mpcomputerstatus|start-mpscan|get-mpthreat|security\s+center|\u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d|\u0437\u0430\u0449\u0438\u0442|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0432\u0438\u0440\u0443\u0441|\u0443\u0433\u0440\u043e\u0437|\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441|\u0437\u0430\u0449\u0438\u0442\u043d\u0438\u043a)/iu.test(value);
+  }
+
   function isRoutineAgentTaskFamily(family) {
     return [
       "program-control",
@@ -122,6 +130,7 @@ export function createSourceTaskClassifier(dependencies = {}) {
       "script-task",
       "web-lookup",
       "power-check",
+      "security-check",
       "driver-check",
       "software-check",
       "audio-volume",
@@ -154,6 +163,9 @@ export function createSourceTaskClassifier(dependencies = {}) {
     if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
       return "driver-check";
     }
+    if (hasSecurityCheckIntent(normalizeRoutineIntentText(lower))) {
+      return "security-check";
+    }
     if (/systemreset|reagentc\s+\/boottore/u.test(lower)) {
       return "windows-reinstall";
     }
@@ -185,6 +197,7 @@ export function createSourceTaskClassifier(dependencies = {}) {
     hasExplicitEventLogIntent,
     normalizeRoutineIntentText,
     hasDriverCheckIntent,
+    hasSecurityCheckIntent,
     isRoutineAgentTaskFamily,
     classifySourceCommand,
     isPlainNonDeviceTask

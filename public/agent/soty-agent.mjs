@@ -981,6 +981,9 @@ function createSourceTaskClassifier(dependencies = {}) {
     if (hasBrowserAutomationIntent(text)) {
       return "browser";
     }
+    if (hasSecurityCheckIntent(text)) {
+      return "security-check";
+    }
     if (hasDriverCheckIntent(text)) {
       return "driver-check";
     }
@@ -1073,6 +1076,11 @@ function createSourceTaskClassifier(dependencies = {}) {
     return /(?:\bdriver\b|\bdrivers\b|pnputil|devmgmt|device manager|problem device|pnp|драйвер|диспетчер\s+устройств|проблемн\w*\s+устройств|устройств\w*\s+с\s+ошиб)/iu.test(value);
   }
 
+  function hasSecurityCheckIntent(text) {
+    const value = String(text || "").toLowerCase();
+    return /(?:defender|microsoft\s+defender|windows\s+security|anti-?virus|antivirus|malware|virus|threat|pua|mpcomputerstatus|start-mpscan|get-mpthreat|security\s+center|\u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d|\u0437\u0430\u0449\u0438\u0442|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0432\u0438\u0440\u0443\u0441|\u0443\u0433\u0440\u043e\u0437|\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441|\u0437\u0430\u0449\u0438\u0442\u043d\u0438\u043a)/iu.test(value);
+  }
+
   function isRoutineAgentTaskFamily(family) {
     return [
       "program-control",
@@ -1084,6 +1092,7 @@ function createSourceTaskClassifier(dependencies = {}) {
       "script-task",
       "web-lookup",
       "power-check",
+      "security-check",
       "driver-check",
       "software-check",
       "audio-volume",
@@ -1116,6 +1125,9 @@ function createSourceTaskClassifier(dependencies = {}) {
     if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
       return "driver-check";
     }
+    if (hasSecurityCheckIntent(normalizeRoutineIntentText(lower))) {
+      return "security-check";
+    }
     if (/systemreset|reagentc\s+\/boottore/u.test(lower)) {
       return "windows-reinstall";
     }
@@ -1147,6 +1159,7 @@ function createSourceTaskClassifier(dependencies = {}) {
     hasExplicitEventLogIntent,
     normalizeRoutineIntentText,
     hasDriverCheckIntent,
+    hasSecurityCheckIntent,
     isRoutineAgentTaskFamily,
     classifySourceCommand,
     isPlainNonDeviceTask
@@ -1154,7 +1167,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.116";
+const agentVersion = "0.4.117";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1980,6 +1993,7 @@ function gonkaForcedToolChoice(payload, tools) {
     "package-install",
     "power-check",
     "program-control",
+    "security-check",
     "script-task",
     "service-check",
     "software",
@@ -8629,6 +8643,7 @@ function codexTaskNeedsSotyMcpTools(taskFamily, target = null) {
     "package-install",
     "power-check",
     "program-control",
+    "security-check",
     "script-task",
     "service-check",
     "software",
@@ -8670,6 +8685,7 @@ function codexReasoningPolicyForTask(family, target = null) {
     "wallpaper",
     "desktop",
     "script-task",
+    "security-check",
     "system-check",
     "service-check",
     "software-check",
@@ -10597,6 +10613,12 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     out.script = driverCheckCompactPowerShell();
     out.timeoutMs = 90000;
   }
+  if (codexSessionFamilyBucket(taskFamily) === "security-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
+    out.operation = "script";
+    out.action = "status";
+    out.script = securityCheckCompactPowerShell({ quickScan: hasSecurityScanIntent(text) });
+    out.timeoutMs = hasSecurityScanIntent(text) ? 900000 : 120000;
+  }
   return out;
 }
 
@@ -10688,6 +10710,38 @@ function driverCheckCompactPowerShell() {
     "$classes = @('DISPLAY','MEDIA','NET','Bluetooth','HDC','SCSIAdapter')",
     "$drivers = @(Get-CimInstance Win32_PnPSignedDriver | Where-Object { $classes -contains $_.DeviceClass } | Sort-Object DeviceName | Select-Object -First 40 DeviceName,DeviceClass,DriverVersion,Manufacturer)",
     "[pscustomobject]@{ ok=$true; action='driver-check'; problemCount=$problemsAll.Count; problems=$problems; importantDrivers=$drivers } | ConvertTo-Json -Depth 5 -Compress"
+  ].join("\n");
+}
+
+function hasSecurityScanIntent(text) {
+  return /(?:quick\s+scan|full\s+scan|scan|start-mpscan|\u0441\u043a\u0430\u043d|\u043f\u0440\u043e\u0432\u0435\u0440(?:\u044c|\u0438\u0442\u044c)\s+(?:\u0432\u0441\u0435|\u043a\u043e\u043c\u043f|\u043d\u0430\s+\u0432\u0438\u0440\u0443\u0441))/iu.test(String(text || ""));
+}
+
+function securityCheckCompactPowerShell({ quickScan = false } = {}) {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    "$startedAt = Get-Date",
+    "$scanRequested = " + (quickScan ? "$true" : "$false"),
+    "$scanCompleted = $false",
+    "$scanError = ''",
+    "$defenderAvailable = $false",
+    "$statusBefore = $null",
+    "$statusAfter = $null",
+    "$pref = $null",
+    "try { $statusBefore = Get-MpComputerStatus; $defenderAvailable = $true } catch { $scanError = $_.Exception.Message }",
+    "try { $pref = Get-MpPreference } catch {}",
+    "if ($scanRequested -and (Get-Command Start-MpScan -ErrorAction SilentlyContinue)) { try { Start-MpScan -ScanType QuickScan -ErrorAction Stop; $scanCompleted = $true } catch { $scanError = $_.Exception.Message } }",
+    "try { $statusAfter = Get-MpComputerStatus } catch {}",
+    "$threats = @(try { Get-MpThreatDetection | Select-Object -First 20 ThreatName,InitialDetectionTime,ActionSuccess,CurrentThreatExecutionStatus,Resources } catch { @() })",
+    "$status = if ($statusAfter) { $statusAfter } else { $statusBefore }",
+    "$signatureUpdated = if ($status) { $status.AntivirusSignatureLastUpdated } else { $null }",
+    "$quickScanEndTime = if ($status) { $status.QuickScanEndTime } else { $null }",
+    "$realTime = if ($status) { [bool]$status.RealTimeProtectionEnabled } else { $null }",
+    "$antivirus = if ($status) { [bool]$status.AntivirusEnabled } else { $null }",
+    "$pua = if ($pref) { [string]$pref.PUAProtection } else { '' }",
+    "$summary = 'Defender available=' + $defenderAvailable + '; antivirus=' + $antivirus + '; realTime=' + $realTime + '; PUA=' + $pua + '; threats=' + $threats.Count + '; quickScanRequested=' + $scanRequested + '; quickScanCompleted=' + $scanCompleted + '; signatureUpdated=' + $signatureUpdated + '; quickScanEndTime=' + $quickScanEndTime + '; changedSettings=false'",
+    "[pscustomobject]@{ ok=$true; action='security-check'; text=$summary; defenderAvailable=$defenderAvailable; antivirusEnabled=$antivirus; realTimeProtectionEnabled=$realTime; puaProtection=$pua; threatCount=$threats.Count; threats=$threats; scanRequested=$scanRequested; scanCompleted=$scanCompleted; scanError=$scanError; signatureUpdated=$signatureUpdated; quickScanEndTime=$quickScanEndTime; changedSettings=$false; startedAt=$startedAt; finishedAt=(Get-Date) } | ConvertTo-Json -Depth 6 -Compress"
   ].join("\n");
 }
 
