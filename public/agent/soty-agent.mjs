@@ -198,6 +198,12 @@ function createMcpComputerRouter(dependencies = {}) {
     search: "soty_web",
     browser: "soty_browser",
     desktop: "soty_desktop",
+    process: "soty_process",
+    processes: "soty_process",
+    proc: "soty_process",
+    clipboard: "soty_clipboard",
+    network: "soty_network",
+    net: "soty_network",
     audio: "soty_audio"
   });
 
@@ -209,11 +215,20 @@ function createMcpComputerRouter(dependencies = {}) {
   const reinstallCapabilities = new Set(["windows-reinstall", "os-reinstall", "reinstall"]);
   const fileOperations = new Set(["file", "filesystem", "read", "write", "append", "list", "stat", "mkdir", "move", "copy", "delete", "publish", "cycle"]);
   const webOperations = new Set(["web", "internet", "web-fetch", "web_fetch", "fetch", "fetch-url", "fetch_url", "web-search", "web_search", "search"]);
-  const webCapabilities = new Set(["web", "internet", "network", "web-search"]);
+  const webCapabilities = new Set(["web", "internet", "web-search"]);
+  const processOperations = new Set(["process", "processes", "proc", "ps", "task", "tasklist", "start-process", "start_process", "stop-process", "stop_process"]);
+  const processCapabilities = new Set(["process", "processes", "proc", "task"]);
+  const clipboardOperations = new Set(["clipboard", "clipboard-read", "clipboard_read", "clipboard-write", "clipboard_write"]);
+  const clipboardCapabilities = new Set(["clipboard"]);
+  const networkOperations = new Set(["network", "net", "interfaces", "connectivity", "probe", "ping", "dns", "tcp"]);
+  const networkCapabilities = new Set(["network", "net", "connectivity"]);
   const directRunOperations = new Set(["run", "script"]);
   const actionOperations = new Set(["run", "script", "action", "execute", "shell", "terminal", "console", "long-job", "long_job"]);
   const browserActions = new Set(["open", "goto", "title", "text", "eval", "click_text", "type", "screenshot"]);
   const fileActions = new Set(["read", "write", "append", "list", "stat", "mkdir", "search", "move", "copy", "delete", "download", "publish", "cycle"]);
+  const processActions = new Set(["list", "status", "start", "launch", "open", "stop", "kill", "close"]);
+  const clipboardActions = new Set(["read", "get", "paste", "write", "set", "copy"]);
+  const networkActions = new Set(["status", "interfaces", "probe", "connect", "ping"]);
   const reinstallActions = new Set(["preflight", "prepare", "status", "repair", "cancel", "arm"]);
   const desktopOperations = new Set(["desktop", "screen", "display", "screenshot", "windows", "window", "focus", "click", "type", "key", "keyboard", "mouse", "wallpaper"]);
 
@@ -232,6 +247,15 @@ function createMcpComputerRouter(dependencies = {}) {
     }
     if (linkStatusOperations.has(operation)) {
       return "soty_link_status";
+    }
+    if (operation === "status" && (processCapabilities.has(capability) || args.pid || args.processName)) {
+      return "soty_process";
+    }
+    if (operation === "status" && clipboardCapabilities.has(capability)) {
+      return "soty_clipboard";
+    }
+    if (operation === "status" && networkCapabilities.has(capability)) {
+      return "soty_network";
     }
     if (operation === "status" && !args.jobId && !reinstallCapabilities.has(capability)) {
       return "soty_link_status";
@@ -267,6 +291,15 @@ function createMcpComputerRouter(dependencies = {}) {
     }
     if (operation === "open-url" || operation === "open_url" || capability === "url") {
       return "soty_open_url";
+    }
+    if (processOperations.has(operation) || processCapabilities.has(capability) || args.pid || args.processName) {
+      return "soty_process";
+    }
+    if (clipboardOperations.has(operation) || clipboardCapabilities.has(capability)) {
+      return "soty_clipboard";
+    }
+    if (networkOperations.has(operation) || networkCapabilities.has(capability) || args.host || args.port) {
+      return "soty_network";
     }
     if (directRunOperations.has(operation) && args.durable === false) {
       return operation === "script" ? "soty_script" : "soty_run";
@@ -308,6 +341,15 @@ function createMcpComputerRouter(dependencies = {}) {
     if (alias === "soty_web" && !next.action) {
       next.action = ["search", "web-search", "web_search"].includes(operation) ? "search" : "fetch";
     }
+    if (alias === "soty_process" && !next.action) {
+      next.action = processActions.has(operation) ? operation : "list";
+    }
+    if (alias === "soty_clipboard" && !next.action) {
+      next.action = clipboardActions.has(operation) ? operation : "read";
+    }
+    if (alias === "soty_network" && !next.action) {
+      next.action = networkActions.has(operation) ? operation : "status";
+    }
     if (alias === "soty_desktop" && !next.action) {
       next.action = operation === "screen" ? "display" : operation;
     }
@@ -334,6 +376,252 @@ function createMcpComputerRouter(dependencies = {}) {
     canonicalSotyMcpToolName,
     computerToolAlias,
     computerToolArguments
+  });
+}
+
+// bundled local agent module: ./agent-modules/mcp-source-system-adapters.mjs
+function createMcpSourceSystemAdapters() {
+  function sourceProcessScript(args = {}) {
+    const payload = Buffer.from(JSON.stringify({
+      action: String(args.action || "list").slice(0, 40),
+      pid: Number.isSafeInteger(args.pid) ? args.pid : Number.parseInt(String(args.pid || ""), 10),
+      processName: String(args.processName || args.name || args.pattern || "").slice(0, 240),
+      pattern: String(args.pattern || args.processName || args.name || "").slice(0, 240),
+      file: String(args.file || args.path || "").slice(0, 2000),
+      command: String(args.command || "").slice(0, 4000),
+      arguments: Array.isArray(args.arguments)
+        ? args.arguments.map((part) => String(part)).slice(0, 64)
+        : String(args.arguments || args.args || "").slice(0, 4000),
+      force: args.force === true,
+      maxResults: Number.isSafeInteger(args.maxResults) ? Math.max(1, Math.min(args.maxResults, 200)) : 60
+    }), "utf8").toString("base64");
+    return `
+const { spawn, spawnSync } = await import("node:child_process");
+const os = await import("node:os");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const emit = (value, code = 0) => {
+  console.log(JSON.stringify(value));
+  process.exit(code);
+};
+const action = String(req.action || "list").toLowerCase().replace(/_/g, "-");
+const pid = Number.isSafeInteger(req.pid) ? req.pid : -1;
+const pattern = String(req.pattern || req.processName || "").trim();
+const maxResults = Math.max(1, Math.min(Number(req.maxResults) || 60, 200));
+function run(file, args, input = "") {
+  const result = spawnSync(file, args, { input, encoding: "utf8", windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error((result.stderr || result.stdout || file + " failed").trim());
+  return String(result.stdout || "").trim();
+}
+function psJson(script) {
+  return JSON.parse(run("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]) || "{}");
+}
+if (process.platform === "win32") {
+  const psPayload = Buffer.from(JSON.stringify(req), "utf8").toString("base64");
+  const ps = \`
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('\${psPayload}')) | ConvertFrom-Json
+$action = ([string]$req.action).ToLowerInvariant().Replace("_", "-")
+$max = [Math]::Max(1, [Math]::Min([int]$req.maxResults, 200))
+function Process-Info($p) {
+  $path = ""
+  try { $path = [string]$p.Path } catch {}
+  [pscustomobject]@{
+    pid = [int]$p.Id
+    name = [string]$p.ProcessName
+    title = [string]$p.MainWindowTitle
+    path = $path
+    responding = if ($null -ne $p.Responding) { [bool]$p.Responding } else { $null }
+  }
+}
+if ($action -eq "list" -or $action -eq "status") {
+  $items = Get-Process
+  if ([int]$req.pid -gt 0) { $items = @($items | Where-Object { $_.Id -eq [int]$req.pid }) }
+  $needle = ([string]$req.pattern).Trim()
+  if (-not $needle) { $needle = ([string]$req.processName).Trim() }
+  if ($needle) { $items = @($items | Where-Object { $_.ProcessName -like "*$needle*" -or $_.MainWindowTitle -like "*$needle*" }) }
+  $out = @($items | Select-Object -First $max | ForEach-Object { Process-Info $_ })
+  [pscustomobject]@{ ok = $true; action = $action; platform = "win32"; count = @($out).Count; processes = $out } | ConvertTo-Json -Depth 6 -Compress
+  exit 0
+}
+if ($action -eq "start" -or $action -eq "launch" -or $action -eq "open") {
+  $file = ([string]$req.file).Trim()
+  if (-not $file) { $file = ([string]$req.command).Trim() }
+  if (-not $file) { throw "file or command required" }
+  $argList = $req.arguments
+  if ($argList -is [array]) { $argList = @($argList | ForEach-Object { [string]$_ }) } else { $argList = [string]$argList }
+  $p = if ($argList) { Start-Process -FilePath $file -ArgumentList $argList -PassThru } else { Start-Process -FilePath $file -PassThru }
+  [pscustomobject]@{ ok = $true; action = "start"; platform = "win32"; pid = [int]$p.Id; name = [string]$p.ProcessName } | ConvertTo-Json -Depth 4 -Compress
+  exit 0
+}
+if ($action -eq "stop" -or $action -eq "kill" -or $action -eq "close") {
+  $items = @()
+  if ([int]$req.pid -gt 0) { $items = @(Get-Process -Id ([int]$req.pid) -ErrorAction Stop) }
+  else {
+    $name = ([string]$req.processName).Trim()
+    if (-not $name) { $name = ([string]$req.pattern).Trim() }
+    if (-not $name) { throw "pid or processName required" }
+    $items = @(Get-Process -Name $name -ErrorAction Stop)
+  }
+  $ids = @($items | Select-Object -ExpandProperty Id)
+  if ([bool]$req.force) { $items | Stop-Process -Force -ErrorAction Stop }
+  else { $items | Stop-Process -ErrorAction Stop }
+  [pscustomobject]@{ ok = $true; action = "stop"; platform = "win32"; stopped = $ids } | ConvertTo-Json -Depth 4 -Compress
+  exit 0
+}
+throw "unsupported process action: $action"
+\`;
+  emit(psJson(ps));
+}
+if (action === "list" || action === "status") {
+  const stdout = run("ps", ["-axo", "pid=,comm=,args="]);
+  const rows = stdout.split(/\\r?\\n/u).map((line) => {
+    const match = line.trim().match(/^(\\d+)\\s+(\\S+)\\s*(.*)$/u);
+    return match ? { pid: Number(match[1]), name: match[2], command: match[3] || "" } : null;
+  }).filter(Boolean).filter((item) => {
+    if (pid > 0 && item.pid !== pid) return false;
+    if (pattern && !(item.name.includes(pattern) || item.command.includes(pattern))) return false;
+    return true;
+  }).slice(0, maxResults);
+  emit({ ok: true, action, platform: process.platform, count: rows.length, processes: rows });
+}
+if (action === "start" || action === "launch" || action === "open") {
+  const command = String(req.command || req.file || "").trim();
+  if (!command) emit({ ok: false, action: "start", error: "file or command required" }, 2);
+  const child = spawn(command, Array.isArray(req.arguments) ? req.arguments.map(String) : [], { detached: true, stdio: "ignore", shell: !Array.isArray(req.arguments) });
+  child.unref();
+  emit({ ok: true, action: "start", platform: process.platform, pid: child.pid, command });
+}
+if (action === "stop" || action === "kill" || action === "close") {
+  if (pid <= 0) emit({ ok: false, action: "stop", error: "pid required on this platform" }, 2);
+  process.kill(pid, req.force ? "SIGKILL" : "SIGTERM");
+  emit({ ok: true, action: "stop", platform: process.platform, stopped: [pid] });
+}
+emit({ ok: false, action, error: "unsupported process action" }, 2);
+`.trim();
+  }
+
+  function sourceClipboardScript(args = {}) {
+    const payload = Buffer.from(JSON.stringify({
+      action: String(args.action || "read").slice(0, 40),
+      text: String(args.text ?? args.content ?? args.value ?? "").slice(0, 300_000),
+      maxChars: Number.isSafeInteger(args.maxChars) ? Math.max(100, Math.min(args.maxChars, 12000)) : 4000
+    }), "utf8").toString("base64");
+    return `
+const { spawnSync } = await import("node:child_process");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const action = String(req.action || "read").toLowerCase().replace(/_/g, "-");
+const maxChars = Math.max(100, Math.min(Number(req.maxChars) || 4000, 12000));
+const emit = (value, code = 0) => {
+  console.log(JSON.stringify(value));
+  process.exit(code);
+};
+function run(file, args, input = "") {
+  const result = spawnSync(file, args, { input, encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error((result.stderr || result.stdout || file + " failed").trim());
+  return String(result.stdout || "");
+}
+function tryRun(commands, input = "") {
+  const errors = [];
+  for (const command of commands) {
+    try {
+      return run(command.file, command.args, input);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  throw new Error(errors.join("; ") || "clipboard command unavailable");
+}
+if (action === "read" || action === "get" || action === "paste") {
+  const text = process.platform === "win32"
+    ? run("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Get-Clipboard -Raw"])
+    : process.platform === "darwin"
+      ? run("pbpaste", [])
+      : tryRun([{ file: "wl-paste", args: ["--no-newline"] }, { file: "xclip", args: ["-selection", "clipboard", "-out"] }, { file: "xsel", args: ["--clipboard", "--output"] }]);
+  emit({ ok: true, action: "read", platform: process.platform, length: text.length, text: text.slice(0, maxChars), truncated: text.length > maxChars });
+}
+if (action === "write" || action === "set" || action === "copy") {
+  const text = String(req.text || "");
+  if (process.platform === "win32") {
+    run("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())"], text);
+  } else if (process.platform === "darwin") {
+    run("pbcopy", [], text);
+  } else {
+    tryRun([{ file: "wl-copy", args: [] }, { file: "xclip", args: ["-selection", "clipboard", "-in"] }, { file: "xsel", args: ["--clipboard", "--input"] }], text);
+  }
+  emit({ ok: true, action: "write", platform: process.platform, length: text.length });
+}
+emit({ ok: false, action, error: "unsupported clipboard action" }, 2);
+`.trim();
+  }
+
+  function sourceNetworkScript(args = {}) {
+    const payload = Buffer.from(JSON.stringify({
+      action: String(args.action || "status").slice(0, 40),
+      url: String(args.url || "").slice(0, 4000),
+      host: String(args.host || args.hostname || "").slice(0, 255),
+      port: Number.isSafeInteger(args.port) ? args.port : Number.parseInt(String(args.port || ""), 10),
+      timeoutMs: Number.isSafeInteger(args.timeoutMs) ? Math.max(1000, Math.min(args.timeoutMs, 120000)) : 15000
+    }), "utf8").toString("base64");
+    return `
+const os = await import("node:os");
+const dns = await import("node:dns/promises");
+const net = await import("node:net");
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const action = String(req.action || "status").toLowerCase().replace(/_/g, "-");
+const timeoutMs = Math.max(1000, Math.min(Number(req.timeoutMs) || 15000, 120000));
+const emit = (value, code = 0) => {
+  console.log(JSON.stringify(value));
+  process.exit(code);
+};
+function interfaces() {
+  return Object.entries(os.networkInterfaces()).flatMap(([name, items]) => (items || [])
+    .filter((item) => !item.internal)
+    .map((item) => ({ name, family: item.family, address: item.address, mac: item.mac, cidr: item.cidr })));
+}
+function connect(host, port) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const socket = net.createConnection({ host, port, timeout: timeoutMs });
+    socket.once("connect", () => {
+      const latencyMs = Date.now() - started;
+      socket.destroy();
+      resolve({ ok: true, host, port, latencyMs });
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve({ ok: false, host, port, error: "timeout" });
+    });
+    socket.once("error", (error) => resolve({ ok: false, host, port, error: error.message }));
+  });
+}
+if (action === "status" || action === "interfaces") {
+  emit({ ok: true, action: "status", platform: process.platform, hostname: os.hostname(), interfaces: interfaces() });
+}
+if (action === "probe" || action === "connect" || action === "ping") {
+  const url = String(req.url || "").trim();
+  if (url) {
+    const started = Date.now();
+    const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs), cache: "no-store" });
+    emit({ ok: response.ok, action: "probe", kind: "http", url, status: response.status, statusText: response.statusText, latencyMs: Date.now() - started });
+  }
+  const host = String(req.host || "").trim();
+  if (!host) emit({ ok: false, action: "probe", error: "host or url required" }, 2);
+  const port = Number.isSafeInteger(req.port) && req.port > 0 ? req.port : 443;
+  const records = await dns.lookup(host, { all: true }).catch((error) => ({ error: error.message }));
+  const connection = await connect(host, port);
+  emit({ ...connection, action: "probe", kind: "tcp", addresses: Array.isArray(records) ? records : [], dnsError: records.error || "" }, connection.ok ? 0 : 1);
+}
+emit({ ok: false, action, error: "unsupported network action" }, 2);
+`.trim();
+  }
+
+  return Object.freeze({
+    sourceProcessScript,
+    sourceClipboardScript,
+    sourceNetworkScript
   });
 }
 
@@ -532,7 +820,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.113";
+const agentVersion = "0.4.114";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -661,6 +949,9 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_web",
   "soty_browser",
   "soty_desktop",
+  "soty_process",
+  "soty_clipboard",
+  "soty_network",
   "soty_open_url",
   "soty_audio"
 ]);
@@ -1732,6 +2023,12 @@ const {
 } = createMcpComputerRouter({
   cleanActionToken
 });
+
+const {
+  sourceProcessScript,
+  sourceClipboardScript,
+  sourceNetworkScript
+} = createMcpSourceSystemAdapters();
 
 function applyAppComputerDefaults(args, text) {
   const out = args || {};
@@ -12192,9 +12489,13 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, process, clipboard, network, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, process, clipboard, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
+            pid: { type: "integer", description: "Process id for operation=process status/stop." },
+            processName: { type: "string", description: "Process name for operation=process list/status/stop." },
+            host: { type: "string", description: "Host for operation=network probe." },
+            port: { type: "integer", description: "TCP port for operation=network probe." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
             usbConfirmed: { type: "boolean", description: "Windows reinstall prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
@@ -12538,6 +12839,59 @@ function runMcpServer() {
         }
       },
       {
+        name: "soty_process",
+        description: "Process adapter on the current Soty Agent LINK source device. Use through computer operation=process for listing, inspecting, starting, and stopping ordinary user processes with JSON proof.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "list, status, start, launch, open, stop, kill, or close." },
+            pid: { type: "integer", description: "Process id for status/stop." },
+            processName: { type: "string", description: "Process name for list/status/stop." },
+            pattern: { type: "string", description: "Filter text for process name or window title." },
+            file: { type: "string", description: "Executable/app path for start." },
+            command: { type: "string", description: "Command or app name for start." },
+            arguments: { type: "string", description: "Optional arguments for start." },
+            force: { type: "boolean", description: "Force stop when action=stop/kill." },
+            maxResults: { type: "integer", description: "Maximum listed processes, 1-200." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_clipboard",
+        description: "Clipboard adapter on the current Soty Agent LINK source device. Use through computer operation=clipboard to read or write the user's clipboard with bounded JSON proof.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "read, get, paste, write, set, or copy." },
+            text: { type: "string", description: "Text to write for action=write/set/copy." },
+            content: { type: "string", description: "Alias for text." },
+            maxChars: { type: "integer", description: "Maximum characters returned for read, 100-12000." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_network",
+        description: "Network adapter on the current Soty Agent LINK source device. Use through computer operation=network for local interface status, DNS/TCP probes, or HTTP availability checks.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "status, interfaces, probe, connect, or ping." },
+            host: { type: "string", description: "Host for DNS/TCP probe." },
+            port: { type: "integer", description: "TCP port for probe. Defaults to 443." },
+            url: { type: "string", description: "HTTP/HTTPS URL for availability probe." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-120000." }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_audio",
         description: "Read or change the default Windows output volume/mute on the current Soty Agent LINK source device. Use this for Russian requests like 'звук на 30', 'громкость 30', 'выключи звук', 'включи звук'. 'звук на 30' means volumePercent=30 and muted=false, not waiting 30 seconds. The PowerShell command and result are shown in the user's LINK console.",
         inputSchema: {
@@ -12706,6 +13060,45 @@ function runMcpServer() {
         script: sourceDesktopScript(args),
         shell: "powershell",
         name: `soty-desktop-${action}`.slice(0, 120),
+        runAs: "user",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJsonText(result);
+    }
+    if (name === "soty_process") {
+      const action = String(args.action || "list").trim().toLowerCase();
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceProcessScript({ ...args, action }),
+        shell: "node",
+        name: `soty-process-${action}`.slice(0, 120),
+        runAs: "user",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJsonText(result);
+    }
+    if (name === "soty_clipboard") {
+      const action = String(args.action || "read").trim().toLowerCase();
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceClipboardScript({ ...args, action }),
+        shell: "node",
+        name: `soty-clipboard-${action}`.slice(0, 120),
+        runAs: "user",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJsonText(result);
+    }
+    if (name === "soty_network") {
+      const action = String(args.action || "status").trim().toLowerCase();
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceNetworkScript({ ...args, action }),
+        shell: "node",
+        name: `soty-network-${action}`.slice(0, 120),
         runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
@@ -12903,6 +13296,8 @@ function runMcpServer() {
         "artifact",
         "web",
         "network",
+        "process",
+        "clipboard",
         "browser",
         "desktop",
         "screen",
@@ -17390,6 +17785,8 @@ function runtimeComputerUsePlaneStatus() {
       "artifact",
       "web",
       "network",
+      "process",
+      "clipboard",
       "browser",
       "desktop",
       "screen",

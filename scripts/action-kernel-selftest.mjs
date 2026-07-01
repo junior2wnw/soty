@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import WebSocket from "ws";
 import { createMcpComputerRouter } from "./agent-modules/mcp-computer-router.mjs";
+import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { buildMemoryControl, buildMemoryQuery, buildTeacherReport } from "../server/agent-learning.js";
 import { attachAgentRelay } from "../server/agent-relay.js";
 
@@ -48,7 +49,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.113");
+      assertEqual(health.body.version, "0.4.114");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -72,6 +73,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
       assert(health.body.computerUsePlane.capabilities.includes("web"));
       assert(health.body.computerUsePlane.capabilities.includes("network"));
+      assert(health.body.computerUsePlane.capabilities.includes("process"));
+      assert(health.body.computerUsePlane.capabilities.includes("clipboard"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
       assert(health.body.computerUsePlane.capabilities.includes("wallpaper"));
       assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
@@ -1290,15 +1293,43 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(router.computerToolAlias("browser", "", {}), "soty_browser");
       assertEqual(router.computerToolArguments("soty_browser", { operation: "browser" }, "browser", "").action, "text");
       assertEqual(router.computerToolAlias("desktop", "", {}), "soty_desktop");
+      assertEqual(router.computerToolAlias("process", "", {}), "soty_process");
+      assertEqual(router.computerToolArguments("soty_process", { operation: "process" }, "process", "").action, "list");
+      assertEqual(router.computerToolAlias("clipboard", "", {}), "soty_clipboard");
+      assertEqual(router.computerToolArguments("soty_clipboard", { operation: "clipboard" }, "clipboard", "").action, "read");
+      assertEqual(router.computerToolAlias("network", "", {}), "soty_network");
+      assertEqual(router.computerToolArguments("soty_network", { operation: "network" }, "network", "").action, "status");
+      assertEqual(router.computerToolAlias("status", "network", {}), "soty_network");
       assertEqual(router.computerToolAlias("run", "", { command: "whoami" }), "soty_action");
       assertEqual(router.computerToolAlias("run", "", { command: "whoami", durable: false }), "soty_run");
       assertEqual(router.computerToolAlias("script", "", { script: "echo ok", durable: false }), "soty_script");
+    }],
+    ["mcp source system adapters produce executable network status script", async () => {
+      const adapters = createMcpSourceSystemAdapters();
+      const scriptPath = join(tempRoot, "network-adapter-selftest.mjs");
+      await writeFile(scriptPath, adapters.sourceNetworkScript({ action: "status" }), "utf8");
+      const response = await runNode([scriptPath], process.env, tempRoot);
+      assertEqual(response.code, 0);
+      const payload = JSON.parse(response.stdout.trim());
+      assertEqual(payload.ok, true);
+      assertEqual(payload.action, "status");
+      assert(Array.isArray(payload.interfaces));
+      const processScriptPath = join(tempRoot, "process-adapter-selftest.mjs");
+      await writeFile(processScriptPath, adapters.sourceProcessScript({ action: "list", maxResults: 3 }), "utf8");
+      const processResponse = await runNode([processScriptPath], process.env, tempRoot);
+      assertEqual(processResponse.code, 0);
+      const processPayload = JSON.parse(processResponse.stdout.trim());
+      assertEqual(processPayload.ok, true);
+      assertEqual(processPayload.action, "list");
+      assert(Array.isArray(processPayload.processes));
+      assert(adapters.sourceClipboardScript({ action: "read" }).includes("Get-Clipboard"));
     }],
     ["gonka local helper exposes safe ordinary task shortcuts", async () => {
       const source = [
         await readFile(sourceAgentPath, "utf8"),
         await readFile(join(sourceAgentModulesPath, "computer-task-router.mjs"), "utf8"),
         await readFile(join(sourceAgentModulesPath, "mcp-computer-router.mjs"), "utf8"),
+        await readFile(join(sourceAgentModulesPath, "mcp-source-system-adapters.mjs"), "utf8"),
         await readFile(join(sourceAgentModulesPath, "source-task-classifier.mjs"), "utf8")
       ].join("\n");
       for (const needle of [
@@ -1322,6 +1353,10 @@ async function runScenarios({ relayUrl } = {}) {
         "computerActionResolvers",
         "createMcpComputerRouter",
         "computerToolAlias",
+        "createMcpSourceSystemAdapters",
+        "sourceProcessScript",
+        "sourceClipboardScript",
+        "sourceNetworkScript",
         "createSourceTaskClassifier",
         "hasBrowserAutomationIntent"
       ]) {
@@ -2026,7 +2061,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.113");
+      assertEqual(manifest.version, "0.4.114");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "gonka-direct-chat-completions+computer-tools+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2063,6 +2098,8 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.computerUsePlane.imagePipeline, "openai.image_generation+computer.artifact-save-apply-verify");
       assert(manifest.computerUsePlane.capabilities.includes("web"));
       assert(manifest.computerUsePlane.capabilities.includes("network"));
+      assert(manifest.computerUsePlane.capabilities.includes("process"));
+      assert(manifest.computerUsePlane.capabilities.includes("clipboard"));
       assert(manifest.computerUsePlane.capabilities.includes("wallpaper"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
@@ -2176,7 +2213,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.113"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.114"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2241,7 +2278,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.113"'));
+      assert(agentSource.includes('const agentVersion = "0.4.114"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2390,14 +2427,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(join(root, "public", "agent", "soty-agent.mjs"), "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.113";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.114";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.113",
+            version: "0.4.114",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

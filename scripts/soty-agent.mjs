@@ -9,9 +9,10 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createComputerTaskRouter } from "./agent-modules/computer-task-router.mjs";
 import { createMcpComputerRouter } from "./agent-modules/mcp-computer-router.mjs";
+import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.113";
+const agentVersion = "0.4.114";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -140,6 +141,9 @@ const sotyMcpLegacyTools = Object.freeze([
   "soty_web",
   "soty_browser",
   "soty_desktop",
+  "soty_process",
+  "soty_clipboard",
+  "soty_network",
   "soty_open_url",
   "soty_audio"
 ]);
@@ -1211,6 +1215,12 @@ const {
 } = createMcpComputerRouter({
   cleanActionToken
 });
+
+const {
+  sourceProcessScript,
+  sourceClipboardScript,
+  sourceNetworkScript
+} = createMcpSourceSystemAdapters();
 
 function applyAppComputerDefaults(args, text) {
   const out = args || {};
@@ -11671,9 +11681,13 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, process, clipboard, network, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, process, clipboard, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
+            pid: { type: "integer", description: "Process id for operation=process status/stop." },
+            processName: { type: "string", description: "Process name for operation=process list/status/stop." },
+            host: { type: "string", description: "Host for operation=network probe." },
+            port: { type: "integer", description: "TCP port for operation=network probe." },
             installMode: { type: "string", description: "Windows reinstall prepare safety contract: clean only after the user explicitly chose a clean/wipe reinstall. Keep-files must use a non-clean reset/repair path, not this clean prepare route." },
             reinstallMode: { type: "string", description: "Alias for installMode for Windows reinstall prepare." },
             usbConfirmed: { type: "boolean", description: "Windows reinstall prepare safety contract: true only after the user explicitly allowed the detected USB drive to be used/erased for the installer." },
@@ -12017,6 +12031,59 @@ function runMcpServer() {
         }
       },
       {
+        name: "soty_process",
+        description: "Process adapter on the current Soty Agent LINK source device. Use through computer operation=process for listing, inspecting, starting, and stopping ordinary user processes with JSON proof.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "list, status, start, launch, open, stop, kill, or close." },
+            pid: { type: "integer", description: "Process id for status/stop." },
+            processName: { type: "string", description: "Process name for list/status/stop." },
+            pattern: { type: "string", description: "Filter text for process name or window title." },
+            file: { type: "string", description: "Executable/app path for start." },
+            command: { type: "string", description: "Command or app name for start." },
+            arguments: { type: "string", description: "Optional arguments for start." },
+            force: { type: "boolean", description: "Force stop when action=stop/kill." },
+            maxResults: { type: "integer", description: "Maximum listed processes, 1-200." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_clipboard",
+        description: "Clipboard adapter on the current Soty Agent LINK source device. Use through computer operation=clipboard to read or write the user's clipboard with bounded JSON proof.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "read, get, paste, write, set, or copy." },
+            text: { type: "string", description: "Text to write for action=write/set/copy." },
+            content: { type: "string", description: "Alias for text." },
+            maxChars: { type: "integer", description: "Maximum characters returned for read, 100-12000." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-86400000." }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      },
+      {
+        name: "soty_network",
+        description: "Network adapter on the current Soty Agent LINK source device. Use through computer operation=network for local interface status, DNS/TCP probes, or HTTP availability checks.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            action: { type: "string", description: "status, interfaces, probe, connect, or ping." },
+            host: { type: "string", description: "Host for DNS/TCP probe." },
+            port: { type: "integer", description: "TCP port for probe. Defaults to 443." },
+            url: { type: "string", description: "HTTP/HTTPS URL for availability probe." },
+            timeoutMs: { type: "integer", description: "Timeout in milliseconds, 1000-120000." }
+          },
+          required: ["action"],
+          additionalProperties: false
+        }
+      },
+      {
         name: "soty_audio",
         description: "Read or change the default Windows output volume/mute on the current Soty Agent LINK source device. Use this for Russian requests like 'звук на 30', 'громкость 30', 'выключи звук', 'включи звук'. 'звук на 30' means volumePercent=30 and muted=false, not waiting 30 seconds. The PowerShell command and result are shown in the user's LINK console.",
         inputSchema: {
@@ -12185,6 +12252,45 @@ function runMcpServer() {
         script: sourceDesktopScript(args),
         shell: "powershell",
         name: `soty-desktop-${action}`.slice(0, 120),
+        runAs: "user",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJsonText(result);
+    }
+    if (name === "soty_process") {
+      const action = String(args.action || "list").trim().toLowerCase();
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceProcessScript({ ...args, action }),
+        shell: "node",
+        name: `soty-process-${action}`.slice(0, 120),
+        runAs: "user",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJsonText(result);
+    }
+    if (name === "soty_clipboard") {
+      const action = String(args.action || "read").trim().toLowerCase();
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceClipboardScript({ ...args, action }),
+        shell: "node",
+        name: `soty-clipboard-${action}`.slice(0, 120),
+        runAs: "user",
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJsonText(result);
+    }
+    if (name === "soty_network") {
+      const action = String(args.action || "status").trim().toLowerCase();
+      const result = await mcpPostOperator("/operator/script", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        script: sourceNetworkScript({ ...args, action }),
+        shell: "node",
+        name: `soty-network-${action}`.slice(0, 120),
         runAs: "user",
         timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
       });
@@ -12382,6 +12488,8 @@ function runMcpServer() {
         "artifact",
         "web",
         "network",
+        "process",
+        "clipboard",
         "browser",
         "desktop",
         "screen",
@@ -16869,6 +16977,8 @@ function runtimeComputerUsePlaneStatus() {
       "artifact",
       "web",
       "network",
+      "process",
+      "clipboard",
       "browser",
       "desktop",
       "screen",

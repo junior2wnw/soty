@@ -21,6 +21,12 @@ export function createMcpComputerRouter(dependencies = {}) {
     search: "soty_web",
     browser: "soty_browser",
     desktop: "soty_desktop",
+    process: "soty_process",
+    processes: "soty_process",
+    proc: "soty_process",
+    clipboard: "soty_clipboard",
+    network: "soty_network",
+    net: "soty_network",
     audio: "soty_audio"
   });
 
@@ -32,11 +38,20 @@ export function createMcpComputerRouter(dependencies = {}) {
   const reinstallCapabilities = new Set(["windows-reinstall", "os-reinstall", "reinstall"]);
   const fileOperations = new Set(["file", "filesystem", "read", "write", "append", "list", "stat", "mkdir", "move", "copy", "delete", "publish", "cycle"]);
   const webOperations = new Set(["web", "internet", "web-fetch", "web_fetch", "fetch", "fetch-url", "fetch_url", "web-search", "web_search", "search"]);
-  const webCapabilities = new Set(["web", "internet", "network", "web-search"]);
+  const webCapabilities = new Set(["web", "internet", "web-search"]);
+  const processOperations = new Set(["process", "processes", "proc", "ps", "task", "tasklist", "start-process", "start_process", "stop-process", "stop_process"]);
+  const processCapabilities = new Set(["process", "processes", "proc", "task"]);
+  const clipboardOperations = new Set(["clipboard", "clipboard-read", "clipboard_read", "clipboard-write", "clipboard_write"]);
+  const clipboardCapabilities = new Set(["clipboard"]);
+  const networkOperations = new Set(["network", "net", "interfaces", "connectivity", "probe", "ping", "dns", "tcp"]);
+  const networkCapabilities = new Set(["network", "net", "connectivity"]);
   const directRunOperations = new Set(["run", "script"]);
   const actionOperations = new Set(["run", "script", "action", "execute", "shell", "terminal", "console", "long-job", "long_job"]);
   const browserActions = new Set(["open", "goto", "title", "text", "eval", "click_text", "type", "screenshot"]);
   const fileActions = new Set(["read", "write", "append", "list", "stat", "mkdir", "search", "move", "copy", "delete", "download", "publish", "cycle"]);
+  const processActions = new Set(["list", "status", "start", "launch", "open", "stop", "kill", "close"]);
+  const clipboardActions = new Set(["read", "get", "paste", "write", "set", "copy"]);
+  const networkActions = new Set(["status", "interfaces", "probe", "connect", "ping"]);
   const reinstallActions = new Set(["preflight", "prepare", "status", "repair", "cancel", "arm"]);
   const desktopOperations = new Set(["desktop", "screen", "display", "screenshot", "windows", "window", "focus", "click", "type", "key", "keyboard", "mouse", "wallpaper"]);
 
@@ -55,6 +70,15 @@ export function createMcpComputerRouter(dependencies = {}) {
     }
     if (linkStatusOperations.has(operation)) {
       return "soty_link_status";
+    }
+    if (operation === "status" && (processCapabilities.has(capability) || args.pid || args.processName)) {
+      return "soty_process";
+    }
+    if (operation === "status" && clipboardCapabilities.has(capability)) {
+      return "soty_clipboard";
+    }
+    if (operation === "status" && networkCapabilities.has(capability)) {
+      return "soty_network";
     }
     if (operation === "status" && !args.jobId && !reinstallCapabilities.has(capability)) {
       return "soty_link_status";
@@ -90,6 +114,15 @@ export function createMcpComputerRouter(dependencies = {}) {
     }
     if (operation === "open-url" || operation === "open_url" || capability === "url") {
       return "soty_open_url";
+    }
+    if (processOperations.has(operation) || processCapabilities.has(capability) || args.pid || args.processName) {
+      return "soty_process";
+    }
+    if (clipboardOperations.has(operation) || clipboardCapabilities.has(capability)) {
+      return "soty_clipboard";
+    }
+    if (networkOperations.has(operation) || networkCapabilities.has(capability) || args.host || args.port) {
+      return "soty_network";
     }
     if (directRunOperations.has(operation) && args.durable === false) {
       return operation === "script" ? "soty_script" : "soty_run";
@@ -130,6 +163,15 @@ export function createMcpComputerRouter(dependencies = {}) {
     }
     if (alias === "soty_web" && !next.action) {
       next.action = ["search", "web-search", "web_search"].includes(operation) ? "search" : "fetch";
+    }
+    if (alias === "soty_process" && !next.action) {
+      next.action = processActions.has(operation) ? operation : "list";
+    }
+    if (alias === "soty_clipboard" && !next.action) {
+      next.action = clipboardActions.has(operation) ? operation : "read";
+    }
+    if (alias === "soty_network" && !next.action) {
+      next.action = networkActions.has(operation) ? operation : "status";
     }
     if (alias === "soty_desktop" && !next.action) {
       next.action = operation === "screen" ? "display" : operation;

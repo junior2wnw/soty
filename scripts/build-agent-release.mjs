@@ -102,6 +102,8 @@ const manifest = {
       "artifact",
       "web",
       "network",
+      "process",
+      "clipboard",
       "browser",
       "desktop",
       "screen",
