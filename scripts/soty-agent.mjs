@@ -8591,6 +8591,7 @@ async function runGonkaDirectSotySessionTurn({
   let exitCode = 0;
   let postconditionProof = "";
   let usedModel = gonkaUpstreamModel(gonkaPrimaryModel());
+  let requireComputerToolNext = needsComputer;
   traceRouting(trace, {
     route: "gonka.direct",
     taskFamily,
@@ -8609,31 +8610,6 @@ async function runGonkaDirectSotySessionTurn({
     maxToolTurns: gonkaDirectMaxToolTurns,
     toolResultChars: gonkaDirectToolResultChars
   });
-  const eagerPostconditionPlan = maybeBuildDirectPostconditionPlan({ text, finalText: "", runtimeContext, target });
-  if (shouldRunDirectLocalPostconditionFirst(eagerPostconditionPlan, text)) {
-    const eager = await maybeRepairDirectLocalPostconditions({
-      text,
-      finalText: "",
-      runtimeContext,
-      target,
-      jobDir,
-      childEnv,
-      trace,
-      signal
-    });
-    if (eager) {
-      terminal.push(eager.terminal);
-      toolResults.push(eager.toolText);
-      finalText = cleanAgentChatReply(eager.text || "").slice(0, maxChatChars);
-      exitCode = eager.ok ? 0 : (eager.exitCode || 1);
-      postconditionProof = eager.proof || "";
-      traceStep(trace, "gonka.direct.eager-postcondition", {
-        kind: eagerPostconditionPlan?.kind || "",
-        ok: eager.ok,
-        textChars: finalText.length
-      });
-    }
-  }
   if (!finalText) {
     for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
     if (signal?.aborted) {
@@ -8643,7 +8619,7 @@ async function runGonkaDirectSotySessionTurn({
       model: gonkaPrimaryModel(),
       messages,
       tools: [gonkaComputerChatTool()],
-      tool_choice: needsComputer && turn === 0 ? "auto" : "auto"
+      tool_choice: requireComputerToolNext ? "required" : "auto"
     }, apiKey, trace);
     usedModel = response.model || usedModel;
     if (!response.ok) {
@@ -8697,24 +8673,10 @@ async function runGonkaDirectSotySessionTurn({
       toolCalls: toolCalls.length
     });
     if (toolCalls.length === 0) {
-      const textToolCallSignal = /<minimax:tool_call\b|<invoke\s+name=["']?computer["']?/iu.test(assistantText);
-      const shouldInferComputer = terminal.length === 0
-        && (needsComputer || textToolCallSignal || computerActionRequiresProof(taskFamily, text));
-      if (shouldInferComputer) {
-        const inferred = await runInferredGonkaDirectComputerAction({ text, taskFamily, jobDir, childEnv, trace, signal });
-        if (inferred) {
-          terminal.push(inferred.terminal);
-          toolResults.push(inferred.toolText);
-          const inferredProof = recoverDirectComputerProofText([inferred.toolText]) || inferred.userText || "";
-          finalText = proofRequired
-            ? inferredProof
-            : (await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal }) || inferredProof);
-          exitCode = inferred.exitCode;
-        }
-      }
       if (!finalText) {
         if (proofRequired && assistantText && !finalTextLooksLikeActionProof(assistantText)) {
           if (turn < gonkaDirectMaxToolTurns) {
+            requireComputerToolNext = true;
             traceStep(trace, "gonka.direct.continue-missing-tool-proof", {
               turn,
               terminal: terminal.length,
@@ -8754,6 +8716,7 @@ async function runGonkaDirectSotySessionTurn({
         }
       }))
     });
+    requireComputerToolNext = false;
     for (let callIndex = 0; callIndex < normalizedToolCalls.length; callIndex += 1) {
       const call = normalizedToolCalls[callIndex];
       const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
@@ -8805,23 +8768,6 @@ async function runGonkaDirectSotySessionTurn({
   finalText = cleanAgentChatReply(finalText).slice(0, maxChatChars);
   if (toolResults.length > 0) {
     finalText = recoverRawDirectComputerJsonFinal(finalText) || finalText;
-  }
-  const postcondition = postconditionProof ? null : await maybeRepairDirectLocalPostconditions({
-    text,
-    finalText,
-    runtimeContext,
-    target,
-    jobDir,
-    childEnv,
-    trace,
-    signal
-  });
-  if (postcondition) {
-    terminal.push(postcondition.terminal);
-    toolResults.push(postcondition.toolText);
-    finalText = cleanAgentChatReply(postcondition.text || finalText).slice(0, maxChatChars);
-    exitCode = postcondition.ok ? 0 : (postcondition.exitCode || exitCode || 1);
-    postconditionProof = postcondition.proof || "";
   }
   if (finalText && !finalText.startsWith("!")) {
     if (typeof onMessage === "function") {
@@ -9619,23 +9565,6 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
       exitCode: run.exitCode
     }
   };
-}
-
-async function runInferredGonkaDirectComputerAction({ text = "", taskFamily = "", jobDir, childEnv, trace = null, signal = null } = {}) {
-  const payload = gonkaDirectSyntheticPayload(text, taskFamily);
-  const args = inferGonkaComputerArguments(payload);
-  if (!args) {
-    return null;
-  }
-  return runGonkaDirectComputerToolCall({
-    call: { id: `inferred_${randomUUID().replace(/-/gu, "")}`, function: { name: "computer", arguments: JSON.stringify(args) } },
-    text,
-    taskFamily,
-    jobDir,
-    childEnv,
-    trace,
-    signal
-  });
 }
 
 function gonkaDirectSyntheticPayload(text, taskFamily = "") {

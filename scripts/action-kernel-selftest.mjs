@@ -2354,11 +2354,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("hasCreateReadDeleteFileIntent"));
       assert(agentSource.includes("create+read/verify+delete file tasks"));
       assert(agentSource.includes("applyExactFileCycleArgs"));
-      assert(agentSource.includes("textToolCallSignal"));
       assert(agentSource.includes("universal_action_contract"));
       assert(agentSource.includes("act -> verify proof -> final"));
       assert(agentSource.includes("buildGonkaDirectMissingProofPrompt"));
       assert(agentSource.includes("gonka.direct.continue-missing-tool-proof"));
+      assert(agentSource.includes('tool_choice: requireComputerToolNext ? "required" : "auto"'));
+      assert(!agentSource.includes("runInferredGonkaDirectComputerAction"));
       assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
       assert(agentSource.includes("hasCriticalDestructiveIntent"));
       assert(agentSource.includes("safetyPowerShell"));
