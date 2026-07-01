@@ -17429,7 +17429,7 @@ async function runCommand(ws, id, command, timeoutMs, runAs = "user") {
   let cleanupJobDir = false;
   if (shouldRunInWindowsUserSession(runAs)) {
     try {
-      jobDir = join(tmpdir(), "soty-agent", safeFileName(id));
+      jobDir = join(sourceScriptJobBaseDir(runAs), safeFileName(id));
       await mkdir(jobDir, { recursive: true });
       shell = await windowsInteractiveTaskSpec(shell, jobDir, timeoutMs);
       cleanupJobDir = true;
@@ -17502,17 +17502,18 @@ async function runCommand(ws, id, command, timeoutMs, runAs = "user") {
 }
 
 async function runScript(ws, id, payload, timeoutMs) {
-  if (shouldBlockWindowsSystemUserRun(payload.runAs || "user")) {
+  const runAs = payload.runAs || "user";
+  if (shouldBlockWindowsSystemUserRun(runAs)) {
     send(ws, id, "! user-session-agent-unavailable\n", 409, "error", { runAs: "user" });
     ws.close(1011, "user-session-agent-unavailable");
     return;
   }
-  const jobDir = join(tmpdir(), "soty-agent", safeFileName(id));
+  const jobDir = join(sourceScriptJobBaseDir(runAs), safeFileName(id));
   await mkdir(jobDir, { recursive: true });
   let script = scriptSpec(payload, jobDir);
   try {
     await writeFile(script.path, script.content, { encoding: "utf8", mode: 0o700 });
-    if (shouldRunInWindowsUserSession(payload.runAs || "user")) {
+    if (shouldRunInWindowsUserSession(runAs)) {
       script = {
         ...await windowsInteractiveTaskSpec(script, jobDir, timeoutMs),
         name: script.name
@@ -17537,7 +17538,7 @@ async function runScript(ws, id, payload, timeoutMs) {
     cwd: process.cwd(),
     pid: child.pid || 0,
     name: script.name,
-    runAs: shouldRunInWindowsUserSession(payload.runAs || "user") ? "interactive-user" : safeRunAs(payload.runAs || "")
+    runAs: shouldRunInWindowsUserSession(runAs) ? "interactive-user" : safeRunAs(runAs)
   });
 
   const finish = async () => {
@@ -18991,6 +18992,19 @@ function shouldRunInWindowsUserSession(runAs) {
 
 function shouldBlockWindowsSystemUserRun(runAs) {
   return process.platform === "win32" && isWindowsSystem() && safeRunAs(runAs) !== "system" && !allowWindowsInteractiveTaskBridge();
+}
+
+function sourceScriptJobBaseDir(runAs = "user") {
+  if (shouldRunInWindowsUserSession(runAs)) {
+    const publicRoot = process.env.PUBLIC || (process.env.SystemDrive ? join(process.env.SystemDrive, "Users", "Public") : "");
+    if (publicRoot) {
+      return join(publicRoot, "soty-agent", "jobs");
+    }
+    if (process.env.ProgramData) {
+      return join(process.env.ProgramData, "soty-agent", "jobs");
+    }
+  }
+  return join(tmpdir(), "soty-agent");
 }
 
 function safeRelayId(value) {

@@ -2338,6 +2338,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("async function scriptNode"));
       assert(agentSource.includes("await scriptNode(browserNode(req)"));
       assert(agentSource.includes("click_text"));
+      assert(agentSource.includes("sourceScriptJobBaseDir"));
+      assert(agentSource.includes('join(publicRoot, "soty-agent", "jobs")'));
       assert(agentSource.includes("Users\\\\Public\\\\Pictures"));
       assert(computerTaskRouter.includes('return "click_text"'));
       assert(evalSource.includes('const strict = args.has("strict")'));
