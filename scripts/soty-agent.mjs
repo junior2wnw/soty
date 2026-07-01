@@ -1570,6 +1570,10 @@ function inferLinkTextFromText(text) {
   if (quoted) {
     return quoted[1].trim();
   }
+  const trailing = value.match(/\b(?:click|press|open|follow)\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s*(?:,|\band\b|\bthen\b|\bafter\b|\bto\b|\bso\b)|[.?!]|$)/iu);
+  if (trailing) {
+    return trailing[1].trim().replace(/^(?:the|a|an)\s+/iu, "").replace(/[.,:;]+$/u, "");
+  }
   const labeled = value.match(/(?:link|button|ссыл\w*|кнопк\w*)\s+([A-Za-z0-9][A-Za-z0-9 _.,:\/-]{1,120}?)(?:\s+(?:и|and|then|после|чтобы|скажи|прочитай)(?:\s|$)|[.?!]|$)/iu);
   if (labeled) {
     return labeled[1].trim().replace(/[.,:;]+$/u, "");
