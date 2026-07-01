@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.108";
+const agentVersion = "0.4.109";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1184,30 +1184,50 @@ function normalizeGonkaComputerOperation(value) {
   return aliases[clean] || clean;
 }
 
+const appAliasRules = Object.freeze([
+  { name: "notepad", pattern: /notepad|\u0431\u043b\u043e\u043a\u043d\u043e\u0442/iu },
+  { name: "calculator", pattern: /calc(?:ulator)?|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442/iu },
+  { name: "paint", pattern: /mspaint|paint|\u043f\u0435\u0439\u043d\u0442/iu },
+  { name: "explorer", pattern: /explorer|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a/iu },
+  { name: "codex", pattern: /codex|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441/iu },
+  { name: "chrome", pattern: /chrome|\u0445\u0440\u043e\u043c/iu },
+  { name: "edge", pattern: /edge|\u044d\u0434\u0436/iu }
+]);
+
+const computerIntentPatterns = Object.freeze({
+  appWindow: /(?:\bapp(?:lication)?s?\b|\bwindow(?:s)?\b|\bgui\b|\bui\b|\bnotepad\b|\bcalc(?:ulator)?\b|\bmspaint\b|\bpaint\b|\bexplorer\b|\bcodex\b|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441|\u043e\u043a\u043d|\u043f\u0440\u0438\u043b\u043e\u0436|\u043f\u0440\u043e\u0433\u0440\u0430\u043c|\u0431\u043b\u043e\u043a\u043d\u043e\u0442|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a|\u043f\u0435\u0439\u043d\u0442)/iu,
+  explicitScript: /(?:powershell|cmd(?:\.exe)?|\bterminal\b|\bconsole\b|\bshell\b|\bscript\b|\bcommand\b|get-process|\bprocess(?:es)?\b|\u043f\u0440\u043e\u0446\u0435\u0441|\u0442\u0435\u0440\u043c\u0438\u043d\u0430\u043b|\u043a\u043e\u043d\u0441\u043e\u043b|\u043a\u043e\u043c\u0430\u043d\u0434|\u0441\u043a\u0440\u0438\u043f\u0442)/iu,
+  appLaunch: /(?:launch|start|open\s+(?:app|program|window)|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0442\u043a\u0440)/iu,
+  appType: /(?:type|input|enter|write|send|submit|message|\u0432\u0432\u0435\u0434|\u043d\u0430\u043f\u0435\u0447|\u043d\u0430\u043f\u0438\u0448|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449)/iu,
+  appClick: /(?:click|press|invoke|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a)/iu,
+  appSnapshot: /(?:inspect|snapshot|read|elements|controls|\u044d\u043b\u0435\u043c|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u043e\u0441\u043c\u043e\u0442\u0440)/iu,
+  appList: /(?:\blist\b|\bwindows\b|\bapps\b|\u0441\u043f\u0438\u0441|\u043e\u043a\u043d\u0430|\u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d)/iu,
+  appSubmit: /(?:\bsend\b|\bsubmit\b|\bmessage\b|\bchat\b|\bdialog\b|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449\u0435\u043d|\u0434\u0438\u0430\u043b\u043e\u0433|\u0447\u0430\u0442|\u043d\u0430\u043f\u0438\u0448\u0438\s+(?:\u0435\u043c\u0443|\u0435\u0439|\u0438\u043c|\u0432\s+(?:\u0447\u0430\u0442|\u0434\u0438\u0430\u043b\u043e\u0433)))/iu
+});
+
+const appTypeActionAliases = Object.freeze(["type", "write", "input", "enter", "send", "submit"]);
+const appClickActionAliases = Object.freeze(["click", "press", "invoke"]);
+
+function hasComputerIntent(name, value) {
+  const pattern = computerIntentPatterns[name];
+  return Boolean(pattern && pattern.test(String(value || "")));
+}
+
 function hasAppWindowIntent(value) {
-  return /(?:\bapp(?:lication)?s?\b|\bwindow(?:s)?\b|\bgui\b|\bui\b|\bnotepad\b|\bcalc(?:ulator)?\b|\bmspaint\b|\bpaint\b|\bexplorer\b|\bcodex\b|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441|\u043e\u043a\u043d|\u043f\u0440\u0438\u043b\u043e\u0436|\u043f\u0440\u043e\u0433\u0440\u0430\u043c|\u0431\u043b\u043e\u043a\u043d\u043e\u0442|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a|\u043f\u0435\u0439\u043d\u0442)/iu.test(String(value || ""));
+  return hasComputerIntent("appWindow", value);
 }
 
 function hasExplicitScriptIntent(value) {
-  return /(?:powershell|cmd(?:\.exe)?|\bterminal\b|\bconsole\b|\bshell\b|\bscript\b|\bcommand\b|get-process|\bprocess(?:es)?\b|\u043f\u0440\u043e\u0446\u0435\u0441|\u0442\u0435\u0440\u043c\u0438\u043d\u0430\u043b|\u043a\u043e\u043d\u0441\u043e\u043b|\u043a\u043e\u043c\u0430\u043d\u0434|\u0441\u043a\u0440\u0438\u043f\u0442)/iu.test(String(value || ""));
+  return hasComputerIntent("explicitScript", value);
 }
 
 function inferAppNameFromText(text) {
   const value = String(text || "");
   const keyed = firstKeyValue(value, ["app", "application", "window", "title"]);
   if (keyed) return keyed;
-  const known = [
-    [/notepad|\u0431\u043b\u043e\u043a\u043d\u043e\u0442/iu, "notepad"],
-    [/calc(?:ulator)?|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442/iu, "calculator"],
-    [/mspaint|paint|\u043f\u0435\u0439\u043d\u0442/iu, "paint"],
-    [/explorer|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a/iu, "explorer"],
-    [/codex|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441/iu, "codex"],
-    [/chrome|\u0445\u0440\u043e\u043c/iu, "chrome"],
-    [/edge|\u044d\u0434\u0436/iu, "edge"]
-  ];
-  for (const [pattern, name] of known) {
-    if (pattern.test(value)) {
-      return name;
+  for (const alias of appAliasRules) {
+    if (alias.pattern.test(value)) {
+      return alias.name;
     }
   }
   return "";
@@ -1230,7 +1250,7 @@ function applyAppComputerDefaults(args, text) {
   if (!out.action) {
     out.action = inferGonkaComputerActionFromText(text, "app", out);
   }
-  if (["type", "write", "input", "enter", "send", "submit"].includes(String(out.action || "").toLowerCase())) {
+  if (appTypeActionAliases.includes(String(out.action || "").toLowerCase())) {
     out.action = "type";
     out.allowFocus = out.allowFocus !== false;
     if (out.submit === undefined && shouldSubmitAppText(text, out)) {
@@ -1241,7 +1261,7 @@ function applyAppComputerDefaults(args, text) {
     delete out.cmd;
     delete out.shell;
   }
-  if (["click", "press", "invoke"].includes(String(out.action || "").toLowerCase()) && !hasAppElementSelector(out)) {
+  if (appClickActionAliases.includes(String(out.action || "").toLowerCase()) && !hasAppElementSelector(out)) {
     out.action = readOnlyAppActionForText(text);
   }
   if (out.action === "type" && !hasAppTypeContent(out)) {
@@ -1267,7 +1287,7 @@ function hasAppTypeContent(args = {}) {
 }
 
 function readOnlyAppActionForText(text) {
-  return /(?:\blist\b|\bwindows\b|\bapps\b|\u0441\u043f\u0438\u0441|\u043e\u043a\u043d\u0430|\u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d)/iu.test(String(text || "")) ? "list" : "snapshot";
+  return hasComputerIntent("appList", text) ? "list" : "snapshot";
 }
 
 function shouldSubmitAppText(text, args = {}) {
@@ -1276,8 +1296,8 @@ function shouldSubmitAppText(text, args = {}) {
   if (args.submit !== undefined || args.send !== undefined || args.pressEnter !== undefined || args.enterAfterType !== undefined) {
     return false;
   }
-  return /(?:\bsend\b|\bsubmit\b|\bmessage\b|\bchat\b|\bdialog\b|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449\u0435\u043d|\u0434\u0438\u0430\u043b\u043e\u0433|\u0447\u0430\u0442|\u043d\u0430\u043f\u0438\u0448\u0438\s+(?:\u0435\u043c\u0443|\u0435\u0439|\u0438\u043c|\u0432\s+(?:\u0447\u0430\u0442|\u0434\u0438\u0430\u043b\u043e\u0433)))/iu.test(value)
-    || (app === "codex" && /(?:write|type|\u043d\u0430\u043f\u0438\u0448|\u0432\u0432\u0435\u0434)/iu.test(value));
+  return hasComputerIntent("appSubmit", value)
+    || (app === "codex" && hasComputerIntent("appType", value));
 }
 
 function inferGonkaComputerOperationFromText(text, family, args) {
@@ -1339,10 +1359,10 @@ function inferGonkaComputerActionFromText(text, operation, args) {
     return /удали|удалить|delete|remove|cleanup|clean up/iu.test(lower) ? "cycle" : "save";
   }
   if (operation === "app") {
-    if (/launch|start|open\s+(?:app|program|window)|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0442\u043a\u0440/iu.test(lower) && (args.app || inferAppNameFromText(text))) return "launch";
-    if (/(?:type|input|enter|write|send|submit|message|\u0432\u0432\u0435\u0434|\u043d\u0430\u043f\u0435\u0447|\u043d\u0430\u043f\u0438\u0448|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449)/iu.test(lower) && (args.content || args.value || args.input || (!args.target && args.text))) return "type";
-    if (/click|press|invoke|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a/iu.test(lower) || args.target || args.text) return "click";
-    if (/inspect|snapshot|read|elements|controls|\u044d\u043b\u0435\u043c|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u043e\u0441\u043c\u043e\u0442\u0440/iu.test(lower) || args.app || args.window || args.title) return "snapshot";
+    if (hasComputerIntent("appLaunch", lower) && (args.app || inferAppNameFromText(text))) return "launch";
+    if (hasComputerIntent("appType", lower) && (args.content || args.value || args.input || (!args.target && args.text))) return "type";
+    if (hasComputerIntent("appClick", lower) || args.target || args.text) return "click";
+    if (hasComputerIntent("appSnapshot", lower) || args.app || args.window || args.title) return "snapshot";
     return "list";
   }
   if (operation === "file") {
