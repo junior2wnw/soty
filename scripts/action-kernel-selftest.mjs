@@ -2334,6 +2334,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("applyBrowserClickDefaults"));
       assert(agentSource.includes("firstUrlCandidate"));
       assert(agentSource.includes("repairBrowserUrlFromText"));
+      assert(agentSource.includes("isCompositeBrowserClickTarget"));
+      assert(agentSource.includes("openTrailing && !"));
       assert(agentSource.includes('"const browserNode = " + sourceBrowserScript.toString() + ";"'));
       assert(agentSource.includes("async function scriptNode"));
       assert(agentSource.includes("await scriptNode(browserNode(req)"));

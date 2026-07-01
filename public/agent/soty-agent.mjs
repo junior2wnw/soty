@@ -2737,9 +2737,13 @@ function inferLinkTextFromText(text) {
   if (quoted) {
     return quoted[1].trim();
   }
-  const trailing = value.match(/\b(?:click|press|open|follow)\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s*(?:,|\band\b|\bthen\b|\bafter\b|\bto\b|\bso\b)|[.?!]|$)/iu);
+  const trailing = value.match(/\b(?:click|press|follow)\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s*(?:,|\band\b|\bthen\b|\bafter\b|\bto\b|\bso\b)|[.?!]|$)/iu);
   if (trailing) {
     return trailing[1].trim().replace(/^(?:the|a|an)\s+/iu, "").replace(/[.,:;]+$/u, "");
+  }
+  const openTrailing = value.match(/\bopen\s+(?:the\s+|a\s+|an\s+)?(.{1,120}?)\s+(?:link|button)(?:\s*(?:,|\band\b|\bthen\b|\bafter\b|\bto\b|\bso\b)|[.?!]|$)/iu);
+  if (openTrailing && !/(?:https?:\/\/|\b(?:click|press|follow)\b|,\s*\w)/iu.test(openTrailing[1])) {
+    return openTrailing[1].trim().replace(/^(?:the|a|an)\s+/iu, "").replace(/[.,:;]+$/u, "");
   }
   const labeled = value.match(/(?:link|button|ссыл\w*|кнопк\w*)\s+([A-Za-z0-9][A-Za-z0-9 _.,:\/-]{1,120}?)(?:\s+(?:и|and|then|после|чтобы|скажи|прочитай)(?:\s|$)|[.?!]|$)/iu);
   if (labeled) {
@@ -2752,6 +2756,17 @@ function inferLinkTextFromText(text) {
   return "";
 }
 
+function isCompositeBrowserClickTarget(value, linkText = "") {
+  const target = String(value || "").trim();
+  const cleanLink = String(linkText || "").trim();
+  if (!target || !cleanLink || target.toLowerCase() === cleanLink.toLowerCase()) {
+    return false;
+  }
+  return /https?:\/\//iu.test(target)
+    || /\b(?:click|press|follow|open|reply|read|tell)\b/iu.test(target)
+    || (target.length > cleanLink.length + 20 && target.toLowerCase().includes(cleanLink.toLowerCase()));
+}
+
 function applyBrowserClickDefaults(args, text) {
   const value = String(text || "");
   const clickIntent = /\b(?:click|press|follow)\b|РЅР°Р¶РјРё|РєР»РёРє|РїРµСЂРµР№РґРё|СЃСЃС‹Р»\w*|РєРЅРѕРїРє\w*/iu.test(value);
@@ -2761,8 +2776,11 @@ function applyBrowserClickDefaults(args, text) {
   const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
   const linkText = inferLinkTextFromText(value);
   const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
-  if (linkText && !currentTarget) {
+  if (linkText && (!currentTarget || isCompositeBrowserClickTarget(currentTarget, linkText))) {
     args.text = linkText;
+    delete args.linkText;
+    delete args.selector;
+    delete args.target;
   }
   const hasBrowserTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
   const browserLike = args.url || operation === "browser" || operation === "open-url" || operation === "open";
