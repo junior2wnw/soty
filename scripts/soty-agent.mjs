@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.127";
+const agentVersion = "0.4.128";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -11236,14 +11236,27 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"$needle = ([string]$req.text).Trim()\",",
     "    \"$requestedPath = ([string]$req.path).Trim()\",",
     "    \"$maxChars = [Math]::Max(1000, [Math]::Min([int]$req.maxChars, 12000))\",",
-    "    \"if ($url) { Start-Process $url; Start-Sleep -Seconds 3 }\",",
+    "    \"function Open-BrowserWindow([string]$targetUrl) {\",",
+    "    \"  if ([string]::IsNullOrWhiteSpace($targetUrl)) { return }\",",
+    "    \"  $opened = $false\",",
+    "    \"  foreach ($exe in @('chrome.exe','msedge.exe')) {\",",
+    "    \"    try { Start-Process -FilePath $exe -ArgumentList @('--new-window', $targetUrl); $opened = $true; break } catch {}\",",
+    "    \"  }\",",
+    "    \"  if (-not $opened) { Start-Process $targetUrl }\",",
+    "    \"  Start-Sleep -Seconds 3\",",
+    "    \"}\",",
+    "    \"if ($url) { Open-BrowserWindow $url }\",",
     "    \"$root = [System.Windows.Automation.AutomationElement]::RootElement\",",
     "    \"function Get-ChromeWindow {\",",
     "    \"  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)\",",
     "    \"  $best = $null\",",
     "    \"  for ($i = 0; $i -lt $wins.Count; $i++) {\",",
     "    \"    $w = $wins.Item($i)\",",
-    "    \"    if ($w.Current.ClassName -eq 'Chrome_WidgetWin_1' -and $w.Current.Name -like '*Google Chrome*') { $best = $w }\",",
+    "    \"    $name = [string]$w.Current.Name\",",
+    "    \"    if ($w.Current.ClassName -eq 'Chrome_WidgetWin_1' -and $name -like '*Google Chrome*') {\",",
+    "    \"      if ($name -notmatch '(?i)(soty|xn--n1afe0b|соты)') { $best = $w }\",",
+    "    \"      elseif (-not $best) { $best = $w }\",",
+    "    \"    }\",",
     "    \"  }\",",
     "    \"  return $best\",",
     "    \"}\",",
