@@ -1176,7 +1176,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.123";
+const agentVersion = "0.4.124";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -2527,6 +2527,12 @@ function hasScopedTemporaryWorkspaceIntent(value) {
   return creates && deletes && explicitUserPath && !dangerousScope;
 }
 
+function hasSafeExactFileCycleIntent(value) {
+  const text = String(value || "");
+  const dangerousScope = /(?:\bwindows\b|\bsystem32\b|\bprogram\s*files\b|\bdrive\b|\bdisk\b|\breinstall\b|\breformat\b|\bwipe\b|\berase\b|\u0432\u0438\u043d\u0434|\u0434\u0438\u0441\u043a|\u0444\u043e\u0440\u043c\u0430\u0442|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d)/iu.test(text);
+  return hasCreateReadDeleteFileIntent(text) && mentionedFileTokenCount(text) === 1 && !dangerousScope;
+}
+
 function hasExplicitDestructiveConfirmation(value) {
   return /(?:\bconfirm(?:ed|ation)?\b|\bi\s+confirm\b|\bexplicitly\s+confirm\b|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044e|\u044f\s+\u043f\u043e\u043d\u0438\u043c\u0430\u044e\s+\u0440\u0438\u0441\u043a|\u0434\u0430,\s*(?:\u0443\u0434\u0430\u043b|\u0441\u043d\u0435\u0441|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d))/iu.test(String(value || ""));
 }
@@ -2546,6 +2552,9 @@ function applyCriticalDestructiveSafety(args, text) {
     return args;
   }
   if (hasScopedTemporaryWorkspaceIntent(text)) {
+    return args;
+  }
+  if (hasSafeExactFileCycleIntent(text)) {
     return args;
   }
   return safetyComputerArgs();
