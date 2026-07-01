@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.126";
+const agentVersion = "0.4.127";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -8281,8 +8281,11 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
   }
   if (action === "screenshot" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
+    const title = String(inner.title || "").trim();
+    const url = String(inner.url || "").trim();
+    const page = [title ? `title: ${title}` : "", url ? `url: ${url}` : ""].filter(Boolean).join("; ");
     return inner.path
-      ? `\u0421\u043a\u0440\u0438\u043d\u0448\u043e\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d: ${inner.path}${bytes}.`
+      ? `${page ? `${page}; ` : ""}\u0421\u043a\u0440\u0438\u043d\u0448\u043e\u0442 \u0441\u043e\u0445\u0440\u0430\u043d\u0435\u043d: ${inner.path}${bytes}.`
       : "\u0421\u043a\u0440\u0438\u043d\u0448\u043e\u0442 \u0441\u0434\u0435\u043b\u0430\u043d.";
   }
   if (operation === "browser" && inner && typeof inner === "object") {
