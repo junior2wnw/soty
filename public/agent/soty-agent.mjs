@@ -1176,7 +1176,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.122";
+const agentVersion = "0.4.123";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -9404,6 +9404,21 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
       "changedSettings=false"
     ].filter(Boolean).join("; ");
   }
+  if ((action === "driver-check" || inner?.action === "driver-check") && inner && typeof inner === "object") {
+    const problemCount = Number.isFinite(Number(inner.problemCount)) ? Number(inner.problemCount) : 0;
+    const problems = Array.isArray(inner.problems)
+      ? inner.problems.map((item) => `${item.Class || "device"}:${item.FriendlyName || item.InstanceId || item.Status || "unknown"}`).slice(0, 6).join(" | ")
+      : "";
+    const drivers = Array.isArray(inner.importantDrivers)
+      ? inner.importantDrivers.map((item) => `${item.DeviceClass || "driver"}:${item.DeviceName || "unknown"} ${item.DriverVersion || ""}`.trim()).slice(0, 8).join(" | ")
+      : "";
+    return [
+      `problemDevices=${problemCount}`,
+      problems ? `problems=${problems}` : "",
+      drivers ? `importantDrivers=${drivers}` : "",
+      "changedSettings=false"
+    ].filter(Boolean).join("; ");
+  }
   if (action === "screenshot" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
     return inner.path
@@ -9927,14 +9942,14 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
     return true;
   }
   const family = codexSessionFamilyBucket(taskFamily);
-  return ["system-time", "audio", "file-work", "web-lookup", "security-check"].includes(family);
+  return ["system-time", "audio", "file-work", "web-lookup", "security-check", "driver-check"].includes(family);
 }
 
 function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamily = "") {
   const family = codexSessionFamilyBucket(taskFamily);
   const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
   const action = String(args?.action || "").trim().toLowerCase();
-  return family === "security-check" && operation === "script" && (action === "status" || action === "security-check");
+  return (family === "security-check" || family === "driver-check") && operation === "script" && (action === "status" || action === "security-check" || action === "driver-check");
 }
 
 function hasDownloadSaveDeleteFileIntent(value) {
@@ -10671,7 +10686,7 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     applyAppComputerDefaults(out, text);
   }
   Object.assign(out, applyExactFileCycleArgs(out, text));
-  if (codexSessionFamilyBucket(taskFamily) === "driver-check" && (out.operation === "system-resources" || out.operation === "status") && !out.script && !out.command) {
+  if (codexSessionFamilyBucket(taskFamily) === "driver-check") {
     out.operation = "script";
     out.action = "status";
     out.script = driverCheckCompactPowerShell();
@@ -10800,7 +10815,7 @@ function driverCheckCompactPowerShell() {
     "$problems = @($problemsAll | Select-Object -First 20 Status,Class,FriendlyName,InstanceId)",
     "$classes = @('DISPLAY','MEDIA','NET','Bluetooth','HDC','SCSIAdapter')",
     "$drivers = @(Get-CimInstance Win32_PnPSignedDriver | Where-Object { $classes -contains $_.DeviceClass } | Sort-Object DeviceName | Select-Object -First 40 DeviceName,DeviceClass,DriverVersion,Manufacturer)",
-    "[pscustomobject]@{ ok=$true; action='driver-check'; problemCount=$problemsAll.Count; problems=$problems; importantDrivers=$drivers } | ConvertTo-Json -Depth 5 -Compress"
+    "[pscustomobject]@{ ok=$true; action='driver-check'; problemCount=$problemsAll.Count; problems=$problems; importantDrivers=$drivers; changedSettings=$false } | ConvertTo-Json -Depth 5 -Compress"
   ].join("\n");
 }
 
