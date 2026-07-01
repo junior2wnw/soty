@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.128";
+const agentVersion = "0.4.129";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -8292,7 +8292,13 @@ function formatDirectComputerFallbackText(args, stdout, stderr = "") {
     if (inner.clicked === false && args?.text) {
       return `Не смог нажать «${args.text}». Текущий заголовок: ${inner.title || "неизвестно"}.`;
     }
-    return inner.title ? String(inner.title) : formatRecoveredOperatorText(raw);
+    const title = String(inner.title || "").trim();
+    const url = String(inner.url || "").trim();
+    const target = String(inner.target || "").trim();
+    const clicked = inner.clicked === true ? (target ? `clicked: ${target}` : "clicked=true") : "";
+    const titleChanged = Object.hasOwn(inner, "titleChanged") ? `titleChanged=${inner.titleChanged === true}` : "";
+    const parts = [clicked, title ? `title: ${title}` : "", url ? `url: ${url}` : "", titleChanged].filter(Boolean);
+    return parts.length ? parts.join("; ") : formatRecoveredOperatorText(raw);
   }
   if (operation === "app" && inner && typeof inner === "object") {
     const windowTitle = String(inner.window?.name || inner.window?.title || inner.title || inner.app || "").trim();
@@ -11230,6 +11236,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"$ErrorActionPreference = 'Stop'\",",
     "    \"Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes\",",
     "    \"Add-Type -AssemblyName System.Windows.Forms,System.Drawing\",",
+    "    \"if (-not ('SotyWin32' -as [type])) { Add-Type 'using System; using System.Runtime.InteropServices; public class SotyWin32 { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); }' }\",",
     "    `$req = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json`,",
     "    \"$action = ([string]$req.action).Trim().ToLowerInvariant()\",",
     "    \"$url = [string]$req.url\",",
@@ -11249,12 +11256,16 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"$root = [System.Windows.Automation.AutomationElement]::RootElement\",",
     "    \"function Get-ChromeWindow {\",",
     "    \"  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)\",",
+    "    \"  $foreground = [SotyWin32]::GetForegroundWindow().ToInt64()\",",
     "    \"  $best = $null\",",
     "    \"  for ($i = 0; $i -lt $wins.Count; $i++) {\",",
     "    \"    $w = $wins.Item($i)\",",
     "    \"    $name = [string]$w.Current.Name\",",
     "    \"    if ($w.Current.ClassName -eq 'Chrome_WidgetWin_1' -and $name -like '*Google Chrome*') {\",",
-    "    \"      if ($name -notmatch '(?i)(soty|xn--n1afe0b|соты)') { $best = $w }\",",
+    "    \"      $isSoty = $name -match '(?i)(soty|xn--n1afe0b|соты)'\",",
+    "    \"      $handle = [int64]$w.Current.NativeWindowHandle\",",
+    "    \"      if (-not $isSoty -and $handle -eq $foreground) { return $w }\",",
+    "    \"      if (-not $isSoty) { $best = $w }\",",
     "    \"      elseif (-not $best) { $best = $w }\",",
     "    \"    }\",",
     "    \"  }\",",
@@ -11331,17 +11342,15 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "    \"  }\",",
     "    \"  for ($wait = 0; $wait -lt 24; $wait++) {\",",
     "    \"    Start-Sleep -Milliseconds 500\",",
-    "    \"    $chrome = Get-ChromeWindow\",",
-    "    \"    if (-not $chrome) { continue }\",",
-    "    \"    $currentTitle = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '')\",",
+    "    \"    $currentTitle = ''\",",
+    "    \"    try { $currentTitle = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '') } catch { $chrome = Get-ChromeWindow; if ($chrome) { $currentTitle = (([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', '') } }\",",
     "    \"    if ($currentTitle -and $currentTitle -ne $titleBeforeClick -and $currentTitle -notmatch '^(https?://)?[A-Za-z0-9.-]+/.+') { break }\",",
     "    \"  }\",",
     "    \"  Start-Sleep -Milliseconds 500\",",
-    "    \"  $chrome = Get-ChromeWindow\",",
     "    \"}\",",
     "    \"$title = ([string]$chrome.Current.Name) -replace '\\\\s+-\\\\s+Google Chrome$', ''\",",
     "    \"$body = Collect-ChromeText $chrome $maxChars\",",
-    "    \"[pscustomobject]@{ ok=$true; action='browser'; url=$url; clicked=$clicked; target=$needle; title=$title; text=$body } | ConvertTo-Json -Compress\"",
+    "    \"[pscustomobject]@{ ok=$true; action='browser'; url=$url; clicked=$clicked; target=$needle; titleBeforeClick=$titleBeforeClick; title=$title; titleChanged=($title -ne $titleBeforeClick); text=$body } | ConvertTo-Json -Compress\"",
     "  ].join('\\n');",
     "}",
     "function appPowerShell(req) {",
