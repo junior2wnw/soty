@@ -1167,7 +1167,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.119";
+const agentVersion = "0.4.120";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -10701,24 +10701,7 @@ function shouldUseSecurityCheckCompactScript(out, taskFamily = "", text = "") {
   if (codexSessionFamilyBucket(taskFamily) !== "security-check" || !hasDefenderSecurityIntent(text)) {
     return false;
   }
-  const script = String(out?.script || out?.command || out?.cmd || "");
-  if ((out.operation === "system-resources" || out.operation === "status") && !script) {
-    return true;
-  }
-  if (!script) {
-    return false;
-  }
-  return scriptHasEphemeralPowerShellJobPolling(script) || scriptLooksLikeAdHocDefenderCheck(script);
-}
-
-function scriptHasEphemeralPowerShellJobPolling(value) {
-  return /(?:\bStart-Job\b|\bGet-Job\b|\bReceive-Job\b|\bWait-Job\b|\bRemove-Job\b|\bSTILL_RUNNING\b)/iu.test(String(value || ""));
-}
-
-function scriptLooksLikeAdHocDefenderCheck(value) {
-  const text = String(value || "");
-  return /(?:Get-MpComputerStatus|Get-MpPreference|Get-MpThreatDetection|Start-MpScan|MpCmdRun\.exe)/iu.test(text)
-    && !/changedSettings\s*=\s*\$false|action='security-check'|action="security-check"/iu.test(text);
+  return true;
 }
 
 function compactGonkaDirectToolResult(args, run) {
@@ -10836,15 +10819,16 @@ function securityCheckCompactPowerShell({ quickScan = false } = {}) {
     "try { $pref = Get-MpPreference } catch {}",
     "if ($scanRequested -and (Get-Command Start-MpScan -ErrorAction SilentlyContinue)) { try { Start-MpScan -ScanType QuickScan -ErrorAction Stop; $scanCompleted = $true } catch { $scanError = $_.Exception.Message } }",
     "try { $statusAfter = Get-MpComputerStatus } catch {}",
-    "$threats = @(try { Get-MpThreatDetection | Select-Object -First 20 ThreatName,InitialDetectionTime,ActionSuccess,CurrentThreatExecutionStatus,Resources } catch { @() })",
+    "$threatsAll = @(try { Get-MpThreatDetection } catch { @() })",
+    "$threats = @($threatsAll | Select-Object -First 10 ThreatName,InitialDetectionTime,ActionSuccess,CurrentThreatExecutionStatus)",
     "$status = if ($statusAfter) { $statusAfter } else { $statusBefore }",
     "$signatureUpdated = if ($status) { $status.AntivirusSignatureLastUpdated } else { $null }",
     "$quickScanEndTime = if ($status) { $status.QuickScanEndTime } else { $null }",
     "$realTime = if ($status) { [bool]$status.RealTimeProtectionEnabled } else { $null }",
     "$antivirus = if ($status) { [bool]$status.AntivirusEnabled } else { $null }",
     "$pua = if ($pref) { [string]$pref.PUAProtection } else { '' }",
-    "$summary = 'Defender available=' + $defenderAvailable + '; antivirus=' + $antivirus + '; realTime=' + $realTime + '; PUA=' + $pua + '; threats=' + $threats.Count + '; quickScanRequested=' + $scanRequested + '; quickScanCompleted=' + $scanCompleted + '; signatureUpdated=' + $signatureUpdated + '; quickScanEndTime=' + $quickScanEndTime + '; changedSettings=false'",
-    "[pscustomobject]@{ ok=$true; action='security-check'; text=$summary; defenderAvailable=$defenderAvailable; antivirusEnabled=$antivirus; realTimeProtectionEnabled=$realTime; puaProtection=$pua; threatCount=$threats.Count; threats=$threats; scanRequested=$scanRequested; scanCompleted=$scanCompleted; scanError=$scanError; signatureUpdated=$signatureUpdated; quickScanEndTime=$quickScanEndTime; changedSettings=$false; startedAt=$startedAt; finishedAt=(Get-Date) } | ConvertTo-Json -Depth 6 -Compress"
+    "$summary = 'Defender available=' + $defenderAvailable + '; antivirus=' + $antivirus + '; realTime=' + $realTime + '; PUA=' + $pua + '; threats=' + $threatsAll.Count + '; quickScanRequested=' + $scanRequested + '; quickScanCompleted=' + $scanCompleted + '; signatureUpdated=' + $signatureUpdated + '; quickScanEndTime=' + $quickScanEndTime + '; changedSettings=false'",
+    "[pscustomobject]@{ ok=$true; action='security-check'; text=$summary; defenderAvailable=$defenderAvailable; antivirusEnabled=$antivirus; realTimeProtectionEnabled=$realTime; puaProtection=$pua; threatCount=$threatsAll.Count; threatSample=$threats; scanRequested=$scanRequested; scanCompleted=$scanCompleted; scanError=$scanError; signatureUpdated=$signatureUpdated; quickScanEndTime=$quickScanEndTime; changedSettings=$false; startedAt=$startedAt; finishedAt=(Get-Date) } | ConvertTo-Json -Depth 5 -Compress"
   ].join("\n");
 }
 
