@@ -2364,11 +2364,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes("runInferredGonkaDirectComputerAction"));
       assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
       assert(agentSource.includes("hasCriticalDestructiveIntent"));
+      assert(agentSource.includes("shouldBlockCriticalDestructiveAction"));
+      assert(agentSource.includes("gonka.direct.safety-block"));
       assert(agentSource.includes("safetyPowerShell"));
       assert(agentSource.includes("confirmation_required"));
       assert(agentSource.includes("recoverDirectComputerProofText"));
       assert(agentSource.includes("directComputerRunExitCode"));
       assert(agentSource.includes("parsed?.ok === false"));
+      assert(agentSource.includes('inferredOperation === "web"'));
       assert(agentSource.includes("answer with the path instead of page text or raw JSON"));
       assert(ui.includes('if (message.type === "operator.terminal")'));
       assert(ui.includes("redactVisibleTerminalSecrets"));

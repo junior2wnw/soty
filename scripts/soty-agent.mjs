@@ -1467,6 +1467,17 @@ function applyCriticalDestructiveSafety(args, text) {
   return safetyComputerArgs();
 }
 
+function shouldBlockCriticalDestructiveAction(text) {
+  return hasCriticalDestructiveIntent(text)
+    && !hasExplicitDestructiveConfirmation(text)
+    && !hasScopedTemporaryWorkspaceIntent(text)
+    && !hasSafeExactFileCycleIntent(text);
+}
+
+function directSafetyBlockText() {
+  return "Dangerous broad destructive action blocked. No changes were made. Provide explicit confirmation with the exact target if you really want this.";
+}
+
 function applyExactFileCycleArgs(args, text) {
   if (!hasCreateReadDeleteFileIntent(text)) {
     return args;
@@ -2173,6 +2184,22 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   const linkText = inferLinkTextFromText(userText);
   const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
   const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
+  const family = (allText.match(/task_family:\s*([a-z0-9_.:-]+)/iu)?.[1] || "").toLowerCase();
+  const inferredOperation = inferGonkaComputerOperationFromText(userText || allText, codexSessionFamilyBucket(family), args);
+  if ((["", "system-resources", "status", "open-url", "open", "web", "script", "run", "shell"].includes(operation) || !operation)
+    && inferredOperation === "web") {
+    args.operation = "web";
+    if (!args.url) {
+      args.url = firstUrlCandidate(userText || allText);
+    }
+    if (!args.action || ["status", "open", "goto"].includes(String(args.action || "").toLowerCase())) {
+      args.action = args.url ? "fetch" : "search";
+    }
+    delete args.script;
+    delete args.command;
+    delete args.cmd;
+    delete args.shell;
+  }
   const audioIntent = /громк|звук|mute|unmute|volume/iu.test(userText);
   if (audioIntent && (operation === "script" || operation === "run" || operation === "shell" || !operation)) {
     args.operation = "audio";
@@ -8591,6 +8618,10 @@ async function runGonkaDirectSotySessionTurn({
 } = {}) {
   if (signal?.aborted) {
     return { ok: false, text: "! cancelled", exitCode: 130 };
+  }
+  if (shouldBlockCriticalDestructiveAction(text)) {
+    traceStep(trace, "gonka.direct.safety-block", { taskFamily });
+    return { ok: true, text: directSafetyBlockText(), exitCode: 0 };
   }
   const apiKey = codexGonkaApiKey();
   if (!apiKey) {
