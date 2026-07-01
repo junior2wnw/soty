@@ -10732,24 +10732,41 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
     timeoutMs: safeDirectComputerToolTimeoutMs(args.timeoutMs, taskFamily, args),
     signal
   });
-  const modelText = compactGonkaDirectToolResult(args, run);
+  const logicalExitCode = directComputerRunExitCode(run);
+  const logicalRun = { ...run, exitCode: logicalExitCode };
+  const modelText = compactGonkaDirectToolResult(args, logicalRun);
   const userText = formatDirectComputerFallbackText(args, run.stdout, run.stderr)
     || formatRecoveredOperatorText(run.stdout)
-    || formatRecoveredOperatorFailureText(run.stderr || run.stdout, run.exitCode)
+    || formatRecoveredOperatorFailureText(run.stderr || run.stdout, logicalExitCode)
     || modelText;
   return {
     callId,
     args,
-    exitCode: run.exitCode,
+    exitCode: logicalExitCode,
     modelText,
     toolText: `${run.stdout || ""}\n${run.stderr || ""}`.trim(),
     userText: cleanAgentChatReply(userText).slice(0, maxChatChars),
     terminal: {
       key: `gonka-direct-computer-${callId}`,
       text: `${run.stdout || ""}\n${run.stderr || ""}`.trim().slice(0, maxChatChars),
-      exitCode: run.exitCode
+      exitCode: logicalExitCode
     }
   };
+}
+
+function directComputerRunExitCode(run = {}) {
+  const raw = `${run.stdout || ""}\n${run.stderr || ""}`.trim();
+  const wrapper = parseJsonMaybe(run.stdout) || parseJsonMaybe(raw);
+  const innerText = typeof wrapper?.text === "string" ? wrapper.text : "";
+  const parsed = parseJsonMaybe(innerText) || (wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : null);
+  const parsedExit = Number(parsed?.exitCode);
+  if (Number.isSafeInteger(parsedExit)) {
+    return parsedExit;
+  }
+  if (parsed?.ok === false) {
+    return run.exitCode === 0 ? 1 : (run.exitCode || 1);
+  }
+  return Number.isSafeInteger(Number(run.exitCode)) ? Number(run.exitCode) : 1;
 }
 
 function gonkaDirectSyntheticPayload(text, taskFamily = "") {
