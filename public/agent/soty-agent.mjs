@@ -2129,7 +2129,7 @@ function inferGonkaComputerArguments(payload) {
   if (explicitAction) {
     args.action = explicitAction;
   }
-  const url = firstHttpUrl(userText) || (!userText ? firstHttpUrl(allText) : "");
+  const url = firstUrlCandidate(userText) || (!userText ? firstUrlCandidate(allText) : "");
   if (url) {
     args.url = url;
   }
@@ -2210,6 +2210,7 @@ function inferGonkaComputerArguments(payload) {
   if (!args.operation) {
     args.operation = inferGonkaComputerOperationFromText(userText, family, args);
   }
+  repairBrowserUrlFromText(args, userText || allText);
   if (args.operation === "app") {
     applyAppComputerDefaults(args, userText);
   }
@@ -2217,7 +2218,7 @@ function inferGonkaComputerArguments(payload) {
     args.operation = hasBrowserPageIntent(userText || allText) ? "browser" : "desktop";
     args.action = "screenshot";
     if (!args.url) {
-      args.url = inferKnownBrowserUrlFromText(userText || allText);
+      args.url = inferBrowserUrlFromText(userText || allText);
     }
     if (!args.path) {
       args.path = inferScreenshotPathFromText(userText || allText, args.operation);
@@ -2233,6 +2234,7 @@ function inferGonkaComputerArguments(payload) {
     args.action = inferGonkaComputerActionFromText(userText, args.operation, args);
   }
   applyBrowserClickDefaults(args, userText || allText);
+  repairBrowserUrlFromText(args, userText || allText);
   if (args.operation === "app") {
     applyAppComputerDefaults(args, userText);
   }
@@ -2325,6 +2327,72 @@ function firstIntegerValue(text, keys) {
 function firstHttpUrl(text) {
   const match = String(text || "").match(/https?:\/\/[^\s"'<>),]+/iu);
   return match ? match[0] : "";
+}
+
+function trimUrlCandidate(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[\u00ab\u00bb"'<>()\[\]{}]+$/gu, "")
+    .replace(/^[\u00ab\u00bb"'<>()\[\]{}]+/gu, "")
+    .replace(/[.,;:!?]+$/gu, "");
+}
+
+function firstUrlCandidate(text) {
+  const explicit = trimUrlCandidate(firstHttpUrl(text));
+  if (explicit) {
+    return explicit;
+  }
+  const value = String(text || "");
+  const match = value.match(/(?:^|[\s(["'\u00ab])((?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?::\d{2,5})?(?:\/[^\s<>"'`\u00ab\u00bb)]*)?)/iu);
+  if (!match) {
+    return "";
+  }
+  const domain = trimUrlCandidate(match[1]);
+  if (!domain || domain.includes("@")) {
+    return "";
+  }
+  return /^https?:\/\//iu.test(domain) ? domain : `https://${domain}`;
+}
+
+function isLikelyUsableBrowserUrl(value) {
+  const text = trimUrlCandidate(value);
+  if (!text) {
+    return false;
+  }
+  try {
+    const url = new URL(/^https?:\/\//iu.test(text) ? text : `https://${text}`);
+    const host = url.hostname.replace(/\.$/u, "");
+    if (!/^https?:$/iu.test(url.protocol)) {
+      return false;
+    }
+    if (/^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\])$/iu.test(host)) {
+      return true;
+    }
+    const labels = host.split(".").filter(Boolean);
+    return labels.length >= 2 && labels.at(-1).length >= 2;
+  } catch {
+    return false;
+  }
+}
+
+function inferBrowserUrlFromText(value) {
+  return firstUrlCandidate(value) || inferKnownBrowserUrlFromText(value);
+}
+
+function repairBrowserUrlFromText(args, text) {
+  if (!args || typeof args !== "object") {
+    return args;
+  }
+  const inferred = inferBrowserUrlFromText(text);
+  const current = trimUrlCandidate(args.url || args.href || args.uri || "");
+  const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
+  const browserLike = operation === "browser" || operation === "web" || operation === "fetch" || operation === "open-url" || operation === "download" || operation === "wallpaper" || operation === "open";
+  if (inferred && (browserLike || hasBrowserPageIntent(text) || current) && (!isLikelyUsableBrowserUrl(current) || current !== inferred)) {
+    args.url = inferred;
+  } else if (current && current !== args.url && isLikelyUsableBrowserUrl(current)) {
+    args.url = /^https?:\/\//iu.test(current) ? current : `https://${current}`;
+  }
+  return args;
 }
 
 function normalizeGonkaComputerOperation(value) {
@@ -3250,6 +3318,7 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
     return JSON.stringify(args);
   }
   args = applyExactFileCycleArgs(args, userText || allText);
+  repairBrowserUrlFromText(args, userText || allText);
   const linkText = inferLinkTextFromText(userText);
   const currentTarget = String(args.text || args.linkText || args.selector || args.target || "").trim();
   const operation = normalizeGonkaComputerOperation(args.operation || args.op || args.capability || "");
@@ -3272,6 +3341,7 @@ function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
   } else if (hasBrowserTarget && args.url && (operation === "open-url" || operation === "open" || operation === "browser" || !operation)) {
     args.operation = "browser";
   }
+  repairBrowserUrlFromText(args, userText || allText);
   if (typeof args.path === "string" && args.path.trim()) {
     args.path = normalizeGonkaComputerFilePathArg(args.path);
   }
@@ -10722,6 +10792,7 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   if (safeOut.operation === "safety") {
     return safeOut;
   }
+  repairBrowserUrlFromText(out, text);
   if (hasScreenshotIntent(text)) {
     if (!out.operation || out.operation === "web" || out.operation === "open-url" || out.operation === "system-resources") {
       out.operation = hasBrowserPageIntent(text) ? "browser" : "desktop";
@@ -10729,7 +10800,7 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     if (out.operation === "browser" || out.operation === "desktop") {
       out.action = "screenshot";
       if (!out.url && out.operation === "browser") {
-        out.url = inferKnownBrowserUrlFromText(text);
+        out.url = inferBrowserUrlFromText(text);
       }
       if (!out.path) {
         out.path = inferScreenshotPathFromText(text, out.operation);
@@ -10764,6 +10835,7 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     out.timeoutMs = hasSecurityScanIntent(text) ? 900000 : 120000;
   }
   applyBrowserClickDefaults(out, text);
+  repairBrowserUrlFromText(out, text);
   return out;
 }
 
