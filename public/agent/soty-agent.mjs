@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const agentVersion = "0.4.107";
+const agentVersion = "0.4.108";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 const agentConfigPath = join(agentDir, "agent-config.json");
@@ -1241,10 +1241,33 @@ function applyAppComputerDefaults(args, text) {
     delete out.cmd;
     delete out.shell;
   }
+  if (["click", "press", "invoke"].includes(String(out.action || "").toLowerCase()) && !hasAppElementSelector(out)) {
+    out.action = readOnlyAppActionForText(text);
+  }
+  if (out.action === "type" && !hasAppTypeContent(out)) {
+    out.action = readOnlyAppActionForText(text);
+  }
   if (!out.maxElements) {
     out.maxElements = 60;
   }
   return out;
+}
+
+function hasAppElementSelector(args = {}) {
+  const selector = String(args.target || args.text || args.element || args.name || "").trim();
+  if (selector) {
+    return true;
+  }
+  const index = Number(args.elementIndex ?? args.index);
+  return Number.isFinite(index) && index >= 0;
+}
+
+function hasAppTypeContent(args = {}) {
+  return Boolean(String(args.content ?? args.value ?? args.input ?? "").trim());
+}
+
+function readOnlyAppActionForText(text) {
+  return /(?:\blist\b|\bwindows\b|\bapps\b|\u0441\u043f\u0438\u0441|\u043e\u043a\u043d\u0430|\u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d)/iu.test(String(text || "")) ? "list" : "snapshot";
 }
 
 function shouldSubmitAppText(text, args = {}) {
@@ -1591,7 +1614,7 @@ function gonkaComputerChatTool() {
           path: { type: "string", description: "File path for simple file operations or an existing wallpaper image." },
           app: { type: "string", description: "Application/window name or app alias for app/window operations, such as notepad, calculator, paint, explorer, chrome, or part of a window title." },
           target: { type: "string", description: "Visible element label/name for app/window click/type operations." },
-          content: { type: "string", description: "File content for write operations." },
+          content: { type: "string", description: "File content for write operations, or text to type for app/window and browser type actions." },
           fit: { type: "string", description: "Wallpaper fit mode: fill, fit, stretch, center, tile, or span." },
           volumePercent: { type: "integer", description: "Output volume, 0-100." },
           maxChars: { type: "integer", description: "Maximum returned text, 1000-12000." },
