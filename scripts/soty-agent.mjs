@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.135";
+const agentVersion = "0.4.136";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -7344,6 +7344,7 @@ function agentResponseStyleStatus(profile = activeAgentResponseStyle) {
 function universalComputerUseContractPromptLines() {
   return [
     "- universal_action_contract: understand goal -> inspect when useful -> choose a capability -> act -> verify proof -> final in the user's language.",
+    ...universalPlanningContractPromptLines(),
     "- The model is the planner. The runtime must not guess user intent or replace a missing tool decision with a local recipe.",
     "- The selected computer is the current source computer, or the explicitly selected/named Link computer. Do not operate on hidden or unnamed devices.",
     "- If the next step is unclear, call computer with operation=discover or operation=status instead of guessing.",
@@ -7355,6 +7356,18 @@ function universalComputerUseContractPromptLines() {
   ];
 }
 
+function universalPlanningContractPromptLines() {
+  return [
+    "- planning_contract: choose the smallest sufficient next step; do not make a visible plan for simple one-step work.",
+    "- Plan visibly only for long, risky, ambiguous, or multi-surface tasks; keep it to 2-4 concrete steps and update it from real proof.",
+    "- Before acting, lock the exact user goal, target computer/app/path/url, risk level, and proof needed; do not drift to a nearby task.",
+    "- If the operation and target are obvious, call the narrow tool immediately; do not start with discover/status just to look busy.",
+    "- Inspect narrowly when information is missing; avoid broad scans, duplicate checks, and speculative detours.",
+    "- After sufficient proof, stop and answer; do not run another model/tool round just to polish or reconfirm.",
+    "- If blocked, name the single concrete blocker and the smallest next action or question; do not output raw diagnostics as the answer."
+  ];
+}
+
 function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   if (!codexUsesGonka) {
     return [];
@@ -7363,6 +7376,7 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
   const sourceDeviceId = promptInline(runtime?.target?.sourceDeviceId || runtime?.source?.deviceId || "");
   return [
     "- Gonka direct agent: Gonka is the central solver. Soty provides a single selected-computer tool plane named `computer`; use it when the task touches a computer.",
+    ...universalPlanningContractPromptLines(),
     `- Selected-computer scope: target=${targetId || "<none>"}; sourceDeviceId=${sourceDeviceId || "<none>"}.`,
     `- Capability map: ${computerToolCapabilityText()}`,
     "- If you know the surface, call `computer` with an explicit operation and action. If you do not, call operation=discover or operation=status first.",
@@ -8231,6 +8245,7 @@ function buildGonkaDirectSystemPrompt(runtimeContext = {}, taskFamily = "generic
     "You are Агент, the Soty computer agent.",
     "You are running directly on Gonka Chat Completions. Codex CLI is not in this execution path.",
     "You have one selected-computer tool named `computer`. You choose its operation; the runtime only executes and verifies.",
+    ...universalPlanningContractPromptLines(),
     `Computer capability map: ${computerToolCapabilityText()}`,
     "If you are unsure which operation is right, call `computer` with operation=discover or operation=status before acting.",
     "After a tool result, finish with a short useful answer in the user's language. Do not expose internal transport, relay, worker, MCP, Codex, or tool-loop details.",
