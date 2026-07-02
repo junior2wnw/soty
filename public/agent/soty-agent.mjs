@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.130";
+const agentVersion = "0.4.131";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -8332,18 +8332,14 @@ function loadAgentSecretEnv() {
     if (name === "NODE_OPTIONS" || !/^(?:SOTY_|GONKA_|JOIN_GONKA_|ANTHROPIC_AUTH_TOKEN$)/u.test(name)) {
       continue;
     }
-    if (String(process.env[name] || "").trim()) {
+    if (!String(value ?? "").trim()) {
       continue;
     }
     process.env[name] = String(value ?? "");
   }
   if (firstNonEmptySecretEnv(["SOTY_GONKA_API_KEY", "GONKA_API_KEY", "GONKA_BROKER_API_KEY", "JOIN_GONKA_API_KEY"])) {
-    if (!String(process.env.SOTY_CODEX_PROVIDER || "").trim()) {
-      process.env.SOTY_CODEX_PROVIDER = "gonka";
-    }
-    if (!String(process.env.SOTY_GONKA_DIRECT_AGENT || "").trim()) {
-      process.env.SOTY_GONKA_DIRECT_AGENT = "1";
-    }
+    process.env.SOTY_CODEX_PROVIDER = "gonka";
+    process.env.SOTY_GONKA_DIRECT_AGENT = "1";
   }
   delete process.env.NODE_OPTIONS;
 }

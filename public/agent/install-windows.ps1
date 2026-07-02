@@ -975,8 +975,8 @@ if (Test-Path -LiteralPath $secretPath) {
   }
 }
 if ($env:SOTY_GONKA_API_KEY -or $env:GONKA_API_KEY -or $env:GONKA_BROKER_API_KEY -or $env:JOIN_GONKA_API_KEY) {
-  if (-not $env:SOTY_CODEX_PROVIDER) { $env:SOTY_CODEX_PROVIDER = "gonka" }
-  if (-not $env:SOTY_GONKA_DIRECT_AGENT) { $env:SOTY_GONKA_DIRECT_AGENT = "1" }
+  $env:SOTY_CODEX_PROVIDER = "gonka"
+  $env:SOTY_GONKA_DIRECT_AGENT = "1"
 }
 $env:NODE_OPTIONS = ""
 '@
