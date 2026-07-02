@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.133";
+const agentVersion = "0.4.134";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9013,6 +9013,17 @@ function formatDirectComputerToolText(args, stdout, stderr = "") {
     if (action === "cycle" && inner.deleted === true) {
       const text = String(inner.text || "").trim();
       return `Файл создан, прочитан и удалён. Прочитанный текст: ${text ? `\`${text}\`` : "(пусто)"}.`;
+    }
+    if (action === "write" || action === "append" || action === "stat") {
+      const path = String(inner.path || args?.path || "").trim();
+      const exists = inner.exists === true;
+      const length = Number.isFinite(Number(inner.length)) ? `, ${Number(inner.length)} \u0431\u0430\u0439\u0442` : "";
+      const verb = action === "append" ? "\u0444\u0430\u0439\u043b \u0434\u043e\u043f\u0438\u0441\u0430\u043d" : action === "write" ? "\u0444\u0430\u0439\u043b \u0437\u0430\u043f\u0438\u0441\u0430\u043d" : "\u0444\u0430\u0439\u043b \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d";
+      return `\u0413\u043e\u0442\u043e\u0432\u043e: ${verb}${path ? `: ${path}` : ""}. \u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430: ${exists ? "\u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442" : "\u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d"}${length}.`;
+    }
+    if (action === "list") {
+      const count = Array.isArray(inner.items) ? inner.items.length : 0;
+      return `\u0413\u043e\u0442\u043e\u0432\u043e: \u043f\u0430\u043f\u043a\u0430 \u043f\u0440\u043e\u0447\u0438\u0442\u0430\u043d\u0430. \u042d\u043b\u0435\u043c\u0435\u043d\u0442\u043e\u0432: ${count}.`;
     }
     if (action === "read") {
       return cleanActionText(inner.text || "", maxChatChars);
