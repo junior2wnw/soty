@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.138";
+const agentVersion = "0.4.139";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9436,6 +9436,9 @@ function buildGonkaDirectUserPrompt(text, context = "", runtimeContext = {}, tas
 function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily = "") {
   const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
   const action = String(args?.action || "").trim().toLowerCase();
+  if (requestLooksMultiStep(text) && !directToolCallCanCompleteMultiStep(args)) {
+    return false;
+  }
   const needsDelete = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(String(text || ""));
   const needsBrowserClick = /(?:\bclick\b|\bpress\b|\bfollow\b|\blink\b|\bbutton\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u043f\u0435\u0440\u0435\u0439\u0434|\u0441\u0441\u044b\u043b|\u043a\u043d\u043e\u043f)/iu.test(String(text || ""));
   if (operation === "file") {
@@ -9462,6 +9465,38 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
     return true;
   }
   return false;
+}
+
+function requestLooksMultiStep(text = "") {
+  const value = String(text || "").toLowerCase();
+  if (!value.trim()) {
+    return false;
+  }
+  const families = new Set();
+  const patterns = [
+    ["create", /(?:\b(?:create|write|append|make|save|download)\b|\u0441\u043e\u0437\u0434|\u0437\u0430\u043f\u0438\u0448|\u0441\u043e\u0445\u0440\u0430\u043d|\u0441\u043a\u0430\u0447)/iu],
+    ["inspect", /(?:\b(?:check|verify|read|inspect|find|search|look|open)\b|\u043f\u0440\u043e\u0432\u0435\u0440|\u043f\u0440\u043e\u0447\u0438\u0442|\u043d\u0430\u0439\u0434|\u043f\u043e\u0441\u043c\u043e\u0442\u0440|\u043e\u0442\u043a\u0440)/iu],
+    ["remove", /(?:\b(?:delete|remove|clear|clean)\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440|\u043e\u0447\u0438\u0441\u0442)/iu],
+    ["interact", /(?:\b(?:click|press|type|send|submit|set|change|install|run|start|stop|restart|update|repair)\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u0432\u0432\u0435\u0434|\u043e\u0442\u043f\u0440\u0430\u0432|\u0438\u0437\u043c\u0435\u043d|\u0443\u0441\u0442\u0430\u043d\u043e\u0432|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0441\u0442\u0430\u043d\u043e\u0432|\u043e\u0431\u043d\u043e\u0432|\u043f\u043e\u0447\u0438\u043d)/iu]
+  ];
+  for (const [family, pattern] of patterns) {
+    if (pattern.test(value)) {
+      families.add(family);
+    }
+  }
+  if (families.size >= 2) {
+    return true;
+  }
+  return /(?:\b(?:then|after that|and then)\b|[,;]\s*(?:then\s+)?|\u043f\u043e\u0442\u043e\u043c|\u0437\u0430\u0442\u0435\u043c|\u043f\u043e\u0441\u043b\u0435\s+\u044d\u0442\u043e\u0433\u043e|\u0438\s+(?:\u043f\u043e\u0442\u043e\u043c|\u0437\u0430\u0442\u0435\u043c)?)/iu.test(value)
+    && families.size >= 1;
+}
+
+function directToolCallCanCompleteMultiStep(args = {}) {
+  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
+  const action = String(args?.action || "").trim().toLowerCase();
+  return ["run", "script", "terminal", "console", "action", "toolkit", "reinstall"].includes(operation)
+    || ["cycle", "workflow", "transaction", "prepare", "submit"].includes(action)
+    || Boolean(args?.command || args?.script);
 }
 
 function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamily = "") {
