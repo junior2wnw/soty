@@ -5618,6 +5618,28 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const target = resolveAgentBridgeTarget(safeSource, text, sourceTargets);
   const learningContext = learningContextForTurn(safeSource, target);
   const taskFamily = resolveCodexTaskFamily(text, safeSource, target);
+  if (shouldBlockCriticalDestructiveAction(text)) {
+    const safetyText = directSafetyBlockText();
+    traceRouting(trace, {
+      route: "soty.safety-block",
+      taskFamily,
+      targetId: target?.id || "",
+      targetLabel: target?.label || ""
+    });
+    traceStep(trace, "soty.safety-block", { taskFamily });
+    recordLearningReceipt({
+      kind: "agent-runtime",
+      family: taskFamily,
+      result: "blocked",
+      route: "soty.safety-block",
+      taskSig: taskSignature(text),
+      proof: "criticalDestructiveIntent=true; explicitConfirmation=false",
+      exitCode: 0,
+      durationMs: Date.now() - startedAt,
+      ...learningContext
+    });
+    return { ok: true, text: safetyText, messages: [safetyText], exitCode: 0 };
+  }
   const sessionKey = codexSessionKey(safeSource, target, taskFamily);
   const activeTargetTurnKey = codexActiveTargetTurnKey(safeSource, target);
   const activeTargetTurn = activeTargetTurnKey ? activeCodexTargetTurns.get(activeTargetTurnKey) : null;
@@ -7957,6 +7979,17 @@ async function runGonkaDirectSotySessionTurn({
     });
     if (toolCalls.length === 0) {
       if (!finalText) {
+        if (toolResults.length > 0 && isTinyCompletionReply(assistantText)) {
+          const recoveredFinal = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal });
+          if (recoveredFinal) {
+            finalText = recoveredFinal;
+            traceStep(trace, "gonka.direct.recovered-tiny-tool-final", {
+              turn,
+              textChars: finalText.length
+            });
+            break;
+          }
+        }
         if (proofRequired && assistantText && !finalTextLooksLikeActionProof(assistantText)) {
           if (turn < gonkaDirectMaxToolTurns) {
             requireComputerToolNext = true;
@@ -8051,6 +8084,15 @@ async function runGonkaDirectSotySessionTurn({
   finalText = cleanAgentChatReply(finalText).slice(0, maxChatChars);
   if (toolResults.length > 0) {
     finalText = recoverRawDirectComputerJsonFinal(finalText) || finalText;
+    if (isTinyCompletionReply(finalText)) {
+      const recoveredFinal = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal });
+      if (recoveredFinal && !isTinyCompletionReply(recoveredFinal)) {
+        finalText = cleanAgentChatReply(recoveredFinal).slice(0, maxChatChars);
+        traceStep(trace, "gonka.direct.replaced-tiny-final-after-tool", {
+          textChars: finalText.length
+        });
+      }
+    }
   }
   if (finalText && !finalText.startsWith("!")) {
     if (typeof onMessage === "function") {

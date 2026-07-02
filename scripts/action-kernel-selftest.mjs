@@ -1701,6 +1701,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("codexActionRecoverableIdleAfterProgressTimeoutMs"));
       assert(agent.includes("isActionFollowupPrompt"));
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
+      assert(agent.includes('route: "soty.safety-block"'));
+      assert(agent.includes("gonka.direct.recovered-tiny-tool-final"));
+      assert(agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
       assert(agent.includes("command-output-failure"));
       assert(agent.includes("computerToolCapabilityCatalog"));
       assert(agent.includes("computerToolCapabilityText"));
