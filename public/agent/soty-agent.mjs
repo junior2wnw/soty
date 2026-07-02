@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.140";
+const agentVersion = "0.4.141";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9795,8 +9795,23 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
     if (["write", "append", "cycle"].includes(action) && contentSource && !String(out.content ?? "")) {
       out.content = contentSource;
     }
+    if (action === "write" && out.path && contentSource && requestNeedsFileLifecycleTransaction(text)) {
+      out.action = "cycle";
+      out.content = contentSource;
+    }
   }
   return out;
+}
+
+function requestNeedsFileLifecycleTransaction(text = "") {
+  const value = String(text || "").toLowerCase();
+  if (!/(?:\bfile\b|\bfolder\b|файл|папк|path|[a-z]:\\|\/(?:users|home|tmp|var)\b)/iu.test(value)) {
+    return false;
+  }
+  const wantsWrite = /(?:\b(?:create|write|make|save)\b|созд|запиш|сохран)/iu.test(value);
+  const wantsVerify = /(?:\b(?:check|verify|read|confirm)\b|провер|прочит|убед)/iu.test(value);
+  const wantsDelete = /(?:\b(?:delete|remove|clean\s*up)\b|удал|сотр)/iu.test(value);
+  return wantsWrite && wantsVerify && wantsDelete;
 }
 
 function firstNonEmptyValue(...items) {
