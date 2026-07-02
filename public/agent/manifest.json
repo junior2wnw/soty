@@ -3,7 +3,7 @@
   "schema": "soty.agent.release.v2",
   "architecture": "gonka-direct-chat-completions+computer-tools+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "78f6ef1ef31a04cfeb033e608760494ee9cf44c9a11b4178c920d95aa0ba240d",
+  "sha256": "cfe8687a1bf0c306a52be67075ce386d94b2279cdd496e4fab7a6f39d2293b36",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "centralResolver": "gonka-direct-chat-completions",
@@ -403,9 +403,9 @@
     },
     "profiles": [
       {
-        "id": "soty-windows-reinstall-managed-fast-lane",
+        "id": "soty.os.reinstall.v1",
         "family": "windows-reinstall",
-        "title": "Managed Windows reinstall fast lane",
+        "title": "Windows reinstall capability profile",
         "entryTool": "computer",
         "capability": "os-reinstall",
         "legacyTool": "soty_reinstall",
@@ -474,7 +474,7 @@
           }
         ],
         "learning": {
-          "reuseKey": "soty-windows-reinstall-managed-fast-lane",
+          "reuseKey": "soty.os.reinstall.v1",
           "scriptUse": "prepare/status/repair/cancel/arm",
           "successCriteria": "backupProof+installMedia+unattend+postinstall",
           "contextFingerprint": "windows-machine-worker",
@@ -482,7 +482,7 @@
         }
       },
       {
-        "id": "soty-generated-asset-wallpaper-fast-lane",
+        "id": "soty.artifact.wallpaper.v1",
         "family": "generated-image-wallpaper",
         "title": "Native image generation to source-device wallpaper",
         "entryTool": "computer",
@@ -498,8 +498,8 @@
         ],
         "route": [
           "generate the image with native OpenAI image_gen/image_generation",
-          "use the exact newest generated_images artifact path when Codex did not expose a direct path",
-          "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
+          "use the exact generated artifact path when the native image tool exposes one",
+          "send the exact bytes with computer operation=artifact using an explicit localPath and targetPath",
           "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
           "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
         ],
@@ -519,7 +519,7 @@
           "display"
         ],
         "learning": {
-          "reuseKey": "soty-generated-asset-wallpaper-fast-lane",
+          "reuseKey": "soty.artifact.wallpaper.v1",
           "scriptUse": "image_gen/artifact/wallpaper/verify",
           "successCriteria": "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
           "contextFingerprint": "codex-generated-image+source-user-desktop",
@@ -689,8 +689,8 @@
         ],
         "promotion": "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
         "routeProfiles": [
-          "soty-windows-reinstall-managed-fast-lane",
-          "soty-generated-asset-wallpaper-fast-lane"
+          "soty.os.reinstall.v1",
+          "soty.artifact.wallpaper.v1"
         ]
       },
       {
@@ -752,7 +752,7 @@
           "currentWallpaper",
           "display"
         ],
-        "routeProfile": "soty-generated-asset-wallpaper-fast-lane",
+        "routeProfile": "soty.artifact.wallpaper.v1",
         "promotion": "Native OpenAI image generation with Soty artifact transfer and source desktop wallpaper proof."
       },
       {
@@ -799,7 +799,7 @@
           "cancelProof",
           "rebooting"
         ],
-        "routeProfile": "soty-windows-reinstall-managed-fast-lane"
+        "routeProfile": "soty.os.reinstall.v1"
       }
     ],
     "routeProfiles": {
@@ -812,9 +812,9 @@
       },
       "profiles": [
         {
-          "id": "soty-windows-reinstall-managed-fast-lane",
+          "id": "soty.os.reinstall.v1",
           "family": "windows-reinstall",
-          "title": "Managed Windows reinstall fast lane",
+          "title": "Windows reinstall capability profile",
           "entryTool": "computer",
           "capability": "os-reinstall",
           "legacyTool": "soty_reinstall",
@@ -883,7 +883,7 @@
             }
           ],
           "learning": {
-            "reuseKey": "soty-windows-reinstall-managed-fast-lane",
+            "reuseKey": "soty.os.reinstall.v1",
             "scriptUse": "prepare/status/repair/cancel/arm",
             "successCriteria": "backupProof+installMedia+unattend+postinstall",
             "contextFingerprint": "windows-machine-worker",
@@ -891,7 +891,7 @@
           }
         },
         {
-          "id": "soty-generated-asset-wallpaper-fast-lane",
+          "id": "soty.artifact.wallpaper.v1",
           "family": "generated-image-wallpaper",
           "title": "Native image generation to source-device wallpaper",
           "entryTool": "computer",
@@ -907,8 +907,8 @@
           ],
           "route": [
             "generate the image with native OpenAI image_gen/image_generation",
-            "use the exact newest generated_images artifact path when Codex did not expose a direct path",
-            "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
+            "use the exact generated artifact path when the native image tool exposes one",
+            "send the exact bytes with computer operation=artifact using an explicit localPath and targetPath",
             "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
             "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
           ],
@@ -928,7 +928,7 @@
             "display"
           ],
           "learning": {
-            "reuseKey": "soty-generated-asset-wallpaper-fast-lane",
+            "reuseKey": "soty.artifact.wallpaper.v1",
             "scriptUse": "image_gen/artifact/wallpaper/verify",
             "successCriteria": "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
             "contextFingerprint": "codex-generated-image+source-user-desktop",

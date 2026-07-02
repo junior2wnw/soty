@@ -15,6 +15,8 @@ const outputPath = join(outputDir, "soty-agent.mjs");
 const manifestPath = join(outputDir, "manifest.json");
 const windowsMachineCmdPath = join(outputDir, "install-windows-machine.cmd");
 const windowsReinstallDir = join(outputDir, "windows-reinstall");
+const windowsReinstallRouteProfileId = "soty.os.reinstall.v1";
+const generatedAssetRouteProfileId = "soty.artifact.wallpaper.v1";
 const retiredOpsSkillArtifacts = [
   join(outputDir, "ops-skill.zip"),
   join(outputDir, "ops-skill.tar.gz")
@@ -266,9 +268,9 @@ function buildRouteProfiles(windowsReinstall) {
     },
     profiles: [
       {
-        id: "soty-windows-reinstall-managed-fast-lane",
+        id: windowsReinstallRouteProfileId,
         family: "windows-reinstall",
-        title: "Managed Windows reinstall fast lane",
+        title: "Windows reinstall capability profile",
         entryTool: "computer",
         capability: "os-reinstall",
         legacyTool: "soty_reinstall",
@@ -298,7 +300,7 @@ function buildRouteProfiles(windowsReinstall) {
         proof: ["machineWorker", "scriptSha256", "mediaSha256", "backupProof", "installMedia", "autounattend", "setupcomplete", "repairProof", "cancelProof", "postArmReturnPath"],
         scripts: scriptProof,
         learning: {
-          reuseKey: "soty-windows-reinstall-managed-fast-lane",
+          reuseKey: windowsReinstallRouteProfileId,
           scriptUse: "prepare/status/repair/cancel/arm",
           successCriteria: "backupProof+installMedia+unattend+postinstall",
           contextFingerprint: "windows-machine-worker",
@@ -306,7 +308,7 @@ function buildRouteProfiles(windowsReinstall) {
         }
       },
       {
-        id: "soty-generated-asset-wallpaper-fast-lane",
+        id: generatedAssetRouteProfileId,
         family: "generated-image-wallpaper",
         title: "Native image generation to source-device wallpaper",
         entryTool: "computer",
@@ -317,8 +319,8 @@ function buildRouteProfiles(windowsReinstall) {
         phases: ["generate-native", "artifact", "wallpaper", "verify"],
         route: [
           "generate the image with native OpenAI image_gen/image_generation",
-          "use the exact newest generated_images artifact path when Codex did not expose a direct path",
-          "push the exact bytes with computer operation=artifact localPath=/agent/codex-stock-home/generated_images/... targetPath=<source-device-path>",
+          "use the exact generated artifact path when the native image tool exposes one",
+          "send the exact bytes with computer operation=artifact using an explicit localPath and targetPath",
           "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
           "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
         ],
@@ -330,7 +332,7 @@ function buildRouteProfiles(windowsReinstall) {
         ],
         proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
         learning: {
-          reuseKey: "soty-generated-asset-wallpaper-fast-lane",
+          reuseKey: generatedAssetRouteProfileId,
           scriptUse: "image_gen/artifact/wallpaper/verify",
           successCriteria: "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
           contextFingerprint: "codex-generated-image+source-user-desktop",
@@ -413,7 +415,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
         kind: "managed-toolkit",
         phases: ["image_gen", "artifact", "wallpaper", "verify"],
         proof: ["localPath", "targetPath", "artifactSha256", "bytes", "wallpaperPath", "currentWallpaper", "display"],
-        routeProfile: "soty-generated-asset-wallpaper-fast-lane",
+        routeProfile: generatedAssetRouteProfileId,
         promotion: "Native OpenAI image generation with Soty artifact transfer and source desktop wallpaper proof."
       },
       {
@@ -428,7 +430,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
           bytes: script.bytes
         })),
         proof: ["backupProof", "installMedia", "unattend", "postinstall", "repairProof", "cancelProof", "rebooting"],
-        routeProfile: "soty-windows-reinstall-managed-fast-lane"
+        routeProfile: windowsReinstallRouteProfileId
       }
     ],
     routeProfiles

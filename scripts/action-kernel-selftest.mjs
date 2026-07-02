@@ -70,8 +70,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.standardTools.includes("computer"));
       assert(!health.body.computerUsePlane.standardTools.includes("image_gen"));
       assertEqual(health.body.computerUsePlane.routeProfiles.schema, "soty.route-profiles.v1");
-      assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-windows-reinstall-managed-fast-lane"));
-      assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane"));
+      assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty.os.reinstall.v1"));
+      assert(health.body.computerUsePlane.routeProfiles.profiles.some((profile) => profile.id === "soty.artifact.wallpaper.v1"));
       assert(health.body.computerUsePlane.capabilities.includes("web"));
       assert(health.body.computerUsePlane.capabilities.includes("network"));
       assert(health.body.computerUsePlane.capabilities.includes("process"));
@@ -1308,6 +1308,16 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(router.computerToolAlias("run", "", { command: "whoami", durable: false }), "soty_run");
       assertEqual(router.computerToolAlias("script", "", { script: "echo ok", durable: false }), "soty_script");
     }],
+    ["app adapter parses numeric fields defensively", async () => {
+      const agent = await readFile(sourceAgentPath, "utf8");
+      assert(agent.includes("function App-SafeInt($value, [int]$fallback = 0)"));
+      assert(agent.includes("$maxElements = [Math]::Max(10, [Math]::Min((App-SafeInt $req.maxElements 60), 300))"));
+      assert(agent.includes("$elementIndex = App-SafeInt $req.elementIndex ([int]-1)"));
+      assert(agent.includes("$processId = App-SafeInt $req.processId 0"));
+      assert(!agent.includes("$maxElements = [Math]::Max(10, [Math]::Min([int]$req.maxElements, 300))"));
+      assert(!agent.includes("$elementIndex = [int]$req.elementIndex"));
+      assert(!agent.includes("$processId = [int]$req.processId"));
+    }],
     ["mcp source system adapters produce executable network status script", async () => {
       const adapters = createMcpSourceSystemAdapters();
       const scriptPath = join(tempRoot, "network-adapter-selftest.mjs");
@@ -1345,7 +1355,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(adapters.sourceWebScript({ action: "fetch", url: "https://example.com" }).includes("duckDuckGoResults"));
       assert(adapters.sourceOpenUrlScript("https://example.com").includes("detached: true"));
     }],
-    ["gonka local helper exposes safe ordinary task shortcuts", async () => {
+    ["gonka local helper exposes one universal computer bridge", async () => {
       const source = [
         await readFile(sourceAgentPath, "utf8"),
         await readFile(join(sourceAgentModulesPath, "computer-task-router.mjs"), "utf8"),
@@ -1355,15 +1365,8 @@ async function runScenarios({ relayUrl } = {}) {
         await readFile(join(sourceAgentModulesPath, "source-task-classifier.mjs"), "utf8")
       ].join("\n");
       for (const needle of [
-        "desktop-cycle",
-        "cleanInferredFileContent",
-        "computer <json>",
+        "computer <json-or-stdin>",
         "SOTY_LOCAL_API.mjs computer",
-        "audio-get",
-        "time-status",
-        "system-resources",
-        "open-url",
-        "script-powershell <script-or-stdin>",
         "stripHiddenReasoningBlocks",
         "recoverFailureTextFromCodexEvent",
         "operatorTextLooksLikeCommandFailure",
@@ -1386,14 +1389,25 @@ async function runScenarios({ relayUrl } = {}) {
       ]) {
         assert(source.includes(needle), `missing helper needle ${needle}`);
       }
+      for (const legacyNeedle of [
+        "desktop-cycle",
+        "audio-get",
+        "time-status",
+        "open-url <url>",
+        "script-powershell <script-or-stdin>",
+        "small commands include",
+        "cleanInferredFileContent"
+      ]) {
+        assert(!source.includes(legacyNeedle), `legacy helper shortcut remained ${legacyNeedle}`);
+      }
     }],
-    ["driver prompt goes through agent dialog instead of prewritten fast route", async () => {
+    ["driver prompt goes through agent dialog instead of prewritten route", async () => {
       const before = mock.count("Win32_PnPEntity");
       const response = await agentReply("check drivers");
       assert(!String(response.body.text || "").includes("Problem devices"));
       assertEqual(mock.count("Win32_PnPEntity"), before);
     }],
-    ["software prompt goes through agent dialog instead of prewritten fast route", async () => {
+    ["software prompt goes through agent dialog instead of prewritten route", async () => {
       const before = mock.count("Get-Command $tool.Command");
       const response = await agentReply("check python pip git node npm");
       assert(!String(response.body.text || "").includes("git:"));
@@ -1411,13 +1425,13 @@ async function runScenarios({ relayUrl } = {}) {
       const response = await agentReply("repeat smoke no duplicate shortcut");
       assert(String(response.body.text || "").trim().length > 0);
     }],
-    ["hosts path does not trigger driver fast route", async () => {
+    ["hosts path does not trigger driver route", async () => {
       const before = mock.count("Win32_PnPEntity");
       const response = await agentReply("проверь путь C:\\Windows\\System32\\drivers\\etc\\hosts");
       assert(!String(response.body.text || "").includes("Проблемных устройств"));
       assertEqual(mock.count("Win32_PnPEntity"), before);
     }],
-    ["composite memory test skips deterministic fast route", async () => {
+    ["composite memory test skips deterministic prewritten route", async () => {
       const before = mock.count("Win32_PnPEntity");
       const response = await agentReply([
         "Живой недетерминированный тест памяти и ускорения.",
@@ -1430,13 +1444,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!String(response.body.text || "").includes("Проблемных устройств"));
       assertEqual(mock.count("Win32_PnPEntity"), before);
     }],
-    ["inline composite memory test skips system performance fast route", async () => {
+    ["inline composite memory test skips system performance prewritten route", async () => {
       const before = mock.count("wuauserv,BITS");
       const response = await agentReply("Live nondeterministic memory speed test. 1) link status; 2) python and pip; 3) disk memory CPU check; 4) path C:\\Windows\\System32\\drivers\\etc\\hosts; 5) remember name.");
       assert(!String(response.body.text || "").includes("C:"));
       assertEqual(mock.count("wuauserv,BITS"), before);
     }],
-    ["memory recall follow-up skips software fast route", async () => {
+    ["memory recall follow-up skips software prewritten route", async () => {
       const before = mock.count("Get-Command $tool.Command");
       const response = await agentReply("Memory check B. What was my name in the previous test? Repeat only python/pip, git, node/npm, hosts path.");
       assert(!String(response.body.text || "").includes("git:"));
@@ -1688,7 +1702,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("isActionFollowupPrompt"));
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
       assert(agent.includes("command-output-failure"));
-      assert(agent.includes('operation=\\"file\\"'));
+      assert(agent.includes("computerToolCapabilityCatalog"));
+      assert(agent.includes("computerToolCapabilityText"));
+      assert(agent.includes("directComputerToolArgumentFailure"));
+      assert(agent.includes("operation-required"));
       assert(contentAdapters.includes('action === "cycle"'));
       assert(agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
@@ -1702,23 +1719,23 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("responsesPayloadHasToolResult"));
       assert(!agent.includes("responsesInputItemHasToolResult"));
       assert(agent.includes("extractAuthoritativeUserRequest"));
-      assert(agent.includes("inferGonkaComputerArguments"));
+      assert(!agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("safeDirectComputerToolTimeoutMs"));
-      assert(agent.includes("shouldUseSecurityCheckCompactScript"));
+      assert(!agent.includes("shouldUseSecurityCheckCompactScript"));
       assert(agent.includes("model-failure-after-tool-recovered"));
       assert(agent.includes("shouldSingleSuccessfulDirectToolSuffice"));
-      assert(agent.includes("securityCheckCompactPowerShell"));
-      assert(agent.includes("driverCheckCompactPowerShell"));
+      assert(!agent.includes("securityCheckCompactPowerShell"));
+      assert(!agent.includes("driverCheckCompactPowerShell"));
       assert(agent.includes("problemDevices="));
-      assert(agent.includes("changedSettings=$false"));
-      assert(agent.includes("threatSample"));
+      assert(!agent.includes("changedSettings=$false"));
+      assert(!agent.includes("threatSample"));
       assert(!agent.includes("ThreatName,InitialDetectionTime,ActionSuccess,CurrentThreatExecutionStatus,Resources"));
-      assert(agent.includes("download-image-wallpaper"));
+      assert(!agent.includes("download-image-wallpaper"));
       assert(agent.includes("hasWallpaperIntent"));
-      assert(agent.includes("inferWallpaperQuery"));
-      assert(agent.includes("inferInlineFileContent"));
-      assert(agent.includes("hasSafeExactFileCycleIntent"));
-      assert(agent.includes("с\\s+текстом"));
+      assert(!agent.includes("inferWallpaperQuery"));
+      assert(!agent.includes("inferInlineFileContent"));
+      assert(!agent.includes("hasSafeExactFileCycleIntent"));
+      assert(!agent.includes("с\\s+текстом"));
       assert(agent.includes("normalizeGonkaComputerFilePathArg"));
       assert(agent.includes("%USERNAME%"));
       assert(!agent.includes(".Replace('${env:USERPROFILE}'"));
@@ -1753,21 +1770,21 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("standardTools: [...sotyMcpPublicTools]"));
       assert(!agent.includes('name: "image_gen"'));
       assert(agent.includes("return tools.filter((tool) => sotyMcpPublicTools.includes(tool.name))"));
-      assert(agent.includes("The user's source device does not need image credentials"));
-      assert(agent.includes("Image generation is a native OpenAI built-in"));
+      assert(agent.includes("The model is the planner and operator"));
+      assert(agent.includes("Soty exposes capabilities; it does not replace"));
       assert(!agent.includes('if (name === "soty_image")'));
       assert(!agent.includes('image_gen: "soty_image"'));
       assert(agent.includes("codexProxyUrl"));
-      assert(agent.includes("use native OpenAI tools plus Soty MCP `computer`"));
-      assert(agent.includes("Do not describe internal transport"));
-      assert(agent.includes("For generated wallpaper tasks, generate with the native OpenAI image tool before desktop/display checks"));
+      assert(agent.includes("Hide transport, relay, worker, bridge, MCP, and tool-loop details"));
+      assert(agent.includes("Capability map"));
+      assert(!agent.includes("For generated wallpaper tasks, generate with the native OpenAI image tool before desktop/display checks"));
       assert(!agent.includes("For generated wallpaper tasks, call soty_image"));
-      assert(agent.includes("Do not say local image generation route"));
-      assert(agent.includes("stop and report that blocker only"));
+      assert(agent.includes("operation=discover or operation=status"));
+      assert(agent.includes("hasComputerActionText"));
       assert(!agent.includes('name: "artifact"'));
-      assert(agent.includes("Source-device canonical"));
-      assert(agent.includes("User-facing device model"));
-      assert(agent.includes("try the remote desktop/interactive route first"));
+      assert(agent.includes("Current-computer scope"));
+      assert(agent.includes("choose the operation/action yourself"));
+      assert(!agent.includes("try the remote desktop/interactive route first"));
       assert(!agent.includes("If the needed desktop session is unavailable, say that the user's desktop session is unavailable"));
       assert(agent.includes("windowsInteractiveTaskSpec"));
       assert(agent.includes("interactive-launcher.vbs"));
@@ -1806,30 +1823,28 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("no active interactive Windows user session"));
       assert(agent.includes("hasBrokenSotyNodeOptions"));
       assert(agent.includes("cleanChildProcessEnv"));
-      assert(agent.includes("Never set persistent `NODE_OPTIONS`"));
-      assert(agent.includes("Do not create or persist `NODE_OPTIONS=--require ...` shims"));
+      assert(!agent.includes("Never set persistent `NODE_OPTIONS`"));
+      assert(!agent.includes("Do not create or persist `NODE_OPTIONS=--require ...` shims"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes("expandArtifactTargetPath"));
       assert(agent.includes('await import("node:fs")'));
       assert(!agent.includes('const fs = require("node:fs")'));
       assert(!agent.includes('const { spawn } = require("node:child_process")'));
       assert(agent.includes('savedBy: "source-device"'));
-      assert(agent.includes("Soty is the data plane"));
-      assert(agent.includes("action=download"));
-      assert(agent.includes("Do not stage user artifacts under `C:\\\\Windows\\\\Temp`"));
-      assert(agent.includes("C:\\\\ProgramData\\\\soty-agent\\\\artifacts"));
+      assert(agent.includes("action=download means source device -> controller/current computer Downloads"));
+      assert(agent.includes("Never use public upload services"));
       assert(contentAdapters.includes('emitSotyFileControl("BEGIN"'));
       assert(contentAdapters.includes("SOTY_FILE_CHUNK"));
       assert(contentAdapters.includes("room-file-rail"));
-      assert(agent.includes("Never use 0x0.st, file.io, temp.sh, bashupload"));
-      assert(agent.includes("soty-generated-asset-wallpaper-fast-lane"));
+      assert(!agent.includes("Never use 0x0.st, file.io, temp.sh, bashupload"));
+      assert(agent.includes("soty.artifact.wallpaper.v1"));
       assert(agent.includes("SOTY_ROUTES.md"));
-      assert(agent.includes("operation=artifact localPath=/agent/codex-stock-home/generated_images"));
+      assert(agent.includes("generic capability-loop reminder"));
+      assert(!agent.includes("operation=artifact localPath=/agent/codex-stock-home/generated_images"));
       assert(agent.includes("operation=wallpaper"));
-      assert(agent.includes("Hard stop: no shell base64/split"));
-      assert(agent.includes("Do not use `C:\\\\Windows\\\\Temp`"));
-      assert(agent.includes("Do not inspect `imagegen` SKILL.md"));
-      assert(agent.includes("If you already used shell/base64/public upload"));
+      assert(!agent.includes("Hard stop: no shell base64/split"));
+      assert(!agent.includes("Do not inspect `imagegen` SKILL.md"));
+      assert(!agent.includes("If you already used shell/base64/public upload"));
       assert(agent.includes("'wallpaper' {"));
       assert(agent.includes("desktop action is running as SYSTEM; retry through the selected interactive user route"));
       assert(agent.includes("New-Item -Path $desktopKey -Force"));
@@ -1837,10 +1852,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("systemParametersInfoOk"));
       assert(agent.includes("verification='registry-current-wallpaper-matches-path'"));
       assert(agent.includes("currentWallpaper"));
-      assert(agent.includes("Wallpaper honesty"));
-      assert(agent.includes("Hidden Link devices are not candidates"));
+      assert(agent.includes("Important actions need proof from the selected computer"));
+      assert(agent.includes("Do not infer hidden devices"));
       assert(!agent.includes("return accessTargets.length === 1 ? accessTargets[0] : null"));
-      assert(agent.includes("cannot substitute for a missing source-device or native OpenAI image-generation tool"));
+      assert(agent.includes("it is not the user's computer"));
       assert(agent.includes("native-openai-image-generation-required"));
       assert(!agent.includes("SOTY_OPENAI_API_KEY"));
       assert(!agent.includes("image-generation-unavailable"));
@@ -1851,7 +1866,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("sourceSaveGeneratedImageScript"));
       assert(!agent.includes("SOTY_IMAGE_MODEL"));
       assert(!agent.includes("name: \"image_gen\""));
-      assert(agent.includes("Do not create workspace/public-download/ASCII/SVG placeholder images as a fallback"));
+      assert(!agent.includes("Do not create workspace/public-download/ASCII/SVG placeholder images as a fallback"));
       assert(!agent.includes("image artifact fallback is blocked"));
       assert(agent.includes("image_gen"));
       assert(agent.includes('runAs: "user"'));
@@ -1868,19 +1883,18 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("withTurnkeyPollingGuidance"));
       assert(agent.includes("mcpWaitBeforeStatusPoll"));
       assert(agent.includes("managed-prepare-still-running"));
-      assert(agent.includes("Ignore older failed prepare jobs while latestPrepare is running"));
-      assert(agent.includes("Windows Reinstall Managed Prepare"));
-      assert(agent.includes("normal shell/file access stays available"));
-      assert(agent.includes("If `latestPrepare.status` is `running-or-started`"));
+      assert(!agent.includes("Windows Reinstall Managed Prepare"));
+      assert(!agent.includes("If `latestPrepare.status` is `running-or-started`"));
+      assert(agent.includes("Use operation=discover or operation=status"));
       assert(agent.includes("compactReinstallStatusToolPayload"));
       assert(agent.includes("maxTextLength: 1_000_000"));
       assert(agent.includes("safeOperatorTextLength"));
       assert(agent.includes("maxTextLength: sourceMaxTextLength"));
       assert(agent.includes("const stillRunning = [\"created\", \"running\", \"monitoring\""));
-      assert(agent.includes("Long Turnkey Job"));
-      assert(agent.includes("Turnkey ownership"));
-      assert(agent.includes("Do not ask the user to type `continue`"));
-      assert(agent.includes("If a tool returns running/still-running/nextTool"));
+      assert(!agent.includes("Long Turnkey Job"));
+      assert(!agent.includes("Turnkey ownership"));
+      assert(agent.includes("poll status yourself"));
+      assert(agent.includes("Long tasks should run as durable jobs"));
       assert(agent.includes("turnkey-monitoring"));
       assert(!agent.includes("write `продолжай`"));
       assert(!agent.includes("maybeRedirectManagedReinstallProbe"));
@@ -1898,27 +1912,27 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("shouldAutoReplyOperatorMessage"));
       assert(!agent.includes("isActionableTargetOperatorMessage"));
       assert(agent.includes('preferredTargetId: agentDialog ? "" : item.target'));
-      assert(agent.includes("Computer-use plane:"));
-      assert(agent.includes("use `computer` as one computer-use plane"));
-      assert(agent.includes("Legacy `soty_*` names are hidden compatibility aliases"));
+      assert(agent.includes("Central solver policy:"));
+      assert(agent.includes("The model is the planner and operator"));
+      assert(agent.includes("Capability map"));
       assert(!agent.includes("soty_browser for browser work"));
       assert(!agent.includes("soty_desktop for screen/mouse/keyboard"));
       assert(!agent.includes("soty_action or soty_reinstall for long jobs"));
-      assert(agent.includes("Use memory as short reusable hints"));
-      assert(agent.includes("Route profiles are memory-derived accelerators"));
-      assert(agent.includes("soty-windows-reinstall-managed-fast-lane"));
-      assert(agent.includes('operation: \\"reinstall\\", capability: \\"os-reinstall\\", action: \\"prepare\\"'));
+      assert(!agent.includes("Use memory as short reusable hints"));
+      assert(!agent.includes("Route profiles are memory-derived accelerators"));
+      assert(agent.includes("soty.os.reinstall.v1"));
+      assert(!agent.includes("soty-windows-reinstall-managed-fast-lane"));
       assert(agent.includes("ask clean vs keep-files and require explicit USB-use consent before a new prepare"));
-      assert(agent.includes("Ask clean vs keep-files and explicit USB permission first"));
+      assert(!agent.includes("Ask clean vs keep-files and explicit USB permission first"));
       assert(agent.includes("normalizeWindowsReinstallInstallMode"));
       assert(agent.includes("prepare-consent-required"));
       assert(agent.includes('required: ["installMode=clean", "usbConfirmed=true"]'));
-      assert(agent.includes('installMode: \\"clean\\", usbConfirmed: true'));
+      assert(!agent.includes('installMode: \\"clean\\", usbConfirmed: true'));
       assert(agent.includes('usbConfirmed: { type: "boolean"'));
       assert(agent.includes('managedUserName !== "Соты"'));
       assert(!agent.includes('managedUserName || "") !== "РЎРѕС‚С‹"'));
       assert(agent.includes('["preflight", "prepare", "status", "repair", "cancel", "arm"]'));
-      assert(agent.includes('action: \\"repair\\", timeoutMs: 45000'));
+      assert(!agent.includes('action: \\"repair\\", timeoutMs: 45000'));
       assert(agent.includes("do not answer reinstall failure reports from memory without fresh repair/status proof"));
       assert(agent.includes("compactReinstallRepairToolPayload"));
       assert(agent.includes("prepare-job-stale-orphaned"));
@@ -2119,10 +2133,10 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.memoryPlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.opsSkill, undefined);
       assertEqual(manifest.routeProfiles.schema, "soty.route-profiles.v1");
-      assertEqual(manifest.routeProfiles.profiles[0].id, "soty-windows-reinstall-managed-fast-lane");
+      assertEqual(manifest.routeProfiles.profiles[0].id, "soty.os.reinstall.v1");
       assertEqual(manifest.routeProfiles.profiles[0].defaultAction, "prepare");
       assert(manifest.routeProfiles.profiles[0].doNot.some((item) => item.includes("manually download ISO")));
-      const generatedAssetProfile = manifest.routeProfiles.profiles.find((profile) => profile.id === "soty-generated-asset-wallpaper-fast-lane");
+      const generatedAssetProfile = manifest.routeProfiles.profiles.find((profile) => profile.id === "soty.artifact.wallpaper.v1");
       assert(generatedAssetProfile);
       assertEqual(generatedAssetProfile.defaultAction, "wallpaper");
       assert(generatedAssetProfile.doNot.some((item) => item.includes("public upload hosts")));
@@ -2161,7 +2175,7 @@ async function runScenarios({ relayUrl } = {}) {
       const reinstallToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "windows-reinstall");
       assert(reinstallToolkit);
       assertEqual(reinstallToolkit.entryTool, "computer");
-      assertEqual(reinstallToolkit.routeProfile, "soty-windows-reinstall-managed-fast-lane");
+      assertEqual(reinstallToolkit.routeProfile, "soty.os.reinstall.v1");
       assert(reinstallToolkit.scripts.some((script) => script.name === "managed"));
       assert(reinstallToolkit.phases.includes("repair"));
       assert(reinstallToolkit.proof.includes("repairProof"));
@@ -2170,7 +2184,7 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(durableKernel.entryTool, "jobs");
       const generatedAssetToolkit = manifest.automationToolkits.toolkits.find((toolkit) => toolkit.name === "generated-asset");
       assert(generatedAssetToolkit);
-      assertEqual(generatedAssetToolkit.routeProfile, "soty-generated-asset-wallpaper-fast-lane");
+      assertEqual(generatedAssetToolkit.routeProfile, "soty.artifact.wallpaper.v1");
     }],
     ["agent installers stay lightweight by default", async () => {
       const windowsInstall = await readFile(join(root, "public", "agent", "install-windows.ps1"), "utf8");
@@ -2327,16 +2341,17 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
       assert(agentSource.includes("hasDesktopSurfaceIntent"));
-      assert(agentSource.includes("hasScreenshotIntent"));
+      assert(!agentSource.includes("hasScreenshotIntent"));
       assert(agentSource.includes("Resolve-ScreenshotPath"));
-      assert(agentSource.includes('["script", "run", "shell"].includes(out.operation)'));
+      assert(agentSource.includes('out.operation = "script"'));
+      assert(agentSource.includes('out.operation = "run"'));
       assert(agentSource.includes("xn--n1afe0b"));
       assert(agentSource.includes("titleChanged"));
       assert(agentSource.includes("%USERPROFILE%\\\\Desktop"));
       assert(agentSource.includes("title: ${title}"));
-      assert(agentSource.includes("applyBrowserClickDefaults"));
+      assert(!agentSource.includes("applyBrowserClickDefaults"));
       assert(agentSource.includes("firstUrlCandidate"));
-      assert(agentSource.includes("repairBrowserUrlFromText"));
+      assert(!agentSource.includes("repairBrowserUrlFromText"));
       assert(agentSource.includes("isCompositeBrowserClickTarget"));
       assert(agentSource.includes("openTrailing && !"));
       assert(agentSource.includes('"const browserNode = " + sourceBrowserScript.toString() + ";"'));
@@ -2356,9 +2371,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("Page.captureScreenshot"));
       assert(agentSource.includes("desktopPowerShell"));
       assert(agentSource.includes("computer-desktop-screenshot"));
-      assert(agentSource.includes("hasCreateReadDeleteFileIntent"));
-      assert(agentSource.includes("create+read/verify+delete file tasks"));
-      assert(agentSource.includes("applyExactFileCycleArgs"));
+      assert(!agentSource.includes("hasCreateReadDeleteFileIntent"));
+      assert(!agentSource.includes("create+read/verify+delete file tasks"));
+      assert(!agentSource.includes("applyExactFileCycleArgs"));
       assert(agentSource.includes("universal_action_contract"));
       assert(agentSource.includes("act -> verify proof -> final"));
       assert(agentSource.includes("buildGonkaDirectMissingProofPrompt"));
@@ -2374,8 +2389,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("recoverDirectComputerProofText"));
       assert(agentSource.includes("directComputerRunExitCode"));
       assert(agentSource.includes("parsed?.ok === false"));
-      assert(agentSource.includes('inferredOperation === "web"'));
-      assert(agentSource.includes("answer with the path instead of page text or raw JSON"));
+      assert(!agentSource.includes('inferredOperation === "web"'));
+      assert(!agentSource.includes("answer with the path instead of page text or raw JSON"));
+      assert(agentSource.includes("operation-required"));
       assert(ui.includes('if (message.type === "operator.terminal")'));
       assert(ui.includes("redactVisibleTerminalSecrets"));
       assert(!ui.includes("appendAgentTerminalTranscript"));
@@ -2400,10 +2416,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("targetMentionedAnywhere"));
       assert(agentSource.includes("agentDialogVisibleTargets"));
       assert(agentSource.includes("allRuntimeActiveTargets"));
-      assert(agentSource.includes("Hidden Link devices are not candidates"));
-      assert(agentSource.includes("A plain Agent chat defaults to the current/source computer, never to an unnamed Link target."));
+      assert(agentSource.includes("Current-computer scope"));
+      assert(agentSource.includes("Do not infer hidden devices"));
       assert(!agentSource.includes("if there is exactly one Link target, it may be the default"));
-      assert(agentSource.includes("BusyBox find may not support `-printf`"));
+      assert(!agentSource.includes("BusyBox find may not support `-printf`"));
       assert(agentSource.includes("soty-agent-machine:bootstrap-download"));
       assert(agentSource.includes("install-windows-machine-bootstrap.ps1?v="));
       assert(agentSource.includes("$revision = '"));
@@ -2413,7 +2429,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes("soty-operator-bridge-proxy"));
       assert(agentSource.includes("sourceArtifactDownloadPowerShellScript"));
       assert(agentSource.includes("soty-relay-artifact"));
-      assert(agentSource.includes("Cross-device file transfer"));
+      assert(!agentSource.includes("Cross-device file transfer"));
       assert(contentAdapters.includes("controller-browser-downloads"));
       assert(agentSource.includes("action=download means source device -> controller/current computer Downloads"));
       assert(agentSource.includes("mcpToolJsonText(result)"));
