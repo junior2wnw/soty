@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.137";
+const agentVersion = "0.4.138";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -11231,6 +11231,22 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "const base = 'http://127.0.0.1:" + port + "';",
     "const localDirect = " + JSON.stringify(localApiCanRunDirect) + ";",
     "const browserNode = " + sourceBrowserScript.toString() + ";",
+    "const capabilityMap = " + JSON.stringify(computerToolCapabilityText()) + ";",
+    "const capabilityOperations = " + JSON.stringify([
+      "discover",
+      "status",
+      "file",
+      "web",
+      "browser",
+      "desktop",
+      "app",
+      "audio",
+      "time",
+      "script",
+      "download",
+      "wallpaper",
+      "safety"
+    ]) + ";",
     "const [, , op = '', ...args] = process.argv;",
     "function ps(value) { return `'${String(value ?? '').replace(/'/g, \"''\")}'`; }",
     "function desktopPathScript(name) { return `$path = Join-Path ([Environment]::GetFolderPath('Desktop')) ${ps(name)}`; }",
@@ -11529,6 +11545,10 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  const req = JSON.parse(argsText || '{}');",
     "  const operation = String(req.operation || req.action || '').toLowerCase().replace(/_/g, '-');",
     "  const requestedAction = String(req.action || '').toLowerCase().replace(/_/g, '-');",
+    "  if (!operation || ['discover', 'describe', 'capabilities', 'tools', 'plane'].includes(operation)) {",
+    "    console.log(JSON.stringify({ ok: true, schema: 'soty.local-computer-plane.v1', operation: operation || 'discover', target, sourceDeviceId, sourceRelayId: sourceRelayId ? '<set>' : '', localDirect, capabilityMap, operations: capabilityOperations, proof: ['path', 'bytes', 'sha256', 'title', 'text', 'exitCode', 'jobId', 'setting', 'concrete-blocker'] }, null, 2));",
+    "    return;",
+    "  }",
     "  if (operation === 'safety' || operation === 'confirmation-required' || operation === 'confirm') {",
     "    await scriptPowerShell(safetyPowerShell(req), { name: 'computer-safety', timeoutMs: Math.max(1000, Math.min(Number(req.timeoutMs) || 5000, 10000)) });",
     "    return;",
