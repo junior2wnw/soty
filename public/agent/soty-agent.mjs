@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.132";
+const agentVersion = "0.4.133";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9715,7 +9715,30 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   if (typeof out.path === "string" && out.path.trim()) {
     out.path = normalizeGonkaComputerFilePathArg(out.path);
   }
+  if (out.operation === "file") {
+    const contentSource = firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body);
+    if (!out.action && out.path && contentSource) {
+      out.action = "write";
+    }
+    const action = String(out.action || "").trim().toLowerCase().replace(/_/gu, "-");
+    if (["write", "append", "cycle"].includes(action) && contentSource && !String(out.content ?? "")) {
+      out.content = contentSource;
+    }
+  }
   return out;
+}
+
+function firstNonEmptyValue(...items) {
+  for (const item of items) {
+    if (item === undefined || item === null) {
+      continue;
+    }
+    const text = String(item);
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  return "";
 }
 
 function safeDirectComputerToolTimeoutMs(value, taskFamily = "", args = null) {
@@ -10403,6 +10426,10 @@ function resolveAgentBridgeTarget(source, text = "", sourceTargets = []) {
   const [linked] = sourceAgentLinkTargets(safe, sourceTargets);
   if (linked) {
     return linked;
+  }
+  const singleSource = singleAccessibleAgentSourceTarget(sourceTargets);
+  if (singleSource) {
+    return singleSource;
   }
   return sourceDeviceRuntimeTarget(safe, sourceTargets);
 }
@@ -11543,7 +11570,7 @@ async function writeCodexRuntimeFiles(jobDir, runtimeContext) {
     "  }",
     "  throw new Error('unsupported computer operation: ' + operation);",
     "}",
-    "if (!target || !sourceDeviceId || (!sourceRelayId && !localDirect)) { console.error('missing target/sourceDeviceId/sourceRelayId'); process.exit(2); }",
+    "if (!target || !sourceDeviceId) { console.error('missing target/sourceDeviceId'); process.exit(2); }",
     "if (op === 'computer') {",
     "  const argsText = args.length ? args.join(' ') : await readStdin();",
     "  if (!argsText.trim()) { console.error('usage: computer <json-or-stdin>'); process.exit(2); }",
@@ -12015,6 +12042,12 @@ function sourceMatchedOperatorTargets(source, extraTargets = []) {
 function sourceAgentLinkTargets(source, extraTargets = []) {
   const matches = sourceMatchedOperatorTargets(source, extraTargets);
   return matches.filter((target) => isAgentSourceTarget(target.id));
+}
+
+function singleAccessibleAgentSourceTarget(sourceTargets = []) {
+  const sources = sanitizeTargets(sourceTargets)
+    .filter((target) => target.access === true && isAgentSourceTarget(target.id));
+  return sources.length === 1 ? sources[0] : null;
 }
 
 function targetMatchesSourceDevice(target, sourceDeviceId) {
