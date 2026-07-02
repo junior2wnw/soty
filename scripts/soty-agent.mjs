@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.139";
+const agentVersion = "0.4.140";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -6572,6 +6572,9 @@ function computerActionHasDeletionProof(text) {
 
 function formatRecoveredOperatorFailureText(value, exitCode = 1) {
   const text = String(value || "").replace(/\r\n?/gu, "\n").trim();
+  if (exitCode === 0) {
+    return formatRecoveredOperatorText(text) || (text ? cleanActionText(text, maxChatChars) : "Готово.");
+  }
   const firstMeaningful = text
     .split("\n")
     .map((line) => line.trim())
@@ -8179,6 +8182,16 @@ async function runGonkaDirectSotySessionTurn({
     exitCode = exitCode || 125;
   }
   finalText = cleanAgentChatReply(finalText).slice(0, maxChatChars);
+  if (finalTextContradictsSuccessfulComputerProof(finalText, exitCode, toolResults)) {
+    const recoveredFinal = recoverDirectComputerProofText(toolResults)
+      || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
+      || "Готово.";
+    finalText = cleanAgentChatReply(recoveredFinal).slice(0, maxChatChars);
+    traceStep(trace, "gonka.direct.replaced-contradictory-success-final", {
+      textChars: finalText.length,
+      toolCalls: terminal.length
+    });
+  }
   if (toolResults.length > 0) {
     finalText = recoverRawDirectComputerJsonFinal(finalText) || finalText;
     if (isTinyCompletionReply(finalText)) {
@@ -8726,6 +8739,19 @@ function recoverDirectComputerProofText(toolResults = []) {
     }
   }
   return "";
+}
+
+function finalTextContradictsSuccessfulComputerProof(finalText = "", exitCode = 0, toolResults = []) {
+  if (exitCode !== 0 || !Array.isArray(toolResults) || toolResults.length === 0) {
+    return false;
+  }
+  const value = String(finalText || "").toLowerCase();
+  if (!value.trim()) {
+    return false;
+  }
+  const saysFailure = /(?:\b(?:failed|failure|error|could not|unable|did not)\b|не\s+(?:получилось|удалось|смог)|ошибк|сбой)/iu.test(value);
+  const saysZeroCode = /(?:\b(?:code|exitcode|exit\s+code)\s*[:=]?\s*0\b|код\s*0)/iu.test(value);
+  return saysFailure && (saysZeroCode || directToolResultsCoverExplicitTarget(toolResults, ""));
 }
 
 function isTinyCompletionReply(value) {
