@@ -2382,6 +2382,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes("runInferredGonkaDirectComputerAction"));
       assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
       assert(agentSource.includes("function hasCriticalDestructiveIntent"));
+      assert(agentSource.includes("function hasScopedTemporaryWorkspaceIntent"));
       assert(agentSource.includes("shouldBlockCriticalDestructiveAction"));
       assert(agentSource.includes("gonka.direct.safety-block"));
       assert(agentSource.includes("safetyPowerShell"));
