@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.136";
+const agentVersion = "0.4.137";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9124,7 +9124,7 @@ async function runGonkaDirectSotySessionTurn({
   if (!apiKey) {
     return { ok: false, text: "! gonka: API key is not configured", exitCode: 126 };
   }
-  const needsComputer = directGonkaTaskNeedsComputerTool(taskFamily, target, text);
+  const computerAvailable = Boolean(target?.id);
   const proofRequired = Boolean(target?.id && computerActionRequiresProof(taskFamily, text));
   const messages = [
     { role: "system", content: buildGonkaDirectSystemPrompt(runtimeContext, taskFamily, target) },
@@ -9136,7 +9136,6 @@ async function runGonkaDirectSotySessionTurn({
   let finalText = "";
   let exitCode = 0;
   let usedModel = gonkaUpstreamModel(gonkaPrimaryModel());
-  let requireComputerToolNext = needsComputer;
   traceRouting(trace, {
     route: "gonka.direct",
     taskFamily,
@@ -9151,7 +9150,8 @@ async function runGonkaDirectSotySessionTurn({
     upstreamModel: usedModel,
     taskFamily,
     targetId: target?.id || "",
-    needsComputer,
+    computerAvailable,
+    proofRequired,
     maxToolTurns: gonkaDirectMaxToolTurns,
     toolResultChars: gonkaDirectToolResultChars
   });
@@ -9171,7 +9171,7 @@ async function runGonkaDirectSotySessionTurn({
       model: gonkaPrimaryModel(),
       messages,
       tools: [gonkaComputerChatTool()],
-      tool_choice: requireComputerToolNext ? "required" : "auto"
+      tool_choice: "auto"
     }, apiKey, trace);
     usedModel = response.model || usedModel;
     if (!response.ok) {
@@ -9239,7 +9239,6 @@ async function runGonkaDirectSotySessionTurn({
         }
         if (proofRequired && assistantText && !finalTextLooksLikeActionProof(assistantText)) {
           if (turn < gonkaDirectMaxToolTurns) {
-            requireComputerToolNext = true;
             traceStep(trace, "gonka.direct.continue-missing-tool-proof", {
               turn,
               terminal: terminal.length,
@@ -9279,7 +9278,6 @@ async function runGonkaDirectSotySessionTurn({
         }
       }))
     });
-    requireComputerToolNext = false;
     let continueForTargetCoverage = false;
     for (let callIndex = 0; callIndex < normalizedToolCalls.length; callIndex += 1) {
       const call = normalizedToolCalls[callIndex];
@@ -9300,7 +9298,6 @@ async function runGonkaDirectSotySessionTurn({
         content: executed.modelText
       });
       if (executed.exitCode === 0 && !directToolResultCoversExplicitTarget(executed.args, executed.toolText, text)) {
-        requireComputerToolNext = true;
         continueForTargetCoverage = true;
         traceStep(trace, "gonka.direct.tool-proof-misses-explicit-target", {
           operation: executed.args?.operation || "",
@@ -9434,13 +9431,6 @@ function buildGonkaDirectUserPrompt(text, context = "", runtimeContext = {}, tas
     runtimeContext?.source?.deviceNick ? `source_device: ${runtimeContext.source.deviceNick}` : "",
     context ? `Visible chat context:\n${String(context).slice(-4000)}` : ""
   ].filter(Boolean).join("\n");
-}
-
-function directGonkaTaskNeedsComputerTool(taskFamily, target = null, text = "") {
-  if (!target?.id) {
-    return false;
-  }
-  return codexTaskNeedsSotyMcpTools(taskFamily, target) || computerActionRequiresProof(taskFamily, text);
 }
 
 function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily = "") {
