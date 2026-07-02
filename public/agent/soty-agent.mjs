@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.131";
+const agentVersion = "0.4.132";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -8321,7 +8321,7 @@ function loadAgentSecretEnv() {
   }
   let data = null;
   try {
-    data = JSON.parse(readFileSync(secretPath, "utf8"));
+    data = JSON.parse(readFileSync(secretPath, "utf8").replace(/^\uFEFF/u, ""));
   } catch {
     return;
   }

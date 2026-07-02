@@ -367,7 +367,7 @@ function quote(value) {
   return "'" + String(value ?? "").replace(/'/g, "'\\''") + "'";
 }
 try {
-  const data = JSON.parse(fs.readFileSync(path, "utf8"));
+  const data = JSON.parse(fs.readFileSync(path, "utf8").replace(/^\uFEFF/u, ""));
   for (const [name, value] of Object.entries(data && typeof data === "object" ? data : {})) {
     if (name === "NODE_OPTIONS" || !allowed.test(name)) continue;
     process.stdout.write(`export ${name}=${quote(value)}\n`);

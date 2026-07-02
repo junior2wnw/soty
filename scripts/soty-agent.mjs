@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.131";
+const agentVersion = "0.4.132";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -7154,7 +7154,7 @@ function loadAgentSecretEnv() {
   }
   let data = null;
   try {
-    data = JSON.parse(readFileSync(secretPath, "utf8"));
+    data = JSON.parse(readFileSync(secretPath, "utf8").replace(/^\uFEFF/u, ""));
   } catch {
     return;
   }
