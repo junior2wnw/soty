@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.141";
+const agentVersion = "0.4.142";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9785,6 +9785,12 @@ function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   }
   if (typeof out.path === "string" && out.path.trim()) {
     out.path = normalizeGonkaComputerFilePathArg(out.path);
+  }
+  if (out.operation === "file"
+    && !out.action
+    && !firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body)
+    && firstNonEmptyValue(out.script, out.command, out.cmd)) {
+    out.operation = "script";
   }
   if (out.operation === "file") {
     const contentSource = firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body);
