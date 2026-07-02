@@ -2262,7 +2262,7 @@ function hasCriticalDestructiveIntent(value) {
 }
 
 function hasScopedTemporaryWorkspaceIntent(value) {
-  return /(?:\b(?:temp|tmp|temporary|scratch|sandbox|test|selftest|eval|workspace|fixture)\b|\\(?:temp|tmp)\\|\/(?:tmp|var\/tmp)\/|\bsoty-agent-eval\b|\bSELFTEST\b)/iu.test(String(value || ""));
+  return /(?:\b(?:temp|tmp|temporary|scratch|sandbox|selftest|eval|fixture)\b|\\(?:temp|tmp)\\|\/(?:tmp|var\/tmp)\/|\bsoty-agent-eval\b|\bSELFTEST\b|\btest\s+(?:folder|directory|dir|workspace|fixture)\b)/iu.test(String(value || ""));
 }
 
 function hasExplicitDestructiveConfirmation(value) {
@@ -9200,6 +9200,7 @@ async function runGonkaDirectSotySessionTurn({
       }))
     });
     requireComputerToolNext = false;
+    let continueForTargetCoverage = false;
     for (let callIndex = 0; callIndex < normalizedToolCalls.length; callIndex += 1) {
       const call = normalizedToolCalls[callIndex];
       const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
@@ -9218,6 +9219,17 @@ async function runGonkaDirectSotySessionTurn({
         name: "computer",
         content: executed.modelText
       });
+      if (executed.exitCode === 0 && !directToolResultCoversExplicitTarget(executed.args, executed.toolText, text)) {
+        requireComputerToolNext = true;
+        continueForTargetCoverage = true;
+        traceStep(trace, "gonka.direct.tool-proof-misses-explicit-target", {
+          operation: executed.args?.operation || "",
+          action: executed.args?.action || "",
+          requestedUrl: firstUrlCandidate(text).slice(0, 260)
+        });
+        messages.push({ role: "user", content: buildGonkaDirectTargetCoveragePrompt(text, taskFamily) });
+        break;
+      }
       if (executed.exitCode === 0
         && (callIndex === normalizedToolCalls.length - 1 || shouldSingleSuccessfulDirectToolSuffice(executed.args, text, taskFamily))
         && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
@@ -9234,15 +9246,23 @@ async function runGonkaDirectSotySessionTurn({
         break;
       }
     }
+    if (continueForTargetCoverage) {
+      continue;
+    }
     if (finalText) {
       break;
     }
   }
   }
   if (!finalText && toolResults.length > 0) {
-    finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
-      || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
-      || "Готово.";
+    if (directToolResultsCoverExplicitTarget(toolResults, text)) {
+      finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
+        || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
+        || "Готово.";
+    } else {
+      finalText = agentFailureText("The computer-tool result did not cover the explicit target in the request.");
+      exitCode = exitCode || 125;
+    }
   }
   if (!finalText) {
     finalText = "! gonka: model did not produce a final answer";
@@ -9375,6 +9395,49 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
 
 function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamily = "") {
   return false;
+}
+
+function directToolResultsCoverExplicitTarget(toolResults = [], userText = "") {
+  const requestedUrl = firstUrlCandidate(userText);
+  if (!requestedUrl) {
+    return true;
+  }
+  return toolResults.some((item) => directToolResultCoversExplicitTarget({}, item, userText));
+}
+
+function directToolResultCoversExplicitTarget(args = {}, toolText = "", userText = "") {
+  const requestedUrl = firstUrlCandidate(userText);
+  if (!requestedUrl) {
+    return true;
+  }
+  const payload = parseDirectComputerToolPayload(toolText);
+  const actualUrl = trimUrlCandidate(payload?.url || payload?.sourceUrl || payload?.href || "");
+  if (!actualUrl || /^about:blank$/iu.test(actualUrl)) {
+    return false;
+  }
+  if (!isLikelyUsableBrowserUrl(actualUrl)) {
+    return false;
+  }
+  return true;
+}
+
+function parseDirectComputerToolPayload(toolText = "") {
+  const wrapper = parseJsonMaybe(toolText);
+  const raw = typeof wrapper?.text === "string" ? wrapper.text : String(toolText || "").trim();
+  return parseJsonMaybe(raw) || (wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : {});
+}
+
+function buildGonkaDirectTargetCoveragePrompt(text = "", taskFamily = "") {
+  return [
+    "The previous computer-tool result did not cover the explicit target named by the user.",
+    "Continue the same request with a computer operation/action that directly reads, opens, or verifies that target.",
+    "Do not finish from about:blank, an empty page, an unrelated path, or a generic screenshot when the user named a URL/path/app target.",
+    "",
+    "Current user request (authoritative):",
+    String(text || "").trim(),
+    "",
+    `task_family: ${taskFamily || "generic"}`
+  ].join("\n");
 }
 
 function buildGonkaDirectMissingProofPrompt(text = "", taskFamily = "") {

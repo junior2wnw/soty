@@ -1704,6 +1704,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes('route: "soty.safety-block"'));
       assert(agent.includes("gonka.direct.recovered-tiny-tool-final"));
       assert(agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
+      assert(agent.includes("directToolResultCoversExplicitTarget"));
+      assert(agent.includes("gonka.direct.tool-proof-misses-explicit-target"));
       assert(agent.includes("command-output-failure"));
       assert(agent.includes("computerToolCapabilityCatalog"));
       assert(agent.includes("computerToolCapabilityText"));
