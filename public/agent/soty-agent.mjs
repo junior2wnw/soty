@@ -6504,6 +6504,14 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       gonkaDirectAgent,
       relayFallback: codexRelayFallback
     });
+    if (shouldBlockCriticalDestructiveAction(text)) {
+      const safetyText = directSafetyBlockText();
+      traceRouting(trace, { finalRoute: "soty.safety-block" });
+      traceStep(trace, "soty.safety-block", { boundary: "agent.reply" });
+      const blocked = { ok: true, text: safetyText, messages: [safetyText], exitCode: 0 };
+      await finishAgentTrace(trace, blocked);
+      return withTraceId(blocked, trace);
+    }
     if (gonkaDirectAgent) {
       const childEnv = withAgentToolPath(cleanChildProcessEnv({
         ...codexNetworkProxyEnv(),
