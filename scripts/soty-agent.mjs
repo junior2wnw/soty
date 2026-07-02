@@ -1090,6 +1090,10 @@ function inferQuotedContent(text) {
   return matches[0] || "";
 }
 
+function hasCriticalDestructiveIntent(value) {
+  return /(?:\b(?:format|wipe|erase|factory\s+reset|reset\s+this\s+pc|reinstall\s+windows|delete\s+(?:the\s+)?(?:whole|entire|all)|remove\s+(?:the\s+)?(?:whole|entire|all)|rm\s+-rf|diskpart\s+clean|clear-disk|cleanmgr\s*\/verylowdisk)\b|\u0443\u0434\u0430\u043b(?:\u0438|\u044f\u0439)\s+\u0432\u0441[её]|\u0441\u043d\u0435\u0441(?:\u0438|\u0442\u0438)|\u0441\u043e\u0442\u0440(?:\u0438|\u0438\u0442\u0435)\s+\u0432\u0441[её]|\u0444\u043e\u0440\u043c\u0430\u0442\u0438\u0440(?:\u0443\u0439|\u043e\u0432\u0430\u0442\u044c)|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d\u043e\u0432(?:\u0438|\u043a\u0430)\s+windows)/iu.test(String(value || ""));
+}
+
 function hasExplicitDestructiveConfirmation(value) {
   return /(?:\bconfirm(?:ed|ation)?\b|\bi\s+confirm\b|\bexplicitly\s+confirm\b|\u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044e|\u044f\s+\u043f\u043e\u043d\u0438\u043c\u0430\u044e\s+\u0440\u0438\u0441\u043a|\u0434\u0430,\s*(?:\u0443\u0434\u0430\u043b|\u0441\u043d\u0435\u0441|\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d))/iu.test(String(value || ""));
 }
