@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.129";
+const agentVersion = "0.4.130";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
