@@ -16,6 +16,7 @@ import { createSourceTaskClassifier } from "./agent-modules/source-task-classifi
 const agentVersion = "0.4.129";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
+loadAgentSecretEnv();
 const agentConfigPath = join(agentDir, "agent-config.json");
 const codexSessionsPath = join(agentDir, "agent-codex-sessions.json");
 const codexWorkspacesDir = join(agentDir, "codex-workspaces");
@@ -7144,6 +7145,49 @@ function autoCodexProvider() {
   ])
     ? "gonka"
     : "";
+}
+
+function loadAgentSecretEnv() {
+  const secretPath = join(agentDir, "agent-secrets.json");
+  if (!existsSync(secretPath)) {
+    return;
+  }
+  let data = null;
+  try {
+    data = JSON.parse(readFileSync(secretPath, "utf8"));
+  } catch {
+    return;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return;
+  }
+  for (const [name, value] of Object.entries(data)) {
+    if (name === "NODE_OPTIONS" || !/^(?:SOTY_|GONKA_|JOIN_GONKA_|ANTHROPIC_AUTH_TOKEN$)/u.test(name)) {
+      continue;
+    }
+    if (String(process.env[name] || "").trim()) {
+      continue;
+    }
+    process.env[name] = String(value ?? "");
+  }
+  if (firstNonEmptySecretEnv(["SOTY_GONKA_API_KEY", "GONKA_API_KEY", "GONKA_BROKER_API_KEY", "JOIN_GONKA_API_KEY"])) {
+    if (!String(process.env.SOTY_CODEX_PROVIDER || "").trim()) {
+      process.env.SOTY_CODEX_PROVIDER = "gonka";
+    }
+    if (!String(process.env.SOTY_GONKA_DIRECT_AGENT || "").trim()) {
+      process.env.SOTY_GONKA_DIRECT_AGENT = "1";
+    }
+  }
+  delete process.env.NODE_OPTIONS;
+}
+
+function firstNonEmptySecretEnv(names) {
+  for (const name of names) {
+    if (String(process.env[name] || "").trim()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function safeCodexProvider(value) {

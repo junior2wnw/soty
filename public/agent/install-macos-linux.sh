@@ -357,6 +357,31 @@ export SOTY_AGENT_UPDATE_URL="${MANIFEST_URL}"
 export SOTY_AGENT_RELAY_ID="${RELAY_ID}"
 export SOTY_AGENT_RELAY_URL="https://xn--n1afe0b.online"
 export PATH="${node_bin_dir}:\${PATH}"
+secret_json="${AGENT_DIR}/agent-secrets.json"
+if [ -f "\$secret_json" ]; then
+  eval "\$("${NODE_PATH}" - "\$secret_json" <<'NODE'
+const fs = require("fs");
+const path = process.argv[2];
+const allowed = /^(SOTY_|GONKA_|JOIN_GONKA_|ANTHROPIC_AUTH_TOKEN$)/;
+function quote(value) {
+  return "'" + String(value ?? "").replace(/'/g, "'\\''") + "'";
+}
+try {
+  const data = JSON.parse(fs.readFileSync(path, "utf8"));
+  for (const [name, value] of Object.entries(data && typeof data === "object" ? data : {})) {
+    if (name === "NODE_OPTIONS" || !allowed.test(name)) continue;
+    process.stdout.write(`export ${name}=${quote(value)}\n`);
+  }
+} catch {}
+NODE
+)"
+fi
+if [ -n "\${SOTY_GONKA_API_KEY:-}\${GONKA_API_KEY:-}\${GONKA_BROKER_API_KEY:-}\${JOIN_GONKA_API_KEY:-}" ]; then
+  : "\${SOTY_CODEX_PROVIDER:=gonka}"
+  : "\${SOTY_GONKA_DIRECT_AGENT:=1}"
+  export SOTY_CODEX_PROVIDER SOTY_GONKA_DIRECT_AGENT
+fi
+unset NODE_OPTIONS
 while true; do
   "${NODE_PATH}" "${AGENT_PATH}"
   code=\$?

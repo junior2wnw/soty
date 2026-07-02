@@ -1707,6 +1707,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
       assert(agent.includes("directToolResultCoversExplicitTarget"));
       assert(agent.includes("gonka.direct.tool-proof-misses-explicit-target"));
+      assert(agent.includes("loadAgentSecretEnv();"));
+      assert(agent.includes("agent-secrets.json"));
+      assert(agent.includes('SOTY_CODEX_PROVIDER = "gonka"'));
       assert(agent.includes("command-output-failure"));
       assert(agent.includes("computerToolCapabilityCatalog"));
       assert(agent.includes("computerToolCapabilityText"));
@@ -1820,6 +1823,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsInstall.includes("Reset-BrokenNodeOptions"));
       assert(windowsInstall.includes("soty-node-require-shim|C:Users.*soty-node-require-shim"));
       assert(windowsInstall.includes('$env:NODE_OPTIONS = ""'));
+      assert(windowsInstall.includes('agent-secrets.json'));
+      assert(windowsInstall.includes('SOTY_CODEX_PROVIDER = "gonka"'));
       assert(windowsInstall.includes("set NODE_OPTIONS="));
       assert(windowsInstall.includes("Test-NodePathAllowedForScope"));
       assert(windowsInstall.includes("soty-node:using:portable-cache"));

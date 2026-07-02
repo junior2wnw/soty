@@ -958,6 +958,28 @@ $nickLine
   } else {
     ""
   }
+  $RunnerSecretEnv = @'
+$secretPath = Join-Path $PSScriptRoot "agent-secrets.json"
+if (Test-Path -LiteralPath $secretPath) {
+  try {
+    $secretData = Get-Content -LiteralPath $secretPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    foreach ($property in @($secretData.PSObject.Properties)) {
+      $name = [string]$property.Name
+      if ($name -eq "NODE_OPTIONS") { continue }
+      if ($name -match "^(SOTY_|GONKA_|JOIN_GONKA_|ANTHROPIC_AUTH_TOKEN$)") {
+        [Environment]::SetEnvironmentVariable($name, [string]$property.Value, "Process")
+      }
+    }
+  } catch {
+    try { ("secret-load-error " + (Get-Date).ToString("o") + " " + $_.Exception.Message) | Out-File -LiteralPath $statusPath -Encoding UTF8 -Append } catch {}
+  }
+}
+if ($env:SOTY_GONKA_API_KEY -or $env:GONKA_API_KEY -or $env:GONKA_BROKER_API_KEY -or $env:JOIN_GONKA_API_KEY) {
+  if (-not $env:SOTY_CODEX_PROVIDER) { $env:SOTY_CODEX_PROVIDER = "gonka" }
+  if (-not $env:SOTY_GONKA_DIRECT_AGENT) { $env:SOTY_GONKA_DIRECT_AGENT = "1" }
+}
+$env:NODE_OPTIONS = ""
+'@
   Write-SotyStep "agent:download"
   Invoke-SotyDownload -Uri $ManifestUrl -OutFile (Join-Path $AgentDir "manifest.json") -TimeoutSec 45 -Retries 3
   Invoke-SotyDownload -Uri $AgentUrl -OutFile $AgentPath -TimeoutSec 90 -Retries 3
@@ -976,6 +998,7 @@ $RunnerPathEnv
 `$stdoutPath = Join-Path `$PSScriptRoot "start-agent.out.log"
 `$stderrPath = Join-Path `$PSScriptRoot "start-agent.err.log"
 `$statusPath = Join-Path `$PSScriptRoot "start-agent.status.log"
+$RunnerSecretEnv
 while (`$true) {
   try {
     ("start " + (Get-Date).ToString("o") + " node=$NodePath agent=$AgentPath") | Out-File -LiteralPath `$statusPath -Encoding UTF8 -Append
