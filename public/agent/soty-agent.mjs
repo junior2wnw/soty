@@ -1180,7 +1180,7 @@ function createSourceTaskClassifier(dependencies = {}) {
 }
 
 
-const agentVersion = "0.4.134";
+const agentVersion = "0.4.135";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -9144,6 +9144,13 @@ async function runGonkaDirectSotySessionTurn({
   if (!finalText) {
     for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
     if (signal?.aborted) {
+      const recoveredText = lastToolUserText
+        || recoverDirectComputerProofText(toolResults)
+        || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
+        || "";
+      if (recoveredText) {
+        return { ok: true, text: cleanAgentChatReply(recoveredText).slice(0, maxChatChars), ...(terminal.length > 0 ? { terminal } : {}), exitCode: exitCode || 0 };
+      }
       return { ok: false, text: "! cancelled", ...(terminal.length > 0 ? { terminal } : {}), exitCode: 130 };
     }
     const response = await fetchGonkaDirectChatWithFallback({
@@ -9433,7 +9440,7 @@ function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily 
     return ["cycle", "read", "delete", "write", "append", "download", "publish"].includes(action);
   }
   if (["web", "fetch", "search"].includes(operation)) {
-    return false;
+    return true;
   }
   if (operation === "browser") {
     if (["click_text", "click"].includes(action)) {
