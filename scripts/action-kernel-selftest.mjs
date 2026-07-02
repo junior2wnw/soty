@@ -1842,6 +1842,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("generic capability-loop reminder"));
       assert(!agent.includes("operation=artifact localPath=/agent/codex-stock-home/generated_images"));
       assert(agent.includes("operation=wallpaper"));
+      assert(agent.includes("operation === 'open-url' || operation === 'open'"));
+      assert(agent.includes("browserNode({ ...req, action })"));
+      assert(!agent.includes("Start-Process ${ps(url)}"));
       assert(!agent.includes("Hard stop: no shell base64/split"));
       assert(!agent.includes("Do not inspect `imagegen` SKILL.md"));
       assert(!agent.includes("If you already used shell/base64/public upload"));
