@@ -25,6 +25,7 @@ export interface LocalAgentStatus {
 
 export interface AgentSourceClientState {
   readonly localAgent?: LocalAgentStatus;
+  readonly deviceNetwork?: LocalAgentDeviceNetwork;
 }
 
 export interface LocalAgentReply {
@@ -57,8 +58,16 @@ export interface LocalAgentOperatorTarget {
   readonly access?: boolean;
   readonly host?: boolean;
   readonly selected?: boolean;
+  readonly traffic?: LocalAgentTrafficTarget;
   readonly rank?: number;
   readonly lastActionAt?: string;
+}
+
+export interface LocalAgentTrafficTarget {
+  readonly exit: boolean;
+  readonly mode: "proxy" | "system";
+  readonly share: boolean;
+  readonly status: "available" | "planned" | "disabled";
 }
 
 export interface LocalAgentDeviceNetwork {
@@ -73,6 +82,7 @@ export interface LocalAgentDeviceNetwork {
   readonly selectedTargetDeviceId: string;
   readonly selectedTargetAccess: boolean;
   readonly selectedTargetLink: boolean;
+  readonly selectedTargetTraffic: boolean;
   readonly capabilities: readonly string[];
   readonly targets: readonly LocalAgentOperatorTarget[];
 }
@@ -331,8 +341,9 @@ export async function checkAgentSourceMachineAgent(deviceId: string, timeoutMs =
 function agentSourceClientPayload(state: AgentSourceClientState): Record<string, unknown> {
   return {
     clientProtocol: "soty-source-client.v2",
-    clientCapabilities: ["runas", "local-agent-health"],
-    localAgent: publicLocalAgentHealth(state.localAgent)
+    clientCapabilities: ["runas", "local-agent-health", "link-traffic-v1"],
+    localAgent: publicLocalAgentHealth(state.localAgent),
+    ...(state.deviceNetwork ? { deviceNetwork: state.deviceNetwork } : {})
   };
 }
 

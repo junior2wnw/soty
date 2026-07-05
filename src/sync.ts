@@ -96,6 +96,7 @@ export interface RemoteGrant {
   readonly id: string;
   readonly enabled: boolean;
   readonly targetDeviceId: string;
+  readonly capabilities?: readonly string[];
   readonly deviceId: string;
   readonly nick: string;
   readonly createdAt: string;
@@ -260,6 +261,13 @@ interface EncryptedRemoteOutput {
   readonly createdAt?: string;
 }
 
+interface RemoteGrantMessage {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly targetDeviceId: string;
+  readonly capabilities?: readonly string[];
+}
+
 interface RemoteCancelMessage {
   readonly id: string;
   readonly commandId: string;
@@ -354,7 +362,7 @@ type ControlMessage =
   | { readonly type: "notice.knock"; readonly knock: { readonly id: string; readonly targetDeviceId: string } }
   | { readonly type: "live.draft"; readonly draft: { readonly id: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.request"; readonly request: { readonly id: string; readonly targetDeviceId: string } }
-  | { readonly type: "remote.grant"; readonly grant: { readonly id: string; readonly enabled: boolean; readonly targetDeviceId: string } }
+  | { readonly type: "remote.grant"; readonly grant: RemoteGrantMessage }
   | { readonly type: "remote.command"; readonly command: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.script"; readonly script: { readonly id: string; readonly targetDeviceId: string; readonly nonce: string; readonly ciphertext: string } }
   | { readonly type: "remote.cancel"; readonly cancel: { readonly id: string; readonly commandId: string; readonly targetDeviceId: string } }
@@ -707,13 +715,14 @@ export class TunnelSync {
     });
   }
 
-  grantRemote(enabled: boolean, targetDeviceId = "*"): void {
+  grantRemote(enabled: boolean, targetDeviceId = "*", capabilities: readonly string[] = []): void {
     this.sendControl({
       type: "remote.grant",
       grant: {
         id: `remote_grant_${crypto.randomUUID()}`,
         enabled,
-        targetDeviceId
+        targetDeviceId,
+        ...(capabilities.length > 0 ? { capabilities: [...capabilities] } : {})
       }
     });
   }

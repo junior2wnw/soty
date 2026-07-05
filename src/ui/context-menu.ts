@@ -4,11 +4,13 @@ export interface CounterpartyMenuActions {
   readonly attach: () => void;
   readonly knock: () => void;
   readonly remote: () => void;
+  readonly traffic: () => void;
   readonly close: () => void;
 }
 
 export interface CounterpartyMenuState {
   readonly remoteEnabled: boolean;
+  readonly trafficEnabled: boolean;
 }
 
 let currentCleanup = () => undefined;
@@ -17,16 +19,17 @@ export function openCounterpartyMenu(
   x: number,
   y: number,
   actions: CounterpartyMenuActions,
-  state: CounterpartyMenuState = { remoteEnabled: false }
+  state: CounterpartyMenuState = { remoteEnabled: false, trafficEnabled: false }
 ): void {
   closeCounterpartyMenu();
   const menu = document.createElement("div");
   menu.className = "counterparty-menu retro-menu";
   menu.innerHTML = `
-    <button type="button" data-action="attach" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}</button>
-    <button type="button" data-action="knock" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}</button>
-    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote" data-tooltip="Удаленное подключение">${icon("remote")}</button>
-    <button type="button" data-action="close" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}</button>
+    <button type="button" data-action="attach" aria-label="attach" data-tooltip="Send file">${icon("clip")}</button>
+    <button type="button" data-action="knock" aria-label="knock" data-tooltip="Call peer">${icon("bell")}</button>
+    <button class="${state.remoteEnabled ? "is-on" : ""}" type="button" data-action="remote" aria-label="remote" data-tooltip="Link access">${icon("remote")}</button>
+    <button class="${state.trafficEnabled ? "is-on" : ""}" type="button" data-action="traffic" aria-label="traffic" data-tooltip="Link traffic">${icon("traffic")}</button>
+    <button type="button" data-action="close" aria-label="close" data-tooltip="Close link">${icon("close")}</button>
   `;
   document.body.append(menu);
   const rect = menu.getBoundingClientRect();

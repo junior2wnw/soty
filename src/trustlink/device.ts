@@ -11,7 +11,7 @@ export async function loadDevice(): Promise<DeviceRecord | null> {
 export async function createDevice(nick: string): Promise<DeviceRecord> {
   const keys = await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
-    false,
+    true,
     ["sign", "verify"]
   ) as CryptoKeyPair;
   const publicJwk = await crypto.subtle.exportKey("jwk", keys.publicKey);

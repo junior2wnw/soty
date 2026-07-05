@@ -1,9 +1,9 @@
 {
-  "version": "0.4.142",
+  "version": "0.4.143",
   "schema": "soty.agent.release.v2",
   "architecture": "gonka-direct-chat-completions+computer-tools+memory-plane",
   "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "8020e917aa8d856d6ebc06c8d515b78cd82aa7d66f2a2d1d1d438b332506f910",
+  "sha256": "0384962826e8d483efedea4dc3a918698058443552b52b2bdcfad6bc715f84d2",
   "openAiToolPlane": {
     "schema": "openai.responses-tools+mcp.v1",
     "centralResolver": "gonka-direct-chat-completions",
@@ -80,6 +80,7 @@
       "artifact",
       "web",
       "network",
+      "traffic",
       "process",
       "clipboard",
       "browser",
@@ -380,6 +381,23 @@
           "status",
           "result"
         ]
+      },
+      {
+        "family": "traffic",
+        "actions": [
+          "status",
+          "share",
+          "use",
+          "stop"
+        ],
+        "risk": "high",
+        "requiresConfirmation": true,
+        "proof": [
+          "grant",
+          "mode",
+          "target",
+          "status"
+        ]
       }
     ],
     "terminalStates": [
@@ -662,7 +680,8 @@
           "audio",
           "os",
           "transaction",
-          "device"
+          "device",
+          "traffic"
         ]
       },
       {

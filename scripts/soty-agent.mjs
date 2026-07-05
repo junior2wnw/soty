@@ -13,7 +13,7 @@ import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-conte
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
 import { createSourceTaskClassifier } from "./agent-modules/source-task-classifier.mjs";
 
-const agentVersion = "0.4.142";
+const agentVersion = "0.4.143";
 const scriptPath = fileURLToPath(import.meta.url);
 const agentDir = dirname(scriptPath);
 loadAgentSecretEnv();
@@ -547,6 +547,18 @@ async function handleHttpRequest(request, response) {
     await handleOperatorHttpSourceStatus(url, response, headers);
     return;
   }
+  if (url.pathname === "/operator/traffic" && request.method === "GET") {
+    sendJson(response, 200, headers, {
+      ok: true,
+      ...trafficRuntimeStatus(),
+      operator: trafficOperatorStatus()
+    });
+    return;
+  }
+  if (url.pathname === "/operator/traffic/fetch" && request.method === "POST") {
+    await handleOperatorHttpTrafficFetch(request, response, headers);
+    return;
+  }
   if (url.pathname === "/operator/toolkits" && request.method === "GET") {
     sendJson(response, 200, headers, {
       ok: true,
@@ -1017,7 +1029,8 @@ const {
 const {
   sourceOpenUrlScript,
   sourceFileScript,
-  sourceWebScript
+  sourceWebScript,
+  sourceTrafficFetchScript
 } = createMcpSourceContentAdapters();
 
 function applyAppComputerDefaults(args, text) {
@@ -3783,6 +3796,176 @@ function operatorTargetByText(target) {
   return operatorTargets.find((item) => item.id === target || item.id.toLowerCase() === needle)
     || operatorTargets.find((item) => cleanTargetNeedle(item.label) === needle)
     || null;
+}
+
+function trafficOperatorStatus() {
+  const targets = operatorTargets
+    .filter((target) => target?.traffic?.exit === true)
+    .map((target) => ({
+      id: target.id || "",
+      label: target.label || "",
+      hostDeviceId: target.hostDeviceId || "",
+      mode: target.traffic?.mode === "system" ? "system" : "proxy",
+      status: target.traffic?.status || "planned"
+    }));
+  return {
+    attached: Boolean(operatorBridge?.open),
+    targets,
+    selectedTargetTraffic: operatorDeviceNetwork.selectedTargetTraffic === true
+  };
+}
+
+function trafficTargetByRequest(target, sourceDeviceId = "") {
+  const requested = operatorTargetByText(target);
+  const requestedDeviceId = safeSourceText(sourceDeviceId || "");
+  if (requested?.traffic?.exit === true) {
+    return requested;
+  }
+  if (!requestedDeviceId) {
+    return null;
+  }
+  return operatorTargets.find((item) => item?.traffic?.exit === true
+    && (item.hostDeviceId === requestedDeviceId || item.deviceIds?.includes(requestedDeviceId))) || null;
+}
+
+async function handleOperatorHttpTrafficFetch(request, response, headers) {
+  let payload;
+  try {
+    payload = await readJsonBody(request, 32_000);
+  } catch {
+    sendJson(response, 400, headers, { ok: false, operation: "traffic-fetch", text: "! json", exitCode: 400 });
+    return;
+  }
+  const target = cleanActionText(payload.target || "", 160);
+  const sourceDeviceId = safeSourceText(payload.sourceDeviceId || "");
+  const sourceRelayId = safeRelayId(payload.sourceRelayId || "");
+  const url = cleanTrafficFetchUrl(payload.url || "");
+  if (!target || !url) {
+    sendJson(response, 400, headers, { ok: false, operation: "traffic-fetch", text: "! request", exitCode: 400 });
+    return;
+  }
+  const trafficTarget = trafficTargetByRequest(target, sourceDeviceId);
+  if (!trafficTarget) {
+    sendJson(response, 403, headers, {
+      ok: false,
+      operation: "traffic-fetch",
+      text: "! traffic-grant",
+      exitCode: 403,
+      policy: "explicit-link-grant-only"
+    });
+    return;
+  }
+  const method = cleanTrafficFetchMethod(payload.method || "GET");
+  const maxBytes = safeTrafficFetchBytes(payload.maxBytes);
+  const timeoutMs = safeDurationMs(payload.timeoutMs, 30_000, 120_000);
+  await sendLongOperatorJson(response, headers, async (signal) => {
+    return await runTrafficFetchViaSource({
+      target: trafficTarget,
+      sourceDeviceId: sourceDeviceId || trafficTarget.hostDeviceId || "",
+      sourceRelayId,
+      url,
+      method,
+      headers: cleanTrafficFetchHeaders(payload.headers),
+      maxBytes,
+      timeoutMs,
+      signal
+    });
+  });
+}
+
+async function runTrafficFetchViaSource({ target, sourceDeviceId, sourceRelayId, url, method, headers, maxBytes, timeoutMs, signal }) {
+  const normalized = await normalizeOperatorHttpTarget(target.id || "", sourceDeviceId, sourceRelayId, { allowFallbackSource: false });
+  if (!isAgentSourceTarget(normalized.target)) {
+    return {
+      ok: false,
+      operation: "traffic-fetch",
+      text: "! traffic-source-worker",
+      exitCode: 409,
+      target: trafficFetchTargetProof(target),
+      diagnostic: { reason: "source-worker-required" }
+    };
+  }
+  const deviceId = agentSourceDeviceId(normalized.target);
+  const result = await postAgentSourceJob("/api/agent/source/script", {
+    deviceId,
+    script: sourceTrafficFetchScript({ url, method, headers, maxBytes, timeoutMs }),
+    shell: "node",
+    name: "soty-traffic-fetch",
+    runAs: "user",
+    timeoutMs,
+    maxTextLength: safeTrafficFetchReplyChars(maxBytes)
+  }, normalized.sourceRelayId, safeTrafficFetchReplyChars(maxBytes), signal);
+  const parsed = parseAgentSourceJson(result.text);
+  if (!parsed) {
+    return {
+      ok: false,
+      operation: "traffic-fetch",
+      text: result.text || "! traffic-json",
+      exitCode: result.exitCode || 502,
+      target: trafficFetchTargetProof(target),
+      sourceDeviceId: deviceId,
+      diagnostic: result.diagnostic || { reason: "invalid-source-json" }
+    };
+  }
+  const exitCode = parsed.ok === true ? 0 : (Number.isSafeInteger(parsed.status) ? parsed.status : result.exitCode || 1);
+  return {
+    ok: parsed.ok === true,
+    operation: "traffic-fetch",
+    text: String(parsed.textPreview || `${parsed.status || exitCode} ${parsed.url || url}`).slice(0, 4000),
+    exitCode,
+    target: trafficFetchTargetProof(target),
+    sourceDeviceId: deviceId,
+    mode: target.traffic?.mode === "system" ? "system" : "proxy",
+    result: parsed
+  };
+}
+
+function trafficFetchTargetProof(target) {
+  return {
+    id: target?.id || "",
+    label: target?.label || "",
+    hostDeviceId: target?.hostDeviceId || "",
+    traffic: {
+      exit: target?.traffic?.exit === true,
+      mode: target?.traffic?.mode === "system" ? "system" : "proxy",
+      status: target?.traffic?.status || "planned"
+    }
+  };
+}
+
+function cleanTrafficFetchUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return /^https?:$/iu.test(url.protocol) ? url.toString().slice(0, 4000) : "";
+  } catch {
+    return "";
+  }
+}
+
+function cleanTrafficFetchMethod(value) {
+  const method = String(value || "GET").trim().toUpperCase();
+  return method === "HEAD" ? "HEAD" : "GET";
+}
+
+function cleanTrafficFetchHeaders(value) {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const out = {};
+  for (const key of ["accept", "accept-language", "user-agent"]) {
+    const found = Object.entries(input).find(([name]) => String(name || "").trim().toLowerCase() === key);
+    if (found && typeof found[1] === "string") {
+      out[key] = found[1].slice(0, 4000);
+    }
+  }
+  return out;
+}
+
+function safeTrafficFetchBytes(value) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  return Number.isSafeInteger(parsed) ? Math.max(1024, Math.min(parsed, 512 * 1024)) : 192 * 1024;
+}
+
+function safeTrafficFetchReplyChars(maxBytes) {
+  return Math.max(16_000, Math.min(1_000_000, Math.ceil(safeTrafficFetchBytes(maxBytes) * 1.45) + 12_000));
 }
 
 async function handleAgentSourceHttpScript(target, sourceDeviceId, payload, timeoutMs, response, headers, sourceRelayId = "", maxTextLength = maxChatChars) {
@@ -7995,7 +8178,7 @@ async function runGonkaDirectSotySessionTurn({
     for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
     if (signal?.aborted) {
       const recoveredText = lastToolUserText
-        || recoverDirectComputerProofText(toolResults)
+        || directComputerProofText(toolResults)
         || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
         || "";
       if (recoveredText) {
@@ -8013,7 +8196,7 @@ async function runGonkaDirectSotySessionTurn({
     if (!response.ok) {
       if (toolResults.length > 0 || lastToolUserText) {
         const recoveredText = lastToolUserText
-          || recoverDirectComputerProofText(toolResults)
+          || directComputerProofText(toolResults)
           || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
           || "";
         if (recoveredText) {
@@ -8062,17 +8245,6 @@ async function runGonkaDirectSotySessionTurn({
     });
     if (toolCalls.length === 0) {
       if (!finalText) {
-        if (toolResults.length > 0 && isTinyCompletionReply(assistantText)) {
-          const recoveredFinal = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal });
-          if (recoveredFinal) {
-            finalText = recoveredFinal;
-            traceStep(trace, "gonka.direct.recovered-tiny-tool-final", {
-              turn,
-              textChars: finalText.length
-            });
-            break;
-          }
-        }
         if (proofRequired && assistantText && !finalTextLooksLikeActionProof(assistantText)) {
           if (turn < gonkaDirectMaxToolTurns) {
             traceStep(trace, "gonka.direct.continue-missing-tool-proof", {
@@ -8084,9 +8256,7 @@ async function runGonkaDirectSotySessionTurn({
             messages.push({ role: "user", content: buildGonkaDirectMissingProofPrompt(text, taskFamily) });
             continue;
           }
-          const recoveredProof = recoverDirectComputerProofText(toolResults);
-          finalText = recoveredProof || agentFailureText("The action did not produce a verified computer-tool result.");
-          exitCode = recoveredProof ? (exitCode || 0) : (exitCode || 125);
+          finalText = assistantText;
           break;
         }
         finalText = assistantText;
@@ -8148,7 +8318,7 @@ async function runGonkaDirectSotySessionTurn({
         && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
         finalText = executed.userText
           || formatDirectComputerToolText(executed.args, executed.toolText, "")
-          || formatRecoveredOperatorText(executed.toolText)
+          || directComputerProofText([executed.toolText])
           || "";
         exitCode = 0;
         traceStep(trace, "gonka.direct.finish-after-tool-proof", {
@@ -8167,43 +8337,17 @@ async function runGonkaDirectSotySessionTurn({
     }
   }
   }
-  if (!finalText && toolResults.length > 0) {
-    if (directToolResultsCoverExplicitTarget(toolResults, text)) {
-      finalText = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal })
-        || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
-        || "Готово.";
-    } else {
-      finalText = agentFailureText("The computer-tool result did not cover the explicit target in the request.");
-      exitCode = exitCode || 125;
-    }
-  }
-  if (!finalText) {
-    finalText = "! gonka: model did not produce a final answer";
-    exitCode = exitCode || 125;
-  }
-  finalText = cleanAgentChatReply(finalText).slice(0, maxChatChars);
-  if (finalTextContradictsSuccessfulComputerProof(finalText, exitCode, toolResults)) {
-    const recoveredFinal = recoverDirectComputerProofText(toolResults)
-      || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
-      || "Готово.";
-    finalText = cleanAgentChatReply(recoveredFinal).slice(0, maxChatChars);
-    traceStep(trace, "gonka.direct.replaced-contradictory-success-final", {
-      textChars: finalText.length,
-      toolCalls: terminal.length
-    });
-  }
-  if (toolResults.length > 0) {
-    finalText = recoverRawDirectComputerJsonFinal(finalText) || finalText;
-    if (isTinyCompletionReply(finalText)) {
-      const recoveredFinal = await finalTextFromGonkaDirectToolResults({ text, taskFamily, toolResults, trace, signal });
-      if (recoveredFinal && !isTinyCompletionReply(recoveredFinal)) {
-        finalText = cleanAgentChatReply(recoveredFinal).slice(0, maxChatChars);
-        traceStep(trace, "gonka.direct.replaced-tiny-final-after-tool", {
-          textChars: finalText.length
-        });
-      }
-    }
-  }
+  const normalizedFinal = normalizeGonkaDirectFinal({
+    finalText,
+    exitCode,
+    text,
+    taskFamily,
+    toolResults,
+    trace,
+    signal
+  });
+  finalText = normalizedFinal.finalText;
+  exitCode = normalizedFinal.exitCode;
   if (finalText && !finalText.startsWith("!")) {
     if (typeof onMessage === "function") {
       onMessage(finalText);
@@ -8728,30 +8872,57 @@ function compactGonkaDirectToolResult(args, run) {
   });
 }
 
-async function finalTextFromGonkaDirectToolResults({ text = "", taskFamily = "", toolResults = [], trace = null, signal = null } = {}) {
-  const toolText = String(toolResults.filter(Boolean).slice(-2).join("\n\n")).slice(0, gonkaDirectToolResultChars);
-  if (!toolText) {
-    return "";
-  }
+function normalizeGonkaDirectFinal({ finalText = "", exitCode = 0, text = "", taskFamily = "", toolResults = [], trace = null, signal = null } = {}) {
   if (signal?.aborted) {
-    return "";
+    return { finalText: "! cancelled", exitCode: 130 };
   }
-  const proofText = recoverDirectComputerProofText(toolResults);
-  if (proofText && (hasCriticalDestructiveIntent(text) || computerActionRequiresProof(taskFamily, text))) {
-    return proofText;
+  const results = Array.isArray(toolResults) ? toolResults.filter(Boolean) : [];
+  let clean = cleanAgentChatReply(recoverRawDirectComputerJsonFinal(finalText) || finalText).slice(0, maxChatChars);
+  let code = Number.isSafeInteger(Number(exitCode)) ? Number(exitCode) : 0;
+  if (results.length > 0 && !directToolResultsCoverExplicitTarget(results, text)) {
+    return {
+      finalText: agentFailureText("The computer-tool result did not cover the explicit target in the request."),
+      exitCode: code || 125
+    };
   }
-  const polished = await polishGonkaRecoveredFinalText({ userText: text, toolText, taskFamily });
-  if (polished) {
-    if (proofText && isTinyCompletionReply(polished)) {
-      return proofText;
+
+  const proofText = directComputerProofText(results);
+  const proofFallback = proofText || directComputerResultText(results);
+  const proofRequired = hasCriticalDestructiveIntent(text) || computerActionRequiresProof(taskFamily, text);
+  let normalizedReason = "";
+  if (results.length > 0) {
+    if (proofFallback && !clean) {
+      normalizedReason = "empty-final";
+    } else if (proofFallback && isTinyCompletionReply(clean)) {
+      normalizedReason = "tiny-final";
+    } else if (proofFallback && finalTextNeedsComputerProofNormalization(clean, code, results)) {
+      normalizedReason = "proof-conflict";
+    } else if (proofRequired && !finalTextLooksLikeActionProof(clean)) {
+      if (proofFallback) {
+        normalizedReason = "missing-proof";
+      } else {
+        clean = agentFailureText("The action did not produce a verified computer-tool result.");
+        code = code || 125;
+        normalizedReason = "missing-proof";
+      }
     }
-    traceStep(trace, "gonka.direct.polished-tool-final", { textChars: polished.length });
-    return polished;
   }
-  return proofText || cleanActionText(formatRecoveredOperatorText(toolText) || toolText, maxChatChars);
+  if (normalizedReason && proofFallback) {
+    clean = cleanAgentChatReply(proofFallback).slice(0, maxChatChars);
+    traceStep(trace, "gonka.direct.normalized-tool-final", {
+      reason: normalizedReason,
+      textChars: clean.length,
+      toolResults: results.length
+    });
+  }
+  if (!clean) {
+    clean = "! gonka: model did not produce a final answer";
+    code = code || 125;
+  }
+  return { finalText: clean, exitCode: code };
 }
 
-function recoverDirectComputerProofText(toolResults = []) {
+function directComputerProofText(toolResults = []) {
   for (const item of toolResults.filter(Boolean).slice().reverse()) {
     const formatted = formatDirectComputerToolText({}, item, "");
     const clean = cleanActionText(formatted || "", maxChatChars);
@@ -8762,7 +8933,15 @@ function recoverDirectComputerProofText(toolResults = []) {
   return "";
 }
 
-function finalTextContradictsSuccessfulComputerProof(finalText = "", exitCode = 0, toolResults = []) {
+function directComputerResultText(toolResults = []) {
+  const toolText = String(toolResults.filter(Boolean).slice(-2).join("\n\n")).slice(0, gonkaDirectToolResultChars);
+  if (!toolText) {
+    return "";
+  }
+  return cleanActionText(formatRecoveredOperatorText(toolText) || toolText, maxChatChars);
+}
+
+function finalTextNeedsComputerProofNormalization(finalText = "", exitCode = 0, toolResults = []) {
   if (exitCode !== 0 || !Array.isArray(toolResults) || toolResults.length === 0) {
     return false;
   }
@@ -9877,7 +10056,14 @@ function runtimeDeviceNetwork(source, target = null, sourceTargets = [], text = 
       sourceDeviceId: promptInline(agentSourceDeviceId(item.id) || item.hostDeviceId || item.deviceIds?.[0] || ""),
       access: item.access === true,
       selected: item.selected === true || item.id === (target?.id || safe.preferredTargetId),
-      channel: isAgentSourceTarget(item.id) ? "agent-source" : "link-room"
+      channel: isAgentSourceTarget(item.id) ? "agent-source" : "link-room",
+      traffic: item.traffic?.exit === true
+        ? {
+          exit: true,
+          mode: item.traffic.mode === "system" ? "system" : "proxy",
+          status: item.traffic.status || "planned"
+        }
+        : null
     }));
   return {
     protocol: "soty-device-network.v1",
@@ -9895,7 +10081,8 @@ function runtimeDeviceNetwork(source, target = null, sourceTargets = [], text = 
       label: promptInline(selectedTarget?.label || (agentDialog ? "" : selectedNetworkTarget.label || safe.preferredTargetLabel)),
       sourceDeviceId: promptInline(bridgeSourceDeviceId(selectedTarget, safe) || (agentDialog ? "" : selectedNetworkTarget.sourceDeviceId) || ""),
       access: Boolean(selectedTarget?.access === true || (!agentDialog && network.selectedTargetAccess === true)),
-      link: Boolean((!agentDialog && network.selectedTargetLink) || (selectedTarget && !isAgentSourceTarget(selectedTarget.id)))
+      link: Boolean((!agentDialog && network.selectedTargetLink) || (selectedTarget && !isAgentSourceTarget(selectedTarget.id))),
+      traffic: Boolean(selectedTarget?.traffic?.exit === true || (!agentDialog && network.selectedTargetTraffic === true))
     },
     capabilities: sanitizeStringList(network.capabilities, 32, 80),
     targets: activeTargets
@@ -9910,7 +10097,7 @@ function formatRuntimeDeviceNetwork(network) {
     `protocol=${network.protocol || "soty-device-network.v1"}`,
     `controller=${network.controller?.deviceNick || "unknown"} (${network.controller?.deviceId || "no-id"})`,
     `active_chat=${network.activeChat?.label || "none"} (${network.activeChat?.tunnelId || "none"}) kind=${network.activeChat?.kind || "peer"}`,
-    `selected_target=${network.selectedTarget?.label || "none"} (${network.selectedTarget?.id || "none"}) sourceDeviceId=${network.selectedTarget?.sourceDeviceId || "none"} access=${network.selectedTarget?.access ? "true" : "false"}`
+    `selected_target=${network.selectedTarget?.label || "none"} (${network.selectedTarget?.id || "none"}) sourceDeviceId=${network.selectedTarget?.sourceDeviceId || "none"} access=${network.selectedTarget?.access ? "true" : "false"} traffic=${network.selectedTarget?.traffic ? "true" : "false"}`
   ];
   const capabilities = Array.isArray(network.capabilities) ? network.capabilities.filter(Boolean).join(",") : "";
   if (capabilities) {
@@ -9918,7 +10105,8 @@ function formatRuntimeDeviceNetwork(network) {
   }
   const targets = Array.isArray(network.targets) ? network.targets : [];
   for (const item of targets.slice(0, 12)) {
-    lines.push(`- ${item.label || "target"} (${item.id || "no-id"}) sourceDeviceId=${item.sourceDeviceId || "none"} access=${item.access ? "true" : "false"} channel=${item.channel || "link-room"} selected=${item.selected ? "true" : "false"}`);
+    const traffic = item.traffic?.exit ? ` traffic=${item.traffic.mode || "proxy"}:${item.traffic.status || "planned"}` : "";
+    lines.push(`- ${item.label || "target"} (${item.id || "no-id"}) sourceDeviceId=${item.sourceDeviceId || "none"} access=${item.access ? "true" : "false"} channel=${item.channel || "link-room"} selected=${item.selected ? "true" : "false"}${traffic}`);
   }
   return lines.join("\n") || "none";
 }
@@ -10893,6 +11081,7 @@ function agentDialogDeviceNetwork(deviceNetwork) {
     selectedTargetDeviceId: "",
     selectedTargetAccess: false,
     selectedTargetLink: false,
+    selectedTargetTraffic: false,
     targets: sanitizeTargets(deviceNetwork.targets).map((target) => ({ ...target, selected: false }))
   };
 }
@@ -10920,6 +11109,7 @@ function sanitizeDeviceNetwork(value) {
     selectedTargetDeviceId: selectedAllowed ? clean(value.selectedTargetDeviceId) : "",
     selectedTargetAccess: selectedAllowed,
     selectedTargetLink: selectedAllowed,
+    selectedTargetTraffic: selectedAllowed && value.selectedTargetTraffic === true,
     capabilities: sanitizeStringList(value.capabilities, 32, 80),
     targets
   };
@@ -10952,6 +11142,7 @@ function emptyDeviceNetwork() {
     selectedTargetDeviceId: "",
     selectedTargetAccess: false,
     selectedTargetLink: false,
+    selectedTargetTraffic: false,
     capabilities: [],
     targets: []
   };
@@ -11370,8 +11561,8 @@ function runMcpServer() {
         inputSchema: {
           type: "object",
           properties: {
-            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, process, clipboard, network, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
-            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, process, clipboard, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
+            operation: { type: "string", description: "discover, route_profiles, status, run, script, action, terminal, console, job_status, job_stop, jobs, file, artifact, web, fetch, search, browser, desktop, process, clipboard, network, traffic, wallpaper, open_url, audio, app, api, transaction, reinstall, toolkit, or learn." },
+            capability: { type: "string", description: "Optional capability family: shell, filesystem, web, network, traffic, process, clipboard, browser, desktop, screen, keyboard, mouse, wallpaper, audio, artifact, app, api, transaction, long-job, service, package, os-reinstall, or auto." },
             action: { type: "string", description: "Capability-specific action, for example display, screenshot, read, write, open, prepare, status, or arm." },
             pid: { type: "integer", description: "Process id for operation=process status/stop." },
             processName: { type: "string", description: "Process name for operation=process list/status/stop." },
@@ -12050,6 +12241,9 @@ function runMcpServer() {
         routeProfiles: routeProfilesStatus()
       });
     }
+    if (operation === "traffic" || operation === "link-traffic" || operation === "link_traffic" || capability === "traffic") {
+      return await callSotyTrafficTool(args);
+    }
     const alias = computerToolAlias(operation, capability, args);
     if (!alias) {
       return mcpToolJson({
@@ -12211,6 +12405,33 @@ function runMcpServer() {
       timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
     });
     return mcpToolJsonText(result);
+  }
+
+  async function callSotyTrafficTool(args) {
+    const url = cleanTrafficFetchUrl(args.url || "");
+    if (url) {
+      if (!mcpTarget) {
+        return mcpSourceUnavailableResult();
+      }
+      const result = await mcpPostOperator("/operator/traffic/fetch", {
+        target: mcpTarget,
+        sourceDeviceId: mcpSourceDeviceId,
+        url,
+        method: cleanTrafficFetchMethod(args.method || "GET"),
+        headers: cleanTrafficFetchHeaders(args.headers),
+        maxBytes: safeTrafficFetchBytes(args.maxBytes),
+        timeoutMs: mcpSafeTimeout(args.timeoutMs, 60_000)
+      });
+      return mcpToolJson(result.payload || result, !result.ok, result.exitCode);
+    }
+    return mcpToolJson({
+      ok: true,
+      operation: "traffic",
+      traffic: trafficRuntimeStatus(),
+      operator: trafficOperatorStatus(),
+      deviceNetwork: operatorDeviceNetwork,
+      agentGuidance: "Traffic grants are explicit Link capabilities. Use operation=traffic with url for proxy-mode fetch through a granted Link Traffic target; system routing remains a separate machine-scope adapter."
+    });
   }
 
   async function callSotyArtifactTool(args) {
@@ -14852,11 +15073,24 @@ function sanitizeTargets(value) {
       access: typeof item?.access === "boolean" ? item.access : undefined,
       host: typeof item?.host === "boolean" ? item.host : undefined,
       selected: typeof item?.selected === "boolean" ? item.selected : undefined,
+      traffic: sanitizeTrafficTarget(item?.traffic),
       rank: Number.isSafeInteger(item?.rank) ? Math.max(1, Math.min(item.rank, 999)) : undefined,
       lastActionAt: typeof item?.lastActionAt === "string" ? item.lastActionAt.slice(0, 80) : ""
     }))
     .filter((item) => item.id && item.label)
     .slice(0, maxOperatorTargets);
+}
+
+function sanitizeTrafficTarget(value) {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return {
+    exit: value.exit === true,
+    mode: value.mode === "system" ? "system" : "proxy",
+    share: value.share === true,
+    status: ["available", "planned", "disabled"].includes(value.status) ? value.status : "planned"
+  };
 }
 
 function hasKnownOperatorTarget(target) {
@@ -16290,6 +16524,7 @@ function agentRuntimeStatus() {
       { family: "mouse", actions: ["move", "click"], risk: "high", proof: ["status", "result"] },
       { family: "clipboard", actions: ["read", "write"], risk: "medium", proof: ["status", "result"] },
       { family: "network", actions: ["status", "probe"], risk: "low", proof: ["status", "result"] },
+      { family: "traffic", actions: ["status", "share", "use", "stop"], risk: "high", requiresConfirmation: true, proof: ["grant", "mode", "target", "status"] },
       { family: "web", actions: ["fetch", "search"], risk: "low", proof: ["status", "title", "url", "text"] },
       { family: "app", actions: ["list", "snapshot", "launch", "focus", "click", "type", "connect", "read", "write", "submit"], risk: "high", proof: ["window", "elements", "target", "stateBefore", "stateAfter", "result"] },
       { family: "api", actions: ["get", "post", "put", "delete", "submit"], risk: "high", proof: ["status", "result"] },
@@ -16300,6 +16535,20 @@ function agentRuntimeStatus() {
       { family: "transaction", actions: ["prepare", "preview", "submit", "cancel"], risk: "critical", requiresConfirmation: true, proof: ["preparedActionId", "visiblePreview", "confirmation", "result"] },
       { family: "device", actions: ["status", "reboot", "poweroff"], risk: "critical", requiresConfirmation: true, proof: ["status", "result"] }
     ]
+  };
+}
+
+function trafficRuntimeStatus() {
+  return {
+    schema: "soty.link-traffic.v1",
+    grantCapability: "traffic.exit",
+    modes: ["proxy", "system"],
+    defaultMode: "proxy",
+    dataPlane: "agent-fetch-proxy-v1",
+    proxyEndpoint: "/operator/traffic/fetch",
+    systemHelper: isSystemAgent() ? "available-for-native-helper" : "requires-machine-scope-agent",
+    sticky: "per-request-required",
+    policy: "explicit-link-grant-only"
   };
 }
 
@@ -16345,6 +16594,7 @@ function runtimeHealth() {
     memory: memoryPlaneStatus(),
     openAiToolPlane: openAiToolPlaneStatus(),
     agentRuntime: agentRuntimeStatus(),
+    traffic: trafficRuntimeStatus(),
     computerUsePlane: runtimeComputerUsePlaneStatus(),
     automationToolkits: automationToolkitStatus(),
     ...(process.platform === "win32" ? {
@@ -16415,6 +16665,7 @@ function runtimeComputerUsePlaneStatus() {
       "artifact",
       "web",
       "network",
+      "traffic",
       "process",
       "clipboard",
       "browser",

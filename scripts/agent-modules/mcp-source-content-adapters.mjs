@@ -324,9 +324,86 @@ if (action === "search" || action === "web-search" || action === "web_search" ||
 `.trim();
   }
 
+  function sourceTrafficFetchScript(args) {
+    const headerEntries = args.headers && typeof args.headers === "object" && !Array.isArray(args.headers)
+      ? Object.entries(args.headers)
+        .filter(([key, value]) => ["accept", "accept-language", "user-agent"].includes(String(key || "").trim().toLowerCase()) && typeof value === "string")
+        .slice(0, 12)
+      : [];
+    const payload = Buffer.from(JSON.stringify({
+      url: String(args.url || "").slice(0, 4000),
+      method: String(args.method || "GET").slice(0, 12),
+      headers: Object.fromEntries(headerEntries.map(([key, value]) => [String(key).toLowerCase(), String(value).slice(0, 4000)])),
+      maxBytes: Number.isSafeInteger(args.maxBytes) ? Math.max(1024, Math.min(args.maxBytes, 512 * 1024)) : 192 * 1024,
+      timeoutMs: Number.isSafeInteger(args.timeoutMs) ? Math.max(1000, Math.min(args.timeoutMs, 120000)) : 30000
+    }), "utf8").toString("base64");
+    return `
+const req = JSON.parse(Buffer.from("${payload}", "base64").toString("utf8"));
+const emit = (value) => console.log(JSON.stringify(value));
+const timeoutMs = Math.max(1000, Math.min(Number(req.timeoutMs) || 30000, 120000));
+const maxBytes = Math.max(1024, Math.min(Number(req.maxBytes) || 196608, 524288));
+const method = String(req.method || "GET").toUpperCase() === "HEAD" ? "HEAD" : "GET";
+const url = new URL(String(req.url || ""));
+if (!/^https?:$/i.test(url.protocol)) throw new Error("unsupported url protocol");
+const headers = { ...req.headers };
+if (!headers["user-agent"]) headers["user-agent"] = "Mozilla/5.0 (compatible; SotyTraffic/1.0; +https://xn--n1afe0b.online)";
+const res = await fetch(url, {
+  method,
+  headers,
+  redirect: "follow",
+  signal: AbortSignal.timeout(timeoutMs)
+});
+const chunks = [];
+let bytes = 0;
+let truncated = false;
+if (method !== "HEAD" && res.body) {
+  const reader = res.body.getReader();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    if (bytes + chunk.length > maxBytes) {
+      chunks.push(chunk.subarray(0, Math.max(0, maxBytes - bytes)));
+      bytes = maxBytes;
+      truncated = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+    chunks.push(chunk);
+    bytes += chunk.length;
+  }
+}
+const body = Buffer.concat(chunks);
+const responseHeaders = {};
+for (const key of ["content-type", "content-length", "location", "cache-control", "etag", "last-modified"]) {
+  const value = res.headers.get(key);
+  if (value) responseHeaders[key] = value.slice(0, 4000);
+}
+const contentType = String(res.headers.get("content-type") || "");
+const textual = /(?:text|json|xml|javascript|svg|html|x-www-form-urlencoded)/i.test(contentType);
+const textPreview = textual ? body.toString("utf8").replace(/\\s+/g, " ").trim().slice(0, 4000) : "";
+emit({
+  ok: res.ok,
+  action: "traffic-fetch",
+  method,
+  url: res.url || url.toString(),
+  status: res.status,
+  statusText: res.statusText,
+  contentType,
+  headers: responseHeaders,
+  bytes: body.length,
+  truncated,
+  bodyBase64: body.toString("base64"),
+  textPreview
+});
+if (!res.ok) process.exitCode = 1;
+`.trim();
+  }
+
   return Object.freeze({
     sourceOpenUrlScript,
     sourceFileScript,
-    sourceWebScript
+    sourceWebScript,
+    sourceTrafficFetchScript
   });
 }

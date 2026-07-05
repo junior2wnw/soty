@@ -50,7 +50,7 @@ async function runScenarios({ relayUrl } = {}) {
     ["health reports new version", async () => {
       const health = await get("/health");
       assertEqual(health.status, 200);
-      assertEqual(health.body.version, "0.4.142");
+      assertEqual(health.body.version, "0.4.143");
       assertEqual(health.body.autoUpdate, false);
       assertEqual(health.body.trace.schema, "soty.agent.trace.v1");
       assertEqual(health.body.trace.enabled, true);
@@ -78,6 +78,12 @@ async function runScenarios({ relayUrl } = {}) {
       assert(health.body.computerUsePlane.capabilities.includes("clipboard"));
       assert(health.body.computerUsePlane.capabilities.includes("browser"));
       assert(health.body.computerUsePlane.capabilities.includes("wallpaper"));
+      assert(health.body.computerUsePlane.capabilities.includes("traffic"));
+      assertEqual(health.body.traffic.schema, "soty.link-traffic.v1");
+      assertEqual(health.body.traffic.grantCapability, "traffic.exit");
+      assertEqual(health.body.traffic.defaultMode, "proxy");
+      assertEqual(health.body.traffic.dataPlane, "agent-fetch-proxy-v1");
+      assertEqual(health.body.traffic.proxyEndpoint, "/operator/traffic/fetch");
       assert(health.body.computerUsePlane.capabilities.includes("turnkey-monitoring"));
       assert(health.body.computerUsePlane.capabilities.includes("generated-asset-save-apply-verify"));
       assertEqual(health.body.automationToolkits.schema, "soty.automation-toolkits.v2");
@@ -665,6 +671,7 @@ async function runScenarios({ relayUrl } = {}) {
           access: true,
           host: false,
           selected: true,
+          traffic: { exit: true, mode: "proxy", share: false, status: "planned" },
           lastActionAt: new Date().toISOString()
         };
         const created = await relayRequest(base, "POST", "/api/agent/relay/request", {
@@ -692,7 +699,8 @@ async function runScenarios({ relayUrl } = {}) {
               selectedTargetDeviceId: "dev-comp",
               selectedTargetAccess: true,
               selectedTargetLink: true,
-              capabilities: ["linked-device-actions", "multi-device-context", "web-controller"],
+              selectedTargetTraffic: true,
+              capabilities: ["linked-device-actions", "multi-device-context", "web-controller", "link-traffic-v1"],
               targets: [peerTarget]
             }
           }
@@ -704,7 +712,10 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(job.source.preferredTargetId, "room-comp");
         assertEqual(job.source.preferredTargetLabel, "комп");
         assertEqual(job.source.deviceNetwork.selectedTargetId, "room-comp");
+        assertEqual(job.source.deviceNetwork.selectedTargetTraffic, true);
         assert(job.source.deviceNetwork.capabilities.includes("web-controller"));
+        assert(job.source.deviceNetwork.capabilities.includes("link-traffic-v1"));
+        assertEqual(job.source.operatorTargets.find((target) => target.id === "room-comp")?.traffic?.mode, "proxy");
         assert(!job.source.operatorTargets.some((target) => target.id === "agent-source:dev-phone"));
         await relayRequest(base, "POST", "/api/agent/relay/reply", {
           relayId: clientRelayId,
@@ -1353,6 +1364,28 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(payload.read, true);
       assertEqual(payload.deleted, true);
       assert(adapters.sourceWebScript({ action: "fetch", url: "https://example.com" }).includes("duckDuckGoResults"));
+      const trafficServer = createServer((request, response) => {
+        response.writeHead(200, { "Content-Type": "text/plain" });
+        response.end(`TRAFFIC_FETCH_OK ${request.url}`);
+      });
+      await listen(trafficServer, "127.0.0.1", 0);
+      try {
+        const trafficScriptPath = join(tempRoot, "traffic-fetch-adapter-selftest.mjs");
+        await writeFile(trafficScriptPath, adapters.sourceTrafficFetchScript({
+          url: `http://127.0.0.1:${trafficServer.address().port}/traffic.txt`,
+          maxBytes: 4096
+        }), "utf8");
+        const trafficResponse = await runNode([trafficScriptPath], process.env, tempRoot);
+        assertEqual(trafficResponse.code, 0);
+        const trafficPayload = JSON.parse(trafficResponse.stdout.trim());
+        assertEqual(trafficPayload.ok, true);
+        assertEqual(trafficPayload.action, "traffic-fetch");
+        assertEqual(trafficPayload.status, 200);
+        assert(trafficPayload.textPreview.includes("TRAFFIC_FETCH_OK /traffic.txt"));
+        assert(Buffer.from(trafficPayload.bodyBase64, "base64").toString("utf8").includes("TRAFFIC_FETCH_OK"));
+      } finally {
+        await closeServer(trafficServer);
+      }
       assert(adapters.sourceOpenUrlScript("https://example.com").includes("detached: true"));
     }],
     ["gonka local helper exposes one universal computer bridge", async () => {
@@ -1703,8 +1736,11 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
       assert(agent.includes('route: "soty.safety-block"'));
       assert(agent.includes('boundary: "agent.reply"'));
-      assert(agent.includes("gonka.direct.recovered-tiny-tool-final"));
-      assert(agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
+      assert(agent.includes("normalizeGonkaDirectFinal"));
+      assert(agent.includes("gonka.direct.normalized-tool-final"));
+      assert(agent.includes("directComputerProofText"));
+      assert(!agent.includes("gonka.direct.recovered-tiny-tool-final"));
+      assert(!agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
       assert(agent.includes("directToolResultCoversExplicitTarget"));
       assert(agent.includes("gonka.direct.tool-proof-misses-explicit-target"));
       assert(agent.includes("loadAgentSecretEnv();"));
@@ -1778,6 +1814,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("Codex CLI is not in this execution path"));
       assert(agent.includes("createMcpSourceContentAdapters"));
       assert(contentAdapters.includes("sourceWebScript"));
+      assert(contentAdapters.includes("sourceTrafficFetchScript"));
       assert(agent.includes("openAiToolPlaneStatus"));
       assert(agent.includes("standardTools: [...sotyMcpPublicTools]"));
       assert(!agent.includes('name: "image_gen"'));
@@ -2137,7 +2174,7 @@ async function runScenarios({ relayUrl } = {}) {
     }],
     ["public manifest still validates after fallback build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
-      assertEqual(manifest.version, "0.4.142");
+      assertEqual(manifest.version, "0.4.143");
       assertEqual(manifest.schema, "soty.agent.release.v2");
       assertEqual(manifest.architecture, "gonka-direct-chat-completions+computer-tools+memory-plane");
       assertEqual(manifest.openAiToolPlane.schema, "openai.responses-tools+mcp.v1");
@@ -2177,6 +2214,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(manifest.computerUsePlane.capabilities.includes("process"));
       assert(manifest.computerUsePlane.capabilities.includes("clipboard"));
       assert(manifest.computerUsePlane.capabilities.includes("wallpaper"));
+      assert(manifest.computerUsePlane.capabilities.includes("traffic"));
       assertEqual(manifest.computerUsePlane.routeProfileSchema, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
       assertEqual(manifest.automationToolkits.policy.centralResolver, "gonka-direct-chat-completions");
@@ -2293,7 +2331,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(windowsMachineInstall.includes("bootstrap-elevated.log"));
       assert(windowsMachineInstall.includes("--- install.log tail ---"));
       assert(windowsMachineInstall.includes("node-probe.err.log"));
-      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.142"));
+      assert(windowsMachineInstall.includes("soty-agent-machine-bootstrap:0.4.143"));
       assert(windowsMachineInstall.includes("--- start-agent.status.log ---"));
       assert(windowsMachineInstall.includes("--- start-agent.err.log ---"));
       assert(windowsMachineInstall.includes("SOTY_AGENT_DEVICE_ID"));
@@ -2358,7 +2396,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!ui.includes("Скачать обычный установщик"));
       assert(tooltips.includes("Скачать Soty Agent"));
       assert(!tooltips.includes("Скачать обычный установщик"));
-      assert(agentSource.includes('const agentVersion = "0.4.142"'));
+      assert(agentSource.includes('const agentVersion = "0.4.143"'));
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
@@ -2405,8 +2443,10 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("soty.local-computer-plane.v1"));
       assert(agentSource.includes("requestLooksMultiStep"));
       assert(agentSource.includes("directToolCallCanCompleteMultiStep"));
-      assert(agentSource.includes("finalTextContradictsSuccessfulComputerProof"));
-      assert(agentSource.includes("gonka.direct.replaced-contradictory-success-final"));
+      assert(agentSource.includes("finalTextNeedsComputerProofNormalization"));
+      assert(agentSource.includes("gonka.direct.normalized-tool-final"));
+      assert(!agentSource.includes("finalTextContradictsSuccessfulComputerProof"));
+      assert(!agentSource.includes("gonka.direct.replaced-contradictory-success-final"));
       assert(agentSource.includes("requestNeedsFileLifecycleTransaction"));
       assert(!agentSource.includes("runInferredGonkaDirectComputerAction"));
       assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
@@ -2416,7 +2456,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("gonka.direct.safety-block"));
       assert(agentSource.includes("safetyPowerShell"));
       assert(agentSource.includes("confirmation_required"));
-      assert(agentSource.includes("recoverDirectComputerProofText"));
+      assert(agentSource.includes("directComputerProofText"));
       assert(agentSource.includes("directComputerRunExitCode"));
       assert(agentSource.includes("parsed?.ok === false"));
       assert(!agentSource.includes('inferredOperation === "web"'));
@@ -2489,6 +2529,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("preparePeerAgentInvocation"));
       assert(ui.includes("stripAgentInvocation"));
       assert(ui.includes("operatorTargets: targets"));
+      assert(ui.includes("toggleTrafficGrant"));
+      assert(ui.includes("trafficGrantCapabilities(trafficShare.has(tunnelId))"));
+      assert(ui.includes("selectedTargetTraffic"));
       assert(!ui.includes("defaultAgentDialogTarget"));
       assert(ui.includes("const selectedTarget = tunnel && isAgentTunnel(tunnel)\n    ? null"));
       assert(ui.includes("const preferredTarget = agentTunnel\n    ? null"));
@@ -2501,7 +2544,16 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("Connected Soty device network"));
       assert(agentSource.includes("soty-device-network.v1"));
       assert(agentSource.includes("formatRuntimeDeviceNetwork"));
+      assert(agentSource.includes("trafficRuntimeStatus"));
+      assert(agentSource.includes('operation === "traffic"'));
+      assert(agentSource.includes('"/operator/traffic/fetch"'));
+      assert(agentSource.includes("sourceTrafficFetchScript"));
+      assert(agentSource.includes("agent-fetch-proxy-v1"));
+      assert(agentSource.includes("Traffic grants are explicit Link capabilities"));
       assert(agentRelay.includes("cleanDeviceNetwork"));
+      assert(agentRelay.includes("cleanTrafficTarget"));
+      assert(validators.includes("optionalCapabilityList"));
+      assert(validators.includes("&& optionalCapabilityList(value.capabilities)"));
       assert(agentRelay.includes('"/api/agent/artifacts"'));
       assert(agentRelay.includes('"/api/agent/artifacts/:id"'));
       assert(ui.includes("!isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id)"));
@@ -2553,14 +2605,14 @@ async function runScenarios({ relayUrl } = {}) {
       const updateDir = await mkdtemp(join(tmpdir(), "soty-update-selftest-"));
       const updateAgentPath = join(updateDir, "soty-agent.mjs");
       const nextSource = await readFile(join(root, "public", "agent", "soty-agent.mjs"), "utf8");
-      const oldSource = nextSource.replace('const agentVersion = "0.4.142";', 'const agentVersion = "0.4.65";');
+      const oldSource = nextSource.replace('const agentVersion = "0.4.143";', 'const agentVersion = "0.4.65";');
       assert(oldSource.includes('const agentVersion = "0.4.65"'));
       await writeFile(updateAgentPath, oldSource, "utf8");
       const nextHash = sha256(nextSource);
       const updateServer = createServer((request, response) => {
         if (request.url === "/manifest.json") {
           json(response, 200, {
-            version: "0.4.142",
+            version: "0.4.143",
             agentUrl: "/soty-agent.mjs",
             sha256: nextHash
           });

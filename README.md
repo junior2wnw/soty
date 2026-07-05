@@ -16,6 +16,7 @@ The browser side stays deliberately simple:
 - file transfer works from the counterparty menu, drag and drop, and agent-initiated device file publishing;
 - the bell icon sends one small wake pulse through the existing tunnel;
 - the remote icon grants one-way command access to the selected counterparty;
+- Link traffic is an explicit option on that same trust relationship: it advertises a `traffic.exit` grant and stays separate from ordinary command access;
 - command access uses a local companion agent that the PWA can detect on `127.0.0.1:49424`;
 - local operators can use `sotyctl` to list remote targets and run commands through an opened PWA bridge;
 - long remote jobs can be staged as temporary scripts and launched without visible terminal windows;
@@ -67,7 +68,7 @@ For development, run:
 pnpm run agent
 ```
 
-Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. Agent chat is routed to a server Codex executor channel marked with `SOTY_SERVER_CODEX_RELAY_ID`, `SOTY_AGENT_RELAY_ID`, `SOTY_AGENT_SCOPE=Server`, or a `srv_codex_` relay id. Local device agents run the source-worker/control plane only; they do not run Codex as the chat brain. The server executor may think for many client relays, but device commands are routed back through the requesting `sourceRelayId + deviceId`; it must not auto-switch to a global "latest" user agent from another device.
+Then open the counterparty menu in the PWA and toggle the remote icon. Commands typed by the granted counterparty are bridged through the local loopback agent on `127.0.0.1:49424`. The Link Traffic option uses the same explicit Link grant model and publishes a traffic target to the installed agent; proxy-mode fetch traffic is available through the agent, while system-wide routing remains a guarded machine-scope adapter rather than an implicit side effect of opening command access. Agent chat is routed to a server Codex executor channel marked with `SOTY_SERVER_CODEX_RELAY_ID`, `SOTY_AGENT_RELAY_ID`, `SOTY_AGENT_SCOPE=Server`, or a `srv_codex_` relay id. Local device agents run the source-worker/control plane only; they do not run Codex as the chat brain. The server executor may think for many client relays, but device commands are routed back through the requesting `sourceRelayId + deviceId`; it must not auto-switch to a global "latest" user agent from another device.
 
 Remote command transcripts are part of the encrypted tunnel document, not page-local scratch state. Reloading one browser tab must not clear another device's command window, and a refreshed tab should recover the terminal transcript from the server snapshot.
 

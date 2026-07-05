@@ -40,7 +40,8 @@ export function isRemoteGrant(value) {
   return value
     && isShortText(value.id, 140)
     && typeof value.enabled === "boolean"
-    && isShortText(value.targetDeviceId, 140);
+    && isShortText(value.targetDeviceId, 140)
+    && optionalCapabilityList(value.capabilities);
 }
 
 export function isRemoteRequest(value) {
@@ -165,6 +166,17 @@ function isJoinPublicJwk(value) {
 
 function optionalShortText(value, max) {
   return value === undefined || value === null || isShortText(value, max);
+}
+
+function optionalCapabilityList(value) {
+  return value === undefined
+    || value === null
+    || (Array.isArray(value)
+      && value.length <= 16
+      && value.every((item) => typeof item === "string"
+        && item.length > 0
+        && item.length <= 64
+        && /^[a-z][a-z0-9.-]{0,63}$/u.test(item)));
 }
 
 function isSafeRange(value, min, max) {

@@ -104,6 +104,7 @@ const manifest = {
       "artifact",
       "web",
       "network",
+      "traffic",
       "process",
       "clipboard",
       "browser",
@@ -347,8 +348,11 @@ function buildSotyAgentRuntime() {
   return buildAgentRuntimeManifest({
     runtimeId: "soty-agent",
     entrypoint: "computer",
-    capabilities: defaultAgentRuntimeCapabilities()
-      .filter((capability) => !excludedRuntimeFamilies.has(capability.family))
+    capabilities: [
+      ...defaultAgentRuntimeCapabilities()
+        .filter((capability) => !excludedRuntimeFamilies.has(capability.family)),
+      { family: "traffic", actions: ["status", "share", "use", "stop"], risk: "high", requiresConfirmation: true, proof: ["grant", "mode", "target", "status"] }
+    ]
   });
 }
 

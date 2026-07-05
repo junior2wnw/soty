@@ -744,6 +744,7 @@ function publicAgentSourceDiagnostic(source, now = Date.now()) {
     directWorkerFresh: agentSourceDirectWorkerFresh(source, now),
     clientProtocol: source.clientProtocol || "",
     clientCapabilities: Array.isArray(source.clientCapabilities) ? source.clientCapabilities : [],
+    deviceNetwork: source.deviceNetwork || emptyDeviceNetwork(),
     localAgent: publicSourceLocalAgent(source.localAgent),
     workers: publicSourceWorkers(source.workers, now),
     pendingJobs: jobs.filter((job) => !Number.isSafeInteger(job.exitCode) && (!job.leaseUntil || job.leaseUntil <= now)).length,
@@ -817,6 +818,10 @@ function applyAgentSourceClientInfo(source, value) {
     source.clientCapabilities = capabilities;
   }
   const localAgent = localAgentInfoFrom(value);
+  const deviceNetwork = cleanDeviceNetwork(value?.deviceNetwork);
+  if (deviceNetwork.protocol) {
+    source.deviceNetwork = deviceNetwork;
+  }
   const workerPlane = sourceWorkerPlane(localAgent);
   if (isDirectWorkerHeartbeat) {
     source.directWorkerSeenAt = Date.now();
@@ -1159,6 +1164,12 @@ function publicAgentSourceTarget(source) {
     access: true,
     host: true,
     selected: true,
+    traffic: {
+      exit: false,
+      mode: "proxy",
+      share: false,
+      status: "planned"
+    },
     rank: 0,
     lastActionAt: source.lastSeenAt ? new Date(source.lastSeenAt).toISOString() : ""
   };
@@ -1476,6 +1487,7 @@ function cleanDeviceNetwork(value) {
     selectedTargetDeviceId: selectedAllowed ? cleanText(value.selectedTargetDeviceId, maxSourceChars) : "",
     selectedTargetAccess: selectedAllowed,
     selectedTargetLink: selectedAllowed,
+    selectedTargetTraffic: selectedAllowed && value.selectedTargetTraffic === true,
     capabilities: cleanStringList(value.capabilities, 32, 80),
     targets
   };
@@ -1507,6 +1519,7 @@ function emptyDeviceNetwork() {
     selectedTargetDeviceId: "",
     selectedTargetAccess: false,
     selectedTargetLink: false,
+    selectedTargetTraffic: false,
     capabilities: [],
     targets: []
   };
@@ -1544,11 +1557,24 @@ function cleanOperatorTargets(value) {
       access: typeof item?.access === "boolean" ? item.access : undefined,
       host: typeof item?.host === "boolean" ? item.host : undefined,
       selected: typeof item?.selected === "boolean" ? item.selected : undefined,
+      traffic: cleanTrafficTarget(item?.traffic),
       rank: Number.isSafeInteger(item?.rank) ? Math.max(1, Math.min(item.rank, 999)) : undefined,
       lastActionAt: cleanText(item?.lastActionAt, 80)
     }))
     .filter((item) => item.id && item.label)
     .slice(0, maxOperatorTargets);
+}
+
+function cleanTrafficTarget(value) {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return {
+    exit: value.exit === true,
+    mode: value.mode === "system" ? "system" : "proxy",
+    share: value.share === true,
+    status: ["available", "planned", "disabled"].includes(value.status) ? value.status : "planned"
+  };
 }
 
 function findReply(relayId, id) {

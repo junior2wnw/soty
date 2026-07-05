@@ -8,8 +8,11 @@ import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkA
 import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
+import { accountTransferButtonWidth, accountTransferChoices, accountTransferOperation, accountTransferSchema, createAccountTransferPayload, importDeviceFromAccountTransferPayload, isAccountTransferPayload, loadAccountPhraseBackup, phraseRecommendedWords, saveAccountPhraseBackup, validateAccountPhrase } from "./features/account-transfer";
+import type { AccountTransferOperation, AccountTransferRootAction, AccountTransferStage } from "./features/account-transfer";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
+import { capabilitiesAllowTraffic, clearTrafficState, loadTrafficAccess, loadTrafficShare, setTrafficAccess, setTrafficShare, trafficGrantCapabilities, trafficModeFromCapabilities } from "./features/traffic";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import { installTooltips } from "./ui/tooltips";
@@ -56,6 +59,63 @@ type BarcodeDetectorLike = {
 };
 
 type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorLike;
+
+type SpeechRecognitionAlternativeLike = {
+  readonly transcript: string;
+  readonly confidence?: number;
+};
+
+type SpeechRecognitionResultLike = {
+  readonly isFinal: boolean;
+  readonly length: number;
+  readonly [index: number]: SpeechRecognitionAlternativeLike;
+  item(index: number): SpeechRecognitionAlternativeLike;
+};
+
+type SpeechRecognitionResultListLike = {
+  readonly length: number;
+  readonly [index: number]: SpeechRecognitionResultLike;
+  item(index: number): SpeechRecognitionResultLike;
+};
+
+type SpeechRecognitionEventLike = Event & {
+  readonly resultIndex: number;
+  readonly results: SpeechRecognitionResultListLike;
+};
+
+type SpeechRecognitionErrorEventLike = Event & {
+  readonly error?: string;
+  readonly message?: string;
+};
+
+type SpeechRecognitionLike = EventTarget & {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: ((event: Event) => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onend: ((event: Event) => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+};
+
+type SpeechRecognitionConstructorLike = new () => SpeechRecognitionLike;
+
+type SpeechRecognitionWindow = Window & {
+  SpeechRecognition?: SpeechRecognitionConstructorLike;
+  webkitSpeechRecognition?: SpeechRecognitionConstructorLike;
+};
+
+type VoiceNoticeTone = "ok" | "busy" | "off";
+
+type VoiceNotice = {
+  readonly text: string;
+  readonly tone: VoiceNoticeTone;
+  readonly until?: number;
+};
 
 interface OperatorExportPayload {
   readonly schema?: string;
@@ -115,6 +175,15 @@ let textPaint: HTMLDivElement | null = null;
 let lineGutter: HTMLDivElement | null = null;
 let lineMeta: HTMLDivElement | null = null;
 let fileInput: HTMLInputElement | null = null;
+let accountTransferFileInput: HTMLInputElement | null = null;
+let accountTransferStage: AccountTransferStage = "root";
+let accountTransferNotice: { readonly text: string; readonly until: number } | null = null;
+let voiceRecognition: SpeechRecognitionLike | null = null;
+let voiceTunnelId = "";
+let voiceBaseDraft = "";
+let voiceFinalTranscript = "";
+let voiceInterimTranscript = "";
+let voiceNotice: VoiceNotice | null = null;
 const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
@@ -128,6 +197,8 @@ const liveDraftTimers = new Map<string, number>();
 const liveDraftSendTimers = new Map<string, number>();
 let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
+let trafficShare = loadTrafficShare();
+let trafficAccess = loadTrafficAccess();
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
 const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
@@ -431,8 +502,11 @@ async function boot(): Promise<void> {
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
     clearRemoteSessionState();
+    clearTrafficState();
     remoteEnabled = loadRemoteEnabled();
     remoteAccess = loadRemoteAccess();
+    trafficShare = loadTrafficShare();
+    trafficAccess = loadTrafficAccess();
     terminalOpenId = "";
     chessOpenId = "";
     rememberAppRuntime();
@@ -544,7 +618,7 @@ function renderNick(): void {
   restoreFile?.addEventListener("change", () => {
     const file = restoreFile.files?.[0];
     if (file) {
-      void restoreFromOperatorExportText(file.text(), input);
+      void restoreFromAccountTransferText(file.text(), input);
     }
     restoreFile.value = "";
   });
@@ -590,18 +664,43 @@ function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
 async function restoreFromOperatorExportText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {
   try {
     const payload = parseOperatorExportPayload(await textOrPromise);
-    const restored = await restoreOperatorExportPayload(payload);
-    finishDeviceBoot(restored.texts);
-    return restored;
+    return await restoreParsedExportPayload(payload);
   } catch (error) {
     console.warn("[soty] operator export restore failed", error);
-    if (nickInput) {
-      nickInput.value = "";
-      nickInput.placeholder = "backup?";
-      nickInput.focus();
-    }
+    markRestoreInputFailed(nickInput);
     return null;
   }
+}
+
+async function restoreFromAccountTransferText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {
+  try {
+    const text = await textOrPromise;
+    const parsed = parseJsonPayload(text);
+    if (isAccountTransferPayload(parsed)) {
+      device = await importDeviceFromAccountTransferPayload(parsed);
+      return await restoreParsedExportPayload(parsed.operatorExport as OperatorExportPayload);
+    }
+    return await restoreParsedExportPayload(parseOperatorExportPayloadFromParsed(parsed));
+  } catch (error) {
+    console.warn("[soty] account transfer restore failed", error);
+    markRestoreInputFailed(nickInput);
+    return null;
+  }
+}
+
+async function restoreParsedExportPayload(payload: OperatorExportPayload): Promise<RestoreResult> {
+  const restored = await restoreOperatorExportPayload(payload);
+  finishDeviceBoot(restored.texts);
+  return restored;
+}
+
+function markRestoreInputFailed(nickInput?: HTMLInputElement | null): void {
+  if (!nickInput) {
+    return;
+  }
+  nickInput.value = "";
+  nickInput.placeholder = "backup?";
+  nickInput.focus();
 }
 
 async function restoreOperatorExportPayload(payload: OperatorExportPayload): Promise<RestoreResult> {
@@ -621,8 +720,11 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
 
   rememberAppRuntime();
   clearRemoteSessionState();
+  clearTrafficState();
   remoteEnabled = loadRemoteEnabled();
   remoteAccess = loadRemoteAccess();
+  trafficShare = loadTrafficShare();
+  trafficAccess = loadTrafficAccess();
   terminalOpenId = "";
   chessOpenId = "";
   return {
@@ -632,8 +734,15 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
 }
 
 function parseOperatorExportPayload(text: string): OperatorExportPayload {
+  return parseOperatorExportPayloadFromParsed(parseJsonPayload(text));
+}
+
+function parseJsonPayload(text: string): unknown {
   const cleanText = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-  const parsed: unknown = JSON.parse(cleanText);
+  return JSON.parse(cleanText);
+}
+
+function parseOperatorExportPayloadFromParsed(parsed: unknown): OperatorExportPayload {
   if (!isRecord(parsed) || parsed.schema !== "soty.operator-export.v1") {
     throw new Error("Unsupported Soty backup file");
   }
@@ -1356,6 +1465,7 @@ function renderApp(): void {
           <div class="composer-mode-host"></div>
           <form class="composer-bar">
             <button class="composer-attach retro-icon-button" type="button" aria-label="attach" data-tooltip="Прикрепить файл">${icon("clip")}</button>
+            <button class="composer-voice retro-icon-button" type="button" aria-label="voice input" aria-pressed="false" data-tooltip="Голосовой ввод">${icon("mic")}</button>
             <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
             <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
           </form>
@@ -1409,14 +1519,18 @@ function renderApp(): void {
         <section class="side-block action-block">
           <h2>Действия</h2>
           <div class="side-actions">
-            <button class="side-action attach-action" type="button" aria-label="attach" data-tooltip="Отправить файл">${icon("clip")}<span>Файл</span></button>
-            <button class="side-action knock-action" type="button" aria-label="knock" data-tooltip="Позвать собеседника">${icon("bell")}<span>Позвать</span></button>
-            <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}<span>Агент</span></button>
-            <button class="side-action quick-actions-action" type="button" aria-label="действия" data-tooltip="Действия">${icon("check")}<span>Задачи</span></button>
-            <button class="side-action remote-action" type="button" aria-label="remote" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>Доступ</span></button>
-            <button class="side-action close-action" type="button" aria-label="close" data-tooltip="Закрыть соту">${icon("close")}<span>Закрыть</span></button>
-            <button class="side-action chess-action" type="button" aria-label="chess" data-tooltip="Шахматы">${icon("chess")}<span>Шахматы</span></button>
+            <button class="side-action attach-action" type="button" aria-label="attach" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Отправить файл">${icon("clip")}<span>Файл</span></button>
+            <button class="side-action knock-action" type="button" aria-label="knock" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Позвать собеседника">${icon("bell")}<span>Позвать</span></button>
+            <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Поговорить с агентом">${icon("person")}<span>Агент</span></button>
+            <button class="side-action quick-actions-action" type="button" aria-label="действия" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Действия">${icon("check")}<span>Задачи</span></button>
+            <button class="side-action remote-action" type="button" aria-label="remote" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>Доступ</span></button>
+            <button class="side-action close-action" type="button" aria-label="close" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Закрыть соту">${icon("close")}<span>Закрыть</span></button>
+            <button class="side-action chess-action" type="button" aria-label="chess" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Шахматы">${icon("chess")}<span>Шахматы</span></button>
+            <button class="side-action traffic-action" type="button" aria-label="traffic" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Link traffic">${icon("traffic")}<span>Traffic</span></button>
+            ${accountTransferSideActionsHtml()}
           </div>
+          <input class="account-transfer-file" type="file" accept="application/json,.json" />
+          ${accountTransferNoticeHtml()}
         </section>
       </aside>
     </section>
@@ -1428,6 +1542,7 @@ function renderApp(): void {
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
+  accountTransferFileInput = app.querySelector(".account-transfer-file");
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
     updateChatBottomButton();
@@ -1489,6 +1604,9 @@ function renderApp(): void {
     finalizeComposerDraft();
   });
   app.querySelector<HTMLButtonElement>(".composer-attach")?.addEventListener("click", () => fileInput?.click());
+  app.querySelector<HTMLButtonElement>(".composer-voice")?.addEventListener("click", () => {
+    toggleVoiceComposer();
+  });
   app.querySelector<HTMLElement>(".editor")?.addEventListener("dragover", (event) => {
     event.preventDefault();
     app.querySelector(".editor")?.classList.add("dropping");
@@ -1505,6 +1623,15 @@ function renderApp(): void {
     void sendFiles(fileInput?.files);
     if (fileInput) {
       fileInput.value = "";
+    }
+  });
+  accountTransferFileInput?.addEventListener("change", () => {
+    const file = accountTransferFileInput?.files?.[0];
+    if (file) {
+      void restoreFromAccountTransferText(file.text());
+    }
+    if (accountTransferFileInput) {
+      accountTransferFileInput.value = "";
     }
   });
   app.querySelector<HTMLButtonElement>(".terminal-close")?.addEventListener("click", () => {
@@ -1543,6 +1670,7 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".chess-action")?.addEventListener("click", () => {
     void openChessForSelected();
   });
+  bindAccountTransferMenu();
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
     void (async () => {
       if (!selectedId) {
@@ -1567,6 +1695,12 @@ function renderApp(): void {
         void toggleRemoteGrant(selectedId);
       }
     })();
+  });
+  app.querySelector<HTMLButtonElement>(".traffic-action")?.addEventListener("click", () => {
+    if (!selectedId) {
+      return;
+    }
+    void toggleTrafficGrant(selectedId);
   });
   app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
     if (selectedId) {
@@ -1640,9 +1774,14 @@ function renderTiles(): void {
             void toggleRemoteGrant(id);
           }
         },
+        traffic: () => {
+          selectTunnel(id);
+          void toggleTrafficGrant(id);
+        },
         close: () => closeTunnel(id)
       }, {
-        remoteEnabled: remoteEnabled.has(id)
+        remoteEnabled: remoteEnabled.has(id),
+        trafficEnabled: trafficShare.has(id)
       });
     }
   });
@@ -1683,7 +1822,7 @@ async function toggleRemoteGrant(id: string): Promise<void> {
   await enableRemoteGrant(id);
 }
 
-async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<boolean> {
+async function enableRemoteGrant(id: string, targetDeviceId = "*", options: { readonly traffic?: boolean } = {}): Promise<boolean> {
   const mode = await refreshAgentButtonState(true);
   if (mode !== "link") {
     markAgentDownloadNeeded();
@@ -1691,13 +1830,43 @@ async function enableRemoteGrant(id: string, targetDeviceId = "*"): Promise<bool
     return false;
   }
 
+  if (options.traffic === true) {
+    trafficShare = setTrafficShare(id, true);
+  }
   remoteEnabled = setRemoteEnabled(id, true);
-  syncs.get(id)?.grantRemote(true, targetDeviceId);
+  syncs.get(id)?.grantRemote(true, targetDeviceId, grantCapabilitiesForTunnel(id));
   terminalOpenId = id;
   setTerminalState(id, "idle");
   renderTerminal();
   renderTiles();
   return true;
+}
+
+async function toggleTrafficGrant(id: string): Promise<void> {
+  if (isAgentTunnelId(id)) {
+    return;
+  }
+  if (trafficShare.has(id)) {
+    trafficShare = setTrafficShare(id, false);
+    if (remoteEnabled.has(id)) {
+      syncs.get(id)?.grantRemote(true, "*", grantCapabilitiesForTunnel(id));
+    }
+    renderTiles();
+    renderDialogChrome();
+    publishOperatorTargets();
+    return;
+  }
+  const ok = await enableRemoteGrant(id, "*", { traffic: true });
+  if (!ok) {
+    return;
+  }
+  appendTerminalLine(id, "+ link traffic");
+  renderTerminal();
+  publishOperatorTargets();
+}
+
+function grantCapabilitiesForTunnel(tunnelId: string): string[] {
+  return trafficGrantCapabilities(trafficShare.has(tunnelId));
 }
 
 function openRemoteCommands(id: string): void {
@@ -1795,7 +1964,7 @@ function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
   if (!remoteEnabled.has(tunnelId)) {
     return;
   }
-  syncs.get(tunnelId)?.grantRemote(true, targetDeviceId);
+  syncs.get(tunnelId)?.grantRemote(true, targetDeviceId, grantCapabilitiesForTunnel(tunnelId));
 }
 
 async function refreshLocalAgent(): Promise<LocalAgentStatus> {
@@ -2005,6 +2174,7 @@ function closeRemoteMode(tunnelId: string): void {
   const hostDeviceId = remoteAccess.get(tunnelId);
   if (remoteEnabled.has(tunnelId)) {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
+    trafficShare = setTrafficShare(tunnelId, false);
     sync?.grantRemote(false, "*");
     if (isAgentTunnelId(tunnelId) && device) {
       void grantAgentSourceAccess(device.id, device.nick, false);
@@ -2013,6 +2183,7 @@ function closeRemoteMode(tunnelId: string): void {
   }
   if (hostDeviceId) {
     remoteAccess = setRemoteAccess(tunnelId, "", false);
+    trafficAccess = setTrafficAccess(tunnelId, "", false);
     if (hostDeviceId !== device?.id) {
       sync?.grantRemote(false, hostDeviceId);
     }
@@ -2059,6 +2230,7 @@ function normalizeSelectedTunnel(): void {
 }
 
 function selectTunnel(id: string): void {
+  stopVoiceComposer(true);
   rememberCurrentChatScroll();
   selectedId = id;
   saveSelectedTunnelId(id);
@@ -2299,6 +2471,7 @@ function renderDialogChrome(): void {
   const id = app.querySelector<HTMLElement>(".dialog-id");
   const shell = app.querySelector<HTMLElement>(".dialog-shell");
   const remoteButton = app.querySelector<HTMLButtonElement>(".remote-action");
+  const trafficButton = app.querySelector<HTMLButtonElement>(".traffic-action");
   const sendButton = app.querySelector<HTMLButtonElement>(".send-button");
   const mode = agentButtonMode();
   if (shell) {
@@ -2341,7 +2514,275 @@ function renderDialogChrome(): void {
           ? "Open remote commands"
           : "Enable remote link";
   }
+  if (trafficButton) {
+    const needsAgent = mode !== "link";
+    const trafficOut = Boolean(selectedId && trafficShare.has(selectedId));
+    const trafficIn = Boolean(selectedId && trafficAccess.has(selectedId));
+    trafficButton.classList.toggle("is-on", !needsAgent && trafficOut);
+    trafficButton.classList.toggle("has-access", !needsAgent && trafficIn);
+    trafficButton.classList.toggle("needs-agent", needsAgent);
+    trafficButton.hidden = Boolean(selectedId && isAgentTunnelId(selectedId));
+    trafficButton.setAttribute("aria-label", needsAgent ? "download" : "traffic");
+    trafficButton.innerHTML = needsAgent
+      ? `${icon("download")}<span>${mode === "update" ? "РћР±РЅРѕРІРёС‚СЊ" : "РЎРєР°С‡Р°С‚СЊ"}</span>`
+      : `${icon("traffic")}<span>Traffic</span>`;
+    trafficButton.dataset.tooltip = needsAgent
+      ? (mode === "update" ? "Download current Soty Agent" : "Download Soty Agent")
+      : trafficOut
+        ? "Stop sharing traffic"
+        : trafficIn
+          ? "Traffic exit available"
+          : "Share traffic over Link";
+  }
+  renderVoiceComposerState();
   renderChatStatusBar();
+}
+
+function accountTransferSideActionsHtml(): string {
+  const width = accountTransferButtonWidth("transfer");
+  if (accountTransferStage === "root") {
+    return `
+      <button class="side-action account-transfer-action" type="button" data-transfer-root="export" aria-label="экспорт" data-button-width="${width}" data-tooltip="Экспорт аккаунта">${icon("download")}<span>Экспорт</span></button>
+      <button class="side-action account-transfer-action" type="button" data-transfer-root="import" aria-label="импорт" data-button-width="${width}" data-tooltip="Импорт аккаунта">${icon("upload")}<span>Импорт</span></button>
+    `;
+  }
+  return `
+    ${accountTransferChoices(accountTransferStage).map((choice) => `
+      <button class="side-action account-transfer-choice" type="button" data-transfer-channel="${choice.channel}" aria-label="${escapeHtml(choice.label)}" data-button-width="${width}" data-tooltip="${escapeHtml(choice.label)}">
+        ${icon(choice.channel === "file" ? (accountTransferStage === "export" ? "download" : "upload") : "shield")}
+        <span>${escapeHtml(choice.channel === "file" ? "Файлом" : "Фразой")}</span>
+      </button>
+    `).join("")}
+    <button class="side-action account-transfer-back" type="button" aria-label="назад" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Назад">${icon("close")}<span>Назад</span></button>
+  `;
+}
+
+function accountTransferNoticeHtml(): string {
+  const text = activeAccountTransferNoticeText();
+  return `<output class="account-transfer-notice"${text ? "" : " hidden"}>${escapeHtml(text)}</output>`;
+}
+
+function activeAccountTransferNoticeText(now = Date.now()): string {
+  if (!accountTransferNotice || accountTransferNotice.until <= now) {
+    accountTransferNotice = null;
+    return "";
+  }
+  return accountTransferNotice.text;
+}
+
+function renderAccountTransferNotice(): void {
+  const host = app.querySelector<HTMLOutputElement>(".account-transfer-notice");
+  if (!host) {
+    return;
+  }
+  const text = activeAccountTransferNoticeText();
+  host.hidden = !text;
+  host.textContent = text;
+}
+
+function bindAccountTransferMenu(): void {
+  app.querySelectorAll<HTMLButtonElement>("[data-transfer-root]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.transferRoot;
+      if (action === "export" || action === "import") {
+        accountTransferStage = action;
+        renderAccountTransferMenu();
+      }
+    });
+  });
+  app.querySelectorAll<HTMLButtonElement>("[data-transfer-channel]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = accountTransferStage;
+      const channel = button.dataset.transferChannel;
+      if ((action === "export" || action === "import") && (channel === "file" || channel === "phrase")) {
+        void runAccountTransferOperation(accountTransferOperation(action, channel));
+      }
+    });
+  });
+  app.querySelector<HTMLButtonElement>(".account-transfer-back")?.addEventListener("click", () => {
+    accountTransferStage = "root";
+    renderAccountTransferMenu();
+  });
+}
+
+function renderAccountTransferMenu(): void {
+  const host = app.querySelector<HTMLDivElement>(".side-actions");
+  if (!host) {
+    return;
+  }
+  host.querySelectorAll(".account-transfer-action, .account-transfer-choice, .account-transfer-back").forEach((node) => node.remove());
+  host.insertAdjacentHTML("beforeend", accountTransferSideActionsHtml());
+  bindAccountTransferMenu();
+}
+
+async function runAccountTransferOperation(operation: AccountTransferOperation): Promise<void> {
+  try {
+    if (operation === "export-file") {
+      await exportAccountTransferFile();
+      return;
+    }
+    if (operation === "export-phrase") {
+      await exportAccountTransferPhrase();
+      return;
+    }
+    if (operation === "import-file") {
+      accountTransferStage = "root";
+      renderAccountTransferMenu();
+      accountTransferFileInput?.click();
+      return;
+    }
+    if (operation === "import-phrase") {
+      await importAccountTransferPhrase();
+    }
+  } catch (error) {
+    console.warn("[soty] account transfer failed", error);
+    setAccountTransferNotice(friendlyAccountTransferError(error));
+  } finally {
+    if (operation !== "import-file") {
+      accountTransferStage = "root";
+      renderAccountTransferMenu();
+    }
+  }
+}
+
+async function exportAccountTransferFile(): Promise<void> {
+  const text = await buildAccountTransferExportText();
+  downloadTextFile(`soty-account-${compactDateStamp()}.json`, text, "application/json");
+  setAccountTransferNotice("Экспорт сохранен файлом. Этот файл хранит ключ аккаунта.");
+}
+
+async function exportAccountTransferPhrase(): Promise<void> {
+  const phrase = await requestAccountPhrase("export");
+  if (!phrase) {
+    return;
+  }
+  const text = await buildAccountTransferExportText();
+  await saveAccountPhraseBackup(phrase, text);
+  setAccountTransferNotice("Фраза сохранена. Для импорта нужна та же фраза, слово в слово.");
+}
+
+async function importAccountTransferPhrase(): Promise<void> {
+  const phrase = await requestAccountPhrase("import");
+  if (!phrase) {
+    return;
+  }
+  const text = await loadAccountPhraseBackup(phrase);
+  const restored = await restoreFromAccountTransferText(text);
+  if (!restored) {
+    throw new Error("account-transfer-import-failed");
+  }
+  setAccountTransferNotice(`Импорт готов: восстановлено ${restored.count} сот.`);
+}
+
+async function buildAccountTransferExportText(): Promise<string> {
+  if (!device) {
+    throw new Error("device-missing");
+  }
+  const operatorExport = parseOperatorExportPayload(buildOperatorExport());
+  const payload = await createAccountTransferPayload(operatorExport, device);
+  if (payload.schema !== accountTransferSchema) {
+    throw new Error("account-transfer-schema");
+  }
+  return `${JSON.stringify(payload, null, 2)}\n`;
+}
+
+function downloadTextFile(name: string, text: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function compactDateStamp(): string {
+  return new Date().toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}Z$/u, "Z");
+}
+
+function setAccountTransferNotice(text: string): void {
+  accountTransferNotice = { text, until: Date.now() + 9000 };
+  renderAccountTransferNotice();
+  window.setTimeout(renderAccountTransferNotice, 9200);
+}
+
+function friendlyAccountTransferError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message === "device-key-not-exportable") {
+    return "Этот аккаунт создан старым непереносимым ключом. Новый аккаунт или импортированный backup уже будет переносимым.";
+  }
+  if (message === "phrase-too-short") {
+    return "Фраза слишком короткая: минимум 6 слов, лучше 12 и больше.";
+  }
+  if (message === "phrase-backup-not-found") {
+    return "По этой фразе backup не найден.";
+  }
+  if (message === "account-transfer-import-failed" || message.includes("decrypt")) {
+    return "Импорт не прошел. Проверьте фразу или файл.";
+  }
+  if (message.includes("save")) {
+    return "Не удалось сохранить фразовый backup. Проверьте связь с сервером.";
+  }
+  return "Перенос аккаунта не прошел. Проверьте файл или фразу.";
+}
+
+function requestAccountPhrase(kind: AccountTransferRootAction): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "action-modal account-phrase-modal";
+    overlay.innerHTML = `
+      <section class="action-sheet account-phrase-sheet" role="dialog" aria-modal="true" aria-label="${kind === "export" ? "export phrase" : "import phrase"}">
+        <header class="action-head">
+          <span class="action-mark">${icon("shield")}</span>
+          <span>
+            <b>${kind === "export" ? "Сохранить фразой" : "Импорт фразой"}</b>
+            <small>минимум 6 слов, лучше ${phraseRecommendedWords}+</small>
+          </span>
+          <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
+        </header>
+        <textarea class="account-phrase-input" rows="4" autocomplete="off" spellcheck="false" placeholder="Ваша уникальная фраза на любом языке"></textarea>
+        <output class="account-phrase-status">Чем больше и уникальнее фраза, тем лучше.</output>
+        <div class="account-phrase-actions">
+          <button class="account-phrase-cancel" type="button">Отмена</button>
+          <button class="account-phrase-submit" type="button" disabled>${kind === "export" ? "Сохранить" : "Импорт"}</button>
+        </div>
+      </section>
+    `;
+    const close = (value: string | null) => {
+      overlay.remove();
+      resolve(value);
+    };
+    const input = overlay.querySelector<HTMLTextAreaElement>(".account-phrase-input");
+    const status = overlay.querySelector<HTMLOutputElement>(".account-phrase-status");
+    const submit = overlay.querySelector<HTMLButtonElement>(".account-phrase-submit");
+    const refresh = () => {
+      const validation = validateAccountPhrase(input?.value || "");
+      if (status) {
+        status.textContent = validation.message;
+      }
+      if (submit) {
+        submit.disabled = !validation.ok;
+      }
+    };
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        close(null);
+      }
+    });
+    overlay.querySelector<HTMLButtonElement>(".action-close")?.addEventListener("click", () => close(null));
+    overlay.querySelector<HTMLButtonElement>(".account-phrase-cancel")?.addEventListener("click", () => close(null));
+    submit?.addEventListener("click", () => {
+      const validation = validateAccountPhrase(input?.value || "");
+      if (validation.ok) {
+        close(validation.normalized);
+      }
+    });
+    input?.addEventListener("input", refresh);
+    document.body.append(overlay);
+    input?.focus();
+    refresh();
+  });
 }
 
 function friendlyChatState(mode: AgentButtonMode = agentButtonMode()): string {
@@ -2383,15 +2824,280 @@ function renderChatStatusBar(mode: AgentButtonMode = agentButtonMode()): void {
     return;
   }
   const syncState = selectedId ? syncStates.get(selectedId) : "";
-  const tone = syncState === "closed" ? "off" : (agentThinking.has(selectedId) || syncState === "connecting" ? "busy" : "ok");
+  const voice = activeVoiceStatus();
+  const tone = voice?.tone ?? (syncState === "closed" ? "off" : (agentThinking.has(selectedId) || syncState === "connecting" ? "busy" : "ok"));
   const technical = technicalChatStatus(mode, syncState);
   host.innerHTML = `
     <span class="chat-status-main ${tone}">
       <i aria-hidden="true"></i>
-      <b>${escapeHtml(friendlyChatState(mode))}</b>
+      <b>${escapeHtml(voice?.text ?? friendlyChatState(mode))}</b>
     </span>
     <span class="chat-status-meta">${technical.map((item, index) => `<small>${index > 0 ? " · " : ""}${escapeHtml(item)}</small>`).join("")}</span>
   `;
+}
+
+function speechRecognitionConstructor(): SpeechRecognitionConstructorLike | null {
+  const speechWindow = window as SpeechRecognitionWindow;
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
+function activeVoiceStatus(now = Date.now()): VoiceNotice | null {
+  if (voiceRecognition && voiceTunnelId === selectedId) {
+    const preview = normalizeVoiceTranscript(voiceInterimTranscript);
+    return {
+      text: preview ? `Голос: ${compactChatPreview(preview, 56)}` : "Голос: слушаю",
+      tone: "busy"
+    };
+  }
+  if (!voiceNotice) {
+    return null;
+  }
+  if (voiceNotice.until && voiceNotice.until <= now) {
+    voiceNotice = null;
+    return null;
+  }
+  return voiceNotice;
+}
+
+function setVoiceNotice(text: string, tone: VoiceNoticeTone, ttlMs = 2600): void {
+  voiceNotice = {
+    text,
+    tone,
+    ...(ttlMs > 0 ? { until: Date.now() + ttlMs } : {})
+  };
+  renderVoiceComposerState();
+  renderChatStatusBar();
+  if (ttlMs > 0) {
+    window.setTimeout(() => {
+      if (voiceNotice?.text === text && voiceNotice.until && voiceNotice.until <= Date.now()) {
+        voiceNotice = null;
+        renderVoiceComposerState();
+        renderChatStatusBar();
+      }
+    }, ttlMs + 40);
+  }
+}
+
+function renderVoiceComposerState(): void {
+  const button = app.querySelector<HTMLButtonElement>(".composer-voice");
+  const bar = app.querySelector<HTMLFormElement>(".composer-bar");
+  const supported = Boolean(speechRecognitionConstructor());
+  const listening = Boolean(voiceRecognition && voiceTunnelId === selectedId);
+  if (button) {
+    button.classList.toggle("is-listening", listening);
+    button.classList.toggle("is-unsupported", !supported);
+    button.setAttribute("aria-pressed", String(listening));
+    button.setAttribute("aria-disabled", String(!supported));
+    button.setAttribute("aria-label", listening ? "stop voice input" : "voice input");
+    button.dataset.tooltip = !supported
+      ? "Голосовой ввод доступен в Chrome или Edge"
+      : listening
+        ? "Остановить диктовку"
+        : "Голосовой ввод";
+  }
+  bar?.classList.toggle("is-voice-listening", listening);
+}
+
+function toggleVoiceComposer(): void {
+  if (voiceRecognition && voiceTunnelId === selectedId) {
+    stopVoiceComposer(true);
+    return;
+  }
+  stopVoiceComposer(true);
+  const Recognition = speechRecognitionConstructor();
+  if (!Recognition) {
+    setVoiceNotice("Голосовой ввод доступен в Chrome или Edge", "off", 4200);
+    return;
+  }
+  if (!selectedId || !composer) {
+    setVoiceNotice("Сначала выберите диалог", "off", 2600);
+    return;
+  }
+  let recognition: SpeechRecognitionLike;
+  try {
+    recognition = new Recognition();
+  } catch {
+    setVoiceNotice("Не удалось включить голосовой ввод", "off", 3600);
+    return;
+  }
+  voiceRecognition = recognition;
+  voiceTunnelId = selectedId;
+  voiceBaseDraft = composer.value || localDrafts.get(selectedId) || "";
+  voiceFinalTranscript = "";
+  voiceInterimTranscript = "";
+  recognition.lang = preferredSpeechLanguage();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.onstart = () => {
+    setVoiceNotice("Голос: слушаю", "busy", 0);
+  };
+  recognition.onresult = handleVoiceComposerResult;
+  recognition.onerror = (event) => {
+    setVoiceNotice(friendlyVoiceError(event.error || ""), "off", 4200);
+  };
+  recognition.onend = () => {
+    if (voiceRecognition !== recognition) {
+      return;
+    }
+    voiceRecognition = null;
+    voiceTunnelId = "";
+    voiceBaseDraft = "";
+    voiceInterimTranscript = "";
+    if (voiceNotice?.tone === "busy") {
+      voiceNotice = null;
+    }
+    renderVoiceComposerState();
+    renderChatStatusBar();
+  };
+  try {
+    recognition.start();
+  } catch {
+    voiceRecognition = null;
+    voiceTunnelId = "";
+    setVoiceNotice("Микрофон сейчас недоступен", "off", 3600);
+  }
+  renderVoiceComposerState();
+}
+
+function stopVoiceComposer(commit: boolean): void {
+  const recognition = voiceRecognition;
+  if (!recognition) {
+    return;
+  }
+  if (commit) {
+    applyVoiceComposerTranscript();
+  }
+  voiceRecognition = null;
+  const hadTranscript = Boolean(normalizeVoiceTranscript(`${voiceFinalTranscript} ${voiceInterimTranscript}`));
+  voiceTunnelId = "";
+  voiceBaseDraft = "";
+  voiceFinalTranscript = "";
+  voiceInterimTranscript = "";
+  recognition.onstart = null;
+  recognition.onresult = null;
+  recognition.onerror = null;
+  recognition.onend = null;
+  try {
+    recognition.stop();
+  } catch {
+    try {
+      recognition.abort();
+    } catch {
+      // Browser implementations differ after permission errors; state above is already reset.
+    }
+  }
+  renderVoiceComposerState();
+  if (commit && hadTranscript) {
+    setVoiceNotice("Голос добавлен в черновик", "ok", 1800);
+  } else {
+    renderChatStatusBar();
+  }
+}
+
+function handleVoiceComposerResult(event: SpeechRecognitionEventLike): void {
+  if (!voiceRecognition || !voiceTunnelId) {
+    return;
+  }
+  let finalText = "";
+  let interimText = "";
+  for (let index = 0; index < event.results.length; index += 1) {
+    const result = speechResultAt(event.results, index);
+    const alternative = result ? speechAlternativeAt(result, 0) : null;
+    const transcript = alternative?.transcript || "";
+    if (!transcript) {
+      continue;
+    }
+    if (result?.isFinal) {
+      finalText += ` ${transcript}`;
+    } else {
+      interimText += ` ${transcript}`;
+    }
+  }
+  voiceFinalTranscript = normalizeVoiceTranscript(finalText);
+  voiceInterimTranscript = normalizeVoiceTranscript(interimText);
+  applyVoiceComposerTranscript();
+  renderVoiceComposerState();
+  renderChatStatusBar();
+}
+
+function speechResultAt(list: SpeechRecognitionResultListLike, index: number): SpeechRecognitionResultLike | null {
+  try {
+    return typeof list.item === "function" ? list.item(index) : list[index] ?? null;
+  } catch {
+    return list[index] ?? null;
+  }
+}
+
+function speechAlternativeAt(result: SpeechRecognitionResultLike, index: number): SpeechRecognitionAlternativeLike | null {
+  try {
+    return typeof result.item === "function" ? result.item(index) : result[index] ?? null;
+  } catch {
+    return result[index] ?? null;
+  }
+}
+
+function applyVoiceComposerTranscript(): void {
+  const tunnelId = voiceTunnelId;
+  if (!tunnelId) {
+    return;
+  }
+  const transcript = normalizeVoiceTranscript(`${voiceFinalTranscript} ${voiceInterimTranscript}`);
+  const next = mergeVoiceDraft(voiceBaseDraft, transcript);
+  if (!transcript || next === (localDrafts.get(tunnelId) || "")) {
+    return;
+  }
+  if (selectedId === tunnelId && composer) {
+    composer.value = next;
+    rememberComposerDraft();
+    return;
+  }
+  if (next) {
+    localDrafts.set(tunnelId, next);
+  } else {
+    localDrafts.delete(tunnelId);
+  }
+  scheduleLiveDraft(tunnelId, next);
+}
+
+function mergeVoiceDraft(base: string, transcript: string): string {
+  const cleanTranscript = normalizeVoiceTranscript(transcript);
+  if (!cleanTranscript) {
+    return base;
+  }
+  if (!base.trim()) {
+    return cleanTranscript;
+  }
+  const withoutTrailingInlineSpaces = base.replace(/[ \t]+$/u, "");
+  if (/\n$/u.test(withoutTrailingInlineSpaces)) {
+    return `${withoutTrailingInlineSpaces}${cleanTranscript}`;
+  }
+  return `${withoutTrailingInlineSpaces} ${cleanTranscript}`;
+}
+
+function normalizeVoiceTranscript(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+function preferredSpeechLanguage(): string {
+  const language = navigator.language || "";
+  return language ? language : "ru-RU";
+}
+
+function friendlyVoiceError(error: string): string {
+  if (error === "not-allowed" || error === "service-not-allowed") {
+    return "Микрофон не разрешен";
+  }
+  if (error === "audio-capture") {
+    return "Микрофон не найден";
+  }
+  if (error === "no-speech") {
+    return "Речь не распознана";
+  }
+  if (error === "network") {
+    return "Распознавание сейчас недоступно";
+  }
+  return "Голосовой ввод остановлен";
 }
 
 function technicalChatStatus(mode: AgentButtonMode, syncState: string | undefined): string[] {
@@ -2411,6 +3117,11 @@ function technicalChatStatus(mode: AgentButtonMode, syncState: string | undefine
     items.push("доступ к этому компьютеру");
   } else if (remoteAccess.has(selectedId)) {
     items.push("доступ разрешен");
+  }
+  if (trafficShare.has(selectedId)) {
+    items.push("traffic share");
+  } else if (trafficAccess.has(selectedId)) {
+    items.push("traffic exit");
   }
   if (selectedId) {
     items.push(`id ${selectedId.slice(0, 8).toUpperCase()}`);
@@ -2604,6 +3315,7 @@ function syncRemoteAccessWithPeers(tunnelId: string, items: readonly { readonly 
     return false;
   }
   remoteAccess = setRemoteAccess(tunnelId, "", false);
+  trafficAccess = setTrafficAccess(tunnelId, "", false);
   if (terminalOpenId === tunnelId) {
     terminalOpenId = "";
   }
@@ -2666,6 +3378,8 @@ function closeTunnel(id: string): void {
   syncStates.delete(id);
   remoteEnabled = setRemoteEnabled(id, false);
   remoteAccess = setRemoteAccess(id, "", false);
+  trafficShare = setTrafficShare(id, false);
+  trafficAccess = setTrafficAccess(id, "", false);
   if (terminalOpenId === id) {
     terminalOpenId = "";
   }
@@ -2834,7 +3548,7 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
   }
   const sync = syncs.get(tunnelId);
   if (remoteEnabled.has(tunnelId)) {
-    sync?.grantRemote(true, request.deviceId);
+    sync?.grantRemote(true, request.deviceId, grantCapabilitiesForTunnel(tunnelId));
     return;
   }
   if (shouldAutoSelectTunnel(tunnelId)) {
@@ -2876,7 +3590,7 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
         return;
       }
       remoteEnabled = setRemoteEnabled(tunnelId, true);
-      syncs.get(tunnelId)?.grantRemote(true, request.deviceId);
+      syncs.get(tunnelId)?.grantRemote(true, request.deviceId, grantCapabilitiesForTunnel(tunnelId));
       terminalOpenId = tunnelId;
       setTerminalState(tunnelId, "idle");
       overlay.remove();
@@ -2894,9 +3608,16 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   }
   if (!grant.enabled && remoteEnabled.has(tunnelId)) {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
+    trafficShare = setTrafficShare(tunnelId, false);
     syncs.get(tunnelId)?.grantRemote(false, "*");
   }
   remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
+  trafficAccess = setTrafficAccess(
+    tunnelId,
+    grant.deviceId,
+    grant.enabled && capabilitiesAllowTraffic(grant.capabilities),
+    trafficModeFromCapabilities(grant.capabilities)
+  );
   if (grant.enabled) {
     terminalOpenId = tunnelId;
     setTerminalState(tunnelId, "idle");
@@ -3289,6 +4010,7 @@ function operatorTargets(): LocalAgentOperatorTarget[] {
     .map((tunnel, index) => {
       const deviceIds = [...new Set((peerDevices.get(tunnel.id) ?? []).map((peer) => peer.id).filter(Boolean))];
       const hostDeviceId = remoteAccess.get(tunnel.id) || "";
+      const traffic = trafficAccess.get(tunnel.id);
       return {
         id: tunnel.id,
         label: counterpartyLabel(tunnel),
@@ -3297,6 +4019,14 @@ function operatorTargets(): LocalAgentOperatorTarget[] {
         access: true,
         host: remoteEnabled.has(tunnel.id),
         selected: tunnel.id === selectedId,
+        ...(traffic ? {
+          traffic: {
+            exit: true,
+            mode: traffic.mode,
+            share: false,
+            status: traffic.mode === "proxy" ? "available" as const : "planned" as const
+          }
+        } : {}),
         rank: index + 1,
         lastActionAt: tunnel.lastActionAt || tunnel.updatedAt
       };
@@ -3312,6 +4042,7 @@ function agentDeviceNetworkContext(
     ? null
     : linkedOperatorTargetForTunnel(tunnelId, targets);
   const selectedTargetDeviceId = selectedTarget?.hostDeviceId || selectedTarget?.deviceIds?.[0] || "";
+  const selectedTraffic = selectedTarget?.traffic?.exit === true;
   const sourceCapabilities = isAgentSourceCompanionReady(localAgent, device?.id || "")
     ? ["source-device-agent"]
     : ["web-controller"];
@@ -3327,9 +4058,11 @@ function agentDeviceNetworkContext(
     selectedTargetDeviceId,
     selectedTargetAccess: selectedTarget?.access === true,
     selectedTargetLink: Boolean(selectedTarget),
+    selectedTargetTraffic: selectedTraffic,
     capabilities: [
       "chat-selected-target",
       "linked-device-actions",
+      "link-traffic-v1",
       "room-file-transfer",
       "artifact-transfer",
       "desktop-actions",
@@ -3761,7 +4494,7 @@ async function runOperatorImport(message: { readonly id?: string; readonly text?
   if (!requestId || !text.trim()) {
     return;
   }
-  const restored = await restoreFromOperatorExportText(text);
+  const restored = await restoreFromAccountTransferText(text);
   if (!restored) {
     sendOperatorOutput(requestId, "! import", 500);
     return;
@@ -4527,8 +5260,13 @@ function localAgentRunTimeoutMs(value: unknown): number {
   return safeOperatorTimeoutMs(value) || 30 * 60_000;
 }
 
-function agentSourceClientState(): { readonly localAgent: LocalAgentStatus } {
-  return { localAgent };
+function agentSourceClientState(): { readonly localAgent: LocalAgentStatus; readonly deviceNetwork: LocalAgentDeviceNetwork } {
+  const activeTunnel = selectedId ? loadTunnels().find((item) => item.id === selectedId) || null : null;
+  const targets = operatorTargets();
+  return {
+    localAgent,
+    deviceNetwork: agentDeviceNetworkContext(selectedId, activeTunnel, targets)
+  };
 }
 
 function processLocalAgentDataPlaneOutput(tunnelId: string, commandId: string, rawText: string, flush = false): string {
@@ -5002,6 +5740,9 @@ async function finalizeComposerDraft(): Promise<void> {
   if (agentThinking.has(tunnelId)) {
     stopAgentDialogReply(tunnelId);
     return;
+  }
+  if (voiceRecognition && voiceTunnelId === tunnelId) {
+    stopVoiceComposer(true);
   }
   primeAgentDoneSound();
   const draft = composer.value || localDrafts.get(tunnelId) || "";
@@ -5518,6 +6259,9 @@ function resizeComposer(): void {
 function applySelectedText(focus = false): void {
   if (!textarea) {
     return;
+  }
+  if (voiceRecognition && voiceTunnelId && voiceTunnelId !== selectedId) {
+    stopVoiceComposer(false);
   }
   const next = texts.get(selectedId) || "";
   if (textarea.value !== next) {
@@ -6253,6 +6997,7 @@ function startChatEdit(ref: ChatMessageRef): void {
   if (!composer || !selectedId) {
     return;
   }
+  stopVoiceComposer(true);
   chatEditReturnDrafts.set(selectedId, composer.value || localDrafts.get(selectedId) || "");
   chatEditTargets.set(selectedId, ref);
   chatReplyTargets.delete(selectedId);
@@ -6274,6 +7019,7 @@ async function retryChatMessage(ref: ChatMessageRef): Promise<void> {
     return;
   }
   if (composer) {
+    stopVoiceComposer(true);
     composer.value = ref.text;
     rememberComposerDraft();
     composer.focus();

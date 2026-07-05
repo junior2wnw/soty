@@ -1,4 +1,4 @@
-export type IconName = "install" | "qr" | "scan" | "search" | "reply" | "edit" | "pin" | "close" | "check" | "person" | "clip" | "remote" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
+export type IconName = "install" | "qr" | "scan" | "search" | "reply" | "edit" | "pin" | "close" | "check" | "person" | "clip" | "mic" | "remote" | "traffic" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
@@ -12,7 +12,9 @@ const paths: Record<IconName, string> = {
   check: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7 19.6 5.6 9 16.2Z",
   person: "M12 12c2.2 0 4-1.8 4-4s-1.8-4-4-4-4 1.8-4 4 1.8 4 4 4Zm0 2c-2.7 0-8 1.4-8 4v2h16v-2c0-2.6-5.3-4-8-4Z",
   clip: "M16.5 6.5 8.4 14.6c-1.2 1.2-1.2 3.1 0 4.2 1.2 1.2 3.1 1.2 4.2 0l8.8-8.8c1.9-1.9 1.9-5 0-6.9s-5-1.9-6.9 0L5.3 12.4c-2.7 2.7-2.7 7.1 0 9.8s7.1 2.7 9.8 0l8.1-8.1-1.4-1.4-8.1 8.1c-1.9 1.9-5 1.9-6.9 0s-1.9-5 0-6.9l9.2-9.2c1.1-1.1 2.9-1.1 4 0s1.1 2.9 0 4l-8.8 8.8c-.4.4-1 .4-1.4 0s-.4-1 0-1.4l8.1-8.1-1.4-1.5Z",
+  mic: "M12 14c1.7 0 3-1.3 3-3V5c0-1.7-1.3-3-3-3S9 3.3 9 5v6c0 1.7 1.3 3 3 3Zm5-3c0 2.8-2.2 5-5 5s-5-2.2-5-5H5c0 3.5 2.6 6.4 6 6.9V21H8v2h8v-2h-3v-3.1c3.4-.5 6-3.4 6-6.9h-2Z",
   remote: "M3 4h18v12H3V4Zm2 2v8h14V6H5Zm4 12h6v2H9v-2Zm-4 2h14v2H5v-2Zm7-12 4 3-4 3V8Z",
+  traffic: "M12 2a10 10 0 0 1 10 10h-2a8 8 0 1 0-8 8v2A10 10 0 0 1 12 2Zm0 4a6 6 0 0 1 6 6h-2a4 4 0 1 0-4 4v2a6 6 0 0 1 0-12Zm0 4a2 2 0 0 1 2 2h-2v2a2 2 0 0 1 0-4Zm4 5 6 3-6 3v-2h-4v-2h4v-2Z",
   download: "M5 20h14v-2H5v2ZM13 4h-2v8H8l4 4 4-4h-3V4Z",
   upload: "M5 20h14v-2H5v2ZM11 16h2V8h3l-4-4-4 4h3v8Z",
   refresh: "M17.7 6.3C16.2 4.9 14.2 4 12 4c-3.7 0-6.8 2.6-7.6 6h2.1c.7-2.3 2.9-4 5.5-4 1.7 0 3.3.7 4.4 1.8L13 11h8V3l-3.3 3.3ZM6.3 17.7C7.8 19.1 9.8 20 12 20c3.7 0 6.8-2.6 7.6-6h-2.1c-.7 2.3-2.9 4-5.5 4-1.7 0-3.3-.7-4.4-1.8L11 13H3v8l3.3-3.3Z",

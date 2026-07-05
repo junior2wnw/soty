@@ -1,5 +1,6 @@
 import express from "express";
 import path from "node:path";
+import { attachAccountTransfer } from "./account-transfer.js";
 import { attachAgentLearning } from "./agent-learning.js";
 import { attachAgentRelay } from "./agent-relay.js";
 
@@ -31,7 +32,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     res.setHeader("Origin-Agent-Cluster", "?1");
     res.setHeader("Permissions-Policy", [
       "camera=(self)",
-      "microphone=()",
+      "microphone=(self)",
       "geolocation=()",
       "payment=()",
       "usb=()",
@@ -46,6 +47,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     next();
   });
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  attachAccountTransfer(app, { dataDir });
   attachAgentRelay(app);
   attachAgentLearning(app, { dataDir });
   app.use(express.static(distDir, {
