@@ -350,8 +350,7 @@ function buildSotyAgentRuntime() {
     entrypoint: "computer",
     capabilities: [
       ...defaultAgentRuntimeCapabilities()
-        .filter((capability) => !excludedRuntimeFamilies.has(capability.family)),
-      { family: "traffic", actions: ["status", "share", "use", "stop"], risk: "high", requiresConfirmation: true, proof: ["grant", "mode", "target", "status"] }
+        .filter((capability) => !excludedRuntimeFamilies.has(capability.family))
     ]
   });
 }

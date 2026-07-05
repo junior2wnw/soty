@@ -1,12 +1,20 @@
+import {
+  capabilitiesAllowLinkTraffic,
+  linkTrafficGrantCapabilities,
+  linkTrafficModeFromCapabilities,
+  type LinkTrafficMode
+} from "trustlink-kernel";
+
+export {
+  linkControlCapability,
+  linkTrafficExitCapability,
+  linkTrafficProxyCapability,
+  linkTrafficSystemCapability,
+  type LinkTrafficMode
+} from "trustlink-kernel";
+
 export const trafficShareKey = "soty:link-traffic-share:v1";
 export const trafficAccessKey = "soty:link-traffic-access:v1";
-
-export const linkControlCapability = "link.control";
-export const linkTrafficExitCapability = "traffic.exit";
-export const linkTrafficProxyCapability = "traffic.proxy";
-export const linkTrafficSystemCapability = "traffic.system";
-
-export type LinkTrafficMode = "proxy" | "system";
 
 export interface LinkTrafficAccess {
   readonly hostDeviceId: string;
@@ -108,17 +116,15 @@ export function setTrafficAccess(tunnelId: string, hostDeviceId: string, enabled
 }
 
 export function trafficGrantCapabilities(enabled: boolean): string[] {
-  return enabled
-    ? [linkControlCapability, linkTrafficExitCapability, linkTrafficProxyCapability]
-    : [linkControlCapability];
+  return linkTrafficGrantCapabilities(enabled);
 }
 
 export function capabilitiesAllowTraffic(capabilities: readonly string[] | undefined): boolean {
-  return Boolean(capabilities?.includes(linkTrafficExitCapability));
+  return capabilitiesAllowLinkTraffic(capabilities);
 }
 
 export function trafficModeFromCapabilities(capabilities: readonly string[] | undefined): LinkTrafficMode {
-  return capabilities?.includes(linkTrafficSystemCapability) ? "system" : "proxy";
+  return linkTrafficModeFromCapabilities(capabilities);
 }
 
 export function clearTrafficState(): void {

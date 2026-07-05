@@ -8,4 +8,5 @@ onlyBuiltDependencies:
 allowBuilds:
   esbuild: true
   trustlink-kernel: true
+  trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/082f47242177b56ac2548c3c5b8e8c264dbae500: true
   trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/b6cd753122ef67a6202896dd9ae73a53d669d4b5: true

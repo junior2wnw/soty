@@ -2254,6 +2254,7 @@ async function runScenarios({ relayUrl } = {}) {
       const ui = (await readFile(join(root, "src", "main.ts"), "utf8")).replace(/\r\n/gu, "\n");
       const tooltips = await readFile(join(root, "src", "ui", "tooltips.ts"), "utf8");
       const agentFeature = await readFile(join(root, "src", "features", "agent.ts"), "utf8");
+      const trafficFeature = await readFile(join(root, "src", "features", "traffic.ts"), "utf8");
       const syncSource = await readFile(join(root, "src", "sync.ts"), "utf8");
       const agentSource = await readFile(join(root, "scripts", "soty-agent.mjs"), "utf8");
       const evalSource = await readFile(join(root, "scripts", "soty-agent-eval.mjs"), "utf8");
@@ -2529,6 +2530,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(ui.includes("preparePeerAgentInvocation"));
       assert(ui.includes("stripAgentInvocation"));
       assert(ui.includes("operatorTargets: targets"));
+      assert(trafficFeature.includes('from "trustlink-kernel"'));
+      assert(trafficFeature.includes("linkTrafficGrantCapabilities"));
+      assert(!trafficFeature.includes('export const linkTrafficExitCapability = "traffic.exit"'));
       assert(ui.includes("toggleTrafficGrant"));
       assert(ui.includes("trafficGrantCapabilities(trafficShare.has(tunnelId))"));
       assert(ui.includes("selectedTargetTraffic"));

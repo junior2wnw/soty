@@ -264,6 +264,23 @@
         ]
       },
       {
+        "family": "traffic",
+        "actions": [
+          "status",
+          "share",
+          "use",
+          "stop"
+        ],
+        "risk": "high",
+        "requiresConfirmation": true,
+        "proof": [
+          "grant",
+          "mode",
+          "target",
+          "status"
+        ]
+      },
+      {
         "family": "app",
         "actions": [
           "discover",
@@ -380,23 +397,6 @@
         "proof": [
           "status",
           "result"
-        ]
-      },
-      {
-        "family": "traffic",
-        "actions": [
-          "status",
-          "share",
-          "use",
-          "stop"
-        ],
-        "risk": "high",
-        "requiresConfirmation": true,
-        "proof": [
-          "grant",
-          "mode",
-          "target",
-          "status"
         ]
       }
     ],
@@ -673,6 +673,7 @@
           "mouse",
           "clipboard",
           "network",
+          "traffic",
           "app",
           "api",
           "job",
@@ -680,8 +681,7 @@
           "audio",
           "os",
           "transaction",
-          "device",
-          "traffic"
+          "device"
         ]
       },
       {
