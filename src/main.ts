@@ -184,6 +184,8 @@ let voiceBaseDraft = "";
 let voiceFinalTranscript = "";
 let voiceInterimTranscript = "";
 let voiceNotice: VoiceNotice | null = null;
+const voiceLanguageStorageKey = "soty:voice-language:v1";
+const defaultVoiceLanguage = "ru-RU";
 const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
@@ -2928,7 +2930,7 @@ function toggleVoiceComposer(): void {
   recognition.lang = preferredSpeechLanguage();
   recognition.continuous = true;
   recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
+  recognition.maxAlternatives = 3;
   recognition.onstart = () => {
     setVoiceNotice("Голос: слушаю", "busy", 0);
   };
@@ -3003,7 +3005,7 @@ function handleVoiceComposerResult(event: SpeechRecognitionEventLike): void {
   let interimText = "";
   for (let index = 0; index < event.results.length; index += 1) {
     const result = speechResultAt(event.results, index);
-    const alternative = result ? speechAlternativeAt(result, 0) : null;
+    const alternative = result ? bestSpeechAlternative(result) : null;
     const transcript = alternative?.transcript || "";
     if (!transcript) {
       continue;
@@ -3037,6 +3039,36 @@ function speechAlternativeAt(result: SpeechRecognitionResultLike, index: number)
   }
 }
 
+function bestSpeechAlternative(result: SpeechRecognitionResultLike): SpeechRecognitionAlternativeLike | null {
+  let best: SpeechRecognitionAlternativeLike | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < Math.max(result.length, 1); index += 1) {
+    const alternative = speechAlternativeAt(result, index);
+    if (!alternative?.transcript) {
+      continue;
+    }
+    const confidence = typeof alternative.confidence === "number" && Number.isFinite(alternative.confidence)
+      ? alternative.confidence
+      : (index === 0 ? 0.5 : 0);
+    const clean = normalizeVoiceTranscript(alternative.transcript);
+    const score = confidence
+      + Math.min(clean.length, 120) / 10_000
+      + voiceCommandSignalScore(alternative.transcript)
+      - index / 1000;
+    if (score > bestScore) {
+      best = alternative;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function voiceCommandSignalScore(value: string): number {
+  return /(^|[\s\n])(?:точка|запятая|вопросительный знак|знак вопроса|восклицательный знак|новая строка|новый абзац|period|comma|question mark|new line)(?=$|[\s\n])/iu.test(value)
+    ? 0.03
+    : 0;
+}
+
 function applyVoiceComposerTranscript(): void {
   const tunnelId = voiceTunnelId;
   if (!tunnelId) {
@@ -3061,7 +3093,7 @@ function applyVoiceComposerTranscript(): void {
 }
 
 function mergeVoiceDraft(base: string, transcript: string): string {
-  const cleanTranscript = normalizeVoiceTranscript(transcript);
+  const cleanTranscript = polishVoiceTranscript(transcript, voiceDraftStartsSentence(base));
   if (!cleanTranscript) {
     return base;
   }
@@ -3076,12 +3108,90 @@ function mergeVoiceDraft(base: string, transcript: string): string {
 }
 
 function normalizeVoiceTranscript(value: string): string {
-  return value.replace(/\s+/gu, " ").trim();
+  return normalizeVoiceSpacing(applyVoiceDictationCommands(value));
+}
+
+function polishVoiceTranscript(value: string, sentenceStart: boolean): string {
+  return capitalizeVoiceSentences(normalizeVoiceTranscript(value), sentenceStart);
+}
+
+function applyVoiceDictationCommands(value: string): string {
+  let text = value;
+  const replaceCommand = (pattern: RegExp, replacement: string) => {
+    text = text.replace(pattern, (_match, prefix: string) => `${prefix}${replacement}`);
+  };
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:новый абзац|новый параграф|new paragraph)(?=$|[^\p{L}\p{N}])/giu, "\n\n");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:новая строка|с новой строки|перенос строки|new line)(?=$|[^\p{L}\p{N}])/giu, "\n");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:точка с запятой|точку с запятой|semicolon)(?=$|[^\p{L}\p{N}])/giu, ";");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:вопросительный знак|знак вопроса|question mark)(?=$|[^\p{L}\p{N}])/giu, "?");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:восклицательный знак|exclamation mark|exclamation point)(?=$|[^\p{L}\p{N}])/giu, "!");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:двоеточие|colon)(?=$|[^\p{L}\p{N}])/giu, ":");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:многоточие|ellipsis)(?=$|[^\p{L}\p{N}])/giu, "…");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:запятая|comma)(?=$|[^\p{L}\p{N}])/giu, ",");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:точка|period|full stop)(?=$|[^\p{L}\p{N}])/giu, ".");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:тире|dash)(?=$|[^\p{L}\p{N}])/giu, " — ");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:открой кавычки|кавычки открываются|open quote)(?=$|[^\p{L}\p{N}])/giu, "«");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:закрой кавычки|кавычки закрываются|close quote)(?=$|[^\p{L}\p{N}])/giu, "»");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:открой скобку|скобка открывается|open parenthesis)(?=$|[^\p{L}\p{N}])/giu, "(");
+  replaceCommand(/(^|[^\p{L}\p{N}])(?:закрой скобку|скобка закрывается|close parenthesis)(?=$|[^\p{L}\p{N}])/giu, ")");
+  return text;
+}
+
+function normalizeVoiceSpacing(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[ \t]+/gu, " ")
+    .replace(/[ \t]*\n[ \t]*/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .replace(/\s+([,;:!?…])/gu, "$1")
+    .replace(/\.([^\s\d»")\]}])/gu, ". $1")
+    .replace(/([,;:!?…])(?=\S)/gu, "$1 ")
+    .replace(/([([{«])\s+/gu, "$1")
+    .replace(/\s+([)\]}»])/gu, "$1")
+    .replace(/\s*—\s*/gu, " — ")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+}
+
+function capitalizeVoiceSentences(value: string, sentenceStart: boolean): string {
+  let shouldCapitalize = sentenceStart;
+  let result = "";
+  for (const char of value) {
+    if (shouldCapitalize && /\p{L}/u.test(char)) {
+      result += char.toLocaleUpperCase();
+      shouldCapitalize = false;
+      continue;
+    }
+    result += char;
+    if (/[.!?…]/u.test(char) || char === "\n") {
+      shouldCapitalize = true;
+    } else if (/[\p{L}\p{N}]/u.test(char)) {
+      shouldCapitalize = false;
+    }
+  }
+  return result;
+}
+
+function voiceDraftStartsSentence(base: string): boolean {
+  const trimmed = base.trimEnd();
+  return !trimmed || /(?:[.!?…]|[\n\r])$/u.test(trimmed);
 }
 
 function preferredSpeechLanguage(): string {
+  try {
+    const saved = localStorage.getItem(voiceLanguageStorageKey) || "";
+    if (isSupportedSpeechLanguage(saved)) {
+      return saved;
+    }
+  } catch {
+    // Local storage may be blocked; the browser default below is enough.
+  }
   const language = navigator.language || "";
-  return language ? language : "ru-RU";
+  return /^ru(?:-|$)/iu.test(language) ? language : defaultVoiceLanguage;
+}
+
+function isSupportedSpeechLanguage(value: string): boolean {
+  return /^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/iu.test(value);
 }
 
 function friendlyVoiceError(error: string): string {
