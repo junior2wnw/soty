@@ -1031,6 +1031,28 @@ async function runScenarios({ relayUrl } = {}) {
       assert(seen.includes("$_.Free"));
       assert(!seen.toLowerCase().includes("powershell -noprofile -command"));
     }],
+    ["powershell-like run without executable is promoted to script", async () => {
+      const marker = "SELFTEST_OK ps-scriptlike";
+      const command = `$path = 'C:\\Temp\\${marker}.jpg'; if (Test-Path -LiteralPath $path) { $img = [System.Drawing.Image]::FromFile($path); Write-Host ('SIZE:' + $img.Width + 'x' + $img.Height); $img.Dispose() } else { Write-Host '${marker}' }`;
+      const response = await action(sourceRun(command));
+      expectStatus(response, "ok");
+      const start = mock.lastSourceStartWith(marker);
+      assertEqual(start?.type, "script");
+      assert(start.text.includes("$path"));
+      assert(start.text.includes("$img"));
+      assert(start.text.includes("[System.Drawing.Image]::FromFile($path)"));
+    }],
+    ["operator run promotes powershell-like source command to script", async () => {
+      const marker = "SELFTEST_OK ps-direct-run";
+      const command = `$path = 'C:\\Temp\\${marker}.jpg'; if (Test-Path -LiteralPath $path) { $img = [System.Drawing.Image]::FromFile($path); Write-Host $img.Width; $img.Dispose() } else { Write-Host '${marker}' }`;
+      const response = await post("/operator/run", { target: "agent-source:dev1", command, timeoutMs: 5000 });
+      assertEqual(response.status, 200);
+      assertEqual(response.body.ok, true);
+      const start = mock.lastSourceStartWith(marker);
+      assertEqual(start?.type, "script");
+      assert(start.text.includes("$path"));
+      assert(start.text.includes("$img"));
+    }],
     ["linked pwa target without local operator bridge uses source device route", async () => {
       const response = await action({
         target: "room-a",
@@ -2992,7 +3014,7 @@ function createMockRelay() {
       const payload = JSON.parse(body || "{}");
       const text = String(payload.command || payload.script || "");
       calls.push(text);
-      sourceStarts.push({ relayId: String(payload.relayId || ""), deviceId: String(payload.deviceId || ""), text });
+      sourceStarts.push({ relayId: String(payload.relayId || ""), deviceId: String(payload.deviceId || ""), type: String(payload.type || ""), text });
       if (payload.deviceId === "dev-way") {
         json(response, 404, mockSourceMissing(payload));
         return;
@@ -3227,6 +3249,7 @@ function createMockRelay() {
     server,
     count: (needle) => calls.filter((item) => item.includes(needle)).length,
     lastRelayFor: (needle) => [...sourceStarts].reverse().find((item) => item.text.includes(needle))?.relayId || "",
+    lastSourceStartWith: (needle) => [...sourceStarts].reverse().find((item) => item.text.includes(needle)) || null,
     cancelCount: (id) => cancels.filter((item) => item === id).length,
     lastCommandWith: (needle) => [...calls].reverse().find((item) => item.includes(needle)) || "",
     directPolls: () => directSourcePolls.slice(),

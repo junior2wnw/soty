@@ -2262,6 +2262,22 @@ async function handleOperatorHttpRun(request, response, headers) {
   ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId, {
     allowFallbackSource: !controllerDeviceId
   }));
+  const promoted = promotedRunScript(command);
+  if (promoted) {
+    await handleOperatorHttpPromotedScript({
+      target,
+      sourceDeviceId,
+      sourceRelayId,
+      script: promoted.script,
+      shell: promoted.shell,
+      name: promoted.name,
+      runAs,
+      timeoutMs,
+      response,
+      headers
+    });
+    return;
+  }
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -2282,6 +2298,34 @@ async function handleOperatorHttpRun(request, response, headers) {
     target,
     sourceDeviceId,
     command,
+    runAs,
+    timeoutMs
+  });
+}
+
+async function handleOperatorHttpPromotedScript({ target, sourceDeviceId, sourceRelayId, script, shell, name, runAs, timeoutMs, response, headers }) {
+  if (isAgentSourceTarget(target)) {
+    const deviceId = agentSourceDeviceId(target);
+    if (sourceDeviceId && sourceDeviceId !== deviceId) {
+      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
+      return;
+    }
+    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId);
+    return;
+  }
+  if (!operatorBridge?.open || !target || !script.trim()) {
+    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
+    return;
+  }
+  const id = registerOperatorRun(response, headers, timeoutMs);
+  sendRaw(operatorBridge, {
+    type: "operator.script",
+    id,
+    target,
+    sourceDeviceId,
+    name,
+    shell,
+    script,
     runAs,
     timeoutMs
   });
@@ -2528,14 +2572,12 @@ function normalizeOperatorActionPayload(payload) {
   if (mode === "script" && !script.trim()) {
     return { ok: false, text: "! script" };
   }
-  if (mode === "run" && isPowerShellWorkflowCommand(command)) {
-    const extracted = extractPowerShellCommandBody(command);
-    if (extracted) {
-      mode = "script";
-      script = extracted.slice(0, maxScriptChars);
-      command = "";
-      shell ||= "powershell";
-    }
+  const promoted = mode === "run" ? promotedRunScript(command) : null;
+  if (promoted) {
+    mode = "script";
+    script = promoted.script.slice(0, maxScriptChars);
+    command = "";
+    shell ||= promoted.shell;
   }
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
@@ -2591,6 +2633,39 @@ function isPowerShellWorkflowCommand(command) {
     return false;
   }
   return /[$;|`]|[\r\n]|\b(?:Get|Set|New|Remove|Start|Stop|Invoke|Convert|Where|ForEach)-[A-Za-z]/u.test(value);
+}
+
+function promotedRunScript(command) {
+  const body = extractPowerShellCommandBody(command) || (isPowerShellScriptLikeCommand(command) ? String(command || "").trim() : "");
+  if (!body) {
+    return null;
+  }
+  return {
+    script: body,
+    shell: "powershell",
+    name: "powershell-script"
+  };
+}
+
+function isPowerShellScriptLikeCommand(command) {
+  const value = String(command || "").trim();
+  if (!value || /\b(?:powershell|pwsh)(?:\.exe)?\b/iu.test(value)) {
+    return false;
+  }
+  if (/^(?:cmd|bash|sh|zsh|fish|python|python3|node|npm|pnpm|yarn)\b/iu.test(value)) {
+    return false;
+  }
+  const signals = [
+    /\$[A-Za-z_][\w:]*/u,
+    /\b(?:Get|Set|New|Remove|Start|Stop|Invoke|Convert|Where|ForEach|Test|Write|Add|Clear|Select|Measure|Sort)-[A-Za-z]/u,
+    /\[[A-Za-z][A-Za-z0-9_.]*(?:\]|::)/u,
+    /\b(?:-LiteralPath|-ErrorAction|-OutFile|-UseBasicParsing|-Encoding|-NoProfile|-ExecutionPolicy)\b/iu,
+    /\b(?:param|try|catch|finally|function|foreach|switch)\s*(?:\(|\{)/iu,
+    /\bif\s*\(/iu,
+    /\.(?:Trim|Dispose|Width|Height|FullName|Length)\b/u
+  ];
+  const score = signals.reduce((count, pattern) => count + (pattern.test(value) ? 1 : 0), 0);
+  return score >= 2 && /[;\r\n]|\{|\}/u.test(value);
 }
 
 function extractPowerShellCommandBody(command) {
