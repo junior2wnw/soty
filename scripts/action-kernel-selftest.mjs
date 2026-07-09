@@ -166,7 +166,6 @@ async function runScenarios({ relayUrl } = {}) {
           SOTY_GONKA_API_KEY: "selftest-key",
           SOTY_GONKA_BASE_URL: `http://127.0.0.1:${gonkaUpstream.address().port}/v1`,
           SOTY_CODEX_MODEL: "moonshotai/Kimi-K2.6",
-          SOTY_GONKA_FALLBACK_MODEL: "MiniMaxAI/MiniMax-M2.7",
           SOTY_GONKA_REQUEST_TIMEOUT_MS: "1000",
           SOTY_CODEX_RELAY_FALLBACK: "0"
         },
@@ -177,7 +176,7 @@ async function runScenarios({ relayUrl } = {}) {
         assertEqual(health.body.codexProvider, "gonka");
         assertEqual(health.body.codexModel, "moonshotai/Kimi-K2.6");
         assertEqual(health.body.codexUpstreamModel, "moonshotai/Kimi-K2.6");
-        assertEqual(health.body.codexFallbackModel, "MiniMaxAI/MiniMax-M2.7");
+        assert(!Object.hasOwn(health.body, "codexFallbackModel"));
         assertEqual(health.body.codexAuth, true);
         assertEqual(health.body.codexProviderAdapter, "gonka-direct-chat-completions");
         assertEqual(health.body.codexCentralResolver, "gonka-direct-chat-completions");
@@ -190,7 +189,7 @@ async function runScenarios({ relayUrl } = {}) {
         const models = await requestPort(gonkaPort, "GET", "/codex-gonka/v1/models");
         assertEqual(models.status, 200);
         assertEqual(models.body.models[0].id, "moonshotai/Kimi-K2.6");
-        assertEqual(models.body.models[1].id, "MiniMaxAI/MiniMax-M2.7");
+        assertEqual(models.body.models.length, 1);
         assertEqual(models.body.models[0].supported_in_api, true);
         const proxied = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
@@ -320,9 +319,9 @@ async function runScenarios({ relayUrl } = {}) {
           "Content-Type": "application/json"
         });
         assertEqual(rateLimited.status, 200);
-        assertEqual(rateLimited.body.output[0].content[0].text, "adapter ok");
+        assert(String(rateLimited.body.text || JSON.stringify(rateLimited.body)).includes("response.failed"));
+        assert(String(rateLimited.body.text || JSON.stringify(rateLimited.body)).includes("upstream_rate_limited"));
         assertEqual(gonkaRequests[3].model, "moonshotai/Kimi-K2.6");
-        assertEqual(gonkaRequests[4].model, "MiniMaxAI/MiniMax-M2.7");
         const timedOut = await requestPort(gonkaPort, "POST", "/codex-gonka/v1/responses", JSON.stringify({
           model: "moonshotai/Kimi-K2.6",
           input: "timeout-probe"
@@ -331,9 +330,10 @@ async function runScenarios({ relayUrl } = {}) {
           "Content-Type": "application/json"
         });
         assertEqual(timedOut.status, 200);
-        assertEqual(timedOut.body.output[0].content[0].text, "adapter ok");
-        assertEqual(gonkaRequests[5].model, "moonshotai/Kimi-K2.6");
-        assertEqual(gonkaRequests[6].model, "MiniMaxAI/MiniMax-M2.7");
+        assert(String(timedOut.body.text || JSON.stringify(timedOut.body)).includes("response.failed"));
+        assert(String(timedOut.body.text || JSON.stringify(timedOut.body)).includes("timed out"));
+        assertEqual(gonkaRequests[4].model, "moonshotai/Kimi-K2.6");
+        assertEqual(gonkaRequests.length, 5);
       } finally {
         if (child.exitCode === null) {
           child.kill();
@@ -1423,7 +1423,6 @@ async function runScenarios({ relayUrl } = {}) {
         "computer <json-or-stdin>",
         "SOTY_LOCAL_API.mjs computer",
         "stripHiddenReasoningBlocks",
-        "recoverFailureTextFromCodexEvent",
         "operatorTextLooksLikeCommandFailure",
         "computerIntentPatterns",
         "appAliasRules",
@@ -1753,13 +1752,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("openAiBuiltInTools"));
       assert(agent.includes("codexNativeOpenAiToolFeatures"));
       assert(agent.includes("--enable\", feature"));
-      assert(agent.includes("codexActionRecoverableIdleAfterProgressTimeoutMs"));
+      assert(agent.includes("codexActionIdleAfterProgressTimeoutMs"));
       assert(agent.includes("isActionFollowupPrompt"));
       assert(agent.includes("shouldRejectProoflessComputerFinal"));
       assert(agent.includes('route: "soty.safety-block"'));
       assert(agent.includes('boundary: "agent.reply"'));
       assert(agent.includes("normalizeGonkaDirectFinal"));
-      assert(agent.includes("gonka.direct.normalized-tool-final"));
+      assert(agent.includes("gonka.direct.final-missing-proof"));
       assert(agent.includes("directComputerProofText"));
       assert(!agent.includes("gonka.direct.recovered-tiny-tool-final"));
       assert(!agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
@@ -1790,7 +1789,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("inferGonkaComputerArguments"));
       assert(agent.includes("safeDirectComputerToolTimeoutMs"));
       assert(!agent.includes("shouldUseSecurityCheckCompactScript"));
-      assert(agent.includes("model-failure-after-tool-recovered"));
+      assert(!agent.includes("model-failure-after-tool-recovered"));
       assert(agent.includes("shouldSingleSuccessfulDirectToolSuffice"));
       assert(!agent.includes("securityCheckCompactPowerShell"));
       assert(!agent.includes("driverCheckCompactPowerShell"));
@@ -1823,9 +1822,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("function sourceBrowserScript(args)"));
       assert(agent.includes("await scriptNode(browserNode(req)"));
       assert(agent.includes("name: 'computer-browser'"));
-      assert(agent.includes("polishGonkaRecoveredFinalText"));
       assert(agent.includes("stripGonkaScratchpad"));
-      assert(agent.includes("modelPolished"));
+      assert(!agent.includes("polishGonkaRecoveredFinalText"));
+      assert(!agent.includes("modelPolished"));
       assert(agent.includes("mapGonkaToolCallForCodex"));
       assert(agent.includes('cmd: `node SOTY_LOCAL_API.mjs computer'));
       assert(agent.includes("function filePowerShell(req)"));
@@ -2194,7 +2193,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(arm.includes("Managed user must be passwordless before arming"));
       assert(arm.includes("Personal-folder backup proof is missing"));
     }],
-    ["public manifest still validates after fallback build", async () => {
+    ["public manifest still validates after universal build", async () => {
       const manifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
       assertEqual(manifest.version, "0.4.143");
       assertEqual(manifest.schema, "soty.agent.release.v2");
@@ -2241,7 +2240,8 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(manifest.automationToolkits.policy.entrypoint, "computer");
       assertEqual(manifest.automationToolkits.policy.centralResolver, "gonka-direct-chat-completions");
       assertEqual(manifest.automationToolkits.policy.legacyEntrypoint, "soty_computer");
-      assertEqual(manifest.automationToolkits.policy.fallbackKernel, "jobs");
+      assertEqual(manifest.automationToolkits.policy.jobKernel, "durable-jobs");
+      assertEqual(manifest.automationToolkits.policy.fallbackKernel, undefined);
       assertEqual(manifest.automationToolkits.policy.routeProfiles, "soty.route-profiles.v1");
       assertEqual(manifest.automationToolkits.policy.chat, "agent-sysadmin");
       assertEqual(manifest.automationToolkits.policy.diagnostics.trace, "soty.agent.trace.v1");
@@ -2459,20 +2459,21 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes("applyExactFileCycleArgs"));
       assert(agentSource.includes("universal_action_contract"));
       assert(agentSource.includes("act -> verify proof -> final"));
-      assert(agentSource.includes("buildGonkaDirectMissingProofPrompt"));
-      assert(agentSource.includes("gonka.direct.continue-missing-tool-proof"));
+      assert(!agentSource.includes("buildGonkaDirectMissingProofPrompt"));
+      assert(!agentSource.includes("gonka.direct.continue-missing-tool-proof"));
+      assert(agentSource.includes("gonka.direct.missing-tool-proof"));
       assert(agentSource.includes('tool_choice: "auto"'));
       assert(!agentSource.includes('tool_choice: requireComputerToolNext ? "required" : "auto"'));
       assert(agentSource.includes("soty.local-computer-plane.v1"));
       assert(agentSource.includes("requestLooksMultiStep"));
       assert(agentSource.includes("directToolCallCanCompleteMultiStep"));
-      assert(agentSource.includes("finalTextNeedsComputerProofNormalization"));
-      assert(agentSource.includes("gonka.direct.normalized-tool-final"));
+      assert(!agentSource.includes("finalTextNeedsComputerProofNormalization"));
+      assert(agentSource.includes("gonka.direct.final-missing-proof"));
       assert(!agentSource.includes("finalTextContradictsSuccessfulComputerProof"));
       assert(!agentSource.includes("gonka.direct.replaced-contradictory-success-final"));
       assert(agentSource.includes("requestNeedsFileLifecycleTransaction"));
       assert(!agentSource.includes("runInferredGonkaDirectComputerAction"));
-      assert(agentSource.includes("recoverRawDirectComputerJsonFinal"));
+      assert(agentSource.includes("formatRawDirectComputerJsonFinal"));
       assert(agentSource.includes("function hasCriticalDestructiveIntent"));
       assert(agentSource.includes("function hasScopedTemporaryWorkspaceIntent"));
       assert(agentSource.includes("shouldBlockCriticalDestructiveAction"));

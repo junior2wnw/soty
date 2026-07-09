@@ -1311,12 +1311,10 @@ const audioToolTimeoutMs = 120_000;
 const audioWarmupTimeoutMs = 45_000;
 const codexStartupTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_STARTUP_TIMEOUT_MS, 25_000, 120_000);
 const codexNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_NO_PROGRESS_TIMEOUT_MS, 7000, 120_000);
-const codexFallbackNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_FALLBACK_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexMcpTaskNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_MCP_TASK_NO_PROGRESS_TIMEOUT_MS, 60_000, 180_000);
 const codexGonkaNoProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_GONKA_NO_PROGRESS_TIMEOUT_MS, 45_000, 180_000);
 const codexIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 90_000, 600_000);
-const codexRecoverableIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_RECOVERABLE_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 7_000, 60_000);
-const codexActionRecoverableIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_ACTION_RECOVERABLE_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 120_000, 600_000);
+const codexActionIdleAfterProgressTimeoutMs = safeDurationMs(process.env.SOTY_CODEX_ACTION_IDLE_AFTER_PROGRESS_TIMEOUT_MS, 120_000, 600_000);
 const maxConcurrentCodexJobs = Math.max(1, Math.min(Number.parseInt(process.env.SOTY_CODEX_CONCURRENCY || "4", 10) || 4, 16));
 const codexFullLocalTools = process.env.SOTY_CODEX_FULL_LOCAL_TOOLS !== "0";
 const codexProxyUrl = safeProxyUrl(process.env.SOTY_CODEX_PROXY_URL || process.env.SOTY_AGENT_PROXY_URL || "");
@@ -1332,17 +1330,11 @@ const codexGonkaUpstreamBaseUrl = safeHttpApiBaseUrl(
 );
 const codexGonkaDefaultModel = "moonshotai/Kimi-K2.6";
 const codexGonkaKimiModel = "moonshotai/Kimi-K2.6";
-const codexGonkaFallbackDefaultModel = "MiniMaxAI/MiniMax-M2.7";
 const codexGonkaModel = safeCodexModelId(
   process.env.SOTY_CODEX_MODEL
   || process.env.SOTY_GONKA_MODEL
   || process.env.GONKA_MODEL
   || codexGonkaDefaultModel
-);
-const codexGonkaFallbackModel = safeCodexModelId(
-  process.env.SOTY_GONKA_FALLBACK_MODEL
-  || process.env.SOTY_CODEX_FALLBACK_MODEL
-  || codexGonkaFallbackDefaultModel
 );
 const codexGonkaRequestTimeoutMs = safeGonkaRequestTimeoutMs(process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS);
 const codexGonkaMaxInstructionsChars = safeAgentLimit(process.env.SOTY_GONKA_MAX_INSTRUCTIONS_CHARS, 3500, 32_000);
@@ -1393,7 +1385,6 @@ const sotyMcpLegacyTools = Object.freeze([
 ]);
 const codexMinimumReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_MIN_REASONING_EFFORT || "high") || "high";
 const codexDefaultReasoningEffort = safeCodexReasoningEffort(process.env.SOTY_CODEX_REASONING_EFFORT || "xhigh");
-const codexRelayFallback = process.env.SOTY_CODEX_RELAY_FALLBACK !== "0";
 const codexDisabled = process.env.SOTY_CODEX_DISABLED === "1";
 const localCodexDisabled = true;
 const agentTraceEnabled = process.env.SOTY_AGENT_TRACE !== "0";
@@ -1927,17 +1918,8 @@ async function handleGonkaResponsesProxy(request, response, headers) {
   try {
     upstreamResult = await fetchGonkaChatCompletion(payload, apiKey);
   } catch (error) {
-    if (shouldRetryGonkaFallbackTransport(gonkaUpstreamModel(payload?.model), error)) {
-      try {
-        upstreamResult = await fetchGonkaChatCompletion(payload, apiKey, codexGonkaFallbackModel);
-      } catch (fallbackError) {
-        sendGonkaAdapterErrorSse(response, headers, 502, fallbackError instanceof Error ? fallbackError.message : String(fallbackError));
-        return;
-      }
-    } else {
-      sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
-      return;
-    }
+    sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
+    return;
   }
   if (!upstreamResult?.response) {
     sendGonkaAdapterErrorSse(response, headers, 502, "Gonka request failed");
@@ -1946,23 +1928,8 @@ async function handleGonkaResponsesProxy(request, response, headers) {
   let upstream = upstreamResult.response;
   if (!upstream.ok) {
     const text = await upstream.text().catch(() => "");
-    if (shouldRetryGonkaFallback(upstreamResult.model, upstream.status, text)) {
-      try {
-        upstreamResult = await fetchGonkaChatCompletion(payload, apiKey, codexGonkaFallbackModel);
-        upstream = upstreamResult.response;
-      } catch (error) {
-        sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
-        return;
-      }
-      if (!upstream.ok) {
-        const fallbackText = await upstream.text().catch(() => "");
-        sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, fallbackText || text || upstream.statusText || "Gonka request failed");
-        return;
-      }
-    } else {
-      sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, text || upstream.statusText || "Gonka request failed");
-      return;
-    }
+    sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, text || upstream.statusText || "Gonka request failed");
+    return;
   }
   const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
   if (contentType.includes("text/event-stream")) {
@@ -1970,32 +1937,6 @@ async function handleGonkaResponsesProxy(request, response, headers) {
     return;
   }
   const body = await upstream.json().catch(() => null);
-  if (body?.error && shouldRetryGonkaFallback(upstreamResult.model, 429, JSON.stringify(body.error))) {
-    try {
-      upstreamResult = await fetchGonkaChatCompletion(payload, apiKey, codexGonkaFallbackModel);
-      upstream = upstreamResult.response;
-    } catch (error) {
-      sendGonkaAdapterErrorSse(response, headers, 502, error instanceof Error ? error.message : String(error));
-      return;
-    }
-    if (!upstream.ok) {
-      const fallbackText = await upstream.text().catch(() => "");
-      sendGonkaAdapterErrorSse(response, headers, upstream.status || 502, fallbackText || "Gonka request failed");
-      return;
-    }
-    const fallbackContentType = String(upstream.headers.get("content-type") || "").toLowerCase();
-    if (fallbackContentType.includes("text/event-stream")) {
-      await streamGonkaChatCompletions(upstream, response, headers, responseModel, payload);
-      return;
-    }
-    const fallbackBody = await upstream.json().catch(() => null);
-    if (payload?.stream === true) {
-      streamGonkaChatCompletionObject(fallbackBody, response, headers, responseModel, payload);
-      return;
-    }
-    sendJson(response, 200, headers, gonkaChatCompletionResponseObject(fallbackBody, responseModel, payload));
-    return;
-  }
   if (payload?.stream === true) {
     streamGonkaChatCompletionObject(body, response, headers, responseModel, payload);
     return;
@@ -2823,7 +2764,7 @@ function gonkaAdapterCodexInstructions(value) {
 function gonkaAdapterSystemInstruction() {
   return [
     "Soty uses Gonka AI Chat Completions as the direct model transport for the computer agent by default.",
-    "The legacy Responses-to-Chat adapter is only a compatibility fallback; it must not invent user actions or synthetic tool calls unless explicit diagnostics flags enable that recovery path.",
+    "The legacy Responses-to-Chat adapter is a compatibility adapter; it must not invent user actions or synthetic tool calls unless explicit diagnostics flags enable that diagnostic mode.",
     "MCP and Responses tools are compacted to ordinary function tools when this adapter receives them. If the `computer` tool is present, use it for selected-computer work instead of merely promising future action.",
     `If the user's computer must be controlled and no direct computer function tool is available, use shell_command/exec_command to call Soty's local HTTP API at http://127.0.0.1:${port}.`,
     "Useful local routes: GET /operator/targets, GET /operator/source-status, GET /operator/toolkits, POST /operator/run, POST /operator/script, POST /operator/action, GET /operator/action/<jobId>.",
@@ -3493,7 +3434,6 @@ async function handleOperatorHttpRun(request, response, headers) {
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   let sourceRelayId = safeRelayId(payload.sourceRelayId || "");
-  const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const command = typeof payload.command === "string" ? payload.command.slice(0, maxCommandChars) : "";
   const runAs = safeRunAs(payload.runAs || "");
   const timeoutMs = safeRunTimeoutMs(payload.timeoutMs);
@@ -3503,9 +3443,7 @@ async function handleOperatorHttpRun(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
-  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId, {
-    allowFallbackSource: !controllerDeviceId
-  }));
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   const promoted = promotedRunScript(command);
   if (promoted) {
     await handleOperatorHttpPromotedScript({
@@ -3586,7 +3524,6 @@ async function handleOperatorHttpScript(request, response, headers) {
   let target = typeof payload.target === "string" ? payload.target.slice(0, 160) : "";
   let sourceDeviceId = typeof payload.sourceDeviceId === "string" ? payload.sourceDeviceId.slice(0, maxSourceChars) : "";
   let sourceRelayId = safeRelayId(payload.sourceRelayId || "");
-  const controllerDeviceId = safeSourceText(payload.controllerDeviceId || "");
   const script = typeof payload.script === "string" ? payload.script.slice(0, maxScriptChars) : "";
   const name = typeof payload.name === "string" ? payload.name.slice(0, 120) : "script";
   const shell = typeof payload.shell === "string" ? payload.shell.slice(0, 40) : "";
@@ -3599,9 +3536,7 @@ async function handleOperatorHttpScript(request, response, headers) {
     sendJson(response, 422, headers, { ok: false, text: blocked, exitCode: 422 });
     return;
   }
-  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId, {
-    allowFallbackSource: !controllerDeviceId
-  }));
+  ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target);
     if (sourceDeviceId && sourceDeviceId !== deviceId) {
@@ -4400,7 +4335,6 @@ async function beginAgentTrace({ entrypoint, text, context = "", source = {} }) 
           prewrittenChatRoutes: false,
           codexDisabled,
           codexFullLocalTools,
-          codexRelayFallback,
           codexSessionMode,
           responseStyle: activeAgentResponseStyle.id,
           maxPromptChars: maxAgentRuntimePromptChars
@@ -5031,7 +4965,7 @@ async function handleAgentSourceHttpRun(target, sourceDeviceId, command, timeout
   });
 }
 
-async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "", options = {}) {
+async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId = "") {
   if (isAgentSourceTarget(target)) {
     const deviceId = agentSourceDeviceId(target) || sourceDeviceId || "";
     let nextRelayId = safeRelayId(sourceRelayId);
@@ -5043,8 +4977,8 @@ async function normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId
     return { target, sourceDeviceId, sourceRelayId: nextRelayId || sourceRelayId };
   }
   const operatorTarget = operatorTargetByText(target);
-  const fallbackDeviceId = operatorHttpTargetDeviceId(target, sourceDeviceId);
-  const sourceTargets = await activeAgentSourceTargets(sourceRelayId, fallbackDeviceId);
+  const requestedDeviceId = operatorHttpTargetDeviceId(target, sourceDeviceId);
+  const sourceTargets = await activeAgentSourceTargets(sourceRelayId, requestedDeviceId);
   const sourceTarget = operatorHttpAgentSourceTarget(target, sourceDeviceId, sourceTargets);
   if (sourceTarget) {
     const deviceId = agentSourceDeviceId(sourceTarget.id);
@@ -5193,7 +5127,7 @@ async function handleOperatorHttpTrafficFetch(request, response, headers) {
 }
 
 async function runTrafficFetchViaSource({ target, sourceDeviceId, sourceRelayId, url, method, headers, maxBytes, timeoutMs, signal }) {
-  const normalized = await normalizeOperatorHttpTarget(target.id || "", sourceDeviceId, sourceRelayId, { allowFallbackSource: false });
+  const normalized = await normalizeOperatorHttpTarget(target.id || "", sourceDeviceId, sourceRelayId);
   if (!isAgentSourceTarget(normalized.target)) {
     return {
       ok: false,
@@ -6132,7 +6066,7 @@ function blockedManualWindowsRecoveryHandoff(command) {
   }
   return [
     "! reinstall-route-blocked",
-    "Internal tool note: do not open manual Windows Reset/Recovery/Media Creation Tool screens unless the user explicitly asks for a manual fallback.",
+    "Internal tool note: do not open manual Windows Reset/Recovery/Media Creation Tool screens unless the user explicitly asks for a manual route.",
     "Continue with managed Soty preparation after the target channel is healthy. If the target channel is not healthy, tell the user plainly: I do not see the computer through Soty right now; restart or open Soty on that PC.",
     "Do not quote this tool note or mention router/preflight/gates/bridge/source-scoped internals in chat."
   ].join("\n");
@@ -6837,8 +6771,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       localCodexDisabled,
       codexBrain: canRunCodexBrain(),
       codexProbe: hasCodexBinary(),
-      gonkaDirectAgent,
-      relayFallback: codexRelayFallback
+      gonkaDirectAgent
     });
     if (shouldBlockCriticalDestructiveAction(text)) {
       const safetyText = directSafetyBlockText();
@@ -6857,7 +6790,6 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
         provider: codexProviderName(),
         model: gonkaPrimaryModel(),
         upstreamModel: gonkaUpstreamModel(gonkaPrimaryModel()),
-        fallbackModel: codexGonkaFallbackModel,
         codexCli: "bypassed"
       });
       const direct = await runCodexSotySessionTurn({
@@ -6876,15 +6808,7 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
     }
     const codexBin = hasCodexBinary() ? findCodexBinary() : "";
     if (!codexBin) {
-      traceStep(trace, "codex.missing", { codexDisabled, localCodexDisabled, codexBrain: canRunCodexBrain(), relayFallback: codexRelayFallback });
-      const relay = codexRelayFallback
-        ? await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true, signal })
-        : null;
-      if (relay) {
-        traceRouting(trace, { finalRoute: "codex.relay-fallback" });
-        await finishAgentTrace(trace, relay);
-        return withTraceId(relay, trace);
-      }
+      traceStep(trace, "codex.missing", { codexDisabled, localCodexDisabled, codexBrain: canRunCodexBrain() });
       const missing = {
         ok: false,
         text: "! codex-cli: not found on this computer",
@@ -6918,14 +6842,6 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       trace,
       signal
     });
-    if (shouldUseCodexRelayFallback(local)) {
-      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true, signal });
-      if (relay) {
-        traceRouting(trace, { finalRoute: "codex.relay-fallback-after-local" });
-        await finishAgentTrace(trace, relay);
-        return withTraceId(relay, trace);
-      }
-    }
     await finishAgentTrace(trace, local);
     return withTraceId(local, trace);
   } catch (error) {
@@ -6941,14 +6857,6 @@ async function askCodexForAgentReply(text, context, source = {}, onMessage = nul
       exitCode: 1
     };
     traceStep(trace, "agent.error", { message: error instanceof Error ? error.message : String(error) });
-    if (shouldUseCodexRelayFallback(local)) {
-      const relay = await askCodexRelayFallback(text, context, source, onMessage, onTerminal, { preferServer: true, signal });
-      if (relay) {
-        traceRouting(trace, { finalRoute: "codex.relay-fallback-after-error" });
-        await finishAgentTrace(trace, relay);
-        return withTraceId(relay, trace);
-      }
-    }
     await finishAgentTrace(trace, local);
     return withTraceId(local, trace);
   }
@@ -7330,134 +7238,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
     result = await runCodexForSotyChat(codexBin, args, childEnv, prompt, state, jobDir, codexOnMessage, onTerminal, signal, {
       ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached, noProgressTimeoutMs: turnNoProgressTimeoutMs })
     });
-    if (sessionRecord?.threadId && shouldRetryCodexWithoutResume(result, state)) {
-      const freshState = {
-        threadId: "",
-        lastMessage: "",
-        messages: [],
-        terminal: [],
-        terminalKeys: new Set(),
-        learningMarkers: [],
-        usage: emptyCodexUsage(),
-        trace
-      };
-      const freshArgs = codexSotySessionArgs({
-        jobDir,
-        target,
-        source: safeSource,
-        outPath,
-        threadId: "",
-        taskFamily,
-        attachMcp: mcpAttached
-      });
-      delete persistedCodexSessions[sessionKey];
-      await saveCodexSessions();
-      result = await runCodexForSotyChat(codexBin, freshArgs, childEnv, prompt, freshState, jobDir, codexOnMessage, onTerminal, signal, {
-        ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached, noProgressTimeoutMs: turnNoProgressTimeoutMs })
-      });
-      state.threadId = freshState.threadId;
-      state.lastMessage = freshState.lastMessage;
-      state.messages = freshState.messages;
-      state.terminal = freshState.terminal;
-      state.terminalKeys = freshState.terminalKeys;
-      state.learningMarkers = freshState.learningMarkers;
-      state.usage = freshState.usage;
-    }
-    if (shouldRetryCodexWithoutMcp(result, state, args, signal, { taskFamily, target })) {
-      const fallbackState = {
-        threadId: "",
-        lastMessage: "",
-        messages: [],
-        terminal: [],
-        terminalKeys: new Set(),
-        learningMarkers: [],
-        usage: emptyCodexUsage(),
-        trace
-      };
-      const fallbackOutPath = join(jobDir, `last-message-${randomUUID()}-nomcp.txt`);
-      const fallbackArgs = codexSotySessionArgs({
-        jobDir,
-        target,
-        source: safeSource,
-        outPath: fallbackOutPath,
-        threadId: "",
-        taskFamily,
-        attachMcp: false
-      });
-      const fallbackPrompt = `${prompt}\n\nRuntime recovery note: the first Codex run exited before reaching the model while Soty computer-control MCP was attached. In this retry, use ordinary function tools. If the user requested selected-computer control, use shell_command/exec_command with Node.js fetch to call the local Soty HTTP API; do not rely on curl or wget. Do not claim that any selected-computer action was completed unless a tool/API result is present. If the user asked a plain dialog question, answer normally.`;
-      traceStep(trace, "codex.retry-without-mcp", {
-        reason: "empty-before-model",
-        firstExitCode: result.exitCode,
-        firstStdout: Boolean(result.stdout),
-        firstStderr: Boolean(result.stderr)
-      });
-      await traceWriteJson(trace, "codex-retry-args.json", {
-        file: basename(codexBin),
-        args: fallbackArgs,
-        outPath: fallbackOutPath,
-        reason: "empty-before-model",
-        mcpAttached: false
-      });
-      result = await runCodexForSotyChat(codexBin, fallbackArgs, childEnv, fallbackPrompt, fallbackState, jobDir, codexOnMessage, onTerminal, signal, {
-        ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached: false, noProgressTimeoutMs: codexFallbackNoProgressTimeoutMs })
-      });
-      state.threadId = fallbackState.threadId;
-      state.lastMessage = fallbackState.lastMessage;
-      state.messages = fallbackState.messages;
-      state.terminal = fallbackState.terminal;
-      state.terminalKeys = fallbackState.terminalKeys;
-      state.learningMarkers = fallbackState.learningMarkers;
-      state.usage = fallbackState.usage;
-      outPath = fallbackOutPath;
-    }
-    if (shouldRetryCodexAfterNoProgress(result, state, signal)) {
-      const noProgressRetryState = {
-        threadId: "",
-        lastMessage: "",
-        messages: [],
-        terminal: [],
-        terminalKeys: new Set(),
-        learningMarkers: [],
-        usage: emptyCodexUsage(),
-        trace
-      };
-      const noProgressRetryOutPath = join(jobDir, `last-message-${randomUUID()}-retry.txt`);
-      const noProgressRetryArgs = codexSotySessionArgs({
-        jobDir,
-        target,
-        source: safeSource,
-        outPath: noProgressRetryOutPath,
-        threadId: "",
-        taskFamily,
-        attachMcp: mcpAttached
-      });
-      const retryPrompt = `${prompt}\n\nRuntime recovery note: the previous Codex turn started but produced no model content before timeout. Retry fresh, answer normally, and do not mention the retry unless a real user-facing blocker remains.`;
-      traceStep(trace, "codex.retry-after-no-progress", {
-        firstExitCode: result.exitCode,
-        firstStdout: Boolean(result.stdout),
-        firstStderr: Boolean(result.stderr),
-        mcpAttached
-      });
-      await traceWriteJson(trace, "codex-no-progress-retry-args.json", {
-        file: basename(codexBin),
-        args: noProgressRetryArgs,
-        outPath: noProgressRetryOutPath,
-        reason: "no-progress-before-model-content",
-        mcpAttached
-      });
-      result = await runCodexForSotyChat(codexBin, noProgressRetryArgs, childEnv, retryPrompt, noProgressRetryState, jobDir, codexOnMessage, onTerminal, signal, {
-        ...codexRunTimeoutOptions({ taskFamily, target, text, mcpAttached, noProgressTimeoutMs: turnNoProgressTimeoutMs })
-      });
-      state.threadId = noProgressRetryState.threadId;
-      state.lastMessage = noProgressRetryState.lastMessage;
-      state.messages = noProgressRetryState.messages;
-      state.terminal = noProgressRetryState.terminal;
-      state.terminalKeys = noProgressRetryState.terminalKeys;
-      state.learningMarkers = noProgressRetryState.learningMarkers;
-      state.usage = noProgressRetryState.usage;
-      state.recoverableFinalText = noProgressRetryState.recoverableFinalText;
-      outPath = noProgressRetryOutPath;
-    }
   } finally {
     if (activeTurn) {
       activeTurn.done = true;
@@ -7472,50 +7252,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   const lastFromFile = cleanAgentChatReply(lastFileRaw);
   let messages = compactCodexMessages(state.messages.length > 0 ? state.messages : [lastFromFile]);
   let finalText = cleanAgentChatReply(messages.join("\n\n") || state.lastMessage || lastFromFile);
-  const recoveredFinalText = cleanAgentChatReply(state.recoverableFinalText) || recoverFinalTextFromCodexCommandOutput(result.stdout);
-  const recoveredFailureText = cleanAgentChatReply(state.recoverableFailureText) || recoverFailureTextFromCodexCommandOutput(result.stdout);
-  const shouldUseRecoveredFinalText = Boolean(
-    recoveredFinalText
-      && (!finalText || isLikelyInternalCodexReasoningReply(finalText) || result.exitCode === 124)
-      && recoveredFinalCoversUserRequest(recoveredFinalText, text, taskFamily, target)
-  );
-  if (shouldUseRecoveredFinalText) {
-    const polishedRecoveredFinalText = await polishGonkaRecoveredFinalText({
-      userText: text,
-      toolText: recoveredFinalText,
-      taskFamily
-    });
-    finalText = polishedRecoveredFinalText || recoveredFinalText;
-    messages = compactCodexMessages([finalText]);
-    result.exitCode = 0;
-    traceStep(trace, "codex.recovered-final-from-command-output", {
-      textChars: finalText.length,
-      modelPolished: Boolean(polishedRecoveredFinalText)
-    });
-  }
-  if (!finalText && recoveredFailureText) {
-    traceRouting(trace, { finalRoute: codexRouteName });
-    traceStep(trace, "codex.recovered-failure-from-command-output", {
-      textChars: recoveredFailureText.length
-    });
-    recordLearningReceipt({
-      kind: "codex-turn",
-      family: taskFamily,
-      result: "failed",
-      route: codexRouteName,
-      taskSig: taskSignature(text),
-      proof: `exitCode=${result.exitCode || 1}; recoveredFailure=nonempty; ${codexUsageProof(state.usage, prompt, recoveredFailureText)}`,
-      exitCode: result.exitCode || 1,
-      durationMs: Date.now() - startedAt,
-      ...learningContext
-    });
-    return {
-      ok: false,
-      text: recoveredFailureText.slice(0, maxChatChars),
-      ...(state.terminal.length > 0 ? { terminal: state.terminal } : {}),
-      exitCode: result.exitCode || 1
-    };
-  }
   if (result.exitCode === 130 || signal?.aborted) {
     recordLearningReceipt({
       kind: "codex-turn",
@@ -7733,102 +7469,6 @@ async function runCodexSotySessionTurn({ codexBin, childEnv, text, context = "",
   };
 }
 
-function recoverFinalTextFromCodexCommandOutput(stdout) {
-  const text = String(stdout || "");
-  if (!text.trim()) {
-    return "";
-  }
-  const lines = text.split(/\r?\n/u);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index].trim();
-    if (!line) {
-      continue;
-    }
-    let event = null;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const clean = recoverFinalTextFromCodexEvent(event);
-    if (clean) {
-      return cleanAgentChatReply(clean).slice(0, maxChatChars);
-    }
-  }
-  return "";
-}
-
-function recoverFailureTextFromCodexCommandOutput(stdout) {
-  const text = String(stdout || "");
-  if (!text.trim()) {
-    return "";
-  }
-  const lines = text.split(/\r?\n/u);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index].trim();
-    if (!line) {
-      continue;
-    }
-    let event = null;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const clean = recoverFailureTextFromCodexEvent(event);
-    if (clean) {
-      return cleanAgentChatReply(clean).slice(0, maxChatChars);
-    }
-  }
-  return "";
-}
-
-async function polishGonkaRecoveredFinalText({ userText = "", toolText = "", taskFamily = "" } = {}) {
-  if (!codexUsesGonka || !toolText || !codexGonkaApiKey()) {
-    return "";
-  }
-  try {
-    const upstreamUrl = new URL("chat/completions", `${codexGonkaUpstreamBaseUrl.replace(/\/+$/u, "")}/`);
-    const response = await fetch(upstreamUrl, {
-      method: "POST",
-      cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${codexGonkaApiKey()}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: gonkaUpstreamModel(codexGonkaModel),
-        messages: [
-          {
-            role: "system",
-            content: "You are the Soty computer agent. Write the final user-facing answer in the user's language. Use the tool result as proof. Be concise, do not expose JSON, tool names, transport, relay, or internal routing."
-          },
-          {
-            role: "user",
-            content: [
-              `task_family: ${String(taskFamily || "generic").slice(0, 80)}`,
-              `user_request: ${String(userText || "").slice(0, 4000)}`,
-              `tool_result: ${String(toolText || "").slice(0, 8000)}`,
-              "final_answer: one short sentence unless details are necessary."
-            ].join("\n")
-          }
-        ],
-        stream: false,
-        tool_choice: "none"
-      })
-    });
-    if (!response.ok) {
-      return "";
-    }
-    const body = await response.json().catch(() => null);
-    const content = Array.isArray(body?.choices) ? body.choices[0]?.message?.content : "";
-    return cleanAgentChatReply(stripGonkaScratchpad(content || "")).slice(0, maxChatChars);
-  } catch {
-    return "";
-  }
-}
-
 function stripGonkaScratchpad(value) {
   let text = stripHiddenReasoningBlocks(value).replace(/\r\n?/gu, "\n").trim();
   if (!text) {
@@ -7853,77 +7493,6 @@ function stripGonkaScratchpad(value) {
     return quoted ? quoted[1].trim() : "";
   }
   return text.replace(/^["'“”«]+|["'“”»]+$/gu, "").trim();
-}
-
-function recoverFinalTextFromCodexEvent(event) {
-  const payload = codexCommandOperatorPayload(event);
-  if (!payload?.ok) {
-    return "";
-  }
-  if (typeof payload.text !== "string") {
-    return "";
-  }
-  if (operatorTextLooksLikeCommandFailure(payload.text)) {
-    return "";
-  }
-  return formatRecoveredOperatorText(payload.text) || "Готово.";
-}
-
-function recoverFailureTextFromCodexEvent(event) {
-  const eventErrorText = recoverCodexEventErrorText(event);
-  if (eventErrorText) {
-    return eventErrorText;
-  }
-  const payload = codexCommandOperatorPayload(event);
-  if (payload?.ok === false) {
-    return formatRecoveredOperatorFailureText(payload.text, payload.exitCode);
-  }
-  if (payload?.ok === true && operatorTextLooksLikeCommandFailure(payload.text)) {
-    return formatRecoveredOperatorFailureText(payload.text, 1);
-  }
-  const item = event?.item && typeof event.item === "object" ? event.item : null;
-  if (event?.type === "item.completed" && item?.type === "command_execution" && item.status === "failed") {
-    const exitCode = Number.isSafeInteger(item.exit_code) ? item.exit_code : 1;
-    const output = String(item.aggregated_output || "").trim();
-    if (output) {
-      return formatRecoveredOperatorFailureText(output, exitCode);
-    }
-  }
-  return "";
-}
-
-function recoverCodexEventErrorText(event) {
-  if (!event || typeof event !== "object") {
-    return "";
-  }
-  const message = cleanAdapterErrorMessage(
-    event?.message
-    || event?.error?.message
-    || event?.response?.error?.message
-    || event?.item?.error?.message
-    || event?.error
-    || ""
-  );
-  if (!message) {
-    return "";
-  }
-  if (event?.type === "error" || event?.type === "response.failed" || event?.error || event?.response?.error || event?.item?.error) {
-    return `Model provider failed: ${message}`.slice(0, maxChatChars);
-  }
-  return "";
-}
-
-function codexCommandOperatorPayload(event) {
-  const item = event?.item && typeof event.item === "object" ? event.item : null;
-  if (event?.type !== "item.completed" || item?.type !== "command_execution" || !["completed", "failed"].includes(String(item.status || ""))) {
-    return null;
-  }
-  const output = String(item.aggregated_output || "").trim();
-  const payload = parseJsonObjectLoose(output);
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  return payload;
 }
 
 function operatorTextLooksLikeCommandFailure(value) {
@@ -8028,22 +7597,6 @@ function formatRawProcessWindowTableLeak(value) {
     .slice(0, 6)
     .join(", ");
   return `\u042d\u0442\u043e \u0431\u044b\u043b \u0442\u0435\u0445\u043d\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0441\u043f\u0438\u0441\u043e\u043a \u043f\u0440\u043e\u0446\u0435\u0441\u0441\u043e\u0432/\u043e\u043a\u043e\u043d${names ? ` (${names})` : ""}, \u0430 \u043d\u0435 \u043f\u0440\u0443\u0444 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f. \u0414\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0432 \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u0438 \u043d\u0443\u0436\u043d\u043e \u0434\u0435\u043b\u0430\u0442\u044c \u0447\u0435\u0440\u0435\u0437 app/window-\u0430\u0434\u0430\u043f\u0442\u0435\u0440.`;
-}
-
-function recoveredFinalCoversUserRequest(finalText, userText, taskFamily = "generic", target = null) {
-  const finalLower = String(finalText || "").toLowerCase();
-  const userLower = String(userText || "").toLowerCase();
-  if (!finalLower || !userLower) {
-    return true;
-  }
-  if (target?.id && computerActionRequiresProof(taskFamily, userText) && !finalTextLooksLikeActionProof(finalText)) {
-    return false;
-  }
-  const onlyWritten = /(?:^|\b)(?:готово,\s*)?файл записан:/iu.test(finalLower);
-  if (onlyWritten && /(?:delete|remove|cleanup|check|verify|read back|удал|сотри|проверь|провер|убедись|прочитай|сверь)/iu.test(userLower)) {
-    return false;
-  }
-  return true;
 }
 
 function shouldRejectProoflessComputerFinal({ taskFamily = "", text = "", target = null, finalText = "", state = null } = {}) {
@@ -8235,7 +7788,7 @@ async function maybeWaitForWindowsReinstallTerminalAfterCodex({ taskFamily, sour
         action: "prepare",
         status: "blocked",
         blocker: "source-status-unavailable",
-        text: "Cannot continue monitoring because the selected PC did not return Soty status during the recovery window.",
+        text: "Cannot continue monitoring because the selected PC did not return Soty status during the status window.",
         exitCode: statusResult?.exitCode || 127,
         unavailableMs,
         lastProbe: statusResult?.payload || statusResult || null
@@ -8563,19 +8116,6 @@ function codexSotySessionArgs({ jobDir, target, source, outPath, threadId = "", 
   return args;
 }
 
-function shouldRetryCodexWithoutMcp(result, state, args, signal = null, options = {}) {
-  if (signal?.aborted || !Array.isArray(args) || !args.some((item) => String(item).includes("mcp_servers.soty"))) {
-    return false;
-  }
-  if (!result || ![0, 124].includes(result.exitCode)) {
-    return false;
-  }
-  if (state?.usage?.actual || state?.messages?.length || state?.terminal?.length || cleanAgentChatReply(state?.lastMessage || "")) {
-    return false;
-  }
-  return true;
-}
-
 function codexNoProgressTimeoutForTurn(taskFamily, target = null, mcpAttached = true) {
   if (mcpAttached && codexTaskNeedsSotyMcpTools(taskFamily, target)) {
     return codexMcpTaskNoProgressTimeoutMs;
@@ -8586,7 +8126,7 @@ function codexNoProgressTimeoutForTurn(taskFamily, target = null, mcpAttached = 
   if (codexUsesGonka && !mcpAttached) {
     return codexGonkaNoProgressTimeoutMs;
   }
-  return mcpAttached ? codexNoProgressTimeoutMs : codexFallbackNoProgressTimeoutMs;
+  return codexNoProgressTimeoutMs;
 }
 
 function codexRunTimeoutOptions({ taskFamily = "generic", target = null, text = "", mcpAttached = true, noProgressTimeoutMs = 0 } = {}) {
@@ -8594,11 +8134,8 @@ function codexRunTimeoutOptions({ taskFamily = "generic", target = null, text = 
   return {
     noProgressTimeoutMs: noProgressTimeoutMs || codexNoProgressTimeoutForTurn(taskFamily, target, mcpAttached),
     idleAfterProgressTimeoutMs: actionNeedsProof
-      ? Math.max(codexIdleAfterProgressTimeoutMs, codexActionRecoverableIdleAfterProgressTimeoutMs)
-      : codexIdleAfterProgressTimeoutMs,
-    recoverableIdleAfterProgressTimeoutMs: actionNeedsProof
-      ? Math.max(codexRecoverableIdleAfterProgressTimeoutMs, codexActionRecoverableIdleAfterProgressTimeoutMs)
-      : codexRecoverableIdleAfterProgressTimeoutMs
+      ? Math.max(codexIdleAfterProgressTimeoutMs, codexActionIdleAfterProgressTimeoutMs)
+      : codexIdleAfterProgressTimeoutMs
   };
 }
 
@@ -8701,7 +8238,7 @@ function safeCodexModelId(value) {
 }
 
 function gonkaPrimaryModel() {
-  return codexGonkaModel || codexGonkaFallbackModel || codexGonkaDefaultModel;
+  return codexGonkaModel || codexGonkaDefaultModel;
 }
 
 function gonkaResponseModel(payloadModel = "") {
@@ -8712,7 +8249,6 @@ function gonkaAdvertisedModels() {
   return [...new Set([
     gonkaPrimaryModel(),
     codexGonkaKimiModel,
-    codexGonkaFallbackModel,
     codexGonkaDefaultModel
   ].map(safeCodexModelId).filter(Boolean))];
 }
@@ -8722,32 +8258,7 @@ function gonkaUpstreamModel(payloadModel = "") {
   if (shouldUseGonkaKimiModel(requested)) {
     return codexGonkaKimiModel;
   }
-  if (codexGonkaFallbackModel && shouldUseGonkaFallbackModel(requested)) {
-    return codexGonkaFallbackModel;
-  }
-  return requested || codexGonkaFallbackModel || codexGonkaDefaultModel;
-}
-
-function shouldRetryGonkaFallback(model, status, text) {
-  const fallback = safeCodexModelId(codexGonkaFallbackModel);
-  const current = safeCodexModelId(model);
-  if (!fallback || !current || current.toLowerCase() === fallback.toLowerCase()) {
-    return false;
-  }
-  const message = String(text || "");
-  if (!/(?:rate[_ -]?limit|rate_limit_exceeded|upstream_rate_limited|too many requests|overloaded|overload|capacity|перегруж)/iu.test(message)) {
-    return false;
-  }
-  return [400, 408, 409, 425, 429, 500, 502, 503, 504].includes(Number(status) || 0);
-}
-
-function shouldRetryGonkaFallbackTransport(model, error) {
-  const fallback = safeCodexModelId(codexGonkaFallbackModel);
-  const current = safeCodexModelId(model);
-  if (!fallback || !current || current.toLowerCase() === fallback.toLowerCase()) {
-    return false;
-  }
-  return /(?:timeout|timed out|abort|fetch failed|network|socket|stream disconnected|disconnect|econnreset|etimedout)/iu.test(String(error?.message || error || ""));
+  return requested || codexGonkaDefaultModel;
 }
 
 function normalizedGonkaModelName(model) {
@@ -8760,14 +8271,6 @@ function shouldUseGonkaKimiModel(model) {
   const normalized = normalizedGonkaModelName(model);
   return /^Kimi[-_.]?K2\.6$/iu.test(normalized)
     || /^Kimi[-_.]?K2\.6[-_.]?Online$/iu.test(normalized);
-}
-
-function shouldUseGonkaFallbackModel(model) {
-  const normalized = normalizedGonkaModelName(model);
-  if (/^Kimi[-_.]?K2\.6(?:[-_.]?Online)?$/iu.test(normalized)) {
-    return false;
-  }
-  return /^Kimi[-_.]?K2\.6[-_.]?(?:Thinking|Preview)$/iu.test(normalized);
 }
 
 function firstNonEmptyEnv(names) {
@@ -8890,39 +8393,6 @@ function gonkaLocalApiComputerUsePromptLines(runtime = null) {
     "- Do not ask the user to continue or check manually while a durable job/status route is available; poll or resume it yourself.",
     "- Do not final-answer a computer action from a plan. Final-answer from real tool proof or a concrete blocker."
   ];
-}
-
-function shouldRetryCodexWithoutResume(result, state) {
-  if (!result || result.exitCode === 0) {
-    return false;
-  }
-  if (state?.messages?.length || state?.terminal?.length) {
-    return false;
-  }
-  const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
-  return /resume|session|thread|conversation|not found|missing|invalid|no such/u.test(details);
-}
-
-function shouldRetryCodexAfterNoProgress(result, state, signal = null) {
-  if (signal?.aborted || !result || result.exitCode !== 124) {
-    return false;
-  }
-  if (state?.usage?.actual || state?.messages?.length || state?.terminal?.length || cleanAgentChatReply(state?.lastMessage || "")) {
-    return false;
-  }
-  if (cleanAgentChatReply(state?.recoverableFailureText || "")) {
-    return false;
-  }
-  const details = `${result.stderr || ""}\n${result.stdout || ""}`.toLowerCase();
-  if (codexOutputHasNonRetryableProviderError(details)) {
-    return false;
-  }
-  return /codex (?:no-progress|idle after progress) timeout/u.test(details);
-}
-
-function codexOutputHasNonRetryableProviderError(value) {
-  const text = String(value || "").toLowerCase();
-  return /(?:model\s+["']?[^"'\n]+["']?\s+not\s+found|model_not_found|unknown\s+model|invalid\s+model|available:\s*[a-z0-9/_., -]+)/u.test(text);
 }
 
 function codexSessionKey(source, target = null, taskFamily = "generic") {
@@ -9387,7 +8857,7 @@ function formatDirectComputerToolText(args, stdout, stderr = "") {
   return formatRecoveredOperatorText(raw) || formatRecoveredOperatorFailureText(stderr, Number(wrapper?.exitCode));
 }
 
-function recoverRawDirectComputerJsonFinal(finalText) {
+function formatRawDirectComputerJsonFinal(finalText) {
   const text = String(finalText || "").trim();
   if (!text || !/^[{[]/u.test(text)) {
     return "";
@@ -9470,7 +8940,6 @@ async function runGonkaDirectSotySessionTurn({
   ];
   const terminal = [];
   const toolResults = [];
-  let lastToolUserText = "";
   let finalText = "";
   let exitCode = 0;
   let usedModel = gonkaUpstreamModel(gonkaPrimaryModel());
@@ -9496,16 +8965,9 @@ async function runGonkaDirectSotySessionTurn({
   if (!finalText) {
     for (let turn = 0; turn <= gonkaDirectMaxToolTurns; turn += 1) {
     if (signal?.aborted) {
-      const recoveredText = lastToolUserText
-        || directComputerProofText(toolResults)
-        || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
-        || "";
-      if (recoveredText) {
-        return { ok: true, text: cleanAgentChatReply(recoveredText).slice(0, maxChatChars), ...(terminal.length > 0 ? { terminal } : {}), exitCode: exitCode || 0 };
-      }
       return { ok: false, text: "! cancelled", ...(terminal.length > 0 ? { terminal } : {}), exitCode: 130 };
     }
-    const response = await fetchGonkaDirectChatWithFallback({
+    const response = await fetchGonkaDirectChat({
       model: gonkaPrimaryModel(),
       messages,
       tools: [gonkaComputerChatTool()],
@@ -9513,32 +8975,6 @@ async function runGonkaDirectSotySessionTurn({
     }, apiKey, trace);
     usedModel = response.model || usedModel;
     if (!response.ok) {
-      if (toolResults.length > 0 || lastToolUserText) {
-        const recoveredText = lastToolUserText
-          || directComputerProofText(toolResults)
-          || formatRecoveredOperatorText(toolResults[toolResults.length - 1])
-          || "";
-        if (recoveredText) {
-          traceStep(trace, "gonka.direct.model-failure-after-tool-recovered", {
-            status: response.status || 0,
-            model: usedModel,
-            textChars: recoveredText.length,
-            toolCalls: terminal.length
-          });
-          recordLearningReceipt({
-            kind: "gonka-direct-turn",
-            family: taskFamily,
-            result: "recovered",
-            route: "gonka.direct",
-            taskSig: taskSignature(text),
-            proof: `status=${response.status || 0}; model=${cleanProofToken(usedModel)}; recoveredAfterTool=true; error=${cleanProofToken(response.error || "")}`,
-            exitCode: exitCode || 0,
-            durationMs: Date.now() - startedAt,
-            ...learningContext
-          });
-          return { ok: true, text: cleanAgentChatReply(recoveredText).slice(0, maxChatChars), ...(terminal.length > 0 ? { terminal } : {}), exitCode: exitCode || 0 };
-        }
-      }
       const failureText = agentFailureText(response.error || "Gonka request failed");
       recordLearningReceipt({
         kind: "gonka-direct-turn",
@@ -9565,16 +9001,11 @@ async function runGonkaDirectSotySessionTurn({
     if (toolCalls.length === 0) {
       if (!finalText) {
         if (proofRequired && assistantText && !finalTextLooksLikeActionProof(assistantText)) {
-          if (turn < gonkaDirectMaxToolTurns) {
-            traceStep(trace, "gonka.direct.continue-missing-tool-proof", {
-              turn,
-              terminal: terminal.length,
-              textChars: assistantText.length
-            });
-            messages.push({ role: "assistant", content: assistantText });
-            messages.push({ role: "user", content: buildGonkaDirectMissingProofPrompt(text, taskFamily) });
-            continue;
-          }
+          traceStep(trace, "gonka.direct.missing-tool-proof", {
+            turn,
+            terminal: terminal.length,
+            textChars: assistantText.length
+          });
           finalText = assistantText;
           break;
         }
@@ -9603,15 +9034,11 @@ async function runGonkaDirectSotySessionTurn({
         }
       }))
     });
-    let continueForTargetCoverage = false;
     for (let callIndex = 0; callIndex < normalizedToolCalls.length; callIndex += 1) {
       const call = normalizedToolCalls[callIndex];
       const executed = await runGonkaDirectComputerToolCall({ call, text, taskFamily, jobDir, childEnv, trace, signal });
       terminal.push(executed.terminal);
       toolResults.push(executed.toolText);
-      if (executed.userText) {
-        lastToolUserText = executed.userText;
-      }
       exitCode = Number.isFinite(executed.exitCode) ? executed.exitCode : exitCode;
       if (typeof onTerminal === "function") {
         onTerminal(executed.terminal.text);
@@ -9623,13 +9050,11 @@ async function runGonkaDirectSotySessionTurn({
         content: executed.modelText
       });
       if (executed.exitCode === 0 && !directToolResultCoversExplicitTarget(executed.args, executed.toolText, text)) {
-        continueForTargetCoverage = true;
         traceStep(trace, "gonka.direct.tool-proof-misses-explicit-target", {
           operation: executed.args?.operation || "",
           action: executed.args?.action || "",
           requestedUrl: firstUrlCandidate(text).slice(0, 260)
         });
-        messages.push({ role: "user", content: buildGonkaDirectTargetCoveragePrompt(text, taskFamily) });
         break;
       }
       if (executed.exitCode === 0
@@ -9647,9 +9072,6 @@ async function runGonkaDirectSotySessionTurn({
         });
         break;
       }
-    }
-    if (continueForTargetCoverage) {
-      continue;
     }
     if (finalText) {
       break;
@@ -9842,60 +9264,11 @@ function parseDirectComputerToolPayload(toolText = "") {
   return parseJsonMaybe(raw) || (wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : {});
 }
 
-function buildGonkaDirectTargetCoveragePrompt(text = "", taskFamily = "") {
-  return [
-    "The previous computer-tool result did not cover the explicit target named by the user.",
-    "Continue the same request with a computer operation/action that directly reads, opens, or verifies that target.",
-    "Do not finish from about:blank, an empty page, an unrelated path, or a generic screenshot when the user named a URL/path/app target.",
-    "",
-    "Current user request (authoritative):",
-    String(text || "").trim(),
-    "",
-    `task_family: ${taskFamily || "generic"}`
-  ].join("\n");
-}
-
-function buildGonkaDirectMissingProofPrompt(text = "", taskFamily = "") {
-  return [
-    "The previous assistant message did not include a verified computer-tool result for this action task.",
-    "Continue the same user request now by calling the `computer` function for the missing action.",
-    "If the action is impossible, call a diagnostic computer operation first and then state the concrete blocker.",
-    "Do not finish with a plan, intention, or recommendation unless the tool result proves the requested outcome.",
-    "",
-    "Current user request (authoritative):",
-    String(text || "").trim(),
-    "",
-    `task_family: ${taskFamily || "generic"}`
-  ].join("\n");
-}
-
-
-async function fetchGonkaDirectChatWithFallback(body, apiKey, trace = null) {
-  const primary = await fetchGonkaDirectChatBody(body, apiKey).catch((error) => ({
+async function fetchGonkaDirectChat(body, apiKey) {
+  return await fetchGonkaDirectChatBody(body, apiKey).catch((error) => ({
     ok: false,
     status: 0,
     model: safeCodexModelId(body?.model),
-    error: error instanceof Error ? error.message : String(error)
-  }));
-  if (primary.ok || !codexGonkaFallbackModel) {
-    return primary;
-  }
-  const shouldFallback = primary.status === 0
-    ? shouldRetryGonkaFallbackTransport(primary.model, new Error(primary.error || "Gonka request failed"))
-    : shouldRetryGonkaFallback(primary.model, primary.status, primary.error || "");
-  if (!shouldFallback) {
-    return primary;
-  }
-  traceStep(trace, "gonka.direct.fallback-model", {
-    from: primary.model || "",
-    to: codexGonkaFallbackModel,
-    status: primary.status || 0,
-    error: String(primary.error || "").slice(0, 300)
-  });
-  return await fetchGonkaDirectChatBody({ ...body, model: codexGonkaFallbackModel }, apiKey).catch((error) => ({
-    ok: false,
-    status: 0,
-    model: codexGonkaFallbackModel,
     error: error instanceof Error ? error.message : String(error)
   }));
 }
@@ -10196,7 +9569,7 @@ function normalizeGonkaDirectFinal({ finalText = "", exitCode = 0, text = "", ta
     return { finalText: "! cancelled", exitCode: 130 };
   }
   const results = Array.isArray(toolResults) ? toolResults.filter(Boolean) : [];
-  let clean = cleanAgentChatReply(recoverRawDirectComputerJsonFinal(finalText) || finalText).slice(0, maxChatChars);
+  let clean = cleanAgentChatReply(formatRawDirectComputerJsonFinal(finalText) || finalText).slice(0, maxChatChars);
   let code = Number.isSafeInteger(Number(exitCode)) ? Number(exitCode) : 0;
   if (results.length > 0 && !directToolResultsCoverExplicitTarget(results, text)) {
     return {
@@ -10205,34 +9578,14 @@ function normalizeGonkaDirectFinal({ finalText = "", exitCode = 0, text = "", ta
     };
   }
 
-  const proofText = directComputerProofText(results);
-  const proofFallback = proofText || directComputerResultText(results);
   const proofRequired = hasCriticalDestructiveIntent(text) || computerActionRequiresProof(taskFamily, text);
-  let normalizedReason = "";
-  if (results.length > 0) {
-    if (proofFallback && !clean) {
-      normalizedReason = "empty-final";
-    } else if (proofFallback && isTinyCompletionReply(clean)) {
-      normalizedReason = "tiny-final";
-    } else if (proofFallback && finalTextNeedsComputerProofNormalization(clean, code, results)) {
-      normalizedReason = "proof-conflict";
-    } else if (proofRequired && !finalTextLooksLikeActionProof(clean)) {
-      if (proofFallback) {
-        normalizedReason = "missing-proof";
-      } else {
-        clean = agentFailureText("The action did not produce a verified computer-tool result.");
-        code = code || 125;
-        normalizedReason = "missing-proof";
-      }
-    }
-  }
-  if (normalizedReason && proofFallback) {
-    clean = cleanAgentChatReply(proofFallback).slice(0, maxChatChars);
-    traceStep(trace, "gonka.direct.normalized-tool-final", {
-      reason: normalizedReason,
+  if (results.length > 0 && proofRequired && !finalTextLooksLikeActionProof(clean)) {
+    traceStep(trace, "gonka.direct.final-missing-proof", {
       textChars: clean.length,
       toolResults: results.length
     });
+    clean = agentFailureText("The model did not produce a verified final answer from the computer-tool result.");
+    code = code || 125;
   }
   if (!clean) {
     clean = "! gonka: model did not produce a final answer";
@@ -10251,32 +9604,6 @@ function directComputerProofText(toolResults = []) {
   }
   return "";
 }
-
-function directComputerResultText(toolResults = []) {
-  const toolText = String(toolResults.filter(Boolean).slice(-2).join("\n\n")).slice(0, gonkaDirectToolResultChars);
-  if (!toolText) {
-    return "";
-  }
-  return cleanActionText(formatRecoveredOperatorText(toolText) || toolText, maxChatChars);
-}
-
-function finalTextNeedsComputerProofNormalization(finalText = "", exitCode = 0, toolResults = []) {
-  if (exitCode !== 0 || !Array.isArray(toolResults) || toolResults.length === 0) {
-    return false;
-  }
-  const value = String(finalText || "").toLowerCase();
-  if (!value.trim()) {
-    return false;
-  }
-  const saysFailure = /(?:\b(?:failed|failure|error|could not|unable|did not)\b|не\s+(?:получилось|удалось|смог)|ошибк|сбой)/iu.test(value);
-  const saysZeroCode = /(?:\b(?:code|exitcode|exit\s+code)\s*[:=]?\s*0\b|код\s*0)/iu.test(value);
-  return saysFailure && (saysZeroCode || directToolResultsCoverExplicitTarget(toolResults, ""));
-}
-
-function isTinyCompletionReply(value) {
-  return /^(?:done|ok|completed|complete|ready|готово|сделано|ок)\.?$/iu.test(String(value || "").trim());
-}
-
 
 function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = null, onTerminal = null, signal = null, options = {}) {
   return new Promise((resolve, reject) => {
@@ -10303,9 +9630,6 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     const idleAfterProgressTimeoutMs = Number.isSafeInteger(options?.idleAfterProgressTimeoutMs)
       ? Math.max(1000, options.idleAfterProgressTimeoutMs)
       : codexIdleAfterProgressTimeoutMs;
-    const recoverableIdleAfterProgressTimeoutMs = Number.isSafeInteger(options?.recoverableIdleAfterProgressTimeoutMs)
-      ? Math.max(1000, options.recoverableIdleAfterProgressTimeoutMs)
-      : codexRecoverableIdleAfterProgressTimeoutMs;
     let sawStartupActivity = false;
     let sawModelProgress = false;
     let startupTimer = null;
@@ -10321,9 +9645,7 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
     const markModelProgress = () => {
       sawModelProgress = true;
       clearTimeout(noProgressTimer);
-      const timeoutMs = state?.recoverableFinalText
-        ? recoverableIdleAfterProgressTimeoutMs
-        : idleAfterProgressTimeoutMs;
+      const timeoutMs = idleAfterProgressTimeoutMs;
       if (timeoutMs <= 0 || done) {
         return;
       }
@@ -10336,7 +9658,6 @@ function runCodexForSotyChat(file, args, env, input, state, jobDir, onMessage = 
         stderr = `${stderr}${stderr.endsWith("\n") || !stderr ? "" : "\n"}! codex idle after progress timeout\n`.slice(-24_000);
         traceStep(state?.trace, "codex.idle-after-progress-timeout", {
           timeoutMs,
-          recoverableFinalText: Boolean(state?.recoverableFinalText),
           stdoutChars: stdout.length,
           stderrChars: stderr.length,
           usage: state?.usage || emptyCodexUsage()
@@ -10481,14 +9802,6 @@ function handleCodexJsonLineForSoty(line, state, onMessage = null, onTerminal = 
   }
   traceCodexEvent(state?.trace, text, event);
   mergeCodexUsage(state, extractCodexUsage(event));
-  const recoveredFinalText = cleanAgentChatReply(recoverFinalTextFromCodexEvent(event));
-  if (recoveredFinalText) {
-    state.recoverableFinalText = recoveredFinalText.slice(0, maxChatChars);
-  }
-  const recoveredFailureText = cleanAgentChatReply(recoverFailureTextFromCodexEvent(event));
-  if (recoveredFailureText) {
-    state.recoverableFailureText = recoveredFailureText.slice(0, maxChatChars);
-  }
   const threadId = codexEventThreadId(event);
   if (threadId) {
     state.threadId = threadId;
@@ -10897,7 +10210,7 @@ function implicitOperatorTargetForRequest(source, text = "", sourceTargets = [])
   return null;
 }
 
-function sourceDeviceFallbackTarget(source) {
+function sourceDeviceLocalTarget(source) {
   const safe = sanitizeAgentSource(source);
   if (!safe.deviceId) {
     return null;
@@ -10929,7 +10242,7 @@ function sourceDeviceRuntimeTarget(source, sourceTargets = []) {
   if (directTarget) {
     return directTarget;
   }
-  return sourceHasExecutableLocalAgent(safe) ? sourceDeviceFallbackTarget(safe) : null;
+  return sourceHasExecutableLocalAgent(safe) ? sourceDeviceLocalTarget(safe) : null;
 }
 
 function sourceHasExecutableLocalAgent(source) {
@@ -11157,164 +10470,6 @@ function isLikelyInternalCodexReasoningReply(value) {
   return startsLikeHiddenReasoning && (mentionsInternalTooling || narratesAttempt || text.length > 900);
 }
 
-async function askCodexRelayFallback(text, context, source = {}, onMessage = null, onTerminal = null, options = {}) {
-  const signal = options?.signal || null;
-  if (signal?.aborted) {
-    return { ok: false, text: "! cancelled", exitCode: 130 };
-  }
-  const relayBaseUrl = agentRelayBaseUrl || originFromUrl(updateManifestUrl);
-  if (!relayBaseUrl) {
-    return null;
-  }
-  const requestRelayId = agentRelayId;
-  if (!requestRelayId) {
-    return null;
-  }
-  try {
-    const request = await fetch(new URL("/api/agent/relay/request", relayBaseUrl), {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      signal,
-      body: JSON.stringify({
-        relayId: requestRelayId,
-        text: String(text || "").slice(0, maxChatChars),
-        context: String(context || "").slice(-maxAgentContextChars),
-        source: sanitizeAgentSource(source),
-        ...(options?.preferServer === true ? { preferServer: true } : {})
-      })
-    });
-    const created = await request.json();
-    if (!request.ok || !created?.ok || !isSafeText(created.id, 160)) {
-      return null;
-    }
-    const replyRelayId = safeRelayId(created.relayId || requestRelayId);
-    let stopEvents = false;
-    let cancelSent = false;
-    const cancelRelayFallback = () => {
-      stopEvents = true;
-      cancelSent = true;
-      void cancelCodexRelayFallbackJob(relayBaseUrl, replyRelayId, created.id).catch(() => undefined);
-    };
-    if (signal?.aborted) {
-      await cancelCodexRelayFallbackJob(relayBaseUrl, replyRelayId, created.id).catch(() => undefined);
-      return { ok: false, text: "! cancelled", exitCode: 130 };
-    }
-    signal?.addEventListener?.("abort", cancelRelayFallback, { once: true });
-    const eventStream = typeof onMessage === "function" || typeof onTerminal === "function"
-      ? watchCodexRelayFallbackEvents(relayBaseUrl, replyRelayId, created.id, onMessage, onTerminal, () => stopEvents, signal)
-      : Promise.resolve();
-    try {
-      const reply = await waitForCodexRelayFallbackReply(relayBaseUrl, replyRelayId, created.id, signal);
-      stopEvents = true;
-      void eventStream.catch(() => undefined);
-      if (signal?.aborted) {
-        if (!cancelSent) {
-          await cancelCodexRelayFallbackJob(relayBaseUrl, replyRelayId, created.id).catch(() => undefined);
-        }
-        return { ok: false, text: "! cancelled", exitCode: 130 };
-      }
-      return reply;
-    } finally {
-      stopEvents = true;
-      signal?.removeEventListener?.("abort", cancelRelayFallback);
-    }
-  } catch (error) {
-    if (isAbortError(error) || signal?.aborted) {
-      return { ok: false, text: "! cancelled", exitCode: 130 };
-    }
-    return null;
-  }
-}
-
-async function cancelCodexRelayFallbackJob(relayBaseUrl, relayId, id) {
-  if (!relayBaseUrl || !relayId || !id) {
-    return;
-  }
-  await fetch(new URL("/api/agent/relay/cancel", relayBaseUrl), {
-    method: "POST",
-    cache: "no-store",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ relayId, id })
-  });
-}
-
-async function watchCodexRelayFallbackEvents(relayBaseUrl, relayId, id, onMessage, onTerminal, stopped, signal = null) {
-  let after = 0;
-  while (!stopped() && !signal?.aborted) {
-    const url = new URL("/api/agent/relay/events", relayBaseUrl);
-    url.searchParams.set("relayId", relayId);
-    url.searchParams.set("id", id);
-    url.searchParams.set("after", String(after));
-    url.searchParams.set("wait", "1");
-    try {
-      const response = await fetch(url, { cache: "no-store", signal });
-      if (!response.ok) {
-        return;
-      }
-      if (stopped()) {
-        return;
-      }
-      const payload = await response.json();
-      for (const event of Array.isArray(payload?.events) ? payload.events : []) {
-        const seq = Number.isSafeInteger(event?.seq) ? event.seq : 0;
-        if (seq <= after) {
-          continue;
-        }
-        after = seq;
-        const type = String(event?.type || "agent_message");
-        if (type === "agent_terminal") {
-          const text = cleanTerminalTranscript(event?.text || "");
-          if (text && typeof onTerminal === "function") {
-            await Promise.resolve(onTerminal(text)).catch(() => undefined);
-          }
-          continue;
-        }
-        const text = cleanAgentChatReply(event?.text || "");
-        if (text && typeof onMessage === "function") {
-          await Promise.resolve(onMessage(text)).catch(() => undefined);
-        }
-      }
-      if (payload?.done) {
-        return;
-      }
-    } catch {
-      await sleep(1000);
-    }
-  }
-}
-
-async function waitForCodexRelayFallbackReply(relayBaseUrl, relayId, id, signal = null) {
-  if (!relayId || !id) {
-    return null;
-  }
-  while (!signal?.aborted) {
-    const url = new URL("/api/agent/relay/reply", relayBaseUrl);
-    url.searchParams.set("relayId", relayId);
-    url.searchParams.set("id", id);
-    url.searchParams.set("wait", "1");
-    try {
-      const response = await fetch(url, { cache: "no-store", signal });
-      if (!response.ok) {
-        return null;
-      }
-      const payload = await response.json();
-      if (payload?.reply) {
-        const messages = compactCodexMessages(payload.reply.messages);
-        return {
-          ok: Boolean(payload.reply.ok),
-          text: cleanAgentChatReply(payload.reply.text || "").slice(0, maxChatChars),
-          ...(messages.length > 0 ? { messages } : {}),
-          ...(Number.isSafeInteger(payload.reply.exitCode) ? { exitCode: payload.reply.exitCode } : {})
-        };
-      }
-    } catch {
-      // Keep waiting; transient network switches are common on remote devices.
-    }
-  }
-  return signal?.aborted ? { ok: false, text: "! cancelled", exitCode: 130 } : null;
-}
-
 async function buildAgentRuntimeContext({ text, context = "", source = {}, target = null, sourceTargets = [], sessionRecord = null, jobDir = "" }) {
   const safeSource = sanitizeAgentSource(source);
   const agentDialog = isAgentDialogSource(safeSource);
@@ -11534,7 +10689,7 @@ function windowsReinstallRouteProfile() {
     phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
     route: [
       "prove selected source device and machine/system worker",
-      "recover stale prepare state before starting managed prepare",
+      "resume stale prepare state before starting managed prepare",
       "run repair/status when the user reports a broken or interrupted reinstall workflow",
       "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
       "start managed prepare once with stable idempotency",
@@ -12526,140 +11681,6 @@ function targetMatchesSourceDevice(target, sourceDeviceId) {
   return target.hostDeviceId === sourceId || target.deviceIds.includes(sourceId);
 }
 
-function shouldUseCodexRelayFallback(reply) {
-  if (!codexRelayFallback || !reply || reply.ok) {
-    return false;
-  }
-  return /codex-cli:\s*not found|missing auth|api key|403 forbidden|unable to load site|transport rejected|cold start|local Codex did not start/iu.test(String(reply.text || ""));
-}
-
-function agentFailureText(details) {
-  const clean = redactTraceString(String(details || ""), 1200)
-    .replace(/\r\n?/gu, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .filter((line) => !/^\{"type":/u.test(line))
-    .filter((line) => !isLikelyInternalCodexReasoningReply(line))
-    .slice(-8)
-    .join("\n")
-    .trim();
-  return clean ? `! agent: ${clean}`.slice(0, maxChatChars) : "! agent: no final assistant message";
-}
-
-async function preparePersistentStockCodexHome() {
-  const target = join(agentDir, codexUsesGonka ? "codex-gonka-home" : "codex-stock-home");
-  await mkdir(target, { recursive: true });
-  if (codexUsesGonka) {
-    await rm(join(target, "auth.json"), { force: true }).catch(() => undefined);
-    await rm(join(target, "cap_sid"), { force: true }).catch(() => undefined);
-    await ensureCodexInstallationId(target);
-    return target;
-  }
-  const authHome = chooseCodexAuthHome();
-  for (const file of ["auth.json", "cap_sid", "installation_id", "version.json"]) {
-    const source = authHome ? join(authHome, file) : "";
-    if (source && existsSync(source)) {
-      await copyFile(source, join(target, file)).catch(() => undefined);
-    }
-  }
-  return target;
-}
-
-async function ensureCodexInstallationId(target) {
-  const targetPath = join(target, "installation_id");
-  if (existsSync(targetPath)) {
-    return;
-  }
-  const authHome = chooseCodexAuthHome();
-  const source = authHome ? join(authHome, "installation_id") : "";
-  if (source && existsSync(source)) {
-    await copyFile(source, targetPath).catch(() => undefined);
-  }
-  if (!existsSync(targetPath)) {
-    await writeFile(targetPath, `${randomUUID()}\n`, "utf8").catch(() => undefined);
-  }
-}
-
-function chooseCodexAuthHome() {
-  const explicit = process.env.CODEX_HOME || "";
-  if (explicit && existsSync(explicit)) {
-    return explicit;
-  }
-  const home = join(homedir(), ".codex");
-  return existsSync(home) ? home : "";
-}
-
-function codexNetworkProxyEnv() {
-  if (!codexProxyUrl) {
-    return {};
-  }
-  const noProxy = mergedNoProxy(process.env.NO_PROXY || process.env.no_proxy || "");
-  return {
-    HTTPS_PROXY: codexProxyUrl,
-    HTTP_PROXY: codexProxyUrl,
-    ALL_PROXY: codexProxyUrl,
-    https_proxy: codexProxyUrl,
-    http_proxy: codexProxyUrl,
-    all_proxy: codexProxyUrl,
-    NO_PROXY: noProxy,
-    no_proxy: noProxy
-  };
-}
-
-function codexProviderEnv() {
-  if (!codexUsesGonka) {
-    return {};
-  }
-  const apiKey = codexGonkaApiKey();
-  return apiKey ? { [codexGonkaEnvKey]: apiKey } : {};
-}
-
-function safeProxyUrl(value) {
-  const text = String(value || "").trim();
-  if (!text) {
-    return "";
-  }
-  try {
-    const parsed = new URL(text);
-    return ["http:", "https:", "socks5:", "socks5h:"].includes(parsed.protocol) ? text : "";
-  } catch {
-    return "";
-  }
-}
-
-function proxyScheme(value) {
-  if (!value) {
-    return "";
-  }
-  try {
-    return new URL(value).protocol.replace(/:$/u, "");
-  } catch {
-    return "";
-  }
-}
-
-function mergedNoProxy(value) {
-  const parts = new Set(String(value || "")
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean));
-  for (const host of ["127.0.0.1", "localhost", "::1"]) {
-    parts.add(host);
-  }
-  return Array.from(parts).join(",");
-}
-
-function canRunCodexBrain() {
-  if (codexDisabled) {
-    return false;
-  }
-  const scope = String(agentScope || "").toLowerCase();
-  return scope === "server"
-    || process.env.SOTY_CODEX_SERVER_EXECUTOR === "1"
-    || /^srv_codex_/u.test(agentRelayId);
-}
-
 function findCodexBinary() {
   if (!canRunCodexBrain()) {
     return "";
@@ -12876,7 +11897,7 @@ function runMcpServer() {
     const tools = [
       {
         name: "computer",
-        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, web fetch/search, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are available when they fit, without blocking normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools when the runtime exposes them; operation=web is the Soty source-device internet fallback. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
+        description: "Soty MCP computer-use capability for the selected or named user's computer. Link targets are first-class computers: if device B granted Link access to controller A, use this same computer plane for B through A. Use this as the front door for device perception and action: discover, route_profiles, status, shell/script/action/terminal jobs, files, Soty data-plane file publishing, artifact transfer, web fetch/search, browser, desktop/screen/keyboard/mouse, wallpaper, audio, app/api adapters, transaction prepare/preview/submit flows, generated-asset save/apply/verify, and managed reinstall. This is a full remote computer plane: managed capabilities are available when they fit, without blocking normal shell/file/terminal access. For parallel console work, start independent operation=terminal/action jobs with detached=true, then use job_status/job_stop/jobs. OpenAI built-in tools such as image_generation/web_search are native tools when the runtime exposes them; operation=web uses the selected source computer for internet work. Repeated work should follow the best route profile through a first-class capability, not ad-hoc chat instructions. Legacy soty_* tools are compatibility aliases behind this plane, not the public interface. Never use public upload services or temporary HTTP servers for file transfer while computer file/artifact operations are available. Do not expose internal transport names to the user.",
         inputSchema: {
           type: "object",
           properties: {
@@ -12942,7 +11963,7 @@ function runMcpServer() {
       },
       {
         name: "soty_toolkit",
-        description: "Universal Soty automation toolkit entrypoint for any software or console work on the current LINK source device. Use this first for repeated, long, state-changing, install/repair/diagnostic, or scriptable tasks. It routes to first-class toolkits such as windows-reinstall or to the durable-action kernel, records proof, and keeps old run/script paths as low-level fallback.",
+        description: "Universal Soty automation toolkit entrypoint for any software or console work on the current LINK source device. Use this first for repeated, long, state-changing, install/repair/diagnostic, or scriptable tasks. It routes to first-class toolkits such as windows-reinstall or to the durable-action kernel, records proof, and exposes run/script as low-level universal primitives.",
         inputSchema: {
           type: "object",
           properties: {
@@ -13136,7 +12157,7 @@ function runMcpServer() {
       },
       {
         name: "soty_file",
-        description: "Seamless Desktop-Commander-style file access on the current Soty Agent LINK source device. Use for listing, reading, writing, searching, moving, copying, deleting, creating project files, and transferring exact source-device files. action=download means source device -> controller/current computer Downloads via the encrypted Soty room and browser download. action=publish means source device -> room file rail only. Never use public upload services, temporary HTTP servers, or paste/base64 chat as a file-transfer fallback while this capability is available.",
+        description: "Seamless Desktop-Commander-style file access on the current Soty Agent LINK source device. Use for listing, reading, writing, searching, moving, copying, deleting, creating project files, and transferring exact source-device files. action=download means source device -> controller/current computer Downloads via the encrypted Soty room and browser download. action=publish means source device -> room file rail only. Never use public upload services, temporary HTTP servers, or paste/base64 chat as a file-transfer path while this capability is available.",
         inputSchema: {
           type: "object",
           properties: {
@@ -13578,7 +12599,7 @@ function runMcpServer() {
         ok: false,
         error: "native-openai-image-generation-required",
         message: "Image generation is an OpenAI/Codex built-in tool, not a Soty MCP tool. Use the native image_generation/image_gen tool first, then use computer operation=artifact/desktop to save, apply, and verify on the selected device.",
-        noSotyImageFallback: true,
+        noSotyImageToolSubstitute: true,
         openAiToolPlane: openAiToolPlaneStatus()
       }, true, 78);
     }
@@ -14733,7 +13754,7 @@ function runMcpServer() {
             action: "prepare",
             status: "blocked",
             blocker: "source-status-unavailable",
-            text: "Monitoring is blocked because the selected PC did not return structured Soty status during the recovery window. Reconnect or start Soty Agent on that PC, then I can resume from the existing managed prepare state.",
+            text: "Monitoring is blocked because the selected PC did not return structured Soty status during the status window. Reconnect or start Soty Agent on that PC, then I can resume from the existing managed prepare state.",
             exitCode: statusResult.exitCode || 127,
             consecutiveStatusFailures,
             unavailableMs,
@@ -17804,7 +16825,7 @@ function openAiToolPlaneStatus() {
     centralResolver: direct ? "gonka-direct-chat-completions" : "stock-codex-cli",
     builtInTools: [...openAiBuiltInTools],
     codexCliFeatureFlags: direct ? [] : [...codexNativeOpenAiToolFeatures],
-    webSearch: codexNativeWebSearch ? "native --search" : (codexUsesGonka ? "computer.operation=web fallback" : "disabled-by-env"),
+    webSearch: codexNativeWebSearch ? "native --search" : (codexUsesGonka ? "computer.operation=web on selected computer" : "disabled-by-env"),
     mcp: {
       server: "soty",
       entryTool: "computer",
@@ -17893,7 +16914,6 @@ function runtimeHealth() {
     codexProvider: codexProviderName(),
     codexModel: codexUsesGonka ? gonkaPrimaryModel() : "",
     codexUpstreamModel: codexUsesGonka ? gonkaUpstreamModel(gonkaPrimaryModel()) : "",
-    codexFallbackModel: codexUsesGonka ? codexGonkaFallbackModel : "",
     codexProviderAdapter: codexUsesGonka ? (directGonka ? "gonka-direct-chat-completions" : "gonka-chat-completions-via-local-responses-adapter") : "",
     codexCentralResolver: directGonka ? "gonka-direct-chat-completions" : (canRunCodexBrain() ? "stock-codex-cli" : "server-relay-only"),
     codexAdapterRole: codexUsesGonka ? (directGonka ? "direct-agent-transport" : "model-provider-transport") : "native-provider",
@@ -18189,6 +17209,88 @@ function sourceScriptJobBaseDir(runAs = "user") {
   return join(tmpdir(), "soty-agent");
 }
 
+function agentFailureText(details) {
+  const clean = redactTraceString(String(details || ""), 1200)
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^\{"type":/u.test(line))
+    .filter((line) => !isLikelyInternalCodexReasoningReply(line))
+    .slice(-8)
+    .join("\n")
+    .trim();
+  return clean ? `! agent: ${clean}`.slice(0, maxChatChars) : "! agent: no final assistant message";
+}
+
+async function preparePersistentStockCodexHome() {
+  const target = join(agentDir, codexUsesGonka ? "codex-gonka-home" : "codex-stock-home");
+  await mkdir(target, { recursive: true });
+  if (codexUsesGonka) {
+    await rm(join(target, "auth.json"), { force: true }).catch(() => undefined);
+    await rm(join(target, "cap_sid"), { force: true }).catch(() => undefined);
+    await ensureCodexInstallationId(target);
+    return target;
+  }
+  const authHome = chooseCodexAuthHome();
+  for (const file of ["auth.json", "cap_sid", "installation_id", "version.json"]) {
+    const source = authHome ? join(authHome, file) : "";
+    if (source && existsSync(source)) {
+      await copyFile(source, join(target, file)).catch(() => undefined);
+    }
+  }
+  return target;
+}
+
+async function ensureCodexInstallationId(target) {
+  const targetPath = join(target, "installation_id");
+  if (existsSync(targetPath)) {
+    return;
+  }
+  const authHome = chooseCodexAuthHome();
+  const source = authHome ? join(authHome, "installation_id") : "";
+  if (source && existsSync(source)) {
+    await copyFile(source, targetPath).catch(() => undefined);
+  }
+  if (!existsSync(targetPath)) {
+    await writeFile(targetPath, `${randomUUID()}\n`, "utf8").catch(() => undefined);
+  }
+}
+
+function chooseCodexAuthHome() {
+  const explicit = process.env.CODEX_HOME || "";
+  if (explicit && existsSync(explicit)) {
+    return explicit;
+  }
+  const home = join(homedir(), ".codex");
+  return existsSync(home) ? home : "";
+}
+
+function codexNetworkProxyEnv() {
+  if (!codexProxyUrl) {
+    return {};
+  }
+  const noProxy = mergedNoProxy(process.env.NO_PROXY || process.env.no_proxy || "");
+  return {
+    HTTPS_PROXY: codexProxyUrl,
+    HTTP_PROXY: codexProxyUrl,
+    ALL_PROXY: codexProxyUrl,
+    https_proxy: codexProxyUrl,
+    http_proxy: codexProxyUrl,
+    all_proxy: codexProxyUrl,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy
+  };
+}
+
+function codexProviderEnv() {
+  if (!codexUsesGonka) {
+    return {};
+  }
+  const apiKey = codexGonkaApiKey();
+  return apiKey ? { [codexGonkaEnvKey]: apiKey } : {};
+}
+
 function safeRelayId(value) {
   const text = String(value || "").trim();
   return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
@@ -18225,6 +17327,51 @@ function safeHttpApiBaseUrl(value) {
   } catch {
     return "";
   }
+}
+
+function safeProxyUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!["http:", "https:", "socks5:", "socks5h:"].includes(url.protocol)) {
+      return "";
+    }
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function proxyScheme(value) {
+  if (!value) {
+    return "";
+  }
+  try {
+    return new URL(value).protocol.replace(/:$/u, "");
+  } catch {
+    return "";
+  }
+}
+
+function mergedNoProxy(value) {
+  const parts = new Set(String(value || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean));
+  for (const host of ["127.0.0.1", "localhost", "::1"]) {
+    parts.add(host);
+  }
+  return Array.from(parts).join(",");
+}
+
+function canRunCodexBrain() {
+  if (codexDisabled) {
+    return false;
+  }
+  const scope = String(agentScope || "").toLowerCase();
+  return scope === "server"
+    || process.env.SOTY_CODEX_SERVER_EXECUTOR === "1"
+    || /^srv_codex_/u.test(agentRelayId);
 }
 
 function originFromUrl(value) {

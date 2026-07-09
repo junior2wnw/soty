@@ -235,7 +235,7 @@ function buildOpenAiToolPlane() {
     centralResolver: "gonka-direct-chat-completions",
     builtInTools: ["web_search", "image_generation", "computer_use_preview", "code_interpreter", "shell", "apply_patch"],
     codexCliFeatureFlags: [],
-    webSearch: "native --search or computer.operation=web fallback",
+    webSearch: "native web_search when available; otherwise computer.operation=web on the selected computer",
     mcp: {
       server: "soty",
       entryTool: "computer",
@@ -281,7 +281,7 @@ function buildRouteProfiles(windowsReinstall) {
         phases: ["preflight", "prepare", "status", "repair", "cancel", "arm"],
         route: [
           "prove selected source device and machine/system worker",
-          "recover stale prepare state before starting managed prepare",
+          "resume stale prepare state before starting managed prepare",
           "run repair/status when the user reports a broken or interrupted reinstall workflow",
           "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
           "start managed prepare once with stable idempotency",
@@ -365,7 +365,7 @@ function buildAutomationToolkits(windowsReinstall, routeProfiles, agentRuntime) 
       entrypoint: "computer",
       legacyEntrypoint: "soty_computer",
       route: "computer-use-plane-with-memory-hints",
-      fallbackKernel: "jobs",
+      jobKernel: "durable-jobs",
       routeProfiles: "soty.route-profiles.v1",
       agentRuntime: agentRuntime.schema,
       chat: "agent-sysadmin",
