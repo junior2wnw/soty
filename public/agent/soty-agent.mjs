@@ -7,177 +7,6 @@ import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-// bundled local agent module: ./agent-modules/computer-task-router.mjs
-function createComputerTaskRouter(dependencies = {}) {
-  const {
-    firstKeyValue = () => "",
-    hasScreenshotIntent = () => false,
-    hasBrowserPageIntent = () => false,
-    hasWallpaperIntent = () => false,
-    isGeneratedImageIntent = () => false
-  } = dependencies;
-
-  const appAliasRules = Object.freeze([
-    { name: "notepad", pattern: /notepad|\u0431\u043b\u043e\u043a\u043d\u043e\u0442/iu },
-    { name: "calculator", pattern: /calc(?:ulator)?|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442/iu },
-    { name: "paint", pattern: /mspaint|paint|\u043f\u0435\u0439\u043d\u0442/iu },
-    { name: "explorer", pattern: /explorer|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a/iu },
-    { name: "codex", pattern: /codex|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441/iu },
-    { name: "chrome", pattern: /chrome|\u0445\u0440\u043e\u043c/iu },
-    { name: "edge", pattern: /edge|\u044d\u0434\u0436/iu }
-  ]);
-
-  const computerIntentPatterns = Object.freeze({
-    appWindow: /(?:\bapp(?:lication)?s?\b|\bwindow(?:s)?\b|\bgui\b|\bui\b|\bnotepad\b|\bcalc(?:ulator)?\b|\bmspaint\b|\bpaint\b|\bexplorer\b|\bcodex\b|\u043a\u043e\u0434(?:\u0435|\u0436)\u043a\u0441|\u043e\u043a\u043d|\u043f\u0440\u0438\u043b\u043e\u0436|\u043f\u0440\u043e\u0433\u0440\u0430\u043c|\u0431\u043b\u043e\u043a\u043d\u043e\u0442|\u043a\u0430\u043b\u044c\u043a\u0443\u043b\u044f\u0442|\u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a|\u043f\u0435\u0439\u043d\u0442)/iu,
-    explicitScript: /(?:powershell|cmd(?:\.exe)?|\bterminal\b|\bconsole\b|\bshell\b|\bscript\b|\bcommand\b|get-process|\bprocess(?:es)?\b|\u043f\u0440\u043e\u0446\u0435\u0441|\u0442\u0435\u0440\u043c\u0438\u043d\u0430\u043b|\u043a\u043e\u043d\u0441\u043e\u043b|\u043a\u043e\u043c\u0430\u043d\u0434|\u0441\u043a\u0440\u0438\u043f\u0442)/iu,
-    appLaunch: /(?:launch|start|open\s+(?:app|program|window)|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0442\u043a\u0440)/iu,
-    appType: /(?:type|input|enter|write|send|submit|message|\u0432\u0432\u0435\u0434|\u043d\u0430\u043f\u0435\u0447|\u043d\u0430\u043f\u0438\u0448|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449)/iu,
-    appClick: /(?:click|press|invoke|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a)/iu,
-    appSnapshot: /(?:inspect|snapshot|read|elements|controls|\u044d\u043b\u0435\u043c|\u043f\u0440\u043e\u0447\u0438\u0442|\u043f\u043e\u0441\u043c\u043e\u0442\u0440)/iu,
-    appList: /(?:\blist\b|\bwindows\b|\bapps\b|\u0441\u043f\u0438\u0441|\u043e\u043a\u043d\u0430|\u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d)/iu,
-    appSubmit: /(?:\bsend\b|\bsubmit\b|\bmessage\b|\bchat\b|\bdialog\b|\u043e\u0442\u043f\u0440\u0430\u0432|\u0441\u043e\u043e\u0431\u0449\u0435\u043d|\u0434\u0438\u0430\u043b\u043e\u0433|\u0447\u0430\u0442|\u043d\u0430\u043f\u0438\u0448\u0438\s+(?:\u0435\u043c\u0443|\u0435\u0439|\u0438\u043c|\u0432\s+(?:\u0447\u0430\u0442|\u0434\u0438\u0430\u043b\u043e\u0433)))/iu,
-    wallpaperFamily: /(?:wallpaper|desktop|download-image-wallpaper)/iu,
-    download: /(?:\u0441\u043a\u0430\u0447\u0430\u0439|\u0437\u0430\u0433\u0440\u0443\u0437\u0438|download|save\s+(?:it|file)|\u0441\u043e\u0445\u0440\u0430\u043d\u0438)/iu,
-    audio: /(?:\u0433\u0440\u043e\u043c\u043a|\u0437\u0432\u0443\u043a|volume|mute|unmute)/iu,
-    systemResources: /(?:\u0440\u0435\u0441\u0443\u0440\u0441|cpu|ram|memory|\u043f\u0430\u043c\u044f\u0442|\u0434\u0438\u0441\u043a|disk|\u043d\u0430\u0433\u0440\u0443\u0437)/iu,
-    time: /(?:\u0432\u0440\u0435\u043c\u044f|\u0434\u0430\u0442[\u0430\u0443]|time|date)/iu,
-    openUrl: /(?:\u043e\u0442\u043a\u0440\u043e\u0439|open|browser|\u0431\u0440\u0430\u0443\u0437\u0435\u0440)/iu,
-    web: /(?:\u0438\u043d\u0442\u0435\u0440\u043d\u0435\u0442|\u0441\u0430\u0439\u0442|url|fetch|search|\u043d\u0430\u0439\u0434\u0438|\u043f\u043e\u0438\u0449\u0438|\u0437\u0430\u0433\u0443\u0433\u043b|web)/iu,
-    file: /(?:\u0444\u0430\u0439\u043b|\u043f\u0430\u043f\u043a|desktop|\u0440\u0430\u0431\u043e\u0447|read file|write file|create file|delete file|list files)/iu,
-    downloadCycle: /(?:\u0443\u0434\u0430\u043b\u0438|\u0443\u0434\u0430\u043b\u0438\u0442\u044c|delete|remove|cleanup|clean up)/iu,
-    fileWrite: /(?:\u0441\u043e\u0437\u0434\u0430[\u0439\u0442\u044c]|\u0437\u0430\u043f\u0438\u0448\u0438|\u043d\u0430\u043f\u0438\u0448\u0438|write|create)/iu,
-    fileRead: /(?:\u043f\u0440\u043e\u0447\u0438\u0442\u0430[\u0439\u0442\u044c]|\u0441\u0447\u0438\u0442\u0430\u0439|\u043f\u0440\u043e\u0432\u0435\u0440\u044c|verify|read|show)/iu,
-    fileDelete: /(?:\u0443\u0434\u0430\u043b\u0438|\u0443\u0434\u0430\u043b\u0438\u0442\u044c|delete|remove)/iu,
-    fileAppend: /(?:\u0434\u043e\u0431\u0430\u0432\u044c|append)/iu,
-    fileList: /(?:\u0441\u043f\u0438\u0441\u043e\u043a|list|ls|\u043f\u043e\u043a\u0430\u0436\u0438\s+\u0444\u0430\u0439\u043b\u044b)/iu,
-    fileStat: /(?:\u0441\u0442\u0430\u0442\u0443\u0441|stat|exists|\u0441\u0443\u0449\u0435\u0441\u0442\u0432)/iu,
-    timeSet: /(?:\u0443\u0441\u0442\u0430\u043d\u043e\u0432|set|\u0438\u0437\u043c\u0435\u043d)/iu,
-    script: /(?:powershell|cmd|\u043a\u043e\u043c\u0430\u043d\u0434|\u0441\u043a\u0440\u0438\u043f\u0442|terminal|console|\u0437\u0430\u043f\u0443\u0441\u0442\u0438)/iu
-  });
-
-  const appTypeActionAliases = Object.freeze(["type", "write", "input", "enter", "send", "submit"]);
-  const appClickActionAliases = Object.freeze(["click", "press", "invoke"]);
-
-  function hasComputerIntent(name, value) {
-    const pattern = computerIntentPatterns[name];
-    return Boolean(pattern && pattern.test(String(value || "")));
-  }
-
-  function hasAppWindowIntent(value) {
-    return hasComputerIntent("appWindow", value);
-  }
-
-  function hasExplicitScriptIntent(value) {
-    return hasComputerIntent("explicitScript", value);
-  }
-
-  function inferAppNameFromText(text) {
-    const value = String(text || "");
-    const keyed = firstKeyValue(value, ["app", "application", "window", "title"]);
-    if (keyed) return keyed;
-    for (const alias of appAliasRules) {
-      if (alias.pattern.test(value)) {
-        return alias.name;
-      }
-    }
-    return "";
-  }
-
-  const computerOperationRules = Object.freeze([
-    { operation: ({ lower }) => hasBrowserPageIntent(lower) ? "browser" : "desktop", when: ({ lower }) => hasScreenshotIntent(lower) },
-    { operation: "wallpaper", when: ({ lower, family }) => (hasWallpaperIntent(lower) || hasComputerIntent("wallpaperFamily", family)) && !isGeneratedImageIntent(lower) },
-    { operation: "image", when: ({ lower }) => isGeneratedImageIntent(lower) && hasWallpaperIntent(lower) },
-    { operation: "browser", when: ({ args }) => Boolean(args.url && args.text) },
-    { operation: "download", when: ({ args, lower }) => Boolean(args.url && hasComputerIntent("download", lower)) },
-    { operation: "audio", when: ({ args, lower }) => args.volumePercent !== undefined || hasComputerIntent("audio", lower) },
-    { operation: "system-resources", when: ({ lower, family }) => hasComputerIntent("systemResources", lower) || family === "system-check" },
-    { operation: "time", when: ({ lower, family }) => hasComputerIntent("time", lower) || family === "system-time" },
-    { operation: "open-url", when: ({ args, lower }) => Boolean(args.url && hasComputerIntent("openUrl", lower)) },
-    { operation: "web", when: ({ args, lower, family }) => Boolean(args.url || args.query || hasComputerIntent("web", lower) || family === "web-lookup") },
-    { operation: "app", when: ({ text, family }) => hasAppWindowIntent(text) || family === "app" || family === "computer-use" },
-    { operation: "file", when: ({ args, lower, family }) => Boolean(args.path || hasComputerIntent("file", lower) || family === "file-work") },
-    { operation: "script", when: ({ args, lower, family }) => Boolean(args.script || hasComputerIntent("script", lower) || family === "script-task") }
-  ]);
-
-  const computerActionResolvers = Object.freeze({
-    browser: ({ lower, args }) => {
-      if (hasScreenshotIntent(lower)) return "screenshot";
-      if (args.text || args.linkText || args.selector || args.target || hasComputerIntent("appClick", lower)) return "click_text";
-      return args.url ? "text" : "status";
-    },
-    desktop: ({ lower }) => hasScreenshotIntent(lower) ? "screenshot" : "status",
-    wallpaper: () => "wallpaper",
-    web: ({ args }) => args.url && !args.query ? "fetch" : "search",
-    download: ({ lower }) => hasComputerIntent("downloadCycle", lower) ? "cycle" : "save",
-    app: ({ text, lower, args }) => {
-      if (hasComputerIntent("appLaunch", lower) && (args.app || inferAppNameFromText(text))) return "launch";
-      if (hasComputerIntent("appType", lower) && (args.content || args.value || args.input || (!args.target && args.text))) return "type";
-      if (hasComputerIntent("appClick", lower) || args.target || args.text) return "click";
-      if (hasComputerIntent("appSnapshot", lower) || args.app || args.window || args.title) return "snapshot";
-      return "list";
-    },
-    file: ({ lower, args }) => {
-      const wantsWrite = args.content !== undefined || hasComputerIntent("fileWrite", lower);
-      const wantsRead = hasComputerIntent("fileRead", lower);
-      const wantsDelete = hasComputerIntent("fileDelete", lower);
-      if (args.path && args.content !== undefined && wantsWrite && wantsRead && wantsDelete) return "cycle";
-      if (wantsDelete) return "delete";
-      if (hasComputerIntent("fileAppend", lower)) return "append";
-      if (hasComputerIntent("fileRead", lower) && !args.content) return "read";
-      if (hasComputerIntent("fileList", lower)) return "list";
-      if (hasComputerIntent("fileStat", lower)) return "stat";
-      return args.content !== undefined ? "write" : "stat";
-    },
-    time: ({ lower }) => hasComputerIntent("timeSet", lower) ? "set" : "status",
-    audio: ({ args }) => args.volumePercent !== undefined ? "set" : "status"
-  });
-
-  function inferGonkaComputerOperationFromText(text, family, args = {}) {
-    const context = {
-      text: String(text || ""),
-      lower: String(text || "").toLowerCase(),
-      family: String(family || ""),
-      args: args || {}
-    };
-    for (const rule of computerOperationRules) {
-      if (rule.when(context)) {
-        return typeof rule.operation === "function" ? rule.operation(context) : rule.operation;
-      }
-    }
-    return "system-resources";
-  }
-
-  function inferGonkaComputerActionFromText(text, operation, args) {
-    const actionArgs = args || {};
-    const normalizedOperation = String(operation || "");
-    const resolver = computerActionResolvers[normalizedOperation];
-    if (!resolver) {
-      return actionArgs.action || "status";
-    }
-    return resolver({
-      text: String(text || ""),
-      lower: String(text || "").toLowerCase(),
-      operation: normalizedOperation,
-      args: actionArgs
-    });
-  }
-
-  return Object.freeze({
-    appAliasRules,
-    computerIntentPatterns,
-    appTypeActionAliases,
-    appClickActionAliases,
-    computerOperationRules,
-    computerActionResolvers,
-    hasComputerIntent,
-    hasAppWindowIntent,
-    hasExplicitScriptIntent,
-    inferAppNameFromText,
-    inferGonkaComputerOperationFromText,
-    inferGonkaComputerActionFromText
-  });
-}
-
 // bundled local agent module: ./agent-modules/mcp-computer-router.mjs
 function createMcpComputerRouter(dependencies = {}) {
   const {
@@ -1041,215 +870,30 @@ emit({ ok: false, action, error: "unsupported network action" }, 2);
 }
 
 // bundled local agent module: ./agent-modules/source-task-classifier.mjs
-function createSourceTaskClassifier(dependencies = {}) {
-  const {
-    cleanActionToken = (value, fallback = "generic") => String(value || fallback || "").trim().toLowerCase(),
-    hasWallpaperIntent = () => false,
-    isGeneratedImageIntent = () => false,
-    hasScreenshotIntent = () => false,
-    hasBrowserPageIntent = () => false,
-    hasAppWindowIntent = () => false
-  } = dependencies;
-
-  function classifyRoutineSourceTask(value) {
-    const text = normalizeRoutineIntentText(value);
-    if (hasWallpaperIntent(text) && isGeneratedImageIntent(text)) {
-      return "generated-image-wallpaper";
-    }
-    if (hasWallpaperIntent(text) || /wallpaper|desktop background|\u043e\u0431\u043e\u0438|\u0444\u043e\u043d\s+(?:\u0440\u0430\u0431\u043e\u0447\u0435\u0433\u043e\s+)?\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*|(?:\u043f\u043e\u0441\u0442\u0430\u0432[\u044c\u0438\u0442\u0435]*|\u0443\u0441\u0442\u0430\u043d\u043e\u0432[\u0438\u0442\u0435]*|\u043f\u0440\u0438\u043c\u0435\u043d[\u0438\u0442\u0435]*)\s+(?:\u043d\u0430\s+)?(?:\u0440\u0430\u0431\u043e\u0447[\u0430-\u044f\u0451]*\s+\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*|\u043e\u0431\u043e\u0438)/u.test(text)) {
-      return "download-image-wallpaper";
-    }
-    if (hasBrowserAutomationIntent(text)) {
-      return "browser";
-    }
-    if (hasSecurityCheckIntent(text)) {
-      return "security-check";
-    }
-    if (hasDriverCheckIntent(text)) {
-      return "driver-check";
-    }
-    if (/battery|powercfg|sleep|lid|power plan|заряд|батаре|питани|сон|крышк/u.test(text)) {
-      return "power-check";
-    }
-    if (/(?:\bport\b|listener|listen|tcp|udp|netstat|порт|слуша|соединен)/u.test(text)) {
-      return "system-check";
-    }
-    if (/(?:system\s+(?:time|date)|set-date|get-date|timezone|time\s+zone|date\/time|системн\w*\s+врем|системн\w*\s+дат|текущ\w*\s+врем|измен\w*\s+врем|часов\w*\s+пояс|дата\s+и\s+врем)/iu.test(text)) {
-      return "system-time";
-    }
-    if (hasExplicitEventLogIntent(text)) {
-      return "system-check";
-    }
-    if (hasAppAutomationIntent(text) || /notepad|calc|calculator|paint|process|pid|start-process|stop-process/u.test(text)) {
-      return "program-control";
-    }
-    if (/script|powershell-скрипт|\.ps1|скрипт/u.test(text)) {
-      return "script-task";
-    }
-    if (/https?:\/\/|www\.|интернет|веб|браузер|сайт|ссылк|заголов/iu.test(text)) {
-      return "web-lookup";
-    }
-    if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)
-      && /(official|официальн|релиз|release|lts|stable|стабиль|ссылк|link|github)/u.test(text)) {
-      return "web-lookup";
-    }
-    if (/(?:winget|where\.exe|where\s+|which\s+|installed|version|версии?|установлен[аоы]?|наличи|программ|приложени|git|node|npm|python|pwsh|powershell)\b/u.test(text)
-      && !/\b(?:install|upgrade|uninstall|remove)\b|установи|обнови|удали/u.test(text)) {
-      return "software-check";
-    }
-    if (/internet|web|browser|curl|invoke-webrequest|официальн|сайт|ссылк|релиз|lts|github|node\.js|powershell/u.test(text)) {
-      return "web-lookup";
-    }
-    if (/uptime|ram|memory|disk|cpu|bits|windows update|ipv4|ip address|gateway|dns|defender|firewall|памят|диск|шлюз|сеть|сетев|защит|брандмауэр/u.test(text)) {
-      return "system-check";
-    }
-    if (/temp|file|folder|directory|report\.txt|hash|checksum|zip|archive|compress|файл|папк|архив|отчет|отчёт|создай папку|удали скрипт/u.test(text)) {
-      return "file-work";
-    }
-    if (/notepad|calc|calculator|paint|process|pid|start-process|stop-process|блокнот|калькулятор|процесс|запусти|закрой/u.test(text)) {
-      return "program-control";
-    }
-    return "";
-  }
-
-  function hasBrowserAutomationIntent(text) {
-    const value = String(text || "");
-    const hasTarget = hasBrowserPageIntent(value) || /(?:https?:\/\/|www\.|\bvk\b|vk\.com|\bsite\b|\bpage\b|\bbrowser\b|(?:^|[^\p{L}\p{N}_])вк(?:$|[^\p{L}\p{N}_])|вконтакте|браузер|сайт|страниц)/iu.test(value);
-    if (!hasTarget) {
-      return false;
-    }
-    return hasScreenshotIntent(value)
-      || /(?:\bopen\b|\bgoto\b|\bvisit\b|\bnavigate\b|\bclick\b|\bpress\b|\bread\b|\bfind\b|\bsearch\b|\bdownload\b|\bsave\b|зайди|открой|перейди|нажми|клик|прочитай|прочти|найди|поищи|скачай|сохрани|сделай\s+скрин|скрин)/iu.test(value);
-  }
-
-  function hasAppAutomationIntent(text) {
-    const value = String(text || "");
-    if (!hasAppWindowIntent(value)) {
-      return false;
-    }
-    return hasScreenshotIntent(value)
-      || /(?:\bopen\b|\blaunch\b|\bstart\b|\btype\b|\bwrite\b|\binput\b|\bclick\b|\bpress\b|\bread\b|\binspect\b|\bsnapshot\b|открой|запусти|напиши|введи|напечатай|нажми|клик|прочитай|посмотри|снимок|скрин)/iu.test(value);
-  }
-
-  function hasExplicitEventLogIntent(text) {
-    const value = String(text || "").toLowerCase();
-    if (/(?:event\s*log|eventlog|winlog|eventvwr|журнал\s+событи|событи[яй]?\s+windows|windows\s+events|системн\w*\s+журнал)/iu.test(value)) {
-      return true;
-    }
-    const hasErrorWord = /\b(?:errors?|critical|criticals?)\b|ошиб|критич/iu.test(value);
-    if (!hasErrorWord) {
-      return false;
-    }
-    const hasSystemAnchor = /\b(?:windows|system|win)\b|винд|систем|журнал|событ|event|за\s+\d{1,3}\s*(?:h|ч|час)|24\s*(?:h|ч|час)|последн|last\s+\d/iu.test(value);
-    const hasProbeVerb = /\b(?:check|show|list|find|diagnos|inspect)\b|проверь|проверить|посмотри|покажи|найди|выведи|диагност|последн/iu.test(value);
-    return hasSystemAnchor && hasProbeVerb;
-  }
-
+function createSourceTaskClassifier() {
   function normalizeRoutineIntentText(text) {
-    return String(text || "")
-      .toLowerCase()
-      .replace(/\b[a-z]:[\\/][^\s"'`<>|]+/giu, " windows-path ")
-      .replace(/\bwindows[\\/]+system32[\\/]+drivers[\\/]+etc[\\/]+hosts\b/giu, " windows-hosts-file ");
+    return String(text || "").toLowerCase();
   }
 
-  function hasDriverCheckIntent(text) {
-    const value = String(text || "").toLowerCase();
-    if (/(?:\u0434\u0440\u0430\u0439\u0432\u0435\u0440|\u0434\u0438\u0441\u043f\u0435\u0442\u0447\u0435\u0440\s+\u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432|\u043f\u0440\u043e\u0431\u043b\u0435\u043c\u043d\w*\s+\u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432|\u0443\u0441\u0442\u0440\u043e\u0439\u0441\u0442\u0432\w*\s+\u0441\s+\u043e\u0448\u0438\u0431)/iu.test(value)) {
-      return true;
-    }
-    return /(?:\bdriver\b|\bdrivers\b|pnputil|devmgmt|device manager|problem device|pnp|драйвер|диспетчер\s+устройств|проблемн\w*\s+устройств|устройств\w*\s+с\s+ошиб)/iu.test(value);
-  }
-
-  function hasSecurityCheckIntent(text) {
-    const value = String(text || "").toLowerCase();
-    return /(?:defender|microsoft\s+defender|windows\s+security|anti-?virus|antivirus|malware|virus|threat|pua|mpcomputerstatus|start-mpscan|get-mpthreat|security\s+center|\u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d|\u0437\u0430\u0449\u0438\u0442|\u0430\u043d\u0442\u0438\u0432\u0438\u0440\u0443\u0441|\u0432\u0438\u0440\u0443\u0441|\u0443\u0433\u0440\u043e\u0437|\u0432\u0440\u0435\u0434\u043e\u043d\u043e\u0441|\u0437\u0430\u0449\u0438\u0442\u043d\u0438\u043a)/iu.test(value);
-  }
-
-  function isRoutineAgentTaskFamily(family) {
-    return [
-      "program-control",
-      "file-work",
-      "system-check",
-      "system-time",
-      "service-check",
-      "identity-probe",
-      "script-task",
-      "web-lookup",
-      "power-check",
-      "security-check",
-      "driver-check",
-      "software-check",
-      "audio-volume",
-      "audio-mute",
-      "download-image-wallpaper",
-      "generated-image-wallpaper",
-      "wallpaper",
-      "desktop"
-    ].includes(cleanActionToken(family, ""));
+  function isRoutineAgentTaskFamily() {
+    return false;
   }
 
   function classifySourceCommand(command) {
-    const lower = String(command || "").toLowerCase();
-    const routineFamily = classifyRoutineSourceTask(lower);
-    if (routineFamily) {
-      return routineFamily;
-    }
-    if (/utf-?8|unicode|codepage|chcp|outputencoding|inputencoding|windowsidentity|text\.encoding|кракозябр|кодиров/u.test(lower)) {
-      return "encoding-identity";
-    }
-    if (/\b(whoami|hostname)\b|computername|username/u.test(lower)) {
-      return "identity-probe";
-    }
-    if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
-      return "driver-check";
-    }
-    if (hasSecurityCheckIntent(normalizeRoutineIntentText(lower))) {
-      return "security-check";
-    }
-    if (/volume|mute|audio|sound|endpointvolume|nircmd|sndvol|speaker|mic|микрофон|звук|громк/u.test(lower)) {
-      return /mute|muted|выключ/u.test(lower) ? "audio-mute" : "audio-volume";
-    }
-    if (/(?:system\s+(?:time|date)|set-date|get-date|timezone|time\s+zone|date\/time|системн\w*\s+врем|системн\w*\s+дат|текущ\w*\s+врем|измен\w*\s+врем|часов\w*\s+пояс|дата\s+и\s+врем)/iu.test(lower)) {
-      return "system-time";
-    }
-    if (hasDriverCheckIntent(normalizeRoutineIntentText(lower))) {
-      return "driver-check";
-    }
-    if (hasSecurityCheckIntent(normalizeRoutineIntentText(lower))) {
-      return "security-check";
-    }
-    if (/systemreset|reagentc\s+\/boottore/u.test(lower)) {
+    const lower = normalizeRoutineIntentText(command);
+    if (/\b(?:systemreset|reagentc\s+\/boottore)\b/u.test(lower)
+      || /\b(?:reinstall|reset this pc|windows reset|winre|recovery|bcd|boot\.wim|setupcomplete)\b/u.test(lower)
+      || /(?:\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d\u043e\u0432|\u0441\u0431\u0440\u043e\u0441|\u0432\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u043b\u0435\u043d|\u0432\u0435\u0440\u043d\u0443\u0442\u044c\s+\u043a\u043e\u043c\u043f|\u0443\u0434\u0430\u043b\u0438\u0442\u044c\s+\u0432\u0441[её])/iu.test(lower)) {
       return "windows-reinstall";
-    }
-    if (/reinstall|reset this pc|windows reset|winre|recovery|bcd|boot\.wim|setupcomplete|переустанов|сброс|восстановлен|вернуть компьютер|удалить всё|удалить все/u.test(lower)) {
-      return "windows-reinstall";
-    }
-    if (/battery|powercfg|sleep|lid|заряд|питан/u.test(lower)) {
-      return "power-check";
-    }
-    if (/winget|choco|scoop|msiexec|install|установ/u.test(lower)) {
-      return "package-install";
-    }
-    if (/get-service|systemctl|service|служб/u.test(lower)) {
-      return "service-check";
     }
     return "generic";
   }
 
   function isPlainNonDeviceTask(text) {
-    const lower = String(text || "").toLowerCase();
-    return /без компьютера|не используй компьютер|не трогай компьютер|no computer|without computer/iu.test(lower)
-      || (/(омлет|рецепт|готовк|сковород|яичниц|разминк|тренировк|зарядк|workout|warm-?up|exercise)/iu.test(lower) && !/(файл|папк|windows|powershell|cmd|браузер|интернет|сайт|программ|служб|процесс|pid|диск|сеть)/iu.test(lower));
+    return /(?:\bno\s+computer\b|\bwithout\s+(?:the\s+)?computer\b|\bdo\s+not\s+use\s+(?:the\s+)?computer\b|\u0431\u0435\u0437\s+\u043a\u043e\u043c\u043f\u044c\u044e\u0442\u0435\u0440\u0430|\u043d\u0435\s+\u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439\s+\u043a\u043e\u043c\u043f|\u043d\u0435\s+\u0442\u0440\u043e\u0433\u0430\u0439\s+\u043a\u043e\u043c\u043f)/iu.test(String(text || ""));
   }
 
   return Object.freeze({
-    classifyRoutineSourceTask,
-    hasBrowserAutomationIntent,
-    hasAppAutomationIntent,
-    hasExplicitEventLogIntent,
-    normalizeRoutineIntentText,
-    hasDriverCheckIntent,
-    hasSecurityCheckIntent,
     isRoutineAgentTaskFamily,
     classifySourceCommand,
     isPlainNonDeviceTask
@@ -2133,11 +1777,6 @@ function isLikelyUsableBrowserUrl(value) {
   }
 }
 
-function inferBrowserUrlFromText(value) {
-  return firstUrlCandidate(value) || inferKnownBrowserUrlFromText(value);
-}
-
-
 function normalizeGonkaComputerOperation(value) {
   const clean = String(value || "").trim().toLowerCase().replace(/_/gu, "-");
   const aliases = {
@@ -2172,31 +1811,6 @@ function normalizeGonkaComputerOperation(value) {
   return aliases[clean] || clean;
 }
 
-function hasDesktopSurfaceIntent(value) {
-  return /(?:\bdesktop\b|\u0440\u0430\u0431\u043e\u0447[\u0430-\u044f\u0451]*\s+\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*)/iu.test(String(value || ""));
-}
-
-function hasWallpaperIntent(value) {
-  return /(?:\bwallpaper\b|\bdesktop\s+background\b|\u043e\u0431\u043e\u0438|\u0444\u043e\u043d\s+(?:\u0440\u0430\u0431\u043e\u0447\u0435\u0433\u043e\s+)?\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*)/iu.test(String(value || ""));
-}
-
-function isGeneratedImageIntent(value) {
-  return /(?:\bgenerate\b|\bcreate\s+(?:an?\s+)?image\b|\bdraw\b|\u0441\u0433\u0435\u043d\u0435\u0440|\u0441\u043e\u0437\u0434\u0430[\u0439\u0442\u0435]*\s+(?:\u043a\u0430\u0440\u0442\u0438\u043d|\u0438\u0437\u043e\u0431\u0440\u0430\u0436)|\u043d\u0430\u0440\u0438\u0441\u0443[\u0439\u0439])/iu.test(String(value || ""));
-}
-
-const {
-  appTypeActionAliases,
-  appClickActionAliases,
-  hasComputerIntent,
-  hasAppWindowIntent,
-  hasExplicitScriptIntent
-} = createComputerTaskRouter({
-  firstKeyValue,
-  hasBrowserPageIntent,
-  hasWallpaperIntent,
-  isGeneratedImageIntent
-});
-
 const {
   canonicalSotyMcpToolName,
   computerToolAlias,
@@ -2218,75 +1832,15 @@ const {
   sourceTrafficFetchScript
 } = createMcpSourceContentAdapters();
 
-function applyAppComputerDefaults(args, text) {
+function applyAppComputerDefaults(args) {
   const out = args || {};
   if (out.target && !out.text) {
     out.text = out.target;
-  }
-  if (appTypeActionAliases.includes(String(out.action || "").toLowerCase())) {
-    out.action = "type";
-    out.allowFocus = out.allowFocus !== false;
-    if (out.submit === undefined && shouldSubmitAppText(text, out)) {
-      out.submit = true;
-    }
-    delete out.script;
-    delete out.command;
-    delete out.cmd;
-    delete out.shell;
-  }
-  if (appClickActionAliases.includes(String(out.action || "").toLowerCase()) && !hasAppElementSelector(out)) {
-    out.action = readOnlyAppActionForText(text);
-  }
-  if (out.action === "type" && !hasAppTypeContent(out)) {
-    out.action = readOnlyAppActionForText(text);
   }
   if (!out.maxElements) {
     out.maxElements = 60;
   }
   return out;
-}
-
-function hasAppElementSelector(args = {}) {
-  const selector = String(args.target || args.text || args.element || args.name || "").trim();
-  if (selector) {
-    return true;
-  }
-  const index = Number(args.elementIndex ?? args.index);
-  return Number.isFinite(index) && index >= 0;
-}
-
-function hasAppTypeContent(args = {}) {
-  return Boolean(String(args.content ?? args.value ?? args.input ?? "").trim());
-}
-
-function readOnlyAppActionForText(text) {
-  return hasComputerIntent("appList", text) ? "list" : "snapshot";
-}
-
-function shouldSubmitAppText(text, args = {}) {
-  const value = String(text || "");
-  const app = String(args.app || "").toLowerCase();
-  if (args.submit !== undefined || args.send !== undefined || args.pressEnter !== undefined || args.enterAfterType !== undefined) {
-    return false;
-  }
-  return hasComputerIntent("appSubmit", value)
-    || (app === "codex" && hasComputerIntent("appType", value));
-}
-
-function inferMentionedFileName(text) {
-  const value = String(text || "");
-  const quoted = value.match(/["'`](.+?\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))["'`]/iu);
-  if (quoted) return quoted[1].trim();
-  const plain = value.match(/\b([A-Za-zА-Яа-яЁё0-9_. -]{1,80}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/iu);
-  return plain ? plain[1].trim() : "";
-}
-
-function inferQuotedContent(text) {
-  const value = String(text || "");
-  const matches = [...value.matchAll(/["'`]([^"'`]{1,1000})["'`]/gu)]
-    .map((match) => match[1].trim())
-    .filter((part) => part && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(part));
-  return matches[0] || "";
 }
 
 function hasCriticalDestructiveIntent(value) {
@@ -2368,38 +1922,6 @@ function isCompositeBrowserClickTarget(value, linkText = "") {
     || (target.length > cleanLink.length + 20 && target.toLowerCase().includes(cleanLink.toLowerCase()));
 }
 
-
-
-function hasBrowserPageIntent(value) {
-  return /(?:https?:\/\/|www\.|\bbrowser\b|\bpage\b|\bsite\b|\bweb\b|\bvk\b|vk\.com|(?:^|[^\p{L}\p{N}_])\u0432\u043a(?:$|[^\p{L}\p{N}_])|\u0432\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u0435|\u0431\u0440\u0430\u0443\u0437\u0435\u0440|\u0441\u0430\u0439\u0442|\u0441\u0442\u0440\u0430\u043d\u0438\u0446)/iu.test(String(value || ""));
-}
-
-function inferKnownBrowserUrlFromText(value) {
-  const text = String(value || "");
-  if (/(?:\bvk\b|vk\.com|\u0432\u043a\b|\u0432\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u0435)/iu.test(text)) {
-    return "https://vk.com/";
-  }
-  return "";
-}
-
-function inferScreenshotPathFromText(value, operation = "browser") {
-  const text = String(value || "");
-  const extension = operation === "browser" ? "png" : "png";
-  const named = text.match(/(?:\bas\b|\bto\b|\u043a\u0430\u043a|\u0432\s+\u0444\u0430\u0439\u043b)\s+["'`]?([^"'`\s<>|?*:]+\.png)\b/iu)
-    || text.match(/\b([A-Za-z0-9_.-]+\.png)\b/u);
-  if (named) {
-    const fileName = String(named[1] || "").replace(/[\\/:*?"<>|]+/gu, "").slice(0, 120) || `soty-${operation || "screen"}-screenshot.${extension}`;
-    if (hasDesktopSurfaceIntent(text)) {
-      return `%USERPROFILE%\\Desktop\\${fileName}`;
-    }
-    return `C:\\Users\\Public\\Pictures\\${fileName}`;
-  }
-  if (/(?:\bc:\\|drive\s+c|\bdisk\s+c|\u0434\u0438\u0441\u043a\w*\s+c|\u0434\u0438\u0441\u043a\u0435\s+c)/iu.test(text)) {
-    return `C:\\Users\\Public\\Pictures\\soty-${operation || "screen"}-screenshot.${extension}`;
-  }
-  return "";
-}
-
 function compactComputerQuery(text) {
   return String(text || "")
     .replace(/task_family:[^\n]+/giu, " ")
@@ -2414,7 +1936,7 @@ function gonkaToolsWithInjectedComputer(tools, payload) {
     return list;
   }
   list.unshift(gonkaComputerChatTool());
-  return list.sort((left, right) => gonkaToolPriority(left) - gonkaToolPriority(right));
+  return list;
 }
 
 function shouldInjectGonkaComputerTool(payload) {
@@ -2506,19 +2028,7 @@ function responsesToolsToChatTools(tools) {
       .filter((tool) => tool?.type === "function" && safeChatToolName(tool.name))
       .map((tool) => compactChatToolForGonka(tool))
       .filter(Boolean)
-      .sort((left, right) => gonkaToolPriority(left) - gonkaToolPriority(right))
     : [];
-}
-
-function gonkaToolPriority(tool) {
-  const name = safeChatToolName(tool?.function?.name || tool?.name);
-  if (name === "computer") {
-    return 0;
-  }
-  if (name === "exec_command" || name === "shell_command") {
-    return 20;
-  }
-  return 10;
 }
 
 function compactChatToolForGonka(tool) {
@@ -2908,7 +2418,7 @@ function mapGonkaToolCallForCodex(call, payload = null) {
   if (safeChatToolName(fn.name) !== "computer") {
     return call;
   }
-  const argumentsText = enrichGonkaComputerToolArguments(String(fn.arguments || "{}"), payload);
+  const argumentsText = sanitizeGonkaComputerToolArguments(String(fn.arguments || "{}"), payload);
   return {
     ...call,
     function: {
@@ -2920,41 +2430,14 @@ function mapGonkaToolCallForCodex(call, payload = null) {
   };
 }
 
-function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
+function sanitizeGonkaComputerToolArguments(argumentsText, payload = null) {
   const args = parseJsonMaybe(argumentsText);
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return String(argumentsText || "{}");
   }
   const userText = responsesPayloadUserText(payload) || responsesPayloadPlainText(payload);
   const safeArgs = applyCriticalDestructiveSafety(args, userText);
-  if (safeArgs.operation === "safety") {
-    return JSON.stringify(safeArgs);
-  }
-  const url = trimUrlCandidate(safeArgs.url || safeArgs.href || safeArgs.uri || "");
-  if (url && isLikelyUsableBrowserUrl(url)) {
-    safeArgs.url = /^https?:\/\//iu.test(url) ? url : `https://${url}`;
-  }
-  if (typeof safeArgs.path === "string" && safeArgs.path.trim()) {
-    safeArgs.path = normalizeGonkaComputerFilePathArg(safeArgs.path);
-  }
   return JSON.stringify(safeArgs);
-}
-
-function normalizeGonkaComputerFilePathArg(value) {
-  let text = String(value || "").trim();
-  if (!text) {
-    return text;
-  }
-  text = text
-    .replace(/%USERPROFILE%/giu, "__USERPROFILE__")
-    .replace(/%USERNAME%/giu, "__USERNAME__")
-    .replace(/\$\{?env:USERPROFILE\}?/giu, "__USERPROFILE__")
-    .replace(/\$HOME/giu, "__USERPROFILE__");
-  const desktop = text.match(/^(?:(?:[a-z]:\\users\\(?:[^\\]+|__USERNAME__)(?:\\onedrive)?)|__USERPROFILE__)\\desktop\\(.+)$/iu);
-  if (desktop) {
-    return desktop[1].trim();
-  }
-  return String(value || "").trim();
 }
 
 function shellSingleQuote(value) {
@@ -3444,19 +2927,14 @@ async function handleOperatorHttpRun(request, response, headers) {
     return;
   }
   ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
-  const promoted = promotedRunScript(command);
-  if (promoted) {
-    await handleOperatorHttpPromotedScript({
-      target,
-      sourceDeviceId,
-      sourceRelayId,
-      script: promoted.script,
-      shell: promoted.shell,
-      name: promoted.name,
-      runAs,
-      timeoutMs,
-      response,
-      headers
+  if (runNeedsScriptPrimitive(command)) {
+    sendJson(response, 422, headers, {
+      ok: false,
+      text: "! script-required",
+      exitCode: 422,
+      operation: "run",
+      requiredOperation: "script",
+      message: "This command body is a script. Call the script primitive explicitly instead of run."
     });
     return;
   }
@@ -3480,34 +2958,6 @@ async function handleOperatorHttpRun(request, response, headers) {
     target,
     sourceDeviceId,
     command,
-    runAs,
-    timeoutMs
-  });
-}
-
-async function handleOperatorHttpPromotedScript({ target, sourceDeviceId, sourceRelayId, script, shell, name, runAs, timeoutMs, response, headers }) {
-  if (isAgentSourceTarget(target)) {
-    const deviceId = agentSourceDeviceId(target);
-    if (sourceDeviceId && sourceDeviceId !== deviceId) {
-      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
-      return;
-    }
-    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId);
-    return;
-  }
-  if (!operatorBridge?.open || !target || !script.trim()) {
-    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
-    return;
-  }
-  const id = registerOperatorRun(response, headers, timeoutMs);
-  sendRaw(operatorBridge, {
-    type: "operator.script",
-    id,
-    target,
-    sourceDeviceId,
-    name,
-    shell,
-    script,
     runAs,
     timeoutMs
   });
@@ -3751,12 +3201,12 @@ function normalizeOperatorActionPayload(payload) {
   if (mode === "script" && !script.trim()) {
     return { ok: false, text: "! script" };
   }
-  const promoted = mode === "run" ? promotedRunScript(command) : null;
-  if (promoted) {
-    mode = "script";
-    script = promoted.script.slice(0, maxScriptChars);
-    command = "";
-    shell ||= promoted.shell;
+  if (mode === "run" && runNeedsScriptPrimitive(command)) {
+    return {
+      ok: false,
+      text: "! script-required",
+      requiredOperation: "script"
+    };
   }
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
@@ -3814,16 +3264,8 @@ function isPowerShellWorkflowCommand(command) {
   return /[$;|`]|[\r\n]|\b(?:Get|Set|New|Remove|Start|Stop|Invoke|Convert|Where|ForEach)-[A-Za-z]/u.test(value);
 }
 
-function promotedRunScript(command) {
-  const body = extractPowerShellCommandBody(command) || (isPowerShellScriptLikeCommand(command) ? String(command || "").trim() : "");
-  if (!body) {
-    return null;
-  }
-  return {
-    script: body,
-    shell: "powershell",
-    name: "powershell-script"
-  };
+function runNeedsScriptPrimitive(command) {
+  return Boolean(extractPowerShellCommandBody(command) || isPowerShellScriptLikeCommand(command));
 }
 
 function isPowerShellScriptLikeCommand(command) {
@@ -5536,34 +4978,18 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
   if (ok && family === "generic") {
     return;
   }
-  if (ok && family === "identity-probe") {
-    return;
-  }
 }
 
 const {
-  hasExplicitEventLogIntent,
-  normalizeRoutineIntentText,
   isRoutineAgentTaskFamily,
   classifySourceCommand,
   isPlainNonDeviceTask
 } = createSourceTaskClassifier({
-  cleanActionToken,
-  hasWallpaperIntent,
-  isGeneratedImageIntent,
-  hasBrowserPageIntent,
-  hasAppWindowIntent
+  cleanActionToken
 });
 function sourceOutputShape(text) {
   const value = String(text || "");
-  const volume = value.match(/\b(volume|vol|громкость)\s*[:=]\s*([0-9]{1,3})\b/iu);
-  const muted = value.match(/\b(muted|mute)\s*[:=]\s*(true|false|0|1)\b/iu);
-  const parts = [
-    volume ? `volume=${volume[2]}` : "",
-    muted ? `muted=${muted[2]}` : "",
-    value.trim() ? "nonempty" : "empty"
-  ].filter(Boolean);
-  return parts.join("; ");
+  return value.trim() ? "nonempty" : "empty";
 }
 
 function sourceFailureProof(text) {
@@ -8719,39 +8145,6 @@ function formatDirectComputerToolText(args, stdout, stderr = "") {
   if ((operation === "safety" || action === "confirmation_required") && inner && typeof inner === "object") {
     return "\u042d\u0442\u043e \u043e\u043f\u0430\u0441\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435. \u042f \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438 \u044f\u0432\u043d\u043e \u0442\u043e\u0447\u043d\u0443\u044e \u0446\u0435\u043b\u044c \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u044f/\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438, \u0438 \u044f \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043f\u043e\u043a\u0430\u0436\u0443 \u043f\u043b\u0430\u043d.";
   }
-  if ((action === "security-check" || inner?.action === "security-check") && inner && typeof inner === "object") {
-    const scan = inner.scanRequested === true
-      ? (inner.scanCompleted === true ? "scan completed" : "scan not completed")
-      : "scan not requested";
-    const threats = Number.isFinite(Number(inner.threatCount)) ? Number(inner.threatCount) : 0;
-    return [
-      `Defender available=${inner.defenderAvailable === true}`,
-      `antivirus=${inner.antivirusEnabled === true}`,
-      `real-time=${inner.realTimeProtectionEnabled === true}`,
-      `PUA=${String(inner.puaProtection || "unknown")}`,
-      `threats=${threats}`,
-      scan,
-      inner.signatureUpdated ? `signatures=${inner.signatureUpdated}` : "",
-      inner.quickScanEndTime ? `quickScanEndTime=${inner.quickScanEndTime}` : "",
-      inner.scanError ? `scanError=${inner.scanError}` : "",
-      "changedSettings=false"
-    ].filter(Boolean).join("; ");
-  }
-  if ((action === "driver-check" || inner?.action === "driver-check") && inner && typeof inner === "object") {
-    const problemCount = Number.isFinite(Number(inner.problemCount)) ? Number(inner.problemCount) : 0;
-    const problems = Array.isArray(inner.problems)
-      ? inner.problems.map((item) => `${item.Class || "device"}:${item.FriendlyName || item.InstanceId || item.Status || "unknown"}`).slice(0, 6).join(" | ")
-      : "";
-    const drivers = Array.isArray(inner.importantDrivers)
-      ? inner.importantDrivers.map((item) => `${item.DeviceClass || "driver"}:${item.DeviceName || "unknown"} ${item.DriverVersion || ""}`.trim()).slice(0, 8).join(" | ")
-      : "";
-    return [
-      `problemDevices=${problemCount}`,
-      problems ? `problems=${problems}` : "",
-      drivers ? `importantDrivers=${drivers}` : "",
-      "changedSettings=false"
-    ].filter(Boolean).join("; ");
-  }
   if (action === "screenshot" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
     const title = String(inner.title || "").trim();
@@ -9057,21 +8450,6 @@ async function runGonkaDirectSotySessionTurn({
         });
         break;
       }
-      if (executed.exitCode === 0
-        && (callIndex === normalizedToolCalls.length - 1 || shouldSingleSuccessfulDirectToolSuffice(executed.args, text, taskFamily))
-        && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
-        finalText = executed.userText
-          || formatDirectComputerToolText(executed.args, executed.toolText, "")
-          || directComputerProofText([executed.toolText])
-          || "";
-        exitCode = 0;
-        traceStep(trace, "gonka.direct.finish-after-tool-proof", {
-          operation: executed.args?.operation || "",
-          action: executed.args?.action || "",
-          textChars: finalText.length
-        });
-        break;
-      }
     }
     if (finalText) {
       break;
@@ -9162,76 +8540,6 @@ function buildGonkaDirectUserPrompt(text, context = "", runtimeContext = {}, tas
     runtimeContext?.source?.deviceNick ? `source_device: ${runtimeContext.source.deviceNick}` : "",
     context ? `Visible chat context:\n${String(context).slice(-4000)}` : ""
   ].filter(Boolean).join("\n");
-}
-
-function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily = "") {
-  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
-  const action = String(args?.action || "").trim().toLowerCase();
-  if (requestLooksMultiStep(text) && !directToolCallCanCompleteMultiStep(args)) {
-    return false;
-  }
-  const needsDelete = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(String(text || ""));
-  const needsBrowserClick = /(?:\bclick\b|\bpress\b|\bfollow\b|\blink\b|\bbutton\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u043f\u0435\u0440\u0435\u0439\u0434|\u0441\u0441\u044b\u043b|\u043a\u043d\u043e\u043f)/iu.test(String(text || ""));
-  if (operation === "file") {
-    if (needsDelete && ["stat", "read", ""].includes(action)) {
-      return false;
-    }
-    return ["cycle", "read", "delete", "write", "append", "download", "publish"].includes(action);
-  }
-  if (["web", "fetch", "search"].includes(operation)) {
-    return true;
-  }
-  if (operation === "browser") {
-    if (["click_text", "click"].includes(action)) {
-      return true;
-    }
-    if (["open", "goto", "title", "text"].includes(action)) {
-      return !needsBrowserClick;
-    }
-  }
-  if (["time", "audio", "process", "clipboard", "network"].includes(operation)) {
-    return true;
-  }
-  if ((operation === "desktop" || operation === "browser") && action === "screenshot") {
-    return true;
-  }
-  return false;
-}
-
-function requestLooksMultiStep(text = "") {
-  const value = String(text || "").toLowerCase();
-  if (!value.trim()) {
-    return false;
-  }
-  const families = new Set();
-  const patterns = [
-    ["create", /(?:\b(?:create|write|append|make|save|download)\b|\u0441\u043e\u0437\u0434|\u0437\u0430\u043f\u0438\u0448|\u0441\u043e\u0445\u0440\u0430\u043d|\u0441\u043a\u0430\u0447)/iu],
-    ["inspect", /(?:\b(?:check|verify|read|inspect|find|search|look|open)\b|\u043f\u0440\u043e\u0432\u0435\u0440|\u043f\u0440\u043e\u0447\u0438\u0442|\u043d\u0430\u0439\u0434|\u043f\u043e\u0441\u043c\u043e\u0442\u0440|\u043e\u0442\u043a\u0440)/iu],
-    ["remove", /(?:\b(?:delete|remove|clear|clean)\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440|\u043e\u0447\u0438\u0441\u0442)/iu],
-    ["interact", /(?:\b(?:click|press|type|send|submit|set|change|install|run|start|stop|restart|update|repair)\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u0432\u0432\u0435\u0434|\u043e\u0442\u043f\u0440\u0430\u0432|\u0438\u0437\u043c\u0435\u043d|\u0443\u0441\u0442\u0430\u043d\u043e\u0432|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0441\u0442\u0430\u043d\u043e\u0432|\u043e\u0431\u043d\u043e\u0432|\u043f\u043e\u0447\u0438\u043d)/iu]
-  ];
-  for (const [family, pattern] of patterns) {
-    if (pattern.test(value)) {
-      families.add(family);
-    }
-  }
-  if (families.size >= 2) {
-    return true;
-  }
-  return /(?:\b(?:then|after that|and then)\b|[,;]\s*(?:then\s+)?|\u043f\u043e\u0442\u043e\u043c|\u0437\u0430\u0442\u0435\u043c|\u043f\u043e\u0441\u043b\u0435\s+\u044d\u0442\u043e\u0433\u043e|\u0438\s+(?:\u043f\u043e\u0442\u043e\u043c|\u0437\u0430\u0442\u0435\u043c)?)/iu.test(value)
-    && families.size >= 1;
-}
-
-function directToolCallCanCompleteMultiStep(args = {}) {
-  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
-  const action = String(args?.action || "").trim().toLowerCase();
-  return ["run", "script", "terminal", "console", "action", "toolkit", "reinstall"].includes(operation)
-    || ["cycle", "workflow", "transaction", "prepare", "submit"].includes(action)
-    || Boolean(args?.command || args?.script);
-}
-
-function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamily = "") {
-  return false;
 }
 
 function directToolResultsCoverExplicitTarget(toolResults = [], userText = "") {
@@ -9331,7 +8639,7 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
   const callId = String(call?.id || `call_${randomUUID().replace(/-/gu, "")}`).slice(0, 80);
   let argumentsText = String(call?.function?.arguments || "{}");
   const payload = gonkaDirectSyntheticPayload(text, taskFamily);
-  argumentsText = enrichGonkaComputerToolArguments(argumentsText, payload);
+  argumentsText = sanitizeGonkaComputerToolArguments(argumentsText, payload);
   let args = parseJsonMaybe(argumentsText);
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return directComputerToolArgumentFailure(callId, {}, "invalid-json-arguments");
@@ -9431,75 +8739,13 @@ function gonkaDirectSyntheticPayload(text, taskFamily = "") {
 function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   const out = { ...(args || {}) };
   out.operation = normalizeGonkaComputerOperation(out.operation || out.op || out.capability || "");
-  if (!out.operation) {
-    if (typeof out.script === "string" && out.script.trim()) {
-      out.operation = "script";
-    } else if (typeof out.command === "string" && out.command.trim() || typeof out.cmd === "string" && out.cmd.trim()) {
-      out.operation = "run";
-    }
-  }
   if (!out.maxChars) {
     out.maxChars = Math.min(gonkaDirectToolResultChars, 8000);
   }
   if (!out.timeoutMs) {
     out.timeoutMs = 90000;
   }
-  const safeOut = applyCriticalDestructiveSafety(out, text);
-  if (safeOut.operation === "safety") {
-    return safeOut;
-  }
-  const url = trimUrlCandidate(out.url || out.href || out.uri || "");
-  if (url && isLikelyUsableBrowserUrl(url)) {
-    out.url = /^https?:\/\//iu.test(url) ? url : `https://${url}`;
-  }
-  if (typeof out.path === "string" && out.path.trim()) {
-    out.path = normalizeGonkaComputerFilePathArg(out.path);
-  }
-  if (out.operation === "file"
-    && !out.action
-    && !firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body)
-    && firstNonEmptyValue(out.script, out.command, out.cmd)) {
-    out.operation = "script";
-  }
-  if (out.operation === "file") {
-    const contentSource = firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body);
-    if (!out.action && out.path && contentSource) {
-      out.action = "write";
-    }
-    const action = String(out.action || "").trim().toLowerCase().replace(/_/gu, "-");
-    if (["write", "append", "cycle"].includes(action) && contentSource && !String(out.content ?? "")) {
-      out.content = contentSource;
-    }
-    if (action === "write" && out.path && contentSource && requestNeedsFileLifecycleTransaction(text)) {
-      out.action = "cycle";
-      out.content = contentSource;
-    }
-  }
-  return out;
-}
-
-function requestNeedsFileLifecycleTransaction(text = "") {
-  const value = String(text || "").toLowerCase();
-  if (!/(?:\bfile\b|\bfolder\b|файл|папк|path|[a-z]:\\|\/(?:users|home|tmp|var)\b)/iu.test(value)) {
-    return false;
-  }
-  const wantsWrite = /(?:\b(?:create|write|make|save)\b|созд|запиш|сохран)/iu.test(value);
-  const wantsVerify = /(?:\b(?:check|verify|read|confirm)\b|провер|прочит|убед)/iu.test(value);
-  const wantsDelete = /(?:\b(?:delete|remove|clean\s*up)\b|удал|сотр)/iu.test(value);
-  return wantsWrite && wantsVerify && wantsDelete;
-}
-
-function firstNonEmptyValue(...items) {
-  for (const item of items) {
-    if (item === undefined || item === null) {
-      continue;
-    }
-    const text = String(item);
-    if (text.length > 0) {
-      return text;
-    }
-  }
-  return "";
+  return applyCriticalDestructiveSafety(out, text);
 }
 
 function safeDirectComputerToolTimeoutMs(value, taskFamily = "", args = null) {

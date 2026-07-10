@@ -1023,35 +1023,26 @@ async function runScenarios({ relayUrl } = {}) {
       const response = await action({ mode: "run", target: "agent-source:dev1", command: "SELFTEST_OK run mode", script: "" });
       expectStatus(response, "ok");
     }],
-    ["powershell workflow run is promoted to script", async () => {
+    ["powershell workflow run asks model to choose script primitive", async () => {
       const marker = "SELFTEST_OK ps-workflow";
       const response = await action(sourceRun(`powershell -NoProfile -Command "Write-Output '${marker}'; Get-PSDrive | Select-Object @{Name='FreeGB';Expression={$_.Free}}"`));
-      expectStatus(response, "ok");
-      const seen = mock.lastCommandWith(marker);
-      assert(seen.includes("$_.Free"));
-      assert(!seen.toLowerCase().includes("powershell -noprofile -command"));
+      assertEqual(response.status, 400);
+      assertEqual(response.body.text, "! script-required");
     }],
-    ["powershell-like run without executable is promoted to script", async () => {
+    ["powershell-like run without executable asks model to choose script primitive", async () => {
       const marker = "SELFTEST_OK ps-scriptlike";
       const command = `$path = 'C:\\Temp\\${marker}.jpg'; if (Test-Path -LiteralPath $path) { $img = [System.Drawing.Image]::FromFile($path); Write-Host ('SIZE:' + $img.Width + 'x' + $img.Height); $img.Dispose() } else { Write-Host '${marker}' }`;
       const response = await action(sourceRun(command));
-      expectStatus(response, "ok");
-      const start = mock.lastSourceStartWith(marker);
-      assertEqual(start?.type, "script");
-      assert(start.text.includes("$path"));
-      assert(start.text.includes("$img"));
-      assert(start.text.includes("[System.Drawing.Image]::FromFile($path)"));
+      assertEqual(response.status, 400);
+      assertEqual(response.body.text, "! script-required");
     }],
-    ["operator run promotes powershell-like source command to script", async () => {
+    ["operator run rejects powershell-like source command without rewriting", async () => {
       const marker = "SELFTEST_OK ps-direct-run";
       const command = `$path = 'C:\\Temp\\${marker}.jpg'; if (Test-Path -LiteralPath $path) { $img = [System.Drawing.Image]::FromFile($path); Write-Host $img.Width; $img.Dispose() } else { Write-Host '${marker}' }`;
       const response = await post("/operator/run", { target: "agent-source:dev1", command, timeoutMs: 5000 });
-      assertEqual(response.status, 200);
-      assertEqual(response.body.ok, true);
-      const start = mock.lastSourceStartWith(marker);
-      assertEqual(start?.type, "script");
-      assert(start.text.includes("$path"));
-      assert(start.text.includes("$img"));
+      assertEqual(response.status, 422);
+      assertEqual(response.body.text, "! script-required");
+      assertEqual(response.body.requiredOperation, "script");
     }],
     ["linked pwa target without local operator bridge uses source device route", async () => {
       const response = await action({
@@ -1308,17 +1299,17 @@ async function runScenarios({ relayUrl } = {}) {
       assertEqual(response.status, 422);
       expectStatus(response, "blocked");
     }],
-    ["identity command is classified", async () => expectFamily(await action(sourceRun("whoami SELFTEST_OK")), "identity-probe")],
-    ["audio volume command is classified", async () => expectFamily(await action(sourceRun("set volume SELFTEST_OK")), "audio-volume")],
-    ["audio mute command is classified", async () => expectFamily(await action(sourceRun("mute audio SELFTEST_OK")), "audio-mute")],
-    ["system time command is classified separately", async () => expectFamily(await action(sourceRun("Get-Date SELFTEST_OK")), "system-time")],
-    ["security command is classified", async () => expectFamily(await action(sourceRun("Get-MpComputerStatus; Start-MpScan -ScanType QuickScan SELFTEST_OK")), "security-check")],
-    ["driver command is classified", async () => expectFamily(await action(sourceRun("pnputil /enum-drivers SELFTEST_OK")), "driver-check")],
-    ["driver command with audio words stays driver-check", async () => expectFamily(await action(sourceRun("check video sound network drivers SELFTEST_OK")), "driver-check")],
-    ["russian driver command with audio words stays driver-check", async () => expectFamily(await action(sourceRun("\u043f\u0440\u043e\u0432\u0435\u0440\u044c \u0434\u0440\u0430\u0439\u0432\u0435\u0440\u044b \u0432\u0438\u0434\u0435\u043e \u0437\u0432\u0443\u043a \u0441\u0435\u0442\u044c SELFTEST_OK")), "driver-check")],
-    ["russian internet url task is classified for tools", async () => expectFamily(await action(sourceRun("проверь интернет https://example.com SELFTEST_OK")), "web-lookup")],
-    ["natural browser screenshot task is classified", async () => expectFamily(await action(sourceRun("зайди на вк и сделай скрин SELFTEST_OK")), "browser")],
-    ["natural app task is classified", async () => expectFamily(await action(sourceRun("напиши в кодекс hello SELFTEST_OK")), "program-control")],
+    ["identity command stays generic", async () => expectFamily(await action(sourceRun("whoami SELFTEST_OK")), "generic")],
+    ["audio volume command stays generic", async () => expectFamily(await action(sourceRun("set volume SELFTEST_OK")), "generic")],
+    ["audio mute command stays generic", async () => expectFamily(await action(sourceRun("mute audio SELFTEST_OK")), "generic")],
+    ["system time command stays generic", async () => expectFamily(await action(sourceRun("Get-Date SELFTEST_OK")), "generic")],
+    ["security command stays generic", async () => expectFamily(await action(sourceRun("Get-MpComputerStatus; Start-MpScan -ScanType QuickScan SELFTEST_OK")), "generic")],
+    ["driver command stays generic", async () => expectFamily(await action(sourceRun("pnputil /enum-drivers SELFTEST_OK")), "generic")],
+    ["driver command with audio words stays generic", async () => expectFamily(await action(sourceRun("check video sound network drivers SELFTEST_OK")), "generic")],
+    ["russian driver command with audio words stays generic", async () => expectFamily(await action(sourceRun("\u043f\u0440\u043e\u0432\u0435\u0440\u044c \u0434\u0440\u0430\u0439\u0432\u0435\u0440\u044b \u0432\u0438\u0434\u0435\u043e \u0437\u0432\u0443\u043a \u0441\u0435\u0442\u044c SELFTEST_OK")), "generic")],
+    ["russian internet url task stays generic", async () => expectFamily(await action(sourceRun("проверь интернет https://example.com SELFTEST_OK")), "generic")],
+    ["natural browser screenshot task stays generic", async () => expectFamily(await action(sourceRun("зайди на вк и сделай скрин SELFTEST_OK")), "generic")],
+    ["natural app task stays generic", async () => expectFamily(await action(sourceRun("напиши в кодекс hello SELFTEST_OK")), "generic")],
     ["mcp computer router chooses specialized adapters", async () => {
       const router = createMcpComputerRouter({
         cleanActionToken: (value, fallback = "") => String(value || fallback || "").trim().toLowerCase()
@@ -1424,11 +1415,7 @@ async function runScenarios({ relayUrl } = {}) {
         "SOTY_LOCAL_API.mjs computer",
         "stripHiddenReasoningBlocks",
         "operatorTextLooksLikeCommandFailure",
-        "computerIntentPatterns",
-        "appAliasRules",
         "hasComputerIntent",
-        "computerOperationRules",
-        "computerActionResolvers",
         "createMcpComputerRouter",
         "computerToolAlias",
         "createMcpSourceContentAdapters",
@@ -1439,7 +1426,7 @@ async function runScenarios({ relayUrl } = {}) {
         "sourceClipboardScript",
         "sourceNetworkScript",
         "createSourceTaskClassifier",
-        "hasBrowserAutomationIntent"
+        "model chooses operation"
       ]) {
         assert(source.includes(needle), `missing helper needle ${needle}`);
       }
@@ -1510,9 +1497,9 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!String(response.body.text || "").includes("git:"));
       assertEqual(mock.count("Get-Command $tool.Command"), before);
     }],
-    ["power command is classified", async () => expectFamily(await action(sourceRun("powercfg /batteryreport SELFTEST_OK")), "power-check")],
-    ["package command is classified", async () => expectFamily(await action(sourceRun("winget install app SELFTEST_OK")), "package-install")],
-    ["service command is classified", async () => expectFamily(await action(sourceRun("Get-Service SELFTEST_OK")), "service-check")],
+    ["power command stays generic", async () => expectFamily(await action(sourceRun("powercfg /batteryreport SELFTEST_OK")), "generic")],
+    ["package command stays generic", async () => expectFamily(await action(sourceRun("winget install app SELFTEST_OK")), "generic")],
+    ["service command stays generic", async () => expectFamily(await action(sourceRun("Get-Service SELFTEST_OK")), "generic")],
     ["generic command stays generic", async () => expectFamily(await action(sourceRun("echo SELFTEST_OK")), "generic")],
     ["low risk is inferred", async () => expectRisk(await action(sourceRun("whoami SELFTEST_OK")), "low")],
     ["medium risk is inferred", async () => expectRisk(await action(sourceRun("winget install app SELFTEST_OK")), "medium")],
@@ -1759,6 +1746,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes('boundary: "agent.reply"'));
       assert(agent.includes("normalizeGonkaDirectFinal"));
       assert(agent.includes("gonka.direct.final-missing-proof"));
+      assert(!agent.includes("gonka.direct.finish-after-tool-proof"));
       assert(agent.includes("directComputerProofText"));
       assert(!agent.includes("gonka.direct.recovered-tiny-tool-final"));
       assert(!agent.includes("gonka.direct.replaced-tiny-final-after-tool"));
@@ -1774,7 +1762,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("directComputerToolArgumentFailure"));
       assert(agent.includes("operation-required"));
       assert(contentAdapters.includes('action === "cycle"'));
-      assert(agent.includes("gonkaToolPriority"));
+      assert(!agent.includes("gonkaToolPriority"));
       assert(agent.includes("gonkaToolsWithInjectedComputer"));
       assert(agent.includes("explicitGonkaToolChoice"));
       assert(!agent.includes("codexGonkaAdapterHeuristics"));
@@ -1790,23 +1778,23 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("safeDirectComputerToolTimeoutMs"));
       assert(!agent.includes("shouldUseSecurityCheckCompactScript"));
       assert(!agent.includes("model-failure-after-tool-recovered"));
-      assert(agent.includes("shouldSingleSuccessfulDirectToolSuffice"));
+      assert(!agent.includes("shouldSingleSuccessfulDirectToolSuffice"));
       assert(!agent.includes("securityCheckCompactPowerShell"));
       assert(!agent.includes("driverCheckCompactPowerShell"));
-      assert(agent.includes("problemDevices="));
+      assert(!agent.includes("problemDevices="));
       assert(!agent.includes("changedSettings=$false"));
       assert(!agent.includes("threatSample"));
       assert(!agent.includes("ThreatName,InitialDetectionTime,ActionSuccess,CurrentThreatExecutionStatus,Resources"));
       assert(!agent.includes("download-image-wallpaper"));
-      assert(agent.includes("hasWallpaperIntent"));
+      assert(!agent.includes("hasWallpaperIntent"));
       assert(!agent.includes("inferWallpaperQuery"));
       assert(!agent.includes("inferInlineFileContent"));
       assert(!agent.includes("hasSafeExactFileCycleIntent"));
       assert(!agent.includes("с\\s+текстом"));
-      assert(agent.includes("normalizeGonkaComputerFilePathArg"));
-      assert(agent.includes("firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body)"));
+      assert(!agent.includes("normalizeGonkaComputerFilePathArg"));
+      assert(!agent.includes("firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body)"));
       assert(agent.includes('action === "write" || action === "append" || action === "stat"'));
-      assert(agent.includes("%USERNAME%"));
+      assert(!agent.includes("%USERNAME%"));
       assert(!agent.includes(".Replace('${env:USERPROFILE}'"));
       assert(!agent.includes("$raw -match '^(?i)([a-z]:\\\\users"));
       assert(agent.includes("wallpaperPowerShell"));
@@ -1818,7 +1806,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("idle after progress"));
       assert(agent.includes("finalTextLooksLikeActionProof"));
       assert(agent.includes("inferLinkTextFromText"));
-      assert(agent.includes("enrichGonkaComputerToolArguments"));
+      assert(!agent.includes("enrichGonkaComputerToolArguments"));
+      assert(agent.includes("sanitizeGonkaComputerToolArguments"));
       assert(agent.includes("function sourceBrowserScript(args)"));
       assert(agent.includes("await scriptNode(browserNode(req)"));
       assert(agent.includes("name: 'computer-browser'"));
@@ -1903,7 +1892,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agent.includes("Do not create or persist `NODE_OPTIONS=--require ...` shims"));
       assert(agent.includes("sourceArtifactChunkScript"));
       assert(agent.includes("expandArtifactTargetPath"));
-      assert(agent.includes('if (["web", "fetch", "search"].includes(operation))'));
+      assert(!agent.includes('if (["web", "fetch", "search"].includes(operation))'));
       assert(agent.includes('await import("node:fs")'));
       assert(!agent.includes('const fs = require("node:fs")'));
       assert(!agent.includes('const { spawn } = require("node:child_process")'));
@@ -2024,6 +2013,8 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("stale-media-download"));
       assert(agent.includes("isNonTerminalWindowsReinstallFinalText"));
       assert(agent.includes("extractPowerShellCommandBody"));
+      assert(agent.includes("runNeedsScriptPrimitive"));
+      assert(!agent.includes("promotedRunScript"));
       assert(agent.includes("mcpRecordComputerLearning"));
       assert(agent.includes("shouldRecordComputerLearning"));
       assert(agent.includes("Learning receipt saved as route guidance only"));
@@ -2075,7 +2066,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agent.includes("beginAgentTrace"));
       assert(agent.includes("/agent/traces"));
       assert(!agent.includes("enableFastDirectAnswers"));
-      assert(agent.includes("hasExplicitEventLogIntent"));
+      assert(!agent.includes("hasExplicitEventLogIntent"));
       assert(!agent.includes("shouldRunDeterministicFastRoutine"));
       assert(!agent.includes("isCreativeOrGenerativeMessage"));
       assert(relay.includes("pollRequesterCanLeaseSourceJobs"));
@@ -2423,14 +2414,14 @@ async function runScenarios({ relayUrl } = {}) {
       assert(!agentSource.includes("sendAgentOperatorTerminal"));
       assert(!agentSource.includes('postAgentRelayEvent(job.id, message, "agent_terminal")'));
       assert(agentSource.includes("stripAgentInternalTerminal(result)"));
-      assert(agentSource.includes("hasDesktopSurfaceIntent"));
+      assert(!agentSource.includes("hasDesktopSurfaceIntent"));
       assert(!agentSource.includes("hasScreenshotIntent"));
       assert(agentSource.includes("Resolve-ScreenshotPath"));
-      assert(agentSource.includes('out.operation = "script"'));
-      assert(agentSource.includes('out.operation = "run"'));
+      assert(!agentSource.includes('out.operation = "script"'));
+      assert(!agentSource.includes('out.operation = "run"'));
       assert(agentSource.includes("xn--n1afe0b"));
       assert(agentSource.includes("titleChanged"));
-      assert(agentSource.includes("%USERPROFILE%\\\\Desktop"));
+      assert(!agentSource.includes("%USERPROFILE%\\\\Desktop"));
       assert(agentSource.includes("title: ${title}"));
       assert(!agentSource.includes("applyBrowserClickDefaults"));
       assert(agentSource.includes("firstUrlCandidate"));
@@ -2444,7 +2435,7 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes("sourceScriptJobBaseDir"));
       assert(agentSource.includes('join(publicRoot, "soty-agent", "jobs")'));
       assert(agentSource.includes("Users\\\\Public\\\\Pictures"));
-      assert(computerTaskRouter.includes('return "click_text"'));
+      assert(!computerTaskRouter.includes('return "click_text"'));
       assert(evalSource.includes('const strict = args.has("strict")'));
       assert(evalSource.includes('id: "safe-browser-click-read"'));
       assert(evalSource.includes("verifyPostConditions"));
@@ -2465,13 +2456,13 @@ async function runScenarios({ relayUrl } = {}) {
       assert(agentSource.includes('tool_choice: "auto"'));
       assert(!agentSource.includes('tool_choice: requireComputerToolNext ? "required" : "auto"'));
       assert(agentSource.includes("soty.local-computer-plane.v1"));
-      assert(agentSource.includes("requestLooksMultiStep"));
-      assert(agentSource.includes("directToolCallCanCompleteMultiStep"));
+      assert(!agentSource.includes("requestLooksMultiStep"));
+      assert(!agentSource.includes("directToolCallCanCompleteMultiStep"));
       assert(!agentSource.includes("finalTextNeedsComputerProofNormalization"));
       assert(agentSource.includes("gonka.direct.final-missing-proof"));
       assert(!agentSource.includes("finalTextContradictsSuccessfulComputerProof"));
       assert(!agentSource.includes("gonka.direct.replaced-contradictory-success-final"));
-      assert(agentSource.includes("requestNeedsFileLifecycleTransaction"));
+      assert(!agentSource.includes("requestNeedsFileLifecycleTransaction"));
       assert(!agentSource.includes("runInferredGonkaDirectComputerAction"));
       assert(agentSource.includes("formatRawDirectComputerJsonFinal"));
       assert(agentSource.includes("function hasCriticalDestructiveIntent"));

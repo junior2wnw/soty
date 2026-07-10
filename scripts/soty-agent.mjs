@@ -7,7 +7,6 @@ import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createComputerTaskRouter } from "./agent-modules/computer-task-router.mjs";
 import { createMcpComputerRouter } from "./agent-modules/mcp-computer-router.mjs";
 import { createMcpSourceContentAdapters } from "./agent-modules/mcp-source-content-adapters.mjs";
 import { createMcpSourceSystemAdapters } from "./agent-modules/mcp-source-system-adapters.mjs";
@@ -889,11 +888,6 @@ function isLikelyUsableBrowserUrl(value) {
   }
 }
 
-function inferBrowserUrlFromText(value) {
-  return firstUrlCandidate(value) || inferKnownBrowserUrlFromText(value);
-}
-
-
 function normalizeGonkaComputerOperation(value) {
   const clean = String(value || "").trim().toLowerCase().replace(/_/gu, "-");
   const aliases = {
@@ -928,31 +922,6 @@ function normalizeGonkaComputerOperation(value) {
   return aliases[clean] || clean;
 }
 
-function hasDesktopSurfaceIntent(value) {
-  return /(?:\bdesktop\b|\u0440\u0430\u0431\u043e\u0447[\u0430-\u044f\u0451]*\s+\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*)/iu.test(String(value || ""));
-}
-
-function hasWallpaperIntent(value) {
-  return /(?:\bwallpaper\b|\bdesktop\s+background\b|\u043e\u0431\u043e\u0438|\u0444\u043e\u043d\s+(?:\u0440\u0430\u0431\u043e\u0447\u0435\u0433\u043e\s+)?\u0441\u0442\u043e\u043b[\u0430-\u044f\u0451]*)/iu.test(String(value || ""));
-}
-
-function isGeneratedImageIntent(value) {
-  return /(?:\bgenerate\b|\bcreate\s+(?:an?\s+)?image\b|\bdraw\b|\u0441\u0433\u0435\u043d\u0435\u0440|\u0441\u043e\u0437\u0434\u0430[\u0439\u0442\u0435]*\s+(?:\u043a\u0430\u0440\u0442\u0438\u043d|\u0438\u0437\u043e\u0431\u0440\u0430\u0436)|\u043d\u0430\u0440\u0438\u0441\u0443[\u0439\u0439])/iu.test(String(value || ""));
-}
-
-const {
-  appTypeActionAliases,
-  appClickActionAliases,
-  hasComputerIntent,
-  hasAppWindowIntent,
-  hasExplicitScriptIntent
-} = createComputerTaskRouter({
-  firstKeyValue,
-  hasBrowserPageIntent,
-  hasWallpaperIntent,
-  isGeneratedImageIntent
-});
-
 const {
   canonicalSotyMcpToolName,
   computerToolAlias,
@@ -974,75 +943,15 @@ const {
   sourceTrafficFetchScript
 } = createMcpSourceContentAdapters();
 
-function applyAppComputerDefaults(args, text) {
+function applyAppComputerDefaults(args) {
   const out = args || {};
   if (out.target && !out.text) {
     out.text = out.target;
-  }
-  if (appTypeActionAliases.includes(String(out.action || "").toLowerCase())) {
-    out.action = "type";
-    out.allowFocus = out.allowFocus !== false;
-    if (out.submit === undefined && shouldSubmitAppText(text, out)) {
-      out.submit = true;
-    }
-    delete out.script;
-    delete out.command;
-    delete out.cmd;
-    delete out.shell;
-  }
-  if (appClickActionAliases.includes(String(out.action || "").toLowerCase()) && !hasAppElementSelector(out)) {
-    out.action = readOnlyAppActionForText(text);
-  }
-  if (out.action === "type" && !hasAppTypeContent(out)) {
-    out.action = readOnlyAppActionForText(text);
   }
   if (!out.maxElements) {
     out.maxElements = 60;
   }
   return out;
-}
-
-function hasAppElementSelector(args = {}) {
-  const selector = String(args.target || args.text || args.element || args.name || "").trim();
-  if (selector) {
-    return true;
-  }
-  const index = Number(args.elementIndex ?? args.index);
-  return Number.isFinite(index) && index >= 0;
-}
-
-function hasAppTypeContent(args = {}) {
-  return Boolean(String(args.content ?? args.value ?? args.input ?? "").trim());
-}
-
-function readOnlyAppActionForText(text) {
-  return hasComputerIntent("appList", text) ? "list" : "snapshot";
-}
-
-function shouldSubmitAppText(text, args = {}) {
-  const value = String(text || "");
-  const app = String(args.app || "").toLowerCase();
-  if (args.submit !== undefined || args.send !== undefined || args.pressEnter !== undefined || args.enterAfterType !== undefined) {
-    return false;
-  }
-  return hasComputerIntent("appSubmit", value)
-    || (app === "codex" && hasComputerIntent("appType", value));
-}
-
-function inferMentionedFileName(text) {
-  const value = String(text || "");
-  const quoted = value.match(/["'`](.+?\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))["'`]/iu);
-  if (quoted) return quoted[1].trim();
-  const plain = value.match(/\b([A-Za-zА-Яа-яЁё0-9_. -]{1,80}\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd))\b/iu);
-  return plain ? plain[1].trim() : "";
-}
-
-function inferQuotedContent(text) {
-  const value = String(text || "");
-  const matches = [...value.matchAll(/["'`]([^"'`]{1,1000})["'`]/gu)]
-    .map((match) => match[1].trim())
-    .filter((part) => part && !/\.(?:txt|md|json|csv|log|html?|ps1|js|mjs|py|bat|cmd)$/iu.test(part));
-  return matches[0] || "";
 }
 
 function hasCriticalDestructiveIntent(value) {
@@ -1124,38 +1033,6 @@ function isCompositeBrowserClickTarget(value, linkText = "") {
     || (target.length > cleanLink.length + 20 && target.toLowerCase().includes(cleanLink.toLowerCase()));
 }
 
-
-
-function hasBrowserPageIntent(value) {
-  return /(?:https?:\/\/|www\.|\bbrowser\b|\bpage\b|\bsite\b|\bweb\b|\bvk\b|vk\.com|(?:^|[^\p{L}\p{N}_])\u0432\u043a(?:$|[^\p{L}\p{N}_])|\u0432\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u0435|\u0431\u0440\u0430\u0443\u0437\u0435\u0440|\u0441\u0430\u0439\u0442|\u0441\u0442\u0440\u0430\u043d\u0438\u0446)/iu.test(String(value || ""));
-}
-
-function inferKnownBrowserUrlFromText(value) {
-  const text = String(value || "");
-  if (/(?:\bvk\b|vk\.com|\u0432\u043a\b|\u0432\u043a\u043e\u043d\u0442\u0430\u043a\u0442\u0435)/iu.test(text)) {
-    return "https://vk.com/";
-  }
-  return "";
-}
-
-function inferScreenshotPathFromText(value, operation = "browser") {
-  const text = String(value || "");
-  const extension = operation === "browser" ? "png" : "png";
-  const named = text.match(/(?:\bas\b|\bto\b|\u043a\u0430\u043a|\u0432\s+\u0444\u0430\u0439\u043b)\s+["'`]?([^"'`\s<>|?*:]+\.png)\b/iu)
-    || text.match(/\b([A-Za-z0-9_.-]+\.png)\b/u);
-  if (named) {
-    const fileName = String(named[1] || "").replace(/[\\/:*?"<>|]+/gu, "").slice(0, 120) || `soty-${operation || "screen"}-screenshot.${extension}`;
-    if (hasDesktopSurfaceIntent(text)) {
-      return `%USERPROFILE%\\Desktop\\${fileName}`;
-    }
-    return `C:\\Users\\Public\\Pictures\\${fileName}`;
-  }
-  if (/(?:\bc:\\|drive\s+c|\bdisk\s+c|\u0434\u0438\u0441\u043a\w*\s+c|\u0434\u0438\u0441\u043a\u0435\s+c)/iu.test(text)) {
-    return `C:\\Users\\Public\\Pictures\\soty-${operation || "screen"}-screenshot.${extension}`;
-  }
-  return "";
-}
-
 function compactComputerQuery(text) {
   return String(text || "")
     .replace(/task_family:[^\n]+/giu, " ")
@@ -1170,7 +1047,7 @@ function gonkaToolsWithInjectedComputer(tools, payload) {
     return list;
   }
   list.unshift(gonkaComputerChatTool());
-  return list.sort((left, right) => gonkaToolPriority(left) - gonkaToolPriority(right));
+  return list;
 }
 
 function shouldInjectGonkaComputerTool(payload) {
@@ -1262,19 +1139,7 @@ function responsesToolsToChatTools(tools) {
       .filter((tool) => tool?.type === "function" && safeChatToolName(tool.name))
       .map((tool) => compactChatToolForGonka(tool))
       .filter(Boolean)
-      .sort((left, right) => gonkaToolPriority(left) - gonkaToolPriority(right))
     : [];
-}
-
-function gonkaToolPriority(tool) {
-  const name = safeChatToolName(tool?.function?.name || tool?.name);
-  if (name === "computer") {
-    return 0;
-  }
-  if (name === "exec_command" || name === "shell_command") {
-    return 20;
-  }
-  return 10;
 }
 
 function compactChatToolForGonka(tool) {
@@ -1664,7 +1529,7 @@ function mapGonkaToolCallForCodex(call, payload = null) {
   if (safeChatToolName(fn.name) !== "computer") {
     return call;
   }
-  const argumentsText = enrichGonkaComputerToolArguments(String(fn.arguments || "{}"), payload);
+  const argumentsText = sanitizeGonkaComputerToolArguments(String(fn.arguments || "{}"), payload);
   return {
     ...call,
     function: {
@@ -1676,41 +1541,14 @@ function mapGonkaToolCallForCodex(call, payload = null) {
   };
 }
 
-function enrichGonkaComputerToolArguments(argumentsText, payload = null) {
+function sanitizeGonkaComputerToolArguments(argumentsText, payload = null) {
   const args = parseJsonMaybe(argumentsText);
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return String(argumentsText || "{}");
   }
   const userText = responsesPayloadUserText(payload) || responsesPayloadPlainText(payload);
   const safeArgs = applyCriticalDestructiveSafety(args, userText);
-  if (safeArgs.operation === "safety") {
-    return JSON.stringify(safeArgs);
-  }
-  const url = trimUrlCandidate(safeArgs.url || safeArgs.href || safeArgs.uri || "");
-  if (url && isLikelyUsableBrowserUrl(url)) {
-    safeArgs.url = /^https?:\/\//iu.test(url) ? url : `https://${url}`;
-  }
-  if (typeof safeArgs.path === "string" && safeArgs.path.trim()) {
-    safeArgs.path = normalizeGonkaComputerFilePathArg(safeArgs.path);
-  }
   return JSON.stringify(safeArgs);
-}
-
-function normalizeGonkaComputerFilePathArg(value) {
-  let text = String(value || "").trim();
-  if (!text) {
-    return text;
-  }
-  text = text
-    .replace(/%USERPROFILE%/giu, "__USERPROFILE__")
-    .replace(/%USERNAME%/giu, "__USERNAME__")
-    .replace(/\$\{?env:USERPROFILE\}?/giu, "__USERPROFILE__")
-    .replace(/\$HOME/giu, "__USERPROFILE__");
-  const desktop = text.match(/^(?:(?:[a-z]:\\users\\(?:[^\\]+|__USERNAME__)(?:\\onedrive)?)|__USERPROFILE__)\\desktop\\(.+)$/iu);
-  if (desktop) {
-    return desktop[1].trim();
-  }
-  return String(value || "").trim();
 }
 
 function shellSingleQuote(value) {
@@ -2200,19 +2038,14 @@ async function handleOperatorHttpRun(request, response, headers) {
     return;
   }
   ({ target, sourceDeviceId, sourceRelayId } = await normalizeOperatorHttpTarget(target, sourceDeviceId, sourceRelayId));
-  const promoted = promotedRunScript(command);
-  if (promoted) {
-    await handleOperatorHttpPromotedScript({
-      target,
-      sourceDeviceId,
-      sourceRelayId,
-      script: promoted.script,
-      shell: promoted.shell,
-      name: promoted.name,
-      runAs,
-      timeoutMs,
-      response,
-      headers
+  if (runNeedsScriptPrimitive(command)) {
+    sendJson(response, 422, headers, {
+      ok: false,
+      text: "! script-required",
+      exitCode: 422,
+      operation: "run",
+      requiredOperation: "script",
+      message: "This command body is a script. Call the script primitive explicitly instead of run."
     });
     return;
   }
@@ -2236,34 +2069,6 @@ async function handleOperatorHttpRun(request, response, headers) {
     target,
     sourceDeviceId,
     command,
-    runAs,
-    timeoutMs
-  });
-}
-
-async function handleOperatorHttpPromotedScript({ target, sourceDeviceId, sourceRelayId, script, shell, name, runAs, timeoutMs, response, headers }) {
-  if (isAgentSourceTarget(target)) {
-    const deviceId = agentSourceDeviceId(target);
-    if (sourceDeviceId && sourceDeviceId !== deviceId) {
-      sendJson(response, 403, headers, { ok: false, text: "! source-target", exitCode: 403 });
-      return;
-    }
-    await handleAgentSourceHttpScript(target, sourceDeviceId || deviceId, { script, name, shell, runAs }, timeoutMs, response, headers, sourceRelayId);
-    return;
-  }
-  if (!operatorBridge?.open || !target || !script.trim()) {
-    sendJson(response, 409, headers, { ok: false, text: "! bridge", exitCode: 409 });
-    return;
-  }
-  const id = registerOperatorRun(response, headers, timeoutMs);
-  sendRaw(operatorBridge, {
-    type: "operator.script",
-    id,
-    target,
-    sourceDeviceId,
-    name,
-    shell,
-    script,
     runAs,
     timeoutMs
   });
@@ -2507,12 +2312,12 @@ function normalizeOperatorActionPayload(payload) {
   if (mode === "script" && !script.trim()) {
     return { ok: false, text: "! script" };
   }
-  const promoted = mode === "run" ? promotedRunScript(command) : null;
-  if (promoted) {
-    mode = "script";
-    script = promoted.script.slice(0, maxScriptChars);
-    command = "";
-    shell ||= promoted.shell;
+  if (mode === "run" && runNeedsScriptPrimitive(command)) {
+    return {
+      ok: false,
+      text: "! script-required",
+      requiredOperation: "script"
+    };
   }
   const body = mode === "script" ? script : command;
   const family = cleanActionToken(payload.family || classifySourceCommand(body), "generic");
@@ -2570,16 +2375,8 @@ function isPowerShellWorkflowCommand(command) {
   return /[$;|`]|[\r\n]|\b(?:Get|Set|New|Remove|Start|Stop|Invoke|Convert|Where|ForEach)-[A-Za-z]/u.test(value);
 }
 
-function promotedRunScript(command) {
-  const body = extractPowerShellCommandBody(command) || (isPowerShellScriptLikeCommand(command) ? String(command || "").trim() : "");
-  if (!body) {
-    return null;
-  }
-  return {
-    script: body,
-    shell: "powershell",
-    name: "powershell-script"
-  };
+function runNeedsScriptPrimitive(command) {
+  return Boolean(extractPowerShellCommandBody(command) || isPowerShellScriptLikeCommand(command));
 }
 
 function isPowerShellScriptLikeCommand(command) {
@@ -4292,34 +4089,18 @@ function rememberAgentSourceOutcome({ kind, command, result }) {
   if (ok && family === "generic") {
     return;
   }
-  if (ok && family === "identity-probe") {
-    return;
-  }
 }
 
 const {
-  hasExplicitEventLogIntent,
-  normalizeRoutineIntentText,
   isRoutineAgentTaskFamily,
   classifySourceCommand,
   isPlainNonDeviceTask
 } = createSourceTaskClassifier({
-  cleanActionToken,
-  hasWallpaperIntent,
-  isGeneratedImageIntent,
-  hasBrowserPageIntent,
-  hasAppWindowIntent
+  cleanActionToken
 });
 function sourceOutputShape(text) {
   const value = String(text || "");
-  const volume = value.match(/\b(volume|vol|громкость)\s*[:=]\s*([0-9]{1,3})\b/iu);
-  const muted = value.match(/\b(muted|mute)\s*[:=]\s*(true|false|0|1)\b/iu);
-  const parts = [
-    volume ? `volume=${volume[2]}` : "",
-    muted ? `muted=${muted[2]}` : "",
-    value.trim() ? "nonempty" : "empty"
-  ].filter(Boolean);
-  return parts.join("; ");
+  return value.trim() ? "nonempty" : "empty";
 }
 
 function sourceFailureProof(text) {
@@ -7475,39 +7256,6 @@ function formatDirectComputerToolText(args, stdout, stderr = "") {
   if ((operation === "safety" || action === "confirmation_required") && inner && typeof inner === "object") {
     return "\u042d\u0442\u043e \u043e\u043f\u0430\u0441\u043d\u043e\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435. \u042f \u043d\u0438\u0447\u0435\u0433\u043e \u043d\u0435 \u0438\u0437\u043c\u0435\u043d\u0438\u043b. \u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438 \u044f\u0432\u043d\u043e \u0442\u043e\u0447\u043d\u0443\u044e \u0446\u0435\u043b\u044c \u0443\u0434\u0430\u043b\u0435\u043d\u0438\u044f/\u043f\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u043a\u0438, \u0438 \u044f \u0441\u043d\u0430\u0447\u0430\u043b\u0430 \u043f\u043e\u043a\u0430\u0436\u0443 \u043f\u043b\u0430\u043d.";
   }
-  if ((action === "security-check" || inner?.action === "security-check") && inner && typeof inner === "object") {
-    const scan = inner.scanRequested === true
-      ? (inner.scanCompleted === true ? "scan completed" : "scan not completed")
-      : "scan not requested";
-    const threats = Number.isFinite(Number(inner.threatCount)) ? Number(inner.threatCount) : 0;
-    return [
-      `Defender available=${inner.defenderAvailable === true}`,
-      `antivirus=${inner.antivirusEnabled === true}`,
-      `real-time=${inner.realTimeProtectionEnabled === true}`,
-      `PUA=${String(inner.puaProtection || "unknown")}`,
-      `threats=${threats}`,
-      scan,
-      inner.signatureUpdated ? `signatures=${inner.signatureUpdated}` : "",
-      inner.quickScanEndTime ? `quickScanEndTime=${inner.quickScanEndTime}` : "",
-      inner.scanError ? `scanError=${inner.scanError}` : "",
-      "changedSettings=false"
-    ].filter(Boolean).join("; ");
-  }
-  if ((action === "driver-check" || inner?.action === "driver-check") && inner && typeof inner === "object") {
-    const problemCount = Number.isFinite(Number(inner.problemCount)) ? Number(inner.problemCount) : 0;
-    const problems = Array.isArray(inner.problems)
-      ? inner.problems.map((item) => `${item.Class || "device"}:${item.FriendlyName || item.InstanceId || item.Status || "unknown"}`).slice(0, 6).join(" | ")
-      : "";
-    const drivers = Array.isArray(inner.importantDrivers)
-      ? inner.importantDrivers.map((item) => `${item.DeviceClass || "driver"}:${item.DeviceName || "unknown"} ${item.DriverVersion || ""}`.trim()).slice(0, 8).join(" | ")
-      : "";
-    return [
-      `problemDevices=${problemCount}`,
-      problems ? `problems=${problems}` : "",
-      drivers ? `importantDrivers=${drivers}` : "",
-      "changedSettings=false"
-    ].filter(Boolean).join("; ");
-  }
   if (action === "screenshot" && inner && typeof inner === "object") {
     const bytes = Number.isFinite(Number(inner.bytes)) ? ` (${Number(inner.bytes)} bytes)` : "";
     const title = String(inner.title || "").trim();
@@ -7813,21 +7561,6 @@ async function runGonkaDirectSotySessionTurn({
         });
         break;
       }
-      if (executed.exitCode === 0
-        && (callIndex === normalizedToolCalls.length - 1 || shouldSingleSuccessfulDirectToolSuffice(executed.args, text, taskFamily))
-        && shouldFinishAfterSuccessfulDirectTool(executed.args, text, taskFamily)) {
-        finalText = executed.userText
-          || formatDirectComputerToolText(executed.args, executed.toolText, "")
-          || directComputerProofText([executed.toolText])
-          || "";
-        exitCode = 0;
-        traceStep(trace, "gonka.direct.finish-after-tool-proof", {
-          operation: executed.args?.operation || "",
-          action: executed.args?.action || "",
-          textChars: finalText.length
-        });
-        break;
-      }
     }
     if (finalText) {
       break;
@@ -7918,76 +7651,6 @@ function buildGonkaDirectUserPrompt(text, context = "", runtimeContext = {}, tas
     runtimeContext?.source?.deviceNick ? `source_device: ${runtimeContext.source.deviceNick}` : "",
     context ? `Visible chat context:\n${String(context).slice(-4000)}` : ""
   ].filter(Boolean).join("\n");
-}
-
-function shouldFinishAfterSuccessfulDirectTool(args = {}, text = "", taskFamily = "") {
-  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
-  const action = String(args?.action || "").trim().toLowerCase();
-  if (requestLooksMultiStep(text) && !directToolCallCanCompleteMultiStep(args)) {
-    return false;
-  }
-  const needsDelete = /(?:\bdelete\b|\bremove\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440)/iu.test(String(text || ""));
-  const needsBrowserClick = /(?:\bclick\b|\bpress\b|\bfollow\b|\blink\b|\bbutton\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u043f\u0435\u0440\u0435\u0439\u0434|\u0441\u0441\u044b\u043b|\u043a\u043d\u043e\u043f)/iu.test(String(text || ""));
-  if (operation === "file") {
-    if (needsDelete && ["stat", "read", ""].includes(action)) {
-      return false;
-    }
-    return ["cycle", "read", "delete", "write", "append", "download", "publish"].includes(action);
-  }
-  if (["web", "fetch", "search"].includes(operation)) {
-    return true;
-  }
-  if (operation === "browser") {
-    if (["click_text", "click"].includes(action)) {
-      return true;
-    }
-    if (["open", "goto", "title", "text"].includes(action)) {
-      return !needsBrowserClick;
-    }
-  }
-  if (["time", "audio", "process", "clipboard", "network"].includes(operation)) {
-    return true;
-  }
-  if ((operation === "desktop" || operation === "browser") && action === "screenshot") {
-    return true;
-  }
-  return false;
-}
-
-function requestLooksMultiStep(text = "") {
-  const value = String(text || "").toLowerCase();
-  if (!value.trim()) {
-    return false;
-  }
-  const families = new Set();
-  const patterns = [
-    ["create", /(?:\b(?:create|write|append|make|save|download)\b|\u0441\u043e\u0437\u0434|\u0437\u0430\u043f\u0438\u0448|\u0441\u043e\u0445\u0440\u0430\u043d|\u0441\u043a\u0430\u0447)/iu],
-    ["inspect", /(?:\b(?:check|verify|read|inspect|find|search|look|open)\b|\u043f\u0440\u043e\u0432\u0435\u0440|\u043f\u0440\u043e\u0447\u0438\u0442|\u043d\u0430\u0439\u0434|\u043f\u043e\u0441\u043c\u043e\u0442\u0440|\u043e\u0442\u043a\u0440)/iu],
-    ["remove", /(?:\b(?:delete|remove|clear|clean)\b|\u0443\u0434\u0430\u043b|\u0441\u043e\u0442\u0440|\u043e\u0447\u0438\u0441\u0442)/iu],
-    ["interact", /(?:\b(?:click|press|type|send|submit|set|change|install|run|start|stop|restart|update|repair)\b|\u043d\u0430\u0436\u043c|\u043a\u043b\u0438\u043a|\u0432\u0432\u0435\u0434|\u043e\u0442\u043f\u0440\u0430\u0432|\u0438\u0437\u043c\u0435\u043d|\u0443\u0441\u0442\u0430\u043d\u043e\u0432|\u0437\u0430\u043f\u0443\u0441\u0442|\u043e\u0441\u0442\u0430\u043d\u043e\u0432|\u043e\u0431\u043d\u043e\u0432|\u043f\u043e\u0447\u0438\u043d)/iu]
-  ];
-  for (const [family, pattern] of patterns) {
-    if (pattern.test(value)) {
-      families.add(family);
-    }
-  }
-  if (families.size >= 2) {
-    return true;
-  }
-  return /(?:\b(?:then|after that|and then)\b|[,;]\s*(?:then\s+)?|\u043f\u043e\u0442\u043e\u043c|\u0437\u0430\u0442\u0435\u043c|\u043f\u043e\u0441\u043b\u0435\s+\u044d\u0442\u043e\u0433\u043e|\u0438\s+(?:\u043f\u043e\u0442\u043e\u043c|\u0437\u0430\u0442\u0435\u043c)?)/iu.test(value)
-    && families.size >= 1;
-}
-
-function directToolCallCanCompleteMultiStep(args = {}) {
-  const operation = normalizeGonkaComputerOperation(args?.operation || args?.op || args?.capability || "");
-  const action = String(args?.action || "").trim().toLowerCase();
-  return ["run", "script", "terminal", "console", "action", "toolkit", "reinstall"].includes(operation)
-    || ["cycle", "workflow", "transaction", "prepare", "submit"].includes(action)
-    || Boolean(args?.command || args?.script);
-}
-
-function shouldSingleSuccessfulDirectToolSuffice(args = {}, text = "", taskFamily = "") {
-  return false;
 }
 
 function directToolResultsCoverExplicitTarget(toolResults = [], userText = "") {
@@ -8087,7 +7750,7 @@ async function runGonkaDirectComputerToolCall({ call, text = "", taskFamily = ""
   const callId = String(call?.id || `call_${randomUUID().replace(/-/gu, "")}`).slice(0, 80);
   let argumentsText = String(call?.function?.arguments || "{}");
   const payload = gonkaDirectSyntheticPayload(text, taskFamily);
-  argumentsText = enrichGonkaComputerToolArguments(argumentsText, payload);
+  argumentsText = sanitizeGonkaComputerToolArguments(argumentsText, payload);
   let args = parseJsonMaybe(argumentsText);
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return directComputerToolArgumentFailure(callId, {}, "invalid-json-arguments");
@@ -8187,75 +7850,13 @@ function gonkaDirectSyntheticPayload(text, taskFamily = "") {
 function normalizeGonkaDirectComputerArgs(args, taskFamily = "", text = "") {
   const out = { ...(args || {}) };
   out.operation = normalizeGonkaComputerOperation(out.operation || out.op || out.capability || "");
-  if (!out.operation) {
-    if (typeof out.script === "string" && out.script.trim()) {
-      out.operation = "script";
-    } else if (typeof out.command === "string" && out.command.trim() || typeof out.cmd === "string" && out.cmd.trim()) {
-      out.operation = "run";
-    }
-  }
   if (!out.maxChars) {
     out.maxChars = Math.min(gonkaDirectToolResultChars, 8000);
   }
   if (!out.timeoutMs) {
     out.timeoutMs = 90000;
   }
-  const safeOut = applyCriticalDestructiveSafety(out, text);
-  if (safeOut.operation === "safety") {
-    return safeOut;
-  }
-  const url = trimUrlCandidate(out.url || out.href || out.uri || "");
-  if (url && isLikelyUsableBrowserUrl(url)) {
-    out.url = /^https?:\/\//iu.test(url) ? url : `https://${url}`;
-  }
-  if (typeof out.path === "string" && out.path.trim()) {
-    out.path = normalizeGonkaComputerFilePathArg(out.path);
-  }
-  if (out.operation === "file"
-    && !out.action
-    && !firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body)
-    && firstNonEmptyValue(out.script, out.command, out.cmd)) {
-    out.operation = "script";
-  }
-  if (out.operation === "file") {
-    const contentSource = firstNonEmptyValue(out.content, out.text, out.value, out.input, out.body);
-    if (!out.action && out.path && contentSource) {
-      out.action = "write";
-    }
-    const action = String(out.action || "").trim().toLowerCase().replace(/_/gu, "-");
-    if (["write", "append", "cycle"].includes(action) && contentSource && !String(out.content ?? "")) {
-      out.content = contentSource;
-    }
-    if (action === "write" && out.path && contentSource && requestNeedsFileLifecycleTransaction(text)) {
-      out.action = "cycle";
-      out.content = contentSource;
-    }
-  }
-  return out;
-}
-
-function requestNeedsFileLifecycleTransaction(text = "") {
-  const value = String(text || "").toLowerCase();
-  if (!/(?:\bfile\b|\bfolder\b|файл|папк|path|[a-z]:\\|\/(?:users|home|tmp|var)\b)/iu.test(value)) {
-    return false;
-  }
-  const wantsWrite = /(?:\b(?:create|write|make|save)\b|созд|запиш|сохран)/iu.test(value);
-  const wantsVerify = /(?:\b(?:check|verify|read|confirm)\b|провер|прочит|убед)/iu.test(value);
-  const wantsDelete = /(?:\b(?:delete|remove|clean\s*up)\b|удал|сотр)/iu.test(value);
-  return wantsWrite && wantsVerify && wantsDelete;
-}
-
-function firstNonEmptyValue(...items) {
-  for (const item of items) {
-    if (item === undefined || item === null) {
-      continue;
-    }
-    const text = String(item);
-    if (text.length > 0) {
-      return text;
-    }
-  }
-  return "";
+  return applyCriticalDestructiveSafety(out, text);
 }
 
 function safeDirectComputerToolTimeoutMs(value, taskFamily = "", args = null) {
