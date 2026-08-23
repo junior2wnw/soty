@@ -1575,7 +1575,7 @@ function backoff(failures) {
 return { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed };
 })();
 
-const connectorVersion = "1.2.8";
+const connectorVersion = "1.2.9";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -2304,7 +2304,10 @@ function killProcessTree(child) {
   if (!child?.pid) return;
   if (process.platform === "win32") {
     try {
-      spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      const killer = spawn(windowsSystemTool("taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      killer.once("error", () => {
+        try { child.kill("SIGTERM"); } catch { /* Process already stopped. */ }
+      });
       return;
     } catch { /* Fall through. */ }
   }
@@ -2529,7 +2532,7 @@ async function extractOpenCodeArchive(archivePath, destination, asset) {
   if (asset.endsWith(".zip")) {
     if (process.platform === "win32") {
       const quote = (value) => `'${String(value).replace(/'/gu, "''")}'`;
-      execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `Expand-Archive -LiteralPath ${quote(archivePath)} -DestinationPath ${quote(destination)} -Force`], { timeout: 180_000, windowsHide: true, stdio: "ignore" });
+      execFileSync(windowsBuiltInPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `Expand-Archive -LiteralPath ${quote(archivePath)} -DestinationPath ${quote(destination)} -Force`], { timeout: 180_000, windowsHide: true, stdio: "ignore" });
     } else {
       execFileSync("unzip", ["-q", archivePath, "-d", destination], { timeout: 180_000, stdio: "ignore" });
     }
@@ -2575,8 +2578,8 @@ function isWithin(root, target) {
 
 function shellSpec(command) {
   if (process.platform !== "win32") return { file: requestedShell || process.env.SHELL || "/bin/sh", args: ["-lc", command] };
-  if (String(requestedShell || "").toLowerCase().includes("cmd")) return { file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`] };
-  const file = requestedShell || "powershell.exe";
+  if (String(requestedShell || "").toLowerCase().includes("cmd")) return { file: windowsCmdPath(), args: ["/d", "/s", "/c", `chcp 65001>nul & ${command}`] };
+  const file = windowsPowerShellPath();
   return { file, args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `${powerShellUtf8Prelude()}; ${command}; if ($global:LASTEXITCODE -ne $null) { exit $global:LASTEXITCODE }`] };
 }
 
@@ -2595,10 +2598,10 @@ function scriptSpec(input, directory) {
   if (process.platform === "win32") {
     if (shell.includes("cmd")) {
       const target = join(directory, `${base}.cmd`);
-      return { path: target, content: `@echo off\r\nchcp 65001>nul\r\n${input.script}`, file: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", target] };
+      return { path: target, content: `@echo off\r\nchcp 65001>nul\r\n${input.script}`, file: windowsCmdPath(), args: ["/d", "/s", "/c", target] };
     }
     const target = join(directory, `${base}.ps1`);
-    return { path: target, content: `\uFEFF${powerShellUtf8Prelude()}\r\n${input.script}`, file: shell.includes("pwsh") ? "pwsh.exe" : (requestedShell || "powershell.exe"), args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", target] };
+    return { path: target, content: `\uFEFF${powerShellUtf8Prelude()}\r\n${input.script}`, file: shell.includes("pwsh") ? "pwsh.exe" : windowsPowerShellPath(), args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", target] };
   }
   const target = join(directory, `${base}.sh`);
   return { path: target, content: input.script, file: shell.includes("bash") ? "bash" : (requestedShell || process.env.SHELL || "/bin/sh"), args: [target] };
@@ -2737,7 +2740,7 @@ async function downloadTrafficCoreBytes(url, maxBytes) {
 async function extractTrafficCoreArchive(archivePath, destination) {
   if (process.platform === "win32") {
     const quote = (value) => `'${String(value).replace(/'/gu, "''")}'`;
-    execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `Expand-Archive -LiteralPath ${quote(archivePath)} -DestinationPath ${quote(destination)} -Force`], { timeout: 120_000, windowsHide: true, stdio: "ignore" });
+    execFileSync(windowsBuiltInPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `Expand-Archive -LiteralPath ${quote(archivePath)} -DestinationPath ${quote(destination)} -Force`], { timeout: 120_000, windowsHide: true, stdio: "ignore" });
   } else {
     execFileSync("unzip", ["-q", archivePath, "-d", destination], { timeout: 120_000, stdio: "ignore" });
   }
@@ -2824,10 +2827,10 @@ async function protectSecretFile(path) {
   await chmod(path, 0o600).catch(() => undefined);
   if (process.platform !== "win32") return;
   try {
-    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+    const identity = execFileSync(windowsSystemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: 5_000, windowsHide: true });
     const sid = identity.match(/S-\d-(?:\d+-)+\d+/u)?.[0];
     if (!sid) return;
-    execFileSync("icacls.exe", [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"], { timeout: 10_000, windowsHide: true, stdio: "ignore" });
+    execFileSync(windowsSystemTool("icacls.exe"), [path, "/inheritance:r", "/grant:r", `*${sid}:(F)`, "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"], { timeout: 10_000, windowsHide: true, stdio: "ignore" });
   } catch {
     // The restrictive creation mode remains in force when ACL hardening is unavailable.
   }
@@ -3138,11 +3141,12 @@ async function ensureUserCompanion() {
     "  $mutex.Dispose()",
     "}"
   ].join("\r\n");
-  const vbs = `CreateObject("WScript.Shell").Run "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${bootstrap.replace(/"/gu, '""')}""", 0, False`;
+  const powershell = windowsBuiltInPowerShellPath().replace(/"/gu, '""');
+  const vbs = `CreateObject("WScript.Shell").Run """${powershell}"" -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${bootstrap.replace(/"/gu, '""')}""", 0, False`;
   await writeFile(bootstrap, `\uFEFF${content}`, "utf8");
   await writeFile(launcher, vbs, "utf8");
-  const command = `wscript.exe //B //Nologo "${launcher.replace(/"/gu, '""')}"`;
-  try { execFileSync("reg.exe", ["add", "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "soty-connector-user", "/t", "REG_SZ", "/d", command, "/f"], { timeout: 10_000, windowsHide: true, stdio: "ignore" }); } catch { return; }
+  const command = `"${windowsSystemTool("wscript.exe")}" //B //Nologo "${launcher.replace(/"/gu, '""')}"`;
+  try { execFileSync(windowsSystemTool("reg.exe"), ["add", "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "soty-connector-user", "/t", "REG_SZ", "/d", command, "/f"], { timeout: 10_000, windowsHide: true, stdio: "ignore" }); } catch { return; }
   launchCompanionForActiveUser(launcher);
 }
 
@@ -3155,7 +3159,7 @@ function removeLegacyWindowsCompanion() {
     "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and ($_.CommandLine -match 'start-user-agent\\.(?:ps1|vbs)') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
   ].join("; ");
   try {
-    execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps], {
+    execFileSync(windowsBuiltInPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps], {
       timeout: 15_000,
       windowsHide: true,
       stdio: "ignore"
@@ -3166,18 +3170,19 @@ function removeLegacyWindowsCompanion() {
 function launchCompanionForActiveUser(launcher) {
   const ps = [
     `$launcher = ${psQuote(launcher)}`,
+    `$wscript = ${psQuote(windowsSystemTool("wscript.exe"))}`,
     "$p = Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\" | Select-Object -First 1",
     "if (-not $p) { exit 0 }",
     "$o = Invoke-CimMethod -InputObject $p -MethodName GetOwner",
     "$u = if ($o.Domain) { $o.Domain + '\\\\' + $o.User } else { $o.User }",
-    "$a = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('//B //Nologo \"' + $launcher + '\"')",
+    "$a = New-ScheduledTaskAction -Execute $wscript -Argument ('//B //Nologo \"' + $launcher + '\"')",
     "$t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)",
     "$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
     "$r = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited",
     "Register-ScheduledTask -TaskName 'soty-connector-user-now' -Action $a -Trigger $t -Settings $s -Principal $r -Force | Out-Null",
     "Start-ScheduledTask -TaskName 'soty-connector-user-now'"
   ].join("; ");
-  try { execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], { timeout: 15_000, windowsHide: true, stdio: "ignore" }); } catch { /* Run key covers the next sign-in. */ }
+  try { execFileSync(windowsBuiltInPowerShellPath(), ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], { timeout: 15_000, windowsHide: true, stdio: "ignore" }); } catch { /* Run key covers the next sign-in. */ }
 }
 
 async function saveConfig() {
@@ -3346,7 +3351,29 @@ function safeFileName(value) {
 }
 
 function powerShellUtf8Prelude() {
-  return "$u = [Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $u; [Console]::OutputEncoding = $u; $OutputEncoding = $u; chcp.com 65001 | Out-Null";
+  return "$u = [Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $u; [Console]::OutputEncoding = $u; $OutputEncoding = $u; if ($env:SystemRoot) { & (Join-Path $env:SystemRoot 'System32\\chcp.com') 65001 | Out-Null }";
+}
+
+function windowsCmdPath() {
+  return process.env.ComSpec || windowsSystemTool("cmd.exe");
+}
+
+function windowsPowerShellPath() {
+  const configured = String(requestedShell || "").trim();
+  if (configured && !/^(?:powershell(?:\.exe)?)$/iu.test(configured)) return configured;
+  return windowsBuiltInPowerShellPath();
+}
+
+function windowsBuiltInPowerShellPath() {
+  return windowsSystemTool(join("WindowsPowerShell", "v1.0", "powershell.exe"));
+}
+
+function windowsSystemTool(name) {
+  return join(windowsRoot(), "System32", name);
+}
+
+function windowsRoot() {
+  return process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
 }
 
 function shellName() {
@@ -3360,7 +3387,7 @@ function hostLabel() {
 function isWindowsSystem() {
   if (process.platform !== "win32") return false;
   try {
-    const identity = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: 2_000, windowsHide: true });
+    const identity = execFileSync(windowsSystemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", timeout: 2_000, windowsHide: true });
     return /(?:^|[,\s"])s-1-5-18(?:$|[,\s"])/iu.test(identity);
   } catch {
     const profile = resolve(String(process.env.USERPROFILE || "")).toLowerCase();

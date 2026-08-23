@@ -46,6 +46,10 @@ try {
     SOTY_CONNECTOR_DEVICE_NICK: "Integration",
     SOTY_CONNECTOR_SCOPE: "Dev",
     SOTY_CONNECTOR_AUTO_UPDATE: "0",
+    ...(process.platform === "win32" ? {
+      PATH: path.dirname(process.execPath),
+      Path: path.dirname(process.execPath)
+    } : {}),
     ...(openCodePath ? {
       SOTY_OPENCODE_PATH: openCodePath
     } : {})
@@ -68,6 +72,21 @@ try {
   assert.equal(rejectedSpreadExOrigin.status, 403);
   assert.equal(rejectedSpreadExOrigin.headers.get("access-control-allow-origin"), null);
   await waitJson(`${baseUrl}/api/connectors/status?linkId=${linkId}`, (value) => value.connected === true);
+
+  if (process.platform === "win32") {
+    const pathIndependentShell = await createJob({
+      kind: "command",
+      input: {
+        text: "Write-Output path-independent-shell-ok",
+        runAs: "user",
+        cwd: root,
+        timeoutMs: 10_000
+      }
+    });
+    const shellState = await waitJob(pathIndependentShell.id, 20_000);
+    assert.equal(shellState.status, "succeeded");
+    assert.match(shellState.result.text, /path-independent-shell-ok/u);
+  }
 
   if (openCodePath) {
     await waitJson(`${baseUrl}/ready`, (value) => value.ok === true && value.agentModelProxy?.ready === true);
