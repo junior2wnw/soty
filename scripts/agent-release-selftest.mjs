@@ -124,6 +124,8 @@ assert.match(windowsInstaller, /Remove-LegacyUserCompanion/u);
 assert.match(windowsInstaller, /soty-agent-user-companion-now/u);
 assert.match(windowsInstaller, /SOTY_CONNECTOR_PORT = "49424"/u);
 assert.match(windowsInstaller, /ReadToEndAsync/u);
+assert.match(windowsInstaller, /System32\\WindowsPowerShell\\v1\.0\\powershell\.exe/u, "Windows autostart must not depend on PATH");
+assert.match(windowsInstaller, /RestartCount 999 -RestartInterval/u, "Windows tasks must restart after unexpected exits");
 assert.doesNotMatch(windowsInstaller, /BeginOutputReadLine|DataReceivedEventHandler/u);
 if (process.platform === "win32") {
   execFileSync("powershell.exe", [

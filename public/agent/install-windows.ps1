@@ -37,6 +37,7 @@ $LogPath = Join-Path $AgentDir "install.log"
 $RunnerStdoutPath = Join-Path $AgentDir "start-agent.out.log"
 $RunnerStderrPath = Join-Path $AgentDir "start-agent.err.log"
 $RunnerStatusPath = Join-Path $AgentDir "start-agent.status.log"
+$WindowsPowerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $ManifestUrl = "$Base/manifest.json"
 $RelayBaseUrl = "https://xn--n1afe0b.online"
 try {
@@ -668,19 +669,19 @@ try {
       }
       throw ("Soty machine task did not report SYSTEM health on 127.0.0.1:49424; " + ($diagnostics -join "; "))
     }
-    Start-Process -WindowStyle Hidden -FilePath "powershell.exe" -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RunnerPath)
+    Start-Process -WindowStyle Hidden -FilePath $WindowsPowerShellPath -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RunnerPath)
   }
 
   function Enable-AgentAutostart {
-    $runCommand = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
+    $runCommand = "`"$WindowsPowerShellPath`" -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
 
     if ($Scope -eq "Machine") {
       Write-SotyStep "autostart:machine-task"
       Stop-ExistingSotyAgents
       try { Stop-ScheduledTask -TaskName "soty-agent-machine" -ErrorAction SilentlyContinue } catch {}
-      $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
+      $Action = New-ScheduledTaskAction -Execute $WindowsPowerShellPath -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
       $Trigger = New-ScheduledTaskTrigger -AtStartup
-      $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
+      $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
       $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
       Register-ScheduledTask -TaskName "soty-agent-machine" -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description "soty.online machine local agent" -Force | Out-Null
       Write-SotyLog "soty-agent:autostart:machine-task"
@@ -688,9 +689,9 @@ try {
     }
 
     try {
-      $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
+      $Action = New-ScheduledTaskAction -Execute $WindowsPowerShellPath -Argument "-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RunnerPath`""
       $Trigger = New-ScheduledTaskTrigger -AtLogOn
-      $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
+      $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
       Register-ScheduledTask -TaskName "soty-agent" -Action $Action -Trigger $Trigger -Settings $Settings -Description "soty.online local agent" -Force | Out-Null
       Start-ScheduledTask -TaskName "soty-agent"
       Write-SotyLog "soty-agent:autostart:task"

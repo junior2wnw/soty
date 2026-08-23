@@ -12,7 +12,7 @@ import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSetting
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 
-const connectorVersion = "1.2.10";
+const connectorVersion = "1.2.11";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
