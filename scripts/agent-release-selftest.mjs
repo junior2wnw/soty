@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -63,6 +63,41 @@ try {
   assert.equal(probe.wrapperSha256, manifest.sha256);
   assert.equal(probe.agent?.id, "opencode");
   assert.equal(probe.agent?.version, manifest.agent.runtime.version);
+  if (process.platform === "win32") {
+    const launcherDir = join(dataDir, "launcher path with spaces");
+    const bootstrap = join(launcherDir, "start user connector.ps1");
+    const marker = join(launcherDir, "launcher.ok");
+    const launcher = join(launcherDir, "start user connector.vbs");
+    await mkdir(launcherDir, { recursive: true });
+    await writeFile(bootstrap, `Set-Content -LiteralPath '${marker.replace(/'/gu, "''")}' -Value 'ok' -Encoding ASCII\n`, "utf8");
+    const launcherProbe = JSON.parse(execFileSync(process.execPath, [runtimePath, "ctl", "release-selftest", bootstrap], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 20_000,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: "",
+        SOTY_CONNECTOR_AUTO_UPDATE: "0",
+        SOTY_AGENT_AUTO_UPDATE: "0",
+        SOTY_CONNECTOR_DATA_DIR: dataDir
+      }
+    }));
+    assert.match(launcherProbe.windowsLauncher || "", /WindowsPowerShell/u);
+    await writeFile(launcher, launcherProbe.windowsLauncher, "utf8");
+    const systemRoot = process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
+    execFileSync(join(systemRoot, "System32", "wscript.exe"), ["//B", "//Nologo", launcher], { timeout: 10_000, windowsHide: true });
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      try {
+        assert.equal((await readFile(marker, "utf8")).trim(), "ok");
+        break;
+      } catch {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+    }
+    assert.equal((await readFile(marker, "utf8")).trim(), "ok");
+  }
 } finally {
   await rm(dataDir, { recursive: true, force: true });
 }

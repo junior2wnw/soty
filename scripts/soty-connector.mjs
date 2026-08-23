@@ -1308,12 +1308,14 @@ async function runControl(args) {
   if (command === "release-selftest") {
     const release = openCodeRelease();
     if (!release || !/^[a-f0-9]{64}$/u.test(release.sha256)) throw new Error("invalid-opencode-release");
+    const launcherBootstrap = process.platform === "win32" && isAbsolute(String(args[1] || "")) ? String(args[1]) : "";
     process.stdout.write(`${JSON.stringify({
       ok: true,
       schema: connectorSchema,
       version: connectorVersion,
       wrapperSha256: sha256(await readFile(scriptPath)),
-      agent: { id: "opencode", version: release.version, sha256: release.sha256 }
+      agent: { id: "opencode", version: release.version, sha256: release.sha256 },
+      windowsLauncher: launcherBootstrap ? windowsCompanionVbs(launcherBootstrap) : ""
     })}\n`);
     return;
   }
@@ -1578,8 +1580,7 @@ async function ensureUserCompanion() {
     "  $mutex.Dispose()",
     "}"
   ].join("\r\n");
-  const powershell = windowsBuiltInPowerShellPath().replace(/"/gu, '""');
-  const vbs = `CreateObject("WScript.Shell").Run """${powershell}"" -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${bootstrap.replace(/"/gu, '""')}""", 0, False`;
+  const vbs = windowsCompanionVbs(bootstrap);
   await writeFile(bootstrap, `\uFEFF${content}`, "utf8");
   await writeFile(launcher, vbs, "utf8");
   const command = `"${windowsSystemTool("wscript.exe")}" //B //Nologo "${launcher.replace(/"/gu, '""')}"`;
@@ -1803,6 +1804,11 @@ function windowsPowerShellPath() {
 
 function windowsBuiltInPowerShellPath() {
   return windowsSystemTool(join("WindowsPowerShell", "v1.0", "powershell.exe"));
+}
+
+function windowsCompanionVbs(bootstrap) {
+  const powershell = windowsBuiltInPowerShellPath().replace(/"/gu, '""');
+  return `CreateObject("WScript.Shell").Run """${powershell}"" -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${String(bootstrap).replace(/"/gu, '""')}""", 0, False`;
 }
 
 function windowsSystemTool(name) {
