@@ -1,0 +1,103 @@
+{
+  "schema": "identity.authorization-catalog.v1",
+  "catalog_version": 1,
+  "scopes": [
+    { "id": "analytics:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "billing:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "billing:reconcile", "boundary": "platform", "allowed_actor_types": ["human_session"] },
+    { "id": "developer:profile:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "developer:profile:write", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "feed:connections:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "feed:connections:write", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "feed:runs:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "identity:self:read", "boundary": "tenant", "allowed_actor_types": ["human_session"] },
+    { "id": "inventory:candidates:write", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "inventory:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "organization:members:manage", "boundary": "tenant", "allowed_actor_types": ["human_session"] },
+    { "id": "organization:members:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "organization:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "organization:suspend", "boundary": "platform", "allowed_actor_types": ["human_session"] },
+    { "id": "publication:approve", "boundary": "platform", "allowed_actor_types": ["human_session"] },
+    { "id": "publication:request", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "reviews:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "reviews:respond", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "security:revoke-global", "boundary": "platform", "allowed_actor_types": ["human_session"] },
+    { "id": "verification:decide", "boundary": "platform", "allowed_actor_types": ["human_session"] },
+    { "id": "verification:evidence:submit", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] },
+    { "id": "verification:read", "boundary": "tenant", "allowed_actor_types": ["human_session", "machine_client"] }
+  ],
+  "roles": [
+    {
+      "id": "analyst",
+      "boundary": "tenant",
+      "scopes": ["analytics:read", "feed:runs:read", "inventory:read", "organization:read", "reviews:read", "verification:read"],
+      "requires_human_session": false
+    },
+    {
+      "id": "billing_manager",
+      "boundary": "tenant",
+      "scopes": ["billing:read", "organization:read"],
+      "requires_human_session": false
+    },
+    {
+      "id": "billing_operator",
+      "boundary": "platform",
+      "scopes": ["billing:reconcile"],
+      "requires_human_session": true
+    },
+    {
+      "id": "developer_editor",
+      "boundary": "tenant",
+      "scopes": ["analytics:read", "developer:profile:read", "developer:profile:write", "inventory:candidates:write", "inventory:read", "organization:read", "publication:request", "verification:evidence:submit", "verification:read"],
+      "requires_human_session": false
+    },
+    {
+      "id": "feed_manager",
+      "boundary": "tenant",
+      "scopes": ["feed:connections:read", "feed:connections:write", "feed:runs:read", "inventory:candidates:write", "inventory:read", "organization:read", "verification:evidence:submit", "verification:read"],
+      "requires_human_session": false
+    },
+    {
+      "id": "organization_admin",
+      "boundary": "tenant",
+      "scopes": ["analytics:read", "developer:profile:read", "developer:profile:write", "feed:connections:read", "feed:connections:write", "feed:runs:read", "inventory:candidates:write", "inventory:read", "organization:members:manage", "organization:members:read", "organization:read", "publication:request", "reviews:read", "reviews:respond", "verification:evidence:submit", "verification:read"],
+      "requires_human_session": true
+    },
+    {
+      "id": "organization_owner",
+      "boundary": "tenant",
+      "scopes": ["analytics:read", "billing:read", "developer:profile:read", "developer:profile:write", "feed:connections:read", "feed:connections:write", "feed:runs:read", "inventory:candidates:write", "inventory:read", "organization:members:manage", "organization:members:read", "organization:read", "publication:request", "reviews:read", "reviews:respond", "verification:evidence:submit", "verification:read"],
+      "requires_human_session": true
+    },
+    {
+      "id": "platform_operator",
+      "boundary": "platform",
+      "scopes": ["organization:suspend", "publication:approve"],
+      "requires_human_session": true
+    },
+    {
+      "id": "platform_superadmin",
+      "boundary": "platform",
+      "scopes": ["billing:reconcile", "organization:suspend", "publication:approve", "security:revoke-global", "verification:decide"],
+      "requires_human_session": true
+    },
+    {
+      "id": "security_operator",
+      "boundary": "platform",
+      "scopes": ["security:revoke-global"],
+      "requires_human_session": true
+    },
+    {
+      "id": "support_viewer",
+      "boundary": "tenant",
+      "scopes": ["analytics:read", "feed:runs:read", "organization:read"],
+      "requires_human_session": false
+    },
+    {
+      "id": "verification_reviewer",
+      "boundary": "platform",
+      "scopes": ["verification:decide"],
+      "requires_human_session": true
+    }
+  ]
+}

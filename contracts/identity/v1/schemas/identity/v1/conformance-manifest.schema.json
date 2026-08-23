@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufanovostroyka.ru/schemas/identity/v1/conformance-manifest.schema.json",
+  "title": "Canonical identity wire conformance manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "canonical_wire_version",
+    "authority_model",
+    "browser_login",
+    "workflow_exchange",
+    "service_event",
+    "authorization_catalog",
+    "vectors",
+    "consumer_migrations",
+    "human_gates"
+  ],
+  "properties": {
+    "schema": { "const": "identity.wire-conformance-manifest.v1" },
+    "canonical_wire_version": { "const": 1 },
+    "authority_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity_provider",
+        "organization_control_plane",
+        "workflow_exchange_issuer_and_redeemer",
+        "service_event_signer_and_outbox",
+        "product_runtime_role",
+        "product_may_implement_exchange_store_or_signer",
+        "product_test_double_exception",
+        "forbidden_master_idps"
+      ],
+      "properties": {
+        "identity_provider": { "const": "provider_neutral_oidc" },
+        "organization_control_plane": { "const": "separate_provider_neutral_service" },
+        "workflow_exchange_issuer_and_redeemer": { "const": "organization_control_plane_only" },
+        "service_event_signer_and_outbox": { "const": "organization_control_plane_only" },
+        "product_runtime_role": { "const": "relying_party_consumer_only" },
+        "product_may_implement_exchange_store_or_signer": { "const": false },
+        "product_test_double_exception": { "const": "isolated_nonproduction_conformance_only" },
+        "forbidden_master_idps": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "const": "soty" },
+            { "const": "tavysh" }
+          ],
+          "items": false
+        }
+      }
+    },
+    "browser_login": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_ref", "profile_ref"],
+      "properties": {
+        "schema_ref": { "$ref": "#/$defs/path" },
+        "profile_ref": { "$ref": "#/$defs/path" }
+      }
+    },
+    "workflow_exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_ref",
+        "serialization",
+        "code_entropy_bytes",
+        "max_ttl_seconds",
+        "stored_form",
+        "redeem_transport",
+        "semantic_rules",
+        "rationale"
+      ],
+      "properties": {
+        "schema_ref": { "$ref": "#/$defs/path" },
+        "serialization": { "const": "opaque_base64url_no_padding" },
+        "code_entropy_bytes": { "const": 32 },
+        "max_ttl_seconds": { "const": 60 },
+        "stored_form": { "const": "sha256_of_ascii_code" },
+        "redeem_transport": { "const": "authenticated_server_to_server_post" },
+        "semantic_rules": { "$ref": "#/$defs/rules" },
+        "rationale": { "$ref": "#/$defs/rules" }
+      }
+    },
+    "service_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "envelope_schema_ref",
+        "protected_header_schema_ref",
+        "payload_schema_ref",
+        "serialization",
+        "algorithm",
+        "curve",
+        "payload_canonicalization",
+        "key_resolution",
+        "test_public_key_ref",
+        "semantic_rules",
+        "rationale"
+      ],
+      "properties": {
+        "envelope_schema_ref": { "$ref": "#/$defs/path" },
+        "protected_header_schema_ref": { "$ref": "#/$defs/path" },
+        "payload_schema_ref": { "$ref": "#/$defs/path" },
+        "serialization": { "const": "rfc7515_flattened_jws_json" },
+        "algorithm": { "const": "EdDSA" },
+        "curve": { "const": "Ed25519" },
+        "payload_canonicalization": { "const": "rfc8785_jcs_utf8" },
+        "key_resolution": { "const": "pinned_issuer_and_kid_registry" },
+        "test_public_key_ref": { "$ref": "#/$defs/path" },
+        "semantic_rules": { "$ref": "#/$defs/rules" },
+        "rationale": { "$ref": "#/$defs/rules" }
+      }
+    },
+    "authorization_catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_ref", "catalog_ref"],
+      "properties": {
+        "schema_ref": { "$ref": "#/$defs/path" },
+        "catalog_ref": { "$ref": "#/$defs/path" }
+      }
+    },
+    "vectors": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/vector" }
+    },
+    "consumer_migrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["soty", "tavysh"],
+      "properties": {
+        "soty": { "$ref": "#/$defs/migration" },
+        "tavysh": { "$ref": "#/$defs/migration" }
+      }
+    },
+    "human_gates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/code" }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[a-zA-Z0-9_./-]+\\.json$"
+    },
+    "code": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/code" }
+    },
+    "vector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "kind", "expected"],
+      "properties": {
+        "id": { "$ref": "#/$defs/code" },
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "enum": ["positive", "negative", "legacy_noncanonical"] },
+        "expected": { "enum": ["accept", "reject"] }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "legacy_profile", "required_steps", "cutover_gate", "rollback"],
+      "properties": {
+        "status": { "const": "adapter_required" },
+        "legacy_profile": { "$ref": "#/$defs/code" },
+        "required_steps": { "$ref": "#/$defs/rules" },
+        "cutover_gate": { "$ref": "#/$defs/rules" },
+        "rollback": { "$ref": "#/$defs/rules" }
+      }
+    }
+  }
+}

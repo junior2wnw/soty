@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufanovostroyka.ru/schemas/identity/v1/browser-login-profile.schema.json",
+  "title": "Canonical browser login profile v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "protocol",
+    "flow",
+    "response_type",
+    "pkce_method",
+    "client_kind",
+    "browser_session",
+    "browser_token_storage",
+    "custom_login_token_protocol",
+    "required_checks"
+  ],
+  "properties": {
+    "schema": { "const": "identity.browser-login-profile.v1" },
+    "protocol": { "const": "openid-connect-core-1.0" },
+    "flow": { "const": "authorization_code" },
+    "response_type": { "const": "code" },
+    "pkce_method": { "const": "S256" },
+    "client_kind": { "const": "confidential_bff" },
+    "browser_session": { "const": "server_side_secure_http_only_samesite_lax_cookie" },
+    "browser_token_storage": { "const": "forbidden" },
+    "custom_login_token_protocol": { "const": false },
+    "required_checks": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        { "const": "issuer" },
+        { "const": "audience" },
+        { "const": "signature" },
+        { "const": "expiration" },
+        { "const": "state" },
+        { "const": "nonce" }
+      ],
+      "items": false
+    }
+  }
+}

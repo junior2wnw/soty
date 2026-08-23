@@ -1,0 +1,20 @@
+{
+  "schema": "identity.workflow-exchange-record.v1",
+  "exchange_id": "xchg_01K2A0EXAMPLE",
+  "source_client_id": "ufanovostroyka",
+  "target_client_id": "mykosyk",
+  "target_origin": "https://mykosyk.ru",
+  "purpose": "account_link",
+  "state": "bI7pTW0F4v8Y7S9pN2qLxA",
+  "status": "issued",
+  "subject_id": "sub_01K2A0EXAMPLE",
+  "organization_id": "org_01K2A0EXAMPLE",
+  "resources": [
+    { "kind": "organization", "id": "org_01K2A0EXAMPLE" },
+    { "kind": "project", "id": "prj_01K2A0EXAMPLE" }
+  ],
+  "issued_at": "2026-08-12T10:00:00Z",
+  "expires_at": "2026-08-12T10:01:00Z",
+  "code_hash": "sha256:ea866a757e4c38babfa8127cbe9a409d3e1f93a00ff1488ff735fcf917afffd0",
+  "consumed_at": null
+}

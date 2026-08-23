@@ -1,0 +1,82 @@
+[
+  {
+    "schema": "identity.service-event.v1",
+    "event_id": "evt_subject_01K2A0",
+    "event_type": "identity.subject.changed.v1",
+    "issuer": "https://identity.example",
+    "audience": "ufanovostroyka",
+    "occurred_at": "2026-08-12T10:02:00Z",
+    "subject_id": "sub_01K2A0EXAMPLE",
+    "organization_id": null,
+    "aggregate_id": "sub_01K2A0EXAMPLE",
+    "revision": 1,
+    "previous_event_id": null,
+    "data": { "status": "active", "reason_code": "created" }
+  },
+  {
+    "schema": "identity.service-event.v1",
+    "event_id": "evt_membership_01K2A0",
+    "event_type": "identity.membership.changed.v1",
+    "issuer": "https://identity.example",
+    "audience": "ufanovostroyka",
+    "occurred_at": "2026-08-12T10:03:00Z",
+    "subject_id": "sub_01K2A0EXAMPLE",
+    "organization_id": "org_01K2A0EXAMPLE",
+    "aggregate_id": "mem_01K2A0EXAMPLE",
+    "revision": 1,
+    "previous_event_id": null,
+    "data": {
+      "membership_id": "mem_01K2A0EXAMPLE",
+      "status": "active",
+      "roles": ["feed_manager"],
+      "scopes": ["feed:connections:read", "feed:connections:write", "feed:runs:read"]
+    }
+  },
+  {
+    "schema": "identity.service-event.v1",
+    "event_id": "evt_project_01K2A0",
+    "event_type": "identity.project-access.changed.v1",
+    "issuer": "https://identity.example",
+    "audience": "ufanovostroyka",
+    "occurred_at": "2026-08-12T10:04:00Z",
+    "subject_id": "sub_01K2A0EXAMPLE",
+    "organization_id": "org_01K2A0EXAMPLE",
+    "aggregate_id": "prj_01K2A0EXAMPLE",
+    "revision": 1,
+    "previous_event_id": null,
+    "data": {
+      "project_id": "prj_01K2A0EXAMPLE",
+      "membership_id": "mem_01K2A0EXAMPLE",
+      "status": "active",
+      "scopes": ["analytics:read", "inventory:read"]
+    }
+  },
+  {
+    "schema": "identity.service-event.v1",
+    "event_id": "evt_unlink_01K2A0",
+    "event_type": "identity.subject.unlinked.v1",
+    "issuer": "https://identity.example",
+    "audience": "ufanovostroyka",
+    "occurred_at": "2026-08-12T10:05:00Z",
+    "subject_id": "sub_01K2A0EXAMPLE",
+    "organization_id": "org_01K2A0EXAMPLE",
+    "aggregate_id": "lnk_01K2A0EXAMPLE",
+    "revision": 1,
+    "previous_event_id": null,
+    "data": { "link_id": "lnk_01K2A0EXAMPLE", "status": "unlinked", "reason_code": "subject_request" }
+  },
+  {
+    "schema": "identity.service-event.v1",
+    "event_id": "evt_epoch_01K2A0",
+    "event_type": "identity.security-epoch.advanced.v1",
+    "issuer": "https://identity.example",
+    "audience": "ufanovostroyka",
+    "occurred_at": "2026-08-12T10:06:00Z",
+    "subject_id": "sub_01K2A0EXAMPLE",
+    "organization_id": null,
+    "aggregate_id": "sub_01K2A0EXAMPLE",
+    "revision": 1,
+    "previous_event_id": null,
+    "data": { "security_epoch": 2, "reason_code": "device_revoked" }
+  }
+]

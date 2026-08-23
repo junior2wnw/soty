@@ -8,6 +8,8 @@ COPY . .
 RUN pnpm run build
 RUN pnpm prune --prod
 
+FROM soty-traffic-gateway:26.7.11 AS traffic-core
+
 FROM node:24-trixie-slim
 WORKDIR /app
 ENV NODE_ENV=production
@@ -20,6 +22,8 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server ./server
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/contracts ./contracts
+COPY --from=traffic-core /usr/local/bin/xray /usr/local/bin/xray
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]

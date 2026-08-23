@@ -1,0 +1,114 @@
+{
+    "schema":  "soty.identity-wire-v1-vendor-pin.v1",
+    "canonical_wire_version":  1,
+    "upstream":  {
+                     "repository_path":  "D:\\уфановостройка",
+                     "contract_root":  ".",
+                     "future_package_coordinate":  null
+                 },
+    "synced_at":  "2026-08-12T01:02:50.926Z",
+    "synced_at_is_freshness_or_trust_claim":  false,
+    "digest_algorithm":  "sha256",
+    "upstream_manifest":  {
+                              "path":  "data/contracts/identity/v1/conformance-manifest.json",
+                              "sha256":  "5570120a7c5c1262f457625ef646c3652b1d6de323edb88926a8fa97d67ba786"
+                          },
+    "contract_file_count":  23,
+    "files":  [
+                  {
+                      "path":  "data/contracts/identity/v1/authorization-catalog.json",
+                      "sha256":  "be6f449b2803862c28277c83ae53fa9e6c905b30447b01a3a6308ebb71cfd545"
+                  },
+                  {
+                      "path":  "data/contracts/identity/v1/browser-login-profile.json",
+                      "sha256":  "2ee851e2d98791c46abde53db4442ebe65d160b4fe1881a6201c5315ef2afe9d"
+                  },
+                  {
+                      "path":  "data/contracts/identity/v1/conformance-manifest.json",
+                      "sha256":  "5570120a7c5c1262f457625ef646c3652b1d6de323edb88926a8fa97d67ba786"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/authorization-catalog.schema.json",
+                      "sha256":  "a4f8dfda625913a1b8ccf9a19f64037a068c14d3da3a37a6b5ba42cb957baf07"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/browser-login-profile.schema.json",
+                      "sha256":  "5389aa1a78cfe2295285b51d897e0812c323e0afc176dbf0e2b0a98f968aeaf8"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/conformance-manifest.schema.json",
+                      "sha256":  "16d8bf7e27ad68118e38a441e93bfe6a2ee406caedc7191979a1cf4502b24c9c"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/service-event-jws.schema.json",
+                      "sha256":  "b4ca0f1ad9fe2bbaa758ceab892b1df56ec0b043fe317954c8f516fa5ad9e353"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/service-event-payload.schema.json",
+                      "sha256":  "48a1c440f4d6bf5b3c1436f1b4f55afc24e0af770fc6350bc3a88f032915f1ee"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/service-event-protected-header.schema.json",
+                      "sha256":  "484385eebec23a1264f220fb039673dedf0ac486bc3b720a49008d0f4b627700"
+                  },
+                  {
+                      "path":  "schemas/identity/v1/workflow-exchange-record.schema.json",
+                      "sha256":  "47bc9ee84065be1f5eceeb0ffdcebcddb538d0e7b3b612d7bbdbb730edcf30f3"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/authority-model-negative.json",
+                      "sha256":  "7f579dc4bc1c3d6f38acfcd05c655c569a76f3649cab4762952539d71bedac9d"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/authorization-catalog-negative.json",
+                      "sha256":  "6d18e3ded36e7d75b852313801894ededce15dbcdafe2e959f593effd44b5448"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/browser-login-negative.json",
+                      "sha256":  "22168f2012d52addbb83b50e0f69911529204e1c1b9654436276c1f32f17743d"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/browser-login-positive.json",
+                      "sha256":  "2ee851e2d98791c46abde53db4442ebe65d160b4fe1881a6201c5315ef2afe9d"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/legacy-soty-es256-flat.json",
+                      "sha256":  "9f42cfaee7d0f94f24112a26dbb41de6a1da54b2f5a9a870bf783dd4a94c0963"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/legacy-tavysh-eddsa-nested.json",
+                      "sha256":  "8ed89a913790ca1f11a21676c4b4e0688141ebca902646a3646b938205493616"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/service-event-jws-positive.json",
+                      "sha256":  "4120b9b3fc730eb49b57c4e9c2dc7bba690e2cc7fb96cebfdc921faec67d9e95"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/service-event-negative.json",
+                      "sha256":  "3dadd6bac705fd9db1d24f568609b99894648d3ae9a2b329291e637a3f2157c0"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/service-event-payloads-positive.json",
+                      "sha256":  "cbde6ee7903f13aae34030c16281b0cbd8db82dd65da38cfd2a87185eebadf69"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/service-event-test-public-key.json",
+                      "sha256":  "7de4efcee7086c841aabfc5eb5c4fe748541667601de646d5b9958780ac351bd"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/workflow-exchange-negative.json",
+                      "sha256":  "4fac21c7fe74c276c18eb4f309b0304b5daaaebd267ab8028f2492741d3549a8"
+                  },
+                  {
+                      "path":  "tests/fixtures/identity-wire-v1/workflow-exchange-positive.json",
+                      "sha256":  "52393974e093d13e95a50c6a792b06d7ebc5eff4f335b0e8776e035c014bc65e"
+                  },
+                  {
+                      "path":  "tests/test_identity_wire_contract.py",
+                      "sha256":  "f37420635511ce127511cccdc135f0da29bca14b4751d90316a4b13e60e91f90"
+                  }
+              ],
+    "update_policy":  "explicit_reviewed_diff_only",
+    "auto_merge":  false
+}
+

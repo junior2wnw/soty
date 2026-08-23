@@ -1,0 +1,17 @@
+[
+  {
+    "id": "machine_can_decide_verification",
+    "scope_id": "verification:decide",
+    "patch": { "allowed_actor_types": ["human_session", "machine_client"] }
+  },
+  {
+    "id": "tenant_role_gets_platform_scope",
+    "role_id": "organization_owner",
+    "append_scope": "organization:suspend"
+  },
+  {
+    "id": "unknown_role_scope",
+    "role_id": "analyst",
+    "append_scope": "root:everything"
+  }
+]

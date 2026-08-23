@@ -1,0 +1,25 @@
+soty.pochinit.online {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:18182 {
+    transport http {
+      versions 1.1
+      keepalive 30s
+      read_timeout 75s
+      write_timeout 75s
+    }
+    flush_interval -1
+  }
+}
+
+xn--n1afe0b.online {
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:18182 {
+    transport http {
+      versions 1.1
+      keepalive 30s
+      read_timeout 75s
+      write_timeout 75s
+    }
+    flush_interval -1
+  }
+}

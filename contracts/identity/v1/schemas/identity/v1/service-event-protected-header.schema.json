@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufanovostroyka.ru/schemas/identity/v1/service-event-protected-header.schema.json",
+  "title": "Canonical service event protected JWS header v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["alg", "kid", "typ"],
+  "properties": {
+    "alg": { "const": "EdDSA" },
+    "kid": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^key_[A-Za-z0-9_-]{5,127}$"
+    },
+    "typ": { "const": "identity-service-event+jws" }
+  }
+}

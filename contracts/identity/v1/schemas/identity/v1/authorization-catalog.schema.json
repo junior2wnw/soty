@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufanovostroyka.ru/schemas/identity/v1/authorization-catalog.schema.json",
+  "title": "Canonical identity authorization catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "catalog_version", "scopes", "roles"],
+  "properties": {
+    "schema": { "const": "identity.authorization-catalog.v1" },
+    "catalog_version": { "const": 1 },
+    "scopes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/scope" }
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/role" }
+    }
+  },
+  "$defs": {
+    "scope_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)+$"
+    },
+    "role_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "boundary", "allowed_actor_types"],
+      "properties": {
+        "id": { "$ref": "#/$defs/scope_id" },
+        "boundary": { "enum": ["tenant", "platform"] },
+        "allowed_actor_types": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["human_session", "machine_client"] }
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "boundary", "scopes", "requires_human_session"],
+      "properties": {
+        "id": { "$ref": "#/$defs/role_id" },
+        "boundary": { "enum": ["tenant", "platform"] },
+        "scopes": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/scope_id" }
+        },
+        "requires_human_session": { "type": "boolean" }
+      }
+    }
+  }
+}

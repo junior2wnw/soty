@@ -10,6 +10,7 @@ backups/
 .DS_Store
 Thumbs.db
 .codex-run/
+.playwright-cli/
 .klava-canonical-skill.json
 install-op-cases/
 /soty-export-after-reinstall.json
@@ -26,3 +27,6 @@ scripts/learning-outbox.jsonl
 scripts/learning-sent.jsonl
 scripts/sotyctl.cmd
 scripts/sotyctl.ps1
+/deploy/traffic/server.json
+/deploy/traffic/traffic-exit-pool.json
+/deploy/traffic/*.test.json

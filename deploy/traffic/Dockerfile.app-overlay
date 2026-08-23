@@ -1,0 +1,17 @@
+ARG BASE_IMAGE=soty-online-chat:traffic-final-20260712
+FROM ${BASE_IMAGE}
+COPY connector-api.js /app/server/connector-api.js
+COPY connector-store.js /app/server/connector-store.js
+COPY traffic-control.js /app/server/traffic-control.js
+COPY traffic-tunnel-proxy.js /app/server/traffic-tunnel-proxy.js
+COPY http-app.js /app/server/http-app.js
+COPY index.js /app/server/index.js
+COPY soty-connector.mjs /app/public/agent/soty-connector.mjs
+COPY soty-agent.mjs /app/public/agent/soty-agent.mjs
+COPY manifest.json /app/public/agent/manifest.json
+COPY install-windows-machine.cmd /app/public/agent/install-windows-machine.cmd
+COPY soty-connector.mjs /app/dist/agent/soty-connector.mjs
+COPY soty-agent.mjs /app/dist/agent/soty-agent.mjs
+COPY manifest.json /app/dist/agent/manifest.json
+COPY install-windows-machine.cmd /app/dist/agent/install-windows-machine.cmd
+

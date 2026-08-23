@@ -1,550 +1,134 @@
 {
-  "version": "0.4.143",
-  "schema": "soty.agent.release.v2",
-  "architecture": "gonka-direct-chat-completions+computer-tools+memory-plane",
-  "agentUrl": "/agent/soty-agent.mjs",
-  "sha256": "aa7144e400f340edbb99173c96435563f54610ee539b12368f67332ef2c1a9f3",
-  "openAiToolPlane": {
-    "schema": "openai.responses-tools+mcp.v1",
-    "centralResolver": "gonka-direct-chat-completions",
-    "builtInTools": [
-      "web_search",
-      "image_generation",
-      "computer_use_preview",
-      "code_interpreter",
-      "shell",
-      "apply_patch"
+  "schema": "soty.connector.release.v1",
+  "version": "1.2.8",
+  "architecture": "durable-jobs+opencode+server-gonka-proxy",
+  "connectorUrl": "/agent/soty-connector.mjs",
+  "agentUrl": "/agent/soty-connector.mjs",
+  "compatibilityUrl": "/agent/soty-agent.mjs",
+  "sha256": "5e7c350a4c2f6a851b1eea890b403f369076e94e42378bc91bfa65248309a51c",
+  "protocol": {
+    "schema": "soty.connector-job.v2",
+    "entities": [
+      "device",
+      "link",
+      "thread",
+      "job"
     ],
-    "codexCliFeatureFlags": [],
-    "webSearch": "native web_search when available; otherwise computer.operation=web on the selected computer",
-    "mcp": {
-      "server": "soty",
-      "entryTool": "computer",
-      "publicTools": [
-        "computer"
-      ],
-      "legacyAliasesHidden": true
+    "delivery": "lease+retry",
+    "events": "ordered+resumable",
+    "cancellation": "cooperative+process-tree",
+    "authentication": "per-installation-bearer-token"
+  },
+  "agent": {
+    "id": "opencode",
+    "provider": "gonka",
+    "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "modelLimits": {
+      "context": 380000,
+      "output": 8192
     },
-    "providerAdapter": {
-      "role": "direct-agent-transport",
-      "syntheticToolCallsDefault": false,
-      "directComputerRecoveryDefault": false,
-      "directAgentDefault": true,
-      "codexCliBypassedDefault": true
-    },
-    "rule": "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
-  },
-  "memoryPlane": {
-    "schema": "soty.memory-plane.v1",
-    "controller": "soty.memctl.v1",
-    "backend": "append-only-jsonl",
-    "querySchema": "soty.memory.query.v2",
-    "reportSchema": "soty.memory.report.v2",
-    "routeProfileSchema": "soty.route-profiles.v1",
-    "healthUrl": "/api/agent/memory/health",
-    "queryUrl": "/api/agent/memory/query",
-    "receiptsUrl": "/api/agent/memory/receipts",
-    "reportUrl": "/api/agent/memory/report"
-  },
-  "computerUsePlane": {
-    "schema": "soty.computer-use-plane.v1",
-    "entryTool": "computer",
-    "legacyEntrypoint": "soty_computer",
-    "mcpTools": [
-      "computer"
-    ],
-    "standardTools": [
-      "computer"
-    ],
-    "openAiBuiltInTools": [
-      "web_search",
-      "image_generation",
-      "computer_use_preview",
-      "code_interpreter",
-      "shell",
-      "apply_patch"
-    ],
-    "model": "discover+invoke+durable-jobs+artifacts+source-proof",
-    "imagePipeline": "openai.image_generation+computer.artifact-save-apply-verify",
-    "agentRuntimeSchema": "trustlink.agent-runtime.v1",
-    "routeProfileSchema": "soty.route-profiles.v1",
-    "capabilities": [
-      "discover",
-      "status",
-      "shell",
-      "script",
-      "durable-action",
-      "turnkey-monitoring",
-      "filesystem",
-      "soty-room-file-download",
-      "artifact",
-      "web",
-      "network",
-      "traffic",
-      "process",
-      "clipboard",
-      "browser",
-      "desktop",
-      "screen",
-      "keyboard",
-      "mouse",
-      "wallpaper",
-      "audio",
-      "app",
-      "api",
-      "transaction",
-      "generated-asset-save-apply-verify",
-      "managed-windows-reinstall"
-    ]
-  },
-  "agentRuntime": {
-    "schema": "trustlink.agent-runtime.v1",
-    "runtimeId": "soty-agent",
-    "entrypoint": "computer",
-    "capabilities": [
-      {
-        "family": "console",
-        "actions": [
-          "run",
-          "script",
-          "terminal"
-        ],
-        "risk": "medium",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "filesystem",
-        "actions": [
-          "read",
-          "write",
-          "copy",
-          "move",
-          "delete"
-        ],
-        "risk": "high",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "process",
-        "actions": [
-          "list",
-          "start",
-          "stop"
-        ],
-        "risk": "medium",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "service",
-        "actions": [
-          "status",
-          "start",
-          "stop",
-          "restart"
-        ],
-        "risk": "high",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "package",
-        "actions": [
-          "list",
-          "install",
-          "remove",
-          "upgrade"
-        ],
-        "risk": "high",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "browser",
-        "actions": [
-          "open",
-          "inspect",
-          "click",
-          "type",
-          "download",
-          "submit"
-        ],
-        "risk": "high",
-        "proof": [
-          "target",
-          "stateBefore",
-          "stateAfter",
-          "result"
-        ]
-      },
-      {
-        "family": "desktop",
-        "actions": [
-          "screenshot",
-          "focus",
-          "click",
-          "type"
-        ],
-        "risk": "high",
-        "proof": [
-          "target",
-          "stateBefore",
-          "stateAfter",
-          "result"
-        ]
-      },
-      {
-        "family": "screen",
-        "actions": [
-          "capture"
-        ],
-        "risk": "low",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "keyboard",
-        "actions": [
-          "send"
-        ],
-        "risk": "high",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "mouse",
-        "actions": [
-          "move",
-          "click"
-        ],
-        "risk": "high",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "clipboard",
-        "actions": [
-          "read",
-          "write"
-        ],
-        "risk": "medium",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "network",
-        "actions": [
-          "status",
-          "probe"
-        ],
-        "risk": "low",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "traffic",
-        "actions": [
-          "status",
-          "share",
-          "use",
-          "stop"
-        ],
-        "risk": "high",
-        "requiresConfirmation": true,
-        "proof": [
-          "grant",
-          "mode",
-          "target",
-          "status"
-        ]
-      },
-      {
-        "family": "app",
-        "actions": [
-          "discover",
-          "launch",
-          "focus",
-          "connect",
-          "read",
-          "write",
-          "submit"
-        ],
-        "risk": "high",
-        "proof": [
-          "target",
-          "stateBefore",
-          "stateAfter",
-          "result"
-        ]
-      },
-      {
-        "family": "api",
-        "actions": [
-          "get",
-          "post",
-          "put",
-          "delete",
-          "submit"
-        ],
-        "risk": "high",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "job",
-        "actions": [
-          "start",
-          "status",
-          "stop"
-        ],
-        "risk": "medium",
-        "proof": [
-          "jobId",
-          "status",
-          "resultPath"
-        ]
-      },
-      {
-        "family": "artifact",
-        "actions": [
-          "push",
-          "pull",
-          "verify"
-        ],
-        "risk": "medium",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "audio",
-        "actions": [
-          "status",
-          "set"
-        ],
-        "risk": "medium",
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "os",
-        "actions": [
-          "status",
-          "repair",
-          "reinstall",
-          "reset"
-        ],
-        "risk": "critical",
-        "requiresConfirmation": true,
-        "proof": [
-          "status",
-          "result"
-        ]
-      },
-      {
-        "family": "transaction",
-        "actions": [
-          "prepare",
-          "preview",
-          "submit",
-          "cancel"
-        ],
-        "risk": "critical",
-        "requiresConfirmation": true,
-        "proof": [
-          "preparedActionId",
-          "visiblePreview",
-          "confirmation",
-          "result"
-        ]
-      },
-      {
-        "family": "device",
-        "actions": [
-          "status",
-          "reboot",
-          "poweroff"
-        ],
-        "risk": "critical",
-        "requiresConfirmation": true,
-        "proof": [
-          "status",
-          "result"
-        ]
-      }
-    ],
-    "terminalStates": [
-      "completed",
-      "failed",
-      "blocked",
-      "waiting-confirmation",
-      "running"
-    ],
-    "jobModel": "durable-jobs",
-    "proofModel": "structured-proof",
-    "adapterModel": "capability-adapters"
-  },
-  "routeProfiles": {
-    "schema": "soty.route-profiles.v1",
-    "model": "memory-derived-route-profile+first-class-capability",
-    "promotionPolicy": {
-      "candidateAfter": "one proofed run",
-      "provenAfter": "two compatible successful runs without newer conflicting failure",
-      "promotedInto": "manifest-pinned capability, proof checks, eval/selftest"
-    },
-    "profiles": [
-      {
-        "id": "soty.os.reinstall.v1",
-        "family": "windows-reinstall",
-        "title": "Windows reinstall capability profile",
-        "entryTool": "computer",
-        "capability": "os-reinstall",
-        "legacyTool": "soty_reinstall",
-        "defaultOperation": "reinstall",
-        "defaultAction": "prepare",
-        "context": "windows-machine-worker",
-        "phases": [
-          "preflight",
-          "prepare",
-          "status",
-          "repair",
-          "cancel",
-          "arm"
-        ],
-        "route": [
-          "prove selected source device and machine/system worker",
-          "resume stale prepare state before starting managed prepare",
-          "run repair/status when the user reports a broken or interrupted reinstall workflow",
-          "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
-          "start managed prepare once with stable idempotency",
-          "download Windows media with the guarded parallel/resumable route on the selected PC",
-          "prove backup, install media, unattended account, Autounattend, postinstall",
-          "ask final reinstall confirmation only after proof is complete",
-          "arm reinstall and stop probing while reboot return path is expected"
-        ],
-        "doNot": [
-          "do not ask the user to manually download ISO when the source computer is attached",
-          "do not open Microsoft download pages as the normal route",
-          "do not replace the managed downloader with ad-hoc browser automation",
-          "do not start a second prepare while one is active",
-          "do not treat stale orphaned prepare jobs as active blockers",
-          "do not answer reinstall failure reports from memory without fresh repair/status proof"
-        ],
-        "proof": [
-          "machineWorker",
-          "scriptSha256",
-          "mediaSha256",
-          "backupProof",
-          "installMedia",
-          "autounattend",
-          "setupcomplete",
-          "repairProof",
-          "cancelProof",
-          "postArmReturnPath"
-        ],
-        "scripts": [
-          {
-            "name": "managed",
-            "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
-            "bytes": 53772
-          },
-          {
-            "name": "prepare",
-            "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
-            "bytes": 96345
-          },
-          {
-            "name": "arm",
-            "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
-            "bytes": 8194
-          },
-          {
-            "name": "makeFastUsb",
-            "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
-            "bytes": 14537
-          }
-        ],
-        "learning": {
-          "reuseKey": "soty.os.reinstall.v1",
-          "scriptUse": "prepare/status/repair/cancel/arm",
-          "successCriteria": "backupProof+installMedia+unattend+postinstall",
-          "contextFingerprint": "windows-machine-worker",
-          "receipt": "append-only sanitized route proof"
-        }
-      },
-      {
-        "id": "soty.artifact.wallpaper.v1",
-        "family": "generated-image-wallpaper",
-        "title": "Native image generation to source-device wallpaper",
-        "entryTool": "computer",
-        "capability": "generated-asset-save-apply-verify",
-        "defaultOperation": "artifact",
-        "defaultAction": "wallpaper",
-        "context": "codex-generated-image+source-user-desktop",
-        "phases": [
-          "generate-native",
-          "artifact",
-          "wallpaper",
-          "verify"
-        ],
-        "route": [
-          "generate the image with native OpenAI image_gen/image_generation",
-          "use the exact generated artifact path when the native image tool exposes one",
-          "send the exact bytes with computer operation=artifact using an explicit localPath and targetPath",
-          "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
-          "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
-        ],
-        "doNot": [
-          "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
-          "do not ask for OPENAI_API_KEY on the source device",
-          "do not replace the generated artifact with a stock/public image",
-          "do not check desktop/display before native generation just to choose size"
-        ],
-        "proof": [
-          "localPath",
-          "targetPath",
-          "artifactSha256",
-          "bytes",
-          "wallpaperPath",
-          "currentWallpaper",
-          "display"
-        ],
-        "learning": {
-          "reuseKey": "soty.artifact.wallpaper.v1",
-          "scriptUse": "image_gen/artifact/wallpaper/verify",
-          "successCriteria": "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
-          "contextFingerprint": "codex-generated-image+source-user-desktop",
-          "receipt": "append-only sanitized route proof"
+    "transport": "authenticated-server-proxy",
+    "endpoint": "/api/connectors/gonka/v1/chat/completions",
+    "runtime": {
+      "schema": "soty.opencode.release.v1",
+      "name": "OpenCode",
+      "version": "1.18.15",
+      "source": "https://github.com/anomalyco/opencode",
+      "license": "MIT",
+      "platforms": {
+        "win32-x64": {
+          "asset": "opencode-windows-x64-baseline.zip",
+          "sha256": "98df4ed9993406e190b9a4c937aea98d733bb047c47e93c9f0c2f90ab90c2982",
+          "executable": "opencode.exe",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-windows-x64-baseline.zip"
+        },
+        "win32-arm64": {
+          "asset": "opencode-windows-arm64.zip",
+          "sha256": "7815f7a980fc4273e3fc1ada5a51e9dff17e62f5a119ab769b44e06b50c1d9da",
+          "executable": "opencode.exe",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-windows-arm64.zip"
+        },
+        "linux-x64": {
+          "asset": "opencode-linux-x64-baseline.tar.gz",
+          "sha256": "caab046d311f29d80085979b168995f32cd052ffb7bcffe067b14cd9679d2e38",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-x64-baseline.tar.gz"
+        },
+        "linux-x64-musl": {
+          "asset": "opencode-linux-x64-baseline-musl.tar.gz",
+          "sha256": "73ae90210eb93192b64d8409b9ea70fb151b7a73ac5f49739e170066a253b88f",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-x64-baseline-musl.tar.gz"
+        },
+        "linux-arm64": {
+          "asset": "opencode-linux-arm64.tar.gz",
+          "sha256": "500611819ff88916b185649990505a9be76ad13ca5bb4b9323e5abdd39b1c6fb",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-arm64.tar.gz"
+        },
+        "linux-arm64-musl": {
+          "asset": "opencode-linux-arm64-musl.tar.gz",
+          "sha256": "134d46c15c184ed9d5fce7c93423b4040dcdc8547f23fc425e6a7b51e166e18a",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-linux-arm64-musl.tar.gz"
+        },
+        "darwin-x64": {
+          "asset": "opencode-darwin-x64-baseline.zip",
+          "sha256": "234e67a90a16a8fa670131b097dfb72aabc4a2cc863a7be459be0215deb18a3f",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-darwin-x64-baseline.zip"
+        },
+        "darwin-arm64": {
+          "asset": "opencode-darwin-arm64.zip",
+          "sha256": "bd60b57cb9fe0494a5352c807424d36d6d7853cf6dbddb97065c7ccd3c5d391c",
+          "executable": "opencode",
+          "url": "https://github.com/anomalyco/opencode/releases/download/v1.18.15/opencode-darwin-arm64.zip"
         }
       }
-    ]
+    }
+  },
+  "trafficCore": {
+    "schema": "soty.traffic-core.release.v1",
+    "engine": "xray-core",
+    "version": "26.7.11",
+    "platforms": {
+      "win32-x64": {
+        "url": "/agent/core/xray-windows-x64-26.7.11.zip",
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-windows-64.zip",
+        "sha256": "af801b62c4d41d248d3db8016d4c6e2a7ccfb7ed443e3738aeb6f9e062321512",
+        "executable": "xray.exe"
+      },
+      "linux-x64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-linux-64.zip",
+        "sha256": "aa11c3685c71da0ffc71e511db50404609e7e963bb914b048f59a6a00af8930e",
+        "executable": "xray"
+      },
+      "linux-arm64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-linux-arm64-v8a.zip",
+        "sha256": "89cfe01674d7c9f6847b7dd9389537be9acb3b9dc3c6cb9fdeba87a3e4e57fc1",
+        "executable": "xray"
+      },
+      "darwin-x64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-64.zip",
+        "sha256": "d8c116756d3a88a38a833a94bdf8bc801f69243ee888befcb56df8b4f1ec4878",
+        "executable": "xray"
+      },
+      "darwin-arm64": {
+        "officialUrl": "https://github.com/XTLS/Xray-core/releases/download/v26.7.11/Xray-macos-arm64-v8a.zip",
+        "sha256": "61f8f74d099098af710fa43613d9934d97b901dee909801d34f496cd463956d1",
+        "executable": "xray"
+      }
+    }
+  },
+  "spreadexMl": {
+    "schema": "soty.spreadex-ml.release.v1",
+    "available": false,
+    "reason": "platform-worker-not-published",
+    "featureSchema": "spreadex.ml.features.v1",
+    "signatureRequired": true,
+    "signatureAlgorithm": "Ed25519",
+    "publicKeyId": "spreadex-ml-release-v1",
+    "platforms": {}
   },
   "windowsReinstall": {
     "scriptsBaseUrl": "/agent/windows-reinstall/",
@@ -574,387 +158,5 @@
         "bytes": 14537
       }
     ]
-  },
-  "automationToolkits": {
-    "schema": "soty.automation-toolkits.v2",
-    "architecture": "gonka-direct-chat-completions+computer-use-plane",
-    "policy": {
-      "centralResolver": "gonka-direct-chat-completions",
-      "entrypoint": "computer",
-      "legacyEntrypoint": "soty_computer",
-      "route": "computer-use-plane-with-memory-hints",
-      "jobKernel": "durable-jobs",
-      "routeProfiles": "soty.route-profiles.v1",
-      "agentRuntime": "trustlink.agent-runtime.v1",
-      "chat": "agent-sysadmin",
-      "responseStyle": {
-        "schema": "soty.response-style.v1",
-        "id": "agent-sysadmin",
-        "displayName": "Агент",
-        "base": "agent",
-        "tone": "brief-sysadmin",
-        "maxUserFacingLines": 0,
-        "phraseBank": []
-      },
-      "openAiToolPlane": {
-        "schema": "openai.responses-tools+mcp.v1",
-        "centralResolver": "gonka-direct-chat-completions",
-        "builtInTools": [
-          "web_search",
-          "image_generation",
-          "computer_use_preview",
-          "code_interpreter",
-          "shell",
-          "apply_patch"
-        ],
-        "codexCliFeatureFlags": [],
-        "webSearch": "native web_search when available; otherwise computer.operation=web on the selected computer",
-        "mcp": {
-          "server": "soty",
-          "entryTool": "computer",
-          "publicTools": [
-            "computer"
-          ],
-          "legacyAliasesHidden": true
-        },
-        "providerAdapter": {
-          "role": "direct-agent-transport",
-          "syntheticToolCallsDefault": false,
-          "directComputerRecoveryDefault": false,
-          "directAgentDefault": true,
-          "codexCliBypassedDefault": true
-        },
-        "rule": "do not reimplement or shadow OpenAI built-in tools as Soty MCP tools"
-      },
-      "diagnostics": {
-        "trace": "soty.agent.trace.v1",
-        "eval": "soty-agent-eval"
-      },
-      "terminalStates": [
-        "completed",
-        "failed",
-        "blocked-needs-user",
-        "waiting-confirmation"
-      ]
-    },
-    "toolkits": [
-      {
-        "name": "agent-runtime",
-        "entryTool": "computer",
-        "kind": "runtime-contract",
-        "phases": [
-          "discover",
-          "invoke",
-          "prepare",
-          "confirm",
-          "status",
-          "stop",
-          "learn"
-        ],
-        "proof": [
-          "capability",
-          "risk",
-          "confirmation",
-          "jobId",
-          "result",
-          "proof"
-        ],
-        "schema": "trustlink.agent-runtime.v1",
-        "capabilities": [
-          "console",
-          "filesystem",
-          "process",
-          "service",
-          "package",
-          "browser",
-          "desktop",
-          "screen",
-          "keyboard",
-          "mouse",
-          "clipboard",
-          "network",
-          "traffic",
-          "app",
-          "api",
-          "job",
-          "artifact",
-          "audio",
-          "os",
-          "transaction",
-          "device"
-        ]
-      },
-      {
-        "name": "computer-use-plane",
-        "entryTool": "computer",
-        "kind": "front-door",
-        "phases": [
-          "discover",
-          "route_profiles",
-          "status",
-          "invoke",
-          "jobs",
-          "job_status",
-          "wait",
-          "job_stop"
-        ],
-        "proof": [
-          "sourceDeviceId",
-          "jobId",
-          "statusPath",
-          "resultPath",
-          "exitCode",
-          "artifactSha256"
-        ],
-        "promotion": "Soty MCP computer-use capability for Server Codex; OpenAI built-in tools stay native and are not reimplemented as Soty tools.",
-        "routeProfiles": [
-          "soty.os.reinstall.v1",
-          "soty.artifact.wallpaper.v1"
-        ]
-      },
-      {
-        "name": "capability-gateway",
-        "entryTool": "computer",
-        "kind": "legacy-alias",
-        "phases": [
-          "describe",
-          "start",
-          "status",
-          "stop",
-          "list",
-          "reinstall"
-        ],
-        "proof": [
-          "toolkit",
-          "phase",
-          "jobId",
-          "statusPath",
-          "resultPath",
-          "proof"
-        ],
-        "promotion": "Thin, proofed computer-control plane for Server Codex."
-      },
-      {
-        "name": "durable-action",
-        "entryTool": "jobs",
-        "kind": "generic-kernel",
-        "phases": [
-          "start",
-          "status",
-          "wait",
-          "stop"
-        ],
-        "proof": [
-          "jobId",
-          "statusPath",
-          "resultPath",
-          "proof"
-        ],
-        "promotion": "Durable supervised execution for long or repeatable jobs."
-      },
-      {
-        "name": "generated-asset",
-        "entryTool": "computer",
-        "kind": "managed-toolkit",
-        "phases": [
-          "image_gen",
-          "artifact",
-          "wallpaper",
-          "verify"
-        ],
-        "proof": [
-          "localPath",
-          "targetPath",
-          "artifactSha256",
-          "bytes",
-          "wallpaperPath",
-          "currentWallpaper",
-          "display"
-        ],
-        "routeProfile": "soty.artifact.wallpaper.v1",
-        "promotion": "Native OpenAI image generation with Soty artifact transfer and source desktop wallpaper proof."
-      },
-      {
-        "name": "windows-reinstall",
-        "entryTool": "computer",
-        "kind": "managed-toolkit",
-        "phases": [
-          "preflight",
-          "prepare",
-          "status",
-          "repair",
-          "cancel",
-          "arm"
-        ],
-        "scriptSet": "windowsReinstall",
-        "scripts": [
-          {
-            "name": "managed",
-            "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
-            "bytes": 53772
-          },
-          {
-            "name": "prepare",
-            "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
-            "bytes": 96345
-          },
-          {
-            "name": "arm",
-            "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
-            "bytes": 8194
-          },
-          {
-            "name": "makeFastUsb",
-            "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
-            "bytes": 14537
-          }
-        ],
-        "proof": [
-          "backupProof",
-          "installMedia",
-          "unattend",
-          "postinstall",
-          "repairProof",
-          "cancelProof",
-          "rebooting"
-        ],
-        "routeProfile": "soty.os.reinstall.v1"
-      }
-    ],
-    "routeProfiles": {
-      "schema": "soty.route-profiles.v1",
-      "model": "memory-derived-route-profile+first-class-capability",
-      "promotionPolicy": {
-        "candidateAfter": "one proofed run",
-        "provenAfter": "two compatible successful runs without newer conflicting failure",
-        "promotedInto": "manifest-pinned capability, proof checks, eval/selftest"
-      },
-      "profiles": [
-        {
-          "id": "soty.os.reinstall.v1",
-          "family": "windows-reinstall",
-          "title": "Windows reinstall capability profile",
-          "entryTool": "computer",
-          "capability": "os-reinstall",
-          "legacyTool": "soty_reinstall",
-          "defaultOperation": "reinstall",
-          "defaultAction": "prepare",
-          "context": "windows-machine-worker",
-          "phases": [
-            "preflight",
-            "prepare",
-            "status",
-            "repair",
-            "cancel",
-            "arm"
-          ],
-          "route": [
-            "prove selected source device and machine/system worker",
-            "resume stale prepare state before starting managed prepare",
-            "run repair/status when the user reports a broken or interrupted reinstall workflow",
-            "ask clean vs keep-files and require explicit USB-use consent before a new prepare",
-            "start managed prepare once with stable idempotency",
-            "download Windows media with the guarded parallel/resumable route on the selected PC",
-            "prove backup, install media, unattended account, Autounattend, postinstall",
-            "ask final reinstall confirmation only after proof is complete",
-            "arm reinstall and stop probing while reboot return path is expected"
-          ],
-          "doNot": [
-            "do not ask the user to manually download ISO when the source computer is attached",
-            "do not open Microsoft download pages as the normal route",
-            "do not replace the managed downloader with ad-hoc browser automation",
-            "do not start a second prepare while one is active",
-            "do not treat stale orphaned prepare jobs as active blockers",
-            "do not answer reinstall failure reports from memory without fresh repair/status proof"
-          ],
-          "proof": [
-            "machineWorker",
-            "scriptSha256",
-            "mediaSha256",
-            "backupProof",
-            "installMedia",
-            "autounattend",
-            "setupcomplete",
-            "repairProof",
-            "cancelProof",
-            "postArmReturnPath"
-          ],
-          "scripts": [
-            {
-              "name": "managed",
-              "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
-              "bytes": 53772
-            },
-            {
-              "name": "prepare",
-              "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
-              "bytes": 96345
-            },
-            {
-              "name": "arm",
-              "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
-              "bytes": 8194
-            },
-            {
-              "name": "makeFastUsb",
-              "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
-              "bytes": 14537
-            }
-          ],
-          "learning": {
-            "reuseKey": "soty.os.reinstall.v1",
-            "scriptUse": "prepare/status/repair/cancel/arm",
-            "successCriteria": "backupProof+installMedia+unattend+postinstall",
-            "contextFingerprint": "windows-machine-worker",
-            "receipt": "append-only sanitized route proof"
-          }
-        },
-        {
-          "id": "soty.artifact.wallpaper.v1",
-          "family": "generated-image-wallpaper",
-          "title": "Native image generation to source-device wallpaper",
-          "entryTool": "computer",
-          "capability": "generated-asset-save-apply-verify",
-          "defaultOperation": "artifact",
-          "defaultAction": "wallpaper",
-          "context": "codex-generated-image+source-user-desktop",
-          "phases": [
-            "generate-native",
-            "artifact",
-            "wallpaper",
-            "verify"
-          ],
-          "route": [
-            "generate the image with native OpenAI image_gen/image_generation",
-            "use the exact generated artifact path when the native image tool exposes one",
-            "send the exact bytes with computer operation=artifact using an explicit localPath and targetPath",
-            "apply with computer operation=wallpaper or desktop action=wallpaper using the saved source-device path",
-            "verify with source-device proof: ok=true, the current wallpaper path equals the requested source-device path, and file SHA-256/bytes"
-          ],
-          "doNot": [
-            "do not use curl, wget, public upload hosts, temporary HTTP servers, or pasted base64 for generated images",
-            "do not ask for OPENAI_API_KEY on the source device",
-            "do not replace the generated artifact with a stock/public image",
-            "do not check desktop/display before native generation just to choose size"
-          ],
-          "proof": [
-            "localPath",
-            "targetPath",
-            "artifactSha256",
-            "bytes",
-            "wallpaperPath",
-            "currentWallpaper",
-            "display"
-          ],
-          "learning": {
-            "reuseKey": "soty.artifact.wallpaper.v1",
-            "scriptUse": "image_gen/artifact/wallpaper/verify",
-            "successCriteria": "nativeGeneratedArtifact+sourceSavedBytes+wallpaperApplied+sourceProof",
-            "contextFingerprint": "codex-generated-image+source-user-desktop",
-            "receipt": "append-only sanitized route proof"
-          }
-        }
-      ]
-    }
   }
 }

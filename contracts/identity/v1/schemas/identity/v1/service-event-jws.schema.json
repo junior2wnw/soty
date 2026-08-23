@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufanovostroyka.ru/schemas/identity/v1/service-event-jws.schema.json",
+  "title": "Canonical flattened JWS service event envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protected", "payload", "signature"],
+  "properties": {
+    "protected": { "$ref": "#/$defs/base64url" },
+    "payload": { "$ref": "#/$defs/base64url" },
+    "signature": {
+      "type": "string",
+      "minLength": 86,
+      "maxLength": 86,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  },
+  "$defs": {
+    "base64url": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 32768,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}

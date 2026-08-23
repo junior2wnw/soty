@@ -4,8 +4,8 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, downloadAgentInstallerForDevice, grantAgentSourceAccess, hasAgentRelayId, loadPendingAgentRelayReplies, resumeAgentRelayReply } from "./features/agent";
-import type { LocalAgentDeviceNetwork, LocalAgentOperatorTarget, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/agent";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, clearSpreadExPairCodeFromUrl, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, pairLocalSpreadEx, resumeAgentRelayReply, runConnectorJob, spreadExPairCodeFromUrl } from "./features/connector";
+import type { LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/connector";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { accountTransferButtonWidth, accountTransferChoices, accountTransferOperation, accountTransferSchema, createAccountTransferPayload, importDeviceFromAccountTransferPayload, isAccountTransferPayload, loadAccountPhraseBackup, phraseRecommendedWords, saveAccountPhraseBackup, validateAccountPhrase } from "./features/account-transfer";
@@ -13,6 +13,8 @@ import type { AccountTransferOperation, AccountTransferRootAction, AccountTransf
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { capabilitiesAllowTraffic, clearTrafficState, loadTrafficAccess, loadTrafficShare, setTrafficAccess, setTrafficShare, trafficGrantCapabilities, trafficModeFromCapabilities } from "./features/traffic";
+import { adoptTrafficProfileFromUrl, provisionTraffic, provisionTrafficClient, readTrafficProfile, revokeTrafficClient, saveTrafficProfile, stopTraffic, trafficFabricStatus, trafficInterfaces, trafficProfileInviteUrl, trafficServerStatus } from "./features/traffic-fabric";
+import type { TrafficClient, TrafficExit, TrafficInterface, TrafficRuntime } from "./features/traffic-fabric";
 import { openCounterpartyMenu } from "./ui/context-menu";
 import { renderHexField } from "./ui/hex-field";
 import { installTooltips } from "./ui/tooltips";
@@ -201,6 +203,9 @@ let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
 let trafficShare = loadTrafficShare();
 let trafficAccess = loadTrafficAccess();
+let trafficProfileWasAdopted = false;
+let trafficModal: HTMLDivElement | null = null;
+let trafficLastProfile = "";
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
 const terminalState = new Map<string, "idle" | "run" | "ok" | "bad" | "off">();
@@ -289,21 +294,21 @@ const quickActions: readonly QuickAction[] = [
   },
   {
     id: "agent-repair",
-    title: "Починить агент",
+    title: "Починить Soty Agent",
     label: "Агент",
-    summary: "Проверить установку, обновление, автозапуск и связь агента.",
+    summary: "Проверить OpenCode, Gonka AI, обновление, автозапуск и связь Soty Agent.",
     tags: ["агент", "установить", "обновить", "починить", "bridge", "relay"],
     agentCard: {
       intent: "Repair or update the Soty agent on the current/named device with proof.",
       targetPolicy: "Prefer the current device context; for linked devices use only explicit current dialog target or named target.",
       firstMoves: [
-        "Check agent health/version/autostart before reinstalling.",
+        "Check Soty Agent, OpenCode, Gonka AI, version, and autostart before reinstalling.",
         "Use the official Soty installer/update path.",
         "Verify local health and relay/source status after changes."
       ],
       confirmBefore: ["privileged install/update prompts", "stopping user-visible active work"],
-      successProof: ["agent version", "health endpoint or relay status", "source worker/machine link readiness when relevant"],
-      avoid: ["installing duplicate agents", "masking PATH/runtime issues as missing Codex", "leaving the user without a clear next action"]
+      successProof: ["runtime and OpenCode versions", "Gonka provider readiness", "health endpoint or server status"],
+      avoid: ["installing duplicate agents", "replacing OpenCode with a local decision engine", "leaving the user without a clear next action"]
     }
   },
   {
@@ -345,13 +350,14 @@ let agentReleaseCheckedAt = 0;
 let agentButtonProbe: Promise<AgentButtonMode> | null = null;
 let agentButtonWatchTimer = 0;
 let agentButtonWatchFastUntil = 0;
+let agentButtonConsecutiveProbeFailures = 0;
 const agentButtonWatchFastMs = 2_000;
 const agentButtonWatchNormalMs = 8_000;
 const agentButtonWatchLinkMs = 20_000;
 const agentButtonWatchHiddenMs = 60_000;
 const agentButtonInstallWatchMs = 10 * 60_000;
-let agentSourceGrantRefreshAt = 0;
-const agentSourceGrantRefreshMs = 30_000;
+const agentButtonProbeTimeoutMs = 3_000;
+const agentButtonMaxTransientFailures = 3;
 type WriterLine = {
   readonly nick: string;
   readonly deviceId: string;
@@ -421,26 +427,8 @@ let qrResetClicks = 0;
 let qrResetTimer = 0;
 let qrScanStream: MediaStream | null = null;
 let qrScanFrame = 0;
-let operatorSocket: WebSocket | null = null;
-let operatorReconnectTimer = 0;
-let operatorBridgeAllowEmpty = false;
-const operatorPending = new Map<string, string>();
-let operatorBridgeEpoch = 0;
 let terminalCollapsed = loadTerminalCollapsed();
-type OperatorRemoteRun = {
-  readonly commandId: string;
-  readonly tunnelId: string;
-  readonly hostDeviceId: string;
-  readonly startedAt: number;
-  readonly timeoutMs: number;
-  readonly kind: "run" | "script";
-  readonly label: string;
-};
-const operatorRemoteRuns = new Map<string, OperatorRemoteRun>();
-const operatorRemoteRunTimers = new Map<string, number>();
-const operatorStartingTunnels = new Set<string>();
-const localAgentRuns = new Map<string, WebSocket>();
-const operatorChatQueues = new Map<string, Promise<void>>();
+const localAgentRuns = new Map<string, AbortController>();
 type SotyFileStreamState = {
   readonly tunnelId: string;
   readonly commandId: string;
@@ -456,16 +444,10 @@ type SotyFileStreamState = {
 };
 const sotyFileLineBuffers = new Map<string, string>();
 const sotyFileStreams = new Map<string, SotyFileStreamState>();
-const operatorBridgeProtocol = "soty.operator-bridge.v2";
 const agentReplyQueues = new Map<string, Promise<LocalAgentReply | null | void>>();
 const agentReplyControllers = new Map<string, AbortController>();
 const agentThinking = new Set<string>();
 let agentDoneAudio: AudioContext | null = null;
-let agentSourceControlTunnelId = "";
-let agentSourcePollTimer = 0;
-let agentSourcePolling = false;
-let agentSourcePollEpoch = 0;
-let agentSourcePollController: AbortController | null = null;
 
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
@@ -477,11 +459,6 @@ window.addEventListener("appinstalled", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  sendOperatorVisibility();
-  if (document.visibilityState === "hidden") {
-    void ensureOperatorBridge();
-    return;
-  }
   if (document.visibilityState === "visible" && selectedId) {
     clearTunnelNotices(selectedId);
     tunnels = markTunnel(selectedId, false);
@@ -499,7 +476,14 @@ void boot();
 let serviceWorkerReloading = false;
 
 async function boot(): Promise<void> {
+  const spreadExPairCode = spreadExPairCodeFromUrl();
+  if (spreadExPairCode) {
+    await registerServiceWorker();
+    await renderSpreadExInstall(spreadExPairCode);
+    return;
+  }
   adoptAgentRelayFromUrl();
+  trafficProfileWasAdopted = adoptTrafficProfileFromUrl() || trafficProfileWasAdopted;
 
   if (shouldResetLocalState()) {
     await resetLocalSotyState();
@@ -551,6 +535,93 @@ async function boot(): Promise<void> {
   renderApp();
   startAgentButtonWatcher(true);
   resumePendingAgentDialogReplies();
+  if (trafficProfileWasAdopted) {
+    trafficProfileWasAdopted = false;
+    void openTrafficFabricModal();
+  }
+}
+
+async function renderSpreadExInstall(pairCode: string): Promise<void> {
+  app.innerHTML = `
+    <main class="spreadex-install-screen">
+      <section class="spreadex-install-card" aria-live="polite">
+        <div class="spreadex-install-mark">S</div>
+        <p class="spreadex-install-kicker">SOTY AGENT × SPREADEX</p>
+        <h1>Подключаем умный анализ</h1>
+        <p class="spreadex-install-copy">Проверяем агент на этом компьютере. Код одноразовый; ключи бирж агенту не передаются.</p>
+        <div class="spreadex-install-state"><span></span><b>Ищем Soty Agent…</b></div>
+        <div class="spreadex-install-actions"></div>
+        <small class="spreadex-install-note">Агент работает локально и обновляется автоматически.</small>
+      </section>
+    </main>`;
+  const state = app.querySelector<HTMLDivElement>(".spreadex-install-state");
+  const actions = app.querySelector<HTMLDivElement>(".spreadex-install-actions");
+  if (!state || !actions) return;
+
+  const showSuccess = (): void => {
+    clearSpreadExPairCodeFromUrl();
+    state.dataset.tone = "ok";
+    state.innerHTML = "<span></span><b>Компьютер подключён</b>";
+    actions.innerHTML = '<button class="spreadex-return" type="button">Вернуться в SpreadEx</button>';
+    actions.querySelector<HTMLButtonElement>(".spreadex-return")?.addEventListener("click", () => {
+      window.location.assign("https://miniapp.spreadex.me");
+    });
+  };
+
+  const attempt = async (): Promise<boolean> => {
+    state.dataset.tone = "busy";
+    state.innerHTML = "<span></span><b>Связываем компьютер…</b>";
+    const result = await pairLocalSpreadEx(pairCode);
+    if (result.ok) {
+      showSuccess();
+      return true;
+    }
+    if (!["network", "timeout", "agent-incompatible"].includes(result.error || "")) {
+      state.dataset.tone = "error";
+      state.innerHTML = "<span></span><b>Ссылка недействительна или уже использована</b>";
+      actions.innerHTML = '<button class="spreadex-return" type="button">Получить новую ссылку в SpreadEx</button>';
+      actions.querySelector<HTMLButtonElement>(".spreadex-return")?.addEventListener("click", () => {
+        window.location.assign("https://miniapp.spreadex.me");
+      });
+      return false;
+    }
+    state.dataset.tone = "idle";
+    state.innerHTML = "<span></span><b>Soty Agent пока не найден</b>";
+    if (!canInstallMachineAgent()) {
+      actions.innerHTML = '<p>Откройте эту ссылку на компьютере Windows, macOS или Linux.</p>';
+      return false;
+    }
+    actions.innerHTML = '<button class="spreadex-download" type="button">Установить Soty Agent</button><button class="spreadex-retry" type="button">Проверить ещё раз</button>';
+    actions.querySelector<HTMLButtonElement>(".spreadex-download")?.addEventListener("click", () => {
+      downloadAgentInstallerForDevice("machine");
+      state.dataset.tone = "busy";
+      state.innerHTML = "<span></span><b>Ждём завершения установки…</b>";
+      void watchSpreadExPairing(pairCode, showSuccess, state);
+    });
+    actions.querySelector<HTMLButtonElement>(".spreadex-retry")?.addEventListener("click", () => void attempt());
+    return false;
+  };
+
+  await attempt();
+}
+
+async function watchSpreadExPairing(pairCode: string, onSuccess: () => void, state: HTMLDivElement): Promise<void> {
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+    const result = await pairLocalSpreadEx(pairCode, 2_500);
+    if (result.ok) {
+      onSuccess();
+      return;
+    }
+    if (!["network", "timeout", "agent-incompatible"].includes(result.error || "")) {
+      state.dataset.tone = "error";
+      state.innerHTML = "<span></span><b>Код подключения истёк. Получите новую ссылку в SpreadEx.</b>";
+      return;
+    }
+  }
+  state.dataset.tone = "error";
+  state.innerHTML = "<span></span><b>Агент не появился. Запустите установщик и нажмите «Проверить ещё раз».</b>";
 }
 
 async function registerServiceWorker(): Promise<void> {
@@ -613,7 +684,6 @@ function renderNick(): void {
   const restoreButton = app.querySelector<HTMLButtonElement>(".restore-button");
   const restoreFile = app.querySelector<HTMLInputElement>(".restore-file");
   input?.focus();
-  void ensureOperatorBridge(true);
   restoreButton?.addEventListener("click", () => {
     restoreFile?.click();
   });
@@ -633,7 +703,6 @@ function renderNick(): void {
 }
 
 function finishDeviceBoot(restoredTexts = new Map<string, string>()): void {
-  operatorBridgeAllowEmpty = false;
   const pending = loadPendingJoin();
   if (pending) {
     renderJoinWaiting(pending);
@@ -1528,6 +1597,7 @@ function renderApp(): void {
             <button class="side-action remote-action" type="button" aria-label="remote" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>Доступ</span></button>
             <button class="side-action close-action" type="button" aria-label="close" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Закрыть соту">${icon("close")}<span>Закрыть</span></button>
             <button class="side-action chess-action" type="button" aria-label="chess" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Шахматы">${icon("chess")}<span>Шахматы</span></button>
+            <button class="side-action internet-action" type="button" aria-label="Интернет через Соты" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Интернет через этот компьютер">${icon("traffic")}<span>Интернет</span></button>
             <button class="side-action traffic-action" type="button" aria-label="traffic" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Link traffic">${icon("traffic")}<span>Traffic</span></button>
             ${accountTransferSideActionsHtml()}
           </div>
@@ -1690,7 +1760,7 @@ function renderApp(): void {
         return;
       }
       if (isAgentTunnelId(selectedId)) {
-        void toggleAgentRemoteGrant(selectedId);
+        void refreshLocalAgent();
       } else if (remoteAccess.has(selectedId) && !remoteEnabled.has(selectedId)) {
         openRemoteCommands(selectedId);
       } else {
@@ -1704,6 +1774,9 @@ function renderApp(): void {
     }
     void toggleTrafficGrant(selectedId);
   });
+  app.querySelector<HTMLButtonElement>(".internet-action")?.addEventListener("click", () => {
+    void openTrafficFabricModal();
+  });
   app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
     if (selectedId) {
       closeTunnel(selectedId);
@@ -1714,8 +1787,6 @@ function renderApp(): void {
   renderFiles();
   renderTerminal();
   renderChess();
-  void ensureOperatorBridge(true);
-  resumeAgentSourceControl();
 }
 
 function renderTiles(): void {
@@ -1771,7 +1842,9 @@ function renderTiles(): void {
         remote: () => {
           selectTunnel(id);
           if (isAgentTunnelId(id)) {
-            void toggleAgentRemoteGrant(id);
+            if (agentButtonMode() !== "link") {
+              requestAgentDownload(device || undefined);
+            }
           } else {
             void toggleRemoteGrant(id);
           }
@@ -1855,7 +1928,6 @@ async function toggleTrafficGrant(id: string): Promise<void> {
     }
     renderTiles();
     renderDialogChrome();
-    publishOperatorTargets();
     return;
   }
   const ok = await enableRemoteGrant(id, "*", { traffic: true });
@@ -1864,7 +1936,6 @@ async function toggleTrafficGrant(id: string): Promise<void> {
   }
   appendTerminalLine(id, "+ link traffic");
   renderTerminal();
-  publishOperatorTargets();
 }
 
 function grantCapabilitiesForTunnel(tunnelId: string): string[] {
@@ -1881,55 +1952,12 @@ function openRemoteCommands(id: string): void {
   renderTerminal();
 }
 
-async function toggleAgentRemoteGrant(agentTunnelId: string): Promise<void> {
-  if (remoteEnabled.has(agentTunnelId)) {
-    closeRemoteMode(agentTunnelId);
-    return;
-  }
-  if (!device) {
-    return;
-  }
-  const mode = await refreshAgentButtonState(true);
-  if (mode !== "link") {
-    markAgentDownloadNeeded();
-    requestAgentDownload(device);
-    return;
-  }
-  const companion = await ensureAgentSourceCompanion();
-  if (!companion.ok) {
-    markAgentDownloadNeeded();
-    requestAgentDownload(device);
-    return;
-  }
-  if (!isAgentSourceCompanionReady(companion, device.id)) {
-    markAgentDownloadNeeded();
-    requestAgentDownload(device);
-    return;
-  }
-  const granted = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
-  if (!granted) {
-    await typeOperatorChat(
-      agentTunnelId,
-      formatOperatorChat("LINK не смог подключить командный канал агента. Проверь интернет и попробуй нажать LINK ещё раз.", "sysadmin"),
-      "fast"
-    );
-    return;
-  }
-  remoteEnabled = setRemoteEnabled(agentTunnelId, true);
-  agentSourceGrantRefreshAt = Date.now() + agentSourceGrantRefreshMs;
-  terminalOpenId = agentTunnelId;
-  setTerminalState(agentTunnelId, "idle");
-  appendTerminalLine(agentTunnelId, "+ agent link");
-  renderTerminal();
-  renderTiles();
-  startAgentSourceControl(agentTunnelId);
-}
-
 function isAgentSourceCompanionReady(agent: LocalAgentStatus, expectedDeviceId = ""): boolean {
   return agent.ok === true
     && agent.relay === true
     && agent.sourceWorker === true
     && (!expectedDeviceId || agent.deviceId === expectedDeviceId)
+    && hasAvailableSotyAgent(agent)
     && agent.autoUpdate !== false
     && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
 }
@@ -1937,7 +1965,7 @@ function isAgentSourceCompanionReady(agent: LocalAgentStatus, expectedDeviceId =
 async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
   let agent = await refreshLocalCompanion();
   if (device && !isAgentSourceCompanionReady(agent, device.id)) {
-    const sourceAgent = await checkAgentSourceWorker(device.id, 1200);
+    const sourceAgent = await checkAgentSourceWorker(device.id, agentButtonProbeTimeoutMs);
     if (isAgentSourceCompanionReady(sourceAgent, device.id)) {
       localAgent = sourceAgent;
       return sourceAgent;
@@ -1951,8 +1979,8 @@ async function ensureAgentSourceCompanion(): Promise<LocalAgentStatus> {
     const deadline = Date.now() + 4500;
     do {
       await wait(350);
-      const sourceAgent = await checkAgentSourceWorker(device.id, 1200);
-      agent = isAgentSourceCompanionReady(sourceAgent, device.id) ? sourceAgent : await checkLocalAgent(1200);
+      const sourceAgent = await checkAgentSourceWorker(device.id, agentButtonProbeTimeoutMs);
+      agent = isAgentSourceCompanionReady(sourceAgent, device.id) ? sourceAgent : await checkLocalAgent(agentButtonProbeTimeoutMs);
       localAgent = agent;
       if (isAgentSourceCompanionReady(agent, device.id)) {
         return agent;
@@ -2097,19 +2125,32 @@ async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> 
   }
   const probe = (async () => {
     await refreshAgentRelease(force);
-    let directAgent = await checkLocalCompanionAgent(1200);
-    let relayedMachineAgent = device?.id
-      ? await checkAgentSourceMachineAgent(device.id, 1200)
-      : { ok: false };
+    let [directAgent, relayedMachineAgent] = await Promise.all([
+      checkLocalCompanionAgent(agentButtonProbeTimeoutMs),
+      device?.id
+        ? checkAgentSourceMachineAgent(device.id, agentButtonProbeTimeoutMs)
+        : Promise.resolve<LocalAgentStatus>({ ok: false })
+    ]);
     if (device?.id && directAgent.ok && !isAgentMachineLinkReady(directAgent, device.id)) {
       const bound = await bindLocalAgentRelay(device, 1800).catch(() => false);
       if (bound) {
-        directAgent = await checkLocalCompanionAgent(1200);
-        relayedMachineAgent = await checkAgentSourceMachineAgent(device.id, 1800);
+        [directAgent, relayedMachineAgent] = await Promise.all([
+          checkLocalCompanionAgent(agentButtonProbeTimeoutMs),
+          checkAgentSourceMachineAgent(device.id, agentButtonProbeTimeoutMs)
+        ]);
       }
     }
     localAgent = directAgent;
-    agentButtonAgent = chooseAgentButtonStatus(directAgent, relayedMachineAgent);
+    const candidate = chooseAgentButtonStatus(directAgent, relayedMachineAgent);
+    if (candidate.ok) {
+      agentButtonConsecutiveProbeFailures = 0;
+      agentButtonAgent = candidate;
+    } else {
+      agentButtonConsecutiveProbeFailures += 1;
+      if (agentButtonMode(agentButtonAgent) !== "link" || agentButtonConsecutiveProbeFailures >= agentButtonMaxTransientFailures) {
+        agentButtonAgent = candidate;
+      }
+    }
     renderDialogChrome();
     return agentButtonMode(agentButtonAgent);
   })();
@@ -2124,7 +2165,7 @@ async function refreshAgentButtonState(force = false): Promise<AgentButtonMode> 
 }
 
 function chooseAgentButtonStatus(directAgent: LocalAgentStatus, relayedMachineAgent: LocalAgentStatus): LocalAgentStatus {
-  if (isAgentMachineLinkReady(relayedMachineAgent, device?.id || "")) {
+  if (isConnectorLinkReady(relayedMachineAgent, device?.id || "")) {
     return relayedMachineAgent;
   }
   return directAgent;
@@ -2140,10 +2181,20 @@ function agentButtonMode(agent: LocalAgentStatus = agentButtonAgent): AgentButto
   if (agentRelease?.version && compareVersion(agent.version || "0.0.0", agentRelease.version) < 0) {
     return "update";
   }
-  if (!isAgentMachineLinkReady(agent, device?.id || "")) {
+  if (!isConnectorLinkReady(agent, device?.id || "")) {
     return "download";
   }
   return "link";
+}
+
+function isConnectorLinkReady(agent: LocalAgentStatus, expectedDeviceId = ""): boolean {
+  return agent.ok === true
+    && agent.connector === true
+    && agent.sourceWorker === true
+    && (!expectedDeviceId || agent.deviceId === expectedDeviceId)
+    && hasAvailableSotyAgent(agent)
+    && agent.autoUpdate !== false
+    && (!agentRelease?.version || compareVersion(agent.version || "0.0.0", agentRelease.version) >= 0);
 }
 
 function isAgentMachineLinkReady(agent: LocalAgentStatus, expectedDeviceId = ""): boolean {
@@ -2178,10 +2229,6 @@ function closeRemoteMode(tunnelId: string): void {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
     trafficShare = setTrafficShare(tunnelId, false);
     sync?.grantRemote(false, "*");
-    if (isAgentTunnelId(tunnelId) && device) {
-      void grantAgentSourceAccess(device.id, device.nick, false);
-      stopAgentSourceControl(tunnelId);
-    }
   }
   if (hostDeviceId) {
     remoteAccess = setRemoteAccess(tunnelId, "", false);
@@ -2196,7 +2243,6 @@ function closeRemoteMode(tunnelId: string): void {
   setTerminalState(tunnelId, "ok");
   renderTerminal();
   renderTiles();
-  publishOperatorTargets();
 }
 
 function sortedVisibleTunnels(): TunnelRecord[] {
@@ -2271,25 +2317,7 @@ function startFreshDialog(): void {
   if (!fresh) {
     return;
   }
-  if (active && isAgentTunnel(active)) {
-    moveAgentLinkToFreshDialog(active.id, fresh.id);
-  }
   renderApp();
-}
-
-function moveAgentLinkToFreshDialog(previousId: string, freshId: string): void {
-  if (!device || previousId === freshId || !remoteEnabled.has(previousId)) {
-    return;
-  }
-  remoteEnabled = setRemoteEnabled(previousId, false);
-  remoteEnabled = setRemoteEnabled(freshId, true);
-  terminalOpenId = freshId;
-  terminalLogs.delete(freshId);
-  terminalState.delete(previousId);
-  setTerminalState(freshId, "idle");
-  appendTerminalLine(freshId, "+ agent link");
-  void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
-  startAgentSourceControl(freshId);
 }
 
 function clearCurrentDialog(tunnelId: string): void {
@@ -2359,8 +2387,6 @@ async function startAgentDialog(): Promise<void> {
     composer?.focus();
     return;
   }
-  await ensureOperatorBridge();
-  publishOperatorTargets();
   composer?.focus();
 }
 
@@ -2446,7 +2472,7 @@ function normalizeAgentDialog(tunnelId: string): TunnelRecord | null {
 function agentSupportsDialogInbox(agent: LocalAgentStatus): boolean {
   return agent.ok
     && agent.relay === true
-    && agent.codex !== false
+    && hasAvailableSotyAgent(agent)
     && compareVersion(agent.version || "0.0.0", agentDialogMinVersion) >= 0;
 }
 
@@ -2501,6 +2527,8 @@ function renderDialogChrome(): void {
   }
   if (remoteButton) {
     const needsAgent = mode !== "link";
+    const agentDialog = Boolean(selectedId && isAgentTunnelId(selectedId));
+    remoteButton.hidden = agentDialog && !needsAgent;
     remoteButton.classList.toggle("is-on", !needsAgent && remoteEnabled.has(selectedId));
     remoteButton.classList.toggle("has-access", !needsAgent && remoteAccess.has(selectedId));
     remoteButton.classList.toggle("needs-agent", needsAgent);
@@ -2509,7 +2537,7 @@ function renderDialogChrome(): void {
       ? `${icon("download")}<span>${mode === "update" ? "Обновить" : "Скачать"}</span>`
       : `${icon("remote")}<span>Доступ</span>`;
     remoteButton.dataset.tooltip = needsAgent
-      ? (mode === "update" ? "Download current Soty Agent" : "Download Soty Agent")
+      ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent")
       : remoteEnabled.has(selectedId)
         ? "Turn off remote link"
         : remoteAccess.has(selectedId)
@@ -2526,10 +2554,10 @@ function renderDialogChrome(): void {
     trafficButton.hidden = Boolean(selectedId && isAgentTunnelId(selectedId));
     trafficButton.setAttribute("aria-label", needsAgent ? "download" : "traffic");
     trafficButton.innerHTML = needsAgent
-      ? `${icon("download")}<span>${mode === "update" ? "РћР±РЅРѕРІРёС‚СЊ" : "РЎРєР°С‡Р°С‚СЊ"}</span>`
+      ? `${icon("download")}<span>${mode === "update" ? "Обновить" : "Скачать"}</span>`
       : `${icon("traffic")}<span>Traffic</span>`;
     trafficButton.dataset.tooltip = needsAgent
-      ? (mode === "update" ? "Download current Soty Agent" : "Download Soty Agent")
+      ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent")
       : trafficOut
         ? "Stop sharing traffic"
         : trafficIn
@@ -2812,7 +2840,7 @@ function friendlyChatState(mode: AgentButtonMode = agentButtonMode()): string {
     return "Нет связи";
   }
   if (mode === "download") {
-    return "Нужен агент";
+    return "Нужен Soty Agent";
   }
   if (mode === "update") {
     return "Доступно обновление";
@@ -3220,9 +3248,9 @@ function technicalChatStatus(mode: AgentButtonMode, syncState: string | undefine
     items.push("онлайн");
   }
   if (mode === "download") {
-    items.push("агент не установлен");
+    items.push("Soty Agent не установлен");
   } else if (mode === "update") {
-    items.push("агент устарел");
+    items.push("Soty Agent устарел");
   } else if (remoteEnabled.has(selectedId)) {
     items.push("доступ к этому компьютеру");
   } else if (remoteAccess.has(selectedId)) {
@@ -3431,7 +3459,6 @@ function syncRemoteAccessWithPeers(tunnelId: string, items: readonly { readonly 
   }
   setTerminalState(tunnelId, "off");
   renderTerminal();
-  publishOperatorTargets();
   return true;
 }
 
@@ -3706,7 +3733,6 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
       overlay.remove();
       renderTiles();
       renderTerminal();
-      publishOperatorTargets();
     })();
   });
   overlay.querySelector(".access-deny")?.addEventListener("click", () => overlay.remove());
@@ -3737,8 +3763,6 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   }
   renderTiles();
   renderTerminal();
-  void ensureOperatorBridge();
-  publishOperatorTargets();
 }
 
 function applyRemoteCommand(tunnelId: string, command: RemoteCommand): void {
@@ -3817,10 +3841,6 @@ function maybeAutoDownloadReceivedFile(tunnelId: string, file: ReceivedFile): vo
   saveAutoDownloadedFiles(seen);
   downloadReceivedFile(file);
   appendTerminalLine(tunnelId, `+ saved to Downloads ${file.name}`);
-  const operatorId = file.commandId ? operatorPending.get(file.commandId) : "";
-  if (operatorId) {
-    sendOperatorOutput(operatorId, `controllerDownload=${file.name}\n`);
-  }
   renderTerminal();
 }
 
@@ -3852,15 +3872,6 @@ function applyRemoteOutput(tunnelId: string, output: RemoteOutput): void {
     setTerminalState(tunnelId, output.exitCode === 0 ? "ok" : output.exitCode === 127 ? "off" : "bad");
     appendTerminalExitLine(tunnelId, output.exitCode);
   }
-  const operatorId = operatorPending.get(output.commandId);
-  if (operatorId) {
-    sendOperatorOutput(operatorId, output.text, output.exitCode);
-    if (typeof output.exitCode === "number") {
-      operatorPending.delete(output.commandId);
-      operatorRemoteRuns.delete(operatorId);
-      clearOperatorRemoteRunTimer(operatorId);
-    }
-  }
   terminalOpenId = tunnelId;
   renderTerminal();
 }
@@ -3886,672 +3897,6 @@ async function sendTerminalCommand(): Promise<void> {
   await sync.sendRemoteCommand(hostDeviceId, command);
 }
 
-async function ensureOperatorBridge(allowEmpty = false): Promise<void> {
-  operatorBridgeAllowEmpty = operatorBridgeAllowEmpty || allowEmpty;
-  if (!operatorBridgeAllowEmpty && !hasOperatorTargets()) {
-    closeOperatorBridge();
-    return;
-  }
-  if (operatorSocket && (operatorSocket.readyState === WebSocket.OPEN || operatorSocket.readyState === WebSocket.CONNECTING)) {
-    publishOperatorTargets();
-    resumeAgentSourceControl();
-    return;
-  }
-  window.clearTimeout(operatorReconnectTimer);
-  const agent = await checkLocalCompanionAgent(1500);
-  if (!agent.ok || (!operatorBridgeAllowEmpty && !hasOperatorTargets())) {
-    if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
-      operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
-    }
-    return;
-  }
-  const ws = new WebSocket("ws://127.0.0.1:49424");
-  operatorSocket = ws;
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      type: "operator.attach",
-      visible: document.visibilityState === "visible",
-      protocol: operatorBridgeProtocol,
-      capabilities: ["agent-new", "agent-message", "export-tail", "fast-fresh-dialog"]
-    }));
-    publishOperatorTargets();
-    resumeAgentSourceControl();
-  };
-  ws.onmessage = (event) => {
-    let message: {
-      readonly type?: string;
-      readonly id?: string;
-      readonly target?: string;
-      readonly sourceDeviceId?: string;
-      readonly command?: string;
-      readonly name?: string;
-      readonly shell?: string;
-      readonly script?: string;
-      readonly runAs?: string;
-      readonly text?: string;
-      readonly speed?: string;
-      readonly persona?: string;
-      readonly version?: string;
-      readonly timeoutMs?: number;
-      readonly tailChars?: number;
-    };
-    try {
-      message = JSON.parse(event.data as string) as typeof message;
-    } catch {
-      return;
-    }
-    if (message.type === "operator.run") {
-      void runOperatorCommand(message);
-    }
-    if (message.type === "operator.script") {
-      void runOperatorScript(message);
-    }
-    if (message.type === "operator.cancel") {
-      void runOperatorCancel(message);
-    }
-    if (message.type === "operator.chat") {
-      void runOperatorChat(message);
-    }
-    if (message.type === "operator.agent-message") {
-      void runOperatorAgentMessage(message);
-    }
-    if (message.type === "operator.agent-new") {
-      void runOperatorAgentNew(message);
-    }
-    if (message.type === "operator.terminal") {
-      return;
-    }
-    if (message.type === "operator.access") {
-      runOperatorAccess(message);
-    }
-    if (message.type === "operator.export") {
-      runOperatorExport(message);
-    }
-    if (message.type === "operator.import") {
-      void runOperatorImport(message);
-    }
-    if (message.type === "operator.updating") {
-      cancelAllOperatorRemoteRuns("! agent updating");
-    }
-  };
-  ws.onclose = () => {
-    if (operatorSocket === ws) {
-      operatorSocket = null;
-      operatorBridgeEpoch += 1;
-      cancelAllOperatorRemoteRuns("! operator bridge closed");
-    }
-    if (operatorBridgeAllowEmpty || hasOperatorTargets()) {
-      operatorReconnectTimer = window.setTimeout(() => void ensureOperatorBridge(operatorBridgeAllowEmpty), 1800);
-    }
-  };
-  ws.onerror = () => {
-    ws.close();
-  };
-}
-
-function closeOperatorBridge(): void {
-  window.clearTimeout(operatorReconnectTimer);
-  operatorBridgeEpoch += 1;
-  cancelAllOperatorRemoteRuns("! operator bridge closed");
-  operatorSocket?.close();
-  operatorSocket = null;
-  operatorBridgeAllowEmpty = false;
-  operatorPending.clear();
-  operatorRemoteRuns.clear();
-  operatorStartingTunnels.clear();
-}
-
-function operatorTargetBusy(tunnelId: string): boolean {
-  expireOperatorRemoteRunTimeouts();
-  if (operatorStartingTunnels.has(tunnelId)) {
-    return true;
-  }
-  for (const run of operatorRemoteRuns.values()) {
-    if (run.tunnelId === tunnelId) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function safeOperatorTimeoutMs(value: unknown): number {
-  const timeoutMs = typeof value === "number" ? value : 0;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return 0;
-  }
-  return Math.max(1000, Math.min(Math.trunc(timeoutMs), 2 * 60 * 60_000));
-}
-
-function cancelAllOperatorRemoteRuns(reason: string): void {
-  const runs = [...operatorRemoteRuns.entries()];
-  operatorStartingTunnels.clear();
-  for (const [requestId, run] of runs) {
-    cancelOperatorRemoteRun(requestId, run, reason);
-  }
-  if (runs.length > 0) {
-    renderTerminal();
-  }
-}
-
-function cancelOperatorRemoteRun(requestId: string, run: OperatorRemoteRun, reason: string, exitCode = 130): void {
-  clearOperatorRemoteRunTimer(requestId);
-  appendTerminalLine(run.tunnelId, reason);
-  setTerminalState(run.tunnelId, "bad");
-  const sync = syncs.get(run.tunnelId);
-  if (sync) {
-    void sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
-  }
-  sendOperatorOutput(requestId, `${reason}\n`, exitCode);
-  operatorRemoteRuns.delete(requestId);
-  operatorPending.delete(run.commandId);
-}
-
-function clearOperatorRemoteRunTimer(requestId: string): void {
-  const timer = operatorRemoteRunTimers.get(requestId);
-  if (timer) {
-    window.clearTimeout(timer);
-    operatorRemoteRunTimers.delete(requestId);
-  }
-}
-
-function scheduleOperatorRemoteRunTimeout(requestId: string, run: OperatorRemoteRun): void {
-  clearOperatorRemoteRunTimer(requestId);
-  const timeoutMs = Math.max(1000, run.timeoutMs || 0);
-  const timer = window.setTimeout(() => {
-    const current = operatorRemoteRuns.get(requestId);
-    if (!current) {
-      return;
-    }
-    cancelOperatorRemoteRun(requestId, current, "! timeout", 124);
-    renderTerminal();
-  }, timeoutMs + 3000);
-  operatorRemoteRunTimers.set(requestId, timer);
-}
-
-function expireOperatorRemoteRunTimeouts(now = Date.now()): void {
-  let changed = false;
-  for (const [requestId, run] of [...operatorRemoteRuns.entries()]) {
-    const timeoutMs = Math.max(1000, run.timeoutMs || 0);
-    if (now - run.startedAt <= timeoutMs + 3000) {
-      continue;
-    }
-    cancelOperatorRemoteRun(requestId, run, "! timeout", 124);
-    changed = true;
-  }
-  if (changed) {
-    renderTerminal();
-  }
-}
-
-function hasOperatorTargets(): boolean {
-  return operatorTargets().length > 0;
-}
-
-function publishOperatorTargets(): void {
-  const ws = operatorSocket;
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  const targets = operatorTargets();
-  const activeTunnel = selectedId ? loadTunnels().find((item) => item.id === selectedId) || null : null;
-  ws.send(JSON.stringify({
-    type: "operator.targets",
-    deviceId: device?.id || "",
-    deviceNick: device?.nick || "",
-    targets,
-    deviceNetwork: agentDeviceNetworkContext(selectedId, activeTunnel, targets)
-  }));
-}
-
-function sendOperatorVisibility(): void {
-  const ws = operatorSocket;
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  ws.send(JSON.stringify({
-    type: "operator.visibility",
-    visible: document.visibilityState === "visible"
-  }));
-}
-
-function operatorTargets(): LocalAgentOperatorTarget[] {
-  return sortedVisibleTunnels()
-    .filter((tunnel) => !isAgentTunnel(tunnel) && remoteAccess.has(tunnel.id))
-    .map((tunnel, index) => {
-      const deviceIds = [...new Set((peerDevices.get(tunnel.id) ?? []).map((peer) => peer.id).filter(Boolean))];
-      const hostDeviceId = remoteAccess.get(tunnel.id) || "";
-      const traffic = trafficAccess.get(tunnel.id);
-      return {
-        id: tunnel.id,
-        label: counterpartyLabel(tunnel),
-        deviceIds,
-        hostDeviceId,
-        access: true,
-        host: remoteEnabled.has(tunnel.id),
-        selected: tunnel.id === selectedId,
-        ...(traffic ? {
-          traffic: {
-            exit: true,
-            mode: traffic.mode,
-            share: false,
-            status: traffic.mode === "proxy" ? "available" as const : "planned" as const
-          }
-        } : {}),
-        rank: index + 1,
-        lastActionAt: tunnel.lastActionAt || tunnel.updatedAt
-      };
-    });
-}
-
-function agentDeviceNetworkContext(
-  tunnelId: string,
-  tunnel: TunnelRecord | null,
-  targets: readonly LocalAgentOperatorTarget[] = operatorTargets()
-): LocalAgentDeviceNetwork {
-  const selectedTarget = tunnel && isAgentTunnel(tunnel)
-    ? null
-    : linkedOperatorTargetForTunnel(tunnelId, targets);
-  const selectedTargetDeviceId = selectedTarget?.hostDeviceId || selectedTarget?.deviceIds?.[0] || "";
-  const selectedTraffic = selectedTarget?.traffic?.exit === true;
-  const sourceCapabilities = isAgentSourceCompanionReady(localAgent, device?.id || "")
-    ? ["source-device-agent"]
-    : ["web-controller"];
-  return {
-    protocol: "soty-device-network.v1",
-    controllerDeviceId: device?.id || "",
-    controllerDeviceNick: device?.nick || "",
-    activeTunnelId: tunnelId || "",
-    activeTunnelLabel: tunnel ? counterpartyLabel(tunnel) : "",
-    activeTunnelKind: tunnel && isAgentTunnel(tunnel) ? "agent" : "peer",
-    selectedTargetId: selectedTarget?.id || "",
-    selectedTargetLabel: selectedTarget?.label || "",
-    selectedTargetDeviceId,
-    selectedTargetAccess: selectedTarget?.access === true,
-    selectedTargetLink: Boolean(selectedTarget),
-    selectedTargetTraffic: selectedTraffic,
-    capabilities: [
-      "chat-selected-target",
-      "linked-device-actions",
-      "link-traffic-v1",
-      "room-file-transfer",
-      "artifact-transfer",
-      "desktop-actions",
-      "multi-device-context",
-      ...sourceCapabilities
-    ],
-    targets: [...targets]
-  };
-}
-
-function linkedOperatorTargetForTunnel(tunnelId: string, targets: readonly LocalAgentOperatorTarget[]): LocalAgentOperatorTarget | null {
-  if (!tunnelId) {
-    return null;
-  }
-  return targets.find((target) => target.id === tunnelId) || null;
-}
-
-async function runOperatorCommand(message: { readonly id?: string; readonly target?: string; readonly sourceDeviceId?: string; readonly command?: string; readonly runAs?: string; readonly timeoutMs?: number }): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  const command = typeof message.command === "string" ? message.command.trim() : "";
-  const sourceDeviceId = typeof message.sourceDeviceId === "string" ? message.sourceDeviceId.trim() : "";
-  if (!requestId || !command) {
-    return;
-  }
-  const tunnel = findOperatorTarget(message.target || "");
-  if (!tunnel) {
-    sendOperatorOutput(requestId, "! target", 404);
-    return;
-  }
-  if (sourceDeviceId && !operatorTargetMatchesDevice(tunnel.id, sourceDeviceId)) {
-    sendOperatorOutput(requestId, "! source-target", 403);
-    return;
-  }
-  const hostDeviceId = remoteAccess.get(tunnel.id);
-  const sync = syncs.get(tunnel.id);
-  if (!sync) {
-    sendOperatorOutput(requestId, "! tunnel", 409);
-    return;
-  }
-  if (!hostDeviceId) {
-    sendOperatorOutput(requestId, "! access", 409);
-    return;
-  }
-  if (operatorTargetBusy(tunnel.id)) {
-    appendTerminalLine(tunnel.id, "! busy");
-    sendOperatorOutput(requestId, "! busy", 409);
-    renderTerminal();
-    return;
-  }
-  const bridgeEpoch = operatorBridgeEpoch;
-  const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
-  operatorStartingTunnels.add(tunnel.id);
-  const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
-  if (!keepCurrentDialog) {
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-  }
-  terminalOpenId = tunnel.id;
-  setTerminalState(tunnel.id, "run");
-  appendTerminalLine(tunnel.id, `$ ${command}`);
-  clearTunnelNotices(tunnel.id);
-  tunnels = markTunnel(tunnel.id, false);
-  renderTiles();
-  if (!keepCurrentDialog) {
-    applySelectedText(true);
-    renderFiles();
-  }
-  renderTerminal();
-  try {
-    const commandId = await sync.sendRemoteCommand(hostDeviceId, command, timeoutMs, message.runAs || "");
-    if (bridgeEpoch !== operatorBridgeEpoch || !operatorSocket || operatorSocket.readyState !== WebSocket.OPEN) {
-      await sync.sendRemoteCancel(hostDeviceId, commandId).catch(() => undefined);
-      sendOperatorOutput(requestId, "! operator bridge closed", 130);
-      return;
-    }
-    operatorPending.set(commandId, requestId);
-    const run: OperatorRemoteRun = {
-      commandId,
-      tunnelId: tunnel.id,
-      hostDeviceId,
-      startedAt: Date.now(),
-      timeoutMs,
-      kind: "run",
-      label: command.slice(0, 120)
-    };
-    operatorRemoteRuns.set(requestId, run);
-    scheduleOperatorRemoteRunTimeout(requestId, run);
-  } catch {
-    sendOperatorOutput(requestId, "! tunnel", 500);
-    setTerminalState(tunnel.id, "bad");
-    renderTerminal();
-  } finally {
-    operatorStartingTunnels.delete(tunnel.id);
-  }
-}
-
-async function runOperatorScript(message: {
-  readonly id?: string;
-  readonly target?: string;
-  readonly sourceDeviceId?: string;
-  readonly name?: string;
-  readonly shell?: string;
-  readonly script?: string;
-  readonly runAs?: string;
-  readonly timeoutMs?: number;
-}): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  const script = typeof message.script === "string" ? message.script : "";
-  const sourceDeviceId = typeof message.sourceDeviceId === "string" ? message.sourceDeviceId.trim() : "";
-  if (!requestId || !script.trim()) {
-    return;
-  }
-  const tunnel = findOperatorTarget(message.target || "");
-  if (!tunnel) {
-    sendOperatorOutput(requestId, "! target", 404);
-    return;
-  }
-  if (sourceDeviceId && !operatorTargetMatchesDevice(tunnel.id, sourceDeviceId)) {
-    sendOperatorOutput(requestId, "! source-target", 403);
-    return;
-  }
-  const hostDeviceId = remoteAccess.get(tunnel.id);
-  const sync = syncs.get(tunnel.id);
-  if (!sync) {
-    sendOperatorOutput(requestId, "! tunnel", 409);
-    return;
-  }
-  if (!hostDeviceId) {
-    sendOperatorOutput(requestId, "! access", 409);
-    return;
-  }
-  if (operatorTargetBusy(tunnel.id)) {
-    appendTerminalLine(tunnel.id, "! busy");
-    sendOperatorOutput(requestId, "! busy", 409);
-    renderTerminal();
-    return;
-  }
-  const name = cleanNick(message.name || "script") || "script";
-  const bridgeEpoch = operatorBridgeEpoch;
-  const timeoutMs = safeOperatorTimeoutMs(message.timeoutMs);
-  operatorStartingTunnels.add(tunnel.id);
-  const keepCurrentDialog = shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId);
-  if (!keepCurrentDialog) {
-    selectedId = tunnel.id;
-    saveSelectedTunnelId(tunnel.id);
-  }
-  terminalOpenId = tunnel.id;
-  setTerminalState(tunnel.id, "run");
-  appendTerminalLine(tunnel.id, `$ ${name}`);
-  clearTunnelNotices(tunnel.id);
-  tunnels = markTunnel(tunnel.id, false);
-  renderTiles();
-  if (!keepCurrentDialog) {
-    applySelectedText(true);
-    renderFiles();
-  }
-  renderTerminal();
-  try {
-    const commandId = await sync.sendRemoteScript(hostDeviceId, {
-      name,
-      shell: message.shell || "",
-      script,
-      runAs: message.runAs || "",
-      timeoutMs
-    });
-    if (bridgeEpoch !== operatorBridgeEpoch || !operatorSocket || operatorSocket.readyState !== WebSocket.OPEN) {
-      await sync.sendRemoteCancel(hostDeviceId, commandId).catch(() => undefined);
-      sendOperatorOutput(requestId, "! operator bridge closed", 130);
-      return;
-    }
-    operatorPending.set(commandId, requestId);
-    const run: OperatorRemoteRun = {
-      commandId,
-      tunnelId: tunnel.id,
-      hostDeviceId,
-      startedAt: Date.now(),
-      timeoutMs,
-      kind: "script",
-      label: name.slice(0, 120)
-    };
-    operatorRemoteRuns.set(requestId, run);
-    scheduleOperatorRemoteRunTimeout(requestId, run);
-  } catch {
-    sendOperatorOutput(requestId, "! tunnel", 500);
-    setTerminalState(tunnel.id, "bad");
-    renderTerminal();
-  } finally {
-    operatorStartingTunnels.delete(tunnel.id);
-  }
-}
-
-async function runOperatorCancel(message: { readonly id?: string }): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  const run = requestId ? operatorRemoteRuns.get(requestId) : null;
-  if (!requestId || !run) {
-    return;
-  }
-  const sync = syncs.get(run.tunnelId);
-  if (!sync) {
-    sendOperatorOutput(requestId, "! tunnel", 409);
-    return;
-  }
-  appendTerminalLine(run.tunnelId, "! stop requested");
-  renderTerminal();
-  await sync.sendRemoteCancel(run.hostDeviceId, run.commandId).catch(() => undefined);
-  operatorRemoteRuns.delete(requestId);
-  operatorPending.delete(run.commandId);
-  clearOperatorRemoteRunTimer(requestId);
-  sendOperatorOutput(requestId, "! stopped\n", 130);
-}
-
-async function runOperatorChat(message: {
-  readonly id?: string;
-  readonly target?: string;
-  readonly text?: string;
-  readonly speed?: string;
-  readonly persona?: string;
-}): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  const text = typeof message.text === "string" ? message.text.slice(0, 12_000) : "";
-  if (!requestId || !text.trim()) {
-    return;
-  }
-  const tunnel = findVisibleOperatorTarget(message.target || "") || findAgentOperatorTarget(message.target || "");
-  if (!tunnel) {
-    sendOperatorOutput(requestId, "! target", 404);
-    return;
-  }
-  const sync = syncs.get(tunnel.id);
-  if (!sync) {
-    sendOperatorOutput(requestId, "! tunnel", 409);
-    return;
-  }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
-  renderTiles();
-  applySelectedText();
-  sendOperatorOutput(requestId, "typing\n");
-  const previous = operatorChatQueues.get(tunnel.id) ?? Promise.resolve();
-  const displayText = formatOperatorChat(text, message.persona || "operator");
-  const next = previous
-    .catch(() => undefined)
-    .then(() => typeOperatorChat(tunnel.id, displayText, message.speed || ""));
-  operatorChatQueues.set(tunnel.id, next);
-  try {
-    await next;
-    if (!isAgentTunnel(tunnel) && containsAgentInvocation(text)) {
-      void sendAgentDialogMessage(tunnel.id, text, { explicitMention: true });
-    }
-    sendOperatorOutput(requestId, "sent\n", 0);
-  } catch {
-    sendOperatorOutput(requestId, "! chat", 500);
-  } finally {
-    if (operatorChatQueues.get(tunnel.id) === next) {
-      operatorChatQueues.delete(tunnel.id);
-    }
-  }
-}
-
-async function runOperatorAgentMessage(message: {
-  readonly id?: string;
-  readonly target?: string;
-  readonly sourceDeviceId?: string;
-  readonly sourceDeviceNick?: string;
-  readonly text?: string;
-}): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  const body = normalizeChatMessage(typeof message.text === "string" ? message.text : "");
-  if (!requestId || !body) {
-    return;
-  }
-  const tunnel = findAgentOperatorTarget(message.target || "");
-  if (!tunnel) {
-    sendOperatorOutput(requestId, "! agent-target", 404);
-    return;
-  }
-  ensureSync(tunnel);
-  const sync = syncs.get(tunnel.id);
-  if (!sync) {
-    sendOperatorOutput(requestId, "! tunnel", 409);
-    return;
-  }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
-  const current = texts.get(tunnel.id) || "";
-  const separator = chatMessageSeparator(current);
-  const next = `${current}${separator}${body}\n`;
-  texts.set(tunnel.id, next);
-  sync.setText(next);
-  saveTextSnapshotNow(tunnel.id, next);
-  localDrafts.delete(tunnel.id);
-  clearLiveDraftState(tunnel.id);
-  void sync.sendLiveDraft("");
-  touchSelected();
-  renderTiles();
-  applySelectedText();
-  renderTextPaint();
-  renderWriterPop();
-  try {
-    const reply = await sendAgentDialogMessage(tunnel.id, body);
-    sendOperatorOutput(
-      requestId,
-      formatAgentReplyForOperator(reply),
-      typeof reply?.exitCode === "number" ? reply.exitCode : (reply?.ok === false ? 1 : 0)
-    );
-  } catch {
-    sendOperatorOutput(requestId, "! agent-message", 500);
-  }
-}
-
-function formatAgentReplyForOperator(reply: LocalAgentReply | null | void): string {
-  if (!reply) {
-    return "done\n";
-  }
-  const parts: string[] = [];
-  const seen = new Set<string>();
-  const pushUnique = (value: string) => {
-    const clean = normalizeChatMessage(value);
-    const key = clean.replace(/\s+/gu, " ").trim();
-    if (!clean || !key || seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    parts.push(clean);
-  };
-  for (const message of reply.messages ?? []) {
-    pushUnique(cleanAgentReplyText(message));
-  }
-  const text = normalizeChatMessage(cleanAgentReplyText(reply.text));
-  const messageBody = parts.join("\n\n").trim();
-  const compactText = text.replace(/\s+/gu, " ").trim();
-  const compactMessages = messageBody.replace(/\s+/gu, " ").trim();
-  if (text && !parts.includes(text) && (!compactMessages || !compactText.includes(compactMessages))) {
-    pushUnique(text);
-  }
-  const body = parts.join("\n\n").trim();
-  if (body) {
-    return `${body}\n`;
-  }
-  return reply.ok ? "done\n" : "! agent-message\n";
-}
-
-async function runOperatorAgentNew(message: { readonly id?: string }): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  if (!requestId) {
-    return;
-  }
-  const previous = findActiveAgentDialog();
-  if (previous) {
-    selectedId = previous.id;
-    saveSelectedTunnelId(previous.id);
-  }
-  const fresh = createFreshDialog(agentDialogLabel, {
-    agent: true,
-    archiveCurrent: Boolean(previous)
-  });
-  if (!fresh) {
-    sendOperatorOutput(requestId, "! agent-new\n", 500);
-    return;
-  }
-  if (previous) {
-    moveAgentLinkToFreshDialog(previous.id, fresh.id);
-  }
-  renderApp();
-  publishOperatorTargets();
-  sendOperatorOutput(requestId, `agent ${fresh.id}\n`, 0);
-  void (async () => {
-    const agent = await refreshLocalAgent().catch(() => null);
-    if (agent?.ok && !agent.relay) {
-      const bound = await bindLocalAgentRelay(device || undefined).catch(() => false);
-      if (bound) {
-        await refreshLocalAgent().catch(() => null);
-      }
-    }
-    await ensureOperatorBridge(true).catch(() => undefined);
-    publishOperatorTargets();
-  })();
-}
-
 function formatOperatorChat(text: string, persona: string): string {
   const name = persona === "sysadmin" ? agentDialogLabel : cleanNick(persona || "Оператор") || "Оператор";
   const body = normalizeChatMessage(text);
@@ -4562,121 +3907,6 @@ function formatOperatorChat(text: string, persona: string): string {
     `${name} · ${clock()}`,
     ...body.split("\n")
   ].join("\n");
-}
-
-function runOperatorAccess(message: { readonly id?: string; readonly target?: string }): void {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  if (!requestId) {
-    return;
-  }
-  const tunnel = findVisibleOperatorTarget(message.target || "");
-  if (!tunnel) {
-    sendOperatorOutput(requestId, "! target", 404);
-    return;
-  }
-  const sync = syncs.get(tunnel.id);
-  if (!sync) {
-    sendOperatorOutput(requestId, "! tunnel", 409);
-    return;
-  }
-  selectedId = tunnel.id;
-  saveSelectedTunnelId(tunnel.id);
-  sync.requestRemote("*");
-  renderTiles();
-  sendOperatorOutput(requestId, "requested\n", 0);
-}
-
-function runOperatorExport(message: { readonly id?: string; readonly target?: string; readonly tailChars?: number }): void {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  if (!requestId) {
-    return;
-  }
-  const tailChars = Number.isSafeInteger(message.tailChars) ? Number(message.tailChars) : undefined;
-  sendOperatorOutput(requestId, buildOperatorExport({
-    target: typeof message.target === "string" ? message.target : "",
-    ...(tailChars === undefined ? {} : { tailChars })
-  }), 0);
-}
-
-async function runOperatorImport(message: { readonly id?: string; readonly text?: string }): Promise<void> {
-  const requestId = typeof message.id === "string" ? message.id : "";
-  const text = typeof message.text === "string" ? message.text : "";
-  if (!requestId || !text.trim()) {
-    return;
-  }
-  const restored = await restoreFromAccountTransferText(text);
-  if (!restored) {
-    sendOperatorOutput(requestId, "! import", 500);
-    return;
-  }
-  sendOperatorOutput(requestId, `restored ${restored.count}\n`, 0);
-}
-
-function findAgentOperatorTarget(target: string): TunnelRecord | null {
-  const needle = cleanNick(target).toLowerCase();
-  const items = loadTunnels().filter((tunnel) => !tunnel.archived && isAgentTunnel(tunnel));
-  if (needle) {
-    const found = items.find((tunnel) => tunnel.id === target)
-      || items.find((tunnel) => tunnel.id.toLowerCase() === needle)
-      || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle);
-    if (found) {
-      return found;
-    }
-  }
-  return findActiveAgentDialog();
-}
-
-function findOperatorTarget(target: string): TunnelRecord | null {
-  const needle = cleanNick(target).toLowerCase();
-  if (!needle) {
-    return null;
-  }
-  const items = sortedVisibleTunnels().filter((tunnel) => remoteAccess.has(tunnel.id));
-  return items.find((tunnel) => tunnel.id === target)
-    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
-    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
-    || null;
-}
-
-function operatorTargetMatchesDevice(tunnelId: string, sourceDeviceId: string): boolean {
-  const sourceId = sourceDeviceId.trim();
-  if (!sourceId) {
-    return false;
-  }
-  const hostDeviceId = remoteAccess.get(tunnelId);
-  if (hostDeviceId === sourceId) {
-    return true;
-  }
-  return (peerDevices.get(tunnelId) ?? []).some((peer) => peer.id === sourceId);
-}
-
-function shouldKeepCurrentDialogForOperatorTarget(sourceDeviceId: string): boolean {
-  return Boolean(sourceDeviceId.trim() && selectedId && isAgentTunnelId(selectedId));
-}
-
-function findVisibleOperatorTarget(target: string): TunnelRecord | null {
-  const needle = cleanNick(target).toLowerCase();
-  if (!needle) {
-    return null;
-  }
-  const items = sortedVisibleTunnels();
-  return items.find((tunnel) => tunnel.id === target)
-    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase() === needle)
-    || items.find((tunnel) => counterpartyLabel(tunnel).toLowerCase().includes(needle))
-    || null;
-}
-
-function sendOperatorOutput(id: string, text: string, exitCode?: number): void {
-  const ws = operatorSocket;
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  ws.send(JSON.stringify({
-    type: "operator.output",
-    id,
-    text,
-    ...(typeof exitCode === "number" ? { exitCode } : {})
-  }));
 }
 
 function renderTerminal(): void {
@@ -5283,100 +4513,12 @@ function maybeKnockForTyping(tunnelId: string, activity: WriterActivity, hadNoti
   vibrateHiddenOnce(`typing:${writer}`, tunnelId, hadNotice);
 }
 
-function startAgentSourceControl(tunnelId: string): void {
-  agentSourceControlTunnelId = tunnelId;
-  agentSourcePollEpoch += 1;
-  agentSourcePollController?.abort();
-  agentSourcePollController = null;
-  agentSourcePolling = false;
-  window.clearTimeout(agentSourcePollTimer);
-  agentSourceGrantRefreshAt = 0;
-  void pollAgentSourceControl(agentSourcePollEpoch);
-}
-
-function resumeAgentSourceControl(): void {
-  if (!device) {
-    return;
-  }
-  const agentTunnel = sortedVisibleTunnels().find((tunnel) => remoteEnabled.has(tunnel.id) && isAgentTunnel(tunnel));
-  if (!agentTunnel) {
-    return;
-  }
-  terminalOpenId = terminalOpenId || agentTunnel.id;
-  setTerminalState(agentTunnel.id, "idle");
-  void grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
-  startAgentSourceControl(agentTunnel.id);
-}
-
-function stopAgentSourceControl(tunnelId: string): void {
-  if (agentSourceControlTunnelId === tunnelId) {
-    agentSourceControlTunnelId = "";
-  }
-  agentSourcePollEpoch += 1;
-  agentSourcePollController?.abort();
-  agentSourcePollController = null;
-  agentSourcePolling = false;
-  agentSourceGrantRefreshAt = 0;
-  window.clearTimeout(agentSourcePollTimer);
-}
-
-async function pollAgentSourceControl(epoch = agentSourcePollEpoch): Promise<void> {
-  if (agentSourcePolling || !device || !agentSourceControlTunnelId || !isAgentTunnelId(agentSourceControlTunnelId)) {
-    return;
-  }
-  const tunnelId = agentSourceControlTunnelId;
-  const controller = new AbortController();
-  agentSourcePollController = controller;
-  agentSourcePolling = true;
-  try {
-    await refreshAgentSourceGrant(tunnelId);
-    if (agentSourcePollEpoch !== epoch || controller.signal.aborted) {
-      return;
-    }
-  } finally {
-    if (agentSourcePollController === controller) {
-      agentSourcePollController = null;
-    }
-    if (agentSourcePollEpoch === epoch) {
-      agentSourcePolling = false;
-      if (device && agentSourceControlTunnelId === tunnelId && isAgentTunnelId(tunnelId)) {
-        agentSourcePollTimer = window.setTimeout(() => void pollAgentSourceControl(epoch), agentSourceGrantRefreshMs);
-      }
-    }
-  }
-}
-
-async function refreshAgentSourceGrant(tunnelId: string): Promise<void> {
-  if (!device || !isAgentTunnelId(tunnelId)) {
-    return;
-  }
-  const now = Date.now();
-  if (agentSourceGrantRefreshAt > now) {
-    return;
-  }
-  agentSourceGrantRefreshAt = now + agentSourceGrantRefreshMs;
-  localAgent = await ensureAgentSourceCompanion();
-  if (!isAgentSourceCompanionReady(localAgent, device.id)) {
-    agentSourceGrantRefreshAt = now + 5000;
-    return;
-  }
-  const ok = await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState());
-  if (!ok) {
-    agentSourceGrantRefreshAt = now + 5000;
-  }
-}
-
 function localAgentRunTimeoutMs(value: unknown): number {
-  return safeOperatorTimeoutMs(value) || 30 * 60_000;
-}
-
-function agentSourceClientState(): { readonly localAgent: LocalAgentStatus; readonly deviceNetwork: LocalAgentDeviceNetwork } {
-  const activeTunnel = selectedId ? loadTunnels().find((item) => item.id === selectedId) || null : null;
-  const targets = operatorTargets();
-  return {
-    localAgent,
-    deviceNetwork: agentDeviceNetworkContext(selectedId, activeTunnel, targets)
-  };
+  const timeoutMs = typeof value === "number" ? value : 0;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return 30 * 60_000;
+  }
+  return Math.max(1_000, Math.min(Math.trunc(timeoutMs), 2 * 60 * 60_000));
 }
 
 function processLocalAgentDataPlaneOutput(tunnelId: string, commandId: string, rawText: string, flush = false): string {
@@ -5561,242 +4703,146 @@ function cleanupSotyFileDataPlane(commandId: string): void {
 
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   const sync = syncs.get(tunnelId);
-  if (!sync || !command.deviceId) {
+  if (!sync || !command.deviceId || !device) {
     return;
   }
-  let opened = false;
-  let finished = false;
-  const timeoutMs = localAgentRunTimeoutMs(command.timeoutMs);
-  let watchdogTimer = 0;
-  const ws = new WebSocket("ws://127.0.0.1:49424");
-  const fail = () => {
-    if (finished || opened) {
+  const controller = new AbortController();
+  localAgentRuns.set(command.id, controller);
+  setTerminalState(tunnelId, "run");
+  renderTerminal();
+  let streamed = false;
+  const sendChunk = (rawText: string) => {
+    const text = processLocalAgentDataPlaneOutput(tunnelId, command.id, rawText);
+    if (!text) {
       return;
     }
-    finished = true;
+    streamed = true;
+    appendTerminalLine(tunnelId, text);
+    renderTerminal();
+    void sync.sendRemoteOutput(command.deviceId, command.id, text);
+  };
+  void runConnectorJob({
+    deviceId: device.id,
+    threadId: tunnelId,
+    input: {
+      kind: "command",
+      text: command.command,
+      runAs: command.runAs === "system" ? "system" : "user",
+      timeoutMs: localAgentRunTimeoutMs(command.timeoutMs)
+    },
+    timeoutMs: localAgentRunTimeoutMs(command.timeoutMs) + 5_000,
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === "stdout" || event.type === "stderr") {
+        sendChunk(event.text);
+      }
+    }
+  }).then((reply) => {
+    const trailing = processLocalAgentDataPlaneOutput(tunnelId, command.id, "", true);
+    if (trailing) {
+      streamed = true;
+      appendTerminalLine(tunnelId, trailing);
+      void sync.sendRemoteOutput(command.deviceId, command.id, trailing);
+    }
+    const exitCode = reply.exitCode ?? (reply.ok ? 0 : 1);
+    if (!streamed && reply.text) {
+      const text = `${reply.text}${reply.text.endsWith("\n") ? "" : "\n"}`;
+      appendTerminalLine(tunnelId, text);
+      void sync.sendRemoteOutput(command.deviceId, command.id, text);
+    }
+    setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
+    appendTerminalExitLine(tunnelId, exitCode);
+    renderTerminal();
+    void sync.sendRemoteOutput(command.deviceId, command.id, "", exitCode);
+  }).catch((error) => {
+    const text = `! ${error instanceof Error ? error.message : String(error)}\n`;
+    setTerminalState(tunnelId, "bad");
+    appendTerminalLine(tunnelId, text);
+    renderTerminal();
+    void sync.sendRemoteOutput(command.deviceId, command.id, text, 1);
+  }).finally(() => {
     cleanupSotyFileDataPlane(command.id);
-    setTerminalState(tunnelId, "off");
-    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
-    renderTerminal();
-    window.clearTimeout(timer);
-    window.clearTimeout(watchdogTimer);
-    void sync.sendRemoteOutput(command.deviceId, command.id, "! 127.0.0.1:49424", 127);
-  };
-  const timer = window.setTimeout(() => {
-    fail();
-    ws.close();
-  }, 2500);
-  ws.onopen = () => {
-    opened = true;
-    window.clearTimeout(timer);
-    localAgentRuns.set(command.id, ws);
-    watchdogTimer = window.setTimeout(() => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      stopLocalAgentRun(command.id);
-      cleanupSotyFileDataPlane(command.id);
-      setTerminalState(tunnelId, "bad");
-      appendTerminalLine(tunnelId, "! timeout");
-      renderTerminal();
-      if (localAgentRuns.get(command.id) === ws) {
-        localAgentRuns.delete(command.id);
-      }
-      void sync.sendRemoteOutput(command.deviceId, command.id, "! timeout\n", 124);
-      ws.close();
-    }, timeoutMs + 1500);
-    ws.send(JSON.stringify({
-      type: "run",
-      id: command.id,
-      command: command.command,
-      runAs: command.runAs || "",
-      timeoutMs
-    }));
-  };
-  ws.onmessage = (event) => {
-    let message: { readonly type?: string; readonly text?: string; readonly exitCode?: number };
-    try {
-      message = JSON.parse(event.data as string) as { readonly type?: string; readonly text?: string; readonly exitCode?: number };
-    } catch {
-      return;
-    }
-    if (message.type === "start") {
-      setTerminalState(tunnelId, "run");
-      renderTerminal();
-      return;
-    }
-    if (message.type === "error") {
-      finished = true;
-      window.clearTimeout(watchdogTimer);
-      cleanupSotyFileDataPlane(command.id);
-      setTerminalState(tunnelId, "bad");
-      const text = typeof message.text === "string" ? message.text : "!";
-      appendTerminalLine(tunnelId, text);
-      renderTerminal();
-      void sync.sendRemoteOutput(command.deviceId, command.id, text, 1);
-      return;
-    }
-    if (message.type !== "data" && message.type !== "exit") {
-      return;
-    }
-    const rawText = typeof message.text === "string" ? message.text : "";
-    const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
-    const text = processLocalAgentDataPlaneOutput(tunnelId, command.id, rawText, typeof exitCode === "number");
-    if (text.trim()) {
-      appendTerminalLine(tunnelId, text);
-    }
-    if (typeof exitCode === "number") {
-      finished = true;
-      window.clearTimeout(watchdogTimer);
-      cleanupSotyFileDataPlane(command.id);
-      setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalExitLine(tunnelId, exitCode);
-    }
-    renderTerminal();
-    void sync.sendRemoteOutput(command.deviceId, command.id, text, exitCode);
-  };
-  ws.onerror = () => fail();
-  ws.onclose = () => {
-    window.clearTimeout(timer);
-    window.clearTimeout(watchdogTimer);
-    if (opened && !finished) {
-      finished = true;
-      cleanupSotyFileDataPlane(command.id);
-      setTerminalState(tunnelId, "bad");
-      appendTerminalLine(tunnelId, "! agent disconnected");
-      renderTerminal();
-      void sync.sendRemoteOutput(command.deviceId, command.id, "! agent disconnected\n", 127);
-    }
-    if (localAgentRuns.get(command.id) === ws) {
+    if (localAgentRuns.get(command.id) === controller) {
       localAgentRuns.delete(command.id);
     }
-  };
+  });
 }
 
 function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
   const sync = syncs.get(tunnelId);
-  if (!sync || !script.deviceId) {
+  if (!sync || !script.deviceId || !device) {
     return;
   }
-  let opened = false;
-  let finished = false;
-  const timeoutMs = localAgentRunTimeoutMs(script.timeoutMs);
-  let watchdogTimer = 0;
-  const ws = new WebSocket("ws://127.0.0.1:49424");
-  const fail = () => {
-    if (finished || opened) {
+  const controller = new AbortController();
+  localAgentRuns.set(script.id, controller);
+  setTerminalState(tunnelId, "run");
+  renderTerminal();
+  let streamed = false;
+  const sendChunk = (rawText: string) => {
+    const text = processLocalAgentDataPlaneOutput(tunnelId, script.id, rawText);
+    if (!text) {
       return;
     }
-    finished = true;
-    cleanupSotyFileDataPlane(script.id);
-    setTerminalState(tunnelId, "off");
-    appendTerminalLine(tunnelId, "! 127.0.0.1:49424");
+    streamed = true;
+    appendTerminalLine(tunnelId, text);
     renderTerminal();
-    window.clearTimeout(timer);
-    window.clearTimeout(watchdogTimer);
-    void sync.sendRemoteOutput(script.deviceId, script.id, "! 127.0.0.1:49424", 127);
+    void sync.sendRemoteOutput(script.deviceId, script.id, text);
   };
-  const timer = window.setTimeout(() => {
-    fail();
-    ws.close();
-  }, 2500);
-  ws.onopen = () => {
-    opened = true;
-    window.clearTimeout(timer);
-    localAgentRuns.set(script.id, ws);
-    watchdogTimer = window.setTimeout(() => {
-      if (finished) {
-        return;
-      }
-      finished = true;
-      stopLocalAgentRun(script.id);
-      cleanupSotyFileDataPlane(script.id);
-      setTerminalState(tunnelId, "bad");
-      appendTerminalLine(tunnelId, "! timeout");
-      renderTerminal();
-      if (localAgentRuns.get(script.id) === ws) {
-        localAgentRuns.delete(script.id);
-      }
-      void sync.sendRemoteOutput(script.deviceId, script.id, "! timeout\n", 124);
-      ws.close();
-    }, timeoutMs + 1500);
-    ws.send(JSON.stringify({
-      type: "script",
-      id: script.id,
+  void runConnectorJob({
+    deviceId: device.id,
+    threadId: tunnelId,
+    input: {
+      kind: "script",
       name: script.name,
       shell: script.shell,
       script: script.script,
-      runAs: script.runAs || "",
-      timeoutMs
-    }));
-  };
-  ws.onmessage = (event) => {
-    let message: { readonly type?: string; readonly text?: string; readonly exitCode?: number };
-    try {
-      message = JSON.parse(event.data as string) as { readonly type?: string; readonly text?: string; readonly exitCode?: number };
-    } catch {
-      return;
+      runAs: script.runAs === "system" ? "system" : "user",
+      timeoutMs: localAgentRunTimeoutMs(script.timeoutMs)
+    },
+    timeoutMs: localAgentRunTimeoutMs(script.timeoutMs) + 5_000,
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === "stdout" || event.type === "stderr") {
+        sendChunk(event.text);
+      }
     }
-    if (message.type === "start") {
-      setTerminalState(tunnelId, "run");
-      renderTerminal();
-      return;
+  }).then((reply) => {
+    const trailing = processLocalAgentDataPlaneOutput(tunnelId, script.id, "", true);
+    if (trailing) {
+      streamed = true;
+      appendTerminalLine(tunnelId, trailing);
+      void sync.sendRemoteOutput(script.deviceId, script.id, trailing);
     }
-    if (message.type === "error") {
-      finished = true;
-      window.clearTimeout(watchdogTimer);
-      cleanupSotyFileDataPlane(script.id);
-      setTerminalState(tunnelId, "bad");
-      const text = typeof message.text === "string" ? message.text : "!";
+    const exitCode = reply.exitCode ?? (reply.ok ? 0 : 1);
+    if (!streamed && reply.text) {
+      const text = `${reply.text}${reply.text.endsWith("\n") ? "" : "\n"}`;
       appendTerminalLine(tunnelId, text);
-      renderTerminal();
-      void sync.sendRemoteOutput(script.deviceId, script.id, text, 1);
-      return;
+      void sync.sendRemoteOutput(script.deviceId, script.id, text);
     }
-    if (message.type !== "data" && message.type !== "exit") {
-      return;
-    }
-    const rawText = typeof message.text === "string" ? message.text : "";
-    const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
-    const text = processLocalAgentDataPlaneOutput(tunnelId, script.id, rawText, typeof exitCode === "number");
-    if (text.trim()) {
-      appendTerminalLine(tunnelId, text);
-    }
-    if (typeof exitCode === "number") {
-      finished = true;
-      window.clearTimeout(watchdogTimer);
-      cleanupSotyFileDataPlane(script.id);
-      setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
-      appendTerminalExitLine(tunnelId, exitCode);
-    }
+    setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
+    appendTerminalExitLine(tunnelId, exitCode);
     renderTerminal();
-    void sync.sendRemoteOutput(script.deviceId, script.id, text, exitCode);
-  };
-  ws.onerror = () => fail();
-  ws.onclose = () => {
-    window.clearTimeout(timer);
-    window.clearTimeout(watchdogTimer);
-    if (opened && !finished) {
-      finished = true;
-      cleanupSotyFileDataPlane(script.id);
-      setTerminalState(tunnelId, "bad");
-      appendTerminalLine(tunnelId, "! agent disconnected");
-      renderTerminal();
-      void sync.sendRemoteOutput(script.deviceId, script.id, "! agent disconnected\n", 127);
-    }
-    if (localAgentRuns.get(script.id) === ws) {
+    void sync.sendRemoteOutput(script.deviceId, script.id, "", exitCode);
+  }).catch((error) => {
+    const text = `! ${error instanceof Error ? error.message : String(error)}\n`;
+    setTerminalState(tunnelId, "bad");
+    appendTerminalLine(tunnelId, text);
+    renderTerminal();
+    void sync.sendRemoteOutput(script.deviceId, script.id, text, 1);
+  }).finally(() => {
+    cleanupSotyFileDataPlane(script.id);
+    if (localAgentRuns.get(script.id) === controller) {
       localAgentRuns.delete(script.id);
     }
-  };
+  });
 }
 
 function stopLocalAgentRun(commandId: string): boolean {
-  const ws = localAgentRuns.get(commandId);
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  const controller = localAgentRuns.get(commandId);
+  if (!controller) {
     return false;
   }
-  ws.send(JSON.stringify({ type: "stop", id: commandId }));
+  controller.abort();
   return true;
 }
 
@@ -5899,7 +4945,6 @@ async function finalizeComposerDraft(): Promise<void> {
   }
   void sync.sendLiveDraft("");
   if (tunnel && isAgentTunnel(tunnel)) {
-    await prepareAgentSourceForDialog(tunnelId, tunnel);
     void sendAgentDialogMessage(tunnelId, outboundMessage);
   } else if (tunnel && containsAgentInvocation(outboundMessage)) {
     void sendAgentDialogMessage(tunnelId, outboundMessage, { explicitMention: true });
@@ -6077,11 +5122,11 @@ function sendAgentDialogMessage(
       const streamedMessages: string[] = [];
       try {
         if (agentTunnel) {
-          await prepareAgentSourceForDialog(tunnelId, tunnel);
+          await prepareAgentSourceForDialog(tunnel);
         } else if (options.explicitMention === true) {
-          await preparePeerAgentInvocation(tunnelId);
+          await preparePeerAgentInvocation();
         }
-        const source = agentRequestSourceForTunnel(tunnelId, tunnel, agentTunnel);
+        const source = agentRequestSourceForTunnel(tunnelId, tunnel);
         reply = await askLocalAgentReply(taskText, context, source, 2 * 60 * 60_000, (message) => {
           const streamed = normalizeChatMessage(cleanAgentReplyText(message));
           if (!streamed || streamedMessages[streamedMessages.length - 1] === streamed) {
@@ -6115,66 +5160,29 @@ function sendAgentDialogMessage(
   return next;
 }
 
-function agentRequestSourceForTunnel(tunnelId: string, tunnel: TunnelRecord, agentTunnel: boolean): LocalAgentRequestSource {
-  const targets = operatorTargets();
-  const deviceNetwork = agentDeviceNetworkContext(tunnelId, tunnel, targets);
-  const preferredTarget = agentTunnel
-    ? null
-    : linkedOperatorTargetForTunnel(tunnelId, targets);
+function agentRequestSourceForTunnel(tunnelId: string, tunnel: TunnelRecord): LocalAgentRequestSource {
   return {
     tunnelId,
     tunnelLabel: counterpartyLabel(tunnel),
     deviceId: device?.id || "",
     deviceNick: device?.nick || "",
     localAgent,
-    appOrigin: window.location.origin,
-    preferredTargetId: preferredTarget?.id || "",
-    preferredTargetLabel: preferredTarget?.label || "",
-    operatorTargets: targets,
-    deviceNetwork
+    appOrigin: window.location.origin
   };
 }
 
-async function prepareAgentSourceForDialog(tunnelId: string, tunnel: TunnelRecord): Promise<void> {
+async function prepareAgentSourceForDialog(tunnel: TunnelRecord): Promise<void> {
   if (!device || !isAgentTunnel(tunnel)) {
     return;
   }
   localAgent = await ensureAgentSourceCompanion();
-  if (!isAgentSourceCompanionReady(localAgent, device.id)) {
-    renderTiles();
-    renderTerminal();
-    publishOperatorTargets();
-    return;
-  }
-  if (!remoteEnabled.has(tunnelId)) {
-    remoteEnabled = setRemoteEnabled(tunnelId, true);
-  }
-  terminalOpenId = tunnelId;
-  if (!terminalState.has(tunnelId)) {
-    setTerminalState(tunnelId, "idle");
-  }
-  renderTiles();
-  renderTerminal();
-  publishOperatorTargets();
-  await grantAgentSourceAccess(device.id, device.nick, true, agentSourceClientState(), 2500).catch(() => false);
-  startAgentSourceControl(tunnelId);
-  publishOperatorTargets();
 }
 
-async function preparePeerAgentInvocation(tunnelId: string): Promise<void> {
+async function preparePeerAgentInvocation(): Promise<void> {
   if (!device) {
     return;
   }
-  const tunnel = loadTunnels().find((item) => item.id === tunnelId);
-  if (!tunnel || isAgentTunnel(tunnel) || !remoteAccess.has(tunnelId)) {
-    return;
-  }
-  if (!terminalState.has(tunnelId)) {
-    setTerminalState(tunnelId, "idle");
-  }
-  ensureSync(tunnel);
-  await ensureOperatorBridge();
-  publishOperatorTargets();
+  localAgent = await ensureAgentSourceCompanion();
 }
 
 function finishAgentDialogReply(
@@ -6202,7 +5210,7 @@ function finishAgentDialogReply(
   const appended = appendAgentReplyMessages(tunnelId, finalReply, body);
   if (!appended && !reply.ok && body) {
     appendAgentChatMessage(tunnelId, userVisibleAgentFailureText(body));
-    appendTerminalLine(tunnelId, `! codex bridge: ${body}`);
+    appendTerminalLine(tunnelId, `! agent runtime: ${body}`);
   }
   playAgentDoneSound();
 }
@@ -6238,7 +5246,7 @@ function appendAgentChatMessage(tunnelId: string, rawText: string): boolean {
   const next = `${before}${insertText}`;
   const index = before.length;
   const activity: WriterActivity = {
-    deviceId: "codex",
+    deviceId: "opencode",
     nick: agentDialogLabel,
     index,
     local: false,
@@ -7624,7 +6632,7 @@ function isAgentChromeLineClass(className: string): boolean {
 }
 
 function isOperatorHeader(line: string): boolean {
-  return /^(Агент|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
+  return /^(Агент|OpenCode|Codex|Оператор|Operator)\s+·\s+\d{1,2}:\d{2}$/u.test(line);
 }
 
 function cleanAgentContext(value: string): string {
@@ -8052,6 +7060,195 @@ function closeQrOverlay(): void {
   qrOverlay?.remove();
   qrOverlay = null;
   qrMode = null;
+}
+
+async function openTrafficFabricModal(): Promise<void> {
+  trafficModal?.remove();
+  const overlay = document.createElement("div");
+  overlay.className = "traffic-modal";
+  overlay.innerHTML = `
+    <section class="traffic-sheet" role="dialog" aria-modal="true" aria-label="Интернет через Соты">
+      <header class="traffic-head">
+        <span class="traffic-route-mark">${icon("traffic")}</span>
+        <span><b>Интернет через Соты</b><small>Выход через ваш компьютер</small></span>
+        <button class="traffic-close retro-icon-button" type="button" aria-label="Закрыть">${icon("close")}</button>
+      </header>
+      <div class="traffic-content"><p class="traffic-loading">Проверяем маршрут…</p></div>
+    </section>`;
+  document.body.append(overlay);
+  trafficModal = overlay;
+  const close = () => {
+    overlay.remove();
+    if (trafficModal === overlay) trafficModal = null;
+  };
+  overlay.querySelector<HTMLButtonElement>(".traffic-close")?.addEventListener("click", close);
+  overlay.addEventListener("pointerdown", (event) => {
+    if (event.target === overlay) close();
+  });
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      document.removeEventListener("keydown", onKey);
+      close();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  await renderTrafficFabricModal(overlay);
+}
+
+async function renderTrafficFabricModal(overlay: HTMLDivElement, notice = ""): Promise<void> {
+  const content = overlay.querySelector<HTMLDivElement>(".traffic-content");
+  if (!content) return;
+  const localAgentStatus = await checkLocalCompanionAgent(1200).catch(() => ({ ok: false } as LocalAgentStatus));
+  if (!device || !isAgentMachineLinkReady(localAgentStatus, device.id)) {
+    if (canInstallMachineAgent()) {
+      renderTrafficConnectorInstall(content, notice);
+    } else {
+      renderTrafficMobileProfile(content, notice);
+    }
+    return;
+  }
+
+  const [runtime, interfaces, server] = await Promise.all([
+    trafficFabricStatus().catch((error) => ({ phase: "error", lastError: trafficErrorText(error) } as TrafficRuntime)),
+    trafficInterfaces().catch(() => [] as readonly TrafficInterface[]),
+    trafficServerStatus().catch(() => ({ exits: [] as readonly TrafficExit[], clients: [] as readonly TrafficClient[] }))
+  ]);
+  const activeClients = server.clients.filter((client) => !client.revokedAt);
+  const selectedVpn = interfaces.find((item) => item.up && item.vpn) || interfaces.find((item) => item.up);
+  const active = runtime.active === true;
+  const phase = active ? "Маршрут работает" : runtime.configured ? "Маршрут остановлен" : "Маршрут не настроен";
+  content.innerHTML = `
+    ${notice ? `<output class="traffic-notice">${escapeHtml(notice)}</output>` : ""}
+    <section class="traffic-status-line" data-active="${active}">
+      <span class="traffic-pulse"></span>
+      <span><b>${phase}</b><small>${active ? `Ядро ${escapeHtml(runtime.version || "готово")}` : escapeHtml(runtime.lastError || "Можно включить за один шаг")}</small></span>
+    </section>
+    <section class="traffic-route-section">
+      <h3>Выход</h3>
+      <label class="traffic-switch-row">
+        <input class="traffic-require-vpn" type="checkbox" ${selectedVpn?.vpn ? "checked" : ""} />
+        <span><b>Через VPN компьютера</b><small>Если VPN выключится, телефон не уйдёт напрямую</small></span>
+      </label>
+      <label class="traffic-field">
+        <span>Сетевой интерфейс</span>
+        <select class="traffic-interface">
+          ${interfaces.filter((item) => item.up).map((item) => `<option value="${escapeHtml(item.name)}" ${item.name === selectedVpn?.name ? "selected" : ""}>${escapeHtml(item.name)}${item.vpn ? " · VPN" : ""}</option>`).join("")}
+        </select>
+      </label>
+    </section>
+    <section class="traffic-devices-section">
+      <div class="traffic-section-head"><h3>Устройства</h3><span>${activeClients.length}</span></div>
+      <div class="traffic-device-list">
+        ${activeClients.length ? activeClients.map((client) => `
+          <div class="traffic-device-row">
+            <span><b>${escapeHtml(client.label)}</b><small>${escapeHtml(client.platform || "устройство")}</small></span>
+            <button type="button" data-revoke-client="${escapeHtml(client.id)}">Отключить</button>
+          </div>`).join("") : `<p class="traffic-empty">Подключённых телефонов пока нет.</p>`}
+      </div>
+    </section>
+    <div class="traffic-primary-actions">
+      <button class="traffic-provision" type="button">${active ? "Добавить телефон" : "Включить и добавить телефон"}</button>
+      ${runtime.configured ? `<button class="traffic-stop" type="button">Остановить</button>` : ""}
+    </div>
+    <p class="traffic-footnote">Доступ к локальной сети и файлам компьютера не выдаётся. Профиль можно отозвать отдельно.</p>`;
+
+  const requireVpn = content.querySelector<HTMLInputElement>(".traffic-require-vpn");
+  const interfaceSelect = content.querySelector<HTMLSelectElement>(".traffic-interface");
+  content.querySelector<HTMLButtonElement>(".traffic-provision")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!(button instanceof HTMLButtonElement)) return;
+    button.disabled = true;
+    button.textContent = active ? "Создаём профиль…" : "Запускаем маршрут…";
+    try {
+      const result = active && server.exits[0]
+        ? await provisionTrafficClient(server.exits[0].id, `Телефон ${activeClients.length + 1}`)
+        : await provisionTraffic({
+            requireVpn: requireVpn?.checked === true,
+            vpnInterface: interfaceSelect?.value || "",
+            clientLabel: `Телефон ${activeClients.length + 1}`
+          });
+      const profile = typeof result.profile === "string" ? result.profile : "";
+      if (!profile) throw new Error("profile-not-created");
+      trafficLastProfile = profile;
+      saveTrafficProfile(profile);
+      await renderTrafficProfileReady(content, profile);
+    } catch (error) {
+      await renderTrafficFabricModal(overlay, trafficErrorText(error));
+    }
+  });
+  content.querySelector<HTMLButtonElement>(".traffic-stop")?.addEventListener("click", async () => {
+    await stopTraffic().catch(() => undefined);
+    await renderTrafficFabricModal(overlay, "Маршрут остановлен");
+  });
+  content.querySelectorAll<HTMLButtonElement>("[data-revoke-client]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      await revokeTrafficClient(button.dataset.revokeClient || "").catch(() => undefined);
+      await renderTrafficFabricModal(overlay, "Доступ устройства отозван");
+    });
+  });
+}
+
+function renderTrafficConnectorInstall(content: HTMLDivElement, notice = ""): void {
+  content.innerHTML = `
+    ${notice ? `<output class="traffic-notice">${escapeHtml(notice)}</output>` : ""}
+    <section class="traffic-status-line" data-active="false">
+      <span class="traffic-pulse"></span><span><b>Нужен Soty Agent</b><small>Он запускает OpenCode через Gonka AI и создаёт защищённый интернет-маршрут.</small></span>
+    </section>
+    <div class="traffic-primary-actions">
+      <button class="traffic-install-connector" type="button">Скачать Soty Agent</button>
+    </div>
+    <p class="traffic-footnote">После установки вернитесь сюда — состояние обновится автоматически.</p>`;
+  content.querySelector<HTMLButtonElement>(".traffic-install-connector")?.addEventListener("click", () => {
+    requestAgentDownload(device || undefined);
+  });
+}
+
+function renderTrafficMobileProfile(content: HTMLDivElement, notice = ""): void {
+  const profile = trafficLastProfile || readTrafficProfile();
+  content.innerHTML = profile ? `
+    ${notice ? `<output class="traffic-notice">${escapeHtml(notice)}</output>` : ""}
+    <section class="traffic-status-line" data-active="true">
+      <span class="traffic-pulse"></span><span><b>Профиль готов</b><small>Откройте его в INCY и нажмите подключение</small></span>
+    </section>
+    <div class="traffic-mobile-steps"><span>1</span><p><b>Установите INCY</b><small>Если приложение уже есть — переходите дальше.</small></p></div>
+    <div class="traffic-mobile-steps"><span>2</span><p><b>Импортируйте профиль</b><small>INCY покажет VLESS · XHTTP · TLS.</small></p></div>
+    <button class="traffic-open-client" type="button">Открыть в INCY</button>
+    <p class="traffic-footnote">Профиль даёт только интернет через выбранный компьютер. Он не открывает его файлы и локальную сеть.</p>` : `
+    <section class="traffic-status-line" data-active="false">
+      <span class="traffic-pulse"></span><span><b>Нужен профиль</b><small>Откройте «Интернет» в Сотах на компьютере и покажите QR.</small></span>
+    </section>
+    <p class="traffic-empty">После сканирования этот экран сам предложит открыть INCY.</p>`;
+  content.querySelector<HTMLButtonElement>(".traffic-open-client")?.addEventListener("click", () => {
+    window.location.href = profile;
+  });
+}
+
+async function renderTrafficProfileReady(content: HTMLDivElement, profile: string): Promise<void> {
+  const invite = trafficProfileInviteUrl(profile);
+  content.innerHTML = `
+    <section class="traffic-status-line" data-active="true">
+      <span class="traffic-pulse"></span><span><b>Телефон можно подключать</b><small>Откройте камеру телефона и наведите на QR</small></span>
+    </section>
+    <div class="traffic-profile-qr"><img alt="QR профиля Интернет через Соты" /></div>
+    <div class="traffic-primary-actions">
+      <button class="traffic-copy-link" type="button">Скопировать ссылку</button>
+      <button class="traffic-done" type="button">Готово</button>
+    </div>
+    <p class="traffic-footnote">QR открывает PWA «Сот», а уже она передаёт профиль установленному INCY.</p>`;
+  const qr = content.querySelector<HTMLImageElement>(".traffic-profile-qr img");
+  if (qr && invite) qr.src = await QRCode.toDataURL(invite, { width: 320, margin: 2, color: { dark: "#071009", light: "#e8f7ef" } });
+  content.querySelector<HTMLButtonElement>(".traffic-copy-link")?.addEventListener("click", () => void copyText(invite));
+  content.querySelector<HTMLButtonElement>(".traffic-done")?.addEventListener("click", () => trafficModal?.remove());
+}
+
+function trafficErrorText(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error || "Не удалось включить маршрут");
+  const known: Record<string, string> = {
+    "agent-not-connected": "Soty Agent на компьютере сейчас не связан с сервером.",
+    "profile-not-created": "Сервер не выдал профиль устройства."
+  };
+  return known[raw] || raw.replace(/^traffic-control-http-/u, "Ошибка сервера: ").slice(0, 180);
 }
 
 function setupSplitter(): void {
