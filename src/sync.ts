@@ -97,6 +97,14 @@ export interface RemoteGrant {
   readonly enabled: boolean;
   readonly targetDeviceId: string;
   readonly capabilities?: readonly string[];
+  readonly connectorAccess?: {
+    readonly id: string;
+    readonly token: string;
+    readonly deviceId: string;
+    readonly controllerDeviceId: string;
+    readonly capabilities: readonly string[];
+    readonly expiresAt: string;
+  };
   readonly deviceId: string;
   readonly nick: string;
   readonly createdAt: string;
@@ -266,6 +274,15 @@ interface RemoteGrantMessage {
   readonly enabled: boolean;
   readonly targetDeviceId: string;
   readonly capabilities?: readonly string[];
+  readonly nonce?: string;
+  readonly ciphertext?: string;
+}
+
+interface EncryptedRemoteGrant extends RemoteGrantMessage {
+  readonly deviceId?: string;
+  readonly deviceNick?: string;
+  readonly nick?: string;
+  readonly createdAt?: string;
 }
 
 interface RemoteCancelMessage {
@@ -338,7 +355,7 @@ type ServerMessage =
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
   | { readonly type: "live.draft"; readonly draft: EncryptedLiveDraft }
   | { readonly type: "remote.request"; readonly request: RemoteRequest }
-  | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
+  | { readonly type: "remote.grant"; readonly grant: EncryptedRemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
   | { readonly type: "remote.cancel"; readonly cancel: RemoteCancelMessage }
@@ -375,7 +392,7 @@ type DirectMessage =
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
   | { readonly type: "live.draft"; readonly draft: EncryptedLiveDraft }
   | { readonly type: "remote.request"; readonly request: RemoteRequest }
-  | { readonly type: "remote.grant"; readonly grant: RemoteGrant }
+  | { readonly type: "remote.grant"; readonly grant: EncryptedRemoteGrant }
   | { readonly type: "remote.command"; readonly command: EncryptedRemoteCommand }
   | { readonly type: "remote.script"; readonly script: EncryptedRemoteScript }
   | { readonly type: "remote.cancel"; readonly cancel: RemoteCancelMessage }
@@ -404,6 +421,7 @@ export class TunnelSync {
   private readonly doc = new Y.Doc();
   private readonly text = this.doc.getText("body");
   private readonly chessMeta = this.doc.getMap<string>("chessMeta");
+  private readonly remoteGrantMeta = this.doc.getMap<string>("remoteConnectorGrants");
   private ws: WebSocket | null = null;
   private destroyed = false;
   private ready = false;
@@ -466,6 +484,11 @@ export class TunnelSync {
     });
     this.chessMeta.observe(() => {
       this.callbacks.onChess(this.chessSnapshot());
+    });
+    this.remoteGrantMeta.observe(() => {
+      for (const raw of this.remoteGrantMeta.values()) {
+        void this.applyDurableRemoteGrant(raw);
+      }
     });
     window.addEventListener("online", this.wakeReconnect);
     window.addEventListener("offline", this.offlineState);
@@ -715,15 +738,37 @@ export class TunnelSync {
     });
   }
 
-  grantRemote(enabled: boolean, targetDeviceId = "*", capabilities: readonly string[] = []): void {
+  async grantRemote(
+    enabled: boolean,
+    targetDeviceId = "*",
+    capabilities: readonly string[] = [],
+    connectorAccess?: RemoteGrant["connectorAccess"]
+  ): Promise<void> {
+    const id = `remote_grant_${crypto.randomUUID()}`;
+    const encrypted = await encryptForTunnel(this.tunnel, encode(JSON.stringify({
+      enabled,
+      capabilities: [...capabilities],
+      ...(connectorAccess ? { connectorAccess } : {})
+    })));
+    const grant: RemoteGrantMessage = {
+      id,
+      enabled,
+      targetDeviceId,
+      ...(capabilities.length > 0 ? { capabilities: [...capabilities] } : {}),
+      nonce: encrypted.nonce,
+      ciphertext: encrypted.ciphertext
+    };
+    this.remoteGrantMeta.set(this.device.id, JSON.stringify({
+      ...grant,
+      targetDeviceId: "*",
+      deviceId: this.device.id,
+      deviceNick: this.device.nick,
+      nick: this.device.nick,
+      createdAt: new Date().toISOString()
+    } satisfies EncryptedRemoteGrant));
     this.sendControl({
       type: "remote.grant",
-      grant: {
-        id: `remote_grant_${crypto.randomUUID()}`,
-        enabled,
-        targetDeviceId,
-        ...(capabilities.length > 0 ? { capabilities: [...capabilities] } : {})
-      }
+      grant
     });
   }
 
@@ -1010,8 +1055,8 @@ export class TunnelSync {
     }
 
     if (message.type === "remote.grant") {
-      if (this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
-        this.callbacks.onRemoteGrant(message.grant);
+      if (message.grant.deviceId !== this.device.id) {
+        await this.applyRemoteGrantEnvelope(message.grant);
       }
       return;
     }
@@ -1202,6 +1247,53 @@ export class TunnelSync {
       active,
       seq,
       createdAt: draft.createdAt || new Date().toISOString()
+    });
+  }
+
+  private async applyDurableRemoteGrant(raw: string): Promise<void> {
+    try {
+      const grant = JSON.parse(raw) as EncryptedRemoteGrant;
+      if (grant.deviceId && grant.deviceId !== this.device.id) {
+        await this.applyRemoteGrantEnvelope(grant);
+      }
+    } catch {
+      // Ignore malformed durable state from older or damaged clients.
+    }
+  }
+
+  private async applyRemoteGrantEnvelope(grant: EncryptedRemoteGrant): Promise<void> {
+    let enabled = grant.enabled;
+    let capabilities = grant.capabilities;
+    let connectorAccess: RemoteGrant["connectorAccess"];
+    if (grant.nonce && grant.ciphertext) {
+      try {
+        const bytes = await decryptFromTunnel(this.tunnel, grant.nonce, grant.ciphertext);
+        const payload = JSON.parse(decode(bytes)) as {
+          readonly enabled?: boolean;
+          readonly capabilities?: readonly string[];
+          readonly connectorAccess?: unknown;
+        };
+        enabled = payload.enabled === true;
+        capabilities = Array.isArray(payload.capabilities)
+          ? payload.capabilities.filter((part): part is string => typeof part === "string").slice(0, 16)
+          : [];
+        connectorAccess = cleanConnectorAccess(payload.connectorAccess);
+      } catch {
+        return;
+      }
+    }
+    if (!this.rememberControl(grant.id)) {
+      return;
+    }
+    this.callbacks.onRemoteGrant({
+      id: grant.id,
+      enabled,
+      targetDeviceId: grant.targetDeviceId,
+      ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+      ...(connectorAccess ? { connectorAccess } : {}),
+      deviceId: grant.deviceId || "",
+      nick: grant.deviceNick || grant.nick || "",
+      createdAt: grant.createdAt || new Date().toISOString()
     });
   }
 
@@ -1834,8 +1926,8 @@ export class TunnelSync {
       this.callbacks.onRemoteRequest(message.request);
       return;
     }
-    if (message.type === "remote.grant" && this.rememberControl(message.grant.id) && message.grant.deviceId !== this.device.id) {
-      this.callbacks.onRemoteGrant(message.grant);
+    if (message.type === "remote.grant" && message.grant.deviceId !== this.device.id) {
+      await this.applyRemoteGrantEnvelope(message.grant);
       return;
     }
     if (message.type === "remote.command" && this.rememberControl(message.command.id) && message.command.deviceId !== this.device.id) {
@@ -1960,6 +2052,26 @@ function controlMessageId(message: ControlMessage): string {
 
 function cleanFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]/gu, "_").slice(0, 120) || "file";
+}
+
+function cleanConnectorAccess(value: unknown): RemoteGrant["connectorAccess"] {
+  const item = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const id = typeof item.id === "string" ? item.id : "";
+  const token = typeof item.token === "string" ? item.token : "";
+  const deviceId = typeof item.deviceId === "string" ? item.deviceId : "";
+  const controllerDeviceId = typeof item.controllerDeviceId === "string" ? item.controllerDeviceId : "";
+  const expiresAt = typeof item.expiresAt === "string" ? item.expiresAt : "";
+  const capabilities = Array.isArray(item.capabilities)
+    ? item.capabilities.filter((part): part is string => typeof part === "string" && /^[a-z][a-z0-9.-]{0,63}$/u.test(part)).slice(0, 16)
+    : [];
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/u.test(id)
+    || !/^[A-Za-z0-9_-]{40,160}$/u.test(token)
+    || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/u.test(deviceId)
+    || !(controllerDeviceId === "*" || /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,179}$/u.test(controllerDeviceId))
+    || !Number.isFinite(Date.parse(expiresAt))) {
+    return undefined;
+  }
+  return { id, token, deviceId, controllerDeviceId, capabilities, expiresAt };
 }
 
 function cleanFileId(value: string): string {

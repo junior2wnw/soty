@@ -57,7 +57,8 @@ export interface SpreadExPairResult {
 }
 
 export interface LocalAgentPendingRelayReply {
-  readonly relayId: string;
+  readonly relayId?: string;
+  readonly access?: ConnectorAccessCredential;
   readonly id: string;
   readonly tunnelId: string;
   readonly text: string;
@@ -78,6 +79,16 @@ export interface LocalAgentRequestSource {
   readonly appOrigin?: string;
   readonly sessionId?: string;
   readonly cwd?: string;
+  readonly connectorAccess?: ConnectorAccessCredential;
+}
+
+export interface ConnectorAccessCredential {
+  readonly id: string;
+  readonly token: string;
+  readonly deviceId: string;
+  readonly controllerDeviceId: string;
+  readonly capabilities: readonly string[];
+  readonly expiresAt: string;
 }
 
 export interface ConnectorJobInput {
@@ -108,6 +119,12 @@ export interface RunConnectorJobOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onEvent?: (event: ConnectorJobEvent) => void;
+  readonly access?: ConnectorAccessCredential;
+}
+
+interface ControllerAuth {
+  readonly linkId: string;
+  readonly access?: ConnectorAccessCredential;
 }
 
 const linkStorageKey = "soty:connector:link-id";
@@ -198,6 +215,7 @@ export async function askLocalAgentReply(
   return await runConnectorJob({
     ...(source.deviceId ? { deviceId: source.deviceId } : {}),
     ...(source.tunnelId ? { threadId: source.tunnelId } : {}),
+    ...(source.connectorAccess ? { access: source.connectorAccess } : {}),
     input: {
       kind: "agent",
       text,
@@ -217,12 +235,13 @@ export async function askLocalAgentReply(
 
 export async function runConnectorJob(options: RunConnectorJobOptions): Promise<LocalAgentReply> {
   if (options.signal?.aborted) return cancelledReply();
-  const linkId = readLinkId() || ensureAgentRelayId();
+  const access = sanitizeConnectorAccess(options.access);
+  const linkId = access ? "" : readLinkId() || ensureAgentRelayId();
+  const auth = { linkId, ...(access ? { access } : {}) };
   const created = await requestJson("/api/connectors/jobs", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Soty-Link-Id": linkId },
+    headers: { "Content-Type": "application/json", ...controllerHeaders(auth) },
     body: JSON.stringify({
-      linkId,
       deviceId: options.deviceId || "",
       threadId: cleanId(options.threadId || ""),
       kind: options.input.kind,
@@ -236,7 +255,8 @@ export async function runConnectorJob(options: RunConnectorJobOptions): Promise<
   const id = created.job.id;
   const timeoutMs = Math.max(1_000, options.timeoutMs || options.input.timeoutMs || 2 * 60 * 60_000);
   rememberPending({
-    relayId: linkId,
+    ...(linkId ? { relayId: linkId } : {}),
+    ...(access ? { access } : {}),
     id,
     tunnelId: options.threadId || id,
     text: options.input.text || options.input.name || "",
@@ -246,22 +266,49 @@ export async function runConnectorJob(options: RunConnectorJobOptions): Promise<
     messages: [],
     terminal: []
   });
-  const abort = () => void cancelConnectorJob(id, linkId);
+  const abort = () => void cancelConnectorJob(id, linkId, access || undefined);
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
-    return await waitForJob(linkId, id, timeoutMs, options.onEvent, options.signal);
+    return await waitForJob(auth, id, timeoutMs, options.onEvent, options.signal);
   } finally {
     options.signal?.removeEventListener("abort", abort);
   }
 }
 
-export async function cancelConnectorJob(id: string, explicitLinkId = ""): Promise<boolean> {
+export async function cancelConnectorJob(id: string, explicitLinkId = "", explicitAccess?: ConnectorAccessCredential): Promise<boolean> {
+  const access = sanitizeConnectorAccess(explicitAccess);
   const linkId = sanitizeLinkId(explicitLinkId) || readLinkId();
-  if (!linkId || !cleanId(id)) return false;
+  if ((!linkId && !access) || !cleanId(id)) return false;
   const result = await requestJson(`/api/connectors/jobs/${encodeURIComponent(id)}/cancel`, {
     method: "POST",
+    headers: { "Content-Type": "application/json", ...controllerHeaders({ linkId, ...(access ? { access } : {}) }) },
+    body: JSON.stringify({})
+  }, 5_000);
+  return result.ok;
+}
+
+export async function createConnectorAccessGrant(
+  deviceId: string,
+  controllerDeviceId: string,
+  capabilities: readonly string[]
+): Promise<ConnectorAccessCredential | null> {
+  const linkId = readLinkId() || ensureAgentRelayId();
+  const result = await requestJson("/api/connectors/access-grants", {
+    method: "POST",
     headers: { "Content-Type": "application/json", "X-Soty-Link-Id": linkId },
-    body: JSON.stringify({ linkId })
+    body: JSON.stringify({ deviceId, controllerDeviceId, capabilities, expiresInMs: 30 * 24 * 60 * 60_000 })
+  }, 5_000);
+  return result.ok ? sanitizeConnectorAccess({ ...result.grant, token: result.token }) : null;
+}
+
+export async function revokeConnectorAccessGrant(grantId: string): Promise<boolean> {
+  const id = cleanId(grantId);
+  const linkId = readLinkId();
+  if (!id || !linkId) return false;
+  const result = await requestJson(`/api/connectors/access-grants/${encodeURIComponent(id)}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Soty-Link-Id": linkId },
+    body: JSON.stringify({})
   }, 5_000);
   return result.ok;
 }
@@ -333,17 +380,18 @@ export async function resumeAgentRelayReply(
   onTerminal?: LocalAgentMessageHandler,
   signal?: AbortSignal
 ): Promise<LocalAgentReply> {
-  const linkId = sanitizeLinkId(pending.relayId);
+  const linkId = sanitizeLinkId(pending.relayId || "");
+  const access = sanitizeConnectorAccess(pending.access);
   const id = cleanId(pending.id);
-  if (!linkId || !id) return failureReply("Сохранённое задание повреждено", 400);
-  return await waitForJob(linkId, id, Math.max(1_000, pending.timeoutAt - Date.now()), (event) => {
+  if ((!linkId && !access) || !id) return failureReply("Сохранённое задание повреждено", 400);
+  return await waitForJob({ linkId, ...(access ? { access } : {}) }, id, Math.max(1_000, pending.timeoutAt - Date.now()), (event) => {
     if (event.type === "message") onMessage?.(event.text);
     else if (event.text && !["queued", "leased", "started", "heartbeat"].includes(event.type)) onTerminal?.(event.text);
   }, signal, pending.after);
 }
 
 async function waitForJob(
-  linkId: string,
+  auth: ControllerAuth,
   id: string,
   timeoutMs: number,
   onEvent?: (event: ConnectorJobEvent) => void,
@@ -356,7 +404,7 @@ async function waitForJob(
   const terminal: string[] = [];
   while (!signal?.aborted && Date.now() < deadline) {
     const result = await requestJson(`/api/connectors/jobs/${encodeURIComponent(id)}/events?after=${after}&wait=1`, {
-      headers: { "X-Soty-Link-Id": linkId }
+      headers: controllerHeaders(auth)
     }, Math.min(35_000, Math.max(1_000, deadline - Date.now())), signal);
     if (!result.ok) {
       if (signal?.aborted) break;
@@ -388,7 +436,7 @@ async function waitForJob(
     }
   }
   if (signal?.aborted) {
-    await cancelConnectorJob(id, linkId).catch(() => false);
+    await cancelConnectorJob(id, auth.linkId, auth.access).catch(() => false);
     clearPendingAgentRelayReply(id);
     return cancelledReply();
   }
@@ -507,12 +555,14 @@ function writePending(value: readonly LocalAgentPendingRelayReply[]): void {
 function sanitizePending(value: unknown): LocalAgentPendingRelayReply | null {
   const item = value && typeof value === "object" ? value as Partial<LocalAgentPendingRelayReply> : {};
   const relayId = sanitizeLinkId(item.relayId || "");
+  const access = sanitizeConnectorAccess(item.access);
   const id = cleanId(item.id || "");
   const tunnelId = String(item.tunnelId || "").trim().slice(0, 180);
-  if (!relayId || !id || !tunnelId) return null;
+  if ((!relayId && !access) || !id || !tunnelId) return null;
   const createdAt = Number.isFinite(item.createdAt) ? Number(item.createdAt) : Date.now();
   return {
-    relayId,
+    ...(relayId ? { relayId } : {}),
+    ...(access ? { access } : {}),
     id,
     tunnelId,
     text: String(item.text || "").slice(0, 1_000),
@@ -656,6 +706,35 @@ function writeLinkId(value: string): void {
 function sanitizeLinkId(value: string): string {
   const text = String(value || "").trim();
   return /^[A-Za-z0-9_-]{32,192}$/u.test(text) ? text : "";
+}
+
+function sanitizeConnectorAccess(value: unknown): ConnectorAccessCredential | null {
+  const item = value && typeof value === "object" ? value as Partial<ConnectorAccessCredential> : {};
+  const id = cleanId(String(item.id || ""));
+  const token = String(item.token || "").trim();
+  const deviceId = cleanId(String(item.deviceId || ""));
+  const rawControllerDeviceId = String(item.controllerDeviceId || "");
+  const controllerDeviceId = rawControllerDeviceId === "*" ? "*" : cleanId(rawControllerDeviceId);
+  const expiresAt = String(item.expiresAt || "").trim();
+  const expiresAtMs = Date.parse(expiresAt);
+  const capabilities = Array.isArray(item.capabilities)
+    ? item.capabilities.filter((part): part is string => typeof part === "string" && /^[a-z][a-z0-9.-]{0,63}$/u.test(part)).slice(0, 16)
+    : [];
+  if (!id || !/^[A-Za-z0-9_-]{40,160}$/u.test(token) || !deviceId || !controllerDeviceId || !Number.isFinite(expiresAtMs)) {
+    return null;
+  }
+  return { id, token, deviceId, controllerDeviceId, capabilities, expiresAt: new Date(expiresAtMs).toISOString() };
+}
+
+function controllerHeaders(auth: ControllerAuth): Record<string, string> {
+  if (auth.access) {
+    return {
+      Authorization: `Bearer ${auth.access.token}`,
+      "X-Soty-Access-Grant-Id": auth.access.id,
+      "X-Soty-Controller-Device-Id": auth.access.controllerDeviceId
+    };
+  }
+  return auth.linkId ? { "X-Soty-Link-Id": auth.linkId } : {};
 }
 
 function cleanId(value: string): string {

@@ -110,7 +110,7 @@ export function verifyVendoredIdentityBundle({ files } = {}) {
       throw new CanonicalIdentityError("identity_vendor_pin_invalid", 500);
     }
     const value = snapshot.get(item.path);
-    if (!Buffer.isBuffer(value) || sha256(value) !== item.sha256) {
+    if (!Buffer.isBuffer(value) || sha256(normalizeVendoredContractBytes(value)) !== item.sha256) {
       throw new CanonicalIdentityError("identity_vendor_digest_mismatch", 500);
     }
   }
@@ -1028,6 +1028,13 @@ function isPlainObject(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeVendoredContractBytes(value) {
+  // The vendored identity bundle contains text-only JSON/Python contracts. Git
+  // may materialize those files with CRLF on Windows, while the reviewed pin is
+  // intentionally stable across operating systems and hashes canonical LF text.
+  return Buffer.from(value.toString("utf8").replace(/\r\n?/gu, "\n"), "utf8");
 }
 
 function loadContract(relativePath) {

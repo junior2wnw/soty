@@ -15,32 +15,45 @@ export function attachConnectorApi(app, { dataDir, gonka } = {}) {
     respond(res, await store.register(req.body, bearerToken(req)));
   }));
 
+  app.post("/api/connectors/access-grants", jsonParser, route(async (req, res) => {
+    const result = await store.createAccessGrant(linkId(req, req.body), req.body);
+    respond(res, result, result.ok ? 201 : undefined);
+  }));
+
+  app.post("/api/connectors/access-grants/:id/revoke", jsonParser, route(async (req, res) => {
+    respond(res, await store.revokeAccessGrant(linkId(req, req.body), req.params.id));
+  }));
+
   app.get("/api/connectors/status", route(async (req, res) => {
-    respond(res, await store.status(linkId(req), String(req.query.deviceId || "")));
+    respond(res, await store.status(controllerAuth(req), String(req.query.deviceId || "")));
   }));
 
   app.post("/api/connectors/jobs", jsonParser, route(async (req, res) => {
-    const result = await store.createJob({ ...req.body, linkId: linkId(req, req.body) });
+    const result = await store.createJob({ ...req.body, linkId: linkId(req, req.body) }, controllerAuth(req, req.body));
     respond(res, result, result.ok ? 201 : undefined);
   }));
 
   app.get("/api/connectors/jobs/:id", route(async (req, res) => {
-    respond(res, await store.getJob(linkId(req), req.params.id));
+    const result = req.headers["x-soty-connector-id"]
+      ? await store.getAssignedConnectorJob(connectorAuth(req), req.params.id)
+      : await store.getJob(controllerAuth(req), req.params.id);
+    respond(res, result);
   }));
 
   app.get("/api/connectors/jobs/:id/events", route(async (req, res) => {
     const after = Number.parseInt(String(req.query.after || "0"), 10) || 0;
-    let result = await store.getEvents(linkId(req), req.params.id, after);
+    const auth = controllerAuth(req);
+    let result = await store.getEvents(auth, req.params.id, after);
     if (result.ok && result.events.length === 0 && result.done !== true && req.query.wait === "1") {
       const job = result.job;
-      await store.waitForChange(linkId(req), job.deviceId || "", 25_000, responseSignal(res));
-      result = await store.getEvents(linkId(req), req.params.id, after);
+      await store.waitForControllerChange(auth, job.deviceId || "", 25_000, responseSignal(res));
+      result = await store.getEvents(auth, req.params.id, after);
     }
     respond(res, result);
   }));
 
   app.post("/api/connectors/jobs/:id/cancel", jsonParser, route(async (req, res) => {
-    respond(res, await store.cancelJob(linkId(req, req.body), req.params.id));
+    respond(res, await store.cancelJob(controllerAuth(req, req.body), req.params.id));
   }));
 
   app.get("/api/connectors/poll", route(async (req, res) => {
@@ -106,6 +119,15 @@ function connectorAuth(req, body = {}) {
   };
 }
 
+function controllerAuth(req, body = {}) {
+  return {
+    linkId: linkId(req, body),
+    grantId: String(req.headers["x-soty-access-grant-id"] || ""),
+    controllerDeviceId: String(req.headers["x-soty-controller-device-id"] || body?.controllerDeviceId || ""),
+    token: bearerToken(req)
+  };
+}
+
 function responseSignal(res) {
   const controller = new AbortController();
   res.once("close", () => controller.abort());
@@ -129,6 +151,10 @@ function respond(res, result, preferredStatus) {
 function errorStatus(error) {
   if (error === "job-not-found") return 404;
   if (error === "connector-auth-failed") return 401;
+  if (error === "connector-access-denied") return 403;
+  if (error === "connector-access-revoked") return 403;
+  if (error === "connector-access-expired") return 403;
   if (error === "connector-queue-full") return 503;
+  if (error === "connector-grant-limit") return 503;
   return 400;
 }

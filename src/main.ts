@@ -4,14 +4,14 @@ import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCanc
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
-import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, clearSpreadExPairCodeFromUrl, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, pairLocalSpreadEx, resumeAgentRelayReply, runConnectorJob, spreadExPairCodeFromUrl } from "./features/connector";
-import type { LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/connector";
+import { adoptAgentRelayFromUrl, askLocalAgentReply, bindLocalAgentRelay, canInstallMachineAgent, checkAgentSourceMachineAgent, checkAgentSourceWorker, checkLocalAgent, checkLocalCompanionAgent, clearPendingAgentRelayReply, clearPendingAgentRelayRepliesForTunnel, clearSpreadExPairCodeFromUrl, createConnectorAccessGrant, downloadAgentInstallerForDevice, hasAgentRelayId, hasAvailableSotyAgent, loadPendingAgentRelayReplies, pairLocalSpreadEx, resumeAgentRelayReply, revokeConnectorAccessGrant, runConnectorJob, spreadExPairCodeFromUrl } from "./features/connector";
+import type { ConnectorAccessCredential, LocalAgentPendingRelayReply, LocalAgentReply, LocalAgentRequestSource, LocalAgentStatus } from "./features/connector";
 import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnapshot, chooseAgentMove, createChessSnapshot, geniusCoach, isAgentTurn, isSquare, legalMovesForSquare, normalizeChessSnapshot, pieceGlyph, promotionChoices, sideName, statusText, withCoach } from "./features/chess";
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { accountTransferButtonWidth, accountTransferChoices, accountTransferOperation, accountTransferSchema, createAccountTransferPayload, importDeviceFromAccountTransferPayload, isAccountTransferPayload, loadAccountPhraseBackup, phraseRecommendedWords, saveAccountPhraseBackup, validateAccountPhrase } from "./features/account-transfer";
 import type { AccountTransferOperation, AccountTransferRootAction, AccountTransferStage } from "./features/account-transfer";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
-import { clearRemoteSessionState, loadRemoteAccess, loadRemoteEnabled, setRemoteAccess, setRemoteEnabled } from "./features/remote";
+import { clearRemoteSessionState, loadConnectorAccess, loadIssuedConnectorAccess, loadRemoteAccess, loadRemoteEnabled, setConnectorAccess, setIssuedConnectorAccess, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { capabilitiesAllowTraffic, clearTrafficState, loadTrafficAccess, loadTrafficShare, setTrafficAccess, setTrafficShare, trafficGrantCapabilities, trafficModeFromCapabilities } from "./features/traffic";
 import { adoptTrafficProfileFromUrl, provisionTraffic, provisionTrafficClient, readTrafficProfile, revokeTrafficClient, saveTrafficProfile, stopTraffic, trafficFabricStatus, trafficInterfaces, trafficProfileInviteUrl, trafficServerStatus } from "./features/traffic-fabric";
 import type { TrafficClient, TrafficExit, TrafficInterface, TrafficRuntime } from "./features/traffic-fabric";
@@ -192,6 +192,8 @@ const syncs = new Map<string, TunnelSync>();
 const texts = new Map<string, string>();
 const peers = new Map<string, string>();
 const peerDevices = new Map<string, readonly PeerInfo[]>();
+const remoteGrantMutations = new Map<string, Promise<boolean>>();
+const remoteGrantCloseCounts = new Map<string, number>();
 const syncStates = new Map<string, "open" | "closed" | "connecting">();
 const files = new Map<string, ReceivedFile[]>();
 const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
@@ -201,6 +203,8 @@ const liveDraftTimers = new Map<string, number>();
 const liveDraftSendTimers = new Map<string, number>();
 let remoteEnabled = loadRemoteEnabled();
 let remoteAccess = loadRemoteAccess();
+let connectorAccess = loadConnectorAccess();
+let issuedConnectorAccess = loadIssuedConnectorAccess();
 let trafficShare = loadTrafficShare();
 let trafficAccess = loadTrafficAccess();
 let trafficProfileWasAdopted = false;
@@ -469,6 +473,7 @@ document.addEventListener("visibilitychange", () => {
 
 window.addEventListener("online", () => {
   startAgentButtonWatcher(true);
+  void retryPendingConnectorRevocations();
 });
 
 void boot();
@@ -483,20 +488,27 @@ async function boot(): Promise<void> {
     return;
   }
   adoptAgentRelayFromUrl();
+  void retryPendingConnectorRevocations();
   trafficProfileWasAdopted = adoptTrafficProfileFromUrl() || trafficProfileWasAdopted;
 
   if (shouldResetLocalState()) {
-    await resetLocalSotyState();
-    clearRemoteSessionState();
-    clearTrafficState();
-    remoteEnabled = loadRemoteEnabled();
-    remoteAccess = loadRemoteAccess();
-    trafficShare = loadTrafficShare();
-    trafficAccess = loadTrafficAccess();
-    terminalOpenId = "";
-    chessOpenId = "";
-    rememberAppRuntime();
-    window.history.replaceState({}, "", "/?pwa=1");
+    if (await revokeAllIssuedConnectorAccess()) {
+      await resetLocalSotyState();
+      clearRemoteSessionState();
+      clearTrafficState();
+      remoteEnabled = loadRemoteEnabled();
+      remoteAccess = loadRemoteAccess();
+      connectorAccess = loadConnectorAccess();
+      issuedConnectorAccess = loadIssuedConnectorAccess();
+      trafficShare = loadTrafficShare();
+      trafficAccess = loadTrafficAccess();
+      terminalOpenId = "";
+      chessOpenId = "";
+      rememberAppRuntime();
+      window.history.replaceState({}, "", "/?pwa=1");
+    } else {
+      window.history.replaceState({}, "", "/");
+    }
   }
 
   await registerServiceWorker();
@@ -778,6 +790,9 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   if (!device) {
     device = await createDevice(cleanNick(payload.device?.nick || "Soty"));
   }
+  if (!await revokeAllIssuedConnectorAccess()) {
+    throw new Error("connector-access-revoke-pending");
+  }
 
   const restored = restoredTunnelsFromPayload(payload);
   if (restored.tunnels.length > 0) {
@@ -794,6 +809,8 @@ async function restoreOperatorExportPayload(payload: OperatorExportPayload): Pro
   clearTrafficState();
   remoteEnabled = loadRemoteEnabled();
   remoteAccess = loadRemoteAccess();
+  connectorAccess = loadConnectorAccess();
+  issuedConnectorAccess = loadIssuedConnectorAccess();
   trafficShare = loadTrafficShare();
   trafficAccess = loadTrafficAccess();
   terminalOpenId = "";
@@ -1709,7 +1726,7 @@ function renderApp(): void {
   app.querySelector<HTMLButtonElement>(".terminal-close")?.addEventListener("click", () => {
     const tunnelId = activeTerminalTunnelId();
     if (tunnelId) {
-      closeRemoteMode(tunnelId);
+      void closeRemoteMode(tunnelId);
     }
   });
   app.querySelector<HTMLButtonElement>(".terminal-collapse")?.addEventListener("click", () => {
@@ -1745,10 +1762,14 @@ function renderApp(): void {
   bindAccountTransferMenu();
   app.querySelector<HTMLButtonElement>(".remote-action")?.addEventListener("click", () => {
     void (async () => {
-      if (!selectedId) {
-        return;
-      }
-      let mode = agentButtonMode();
+       if (!selectedId) {
+         return;
+       }
+       if (!isAgentTunnelId(selectedId) && remoteAccess.has(selectedId) && !remoteEnabled.has(selectedId)) {
+         openRemoteCommands(selectedId);
+         return;
+       }
+       let mode = agentButtonMode();
       if (mode !== "link") {
         requestAgentDownload(isAgentTunnelId(selectedId) ? device || undefined : undefined);
         void refreshAgentButtonState(true);
@@ -1761,8 +1782,6 @@ function renderApp(): void {
       }
       if (isAgentTunnelId(selectedId)) {
         void refreshLocalAgent();
-      } else if (remoteAccess.has(selectedId) && !remoteEnabled.has(selectedId)) {
-        openRemoteCommands(selectedId);
       } else {
         void toggleRemoteGrant(selectedId);
       }
@@ -1779,7 +1798,7 @@ function renderApp(): void {
   });
   app.querySelector<HTMLButtonElement>(".close-action")?.addEventListener("click", () => {
     if (selectedId) {
-      closeTunnel(selectedId);
+      void closeTunnel(selectedId);
     }
   });
   setupSplitter();
@@ -1845,6 +1864,8 @@ function renderTiles(): void {
             if (agentButtonMode() !== "link") {
               requestAgentDownload(device || undefined);
             }
+          } else if (remoteAccess.has(id) && !remoteEnabled.has(id)) {
+            openRemoteCommands(id);
           } else {
             void toggleRemoteGrant(id);
           }
@@ -1853,7 +1874,7 @@ function renderTiles(): void {
           selectTunnel(id);
           void toggleTrafficGrant(id);
         },
-        close: () => closeTunnel(id)
+        close: () => void closeTunnel(id)
       }, {
         remoteEnabled: remoteEnabled.has(id),
         trafficEnabled: trafficShare.has(id)
@@ -1890,7 +1911,7 @@ function renderEmptyHiveActions(field: HTMLDivElement): void {
 
 async function toggleRemoteGrant(id: string): Promise<void> {
   if (remoteEnabled.has(id)) {
-    closeRemoteMode(id);
+    await closeRemoteMode(id);
     return;
   }
 
@@ -1898,6 +1919,25 @@ async function toggleRemoteGrant(id: string): Promise<void> {
 }
 
 async function enableRemoteGrant(id: string, targetDeviceId = "*", options: { readonly traffic?: boolean } = {}): Promise<boolean> {
+  if (isRemoteGrantClosing(id)) {
+    return false;
+  }
+  const active = remoteGrantMutations.get(id);
+  if (active) {
+    return await active;
+  }
+  const mutation = enableRemoteGrantUnlocked(id, targetDeviceId, options);
+  remoteGrantMutations.set(id, mutation);
+  try {
+    return await mutation;
+  } finally {
+    if (remoteGrantMutations.get(id) === mutation) {
+      remoteGrantMutations.delete(id);
+    }
+  }
+}
+
+async function enableRemoteGrantUnlocked(id: string, targetDeviceId: string, options: { readonly traffic?: boolean }): Promise<boolean> {
   const mode = await refreshAgentButtonState(true);
   if (mode !== "link") {
     markAgentDownloadNeeded();
@@ -1905,11 +1945,42 @@ async function enableRemoteGrant(id: string, targetDeviceId = "*", options: { re
     return false;
   }
 
+  if (!device) {
+    return false;
+  }
+  const previousAccess = issuedConnectorAccess.get(id);
+  if (previousAccess) {
+    const revoked = await revokeConnectorAccessGrant(previousAccess.id);
+    if (!revoked) {
+      appendTerminalLine(id, "! Не удалось подтвердить отзыв предыдущего доступа; повторим после восстановления сети");
+      setTerminalState(id, "bad");
+      renderTerminal();
+      return false;
+    }
+    issuedConnectorAccess = setIssuedConnectorAccess(id);
+  }
+  const access = await createConnectorAccessGrant(device.id, "*", ["status", "agent", "command", "script", "events", "cancel"]);
+  if (!access) {
+    appendTerminalLine(id, "! Не удалось создать прямой доступ к Soty Agent");
+    setTerminalState(id, "bad");
+    if (remoteEnabled.has(id)) {
+      remoteEnabled = setRemoteEnabled(id, false);
+      await syncs.get(id)?.grantRemote(false, targetDeviceId);
+    }
+    renderTerminal();
+    return false;
+  }
+  if (isRemoteGrantClosing(id)) {
+    issuedConnectorAccess = setIssuedConnectorAccess(id, access);
+    await revokeIssuedConnectorAccess(id, true);
+    return false;
+  }
+  issuedConnectorAccess = setIssuedConnectorAccess(id, access);
   if (options.traffic === true) {
     trafficShare = setTrafficShare(id, true);
   }
   remoteEnabled = setRemoteEnabled(id, true);
-  syncs.get(id)?.grantRemote(true, targetDeviceId, grantCapabilitiesForTunnel(id));
+  await syncs.get(id)?.grantRemote(true, targetDeviceId, grantCapabilitiesForTunnel(id), access);
   terminalOpenId = id;
   setTerminalState(id, "idle");
   renderTerminal();
@@ -1924,7 +1995,7 @@ async function toggleTrafficGrant(id: string): Promise<void> {
   if (trafficShare.has(id)) {
     trafficShare = setTrafficShare(id, false);
     if (remoteEnabled.has(id)) {
-      syncs.get(id)?.grantRemote(true, "*", grantCapabilitiesForTunnel(id));
+      void syncs.get(id)?.grantRemote(true, "*", grantCapabilitiesForTunnel(id), issuedConnectorAccess.get(id));
     }
     renderTiles();
     renderDialogChrome();
@@ -1994,7 +2065,66 @@ function announceRemoteGrant(tunnelId: string, targetDeviceId = "*"): void {
   if (!remoteEnabled.has(tunnelId)) {
     return;
   }
-  syncs.get(tunnelId)?.grantRemote(true, targetDeviceId, grantCapabilitiesForTunnel(tunnelId));
+  const access = issuedConnectorAccess.get(tunnelId);
+  if (access && Date.parse(access.expiresAt) > Date.now() + 24 * 60 * 60_000) {
+    void syncs.get(tunnelId)?.grantRemote(true, targetDeviceId, grantCapabilitiesForTunnel(tunnelId), access);
+    return;
+  }
+  void enableRemoteGrant(tunnelId, targetDeviceId, { traffic: trafficShare.has(tunnelId) });
+}
+
+async function revokeIssuedConnectorAccess(tunnelId: string, notify = false): Promise<boolean> {
+  const issued = issuedConnectorAccess.get(tunnelId);
+  if (!issued) {
+    return true;
+  }
+  const revoked = await revokeConnectorAccessGrant(issued.id).catch(() => false);
+  if (revoked) {
+    issuedConnectorAccess = setIssuedConnectorAccess(tunnelId);
+    return true;
+  }
+  if (notify) {
+    appendTerminalLine(tunnelId, "! Сервер ещё не подтвердил отзыв доступа; повторим автоматически при восстановлении сети");
+    setTerminalState(tunnelId, "bad");
+  }
+  return false;
+}
+
+function beginRemoteGrantClose(tunnelId: string): void {
+  remoteGrantCloseCounts.set(tunnelId, (remoteGrantCloseCounts.get(tunnelId) || 0) + 1);
+}
+
+function endRemoteGrantClose(tunnelId: string): void {
+  const remaining = (remoteGrantCloseCounts.get(tunnelId) || 1) - 1;
+  if (remaining > 0) remoteGrantCloseCounts.set(tunnelId, remaining);
+  else remoteGrantCloseCounts.delete(tunnelId);
+}
+
+function isRemoteGrantClosing(tunnelId: string): boolean {
+  return (remoteGrantCloseCounts.get(tunnelId) || 0) > 0;
+}
+
+async function waitForRemoteGrantMutation(tunnelId: string): Promise<void> {
+  const active = remoteGrantMutations.get(tunnelId);
+  if (active) {
+    await active;
+  }
+}
+
+async function retryPendingConnectorRevocations(): Promise<void> {
+  for (const tunnelId of issuedConnectorAccess.keys()) {
+    if (!remoteEnabled.has(tunnelId)) {
+      await revokeIssuedConnectorAccess(tunnelId);
+    }
+  }
+}
+
+async function revokeAllIssuedConnectorAccess(): Promise<boolean> {
+  let revoked = true;
+  for (const tunnelId of [...issuedConnectorAccess.keys()]) {
+    revoked = await revokeIssuedConnectorAccess(tunnelId) && revoked;
+  }
+  return revoked;
 }
 
 async function refreshLocalAgent(): Promise<LocalAgentStatus> {
@@ -2222,27 +2352,35 @@ function markAgentDownloadNeeded(): void {
   renderDialogChrome();
 }
 
-function closeRemoteMode(tunnelId: string): void {
-  const sync = syncs.get(tunnelId);
-  const hostDeviceId = remoteAccess.get(tunnelId);
-  if (remoteEnabled.has(tunnelId)) {
-    remoteEnabled = setRemoteEnabled(tunnelId, false);
-    trafficShare = setTrafficShare(tunnelId, false);
-    sync?.grantRemote(false, "*");
-  }
-  if (hostDeviceId) {
-    remoteAccess = setRemoteAccess(tunnelId, "", false);
-    trafficAccess = setTrafficAccess(tunnelId, "", false);
-    if (hostDeviceId !== device?.id) {
-      sync?.grantRemote(false, hostDeviceId);
+async function closeRemoteMode(tunnelId: string): Promise<void> {
+  beginRemoteGrantClose(tunnelId);
+  try {
+    await waitForRemoteGrantMutation(tunnelId);
+    const sync = syncs.get(tunnelId);
+    const hostDeviceId = remoteAccess.get(tunnelId);
+    if (remoteEnabled.has(tunnelId)) {
+      remoteEnabled = setRemoteEnabled(tunnelId, false);
+      trafficShare = setTrafficShare(tunnelId, false);
+      await sync?.grantRemote(false, "*");
     }
+    await revokeIssuedConnectorAccess(tunnelId, true);
+    if (hostDeviceId) {
+      remoteAccess = setRemoteAccess(tunnelId, "", false);
+      connectorAccess = setConnectorAccess(tunnelId);
+      trafficAccess = setTrafficAccess(tunnelId, "", false);
+      if (hostDeviceId !== device?.id) {
+        void sync?.grantRemote(false, hostDeviceId);
+      }
+    }
+    if (terminalOpenId === tunnelId) {
+      terminalOpenId = "";
+    }
+    setTerminalState(tunnelId, "ok");
+    renderTerminal();
+    renderTiles();
+  } finally {
+    endRemoteGrantClose(tunnelId);
   }
-  if (terminalOpenId === tunnelId) {
-    terminalOpenId = "";
-  }
-  setTerminalState(tunnelId, "ok");
-  renderTerminal();
-  renderTiles();
 }
 
 function sortedVisibleTunnels(): TunnelRecord[] {
@@ -2526,7 +2664,8 @@ function renderDialogChrome(): void {
     sendButton.innerHTML = icon(stopping ? "stop" : "send");
   }
   if (remoteButton) {
-    const needsAgent = mode !== "link";
+    const incomingAccess = Boolean(selectedId && remoteAccess.has(selectedId));
+    const needsAgent = mode !== "link" && !incomingAccess;
     const agentDialog = Boolean(selectedId && isAgentTunnelId(selectedId));
     remoteButton.hidden = agentDialog && !needsAgent;
     remoteButton.classList.toggle("is-on", !needsAgent && remoteEnabled.has(selectedId));
@@ -2535,7 +2674,7 @@ function renderDialogChrome(): void {
     remoteButton.setAttribute("aria-label", needsAgent ? "download" : "remote");
     remoteButton.innerHTML = needsAgent
       ? `${icon("download")}<span>${mode === "update" ? "Обновить" : "Скачать"}</span>`
-      : `${icon("remote")}<span>Доступ</span>`;
+      : `${icon("remote")}<span>${incomingAccess && !remoteEnabled.has(selectedId) ? "Управлять" : "Доступ"}</span>`;
     remoteButton.dataset.tooltip = needsAgent
       ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent")
       : remoteEnabled.has(selectedId)
@@ -3386,6 +3525,9 @@ function ensureSync(tunnel: TunnelRecord): void {
     },
     onPeers: (items) => {
       peerDevices.set(tunnel.id, items);
+      if (remoteEnabled.has(tunnel.id)) {
+        announceRemoteGrant(tunnel.id);
+      }
       const accessChanged = syncRemoteAccessWithPeers(tunnel.id, items);
       const label = items.map((item) => item.nick).filter(Boolean).join(" ");
       if (label) {
@@ -3449,10 +3591,18 @@ function setTunnelCounterparty(tunnelId: string, label: string): void {
 
 function syncRemoteAccessWithPeers(tunnelId: string, items: readonly { readonly id: string }[]): boolean {
   const hostDeviceId = remoteAccess.get(tunnelId);
+  const direct = connectorAccess.get(tunnelId);
+  if (direct) {
+    if (Date.parse(direct.expiresAt) > Date.now()) {
+      return false;
+    }
+    connectorAccess = setConnectorAccess(tunnelId);
+  }
   if (!hostDeviceId || items.some((item) => item.id === hostDeviceId)) {
     return false;
   }
   remoteAccess = setRemoteAccess(tunnelId, "", false);
+  connectorAccess = setConnectorAccess(tunnelId);
   trafficAccess = setTrafficAccess(tunnelId, "", false);
   if (terminalOpenId === tunnelId) {
     terminalOpenId = "";
@@ -3508,42 +3658,49 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
   document.body.append(overlay);
 }
 
-function closeTunnel(id: string): void {
-  const sync = syncs.get(id);
-  sync?.closeForEveryone();
-  syncs.delete(id);
-  syncStates.delete(id);
-  remoteEnabled = setRemoteEnabled(id, false);
-  remoteAccess = setRemoteAccess(id, "", false);
-  trafficShare = setTrafficShare(id, false);
-  trafficAccess = setTrafficAccess(id, "", false);
-  if (terminalOpenId === id) {
-    terminalOpenId = "";
+async function closeTunnel(id: string): Promise<void> {
+  beginRemoteGrantClose(id);
+  try {
+    await waitForRemoteGrantMutation(id);
+    const sync = syncs.get(id);
+    if (remoteEnabled.has(id)) {
+      await sync?.grantRemote(false, "*");
+    }
+    remoteEnabled = setRemoteEnabled(id, false);
+    await revokeIssuedConnectorAccess(id, true);
+    sync?.closeForEveryone();
+    syncs.delete(id);
+    syncStates.delete(id);
+    remoteAccess = setRemoteAccess(id, "", false);
+    connectorAccess = setConnectorAccess(id);
+    trafficShare = setTrafficShare(id, false);
+    trafficAccess = setTrafficAccess(id, "", false);
+    if (terminalOpenId === id) terminalOpenId = "";
+    if (chessOpenId === id) chessOpenId = "";
+    const chessTimer = chessAgentTimers.get(id);
+    if (chessTimer) {
+      window.clearTimeout(chessTimer);
+      chessAgentTimers.delete(id);
+    }
+    terminalLogs.delete(id);
+    terminalState.delete(id);
+    chessGames.delete(id);
+    chessFlipped.delete(id);
+    forgetChessSnapshot(id);
+    writerLines.delete(id);
+    activeActivities.delete(id);
+    activeActivityTicks.delete(id);
+    clearLiveDraftState(id);
+    agentThinking.delete(id);
+    localDrafts.delete(id);
+    files.delete(id);
+    fileNotices.delete(id);
+    tunnels = removeTunnel(id);
+    normalizeSelectedTunnel();
+    renderApp();
+  } finally {
+    endRemoteGrantClose(id);
   }
-  if (chessOpenId === id) {
-    chessOpenId = "";
-  }
-  const chessTimer = chessAgentTimers.get(id);
-  if (chessTimer) {
-    window.clearTimeout(chessTimer);
-    chessAgentTimers.delete(id);
-  }
-  terminalLogs.delete(id);
-  terminalState.delete(id);
-  chessGames.delete(id);
-  chessFlipped.delete(id);
-  forgetChessSnapshot(id);
-  writerLines.delete(id);
-  activeActivities.delete(id);
-  activeActivityTicks.delete(id);
-  clearLiveDraftState(id);
-  agentThinking.delete(id);
-  localDrafts.delete(id);
-  files.delete(id);
-  fileNotices.delete(id);
-  tunnels = removeTunnel(id);
-  normalizeSelectedTunnel();
-  renderApp();
 }
 
 function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
@@ -3685,7 +3842,7 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
   }
   const sync = syncs.get(tunnelId);
   if (remoteEnabled.has(tunnelId)) {
-    sync?.grantRemote(true, request.deviceId, grantCapabilitiesForTunnel(tunnelId));
+    void sync?.grantRemote(true, request.deviceId, grantCapabilitiesForTunnel(tunnelId), issuedConnectorAccess.get(tunnelId));
     return;
   }
   if (shouldAutoSelectTunnel(tunnelId)) {
@@ -3719,20 +3876,12 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
   document.body.append(overlay);
   overlay.querySelector(".access-accept")?.addEventListener("click", () => {
     void (async () => {
-      const agent = await refreshLocalCompanion();
-      if (!agent.ok) {
+      const granted = await enableRemoteGrant(tunnelId, request.deviceId);
+      if (!granted) {
         overlay.remove();
-        markAgentDownloadNeeded();
-        requestAgentDownload();
         return;
       }
-      remoteEnabled = setRemoteEnabled(tunnelId, true);
-      syncs.get(tunnelId)?.grantRemote(true, request.deviceId, grantCapabilitiesForTunnel(tunnelId));
-      terminalOpenId = tunnelId;
-      setTerminalState(tunnelId, "idle");
       overlay.remove();
-      renderTiles();
-      renderTerminal();
     })();
   });
   overlay.querySelector(".access-deny")?.addEventListener("click", () => overlay.remove());
@@ -3745,9 +3894,19 @@ function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
   if (!grant.enabled && remoteEnabled.has(tunnelId)) {
     remoteEnabled = setRemoteEnabled(tunnelId, false);
     trafficShare = setTrafficShare(tunnelId, false);
-    syncs.get(tunnelId)?.grantRemote(false, "*");
+    void revokeIssuedConnectorAccess(tunnelId, true);
+    void syncs.get(tunnelId)?.grantRemote(false, "*");
   }
   remoteAccess = setRemoteAccess(tunnelId, grant.deviceId, grant.enabled);
+  const directAccess = grant.enabled
+    && grant.connectorAccess
+    && (grant.connectorAccess.controllerDeviceId === "*" || grant.connectorAccess.controllerDeviceId === device.id)
+    ? {
+        ...grant.connectorAccess,
+        controllerDeviceId: grant.connectorAccess.controllerDeviceId === "*" ? device.id : grant.connectorAccess.controllerDeviceId
+      } as ConnectorAccessCredential
+    : undefined;
+  connectorAccess = setConnectorAccess(tunnelId, directAccess);
   trafficAccess = setTrafficAccess(
     tunnelId,
     grant.deviceId,
@@ -3894,6 +4053,37 @@ async function sendTerminalCommand(): Promise<void> {
   setTerminalState(tunnelId, "run");
   appendTerminalLine(tunnelId, `$ ${command}`);
   renderTerminal();
+  const direct = connectorAccess.get(tunnelId);
+  if (direct) {
+    let streamed = false;
+    const reply = await runConnectorJob({
+      access: direct,
+      deviceId: direct.deviceId || hostDeviceId,
+      threadId: tunnelId,
+      input: {
+        kind: "command",
+        text: command,
+        runAs: "user",
+        timeoutMs: 30 * 60_000
+      },
+      timeoutMs: 30 * 60_000 + 5_000,
+      onEvent: (event) => {
+        if (event.text && ["terminal", "stdout", "stderr", "error"].includes(event.type)) {
+          streamed = true;
+          appendTerminalLine(tunnelId, event.text);
+          renderTerminal();
+        }
+      }
+    });
+    if (!streamed && reply.text) {
+      appendTerminalLine(tunnelId, reply.text);
+    }
+    const exitCode = reply.exitCode ?? (reply.ok ? 0 : 1);
+    setTerminalState(tunnelId, exitCode === 0 ? "ok" : "bad");
+    appendTerminalExitLine(tunnelId, exitCode);
+    renderTerminal();
+    return;
+  }
   await sync.sendRemoteCommand(hostDeviceId, command);
 }
 
@@ -5124,7 +5314,7 @@ function sendAgentDialogMessage(
         if (agentTunnel) {
           await prepareAgentSourceForDialog(tunnel);
         } else if (options.explicitMention === true) {
-          await preparePeerAgentInvocation();
+          await preparePeerAgentInvocation(tunnelId);
         }
         const source = agentRequestSourceForTunnel(tunnelId, tunnel);
         reply = await askLocalAgentReply(taskText, context, source, 2 * 60 * 60_000, (message) => {
@@ -5161,12 +5351,14 @@ function sendAgentDialogMessage(
 }
 
 function agentRequestSourceForTunnel(tunnelId: string, tunnel: TunnelRecord): LocalAgentRequestSource {
+  const direct = connectorAccess.get(tunnelId);
   return {
     tunnelId,
     tunnelLabel: counterpartyLabel(tunnel),
-    deviceId: device?.id || "",
+    deviceId: direct?.deviceId || device?.id || "",
     deviceNick: device?.nick || "",
     localAgent,
+    ...(direct ? { connectorAccess: direct } : {}),
     appOrigin: window.location.origin
   };
 }
@@ -5178,8 +5370,8 @@ async function prepareAgentSourceForDialog(tunnel: TunnelRecord): Promise<void> 
   localAgent = await ensureAgentSourceCompanion();
 }
 
-async function preparePeerAgentInvocation(): Promise<void> {
-  if (!device) {
+async function preparePeerAgentInvocation(tunnelId: string): Promise<void> {
+  if (!device || connectorAccess.has(tunnelId)) {
     return;
   }
   localAgent = await ensureAgentSourceCompanion();

@@ -12,7 +12,9 @@ const serverPort = await freePort();
 const connectorPort = await freePort();
 const baseUrl = `http://127.0.0.1:${serverPort}`;
 const linkId = "i".repeat(43);
+const controllerLinkId = "j".repeat(43);
 const deviceId = "integration-device";
+const controllerDeviceId = "integration-controller";
 const processes = [];
 const openCodePath = String(process.env.SOTY_OPENCODE_E2E_PATH || "").trim();
 const connectorRuntime = String(process.env.SOTY_CONNECTOR_E2E_RUNTIME || "scripts/soty-connector.mjs").trim();
@@ -104,6 +106,52 @@ try {
   assert.equal(completedState.status, "succeeded");
   assert.match(completedState.result.text, /connector-ok/u);
   assert.ok(completedState.events.some((event) => event.type === "stdout" && event.text.includes("connector-ok")));
+
+  const access = await json(`${baseUrl}/api/connectors/access-grants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Soty-Link-Id": linkId },
+    body: JSON.stringify({ deviceId, controllerDeviceId, capabilities: ["status", "agent", "command", "script", "events", "cancel"], expiresInMs: 60_000 })
+  });
+  assert.equal(access.ok, true);
+  assert.match(access.token, /^[A-Za-z0-9_-]{40,160}$/u);
+  const accessHeaders = {
+    "X-Soty-Link-Id": controllerLinkId,
+    "X-Soty-Access-Grant-Id": access.grant.id,
+    "X-Soty-Controller-Device-Id": controllerDeviceId,
+    Authorization: `Bearer ${access.token}`
+  };
+  const delegatedStatus = await json(`${baseUrl}/api/connectors/status`, { headers: accessHeaders });
+  assert.deepEqual(delegatedStatus.devices.map((item) => item.deviceId), [deviceId]);
+  const delegatedCreated = await json(`${baseUrl}/api/connectors/jobs`, {
+    method: "POST",
+    headers: { ...accessHeaders, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      linkId: controllerLinkId,
+      deviceId,
+      kind: "script",
+      input: {
+        kind: "script",
+        name: "delegated.mjs",
+        shell: "node",
+        script: "process.stdout.write('delegated-ok')",
+        runAs: "user",
+        cwd: root,
+        timeoutMs: 10_000
+      }
+    })
+  });
+  assert.equal(delegatedCreated.ok, true);
+  const delegatedState = await waitDelegatedJob(delegatedCreated.job.id, accessHeaders, 20_000);
+  assert.equal(delegatedState.job.status, "succeeded");
+  assert.match(delegatedState.job.result.text, /delegated-ok/u);
+  assert.ok(delegatedState.events.some((event) => event.type === "stdout" && event.text.includes("delegated-ok")));
+  const revokedAccess = await json(`${baseUrl}/api/connectors/access-grants/${access.grant.id}/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Soty-Link-Id": linkId },
+    body: "{}"
+  });
+  assert.equal(revokedAccess.ok, true);
+  assert.equal((await json(`${baseUrl}/api/connectors/status`, { headers: accessHeaders })).error, "connector-access-revoked");
 
   const timed = await createJob({
     kind: "script",
@@ -217,6 +265,21 @@ async function waitJobStatus(id, statuses, timeoutMs) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }
   throw new Error(`Job ${id} did not reach ${statuses.join(",")}`);
+}
+
+async function waitDelegatedJob(id, headers, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let after = 0;
+  const events = [];
+  while (Date.now() < deadline) {
+    const result = await json(`${baseUrl}/api/connectors/jobs/${id}/events?after=${after}`, { headers });
+    assert.equal(result.ok, true);
+    events.push(...result.events);
+    after = result.cursor;
+    if (result.done) return { job: result.job, events };
+    await new Promise((resolveWait) => setTimeout(resolveWait, 150));
+  }
+  throw new Error(`Delegated job ${id} did not finish`);
 }
 
 function start(command, args, extraEnv) {

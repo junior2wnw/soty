@@ -41,7 +41,9 @@ export function isRemoteGrant(value) {
     && isShortText(value.id, 140)
     && typeof value.enabled === "boolean"
     && isShortText(value.targetDeviceId, 140)
-    && optionalCapabilityList(value.capabilities);
+    && optionalCapabilityList(value.capabilities)
+    && ((value.nonce === undefined && value.ciphertext === undefined)
+      || (isShortText(value.nonce, 64) && isShortText(value.ciphertext, 20_000)));
 }
 
 export function isRemoteRequest(value) {

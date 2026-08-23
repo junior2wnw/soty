@@ -232,6 +232,14 @@ async function vendorPinSelftest() {
   ]));
   const verified = verifyVendoredIdentityBundle({ files });
   assert.equal(verified.upstream_manifest_sha256, pin.upstream_manifest.sha256);
+  const crlfFiles = new Map([...files].map(([filePath, value]) => [
+    filePath,
+    Buffer.from(value.toString("utf8").replace(/(?<!\r)\n/gu, "\r\n"), "utf8")
+  ]));
+  assert.equal(
+    verifyVendoredIdentityBundle({ files: crlfFiles }).upstream_manifest_sha256,
+    pin.upstream_manifest.sha256
+  );
   const missing = new Map(files);
   missing.delete(pin.files[0].path);
   await expectCanonicalError(

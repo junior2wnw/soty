@@ -83,6 +83,8 @@ try {
   const leased = await store.poll(auth);
   assert.equal(leased.jobs.length, 1);
   assert.equal(leased.jobs[0].id, created.job.id);
+  assert.equal((await store.getAssignedConnectorJob(auth, created.job.id)).ok, true);
+  assert.equal((await store.getAssignedConnectorJob({ ...auth, token: "z".repeat(48) }, created.job.id)).error, "connector-auth-failed");
   assert.equal((await store.poll({ ...auth, token: "z".repeat(48) })).error, "connector-auth-failed");
 
   assert.equal((await store.appendEvent(auth, created.job.id, { type: "message", text: "Начинаю" })).ok, true);
@@ -108,10 +110,126 @@ try {
   const cancellationResult = await persisted.finishJob(auth, retry.job.id, { ok: false, text: "Отменено", exitCode: 130 });
   assert.equal(cancellationResult.job.status, "cancelled");
 
-  const stale = await persisted.createJob({ linkId, deviceId: "offline-device", kind: "agent", text: "Не хранить вечно" });
+  const controllerLinkId = "r".repeat(43);
+  const controllerDeviceId = "controller-device";
+  await persisted.register({
+    linkId,
+    deviceId: "device-2",
+    connectorId: "install-2:user",
+    deviceNick: "Другой компьютер",
+    version: "1.0.0",
+    platform: "win32-x64",
+    scope: "CurrentUser",
+    capabilities: ["agent", "command", "script"],
+    agent: { id: "opencode", provider: "gonka", available: true }
+  }, "u".repeat(48));
+  const ownerOnly = await persisted.createJob({ linkId, deviceId: "device-1", kind: "agent", text: "Только владелец" });
+  assert.equal(ownerOnly.ok, true);
+  assert.equal((await persisted.createJob(
+    { linkId, deviceId: "device-1", kind: "agent", text: "Без grant" },
+    controllerLinkId
+  )).error, "connector-access-denied");
+  assert.equal((await persisted.createJob({ linkId: "q".repeat(43), kind: "agent", text: "Orphan" })).error, "connector-access-denied");
+
+  const issued = await persisted.createAccessGrant(linkId, {
+    deviceId: "device-1",
+    controllerDeviceId,
+    capabilities: ["status", "agent", "command", "script", "events", "cancel"],
+    expiresInMs: 60_000
+  });
+  assert.equal(issued.ok, true);
+  assert.match(issued.token, /^[A-Za-z0-9_-]{40,160}$/u);
+  assert.deepEqual(issued.grant.capabilities, ["status", "agent", "command", "script", "events", "cancel"]);
+  assert.equal("token" in issued.grant, false);
+  assert.equal((await readFile(path.join(root, "connector-store.json"), "utf8")).includes(issued.token), false);
+  const grantStore = createConnectorStore(root, { now: () => now, leaseMs: 5_000 });
+  const delegatedAuth = {
+    linkId: controllerLinkId,
+    grantId: issued.grant.id,
+    controllerDeviceId,
+    token: issued.token
+  };
+  const delegatedStatus = await grantStore.status(delegatedAuth);
+  assert.deepEqual(delegatedStatus.devices.map((item) => item.deviceId), ["device-1"]);
+  assert.equal((await grantStore.status({ ...delegatedAuth, controllerDeviceId: "intruder" })).error, "connector-access-denied");
+  assert.equal((await grantStore.status({ ...delegatedAuth, token: "v".repeat(48) })).error, "connector-access-denied");
+  assert.equal((await grantStore.status(delegatedAuth, "device-2")).error, "connector-access-denied");
+
+  const delegated = await grantStore.createJob({ deviceId: "device-1", kind: "agent", text: "Запусти с другого Link" }, delegatedAuth);
+  assert.equal(delegated.ok, true);
+  const delegatedState = JSON.parse(await readFile(path.join(root, "connector-store.json"), "utf8"));
+  const delegatedRecord = delegatedState.jobs.find((job) => job.id === delegated.job.id);
+  assert.equal(delegatedRecord.schema, "soty.connector-job.v3");
+  assert.equal(
+    delegatedState.jobs.some((job) => ["soty.connector-job.v1", "soty.connector-job.v2"].includes(job.schema) && job.id === delegated.job.id),
+    false
+  );
+  assert.equal((await grantStore.createJob({ deviceId: "device-2", kind: "agent", text: "Не тот target" }, delegatedAuth)).error, "connector-access-denied");
+  assert.equal((await grantStore.getEvents(delegatedAuth, ownerOnly.job.id, 0)).error, "connector-access-denied");
+  assert.equal((await grantStore.poll(auth)).jobs[0].id, ownerOnly.job.id);
+  await grantStore.finishJob(auth, ownerOnly.job.id, { ok: true, text: "owner", exitCode: 0 });
+  assert.equal((await grantStore.poll(auth)).jobs[0].id, delegated.job.id);
+  await grantStore.appendEvent(auth, delegated.job.id, { type: "message", text: "Делегированное событие" });
+  await grantStore.finishJob(auth, delegated.job.id, { ok: true, text: "Делегировано", exitCode: 0 });
+  const delegatedEvents = await grantStore.getEvents(delegatedAuth, delegated.job.id, 0);
+  assert.equal(delegatedEvents.done, true);
+  assert.ok(delegatedEvents.events.some((event) => event.text === "Делегированное событие"));
+
+  const statusOnly = await grantStore.createAccessGrant(linkId, {
+    deviceId: "device-1",
+    controllerDeviceId,
+    capabilities: ["status"],
+    expiresInMs: 60_000
+  });
+  const statusOnlyAuth = { grantId: statusOnly.grant.id, controllerDeviceId, token: statusOnly.token };
+  assert.equal((await grantStore.status(statusOnlyAuth)).ok, true);
+  assert.equal((await grantStore.createJob({ deviceId: "device-1", kind: "agent", text: "Scope isolation" }, statusOnlyAuth)).error, "connector-access-denied");
+  assert.equal((await grantStore.getEvents(statusOnlyAuth, delegated.job.id, 0)).error, "connector-access-denied");
+
+  const wildcard = await grantStore.createAccessGrant(linkId, {
+    deviceId: "device-1",
+    controllerDeviceId: "*",
+    capabilities: ["link.control"],
+    expiresInMs: 60_000
+  });
+  const wildcardAuth = { grantId: wildcard.grant.id, controllerDeviceId: "late-controller", token: wildcard.token };
+  assert.equal((await grantStore.status(wildcardAuth)).ok, true);
+
+  const revokedQueued = await grantStore.createJob({ deviceId: "device-1", kind: "agent", text: "Отозвать в очереди" }, wildcardAuth);
+  assert.equal((await grantStore.revokeAccessGrant(linkId, wildcard.grant.id)).ok, true);
+  assert.equal((await grantStore.getJob(wildcardAuth, revokedQueued.job.id)).error, "connector-access-revoked");
+  assert.equal((await grantStore.getJob(linkId, revokedQueued.job.id)).job.status, "cancelled");
+
+  const activeGrant = await grantStore.createAccessGrant(linkId, {
+    deviceId: "device-1",
+    controllerDeviceId,
+    capabilities: ["link.control"],
+    expiresInMs: 60_000
+  });
+  const activeAuth = { grantId: activeGrant.grant.id, controllerDeviceId, token: activeGrant.token };
+  const activeDelegated = await grantStore.createJob({ deviceId: "device-1", kind: "agent", text: "Отозвать во время работы" }, activeAuth);
+  assert.equal((await grantStore.poll(auth)).jobs[0].id, activeDelegated.job.id);
+  await grantStore.revokeAccessGrant(linkId, activeGrant.grant.id);
+  assert.deepEqual((await grantStore.poll(auth)).cancel, [activeDelegated.job.id]);
+  await grantStore.finishJob(auth, activeDelegated.job.id, { ok: false, text: "Отменено", exitCode: 130 });
+
+  const expiringGrant = await grantStore.createAccessGrant(linkId, {
+    deviceId: "device-1",
+    controllerDeviceId,
+    capabilities: ["link.control"],
+    expiresInMs: 1_000
+  });
+  const expiringAuth = { grantId: expiringGrant.grant.id, controllerDeviceId, token: expiringGrant.token };
+  const expiringJob = await grantStore.createJob({ deviceId: "device-1", kind: "agent", text: "Дождаться expiry" }, expiringAuth);
+  now += 1_001;
+  assert.equal((await grantStore.getJob(expiringAuth, expiringJob.job.id)).error, "connector-access-expired");
+  await grantStore.poll(auth);
+  assert.equal((await grantStore.getJob(linkId, expiringJob.job.id)).job.status, "cancelled");
+
+  const stale = await grantStore.createJob({ linkId, deviceId: "device-1", kind: "agent", text: "Не хранить вечно" });
   now += 7 * 24 * 60 * 60_000 + 1;
-  await persisted.createJob({ linkId, deviceId: "device-1", kind: "agent", text: "Запустить очистку" });
-  const staleState = await persisted.getJob(linkId, stale.job.id);
+  await grantStore.createJob({ linkId, deviceId: "device-1", kind: "agent", text: "Запустить очистку" });
+  const staleState = await grantStore.getJob(linkId, stale.job.id);
   assert.equal(staleState.job.status, "failed");
   assert.equal(staleState.job.result.exitCode, 124);
 
