@@ -1575,7 +1575,7 @@ function backoff(failures) {
 return { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed };
 })();
 
-const connectorVersion = "1.2.9";
+const connectorVersion = "1.2.10";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -2563,11 +2563,18 @@ function safeVersionText(value) {
 }
 
 function resolveJobCwd(value) {
-  const configuredRoot = typeof persisted.workspaceRoot === "string" && isAbsolute(persisted.workspaceRoot) ? resolve(persisted.workspaceRoot) : homedir();
-  const allowed = cleanStrings(persisted.allowedRoots, 16, 2_000).filter(isAbsolute).map((item) => resolve(item));
+  const configuredCandidate = typeof persisted.workspaceRoot === "string" && isAbsolute(persisted.workspaceRoot) ? resolve(persisted.workspaceRoot) : "";
+  const allowed = cleanStrings(persisted.allowedRoots, 16, 2_000).filter(isAbsolute).map((item) => resolve(item)).filter(existsSync);
+  const fallbackRoot = [process.env.USERPROFILE, homedir(), connectorDir, process.cwd()]
+    .filter((item) => typeof item === "string" && isAbsolute(item))
+    .map((item) => resolve(item))
+    .find(existsSync);
+  const configuredRoot = (configuredCandidate && existsSync(configuredCandidate) ? configuredCandidate : allowed[0]) || fallbackRoot;
+  if (!configuredRoot) throw new Error("На компьютере не найдена доступная рабочая папка");
   if (allowed.length === 0) allowed.push(configuredRoot);
   const requested = typeof value === "string" && isAbsolute(value) ? resolve(value) : configuredRoot;
   if (!allowed.some((root) => isWithin(root, requested))) throw new Error("Рабочая папка не разрешена настройками коннектора");
+  if (!existsSync(requested)) throw new Error("Рабочая папка не существует");
   return requested;
 }
 

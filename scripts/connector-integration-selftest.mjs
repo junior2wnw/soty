@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultGonkaProxyModel } from "../server/gonka-proxy.js";
@@ -10,6 +10,7 @@ import { defaultGonkaProxyModel } from "../server/gonka-proxy.js";
 const root = await mkdtemp(path.join(tmpdir(), "soty-connector-integration-"));
 const serverPort = await freePort();
 const connectorPort = await freePort();
+const connectorDataDir = path.join(root, "connector-data");
 const baseUrl = `http://127.0.0.1:${serverPort}`;
 const linkId = "i".repeat(43);
 const controllerLinkId = "j".repeat(43);
@@ -37,9 +38,15 @@ try {
   processes.push(server);
   await waitJson(`${baseUrl}/health`, (value) => value.ok === true);
 
+  await mkdir(connectorDataDir, { recursive: true });
+  await writeFile(path.join(connectorDataDir, "connector-config.json"), `${JSON.stringify({
+    workspaceRoot: path.join(root, "removed-workspace"),
+    allowedRoots: [path.join(root, "removed-workspace")]
+  })}\n`, "utf8");
+
   const connector = start(process.execPath, [connectorRuntime], {
     SOTY_CONNECTOR_PORT: String(connectorPort),
-    SOTY_CONNECTOR_DATA_DIR: path.join(root, "connector-data"),
+    SOTY_CONNECTOR_DATA_DIR: connectorDataDir,
     SOTY_CONNECTOR_LINK_ID: linkId,
     SOTY_CONNECTOR_SERVER_URL: baseUrl,
     SOTY_CONNECTOR_DEVICE_ID: deviceId,

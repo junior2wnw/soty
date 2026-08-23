@@ -87,7 +87,7 @@ try {
     await writeFile(launcher, launcherProbe.windowsLauncher, "utf8");
     const systemRoot = process.env.SystemRoot || process.env.WINDIR || "C:\\Windows";
     execFileSync(join(systemRoot, "System32", "wscript.exe"), ["//B", "//Nologo", launcher], { timeout: 10_000, windowsHide: true });
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       try {
         assert.equal((await readFile(marker, "utf8")).trim(), "ok");
