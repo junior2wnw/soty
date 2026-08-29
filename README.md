@@ -74,6 +74,24 @@ server environment:
 }
 ```
 
+For production, prefer an owner-only file mounted read-only into the server
+container and set `SOTY_GONKA_APPLICATION_TOKENS_FILE` to its container path:
+
+```json
+{
+  "applications": [
+    { "id": "kvartalufa", "token": "<40-160 character base64url token>" }
+  ]
+}
+```
+
+The rollout script persists `${HOME}/.config/soty/application-tokens.json`
+with mode `0600` and mounts it at `/run/secrets/soty-application-tokens.json`.
+An explicitly configured missing or invalid file, duplicate application ID,
+or token reused by multiple applications fails the application proxy closed.
+The legacy `SOTY_GONKA_APPLICATION_TOKENS` environment map remains supported;
+conflicts between the two sources also fail closed.
+
 The application server sends that token to
 `/api/inference/v1/chat/completions`. The browser never receives this token or
 the upstream Gonka key. Application and connector tokens are not

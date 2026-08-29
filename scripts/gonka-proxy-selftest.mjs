@@ -2,10 +2,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultGonkaProxyModel } from "../server/gonka-proxy.js";
+import { createApplicationTokenAuthenticator, defaultGonkaProxyModel } from "../server/gonka-proxy.js";
 
 const root = await mkdtemp(join(tmpdir(), "soty-gonka-proxy-"));
 const appPort = await freePort();
@@ -13,16 +13,23 @@ const upstreamPort = await freePort();
 const appBase = `http://127.0.0.1:${appPort}`;
 const token = "t".repeat(48);
 const applicationToken = "a".repeat(48);
+const applicationTokenFile = join(root, "application-tokens.json");
 const upstreamKey = "server-only-gonka-key-for-selftest";
 const requests = [];
 const upstream = createServer(async (request, response) => {
   const body = await readJson(request);
   requests.push({ url: request.url, authorization: request.headers.authorization, body });
+  if (body.messages?.[0]?.content === "timeout") return;
+  if (body.messages?.[0]?.content === "upstream-error") {
+    response.destroy();
+    return;
+  }
   response.writeHead(200, { "Content-Type": "text/event-stream" });
-  response.write(`data: ${JSON.stringify({ id: "chatcmpl-proxy", object: "chat.completion.chunk", created: 1, model: defaultGonkaProxyModel, choices: [{ index: 0, delta: { content: "proxy-ok" }, finish_reason: null }] })}\n\n`);
+  response.write(`data: ${JSON.stringify({ id: "chatcmpl-proxy", object: "chat.completion.chunk", created: 1, model: defaultGonkaProxyModel, choices: [{ index: 0, delta: body.tools ? { tool_calls: [{ index: 0, id: "call_status", type: "function", function: { name: "get_status", arguments: "{}" } }] } : { content: "proxy-ok" }, finish_reason: null }] })}\n\n`);
   response.end("data: [DONE]\n\n");
 });
 await listen(upstream, upstreamPort);
+await writeFile(applicationTokenFile, JSON.stringify({ applications: [{ id: "kvartalufa", token: applicationToken }] }), { mode: 0o600 });
 
 const app = spawn(process.execPath, ["server/index.js"], {
   cwd: process.cwd(),
@@ -35,7 +42,9 @@ const app = spawn(process.execPath, ["server/index.js"], {
     DATA_DIR: join(root, "data"),
     SOTY_GONKA_API_KEY: upstreamKey,
     SOTY_GONKA_BASE_URL: `http://127.0.0.1:${upstreamPort}/v1`,
-    SOTY_GONKA_APPLICATION_TOKENS: JSON.stringify({ peremetrika: applicationToken })
+    SOTY_GONKA_REQUEST_TIMEOUT_MS: "10000",
+    SOTY_GONKA_APPLICATION_TOKENS: "",
+    SOTY_GONKA_APPLICATION_TOKENS_FILE: applicationTokenFile
   }
 });
 let stderr = "";
@@ -83,13 +92,33 @@ try {
   const applicationProxied = await fetch(`${appBase}/api/inference/v1/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${applicationToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: defaultGonkaProxyModel, stream: true, messages: [{ role: "user", content: "app-ping" }] })
+    body: JSON.stringify({
+      model: defaultGonkaProxyModel,
+      stream: true,
+      messages: [{ role: "user", content: "app-ping" }],
+      tools: [{ type: "function", function: { name: "get_status", description: "Return status", parameters: { type: "object", properties: {} } } }],
+      tool_choice: "auto"
+    })
   });
   assert.equal(applicationProxied.status, 200);
-  assert.match(await applicationProxied.text(), /proxy-ok/u);
+  assert.match(await applicationProxied.text(), /get_status/u);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].authorization, `Bearer ${upstreamKey}`);
   assert.equal(requests[1].body.messages[0].content, "app-ping");
+
+  const unauthenticated = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: defaultGonkaProxyModel, messages: [{ role: "user", content: "ping" }] })
+  });
+  assert.equal(unauthenticated.response.status, 401);
+
+  const wrongApplicationToken = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${"w".repeat(48)}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: defaultGonkaProxyModel, messages: [{ role: "user", content: "ping" }] })
+  });
+  assert.equal(wrongApplicationToken.response.status, 401);
 
   const rejectedConnectorOnApplicationApi = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
     method: "POST",
@@ -105,13 +134,64 @@ try {
   });
   assert.equal(rejectedAuth.response.status, 401);
 
-  const rejectedModel = await requestJson(`${appBase}/api/connectors/gonka/v1/chat/completions`, {
+  const rejectedModel = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${applicationToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: "moonshotai/Kimi-K2.6", messages: [{ role: "user", content: "ping" }] })
   });
   assert.equal(rejectedModel.response.status, 400);
   assert.equal(requests.length, 2, "rejected requests must never reach Gonka");
+
+  const upstreamError = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${applicationToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: defaultGonkaProxyModel, messages: [{ role: "user", content: "upstream-error" }] })
+  });
+  assert.equal(upstreamError.response.status, 502);
+  assert.equal(upstreamError.body.error.message, "model-upstream-unavailable");
+
+  const timeout = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${applicationToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: defaultGonkaProxyModel, messages: [{ role: "user", content: "timeout" }] })
+  });
+  assert.equal(timeout.response.status, 504);
+  assert.equal(timeout.body.error.message, "model-upstream-timeout");
+
+  const legacy = createApplicationTokenAuthenticator(JSON.stringify({ legacy: "l".repeat(48) }), { filePath: "" });
+  assert.equal(legacy.ready, true);
+  assert.equal(await legacy("l".repeat(48)), "legacy");
+  const missingFile = createApplicationTokenAuthenticator(JSON.stringify({ legacy: "l".repeat(48) }), { filePath: join(root, "missing.json") });
+  assert.equal(missingFile.ready, false);
+  const invalidFile = join(root, "invalid.json");
+  await writeFile(invalidFile, "{not-json", { mode: 0o600 });
+  assert.equal(createApplicationTokenAuthenticator("", { filePath: invalidFile }).ready, false);
+  const duplicateIdFile = join(root, "duplicate-id.json");
+  await writeFile(duplicateIdFile, JSON.stringify({ applications: [
+    { id: "kvartalufa", token: "y".repeat(48) },
+    { id: "kvartalufa", token: "z".repeat(48) }
+  ] }), { mode: 0o600 });
+  assert.equal(createApplicationTokenAuthenticator("", { filePath: duplicateIdFile }).ready, false);
+  const reusedTokenFile = join(root, "reused-token.json");
+  await writeFile(reusedTokenFile, JSON.stringify({ applications: [
+    { id: "kvartalufa", token: "r".repeat(48) },
+    { id: "hochuipoteku", token: "r".repeat(48) }
+  ] }), { mode: 0o600 });
+  assert.equal(createApplicationTokenAuthenticator("", { filePath: reusedTokenFile }).ready, false);
+  const conflictFile = join(root, "conflict.json");
+  await writeFile(conflictFile, JSON.stringify({ applications: [{ id: "legacy", token: "z".repeat(48) }] }), { mode: 0o600 });
+  assert.equal(createApplicationTokenAuthenticator(JSON.stringify({ legacy: "l".repeat(48) }), { filePath: conflictFile }).ready, false);
+  const crossSourceTokenFile = join(root, "cross-source-token.json");
+  await writeFile(crossSourceTokenFile, JSON.stringify({ applications: [{ id: "kvartalufa", token: "l".repeat(48) }] }), { mode: 0o600 });
+  assert.equal(createApplicationTokenAuthenticator(JSON.stringify({ legacy: "l".repeat(48) }), { filePath: crossSourceTokenFile }).ready, false);
+  assert.doesNotMatch(JSON.stringify({
+    readiness,
+    unauthenticated: unauthenticated.body,
+    wrongApplicationToken: wrongApplicationToken.body,
+    rejectedModel: rejectedModel.body,
+    upstreamError: upstreamError.body,
+    timeout: timeout.body
+  }), new RegExp(applicationToken, "u"));
 
   process.stdout.write("gonka-proxy:selftest:ok\n");
 } finally {

@@ -9,7 +9,9 @@ export function attachConnectorApi(app, { dataDir, gonka } = {}) {
   const root = dataDir || "data";
   const store = createConnectorStore(root);
   const modelProxy = createGonkaProxy({ store, ...gonka });
-  const applicationAuthenticator = createApplicationTokenAuthenticator(gonka?.applicationTokens);
+  const applicationAuthenticator = createApplicationTokenAuthenticator(gonka?.applicationTokens, {
+    filePath: gonka?.applicationTokensFile
+  });
 
   app.post("/api/connectors/register", jsonParser, route(async (req, res) => {
     respond(res, await store.register(req.body, bearerToken(req)));

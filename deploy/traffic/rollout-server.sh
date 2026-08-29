@@ -8,6 +8,8 @@ next="${current}-next-${stamp}"
 previous="${current}-rollback-${stamp}"
 runtime_dir="${HOME}/.config/soty"
 runtime_env="${runtime_dir}/online-chat.env"
+application_tokens_file="${SOTY_GONKA_APPLICATION_TOKENS_HOST_FILE:-${runtime_dir}/application-tokens.json}"
+application_tokens_mount="/run/secrets/soty-application-tokens.json"
 target="${SOTY_TRAFFIC_TUNNEL_TARGET:-http://172.17.0.1:24444/inside}"
 public_path="${SOTY_TRAFFIC_TUNNEL_PATH:-/api/traffic/tunnel}"
 ws_target="${SOTY_TRAFFIC_WS_TARGET:-ws://172.17.0.1:24446/inside-ws}"
@@ -29,6 +31,19 @@ docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "${current}" \
 mv "${runtime_env}.tmp" "${runtime_env}"
 chmod 600 "${runtime_env}"
 
+set --
+if [ -e "${application_tokens_file}" ]; then
+  [ -f "${application_tokens_file}" ] && [ ! -L "${application_tokens_file}" ] \
+    || { echo "application token source must be a regular non-symlink file" >&2; exit 1; }
+  chmod 600 "${application_tokens_file}"
+  [ "$(stat -c '%a' "${application_tokens_file}")" = "600" ] \
+    && [ "$(stat -c '%u' "${application_tokens_file}")" = "$(id -u)" ] \
+    || { echo "application token source must be mode 0600 and owned by the rollout user" >&2; exit 1; }
+  set -- "$@" \
+    --mount "type=bind,src=${application_tokens_file},dst=${application_tokens_mount},readonly" \
+    --env "SOTY_GONKA_APPLICATION_TOKENS_FILE=${application_tokens_mount}"
+fi
+
 docker image inspect "${image}" >/dev/null
 docker run --rm "${image}" node --check server/index.js >/dev/null
 docker run --rm "${image}" node -e "import('./server/index.js').then(() => setTimeout(() => process.exit(0), 500))" >/dev/null
@@ -37,6 +52,7 @@ docker create \
   --name "${next}" \
   --restart unless-stopped \
   --env-file "${runtime_env}" \
+  "$@" \
   --mount type=volume,src=soty-online-chat-data,dst=/data \
   --publish 127.0.0.1:18182:8080 \
   "${image}" >/dev/null

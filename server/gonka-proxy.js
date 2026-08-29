@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 
 export const defaultGonkaProxyModel = "deepseek-ai/DeepSeek-V4-Flash-0731";
@@ -109,8 +110,13 @@ export function createGonkaProxy({
   };
 }
 
-export function createApplicationTokenAuthenticator(value = process.env.SOTY_GONKA_APPLICATION_TOKENS || "") {
-  const entries = applicationTokenEntries(value);
+export function createApplicationTokenAuthenticator(
+  value = process.env.SOTY_GONKA_APPLICATION_TOKENS || "",
+  { filePath = process.env.SOTY_GONKA_APPLICATION_TOKENS_FILE || "" } = {}
+) {
+  const environmentEntries = applicationTokenEntries(value);
+  const fileResult = applicationTokenFileEntries(filePath);
+  const entries = fileResult.ok ? mergeApplicationTokenEntries(environmentEntries, fileResult.entries) : [];
   const authenticate = async (token) => {
     if (!token) return false;
     const digest = createHash("sha256").update(token).digest();
@@ -123,6 +129,32 @@ export function createApplicationTokenAuthenticator(value = process.env.SOTY_GON
   return authenticate;
 }
 
+function applicationTokenFileEntries(filePath) {
+  const path = String(filePath || "").trim();
+  if (!path) return { ok: true, entries: [] };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return { ok: false, entries: [] };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || Object.keys(parsed).length !== 1 || !Array.isArray(parsed.applications)) {
+    return { ok: false, entries: [] };
+  }
+  const entries = [];
+  for (const item of parsed.applications) {
+    if (!item || typeof item !== "object" || Array.isArray(item)
+        || Object.keys(item).some((key) => !["id", "token"].includes(key))) {
+      return { ok: false, entries: [] };
+    }
+    const entry = applicationTokenEntry(item.id, item.token);
+    if (!entry) return { ok: false, entries: [] };
+    entries.push(entry);
+  }
+  return uniqueApplicationTokenEntries(entries);
+}
+
 function applicationTokenEntries(value) {
   let parsed;
   try {
@@ -133,12 +165,33 @@ function applicationTokenEntries(value) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
   const entries = [];
   for (const [rawId, rawToken] of Object.entries(parsed)) {
-    const id = String(rawId || "").trim();
-    const token = String(rawToken || "").trim();
-    if (!/^[a-z][a-z0-9_-]{1,63}$/u.test(id) || !/^[A-Za-z0-9_-]{40,160}$/u.test(token)) continue;
-    entries.push({ id, digest: createHash("sha256").update(token).digest() });
+    const entry = applicationTokenEntry(rawId, rawToken);
+    if (entry) entries.push(entry);
   }
   return entries;
+}
+
+function applicationTokenEntry(rawId, rawToken) {
+  const id = String(rawId || "").trim();
+  const token = String(rawToken || "").trim();
+  if (!/^[a-z][a-z0-9_-]{1,63}$/u.test(id) || !/^[A-Za-z0-9_-]{40,160}$/u.test(token)) return null;
+  return { id, digest: createHash("sha256").update(token).digest() };
+}
+
+function mergeApplicationTokenEntries(left, right) {
+  return uniqueApplicationTokenEntries([...left, ...right]).entries;
+}
+
+function uniqueApplicationTokenEntries(entries) {
+  const ids = new Set();
+  const digests = new Set();
+  for (const entry of entries) {
+    const digest = entry.digest.toString("base64");
+    if (ids.has(entry.id) || digests.has(digest)) return { ok: false, entries: [] };
+    ids.add(entry.id);
+    digests.add(digest);
+  }
+  return { ok: true, entries };
 }
 
 function cleanChatRequest(value, model) {
