@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultGonkaProxyModel } from "../server/gonka-proxy.js";
@@ -195,6 +195,30 @@ try {
   assert.equal(timedState.status, "failed");
   assert.equal(timedState.result.exitCode, 124);
 
+  if (process.platform === "win32") {
+    const childPidPath = path.join(root, "timeout-tree-child.pid");
+    const treeTimed = await createJob({
+      kind: "script",
+      input: {
+        kind: "script",
+        name: "timeout-tree.ps1",
+        shell: "powershell",
+        script: `$child=Start-Process -FilePath powershell.exe -ArgumentList '-NoLogo','-NoProfile','-Command','while($true){Start-Sleep -Seconds 1}' -NoNewWindow -PassThru
+[IO.File]::WriteAllText('${childPidPath.replace(/'/gu, "''")}',[string]$child.Id)
+while($true){Start-Sleep -Seconds 1}`,
+        runAs: "user",
+        cwd: root,
+        timeoutMs: 1_200
+      }
+    });
+    const treeTimedState = await waitJob(treeTimed.id, 15_000);
+    assert.equal(treeTimedState.status, "failed");
+    assert.equal(treeTimedState.result.exitCode, 124);
+    const childPid = Number((await readFile(childPidPath, "utf8")).trim());
+    assert.ok(childPid > 0, "timeout tree child pid is captured");
+    await waitProcessExit(childPid, 5_000);
+  }
+
   const cancellable = await createJob({
     kind: "script",
     input: {
@@ -333,6 +357,15 @@ async function waitJson(url, predicate, timeoutMs = 10_000) {
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
   }
   throw new Error(`Timed out waiting for ${url}`);
+}
+
+async function waitProcessExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); } catch { return; }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  throw new Error(`Process tree child remained alive: ${pid}`);
 }
 
 async function json(url, options) {

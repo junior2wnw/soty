@@ -1575,7 +1575,7 @@ function backoff(failures) {
 return { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed };
 })();
 
-const connectorVersion = "1.2.11";
+const connectorVersion = "1.2.12";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -2167,6 +2167,7 @@ function runChild(command, args, options) {
     let stdout = "";
     let stderr = "";
     let timer;
+    let terminationTimer;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: { ...childEnv(), ...(options.env || {}) },
@@ -2177,10 +2178,26 @@ function runChild(command, args, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(terminationTimer);
       options.signal?.removeEventListener("abort", abort);
       callback();
     };
-    const abort = () => killProcessTree(child);
+    const resolveTerminated = () => finish(() => resolveRun({
+      exitCode: options.signal?.aborted ? 130 : timedOut ? 124 : 1,
+      stdout,
+      stderr: appendBounded(stderr, "\nprocess-tree-termination-timeout", maxResultChars)
+    }));
+    const abort = () => {
+      killProcessTree(child);
+      if (terminationTimer || settled) return;
+      terminationTimer = setTimeout(() => {
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        try { child.kill("SIGKILL"); } catch { /* Process already stopped. */ }
+        resolveTerminated();
+      }, 10_000);
+    };
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) abort();
     timer = setTimeout(() => {
@@ -2304,9 +2321,10 @@ function killProcessTree(child) {
   if (!child?.pid) return;
   if (process.platform === "win32") {
     try {
-      const killer = spawn(windowsSystemTool("taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-      killer.once("error", () => {
-        try { child.kill("SIGTERM"); } catch { /* Process already stopped. */ }
+      execFileSync(windowsSystemTool("taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], {
+        timeout: 5_000,
+        windowsHide: true,
+        stdio: "ignore"
       });
       return;
     } catch { /* Fall through. */ }
