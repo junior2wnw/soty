@@ -71,6 +71,7 @@ await chmod(connectorOutput, 0o755).catch(() => undefined);
 // existing updater. It contains the connector byte-for-byte, not the old agent.
 await writeFile(compatibilityOutput, bundled, { mode: 0o755 });
 await chmod(compatibilityOutput, 0o755).catch(() => undefined);
+await normalizeInstallerAssets();
 await updateWindowsMachineInstallerRevision(version);
 const windowsReinstall = await publishWindowsReinstallScripts();
 const spreadexMl = await buildSpreadExMlRelease();
@@ -151,13 +152,30 @@ async function updateWindowsMachineInstallerRevision(version) {
   if (next !== text) await writeFile(windowsMachineCmdPath, next);
 }
 
+// Public installers are copied unchanged by Vite. Windows checkouts may supply
+// CRLF, which breaks the Unix shell installer and changes published hashes.
+// Canonical LF matches the existing published assets on every build platform.
+async function normalizeInstallerAssets() {
+  for (const fileName of [
+    "install-macos-linux.sh",
+    "install-windows.ps1",
+    "install-windows-machine-bootstrap.ps1",
+    "install-windows-machine.cmd"
+  ]) {
+    const path = join(outputDir, fileName);
+    const text = await readFile(path, "utf8");
+    const normalized = text.replace(/\r\n/g, "\n");
+    if (normalized !== text) await writeFile(path, normalized);
+  }
+}
+
 async function publishWindowsReinstallScripts() {
   await mkdir(windowsReinstallDir, { recursive: true });
   const scripts = [];
   for (const [name, fileName] of reinstallSpecs) {
     const sourceFile = join(root, "scripts", "windows", fileName);
     if (!existsSync(sourceFile)) throw new Error(`Windows reinstall script not found: ${sourceFile}`);
-    const bytes = await readFile(sourceFile);
+    const bytes = Buffer.from((await readFile(sourceFile, "utf8")).replace(/\r\n/g, "\n"), "utf8");
     await writeFile(join(windowsReinstallDir, fileName), bytes, { mode: 0o755 });
     scripts.push({ name, url: `/agent/windows-reinstall/${fileName}`, sha256: sha256(bytes), bytes: bytes.length });
   }

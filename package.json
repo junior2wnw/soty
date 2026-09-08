@@ -12,6 +12,7 @@
     "start": "node server/index.js",
     "agent": "node scripts/soty-connector.mjs",
     "agent:ctl": "node scripts/soty-connector.mjs ctl",
+    "agent:packaging:selftest": "node scripts/agent-packaging-selftest.mjs",
     "agent:release": "node scripts/build-agent-release.mjs",
     "traffic:selftest": "node scripts/traffic-tunnel-proxy-selftest.mjs && node scripts/traffic-core-selftest.mjs",
     "traffic:smoke": "node scripts/traffic-live-smoke.mjs",

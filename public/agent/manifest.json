@@ -136,26 +136,26 @@
       {
         "name": "managed",
         "url": "/agent/windows-reinstall/soty-managed-windows-reinstall.ps1",
-        "sha256": "c93ea9b3d677a642993d33cbf47c28b926ae211a4dad371ac4d8a6d216b05f3e",
-        "bytes": 53772
+        "sha256": "505d7d771b1b4ffdae9ca43b1151757e4401f5fc91f0a9c691f74e80b9142902",
+        "bytes": 52607
       },
       {
         "name": "prepare",
         "url": "/agent/windows-reinstall/soty-prepare-windows-reinstall.ps1",
-        "sha256": "202340812d003ee6cc80615b8678de1a067ddc65e06065cf0d236f0973411213",
-        "bytes": 96345
+        "sha256": "84ef1cc3594c44f2facd5d2b5ac8036f7119795ce954b29548dfa70eb4abf598",
+        "bytes": 94289
       },
       {
         "name": "arm",
         "url": "/agent/windows-reinstall/soty-arm-windows-reinstall.ps1",
-        "sha256": "2f6913e1704de8b945d768d747acc45ca5819fca72473846289a3c22feceff1b",
-        "bytes": 8384
+        "sha256": "8e245bd6fc2b013678510616fc35c93c04f0f4ed357c284d36cdcafac099fa48",
+        "bytes": 8194
       },
       {
         "name": "makeFastUsb",
         "url": "/agent/windows-reinstall/soty-make-fast-usb.ps1",
-        "sha256": "0f5dc6b3fb9c18b57f8c48506268f0540869734313696273f924872696dac8d0",
-        "bytes": 14857
+        "sha256": "85625a7524b72ec97ef7fd675ca5b56f659320770c725862b9cbd32834c4be34",
+        "bytes": 14537
       }
     ]
   }
