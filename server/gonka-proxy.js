@@ -29,6 +29,7 @@ export function createGonkaProxy({
     model,
     transport: "authenticated-server-proxy",
     applicationPolicyReady: applicationPolicy.ready,
+    applicationPolicySha256: applicationPolicy.sha256,
     async handleChatCompletions(req, res, { authenticateToken, client = "connector" } = {}) {
       if (!ready) {
         respondJson(res, 503, { error: { message: "model-proxy-unavailable", type: "server_configuration" } });

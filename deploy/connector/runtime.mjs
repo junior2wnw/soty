@@ -41,9 +41,11 @@ export function readiness(origin) {return async kind=>{
    const health=await httpJson(origin,'/health',Math.min(10000,deadline-Date.now()));
    if(health?.ok!==true)throw new SafeError('health_failed');
    const modelProxies=modelReadiness(health);
-   if(kind!=='candidate')return {ok:true,modelProxies};
+   const applicationPolicySha256=health.applicationModelProxy?.policySha256||null;
+   if(applicationPolicySha256!==null&&!/^[a-f0-9]{64}$/.test(applicationPolicySha256))throw new SafeError('policy_runtime_hash_invalid');
+   if(kind!=='candidate')return {ok:true,modelProxies,applicationPolicySha256};
    const value=await httpJson(origin,'/api/connectors/storage-ready',Math.max(1,Math.min(10000,deadline-Date.now())));
-   if(value?.ok===true&&value.storageReady===true&&value.maintenance===true&&value.schema==='soty.connector-storage-ready.v1')return {...value,modelProxies};
+   if(value?.ok===true&&value.storageReady===true&&value.maintenance===true&&value.schema==='soty.connector-storage-ready.v1')return {...value,modelProxies,applicationPolicySha256};
   }catch{}
   await new Promise(r=>setTimeout(r,250));
  }

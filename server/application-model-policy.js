@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 export const applicationModelPolicySchema = "soty.application-model-policy.v1";
 export const candidateApplicationModel = "MiniMaxAI/MiniMax-M2.7";
@@ -12,6 +13,7 @@ export function createApplicationModelPolicy({
 } = {}) {
   const rules = new Map();
   let ready = true;
+  let sha256 = null;
   const configured = Boolean(String(filePath || "").trim());
   if (configured) {
     try {
@@ -30,6 +32,7 @@ export function createApplicationModelPolicy({
         }
         rules.set(entry.id, new Set(entry.allowedModels));
       }
+      sha256 = createHash("sha256").update(bytes).digest("hex");
     } catch {
       ready = false;
       rules.clear();
@@ -38,6 +41,7 @@ export function createApplicationModelPolicy({
   return Object.freeze({
     ready,
     configured,
+    sha256,
     allows(applicationId, requestedModel) {
       if (!ready || typeof applicationId !== "string" || !/^[a-z][a-z0-9_-]{1,63}$/u.test(applicationId)) return false;
       return rules.has(applicationId)

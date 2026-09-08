@@ -22,7 +22,17 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   const result={...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
   addApprovedPolicy(result,applicationPolicy);return result;
 }
-export function preservationHash(config) { const c=clone(config);delete c.Image;if(c.Labels){delete c.Labels[label];delete c.Labels[label+'.original'];delete c.Labels['org.opencontainers.image.revision'];}return hash(c); }
+export function preservationHash(config) {
+  const c=clone(config);delete c.Image;
+  if(c.Labels){delete c.Labels[label];delete c.Labels[label+'.original'];delete c.Labels['org.opencontainers.image.revision'];}
+  // Proven Docker API1.45 roundtrip defaults: null means OOM kill enabled,
+  // and an explicitly supplied primary endpoint MAC is also reflected into
+  // the deprecated top-level field. Preserve disagreement/nondefault values.
+  c.HostConfig.OomKillDisable ??= false;
+  const primary=c.NetworkingConfig?.EndpointsConfig?.[c.HostConfig.NetworkMode==='default'?'bridge':c.HostConfig.NetworkMode];
+  if(!c.MacAddress&&primary?.MacAddress)c.MacAddress=primary.MacAddress;
+  return hash(c);
+}
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema};}
 export class Rollout {
   constructor({engine,maintenance,ready,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,record,attempts,sleep});this.state={phase:'new'};}
@@ -41,6 +51,7 @@ export class Rollout {
     this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy);this.fingerprint=preservationHash(this.config);
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
+    this.originalPolicySha256=baseline.applicationPolicySha256||null;
     this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,revision:args.revision,transaction:args.transaction,configurationSha256:this.fingerprint,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null};
   }
   validateCandidate(c,{stopped=false}={}) {
@@ -78,6 +89,7 @@ export class Rollout {
       const running=await this.engine.inspect(this.candidate.Id);this.validateCandidate(running);
       const ready=await this.ready('candidate',this);requireThat(ready?.ok===true&&ready.storageReady===true&&ready.schema==='soty.connector-storage-ready.v1'&&ready.maintenance===true,'candidate_storage_not_ready');
       requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.healthSha256,'candidate_model_readiness_changed');
+      requireThat((ready.applicationPolicySha256||null)===(this.args.applicationPolicy?.sha256||this.originalPolicySha256),'candidate_loaded_policy_mismatch');
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       await this.note('candidate_ready');leaveAttempted=true;
       try{s=safeStatus(await this.maintenance('leave',this));}catch{s=await this.status();}

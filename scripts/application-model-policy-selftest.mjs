@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
@@ -72,6 +73,7 @@ try {
 
   const configured = await app(policyPath);
   assert.equal(configured.attached.applicationModelProxy.ready, true);
+  assert.equal(configured.attached.applicationModelProxy.policySha256, createHash("sha256").update(await readFile(policyPath)).digest("hex"));
   const mini = await call(configured, candidate, { extra: { tools: [{ type: "function", function: { name: "get_status", parameters: { type: "object", properties: {} } } }], tool_choice: "auto" } });
   assert.equal(mini.status, 200);
   assert.match(mini.text, /MiniMaxAI\/MiniMax-M2\.7/);

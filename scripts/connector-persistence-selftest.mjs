@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { performance } from "node:perf_hooks";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { createConnectorStore } from "../server/connector-store.js";
 import { readConnectorState, readConnectorRegistry } from "../server/connector-registry.js";
 import { connectorMaintenance } from "../server/connector-maintenance.js";
@@ -194,6 +197,11 @@ try {
     assert.equal((await store.createJob({...input,text:"different",requestId:"one"})).error,"job-request-conflict");
     await store.cancelJob(linkId,a.job.id);await store.cancelJob(linkId,b.job.id);
     assert.equal(store.state.requests.length,2);
+  });
+
+  await test("combined write failure and failed ROLLBACK fences until worker restart", async () => {
+    const child = await promisify(execFile)(process.execPath, [fileURLToPath(new URL("./connector-rollback-failure-selftest.mjs", import.meta.url))], { windowsHide: true, timeout: 20000, maxBuffer: 65536 });
+    assert.equal(JSON.parse(child.stdout).reopenedRecovery, true);
   });
 
   console.log(JSON.stringify({ok:true,synthetic:true,tests:results},null,2));

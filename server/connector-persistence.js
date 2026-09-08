@@ -171,7 +171,10 @@ if (!isMainThread && workerData?.connectorPersistence) {
     } catch (error) {
       let rolledBack = false;
       try {
-        try { db.exec("ROLLBACK"); } catch { /* COMMIT may have ended the transaction; compare durable revision below. */ }
+        // A revision read on this same connection is not independent evidence
+        // while an uncommitted transaction might still be open. Failed
+        // ROLLBACK always fences; only its successful completion permits reuse.
+        db.exec("ROLLBACK");
         revision = Number(getMeta("revision"));
         rolledBack = revision === delta.revision;
       } catch { /* Reconciliation requires a fresh process. */ }
