@@ -92,7 +92,7 @@ export class Rollout {
       requireThat((ready.applicationPolicySha256||null)===(this.args.applicationPolicy?.sha256||this.originalPolicySha256),'candidate_loaded_policy_mismatch');
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       await this.note('candidate_ready');leaveAttempted=true;
-      try{s=safeStatus(await this.maintenance('leave',this));}catch{s=await this.status();}
+      try{s=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
@@ -114,7 +114,7 @@ export class Rollout {
         // JSON. Legacy original does not admit through the new marker contract.
         await this.reconcile(()=>this.engine.start(this.original.Id),this.original.Id,c=>c.State.Running&&c.Image===this.args.originalImage);
         const restoredHealth=await this.ready('original',this);requireThat(restoredHealth?.ok===true&&restoredHealth.modelProxies&&hash(restoredHealth.modelProxies)===this.healthSha256,'original_health_failed');
-        if(entered){let cleared;try{cleared=safeStatus(await this.maintenance('leave',this));}catch{cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
+        if(entered){let cleared;try{cleared=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
         await this.note('restored',{failureCode:error.code||'activation_failed'});
       }catch(recovery){if(this.state.phase==='aborted')throw recovery;await this.note('recovery_required',{failureCode:recovery.code||'recovery_failed'});throw new SafeError('recovery_required');}
       throw new SafeError(error.code||'activation_failed');

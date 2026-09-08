@@ -66,3 +66,50 @@ test('proven Docker null OOM default and mirrored primary MAC normalize without 
 test('nondefault OOM or disagreeing MAC drift is rejected before stop',async()=>{for(const field of ['oom','mac']){const f=fixture();f.map.get(args.originalId).NetworkSettings.Networks.soty.MacAddress='12:58:0b:53:88:ec';await f.run.prepare(args);const c=f.map.get(f.run.candidate.Id);if(field==='oom')c.HostConfig.OomKillDisable=true;else c.Config.MacAddress='12:58:0b:53:88:ff';await assert.rejects(f.run.promote(),/candidate_configuration_mismatch/);assert.ok(!f.events.some(e=>e.startsWith('stop:')));}});
 test('late policy path hash drift after startup restores original before leave',async()=>policyFixture(async({source,policy})=>{const f=fixture();await f.run.prepare({...args,applicationPolicy:policy});const ready=f.run.ready;f.run.ready=async kind=>{const result=await ready(kind);if(kind==='candidate')await writeFile(source,'{}');return result;};await assert.rejects(f.run.promote(),/policy_hash_mismatch/);assert.equal(f.run.state.phase,'restored');}));
 test('startup-loaded policy digest must match receipt even when host path is correct',async()=>policyFixture(async({policy})=>{const f=fixture();await f.run.prepare({...args,applicationPolicy:policy});const ready=f.run.ready;f.run.ready=async kind=>{const result=await ready(kind);return kind==='candidate'?{...result,applicationPolicySha256:'0'.repeat(64)}:result;};await assert.rejects(f.run.promote(),/candidate_loaded_policy_mismatch/);assert.equal(f.run.state.phase,'restored');}));
+
+test('late helper CREATE after repeated404 is reconciled once by exact name',async()=>{
+ const f=fixture();await f.run.prepare(args);const create=f.engine.create;let pending,creates=0,polls=0;
+ f.engine.create=async(name,body)=>{creates++;pending={name,body};throw new SafeError('engine_response_ambiguous');};
+ const maint=productionMaintenance(f.engine,{maxPolls:5,sleep:async()=>{if(++polls===3)await create(pending.name,pending.body);}});
+ await maint('enter',f.run);
+ assert.equal(creates,1);assert.equal(polls,3);
+ assert.equal(f.events.filter(e=>e==='start-candidate').length,1);
+ assert.equal(f.run.state.maintenanceHelper.state,'removed');
+ assert.equal(f.run.state.maintenanceHelper.createCode,'engine_response_ambiguous');
+ assert.doesNotMatch(JSON.stringify(f.records),/synthetic-sensitive|SOTY_CODEX|SOTY_TRAFFIC/);
+});
+test('unresolved helper CREATE retains exact pending name and never starts or retries',async()=>{
+ const f=fixture();await f.run.prepare(args);let creates=0;
+ f.engine.create=async()=>{creates++;throw new SafeError('engine_response_ambiguous');};
+ const maint=productionMaintenance(f.engine,{maxPolls:3,sleep:async()=>{}});
+ await assert.rejects(maint('enter',f.run),/maintenance_helper_unresolved/);
+ assert.equal(creates,1);assert.equal(f.run.state.maintenanceHelper.state,'create_unresolved');
+ assert.equal(f.run.state.maintenanceHelper.name,`soty-connector-helper-${args.transaction}-1`);
+ assert.ok(!f.events.some(e=>e.startsWith('start:')||e==='start-candidate'));
+});
+test('wrong helper identity after delayed CREATE is never started',async()=>{
+ const f=fixture();await f.run.prepare(args);const create=f.engine.create;
+ f.engine.create=async(name,body)=>create(name,{...body,Image:args.originalImage});
+ await assert.rejects(productionMaintenance(f.engine,{maxPolls:2,sleep:async()=>{}})('enter',f.run),/maintenance_helper_identity/);
+ assert.ok(!f.events.includes('start-candidate'));
+});
+test('retained previously executed helper cannot be restarted on CREATE conflict',async()=>{
+ const f=fixture();await f.run.prepare(args);const create=f.engine.create;
+ f.engine.create=async(name,body)=>{const c=await create(name,body);Object.assign(f.map.get(c.Id).State,{Status:'exited',ExitCode:0});throw new SafeError('engine_http_409');};
+ await assert.rejects(productionMaintenance(f.engine,{maxPolls:2,sleep:async()=>{}})('rollback',f.run),/maintenance_helper_unresolved/);
+ assert.equal(f.run.state.maintenanceHelper.state,'prior_execution_unresolved');
+ assert.ok(!f.events.includes('start-candidate'));
+});
+test('ambiguous helper START with no terminal proof remains fenced and retained',async()=>{
+ const f=fixture();await f.run.prepare(args);let starts=0;
+ f.engine.start=async()=>{starts++;throw new SafeError('engine_response_ambiguous');};
+ await assert.rejects(productionMaintenance(f.engine,{maxPolls:2,sleep:async()=>{}})('enter',f.run),/maintenance_helper_unresolved/);
+ assert.equal(starts,1);assert.equal(f.run.state.maintenanceHelper.state,'starting');
+ assert.ok(f.map.has(f.run.state.maintenanceHelper.id));
+});
+test('unresolved leave helper never starts a concurrent status helper or downgrade',async()=>{
+ const f=fixture();await f.run.prepare(args);const helper=f.run.maintenance;let leaving=false;
+ f.run.maintenance=async verb=>{if(verb==='leave'){leaving=true;throw new SafeError('maintenance_helper_unresolved');}assert.equal(leaving,false);return helper(verb);};
+ await assert.rejects(f.run.promote(),/maintenance_helper_unresolved/);
+ assert.equal(f.run.state.phase,'recovery_required');assert.ok(!f.events.includes('helper:rollback'));
+});

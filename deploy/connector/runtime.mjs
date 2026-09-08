@@ -10,8 +10,25 @@ export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(
    // Existing mounts/Env stay memory-only. Helper has no published port, network,
    // restart policy, devices/capabilities, or original traffic entrypoint.
    const body={Image:run.args.candidateImage,Env:source.Env,User:source.User,WorkingDir:source.WorkingDir||'/app',Entrypoint:['node'],Cmd:['server/connector-maintenance.js',verb],Tty:false,Labels:{[label]:run.args.transaction,[label+'.helper']:verb},HostConfig:{Binds:source.HostConfig.Binds,Mounts:source.HostConfig.Mounts,GroupAdd:source.HostConfig.GroupAdd,UsernsMode:source.HostConfig.UsernsMode,NetworkMode:'none',RestartPolicy:{Name:'no'},ReadonlyRootfs:true,Memory:805306368,NanoCpus:500000000,PidsLimit:64,CapDrop:['ALL'],SecurityOpt:['no-new-privileges'],Tmpfs:{'/tmp':'rw,noexec,nosuid,size=16777216'}},NetworkingConfig:{EndpointsConfig:{}}};
-   let created;try{created=await engine.create(name,body);}catch{}
-   const owned=await engine.inspect(created?.Id||name);if(owned.Image!==run.args.candidateImage||owned.Config.Labels?.[label]!==run.args.transaction||owned.Config.Labels?.[label+'.helper']!==verb)throw new SafeError('maintenance_helper_identity');
+   const receipt={name,verb,state:'creating'};
+   await run.note(run.state.phase,{maintenanceHelper:receipt});
+   let created;try{created=await engine.create(name,body);}catch(error){receipt.createCode=/^engine_[a-z0-9_]+$/.test(error?.code||'')?error.code:'create_failed';}
+   // A timed-out CREATE may become visible after an immediate name lookup404.
+   // Never issue a second CREATE or infer absence from that first lookup.
+   let owned;
+   for(let i=0;i<maxPolls;i++){
+     try{owned=await engine.inspect(created?.Id||name);break;}catch{}
+     if(i+1<maxPolls)await sleep(250);
+   }
+   if(!owned){await run.note(run.state.phase,{maintenanceHelper:{...receipt,state:'create_unresolved'}});throw new SafeError('maintenance_helper_unresolved');}
+   if(owned.Name!=='/'+name||owned.Image!==run.args.candidateImage||owned.Config.Labels?.[label]!==run.args.transaction||owned.Config.Labels?.[label+'.helper']!==verb)throw new SafeError('maintenance_helper_identity');
+   receipt.id=owned.Id;
+   // A retained helper from an earlier ambiguous START must not execute twice.
+   if(owned.State.Running||owned.State.Status!=='created'){
+     await run.note(run.state.phase,{maintenanceHelper:{...receipt,state:'prior_execution_unresolved'}});
+     throw new SafeError('maintenance_helper_unresolved');
+   }
+   await run.note(run.state.phase,{maintenanceHelper:{...receipt,state:'starting'}});
    try{await engine.start(owned.Id);}catch{}
    let final;
    try{for(let i=0;i<maxPolls;i++){final=await engine.inspect(owned.Id);if(!final.State.Running&&['exited','dead'].includes(final.State.Status))break;await sleep(250);}}catch{throw new SafeError('maintenance_helper_unresolved');}
@@ -22,7 +39,8 @@ export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(
    const result=safeStatus(verb==='rollback'?{...output,activeJobs:[]}:output);
    // Failed/ambiguous helper is retained for supervised ID-specific inspection;
    // successful helper can be removed without volumes and without force.
-   await engine.remove(owned.Id);return result;
+   await engine.remove(owned.Id);
+   await run.note(run.state.phase,{maintenanceHelper:{...receipt,state:'removed'}});return result;
  };
 }
 export function modelReadiness(health) {
