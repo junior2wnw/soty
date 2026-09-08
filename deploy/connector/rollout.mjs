@@ -52,9 +52,10 @@ function sameAuthority(expected,current,kind) {
 export class Rollout {
   constructor({engine,maintenance,ready,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,record,attempts,sleep});this.state={phase:'new'};}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
-  async reconcile(action,id,predicate) {
+  async reconcile(action,id,predicate,{polls=this.attempts,observationMs=Infinity}={}) {
     let error;try{await action();}catch(e){error=e;}
-    for(let i=0;i<this.attempts;i++){try{const c=await this.engine.inspect(id);if(predicate(c))return c;}catch{}await this.sleep(250);}
+    const deadline=performance.now()+observationMs;
+    for(let i=0;i<polls&&performance.now()<deadline;i++){try{const c=await this.engine.inspect(id);if(predicate(c))return c;}catch{}await this.sleep(250);}
     throw new SafeError(error?.code==='engine_response_ambiguous'?'operation_unresolved':'operation_failed');
   }
   async guard(args) {
@@ -80,25 +81,75 @@ export class Rollout {
     this.validateCandidate(c,{stopped:true});
     this.candidate=c;await this.note('prepared',{candidateId:c.Id});return this.state;
   }
+  async checkStoppedResume() {
+    const old=await this.engine.inspect(this.args.originalId),candidate=await this.engine.inspect(this.resumeReceipt.candidateId);
+    const stop=this.resumeReceipt.originalStop;
+    const helpers=await this.engine.helpers(this.args.transaction);requireThat(Array.isArray(helpers)&&helpers.length===0,'resume_helper_unresolved');
+    requireThat(old.Id===this.args.originalId&&old.Image===this.args.originalImage&&old.Name==='/soty-online-chat'&&!old.State.Running&&old.State.Status==='exited'&&old.State.FinishedAt===stop.finishedAt&&old.State.ExitCode===stop.exitCode&&!old.State.OOMKilled,'resume_original_changed');
+    requireThat(candidate.Id===this.resumeReceipt.candidateId&&candidate.Name==='/soty-connector-next-'+this.args.transaction&&candidate.State.Status==='created'&&!candidate.State.Running&&candidate.State.StartedAt==='0001-01-01T00:00:00Z','resume_candidate_started');
+    this.validateCandidate(candidate,{stopped:true});
+    const reflected=createConfig(old,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy);
+    const reviewed=createConfig(candidate,this.args.candidateImage,this.args.transaction);
+    // Docker clears runtime endpoint MAC on STOP. Only fill an empty MAC from
+    // the exact never-started candidate whose complete prepared hash passed.
+    for(const [network,endpoint] of Object.entries(reflected.NetworkingConfig.EndpointsConfig)) {
+      if(endpoint.MacAddress==='') {
+        const mac=reviewed.NetworkingConfig.EndpointsConfig[network]?.MacAddress;
+        requireThat(typeof mac==='string'&&/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(mac),'resume_empty_mac_unproven');
+        endpoint.MacAddress=mac;
+      }
+    }
+    requireThat(preservationHash(reflected)===this.fingerprint,'resume_original_configuration_changed');
+    if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
+    this.original=old;this.candidate=candidate;this.config=reflected;
+  }
+  async resumeAfterStop(args,failed,prepared,approval,binding) {
+    requireThat(/^[a-f0-9]{64}$/.test(args.originalId)&&/^sha256:[a-f0-9]{64}$/.test(args.originalImage)&&/^sha256:[a-f0-9]{64}$/.test(args.candidateImage)&&/^[a-f0-9]{40}$/.test(args.revision)&&/^[a-f0-9]{16,40}$/.test(args.transaction),'invalid_exact_guards');
+    requireThat(approval?.schema==='soty.controller-stop-resume.v1'&&approval.approved===true&&approval.migrationContract==='soty.stopped-legacy-snapshot.v1','resume_receipt_invalid');
+    requireThat(binding&&/^[a-f0-9]{64}$/.test(binding.failedJournalSha256)&&/^[a-f0-9]{64}$/.test(binding.preparedJournalSha256)&&approval.failedJournalSha256===binding.failedJournalSha256&&approval.preparedJournalSha256===binding.preparedJournalSha256,'resume_journal_binding');
+    requireThat(failed.phase==='recovery_required'&&failed.failureCode==='offline_authority_unresolved'&&prepared.phase==='prepared'&&!failed.originalStop&&!failed.offlineAuthority&&!failed.migrationContract,'resume_boundary_invalid');
+    const helper=failed.maintenanceHelper;
+    requireThat(helper?.verb==='status'&&helper.state==='removed'&&helper.name===`soty-connector-helper-${args.transaction}-1`&&/^[a-f0-9]{64}$/.test(helper.id),'resume_helper_unresolved');
+    for(const key of ['originalId','originalImage','candidateImage','revision','transaction'])requireThat(args[key]===failed[key]&&args[key]===prepared[key]&&args[key]===approval[key],'resume_identity_mismatch');
+    for(const key of ['candidateId','configurationSha256','modelReadinessSha256','applicationPolicySha256'])requireThat(failed[key]===prepared[key]&&failed[key]===approval[key],'resume_receipt_mismatch');
+    requireThat(/^[a-f0-9]{64}$/.test(approval.candidateId)&&/^[a-f0-9]{64}$/.test(approval.configurationSha256)&&/^[a-f0-9]{64}$/.test(approval.modelReadinessSha256),'resume_hash_invalid');
+    requireThat((args.applicationPolicy?.sha256||null)===approval.applicationPolicySha256&&(approval.originalPolicySha256===null||/^[a-f0-9]{64}$/.test(approval.originalPolicySha256||'')),'resume_policy_mismatch');
+    requireThat(typeof approval.originalStop?.finishedAt==='string'&&Number.isFinite(Date.parse(approval.originalStop.finishedAt))&&[0,137,143].includes(approval.originalStop.exitCode),'resume_stop_proof_invalid');
+    const expected=safeAuthority(approval.expectedAuthority);
+    requireThat(expected.kind==='legacy'&&expected.counts.requests===0&&expected.activeJobs.length===0,'resume_expected_authority_invalid');
+    const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
+    this.args=args;this.resumeReceipt={...approval,expectedAuthority:expected};this.originalName='soty-online-chat';this.fingerprint=approval.configurationSha256;this.healthSha256=approval.modelReadinessSha256;this.originalPolicySha256=approval.originalPolicySha256;
+    await this.checkStoppedResume();
+    this.state={...failed,resumeFrom:{...binding,phase:failed.phase,failureCode:failed.failureCode},failureCode:null};
+    await this.note('stop_resume_validated',{originalStop:approval.originalStop});
+    return this.continuePromotion(true);
+  }
   async status(){return safeStatus(await this.maintenance('status',this));}
-  async promote() {
-    requireThat(this.state.phase==='prepared','candidate_not_prepared');
-    let stopped=false,entered=false,leaveAttempted=false,offlineAuthority;
+  async promote() {return this.continuePromotion(false);}
+  async continuePromotion(resuming) {
+    requireThat(this.state.phase===(resuming?'stop_resume_validated':'prepared'),'candidate_not_prepared');
+    let stopped=resuming,entered=false,leaveAttempted=false,offlineAuthority;
     try{
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
+      if(!resuming){
       const originalNow=await this.engine.inspect(this.original.Id);
       requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy))===this.fingerprint,'original_configuration_changed');
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(s.count===0&&!s.maintenance,'precheck_not_quiescent');
       await this.note('stopping_original');
-      const stoppedOriginal=await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
+      let stoppedOriginal;
+      try{stoppedOriginal=await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running,{polls:60,observationMs:15000});}catch(error){await this.note('stopping_original',{stopReconciliation:{code:error.code||'operation_failed'}});throw error;}stopped=true;
       await this.note('original_stopped',{originalStop:{exitCode:Number.isInteger(stoppedOriginal.State.ExitCode)?stoppedOriginal.State.ExitCode:null,oomKilled:stoppedOriginal.State.OOMKilled===true,finishedAt:stoppedOriginal.State.FinishedAt||null}});
+      }else{
+        await this.checkStoppedResume();
+      }
       // The stopped exact legacy process is the admission/write barrier. Its
       // successful mutation ACK and delivered poll followed atomic rename;
       // a live queue-empty metric neither exists nor establishes that fact.
-      s=safeStatus(await this.maintenance('snapshot',this));
+      let s=safeStatus(await this.maintenance('snapshot',this));
       requireThat(s.count===0&&s.authority?.activeJobs.length===0,'offline_admission_race');
       requireThat(!s.maintenance&&s.authority.kind==='legacy'&&s.authority.counts.requests===0,'offline_legacy_authority_required');
+      if(resuming)requireThat(hash(s.authority)===hash(this.resumeReceipt.expectedAuthority),'resume_authority_changed');
       offlineAuthority=s.authority;
       await this.note('offline_authority_verified',{migrationContract:'soty.stopped-legacy-snapshot.v1',offlineAuthority});
       try{s=safeStatus(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=safeStatus(await this.maintenance('verify',this));}

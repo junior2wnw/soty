@@ -43,3 +43,25 @@ Pass `--policy-file /home/ai2/.config/soty/application-model-policy.json --polic
 The original container retains its exact unmodified configuration for pre-admission rollback. After admission, restore only a transport-compatible release/configuration. If a website has switched to MiniMax, restore its matching website configuration before removing the allowed model. A public default-model request is not changed by allowing the candidate model for this one application.
 
 The preservation projection normalizes only two Docker API1.45 defaults proven by disposable roundtrip: OomKillDisable null/false and an absent legacy top-level MAC reflected from the explicitly supplied primary endpoint MAC. An explicit conflicting MAC, endpoint change or enabled OOM-disable remains a mismatch. The candidate reports the SHA256 of the valid nonsecret policy bytes actually parsed at startup; admission checks that digest against the reviewed file hash, in addition to re-reading the host file. No credential digest is published.
+
+## Explicit continuation after a confirmed late STOP
+
+`resume-after-stop` is a separate supervised recovery entry. It never resets the original journal/claim and never repeats STOP or calls original HTTP readiness. It only accepts `recovery_required/offline_authority_unresolved` before any offline helper, with the recorded removed status helper1. The exact original must be exited with the approved FinishedAt/ExitCode and the exact candidate must still be created and never started. Any retained transaction helper rejects recovery. Fresh strict canonical snapshot must match the separately approved complete authority, including temporary files; no migration starts on stale/nonterminal/marker/SQLite authority. Existing post-stop migration, readiness, rollback and admission fences are shared with normal promote.
+
+Use a new continuation journal and preserve the original raw prepared and failed files:
+
+```
+node deploy/connector/cli.mjs resume-after-stop --original-id ORIGINAL64HEX --original-image sha256:ORIGINAL64HEX --candidate-image sha256:CANDIDATE64HEX --revision CANDIDATE_COMMIT40HEX --transaction EXISTING_TRANSACTION --failed-journal /private/failed.json --prepared-journal /private/prepared.json --reviewed-receipt /private/resume-review.json --journal /private/continuation.json --health-origin http://127.0.0.1:18182
+```
+
+Include the same reviewed policy-file/policy-sha256 arguments when present. Receipt schema is `soty.controller-stop-resume.v1`, with `approved:true`, `migrationContract:soty.stopped-legacy-snapshot.v1`, exact raw `failedJournalSha256` and `preparedJournalSha256`, all prepared identity/configuration/modelReadiness/applicationPolicy hashes, `originalStop:{finishedAt,exitCode}`, `originalPolicySha256` (explicit null for a legacy baseline without loaded-policy reporting), and `expectedAuthority` from a fresh strict read-only legacy snapshot. The receipt is an explicit controller review artifact, not an authentication substitute.
+
+Before any helper runs, CLI creates/fsyncs an exclusive `<failed-journal>.resume.claim` and directory, saves immutable raw inputs beside the continuation journal, then creates that journal exclusively. A crash or failure retains the claim; no automated replay. The continuation references the original hashes. A retained lock or partially written artifact requires inspection, never deletion and retry. Production wrapper must pin exact adapter package hashes and controller receipt bytes.
+
+A separately reviewed adapter directory may be mounted read-only into the DRIVER ONLY while running the existing exact candidate image. This does not replace production server bytes or candidate image labels; the receipt revision is the existing candidate revision. Helpers continue using the existing image/server maintenance implementation. The driver adapter revision/package SHA is a separate approval binding.
+
+For stopped inspection, Docker's proven empty endpoint MAC is filled ONLY from the corresponding endpoint of the exact never-started candidate after its full prepared fingerprint passes. Nonempty conflicts and all other config/Env/network changes remain mismatches. This exception is scoped to resume and does not loosen ordinary preservationHash.
+
+Normal STOP keeps Docker's grace10s, with a STOP-specific20s request deadline and up to15s additional read-only observations (at most60, each inspect separately bounded10s; one in-flight inspect can extend the observation window). No repeated STOP, blind kill or broad timeout change. Any finite deadline may still be followed by late completion, so unresolved results retain the recovery barrier.
+
+`rollout.test.mjs` uses a synthetic engine to test resume safety and STOP reconciliation. `resume-cli.test.mjs` uses a real Linux filesystem and subprocess CLI with explicitly substituted TEST engine/rollout modules to test durable claim/input plumbing; it skips Windows directory-fsync limitations. Neither suite is actual Docker evidence. Root's separate exact adapter Docker fixture gate remains required before use.

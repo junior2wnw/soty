@@ -3,7 +3,7 @@ import http from 'node:http';
 export class SafeError extends Error { constructor(code) { super(code); this.code=code; } }
 export class DockerApi {
   constructor({socketPath='/var/run/docker.sock',timeoutMs=10000}={}) { this.socketPath=socketPath;this.timeoutMs=timeoutMs; }
-  request(method,path,body,raw=false) {
+  request(method,path,body,raw=false,timeoutMs=this.timeoutMs) {
     return new Promise((resolve,reject)=>{
       const data=body===undefined?null:Buffer.from(JSON.stringify(body));
       const req=http.request({socketPath:this.socketPath,path:'/v1.45'+path,method,headers:data?{'content-type':'application/json','content-length':data.length}:{}},res=>{
@@ -11,16 +11,17 @@ export class DockerApi {
         res.on('data',b=>{length+=b.length;if(length>4*1024*1024){req.destroy();reject(new SafeError('engine_response_limit'));}else chunks.push(b);});
         res.on('end',()=>{const bytes=Buffer.concat(chunks);if(res.statusCode<200||res.statusCode>=300){reject(new SafeError('engine_http_'+res.statusCode));return;}if(raw)return resolve(bytes);try{resolve(bytes.length?JSON.parse(bytes):null);}catch{reject(new SafeError('engine_invalid_json'));}});
       });
-      const deadline=setTimeout(()=>{req.destroy();reject(new SafeError('engine_response_ambiguous'));},this.timeoutMs);
+      const deadline=setTimeout(()=>{req.destroy();reject(new SafeError('engine_response_ambiguous'));},timeoutMs);
       req.on('close',()=>clearTimeout(deadline));
       req.on('error',()=>reject(new SafeError('engine_response_ambiguous')));if(data)req.write(data);req.end();
     });
   }
   inspect(id){return this.request('GET',`/containers/${encodeURIComponent(id)}/json`);}
+  helpers(transaction){return this.request('GET','/containers/json?all=true&filters='+encodeURIComponent(JSON.stringify({label:['io.soty.connector-rollout='+transaction,'io.soty.connector-rollout.helper']})));}
   image(id){return this.request('GET',`/images/${encodeURIComponent(id)}/json`);}
   create(name,config){return this.request('POST','/containers/create?name='+encodeURIComponent(name),config);}
   start(id){return this.request('POST',`/containers/${id}/start`);}
-  stop(id){return this.request('POST',`/containers/${id}/stop?t=10`);}
+  stop(id){return this.request('POST',`/containers/${id}/stop?t=10`,undefined,false,Math.max(this.timeoutMs,20000));}
   rename(id,name){return this.request('POST',`/containers/${id}/rename?name=${encodeURIComponent(name)}`);}
   remove(id){return this.request('DELETE',`/containers/${id}?force=false&v=false`);}
   async helperOutput(id) {
