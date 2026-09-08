@@ -6,6 +6,8 @@ const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fro
 export const hash=x=>createHash('sha256').update(JSON.stringify(sorted(x))).digest('hex');
 const requireThat=(ok,code)=>{if(!ok)throw new SafeError(code);};
 const label='io.soty.connector-rollout';
+const safeEngineCode=error=>/^(engine_response_ambiguous|engine_response_limit|engine_invalid_json|engine_http_[0-9]{3})$/.test(error?.code||'')?error.code:'unclassified_error';
+const safeFailureCode=error=>error instanceof SafeError&&/^[a-z][a-z0-9_]{0,79}$/.test(error.code)?error.code:'activation_failed';
 export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy) {
   const config=clone(original.Config),host=clone(original.HostConfig),endpoints={};
   // Inspect includes realised anonymous volume names. Reattach those explicitly;
@@ -53,10 +55,23 @@ export class Rollout {
   constructor({engine,maintenance,ready,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,record,attempts,sleep});this.state={phase:'new'};}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
   async reconcile(action,id,predicate,{polls=this.attempts,observationMs=Infinity}={}) {
-    let error;try{await action();}catch(e){error=e;}
-    const deadline=performance.now()+observationMs;
-    for(let i=0;i<polls&&performance.now()<deadline;i++){try{const c=await this.engine.inspect(id);if(predicate(c))return c;}catch{}await this.sleep(250);}
-    throw new SafeError(error?.code==='engine_response_ambiguous'?'operation_unresolved':'operation_failed');
+    let error;const observations={actionCount:1,actionErrorCode:null,inspectCount:0,inspectSuccessCount:0,inspectErrorCount:0,lastInspectErrorCode:null,lastInspectStatus:null,lastInspectRunning:null};
+    try{await action();}catch(e){error=e;observations.actionErrorCode=safeEngineCode(e);}
+    const begin=performance.now(),deadline=begin+observationMs;
+    for(let i=0;i<polls&&performance.now()<deadline;i++){
+      observations.inspectCount++;
+      try{
+        const c=await this.engine.inspect(id);observations.inspectSuccessCount++;
+        observations.lastInspectErrorCode=null;
+        observations.lastInspectStatus=['created','restarting','running','removing','paused','exited','dead'].includes(c.State?.Status)?c.State.Status:'unknown';
+        observations.lastInspectRunning=typeof c.State?.Running==='boolean'?c.State.Running:null;
+        if(predicate(c))return c;
+      }catch(e){observations.inspectErrorCount++;observations.lastInspectErrorCode=safeEngineCode(e);observations.lastInspectStatus=null;observations.lastInspectRunning=null;}
+      await this.sleep(250);
+    }
+    const failure=new SafeError(error?.code==='engine_response_ambiguous'?'operation_unresolved':'operation_failed');
+    failure.reconciliation={...observations,elapsedObservationMs:Math.ceil(performance.now()-begin)};
+    throw failure;
   }
   async guard(args) {
     requireThat(/^[a-f0-9]{64}$/.test(args.originalId)&&/^sha256:[a-f0-9]{64}$/.test(args.originalImage)&&/^sha256:[a-f0-9]{64}$/.test(args.candidateImage)&&/^[a-f0-9]{40}$/.test(args.revision)&&/^[a-f0-9]{16,40}$/.test(args.transaction),'invalid_exact_guards');
@@ -138,7 +153,7 @@ export class Rollout {
       let s=await this.status();requireThat(s.count===0&&!s.maintenance,'precheck_not_quiescent');
       await this.note('stopping_original');
       let stoppedOriginal;
-      try{stoppedOriginal=await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running,{polls:60,observationMs:15000});}catch(error){await this.note('stopping_original',{stopReconciliation:{code:error.code||'operation_failed'}});throw error;}stopped=true;
+      try{stoppedOriginal=await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running,{polls:60,observationMs:15000});}catch(error){await this.note('stopping_original',{stopReconciliation:{code:safeFailureCode(error),...error.reconciliation}});throw error;}stopped=true;
       await this.note('original_stopped',{originalStop:{exitCode:Number.isInteger(stoppedOriginal.State.ExitCode)?stoppedOriginal.State.ExitCode:null,oomKilled:stoppedOriginal.State.OOMKilled===true,finishedAt:stoppedOriginal.State.FinishedAt||null}});
       }else{
         await this.checkStoppedResume();
@@ -175,6 +190,8 @@ export class Rollout {
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
+      // Recovery has its own failure code; retain the initiating safe cause.
+      await this.note(this.state.phase,{primaryFailureCode:safeFailureCode(error)});
       if(error.code==='maintenance_helper_unresolved'){await this.note('recovery_required',{failureCode:error.code});throw error;}
       if(leaveAttempted){await this.note('recovery_required',{failureCode:'leave_boundary_ambiguous'});throw new SafeError('leave_boundary_ambiguous');}
       try{

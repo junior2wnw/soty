@@ -196,3 +196,20 @@ test('standard STOP gets bounded grace margin without increasing other API deadl
 test('late observed original STOP reconciles beyond four polls without second STOP',async()=>{
  const f=fixture();await f.run.prepare(args);let stopCalls=0,polls=0;f.engine.stop=async()=>{stopCalls++;throw new SafeError('engine_response_ambiguous');};const inspect=f.engine.inspect;f.engine.inspect=async id=>{if(id===args.originalId&&stopCalls&&++polls===6)Object.assign(f.map.get(id).State,{Running:false,Status:'exited'});return inspect(id);};await f.run.promote();assert.equal(f.run.state.phase,'committed');assert.equal(stopCalls,1);assert.ok(polls>=6);
 });
+
+test('unresolved STOP retains allowlisted action cause and bounded inspect observations through recovery',async()=>{
+ const f=fixture();await f.run.prepare(args);let stopping=false,count=0;const inspect=f.engine.inspect;
+ f.engine.stop=async()=>{stopping=true;throw new SafeError('engine_response_ambiguous');};
+ f.engine.inspect=async id=>{if(stopping&&id===args.originalId&&++count<=60){if(count%2===0)throw new SafeError('engine_http_503');return inspect(id);}return inspect(id);};
+ await assert.rejects(f.run.promote(),/recovery_required/);
+ assert.equal(f.run.state.primaryFailureCode,'operation_unresolved');assert.equal(f.run.state.failureCode,'stop_outcome_unresolved');
+ const d=f.run.state.stopReconciliation;assert.equal(d.actionCount,1);assert.equal(d.actionErrorCode,'engine_response_ambiguous');assert.equal(d.inspectCount,60);assert.equal(d.inspectSuccessCount,30);assert.equal(d.inspectErrorCount,30);assert.equal(d.lastInspectErrorCode,'engine_http_503');assert.equal(d.lastInspectStatus,null);assert.equal(d.lastInspectRunning,null);assert.ok(Number.isSafeInteger(d.elapsedObservationMs));
+ assert.doesNotMatch(JSON.stringify(d),/synthetic-sensitive|TOKEN|Env|Config/);
+});
+test('STOP diagnostic rejects arbitrary exception payload and retains last safe running observation',async()=>{
+ const f=fixture();await f.run.prepare(args);f.engine.stop=async()=>{const e=new Error('private_payload');e.code='private_payload';throw e;};await assert.rejects(f.run.promote());
+ const d=f.run.state.stopReconciliation;assert.equal(d.actionErrorCode,'unclassified_error');assert.equal(d.lastInspectStatus,'running');assert.equal(d.lastInspectRunning,true);assert.equal(d.lastInspectErrorCode,null);assert.equal(f.run.state.primaryFailureCode,'operation_failed');assert.doesNotMatch(JSON.stringify(f.records),/private_payload/);
+});
+test('resume primary authority failure remains visible when recovery rejects missing offline baseline',async()=>{
+ const f=await stoppedFixture();const helper=f.run.maintenance;f.run.maintenance=async(v,r)=>{const out=await helper(v,r);if(v==='snapshot')out.authority.stateSha256='0'.repeat(64);return out;};await assert.rejects(f.resume(),/recovery_required/);assert.equal(f.run.state.primaryFailureCode,'resume_authority_changed');assert.equal(f.run.state.failureCode,'offline_authority_unresolved');assert.ok(!f.events.includes('start-old'));
+});
