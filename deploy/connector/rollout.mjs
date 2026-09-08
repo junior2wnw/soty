@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { SafeError } from './docker-api.mjs';
+import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
 const clone=x=>structuredClone(x);
 const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sorted(x[k])])):x;
 export const hash=x=>createHash('sha256').update(JSON.stringify(sorted(x))).digest('hex');
 const requireThat=(ok,code)=>{if(!ok)throw new SafeError(code);};
 const label='io.soty.connector-rollout';
-export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision']) {
+export function createConfig(original,image,tx,revision=original.Config.Labels?.['org.opencontainers.image.revision'],applicationPolicy) {
   const config=clone(original.Config),host=clone(original.HostConfig),endpoints={};
   // Inspect includes realised anonymous volume names. Reattach those explicitly;
   // replaying Config.Volumes alone would silently create fresh empty volumes.
@@ -18,7 +19,8 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   requireThat(!host.AutoRemove,'original_auto_remove_unsupported');
   requireThat(!String(host.NetworkMode||'').startsWith('container:'),'shared_container_network_unsupported');
   config.Image=image;config.Labels={...config.Labels,[label]:tx,[label+'.original']:original.Id,...(revision?{'org.opencontainers.image.revision':revision}:{})};
-  return {...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
+  const result={...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
+  addApprovedPolicy(result,applicationPolicy);return result;
 }
 export function preservationHash(config) { const c=clone(config);delete c.Image;if(c.Labels){delete c.Labels[label];delete c.Labels[label+'.original'];delete c.Labels['org.opencontainers.image.revision'];}return hash(c); }
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema};}
@@ -35,10 +37,11 @@ export class Rollout {
     const old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
     requireThat(old.State.Running,'original_not_running');
     const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
-    this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision);this.fingerprint=preservationHash(this.config);
+    if(args.applicationPolicy)await readApprovedPolicy(args.applicationPolicy.source,args.applicationPolicy.sha256);
+    this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy);this.fingerprint=preservationHash(this.config);
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
-    this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,revision:args.revision,transaction:args.transaction,configurationSha256:this.fingerprint,modelReadinessSha256:this.healthSha256};
+    this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,revision:args.revision,transaction:args.transaction,configurationSha256:this.fingerprint,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null};
   }
   validateCandidate(c,{stopped=false}={}) {
     requireThat(c.Id&&c.Image===this.args.candidateImage&&c.Config.Labels?.[label]===this.args.transaction&&c.Config.Labels?.[label+'.original']===this.args.originalId&&c.Config.Labels?.['org.opencontainers.image.revision']===this.args.revision&&(!stopped||!c.State.Running),'candidate_ownership_mismatch');
@@ -58,7 +61,8 @@ export class Rollout {
     try{
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
       const originalNow=await this.engine.inspect(this.original.Id);
-      requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction))===this.fingerprint,'original_configuration_changed');
+      requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy))===this.fingerprint,'original_configuration_changed');
+      if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(s.count===0&&!s.maintenance,'precheck_not_quiescent');
       await this.note('stopping_original');
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
@@ -74,6 +78,7 @@ export class Rollout {
       const running=await this.engine.inspect(this.candidate.Id);this.validateCandidate(running);
       const ready=await this.ready('candidate',this);requireThat(ready?.ok===true&&ready.storageReady===true&&ready.schema==='soty.connector-storage-ready.v1'&&ready.maintenance===true,'candidate_storage_not_ready');
       requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.healthSha256,'candidate_model_readiness_changed');
+      if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       await this.note('candidate_ready');leaveAttempted=true;
       try{s=safeStatus(await this.maintenance('leave',this));}catch{s=await this.status();}
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
