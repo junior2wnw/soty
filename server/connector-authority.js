@@ -53,7 +53,8 @@ async function source(file, { sync = false } = {}) {
     if (sync) await handle.sync();
     check(BigInt(bytes) === info.size && signature(await handle.stat({ bigint: true })) === openedSignature);
     check(await regular(file) === before);
-    return { bytes, sha256: hash.digest("hex"), signature: before, handleSignature: openedSignature, text: small ? Buffer.concat(small).toString("utf8") : null };
+    return { bytes, sha256: hash.digest("hex"), signature: before, handleSignature: openedSignature,
+      access: [info.mode, info.uid, info.gid, info.nlink].join(":"), text: small ? Buffer.concat(small).toString("utf8") : null };
   } finally { await handle.close(); }
 }
 
@@ -132,6 +133,8 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
     const walBefore = await regular(dbFile + "-wal", true);
     const shmBefore = await regular(dbFile + "-shm", true);
     check(databaseBefore !== null || (walBefore === null && shmBefore === null));
+    const walSourceBefore = walBefore === null ? null : await source(dbFile + "-wal");
+    if (walSourceBefore) check(walSourceBefore.signature === walBefore);
     const names = async () => (await readdir(dir)).filter(name => /^connector-store\.json\..+\.next$/u.test(name)).sort();
     const beforeNames = await names();
     check(beforeNames.length <= 32);
@@ -161,14 +164,20 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
     check(after.signature === original.signature && after.handleSignature === original.handleSignature && after.sha256 === original.sha256);
     check(await regular(dbFile, true) === databaseBefore);
     const walAfter = await regular(dbFile + "-wal", true);
-    // SQLite's readonly connection can create an empty WAL sidecar. It has no
-    // frames/state. Reopening an existing empty WAL can change only ctime.
-    // Its device/inode, zero length and mtime must still match exactly.
-    const emptyWalCtimeOnly = metadata && walBefore !== null && walAfter !== null
-      && walBefore.split(":")[2] === "0" && walAfter.split(":")[2] === "0"
-      && walBefore.split(":").slice(0, 4).join(":") === walAfter.split(":").slice(0, 4).join(":");
-    check(walAfter === walBefore || emptyWalCtimeOnly || (metadata && walBefore === null && walAfter !== null
-      && (await lstat(dbFile + "-wal")).size === 0));
+    const walSourceAfter = walAfter === null ? null : await source(dbFile + "-wal");
+    if (walSourceAfter) check(walSourceAfter.signature === walAfter);
+    // Opening SQLite readonly can chmod an existing WAL to its existing mode,
+    // changing ctime even when the writer is frozen and the WAL has frames.
+    // Stream and compare every byte, both file identities, mtime and access
+    // metadata. Only ctime may differ; it is never a substitute for byte proof.
+    const contentIdentity = item => item.split(":").slice(0, 4).join(":");
+    const sameWal = walSourceBefore && walSourceAfter
+      && walSourceBefore.sha256 === walSourceAfter.sha256 && walSourceBefore.access === walSourceAfter.access
+      && contentIdentity(walSourceBefore.signature) === contentIdentity(walSourceAfter.signature)
+      && contentIdentity(walSourceBefore.handleSignature) === contentIdentity(walSourceAfter.handleSignature);
+    // A readonly connection may also create an initially absent, empty WAL.
+    check((walBefore === null && walAfter === null) || (metadata && sameWal)
+      || (metadata && walBefore === null && walSourceAfter?.bytes === 0));
     await regular(dbFile + "-shm", true);
     if (metadata) check(JSON.stringify(sqliteMetadata(dbFile, JSON.parse(after.text))) === JSON.stringify(metadata));
     check(JSON.stringify(await names()) === JSON.stringify(beforeNames));

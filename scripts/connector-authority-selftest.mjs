@@ -56,14 +56,30 @@ try {
     db.prepare("INSERT INTO meta(key,value) VALUES('legacySha256',?)").run("f".repeat(64)); db.close();
     await assert.rejects(snapshotConnectorAuthority(dir));
   });
-  await test("only existing empty WAL ctime drift is tolerated; inode, mtime and nonempty drift reject", async () => {
-    // Real SQLite state/readback, with deterministic stat fault injection at
-    // the second WAL inspection. This models the observed Linux readonly-open
-    // ctime change without timing races or Windows chmod semantics assumptions.
+  await test("open worker WAL remains readable with complete unchanged authority", async () => {
+    const dir = await seed("open-worker");
+    const before = await snapshotConnectorAuthority(dir);
+    const store = createConnectorStore(dir); await store.ready;
+    try {
+      const wal = await fsPromises.lstat(path.join(dir, "connector-store.sqlite-wal"));
+      assert.ok(wal.size > 0);
+      for (let index = 0; index < 2; index++) {
+        const after = await snapshotConnectorAuthority(dir);
+        assert.equal(after.stateSha256, before.stateSha256);
+        assert.equal(after.legacySha256, before.sourceSha256);
+      }
+    } finally { await store.close(); }
+  });
+  await test("WAL ctime drift requires identical bytes, identity, mtime and access metadata", async () => {
+    // A real SQLite snapshot with faults activated after the registry reader
+    // starts. Filesystem read corruption preserves all stat values, so that
+    // case specifically proves complete WAL bytes are checked as well.
     for (const [label, nonempty, field, accepted] of [
       ["empty-ctime", false, "ctimeNs", true], ["empty-mtime", false, "mtimeNs", false],
       ["empty-inode", false, "ino", false], ["empty-device", false, "dev", false],
-      ["nonempty-ctime", true, "ctimeNs", false],
+      ["nonempty-ctime", true, "ctimeNs", true], ["nonempty-bytes", true, "bytes", false],
+      ["nonempty-mode", true, "mode", false], ["nonempty-owner", true, "uid", false],
+      ["nonempty-group", true, "gid", false], ["nonempty-links", true, "nlink", false],
     ]) {
       const dir = await seed("wal-" + label);
       const store = createConnectorStore(dir); await store.ready; await store.close();
@@ -73,13 +89,37 @@ try {
       if (nonempty) db.exec("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'");
       const before = await fsPromises.lstat(wal, { bigint: true });
       assert.equal(before.size > 0n, nonempty);
-      const originalLstat = fsPromises.lstat; let inspections = 0;
-      fsPromises.lstat = async (file, options) => {
-        const info = await originalLstat(file, options);
-        if (String(file) === wal && options?.bigint && ++inspections === 2) {
-          Object.defineProperty(info, field, { value: info[field] + 1n });
+      const originalLstat = fsPromises.lstat, originalReadFile = fsPromises.readFile, originalOpen = fsPromises.open;
+      let readingState = false, injected = 0;
+      const alter = info => {
+        if (readingState && field !== "bytes") {
+          Object.defineProperty(info, field, { value: info[field] + 1n }); injected++;
         }
         return info;
+      };
+      fsPromises.readFile = async (file, ...args) => {
+        const result = await originalReadFile(file, ...args);
+        if (String(file) === path.join(dir, "connector-store.json")) readingState = true;
+        return result;
+      };
+      fsPromises.lstat = async (file, options) => {
+        const info = await originalLstat(file, options);
+        return String(file) === wal && options?.bigint ? alter(info) : info;
+      };
+      fsPromises.open = async (file, ...args) => {
+        const handle = await originalOpen(file, ...args);
+        if (String(file) === wal) {
+          const stat = handle.stat.bind(handle), read = handle.read.bind(handle);
+          handle.stat = async options => alter(await stat(options));
+          handle.read = async (...readArgs) => {
+            const result = await read(...readArgs);
+            if (readingState && field === "bytes" && result.bytesRead) {
+              readArgs[0][result.bytesRead - 1] ^= 1; injected++;
+            }
+            return result;
+          };
+        }
+        return handle;
       };
       syncBuiltinESMExports();
       try {
@@ -91,9 +131,10 @@ try {
           assert.match(error.stack, /at check /u); // Original safe check site survives catch.
           return true;
         });
-        assert.equal(inspections, 2);
+        assert.ok(injected > 0, "requested filesystem fault was exercised");
       } finally {
-        fsPromises.lstat = originalLstat; syncBuiltinESMExports(); db.close();
+        fsPromises.lstat = originalLstat; fsPromises.readFile = originalReadFile; fsPromises.open = originalOpen;
+        syncBuiltinESMExports(); db.close();
       }
     }
   });
