@@ -137,7 +137,7 @@ try {
     await resumed.close();await connectorMaintenance(dir,"enter");
     const candidate=make(dir);await candidate.ready;
     assert.equal((await candidate.createJob(input)).error,"connector-maintenance");
-    assert.deepEqual((await candidate.poll(auth)).jobs,[]);
+    assert.equal((await candidate.poll(auth)).error,"connector-maintenance");
     await candidate.close();
     await assert.rejects(connectorMaintenance(dir,"rollback"),/durable request identities/u);
     assert.equal((await readConnectorState(dir)).requests.length,1);

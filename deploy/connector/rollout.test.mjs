@@ -10,6 +10,7 @@ import {SafeError} from './docker-api.mjs';
 import {productionMaintenance,modelReadiness} from './runtime.mjs';
 const modelProxies={agentModelProxy:{ready:true,model:'DeepSeek-V4-Flash-0731',transport:'server-proxy'},applicationModelProxy:{ready:true,model:'DeepSeek-V4-Flash-0731',transport:'application-token-server-proxy',path:'/api/inference/v1/chat/completions'}};
 const args={originalId:'a'.repeat(64),originalImage:'sha256:'+'d'.repeat(64),candidateImage:'sha256:'+'c'.repeat(64),revision:'e'.repeat(40),transaction:'f'.repeat(20)};
+const authority=(kind='legacy',activeJobs=[])=>({schema:'soty.connector-authority.v1',kind,stateSha256:'1'.repeat(64),sourceSha256:kind==='legacy'?'2'.repeat(64):'3'.repeat(64),legacySha256:'2'.repeat(64),bytes:128,counts:{connectors:1,accessGrants:1,jobs:1,requests:0,events:2},statusCounts:activeJobs.length?{[activeJobs[0].status]:1}:{succeeded:1},activeJobs,temporaryFiles:[{name:'connector-store.json.7.next',bytes:5,sha256:'4'.repeat(64)}]});
 const original=()=>({Id:args.originalId,Image:args.originalImage,Name:'/soty-online-chat',State:{Running:true,Status:'running'},Config:{Image:args.originalImage,Env:['TOKEN=synthetic-sensitive','SOTY_CODEX_SESSION=preserved','SOTY_TRAFFIC_TARGET=unchanged'],Labels:{owner:'original'},Hostname:'existing-host',User:'123:456',Cmd:['node','server/index.js'],WorkingDir:'/app',Volumes:{'/data':{}},Healthcheck:{Test:['CMD','node','probe.js']}},HostConfig:{Binds:['/synthetic/tokens:/run/tokens:ro'],Memory:1073741824,NanoCpus:1500000000,PidsLimit:180,PortBindings:{'8080/tcp':[{HostIp:'127.0.0.1',HostPort:'18182'}]},NetworkMode:'soty',RestartPolicy:{Name:'unless-stopped'},ReadonlyRootfs:false,CapDrop:['NET_RAW'],SecurityOpt:['no-new-privileges']},Mounts:[{Type:'volume',Name:'synthetic-data',Destination:'/data',RW:true}],NetworkSettings:{Networks:{soty:{IPAMConfig:null,Aliases:['preserved-alias'],DriverOpts:{},NetworkID:'runtime-only',IPAddress:'172.28.0.3'}}}});
 function fixture(fault={}) {
  const map=new Map([[args.originalId,original()],['sentinel',{Id:'sentinel',State:{Running:true},Name:'/independent-task'}]]),events=[],records=[];let n=0,maintenance=false,statusCalls=0,migrated=false;
@@ -26,7 +27,7 @@ function fixture(fault={}) {
  async helperOutput(){return {ok:true,activeJobs:[],count:0,maintenance:false,schema:'legacy'};}
  };
  const helper=async verb=>{events.push('helper:'+verb);fail('helper-'+verb,'before');if(verb==='enter')maintenance=true;if(verb==='leave')maintenance=false;if(verb==='rollback'){if(fault.rollbackFailure)throw new SafeError('rollback_failed');migrated=false;}
- const raced=verb==='status'&&((++statusCalls===2&&fault.race)||fault.active);fail('helper-'+verb,'after');return {ok:true,count:raced?1:0,activeJobs:raced?[{id:'raced-job',status:'queued'}]:[],maintenance,schema:'synthetic'};};
+ const raced=(verb==='snapshot'&&fault.race)||(verb==='status'&&fault.active);const activeJobs=raced?[{id:'raced-job',status:fault.raceStatus||'queued'}]:[];fail('helper-'+verb,'after');return {ok:true,count:activeJobs.length,activeJobs,maintenance,schema:'synthetic',...(['snapshot','enter','verify'].includes(verb)?{authority:authority(migrated?'sqlite':'legacy',activeJobs)}:{})};};
  const ready=async kind=>{events.push('ready:'+kind);if(kind==='candidate'){migrated=true;fail('readiness','before');return {ok:true,storageReady:true,maintenance:true,schema:'soty.connector-storage-ready.v1',modelProxies,applicationPolicySha256:run.args.applicationPolicy?.sha256||null};}return {ok:true,modelProxies};};
  const run=new Rollout({engine,maintenance:helper,ready,record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
  return {run,engine,map,events,records,get migrated(){return migrated;}};
@@ -34,8 +35,8 @@ function fixture(fault={}) {
 test('configuration and anonymous volume preserve exact protected values without journal disclosure',async()=>{const f=fixture();await f.run.prepare(args);const c=f.run.config;assert.deepEqual(c.Env,original().Config.Env);assert.deepEqual(c.HostConfig.PortBindings,original().HostConfig.PortBindings);assert.equal(c.HostConfig.Memory,1073741824);assert.equal(c.HostConfig.Mounts[0].Source,'synthetic-data');assert.deepEqual(c.NetworkingConfig.EndpointsConfig.soty.Aliases,['preserved-alias']);assert.doesNotMatch(JSON.stringify(f.records),/synthetic-sensitive|SOTY_CODEX|SOTY_TRAFFIC|\/synthetic\/tokens/);assert.equal(f.run.state.configurationSha256,preservationHash(c));});
 test('normal success creates before stop and offline check before migration/admission',async()=>{const f=fixture();await f.run.prepare(args);await f.run.promote();assert.equal(f.run.state.phase,'committed');assert.ok(f.events.find(e=>e.startsWith('create:')));assert.ok(f.events.indexOf('helper:enter')>f.events.indexOf('stop:'+args.originalId));assert.ok(f.events.indexOf('helper:leave')>f.events.indexOf('ready:candidate'));assert.equal(f.map.get(args.originalId).State.Running,false);assert.equal(f.map.get('sentinel').State.Running,true);});
 for(const op of ['create','stop-old','rename-old','rename-candidate','start-candidate'])test('applied but dropped '+op+' is reconciled without duplicate',async()=>{const f=fixture({op,when:'after'});await f.run.prepare(args);await f.run.promote();assert.equal(f.run.state.phase,'committed');assert.equal([...f.map.values()].filter(c=>c.Image===args.candidateImage).length,1);assert.equal(f.map.get('sentinel').State.Running,true);});
-for(const op of ['rename-old','rename-candidate','start-candidate','readiness'])test('failure '+op+' restores same original ID',async()=>{const f=fixture({op,when:'before'});await f.run.prepare(args);await assert.rejects(f.run.promote());assert.equal(f.run.state.phase,'restored');assert.equal(f.map.get(args.originalId).Name,'/soty-online-chat');assert.equal(f.map.get(args.originalId).State.Running,true);assert.equal(f.map.get('sentinel').State.Running,true);assert.ok(f.events.indexOf('helper:leave')>f.events.indexOf('ready:original'));});
-test('admission race aborts before enter/migration and restarts old exact ID',async()=>{const f=fixture({race:true});await f.run.prepare(args);await assert.rejects(f.run.promote(),/offline_admission_race/);assert.equal(f.run.state.phase,'restored');assert.ok(!f.events.includes('helper:enter'));assert.ok(!f.events.includes('helper:rollback'));assert.equal(f.migrated,false);});
+for(const op of ['rename-old','rename-candidate','start-candidate','readiness'])test('failure '+op+' restores same original ID',async()=>{const f=fixture({op,when:'before'});await f.run.prepare(args);await assert.rejects(f.run.promote());assert.equal(f.run.state.phase,'restored');assert.equal(f.map.get(args.originalId).Name,'/soty-online-chat');assert.equal(f.map.get(args.originalId).State.Running,true);assert.equal(f.map.get('sentinel').State.Running,true);assert.ok(f.events.indexOf('helper:leave')<f.events.indexOf('start-old'));});
+for(const raceStatus of ['queued','leased','running','unknown'])test('offline '+raceStatus+' race is retained without old restart or migration',async()=>{const f=fixture({race:true,raceStatus});await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);assert.equal(f.run.state.phase,'recovery_required');assert.equal(f.map.get(args.originalId).State.Running,false);assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:enter'));assert.ok(!f.events.includes('helper:rollback'));assert.equal(f.migrated,false);});
 test('restore failure is explicit, never falsely restored',async()=>{const f=fixture({op:'readiness',when:'before',rollbackFailure:true});await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);assert.equal(f.run.state.phase,'recovery_required');assert.equal(f.map.get(args.originalId).State.Running,false);});
 test('dropped leave reconciles marker, never rollback after reopening',async()=>{const f=fixture({op:'helper-leave',when:'after'});await f.run.prepare(args);await f.run.promote();assert.equal(f.run.state.phase,'committed');assert.ok(!f.events.includes('helper:rollback'));});
 test('helper uses same mounts and Env in memory but no ports/network/capabilities',async()=>{const f=fixture();await f.run.prepare(args);const maint=productionMaintenance(f.engine,{sleep:async()=>{},maxPolls:2});const created=[];const oldCreate=f.engine.create;f.engine.create=async(n,c)=>{created.push(c);return oldCreate(n,c);};await maint('status',f.run);const c=created[0];assert.deepEqual(c.Env,original().Config.Env);assert.equal(c.HostConfig.NetworkMode,'none');assert.equal(c.HostConfig.PortBindings,undefined);assert.equal(c.HostConfig.Memory,805306368);assert.equal(c.HostConfig.Mounts[0].Source,'synthetic-data');assert.deepEqual(c.Cmd,['server/connector-maintenance.js','status']);});
@@ -112,4 +113,35 @@ test('unresolved leave helper never starts a concurrent status helper or downgra
  f.run.maintenance=async verb=>{if(verb==='leave'){leaving=true;throw new SafeError('maintenance_helper_unresolved');}assert.equal(leaving,false);return helper(verb);};
  await assert.rejects(f.run.promote(),/maintenance_helper_unresolved/);
  assert.equal(f.run.state.phase,'recovery_required');assert.ok(!f.events.includes('helper:rollback'));
+});
+
+test('legacy pending-write diagnostic is not an admission prerequisite after proven stopped snapshot',async()=>{
+ const f=fixture();await f.run.prepare(args);f.run.state.legacyNoPendingWritesObserved=false;
+ await f.run.promote();assert.equal(f.run.state.phase,'committed');
+ assert.ok(f.events.indexOf('helper:snapshot')>f.events.indexOf('stop:'+args.originalId));
+ assert.equal(f.run.state.offlineAuthority.stateSha256,f.run.state.migratedAuthority.stateSha256);
+});
+test('malformed offline snapshot retains stopped original and does not enter or restore',async()=>{
+ const f=fixture();await f.run.prepare(args);const helper=f.run.maintenance;
+ f.run.maintenance=async verb=>verb==='snapshot'?{ok:false}:helper(verb);
+ await assert.rejects(f.run.promote(),/recovery_required/);assert.equal(f.map.get(args.originalId).State.Running,false);
+ assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:enter'));
+});
+test('candidate source linkage mismatch prevents admission and verifies full legacy restoration',async()=>{
+ const f=fixture();await f.run.prepare(args);const helper=f.run.maintenance;
+ f.run.maintenance=async verb=>{const s=await helper(verb);if(verb==='verify'&&s.authority?.kind==='sqlite')s.authority.legacySha256='5'.repeat(64);return s;};
+ await assert.rejects(f.run.promote(),/import_authority_mismatch/);assert.equal(f.run.state.phase,'restored');
+ assert.equal(f.events.filter(v=>v==='helper:leave').length,1);assert.ok(f.events.indexOf('helper:leave')<f.events.indexOf('start-old'));
+});
+test('changed full state cannot be disguised by successful rollback status',async()=>{
+ const f=fixture({op:'readiness',when:'before'});await f.run.prepare(args);const helper=f.run.maintenance;let snapshots=0;
+ f.run.maintenance=async verb=>{const s=await helper(verb);if(verb==='snapshot'&&++snapshots===2)s.authority.stateSha256='6'.repeat(64);return s;};
+ await assert.rejects(f.run.promote(),/recovery_required/);assert.equal(f.run.state.phase,'recovery_required');
+ assert.equal(f.map.get(args.originalId).State.Running,false);assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:leave'));
+});
+test('unresolved verification helper retains candidate maintenance and never starts rollback helper',async()=>{
+ const f=fixture();await f.run.prepare(args);const helper=f.run.maintenance;
+ f.run.maintenance=async verb=>{if(verb==='verify')throw new SafeError('maintenance_helper_unresolved');return helper(verb);};
+ await assert.rejects(f.run.promote(),/maintenance_helper_unresolved/);assert.equal(f.run.state.phase,'recovery_required');
+ assert.ok(!f.events.includes('helper:rollback'));assert.ok(!f.events.includes('helper:leave'));
 });

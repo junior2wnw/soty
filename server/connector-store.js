@@ -537,6 +537,10 @@ class ConnectorStore {
   async mutate(callback) {
     const run = this.writeQueue.then(async () => {
       await this.readable();
+      // Offline migration proves the complete state before reopening. Even a
+      // heartbeat can expire/prune records, so freeze every mutation before
+      // its callback while maintenance is present. Reads stay available.
+      if (this.maintenance()) return { ok: false, error: "connector-maintenance" };
       const committed = this.state;
       const draft = {
         ...committed,

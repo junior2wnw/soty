@@ -19,7 +19,7 @@ try {
  else {
    const prior=JSON.parse(await readFile(opts.journal,'utf8'));
    const approval=JSON.parse(await readFile(opts['reviewed-receipt'],'utf8'));
-   if(approval.approved!==true||approval.legacyNoPendingWritesObserved!==true||approval.originalId!==args.originalId||approval.candidateId!==prior.candidateId||approval.configurationSha256!==prior.configurationSha256||approval.revision!==args.revision)throw new SafeError('supervised_receipt_mismatch');
+   if(approval.approved!==true||approval.migrationContract!=='soty.stopped-legacy-snapshot.v1'||approval.originalId!==args.originalId||approval.candidateId!==prior.candidateId||approval.configurationSha256!==prior.configurationSha256||approval.revision!==args.revision)throw new SafeError('supervised_receipt_mismatch');
    if((approval.applicationPolicySha256||null)!==(args.applicationPolicy?.sha256||null)||(prior.applicationPolicySha256||null)!==(args.applicationPolicy?.sha256||null))throw new SafeError('supervised_policy_receipt_mismatch');
    await run.guard(args);
    if(prior.phase!=='prepared'||prior.originalId!==args.originalId||prior.candidateImage!==args.candidateImage||prior.transaction!==args.transaction||prior.configurationSha256!==run.fingerprint||prior.modelReadinessSha256!==run.healthSha256)throw new SafeError('prepared_receipt_mismatch');

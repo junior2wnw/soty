@@ -6,6 +6,29 @@ import { fileURLToPath } from "node:url";
 import { atomicFile, acquireConnectorOwner, rejectRollbackIntent, syncDirectory } from "./connector-persistence.js";
 import { readConnectorState } from "./connector-registry.js";
 import { normalizeConnectorState } from "./connector-store.js";
+import { snapshotConnectorAuthority, connectorStateSha256 } from "./connector-authority.js";
+
+async function authorityStatus(dataDir, { syncLegacy = false } = {}) {
+  const authority = await snapshotConnectorAuthority(dataDir, { syncLegacy });
+  let maintenance = false;
+  try { await stat(path.join(dataDir,"connector-maintenance.json")); maintenance = true; } catch (error) { if (error.code !== "ENOENT") throw error; }
+  // The full reader already validated/classified every job. Do not parse a
+  // second complete history just to recount the same terminal-only snapshot.
+  return { ok:true,schema:"soty.connector-maintenance.v1",activeJobs:authority.activeJobs,count:authority.activeJobs.length,maintenance,authority };
+}
+
+async function verifyBoundary(dataDir) {
+  const marker = JSON.parse(await readFile(path.join(dataDir,"connector-maintenance.json"),"utf8"));
+  if (marker.schema !== "soty.connector-maintenance.v1" || marker.writeBarrier !== true || !marker.authority) throw new Error("Connector maintenance authority missing");
+  const current = await authorityStatus(dataDir);
+  const expected = marker.authority;
+  if (current.count || current.authority.stateSha256 !== expected.stateSha256
+    || JSON.stringify(current.authority.temporaryFiles) !== JSON.stringify(expected.temporaryFiles)
+    || (current.authority.kind === "sqlite" && expected.kind === "legacy" && current.authority.legacySha256 !== expected.sourceSha256)) {
+    throw new Error("Connector complete authority changed during maintenance");
+  }
+  return current;
+}
 
 export async function maintenanceStatus(dataDir) {
   await rejectRollbackIntent(dataDir);
@@ -31,8 +54,15 @@ export async function maintenanceStatus(dataDir) {
 export async function connectorMaintenance(dataDir, action, { checkpoint = async () => {} } = {}) {
   const marker = path.join(dataDir,"connector-maintenance.json");
   if (action === "status") return await maintenanceStatus(dataDir);
+  if (action === "snapshot") return await authorityStatus(dataDir, { syncLegacy: true });
+  if (action === "verify") return await verifyBoundary(dataDir);
   if (action === "leave") {
     await rejectRollbackIntent(dataDir);
+    // Legacy manual recovery markers predate the complete-state contract.
+    // Reviewed rollout markers always carry authority and must match it.
+    let boundary;
+    try { boundary = JSON.parse(await readFile(marker,"utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (boundary?.authority) await verifyBoundary(dataDir);
     await unlink(marker).catch((error) => { if (error.code !== "ENOENT") throw error; });
     await syncDirectory(dataDir);
     return await maintenanceStatus(dataDir);
@@ -41,10 +71,10 @@ export async function connectorMaintenance(dataDir, action, { checkpoint = async
   const owner = await acquireConnectorOwner(dataDir);
   try {
     if (action === "enter") {
-      const before = await maintenanceStatus(dataDir);
-      if (before.count) throw new Error("Connector maintenance requires no queued or assigned jobs");
-      await atomicFile(marker, JSON.stringify({ schema: "soty.connector-maintenance.v1" }) + "\n");
-      const after = await maintenanceStatus(dataDir);
+      const authority = await snapshotConnectorAuthority(dataDir, { syncLegacy: true });
+      if (authority.activeJobs.length) throw new Error("Connector maintenance requires no queued or assigned jobs");
+      await atomicFile(marker, JSON.stringify({ schema: "soty.connector-maintenance.v1", writeBarrier: true, authority }) + "\n");
+      const after = await verifyBoundary(dataDir);
       if (after.count) throw new Error("Jobs appeared before offline admission barrier; abort rollout");
       return after;
     }
@@ -88,6 +118,8 @@ export async function connectorMaintenance(dataDir, action, { checkpoint = async
     }
     const checked = normalizeConnectorState(JSON.parse(content));
     if (checked.requests.length || checked.jobs.some((job)=>!["succeeded","failed","cancelled"].includes(job.status))) throw new Error("Rollback cannot discard accepted identities or active work");
+    const boundary = JSON.parse(await readFile(marker,"utf8")).authority;
+    if (boundary && connectorStateSha256(checked) !== boundary.stateSha256) throw new Error("Rollback complete state differs from stopped-original snapshot");
     if (!intent) {
       intent = {schema:"soty.connector-rollback.v1",databaseId,sha256:digest(content)};
       await atomicFile(journalPath,JSON.stringify(intent)+"\n");

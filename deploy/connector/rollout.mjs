@@ -33,7 +33,22 @@ export function preservationHash(config) {
   if(!c.MacAddress&&primary?.MacAddress)c.MacAddress=primary.MacAddress;
   return hash(c);
 }
-export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema};}
+export function safeAuthority(a) {
+  const sha=x=>/^[a-f0-9]{64}$/.test(x||'');
+  requireThat(a?.schema==='soty.connector-authority.v1'&&['legacy','sqlite'].includes(a.kind)&&sha(a.stateSha256)&&sha(a.sourceSha256)&&(a.legacySha256===null||sha(a.legacySha256))&&Number.isSafeInteger(a.bytes)&&a.bytes>0,'authority_receipt_invalid');
+  const counts={};for(const name of ['connectors','accessGrants','jobs','requests','events']){requireThat(Number.isSafeInteger(a.counts?.[name])&&a.counts[name]>=0,'authority_counts_invalid');counts[name]=a.counts[name];}
+  requireThat(a.statusCounts&&Object.values(a.statusCounts).every(n=>Number.isSafeInteger(n)&&n>=0)&&Object.values(a.statusCounts).reduce((sum,n)=>sum+n,0)===counts.jobs,'authority_status_counts_invalid');
+  requireThat(Array.isArray(a.activeJobs)&&a.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'authority_jobs_invalid');
+  requireThat(Object.entries(a.statusCounts).filter(([status])=>!['succeeded','failed','cancelled'].includes(status)).reduce((sum,[,count])=>sum+count,0)===a.activeJobs.length,'authority_nonterminal_count_invalid');
+  if(a.kind==='legacy')requireThat(a.legacySha256===a.sourceSha256,'authority_legacy_hash_invalid');
+  requireThat(Array.isArray(a.temporaryFiles)&&a.temporaryFiles.length<=32&&a.temporaryFiles.every(f=>/^connector-store\.json\.[a-zA-Z0-9-]+\.next$/.test(f.name)&&Number.isSafeInteger(f.bytes)&&f.bytes>=0&&sha(f.sha256)),'authority_temporary_files_invalid');
+  return {schema:a.schema,kind:a.kind,stateSha256:a.stateSha256,sourceSha256:a.sourceSha256,legacySha256:a.legacySha256,bytes:a.bytes,counts,statusCounts:{...a.statusCounts},activeJobs:a.activeJobs.map(j=>({id:j.id,status:j.status})),temporaryFiles:a.temporaryFiles.map(f=>({name:f.name,bytes:f.bytes,sha256:f.sha256}))};
+}
+export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema,...(s.authority?{authority:safeAuthority(s.authority)}:{})};}
+function sameAuthority(expected,current,kind) {
+  requireThat(current?.kind===kind&&current.stateSha256===expected.stateSha256&&hash(current.counts)===hash(expected.counts)&&hash(current.temporaryFiles)===hash(expected.temporaryFiles)&&current.activeJobs.length===0,'offline_authority_changed');
+  if(kind==='sqlite')requireThat(current.legacySha256===expected.sourceSha256,'import_authority_mismatch');
+}
 export class Rollout {
   constructor({engine,maintenance,ready,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,record,attempts,sleep});this.state={phase:'new'};}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
@@ -68,7 +83,7 @@ export class Rollout {
   async status(){return safeStatus(await this.maintenance('status',this));}
   async promote() {
     requireThat(this.state.phase==='prepared','candidate_not_prepared');
-    let stopped=false,entered=false,leaveAttempted=false;
+    let stopped=false,entered=false,leaveAttempted=false,offlineAuthority;
     try{
       this.validateCandidate(await this.engine.inspect(this.candidate.Id),{stopped:true});
       const originalNow=await this.engine.inspect(this.original.Id);
@@ -76,11 +91,20 @@ export class Rollout {
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(s.count===0&&!s.maintenance,'precheck_not_quiescent');
       await this.note('stopping_original');
-      await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
-      await this.note('original_stopped');
-      s=await this.status();requireThat(s.count===0,'offline_admission_race');
-      try{s=safeStatus(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
+      const stoppedOriginal=await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
+      await this.note('original_stopped',{originalStop:{exitCode:Number.isInteger(stoppedOriginal.State.ExitCode)?stoppedOriginal.State.ExitCode:null,oomKilled:stoppedOriginal.State.OOMKilled===true,finishedAt:stoppedOriginal.State.FinishedAt||null}});
+      // The stopped exact legacy process is the admission/write barrier. Its
+      // successful mutation ACK and delivered poll followed atomic rename;
+      // a live queue-empty metric neither exists nor establishes that fact.
+      s=safeStatus(await this.maintenance('snapshot',this));
+      requireThat(s.count===0&&s.authority?.activeJobs.length===0,'offline_admission_race');
+      requireThat(!s.maintenance&&s.authority.kind==='legacy'&&s.authority.counts.requests===0,'offline_legacy_authority_required');
+      offlineAuthority=s.authority;
+      await this.note('offline_authority_verified',{migrationContract:'soty.stopped-legacy-snapshot.v1',offlineAuthority});
+      try{s=safeStatus(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=safeStatus(await this.maintenance('verify',this));}
       requireThat(s.count===0&&s.maintenance,'maintenance_enter_failed');entered=true;
+      sameAuthority(offlineAuthority,s.authority,'legacy');
+      requireThat(s.authority.sourceSha256===offlineAuthority.sourceSha256,'offline_source_changed');
       await this.note('maintenance_entered');
       await this.reconcile(()=>this.engine.rename(this.original.Id,'soty-connector-previous-'+this.args.transaction),this.original.Id,c=>c.Name==='/soty-connector-previous-'+this.args.transaction);
       await this.reconcile(()=>this.engine.rename(this.candidate.Id,this.originalName),this.candidate.Id,c=>c.Name==='/'+this.originalName);
@@ -91,6 +115,10 @@ export class Rollout {
       requireThat(ready.modelProxies&&hash(ready.modelProxies)===this.healthSha256,'candidate_model_readiness_changed');
       requireThat((ready.applicationPolicySha256||null)===(this.args.applicationPolicy?.sha256||this.originalPolicySha256),'candidate_loaded_policy_mismatch');
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
+      s=safeStatus(await this.maintenance('verify',this));
+      requireThat(s.maintenance&&s.count===0,'candidate_barrier_changed');
+      sameAuthority(offlineAuthority,s.authority,'sqlite');
+      await this.note('candidate_authority_verified',{migratedAuthority:s.authority});
       await this.note('candidate_ready');leaveAttempted=true;
       try{s=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
@@ -103,6 +131,9 @@ export class Rollout {
         // stop must be inspected before restoration can be claimed.
         const old=await this.engine.inspect(this.original.Id);
         if(!stopped&&old.State.Running){if(error.code==='operation_unresolved')throw new SafeError('stop_outcome_unresolved');await this.note('aborted',{failureCode:error.code||'activation_failed'});throw error;}
+        // Do not restart c0ca with an unclassified/assigned snapshot: its lease
+        // expiry can automatically reoffer an already executing old job.
+        requireThat(offlineAuthority,'offline_authority_unresolved');
         const candidate=await this.engine.inspect(this.candidate.Id);
         if(candidate.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
         if(entered){const back=safeStatus(await this.maintenance('rollback',this));requireThat(back.count===0&&back.maintenance,'rollback_not_quiescent');}
@@ -110,11 +141,15 @@ export class Rollout {
         if(latest.Name==='/'+this.originalName)await this.reconcile(()=>this.engine.rename(latest.Id,'soty-connector-next-'+this.args.transaction),latest.Id,c=>c.Name==='/soty-connector-next-'+this.args.transaction);
         const prev=await this.engine.inspect(this.original.Id);
         if(prev.Name!=='/'+this.originalName)await this.reconcile(()=>this.engine.rename(prev.Id,this.originalName),prev.Id,c=>c.Name==='/'+this.originalName);
-        // Rollback helper leaves the marker in place while restoring compatible
-        // JSON. Legacy original does not admit through the new marker contract.
+        const restored=safeStatus(await this.maintenance('snapshot',this));
+        requireThat(restored.count===0,'restoration_active_jobs');
+        sameAuthority(offlineAuthority,restored.authority,'legacy');
+        await this.note('restoration_authority_verified',{restoredAuthority:restored.authority});
+        // Clear the verified marker while BOTH servers are stopped. Starting
+        // c0ca first would let heartbeats mutate the state before final proof.
+        if(restored.maintenance){let cleared;try{cleared=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
         await this.reconcile(()=>this.engine.start(this.original.Id),this.original.Id,c=>c.State.Running&&c.Image===this.args.originalImage);
         const restoredHealth=await this.ready('original',this);requireThat(restoredHealth?.ok===true&&restoredHealth.modelProxies&&hash(restoredHealth.modelProxies)===this.healthSha256,'original_health_failed');
-        if(entered){let cleared;try{cleared=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
         await this.note('restored',{failureCode:error.code||'activation_failed'});
       }catch(recovery){if(this.state.phase==='aborted')throw recovery;await this.note('recovery_required',{failureCode:recovery.code||'recovery_failed'});throw new SafeError('recovery_required');}
       throw new SafeError(error.code||'activation_failed');

@@ -4,7 +4,7 @@ const label='io.soty.connector-rollout';
 export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(r=>setTimeout(r,ms))}={}) {
  let sequence=0;
  return async (verb,run)=>{
-   if(!['status','enter','leave','rollback'].includes(verb))throw new SafeError('maintenance_verb_invalid');
+   if(!['status','snapshot','verify','enter','leave','rollback'].includes(verb))throw new SafeError('maintenance_verb_invalid');
    const name=`soty-connector-helper-${run.args.transaction}-${++sequence}`;
    const source=createConfig(run.original,run.args.candidateImage,run.args.transaction);
    // Existing mounts/Env stay memory-only. Helper has no published port, network,

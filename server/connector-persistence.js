@@ -73,6 +73,15 @@ if (!isMainThread && workerData?.connectorPersistence) {
     try { legacy = await readFile(filePath, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }
     let parsed;
     try { parsed = legacy === undefined ? undefined : parse(legacy); } catch { throw new Error("Malformed connector store JSON; preserve existing file"); }
+    let boundary;
+    try {
+      const maintenance = parse(await readFile(path.join(path.dirname(filePath),"connector-maintenance.json"),"utf8"));
+      boundary = maintenance.authority;
+      if (boundary && (maintenance.writeBarrier !== true || boundary.schema !== "soty.connector-authority.v1"
+        || !/^[a-f0-9]{64}$/u.test(boundary.stateSha256) || !/^[a-f0-9]{64}$/u.test(boundary.sourceSha256))) throw new Error("Invalid connector maintenance authority");
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (boundary?.kind === "legacy" && parsed?.schema !== sqliteMarkerSchema
+      && (legacy === undefined || createHash("sha256").update(legacy).digest("hex") !== boundary.sourceSha256)) throw new Error("Legacy source changed after stopped-original snapshot");
     let existed = true;
     try { const handle = await open(dbPath, "r"); await handle.close(); } catch (error) { if (error.code !== "ENOENT") throw error; existed = false; }
     // Validate before creating any new persistent file. Unknown/partial data
@@ -120,6 +129,11 @@ if (!isMainThread && workerData?.connectorPersistence) {
     const jobs = new Map(state.jobs.map((job) => [job.id, job]));
     for (const row of db.prepare("SELECT job_id,seq,value FROM events ORDER BY job_id,seq").all()) { const event=parse(row.value); if(event.seq !== row.seq || !jobs.has(row.job_id)) throw new Error("Connector event identity mismatch"); jobs.get(row.job_id).events.push(event); }
     const validatedState = normalizeConnectorState(state);
+    if (boundary) {
+      const { connectorStateSha256 } = await import("./connector-authority.js");
+      if (connectorStateSha256(validatedState) !== boundary.stateSha256) throw new Error("Migrated complete state differs from stopped-original snapshot");
+      if (boundary.kind === "legacy" && getMeta("legacySha256") !== boundary.sourceSha256) throw new Error("Migrated source hash differs from stopped-original snapshot");
+    }
     if (legacy !== undefined) {
       const matchesMarker = parsed?.schema === sqliteMarkerSchema && parsed.databaseId === getMeta("uuid");
       const matchesImport = createHash("sha256").update(legacy).digest("hex") === getMeta("legacySha256");
