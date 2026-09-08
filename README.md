@@ -157,3 +157,6 @@ pnpm run build
 ```
 
 The load fixture is synthetic (320 finished jobs,80 events each,61.7MB legacy JSON); its explicit100MB/s persistence-cost model is not a measurement of the production disk. Separate loopback tests execute the unchanged client with dropped create/start/result responses and independent cancellable children. Production deployment still requires the exact image, bridge transition, disposable Linux rollout proof and supervisor receipt.
+### Optional application-specific native models
+
+`SOTY_GONKA_APPLICATION_MODEL_POLICY_FILE` may name a separate read-only, nonsecret JSON file with schema `soty.application-model-policy.v1` and `applications: [{id, allowedModels}]`. With no file configured, applications and connectors retain the existing DeepSeek-only binding. A valid explicit application rule may allow the DeepSeek default and/or `MiniMaxAI/MiniMax-M2.7`; unconfigured applications keep DeepSeek, and connector policy is unchanged. Invalid or unreadable configured policy fails application requests/readiness closed. The file is parsed at startup; no runtime reload or fallback is performed. Do not add model fields to the strict application token file. See [the scoped proposal, validation and rollback contract](docs/application-model-policy-proposal.md).

@@ -101,7 +101,7 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
       transport: modelProxy.transport
     },
     applicationModelProxy: {
-      ready: modelProxy.ready && applicationAuthenticator.ready,
+      ready: modelProxy.ready && applicationAuthenticator.ready && modelProxy.applicationPolicyReady,
       model: modelProxy.model,
       transport: "application-token-server-proxy",
       path: "/api/inference/v1/chat/completions"

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
+import { createApplicationModelPolicy } from "./application-model-policy.js";
 
 export const defaultGonkaProxyModel = "deepseek-ai/DeepSeek-V4-Flash-0731";
 
@@ -13,18 +14,21 @@ export function createGonkaProxy({
   apiKey = process.env.SOTY_GONKA_API_KEY || "",
   model = defaultGonkaProxyModel,
   timeoutMs = process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS,
-  fetchImpl = fetch
+  fetchImpl = fetch,
+  applicationModelPolicyFile = process.env.SOTY_GONKA_APPLICATION_MODEL_POLICY_FILE || ""
 } = {}) {
   const upstreamBaseUrl = safeUpstreamBaseUrl(baseUrl);
   const upstreamKey = safeSecret(apiKey);
   const requestTimeoutMs = safeInteger(timeoutMs, 10_000, 10 * 60_000, 120_000);
   const ready = Boolean(store && upstreamBaseUrl && upstreamKey && model === defaultGonkaProxyModel);
   const active = new Map();
+  const applicationPolicy = createApplicationModelPolicy({ filePath: applicationModelPolicyFile, defaultModel: model });
 
   return {
     ready,
     model,
     transport: "authenticated-server-proxy",
+    applicationPolicyReady: applicationPolicy.ready,
     async handleChatCompletions(req, res, { authenticateToken, client = "connector" } = {}) {
       if (!ready) {
         respondJson(res, 503, { error: { message: "model-proxy-unavailable", type: "server_configuration" } });
@@ -37,7 +41,15 @@ export function createGonkaProxy({
         respondJson(res, 401, { error: { message: "connector-auth-failed", type: "authentication_error" } });
         return;
       }
-      const body = cleanChatRequest(req.body, model);
+      if (client === "application" && !applicationPolicy.ready) {
+        respondJson(res, 503, { error: { message: "application-model-policy-unavailable", type: "server_configuration" } });
+        return;
+      }
+      if (client === "application" && !applicationPolicy.allows(authenticatedAs, req.body?.model)) {
+        respondJson(res, 400, { error: { message: "invalid-model-request", type: "invalid_request_error" } });
+        return;
+      }
+      const body = cleanChatRequest(req.body, client === "application" ? req.body?.model : model);
       if (!body) {
         respondJson(res, 400, { error: { message: "invalid-model-request", type: "invalid_request_error" } });
         return;
