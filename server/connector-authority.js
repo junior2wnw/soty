@@ -87,9 +87,11 @@ function sqliteMetadata(file, marker) {
     db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=1000; BEGIN");
     const meta = key => db.prepare("SELECT value FROM meta WHERE key=?").get(key)?.value;
     check(meta("schema") === "soty.connector-sqlite.v1");
+    const legacySha256 = meta("legacySha256");
+    const noLegacy = legacySha256 === undefined && !Object.hasOwn(marker, "legacySha256");
     check(marker.schema === "soty.connector-store.sqlite.v1" && marker.database === "connector-store.sqlite"
-      && marker.databaseId === meta("uuid") && /^[a-f0-9]{64}$/u.test(meta("legacySha256"))
-      && marker.legacySha256 === meta("legacySha256"));
+      && marker.databaseId === meta("uuid") && (noLegacy || (/^[a-f0-9]{64}$/u.test(legacySha256)
+      && marker.legacySha256 === legacySha256)));
     for (const table of ["records", "jobs", "requests", "inputs", "results", "events"]) {
       const count = db.prepare(`SELECT count(*) AS count FROM ${table}`).get().count;
       check(count <= (table === "events" ? MAX_EVENTS : table === "records" ? MAX_RECORDS * 2 : MAX_RECORDS));
@@ -102,7 +104,7 @@ function sqliteMetadata(file, marker) {
     for (const row of db.prepare("SELECT id,value FROM requests").all()) check(JSON.parse(row.value).id === row.id);
     for (const row of db.prepare("SELECT seq,value FROM events").all()) check(JSON.parse(row.value).seq === row.seq);
     check(/^[0-9]+$/u.test(meta("revision")) && Number.isSafeInteger(Number(meta("revision"))));
-    return { legacySha256: meta("legacySha256"), revision: meta("revision"), uuid: meta("uuid") };
+    return { legacySha256: noLegacy ? null : legacySha256, revision: meta("revision"), uuid: meta("uuid") };
   } finally { db.close(); }
 }
 
@@ -125,7 +127,7 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
     check(databaseBefore !== null || (walBefore === null && shmBefore === null));
     const names = async () => (await readdir(dir)).filter(name => /^connector-store\.json\..+\.next$/u.test(name)).sort();
     const beforeNames = await names();
-    check(beforeNames.length <= 64);
+    check(beforeNames.length <= 32);
     const temporaryFiles = [];
     const temporarySignatures = [];
     for (const name of beforeNames) {
@@ -161,7 +163,7 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
     check(JSON.stringify(await names()) === JSON.stringify(beforeNames));
     for (let index = 0; index < beforeNames.length; index++) check(await regular(path.join(dir, beforeNames[index])) === temporarySignatures[index]);
     return { schema: "soty.connector-authority.v1", kind: metadata ? "sqlite" : "legacy", stateSha256,
-      sourceSha256: original.sha256, legacySha256: metadata?.legacySha256 || original.sha256,
+      sourceSha256: original.sha256, legacySha256: metadata ? metadata.legacySha256 : original.sha256,
       bytes: original.bytes, counts, statusCounts, activeJobs, temporaryFiles };
   } catch (error) {
     // JSON/SQLite errors can contain input excerpts: do not propagate them.

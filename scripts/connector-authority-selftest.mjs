@@ -30,6 +30,23 @@ async function seed(name, state = fixture()) {
 }
 async function test(name, action) { const result = await action(); checks.push(result?.skipped ? { name, ...result } : { name, ok: true }); }
 try {
+  await test("fresh SQLite has null legacy authority only when both meta and marker omit it", async () => {
+    const dir = path.join(root, "fresh-sqlite");
+    const store = createConnectorStore(dir); await store.ready; await store.close();
+    const before = await snapshotConnectorAuthority(dir, { syncLegacy: true });
+    assert.equal(before.kind, "sqlite"); assert.equal(before.legacySha256, null);
+    assert.deepEqual(before.counts, { connectors: 0, accessGrants: 0, jobs: 0, requests: 0, events: 0 });
+    const file = path.join(dir, "connector-store.json");
+    const marker = JSON.parse(await readFile(file, "utf8"));
+    for (const value of [null, "", "f".repeat(64)]) {
+      await writeFile(file, JSON.stringify({ ...marker, legacySha256: value }));
+      await assert.rejects(snapshotConnectorAuthority(dir));
+    }
+    await writeFile(file, JSON.stringify(marker));
+    const db = new DatabaseSync(path.join(dir, "connector-store.sqlite"));
+    db.prepare("INSERT INTO meta(key,value) VALUES('legacySha256',?)").run("f".repeat(64)); db.close();
+    await assert.rejects(snapshotConnectorAuthority(dir));
+  });
   await test("canonical keys and top-level identities ignore ordering; nested event order remains strict", async () => {
     const state = fixture(), other = structuredClone(state);
     other.connectors.reverse(); other.jobs.reverse(); other.jobs[0].input.context = { a: 1, b: 2 };
