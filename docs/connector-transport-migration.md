@@ -29,6 +29,8 @@ Before admissions reopen, rollback first proves the complete state still matches
 
 Rollback refuses active work or any newly accepted request identity: the old server cannot preserve that contract. After admission, use a transport-compatible previous image or a separately reviewed reconciliation/migration; never point c0ca at a SQLite marker. No plaintext secret-bearing backup is created. The temporary legacy export exists only inside the offline atomic disposition, with restricted permissions, and the intent exposes no credentials/history. `leave` removes the marker only after the selected server is verified healthy.
 
+Automatic legacy restoration also refuses a baseline containing retained `.next` evidence. c0ca reuses `connector-store.json.<pid>.next`, so its next heartbeat could overwrite those bytes. A successful forward SQLite migration preserves them; a failed forward release keeps maintenance and requires explicit recovery instead of restarting c0ca over the evidence.
+
 See [versioned rollout](../deploy/connector/README.md) for exact guards and supervisor receipt. CLI journals contain hashes, container IDs and phases only. The existing traffic rollout is unsuitable because it reconstructs unrelated environment/mounts.
 
 ## Operational limits

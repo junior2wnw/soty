@@ -10,7 +10,7 @@ import {SafeError} from './docker-api.mjs';
 import {productionMaintenance,modelReadiness} from './runtime.mjs';
 const modelProxies={agentModelProxy:{ready:true,model:'DeepSeek-V4-Flash-0731',transport:'server-proxy'},applicationModelProxy:{ready:true,model:'DeepSeek-V4-Flash-0731',transport:'application-token-server-proxy',path:'/api/inference/v1/chat/completions'}};
 const args={originalId:'a'.repeat(64),originalImage:'sha256:'+'d'.repeat(64),candidateImage:'sha256:'+'c'.repeat(64),revision:'e'.repeat(40),transaction:'f'.repeat(20)};
-const authority=(kind='legacy',activeJobs=[])=>({schema:'soty.connector-authority.v1',kind,stateSha256:'1'.repeat(64),sourceSha256:kind==='legacy'?'2'.repeat(64):'3'.repeat(64),legacySha256:'2'.repeat(64),bytes:128,counts:{connectors:1,accessGrants:1,jobs:1,requests:0,events:2},statusCounts:activeJobs.length?{[activeJobs[0].status]:1}:{succeeded:1},activeJobs,temporaryFiles:[{name:'connector-store.json.7.next',bytes:5,sha256:'4'.repeat(64)}]});
+const authority=(kind='legacy',activeJobs=[])=>({schema:'soty.connector-authority.v1',kind,stateSha256:'1'.repeat(64),sourceSha256:kind==='legacy'?'2'.repeat(64):'3'.repeat(64),legacySha256:'2'.repeat(64),bytes:128,counts:{connectors:1,accessGrants:1,jobs:1,requests:0,events:2},statusCounts:activeJobs.length?{[activeJobs[0].status]:1}:{succeeded:1},activeJobs,temporaryFiles:[]});
 const original=()=>({Id:args.originalId,Image:args.originalImage,Name:'/soty-online-chat',State:{Running:true,Status:'running'},Config:{Image:args.originalImage,Env:['TOKEN=synthetic-sensitive','SOTY_CODEX_SESSION=preserved','SOTY_TRAFFIC_TARGET=unchanged'],Labels:{owner:'original'},Hostname:'existing-host',User:'123:456',Cmd:['node','server/index.js'],WorkingDir:'/app',Volumes:{'/data':{}},Healthcheck:{Test:['CMD','node','probe.js']}},HostConfig:{Binds:['/synthetic/tokens:/run/tokens:ro'],Memory:1073741824,NanoCpus:1500000000,PidsLimit:180,PortBindings:{'8080/tcp':[{HostIp:'127.0.0.1',HostPort:'18182'}]},NetworkMode:'soty',RestartPolicy:{Name:'unless-stopped'},ReadonlyRootfs:false,CapDrop:['NET_RAW'],SecurityOpt:['no-new-privileges']},Mounts:[{Type:'volume',Name:'synthetic-data',Destination:'/data',RW:true}],NetworkSettings:{Networks:{soty:{IPAMConfig:null,Aliases:['preserved-alias'],DriverOpts:{},NetworkID:'runtime-only',IPAddress:'172.28.0.3'}}}});
 function fixture(fault={}) {
  const map=new Map([[args.originalId,original()],['sentinel',{Id:'sentinel',State:{Running:true},Name:'/independent-task'}]]),events=[],records=[];let n=0,maintenance=false,statusCalls=0,migrated=false;
@@ -144,4 +144,10 @@ test('unresolved verification helper retains candidate maintenance and never sta
  f.run.maintenance=async verb=>{if(verb==='verify')throw new SafeError('maintenance_helper_unresolved');return helper(verb);};
  await assert.rejects(f.run.promote(),/maintenance_helper_unresolved/);assert.equal(f.run.state.phase,'recovery_required');
  assert.ok(!f.events.includes('helper:rollback'));assert.ok(!f.events.includes('helper:leave'));
+});
+test('legacy restoration never restarts PID1 over retained unacknowledged next evidence',async()=>{
+ const f=fixture({op:'readiness',when:'before'});await f.run.prepare(args);const helper=f.run.maintenance;
+ f.run.maintenance=async verb=>{const s=await helper(verb);if(s.authority)s.authority.temporaryFiles=[{name:'connector-store.json.1.next',bytes:123,sha256:'7'.repeat(64)}];return s;};
+ await assert.rejects(f.run.promote(),/recovery_required/);assert.equal(f.run.state.phase,'recovery_required');
+ assert.equal(f.map.get(args.originalId).State.Running,false);assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));assert.ok(!f.events.includes('helper:leave'));
 });

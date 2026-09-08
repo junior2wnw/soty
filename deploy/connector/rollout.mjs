@@ -134,6 +134,10 @@ export class Rollout {
         // Do not restart c0ca with an unclassified/assigned snapshot: its lease
         // expiry can automatically reoffer an already executing old job.
         requireThat(offlineAuthority,'offline_authority_unresolved');
+        // c0ca always reuses connector-store.json.<pid>.next. A restored PID1
+        // could overwrite retained unacknowledged evidence on its heartbeat.
+        // Keep both authorities fenced for explicit recovery in that case.
+        requireThat(offlineAuthority.temporaryFiles.length===0,'legacy_restart_would_overwrite_unacknowledged_evidence');
         const candidate=await this.engine.inspect(this.candidate.Id);
         if(candidate.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
         if(entered){const back=safeStatus(await this.maintenance('rollback',this));requireThat(back.count===0&&back.maintenance,'rollback_not_quiescent');}
