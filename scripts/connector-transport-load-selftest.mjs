@@ -1,0 +1,32 @@
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+const {createConnectorStore}=await import(pathToFileURL(process.argv[2] || fileURLToPath(new URL("../server/connector-store.js",import.meta.url))));
+const dir=await mkdtemp(path.join(tmpdir(),'soty-load-synthetic-'));
+const at=Date.now(), linkId='s'.repeat(43), token='t'.repeat(48);
+const auth={linkId,deviceId:'synthetic-laptop',connectorId:'synthetic:user',token};
+const connector={...auth,token:undefined,tokenHash:createHash('sha256').update(token).digest('hex'),protocol:2,createdAt:at,lastSeenAt:at,scope:'CurrentUser',capabilities:['script','command'],agent:{id:'opencode',provider:'gonka',available:true}};
+const jobs=Array.from({length:320},(_,i)=>({schema:'soty.connector-job.v2',id:'job_'+String(i).padStart(32,'0'),linkId,deviceId:auth.deviceId,connectorId:auth.connectorId,threadId:'synthetic',kind:'script',input:{name:'synthetic.ps1',text:'synthetic',script:'Write-Output synthetic',runAs:'user',timeoutMs:30000},permissions:{sandbox:'read-only',approval:'never'},status:'succeeded',attempts:1,accessGrantId:'',leaseUntil:0,cancelRequested:false,events:Array.from({length:80},(_,j)=>({type:'message',text:'x'.repeat(2000),seq:j+1,at})),result:{ok:true,text:'r'.repeat(22000),exitCode:0},createdAt:at+i,updatedAt:at,finishedAt:at}));
+const bytes=Buffer.byteLength(JSON.stringify({schema:'soty.connector-store.v2',connectors:[connector],accessGrants:[],jobs},null,2));
+await writeFile(path.join(dir,'connector-store.json'),JSON.stringify({schema:'soty.connector-store.v2',connectors:[connector],accessGrants:[],jobs},null,2));
+let now=at;const store=createConnectorStore(dir,{now:()=>now,leaseMs:5000});
+await store.status(linkId);
+const input={linkId,deviceId:auth.deviceId,threadId:'one-request',requestId:'synthetic-lost-response',kind:'command',text:'echo synthetic'};
+const first=await store.createJob(input);const duplicate=await store.createJob(input);
+await store.poll(auth);await store.appendEvent(auth,first.job.id,{type:'started',text:'synthetic-only'});
+now+=6000;const afterExpiry=await store.poll(auth);
+// Controlled bandwidth model: 100 MB/s on the bytes each persist submits, no live data.
+const persist=store.persist.bind(store);let writtenBytes=0;
+store.persist=async function(changes){const b=Buffer.byteLength(JSON.stringify(changes??this.state,null,2));writtenBytes+=b;await new Promise(r=>setTimeout(r,b/100000));return await persist(changes);};
+const metrics=[];const calls=[];
+for(let i=0;i<4;i++) {for(const [name,fn] of [['poll',()=>store.poll(auth)],['event',()=>store.appendEvent(auth,first.job.id,{type:'heartbeat',text:'probe'})],['status',()=>store.status(linkId)],['get',()=>store.getJob(linkId,first.job.id)]]){const start=performance.now();calls.push(fn().then(()=>metrics.push({name,ms:Math.round(performance.now()-start)})));}}
+const start=performance.now();calls.push(store.cancelJob(linkId,duplicate.job.id).then(()=>metrics.push({name:'cancel',ms:Math.round(performance.now()-start)})));
+await Promise.all(calls);
+const result={synthetic:true,legacyBytes:bytes,historyJobs:320,eventsPerHistoryJob:80,bandwidthModelBytesPerMs:100000,submittedBytes:writtenBytes,duplicateCreate:first.job.id!==duplicate.job.id,expiredRunningReLeased:afterExpiry.jobs.some(j=>j.id===first.job.id),metrics};
+if(store.close)await store.close();
+console.log(JSON.stringify(result,null,2));
+await rm(dir,{recursive:true,force:true});
+if(result.duplicateCreate||result.expiredRunningReLeased||metrics.filter(x=>['status','get'].includes(x.name)).some(x=>x.ms>1000))process.exitCode=1;

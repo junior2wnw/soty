@@ -1,3 +1,5 @@
+import { browserRequestJournal, reconcileCreate } from "./connector-request-journal";
+
 export interface SotyAgentStatus {
   readonly id: "opencode";
   readonly name: "OpenCode";
@@ -238,34 +240,70 @@ export async function runConnectorJob(options: RunConnectorJobOptions): Promise<
   const access = sanitizeConnectorAccess(options.access);
   const linkId = access ? "" : readLinkId() || ensureAgentRelayId();
   const auth = { linkId, ...(access ? { access } : {}) };
-  const created = await requestJson("/api/connectors/jobs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...controllerHeaders(auth) },
-    body: JSON.stringify({
-      deviceId: options.deviceId || "",
-      threadId: cleanId(options.threadId || ""),
-      kind: options.input.kind,
-      input: options.input,
-      permissions: { sandbox: "workspace-write", approval: "never" }
-    })
-  }, 30_000, options.signal);
-  if (!created.ok || typeof created.job?.id !== "string") {
-    return failureReply(created.error === "invalid-job" ? "Задание некорректно" : "Soty Agent не принял задание", 502);
-  }
-  const id = created.job.id;
-  const timeoutMs = Math.max(1_000, options.timeoutMs || options.input.timeoutMs || 2 * 60 * 60_000);
-  rememberPending({
-    ...(linkId ? { relayId: linkId } : {}),
-    ...(access ? { access } : {}),
-    id,
-    tunnelId: options.threadId || id,
-    text: options.input.text || options.input.name || "",
-    createdAt: Date.now(),
-    timeoutAt: Date.now() + timeoutMs,
-    after: 0,
-    messages: [],
-    terminal: []
-  });
+  const body = {
+    deviceId: options.deviceId || "",
+    threadId: cleanId(options.threadId || ""),
+    kind: options.input.kind,
+    input: { ...options.input },
+    permissions: { sandbox: "workspace-write", approval: "never" }
+  };
+  let journal: ReturnType<typeof browserRequestJournal>;
+  try { journal = browserRequestJournal(); }
+  catch { return failureReply("Не удалось открыть надёжное хранилище запросов. Задание не отправлено.", 503); }
+  // Rotating a token must not turn an unresolved request into a new execution.
+  const identity = {
+    endpoint: "/api/connectors/jobs",
+    principal: access ? { grantId: access.id, controllerDeviceId: access.controllerDeviceId, deviceId: access.deviceId } : { linkId },
+    body
+  };
+  const prepared = await journal.submission(identity, async (): Promise<{ id: string; timeoutMs: number } | { failure: LocalAgentReply }> => {
+    let reservation: Awaited<ReturnType<ReturnType<typeof browserRequestJournal>["reserve"]>>;
+    try {
+      reservation = await journal.reserve(identity);
+    } catch {
+      return { failure: failureReply("Не удалось надёжно сохранить идентификатор запроса. Задание не отправлено; проверьте доступ к хранилищу браузера.", 503) };
+    }
+    const requestBody = JSON.stringify({ ...body, requestId: reservation.requestId });
+    const outcome = await reconcileCreate(() => requestJson("/api/connectors/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...controllerHeaders(auth) },
+      body: requestBody
+    }, 30_000, options.signal), options.signal);
+    const created = outcome.response;
+    if (!created.ok || typeof created.job?.id !== "string") {
+      const rejectedWithoutPriorAmbiguity = !reservation.reused && !outcome.ambiguous
+        && [400, 401, 403].includes(created.httpStatus || 0);
+      if (rejectedWithoutPriorAmbiguity) await journal.acknowledge(reservation).catch(() => undefined);
+      if (!rejectedWithoutPriorAmbiguity) {
+        return { failure: failureReply(`Результат отправки не подтверждён. Повторите тот же запрос для сверки; его идентификатор: ${reservation.requestId}. Задание могло быть принято.`, created.httpStatus || 502) };
+      }
+      return { failure: failureReply(created.error === "invalid-job" ? "Задание некорректно" : "Soty Agent отклонил запрос", created.httpStatus || 502) };
+    }
+    const id = created.job.id;
+    const timeoutMs = Math.max(1_000, options.timeoutMs || options.input.timeoutMs || 2 * 60 * 60_000);
+    rememberPending({
+      ...(linkId ? { relayId: linkId } : {}),
+      ...(access ? { access } : {}),
+      id,
+      tunnelId: options.threadId || id,
+      text: options.input.text || options.input.name || "",
+      createdAt: Date.now(),
+      timeoutAt: Date.now() + timeoutMs,
+      after: 0,
+      messages: [],
+      terminal: []
+    });
+    // Commit tracking before clearing the recovery identity; no crash gap between the two journals.
+    try {
+      if (!readPending().some((pending) => pending.id === id)) throw new Error("pending-job-not-persisted");
+      await journal.acknowledge(reservation);
+    } catch {
+      return { failure: failureReply(`Задание принято (${id}), но сохранить отслеживание не удалось. Повторите тот же запрос для сверки. Идентификатор запроса: ${reservation.requestId}.`, 503) };
+    }
+    return { id, timeoutMs };
+  }).catch(() => ({ failure: failureReply("Не удалось сверить состояние запроса. Повторите тот же запрос для проверки.", 503) }));
+  if ("failure" in prepared) return prepared.failure;
+  const { id, timeoutMs } = prepared;
   const abort = () => void cancelConnectorJob(id, linkId, access || undefined);
   options.signal?.addEventListener("abort", abort, { once: true });
   try {
@@ -652,7 +690,7 @@ async function requestJson(path: string, init: RequestInit, timeoutMs: number, e
   try {
     const response = await fetch(path, { cache: "no-store", ...init, signal: controller.signal });
     const value = await response.json().catch(() => ({}));
-    return { ...value, ok: response.ok && value.ok !== false, ...(response.ok ? {} : { error: value.error || `http-${response.status}` }) };
+    return { ...value, ok: response.ok && value.ok !== false, httpStatus: response.status, ...(response.ok ? {} : { error: value.error || `http-${response.status}` }) };
   } catch (error) {
     return { ok: false, error: externalSignal?.aborted ? "cancelled" : error instanceof DOMException && error.name === "AbortError" ? "timeout" : "network" };
   } finally {

@@ -2,12 +2,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultGonkaProxyModel } from "../server/gonka-proxy.js";
 
-const root = await mkdtemp(path.join(tmpdir(), "soty-connector-integration-"));
+// TEMP may use an 8.3 alias on Windows. Keep the synthetic cwd in the same
+// canonical path spelling as the existing client's fallback home boundary.
+const root = await mkdtemp(path.join(await realpath(tmpdir()), "soty-connector-integration-"));
 const serverPort = await freePort();
 const connectorPort = await freePort();
 const connectorDataDir = path.join(root, "connector-data");
@@ -91,7 +93,7 @@ try {
       }
     });
     const shellState = await waitJob(pathIndependentShell.id, 20_000);
-    assert.equal(shellState.status, "succeeded");
+    assert.equal(shellState.status, "succeeded", JSON.stringify(shellState.result));
     assert.match(shellState.result.text, /path-independent-shell-ok/u);
   }
 

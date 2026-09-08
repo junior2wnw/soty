@@ -121,3 +121,39 @@ machine installer once because its old launcher restores the ProgramData copy
 before every restart; the new installer removes that launcher and future
 updates are automatic. The compatibility asset can be removed after that
 installed population has upgraded.
+
+
+## Connector storage and delivery
+
+Server runtimes require Node 22.13+ (the production image uses Node 24). Connector state now lives in `connector-store.sqlite`: WAL transactions with synchronous=FULL run in a dedicated worker. Heartbeats update only changed records; normal reads use the last committed in-memory state and do not wait behind pending writes. A separate nonsecret `connector-owner.sqlite` holds an OS-released exclusive writer lock; a second serving process fails closed. Read-only registry tools do not acquire that writer lock.
+
+On first startup an existing v1/v2 JSON store is strictly validated, atomically imported, read back and replaced by a small nonsecret marker. The original full JSON is not continually mirrored. Malformed input, partial jobs/native results, invalid identity/grant bindings, divergent JSON/SQLite authority, and an interrupted rollback stop readiness without resetting history or credentials. Explicit offline retrieval/rollback and the supported configuration-preserving rollout are described in [connector transport migration](docs/connector-transport-migration.md).
+
+Create accepts an optional `requestId` (1–128 ASCII letters/digits/`_.:-`). It is bound to owner/grant/target and normalized content; replay returns the same job even after completion or restart, a changed request returns 409. Retired identities return 409 instead of re-executing. The ledger admits at most 100000 identities; capacity returns 503 without evicting unresolved or retired keys. Browser and corporate bridge persist their caller key before dispatch. Legacy callers remain valid, but an unkeyed caller must reconcile a lost response before creating another job.
+
+CurrentUser 1.2.12 remains unchanged. It can execute after a lost start acknowledgement, so neither an expired lease nor a missing start event permits automatic redelivery. The existing assignment stays pinned and status exposes `executionUncertain`; later authenticated events/native results reconcile the same job. A cancellation request is not a confirmed stop; only the connector's durable native result completes an assigned job. First committed terminal results are immutable.
+
+Mutation acknowledgements and connector cancellation-watch responses omit event history/result text and include an artifact URL. Owner `GET /api/connectors/jobs/:id?view=summary` is bounded; the compatible full GET/`?view=full` explicitly retrieves the complete retained result and events. Event polling pages by sequence (at most32 events/128KB, except one event); `done` stays false until all available events are drained and the final page includes the complete native result. Existing retention remains512 events per job, seven days for finished jobs and2000 retained jobs. Assigned uncertain work is retained until reconciled rather than invented as a timeout result.
+
+Committed notifications and missed-wake versions are scoped to the authorized link/device. Untargeted jobs wake eligible devices on their own link; targeted traffic never wakes another device or link.
+
+Storage readiness is `/api/connectors/storage-ready`; health alone does not prove successful migration. The corporate bridge must be upgraded to the version using `server/connector-registry.js` before migration; old clients of the raw JSON file cannot read the marker. Never run the legacy traffic rollout script for this update.
+
+Relevant deterministic checks:
+
+```
+node scripts/connector-persistence-selftest.mjs
+node scripts/connector-route-isolation-selftest.mjs
+node scripts/connector-durable-protocol-selftest.mjs
+node scripts/connector-transport-load-selftest.mjs
+node scripts/connector-request-journal-selftest.mjs
+node --test deploy/connector/rollout.test.mjs
+pnpm run connector:selftest
+pnpm run connector:integration
+pnpm run identity:selftest
+pnpm run traffic:selftest
+pnpm run typecheck
+pnpm run build
+```
+
+The load fixture is synthetic (320 finished jobs,80 events each,61.7MB legacy JSON); its explicit100MB/s persistence-cost model is not a measurement of the production disk. Separate loopback tests execute the unchanged client with dropped create/start/result responses and independent cancellable children. Production deployment still requires the exact image, bridge transition, disposable Linux rollout proof and supervisor receipt.

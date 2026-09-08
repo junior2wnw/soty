@@ -3,15 +3,21 @@ import { createConnectorStore } from "./connector-store.js";
 import { createApplicationTokenAuthenticator, createGonkaProxy } from "./gonka-proxy.js";
 
 const jsonParser = express.json({ limit: "1mb", type: "application/json" });
+const resultJsonParser = express.json({ limit: "6mb", type: "application/json" });
 const modelJsonParser = express.json({ limit: "4mb", type: "application/json" });
 
-export function attachConnectorApi(app, { dataDir, gonka } = {}) {
+export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
   const root = dataDir || "data";
-  const store = createConnectorStore(root);
+  const store = createConnectorStore(root, storeOptions);
   const modelProxy = createGonkaProxy({ store, ...gonka });
   const applicationAuthenticator = createApplicationTokenAuthenticator(gonka?.applicationTokens, {
     filePath: gonka?.applicationTokensFile
   });
+
+  app.get("/api/connectors/storage-ready", route(async (_req, res) => {
+    try { await store.readable(); respond(res, { ok: true, schema: "soty.connector-storage-ready.v1", storageReady: true, maintenance: store.maintenance() }); }
+    catch { respond(res, { ok: false, error: "connector-storage-unavailable" }, 503); }
+  }));
 
   app.post("/api/connectors/register", jsonParser, route(async (req, res) => {
     respond(res, await store.register(req.body, bearerToken(req)));
@@ -38,7 +44,7 @@ export function attachConnectorApi(app, { dataDir, gonka } = {}) {
   app.get("/api/connectors/jobs/:id", route(async (req, res) => {
     const result = req.headers["x-soty-connector-id"]
       ? await store.getAssignedConnectorJob(connectorAuth(req), req.params.id)
-      : await store.getJob(controllerAuth(req), req.params.id);
+      : await store.getJob(controllerAuth(req), req.params.id, { summary: req.query.view === "summary" });
     respond(res, result);
   }));
 
@@ -48,7 +54,7 @@ export function attachConnectorApi(app, { dataDir, gonka } = {}) {
     let result = await store.getEvents(auth, req.params.id, after);
     if (result.ok && result.events.length === 0 && result.done !== true && req.query.wait === "1") {
       const job = result.job;
-      await store.waitForControllerChange(auth, job.deviceId || "", 25_000, responseSignal(res));
+      await store.waitForControllerChange(auth, job.deviceId || "", 25_000, responseSignal(res), result.changeVersion);
       result = await store.getEvents(auth, req.params.id, after);
     }
     respond(res, result);
@@ -68,7 +74,7 @@ export function attachConnectorApi(app, { dataDir, gonka } = {}) {
     respond(res, await store.appendEvent(connectorAuth(req, req.body), req.params.id, req.body?.event || req.body));
   }));
 
-  app.post("/api/connectors/jobs/:id/result", jsonParser, route(async (req, res) => {
+  app.post("/api/connectors/jobs/:id/result", resultJsonParser, route(async (req, res) => {
     respond(res, await store.finishJob(connectorAuth(req, req.body), req.params.id, req.body?.result || req.body));
   }));
 
@@ -152,10 +158,13 @@ function respond(res, result, preferredStatus) {
 
 function errorStatus(error) {
   if (error === "job-not-found") return 404;
+  if (error === "job-request-conflict" || error === "job-request-retired") return 409;
+  if (error === "connector-maintenance") return 503;
   if (error === "connector-auth-failed") return 401;
   if (error === "connector-access-denied") return 403;
   if (error === "connector-access-revoked") return 403;
   if (error === "connector-access-expired") return 403;
+  if (error === "connector-request-limit") return 503;
   if (error === "connector-queue-full") return 503;
   if (error === "connector-grant-limit") return 503;
   return 400;
