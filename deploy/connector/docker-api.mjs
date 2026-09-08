@@ -17,7 +17,6 @@ export class DockerApi {
     });
   }
   inspect(id){return this.request('GET',`/containers/${encodeURIComponent(id)}/json`);}
-  helpers(transaction){return this.request('GET','/containers/json?all=true&filters='+encodeURIComponent(JSON.stringify({label:['io.soty.connector-rollout='+transaction,'io.soty.connector-rollout.helper']})));}
   image(id){return this.request('GET',`/images/${encodeURIComponent(id)}/json`);}
   create(name,config){return this.request('POST','/containers/create?name='+encodeURIComponent(name),config);}
   start(id){return this.request('POST',`/containers/${id}/start`);}

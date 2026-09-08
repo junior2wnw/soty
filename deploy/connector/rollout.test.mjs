@@ -152,44 +152,6 @@ test('legacy restoration never restarts PID1 over retained unacknowledged next e
  assert.equal(f.map.get(args.originalId).State.Running,false);assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));assert.ok(!f.events.includes('helper:leave'));
 });
 
-async function stoppedFixture(extraArgs={}) {
- const f=fixture();f.engine.helpers=async()=>[];
- const old=f.map.get(args.originalId);old.NetworkSettings.Networks.soty.MacAddress='ee:c6:bd:b0:d3:f3';
- await f.run.prepare({...args,...extraArgs});const prepared=structuredClone(f.run.state);
- Object.assign(old.State,{Running:false,Status:'exited',FinishedAt:'2026-09-08T21:21:29.035097821Z',ExitCode:137,OOMKilled:false});old.NetworkSettings.Networks.soty.MacAddress='';
- f.map.get(f.run.candidate.Id).State.StartedAt='0001-01-01T00:00:00Z';
- const binding={failedJournalSha256:'8'.repeat(64),preparedJournalSha256:'9'.repeat(64)};
- const failed={...prepared,phase:'recovery_required',failureCode:'offline_authority_unresolved',maintenanceHelper:{name:`soty-connector-helper-${args.transaction}-1`,id:'7'.repeat(64),verb:'status',state:'removed'}};
- const approval={...prepared,...binding,schema:'soty.controller-stop-resume.v1',approved:true,migrationContract:'soty.stopped-legacy-snapshot.v1',originalPolicySha256:null,originalStop:{finishedAt:old.State.FinishedAt,exitCode:137},expectedAuthority:authority()};
- f.events.length=0;
- return {...f,failed,prepared,binding,approval,resume:()=>f.run.resumeAfterStop({...args,...extraArgs},failed,prepared,approval,binding)};
-}
-test('explicit stopped resume performs no original readiness/STOP and preserves failed receipt',async()=>{
- const f=await stoppedFixture();const prior=structuredClone(f.failed);await f.resume();assert.equal(f.run.state.phase,'committed');assert.deepEqual(f.failed,prior);
- assert.ok(!f.events.includes('ready:original'));assert.ok(!f.events.some(e=>e.startsWith('stop:')));assert.equal(f.events.filter(e=>e==='helper:snapshot').length,1);assert.ok(f.events.indexOf('helper:snapshot')<f.events.indexOf('helper:enter'));assert.equal(f.run.state.resumeFrom.failedJournalSha256,f.binding.failedJournalSha256);
-});
-for(const field of ['phase','helper','candidateStarted','finishedAt','env','mac','fingerprint','binding','policy','pendingHelper'])test('resume rejects '+field+' without any write helper/start/STOP',async()=>{
- const f=await stoppedFixture();const old=f.map.get(args.originalId),candidate=f.map.get(f.approval.candidateId);
- if(field==='phase')f.failed.phase='prepared';if(field==='helper')f.failed.maintenanceHelper.verb='enter';if(field==='candidateStarted')candidate.State.StartedAt='2026-09-08T20:00:00Z';if(field==='finishedAt')old.State.FinishedAt='2026-09-08T21:21:30Z';if(field==='env')old.Config.Env.push('DRIFT=1');if(field==='mac')old.NetworkSettings.Networks.soty.MacAddress='ee:c6:bd:b0:d3:ff';if(field==='fingerprint')candidate.HostConfig.Memory++;if(field==='binding')f.approval.failedJournalSha256='0'.repeat(64);if(field==='policy')f.approval.applicationPolicySha256='0'.repeat(64);if(field==='pendingHelper')f.engine.helpers=async()=>[{Id:'stray'}];
- await assert.rejects(f.resume());assert.ok(!f.events.some(e=>e.startsWith('helper:')||e.startsWith('stop:')||e.startsWith('start-')||e.startsWith('rename-')));
-});
-for(const status of ['queued','leased','running','unknown','interrupted'])test('resume fresh '+status+' canonical snapshot stays fenced without old restart',async()=>{
- const f=await stoppedFixture();const helper=f.run.maintenance;f.run.maintenance=async(v,r)=>v==='snapshot'?{ok:true,count:1,activeJobs:[{id:'race',status}],maintenance:false,authority:authority('legacy',[{id:'race',status}])}:helper(v,r);
- await assert.rejects(f.resume(),/recovery_required/);assert.ok(!f.events.includes('helper:enter'));assert.ok(!f.events.includes('start-old'));assert.equal(f.run.state.failureCode,'offline_authority_unresolved');
-});
-for(const defect of ['source','state','maintenance','sqlite','next'])test('resume stale '+defect+' authority cannot migrate or restore old',async()=>{
- const f=await stoppedFixture();const helper=f.run.maintenance;f.run.maintenance=async(v,r)=>{const out=await helper(v,r);if(v==='snapshot'){if(defect==='source')out.authority.legacySha256=out.authority.sourceSha256='0'.repeat(64);if(defect==='state')out.authority.stateSha256='0'.repeat(64);if(defect==='maintenance')out.maintenance=true;if(defect==='sqlite')out.authority.kind='sqlite';if(defect==='next')out.authority.temporaryFiles=[{name:'connector-store.json.1.next',bytes:3,sha256:'a'.repeat(64)}];}return out;};
- await assert.rejects(f.resume(),/recovery_required/);assert.ok(!f.events.includes('helper:enter'));assert.ok(!f.events.includes('start-old'));
-});
-test('resume actual approved policy still checks startup digest',async()=>policyFixture(async({policy})=>{
- const f=await stoppedFixture({applicationPolicy:policy});const ready=f.run.ready;f.run.ready=async kind=>{const out=await ready(kind);return kind==='candidate'?{...out,applicationPolicySha256:'0'.repeat(64)}:out;};await assert.rejects(f.resume(),/candidate_loaded_policy_mismatch/);assert.equal(f.run.state.phase,'restored');assert.ok(!f.events.includes('stop:'+args.originalId));
-}));
-test('resume retained next blocks automatic restoration and keeps frozen candidate',async()=>{
- const f=await stoppedFixture();const next={name:'connector-store.json.1.next',bytes:3,sha256:'a'.repeat(64)};f.approval.expectedAuthority.temporaryFiles=[next];const helper=f.run.maintenance;f.run.maintenance=async(v,r)=>{const out=await helper(v,r);if(out.authority)out.authority.temporaryFiles=[next];return out;};const ready=f.run.ready;f.run.ready=async kind=>{const out=await ready(kind);if(kind==='candidate')throw new SafeError('synthetic_readiness');return out;};await assert.rejects(f.resume(),/recovery_required/);assert.equal(f.run.state.failureCode,'legacy_restart_would_overwrite_unacknowledged_evidence');assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));assert.equal(f.map.get(f.approval.candidateId).State.Running,true);
-});
-test('resumed helper sequence starts after recorded status helper',async()=>{
- const f=await stoppedFixture();f.run.state=f.failed;await productionMaintenance(f.engine,{sleep:async()=>{}})('snapshot',f.run);assert.equal(f.run.state.maintenanceHelper.name,`soty-connector-helper-${args.transaction}-2`);
-});
 test('standard STOP gets bounded grace margin without increasing other API deadlines',async()=>{
  const api=new DockerApi();const calls=[];api.request=async(...a)=>calls.push(a);await api.stop(args.originalId);await api.inspect(args.originalId);assert.equal(calls[0][1],`/containers/${args.originalId}/stop?t=10`);assert.equal(calls[0][4],20000);assert.equal(calls[1][4],undefined);assert.equal(api.timeoutMs,10000);
 });
@@ -209,7 +171,4 @@ test('unresolved STOP retains allowlisted action cause and bounded inspect obser
 test('STOP diagnostic rejects arbitrary exception payload and retains last safe running observation',async()=>{
  const f=fixture();await f.run.prepare(args);f.engine.stop=async()=>{const e=new Error('private_payload');e.code='private_payload';throw e;};await assert.rejects(f.run.promote());
  const d=f.run.state.stopReconciliation;assert.equal(d.actionErrorCode,'unclassified_error');assert.equal(d.lastInspectStatus,'running');assert.equal(d.lastInspectRunning,true);assert.equal(d.lastInspectErrorCode,null);assert.equal(f.run.state.primaryFailureCode,'operation_failed');assert.doesNotMatch(JSON.stringify(f.records),/private_payload/);
-});
-test('resume primary authority failure remains visible when recovery rejects missing offline baseline',async()=>{
- const f=await stoppedFixture();const helper=f.run.maintenance;f.run.maintenance=async(v,r)=>{const out=await helper(v,r);if(v==='snapshot')out.authority.stateSha256='0'.repeat(64);return out;};await assert.rejects(f.resume(),/recovery_required/);assert.equal(f.run.state.primaryFailureCode,'resume_authority_changed');assert.equal(f.run.state.failureCode,'offline_authority_unresolved');assert.ok(!f.events.includes('start-old'));
 });

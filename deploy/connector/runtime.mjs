@@ -5,9 +5,6 @@ export function productionMaintenance(engine,{maxPolls=60,sleep=ms=>new Promise(
  let sequence=0;
  return async (verb,run)=>{
    if(!['status','snapshot','verify','enter','leave','rollback'].includes(verb))throw new SafeError('maintenance_verb_invalid');
-   // A continuation starts after the last recorded helper, never reusing its name.
-   const prior=run.state.maintenanceHelper?.name;
-   if(prior){const prefix=`soty-connector-helper-${run.args.transaction}-`;if(!prior.startsWith(prefix)||!/^\d+$/.test(prior.slice(prefix.length)))throw new SafeError('maintenance_helper_sequence_invalid');sequence=Math.max(sequence,Number(prior.slice(prefix.length)));}
    const name=`soty-connector-helper-${run.args.transaction}-${++sequence}`;
    const source=createConfig(run.original,run.args.candidateImage,run.args.transaction);
    // Existing mounts/Env stay memory-only. Helper has no published port, network,
