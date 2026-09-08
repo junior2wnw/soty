@@ -10,7 +10,8 @@ const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_RECORDS = 100000;
 const MAX_EVENTS = 2000000;
 const terminal = new Set(["succeeded", "failed", "cancelled"]);
-const fail = () => { throw new Error("Connector authority snapshot rejected; preserve offline evidence"); };
+class AuthorityError extends Error {}
+const fail = () => { throw new AuthorityError("Connector authority snapshot rejected; preserve offline evidence"); };
 const check = value => { if (!value) fail(); };
 const signature = s => [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join(":");
 
@@ -161,8 +162,12 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
     check(await regular(dbFile, true) === databaseBefore);
     const walAfter = await regular(dbFile + "-wal", true);
     // SQLite's readonly connection can create an empty WAL sidecar. It has no
-    // frames/state; an existing WAL change or any new nonempty WAL is drift.
-    check(walAfter === walBefore || (metadata && walBefore === null && walAfter !== null
+    // frames/state. Reopening an existing empty WAL can change only ctime.
+    // Its device/inode, zero length and mtime must still match exactly.
+    const emptyWalCtimeOnly = metadata && walBefore !== null && walAfter !== null
+      && walBefore.split(":")[2] === "0" && walAfter.split(":")[2] === "0"
+      && walBefore.split(":").slice(0, 4).join(":") === walAfter.split(":").slice(0, 4).join(":");
+    check(walAfter === walBefore || emptyWalCtimeOnly || (metadata && walBefore === null && walAfter !== null
       && (await lstat(dbFile + "-wal")).size === 0));
     await regular(dbFile + "-shm", true);
     if (metadata) check(JSON.stringify(sqliteMetadata(dbFile, JSON.parse(after.text))) === JSON.stringify(metadata));
@@ -172,6 +177,8 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
       sourceSha256: original.sha256, legacySha256: metadata ? metadata.legacySha256 : original.sha256,
       bytes: original.bytes, counts, statusCounts, activeJobs, temporaryFiles };
   } catch (error) {
+    // Preserve the original controlled-check stack, never arbitrary input errors.
+    if (error instanceof AuthorityError) throw error;
     // JSON/SQLite errors can contain input excerpts: do not propagate them.
     fail();
   }

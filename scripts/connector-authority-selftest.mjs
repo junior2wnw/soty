@@ -2,6 +2,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from "node:fs/promises";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
@@ -53,6 +55,47 @@ try {
     const db = new DatabaseSync(path.join(dir, "connector-store.sqlite"));
     db.prepare("INSERT INTO meta(key,value) VALUES('legacySha256',?)").run("f".repeat(64)); db.close();
     await assert.rejects(snapshotConnectorAuthority(dir));
+  });
+  await test("only existing empty WAL ctime drift is tolerated; inode, mtime and nonempty drift reject", async () => {
+    // Real SQLite state/readback, with deterministic stat fault injection at
+    // the second WAL inspection. This models the observed Linux readonly-open
+    // ctime change without timing races or Windows chmod semantics assumptions.
+    for (const [label, nonempty, field, accepted] of [
+      ["empty-ctime", false, "ctimeNs", true], ["empty-mtime", false, "mtimeNs", false],
+      ["empty-inode", false, "ino", false], ["empty-device", false, "dev", false],
+      ["nonempty-ctime", true, "ctimeNs", false],
+    ]) {
+      const dir = await seed("wal-" + label);
+      const store = createConnectorStore(dir); await store.ready; await store.close();
+      const dbFile = path.join(dir, "connector-store.sqlite"), wal = dbFile + "-wal";
+      const db = new DatabaseSync(dbFile);
+      db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_checkpoint(TRUNCATE)");
+      if (nonempty) db.exec("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'");
+      const before = await fsPromises.lstat(wal, { bigint: true });
+      assert.equal(before.size > 0n, nonempty);
+      const originalLstat = fsPromises.lstat; let inspections = 0;
+      fsPromises.lstat = async (file, options) => {
+        const info = await originalLstat(file, options);
+        if (String(file) === wal && options?.bigint && ++inspections === 2) {
+          Object.defineProperty(info, field, { value: info[field] + 1n });
+        }
+        return info;
+      };
+      syncBuiltinESMExports();
+      try {
+        if (accepted) {
+          const authority = await snapshotConnectorAuthority(dir);
+          assert.equal(authority.stateSha256, connectorStateSha256(normalizeConnectorState(fixture())));
+        } else await assert.rejects(snapshotConnectorAuthority(dir), error => {
+          assert.equal(error.message, "Connector authority snapshot rejected; preserve offline evidence");
+          assert.match(error.stack, /at check /u); // Original safe check site survives catch.
+          return true;
+        });
+        assert.equal(inspections, 2);
+      } finally {
+        fsPromises.lstat = originalLstat; syncBuiltinESMExports(); db.close();
+      }
+    }
   });
   await test("canonical keys and top-level identities ignore ordering; nested event order remains strict", async () => {
     const state = fixture(), other = structuredClone(state);
@@ -113,7 +156,7 @@ try {
     const dir = await seed("malformed");
     for (const bytes of ['{"PRIVATE-SYNTHETIC', '{}', '{"schema":"soty.connector-store.sqlite.v1"}']) {
       await writeFile(path.join(dir, "connector-store.json"), bytes);
-      await assert.rejects(snapshotConnectorAuthority(dir), error => !error.message.includes("PRIVATE-SYNTHETIC"));
+      await assert.rejects(snapshotConnectorAuthority(dir), error => !error.stack.includes("PRIVATE-SYNTHETIC"));
     }
     await rm(path.join(dir, "connector-store.json")); await assert.rejects(snapshotConnectorAuthority(dir));
   });
