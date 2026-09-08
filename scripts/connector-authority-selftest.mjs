@@ -30,6 +30,13 @@ async function seed(name, state = fixture()) {
 }
 async function test(name, action) { const result = await action(); checks.push(result?.skipped ? { name, ...result } : { name, ok: true }); }
 try {
+  await test("repeated opened legacy snapshots retain source identity across supported stat implementations", async () => {
+    const dir = await seed("stat-compatibility");
+    const first = await snapshotConnectorAuthority(dir, { syncLegacy: true });
+    const second = await snapshotConnectorAuthority(dir);
+    assert.deepEqual(second, first);
+    assert.equal(first.sourceSha256, hash(await readFile(path.join(dir, "connector-store.json"))));
+  });
   await test("fresh SQLite has null legacy authority only when both meta and marker omit it", async () => {
     const dir = path.join(root, "fresh-sqlite");
     const store = createConnectorStore(dir); await store.ready; await store.close();

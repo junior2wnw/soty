@@ -30,7 +30,13 @@ async function source(file, { sync = false } = {}) {
   const handle = await open(file, (sync && process.platform === "win32" ? constants.O_RDWR : constants.O_RDONLY) | (constants.O_NOFOLLOW || 0));
   try {
     const info = await handle.stat({ bigint: true });
-    check(info.isFile() && signature(info) === before && info.size <= BigInt(MAX_BYTES));
+    const openedSignature = signature(info);
+    // Node22 Windows lstat reports dev=0 while fstat reports the real volume.
+    // Compare its available path identity, retaining full fstat identity for
+    // the read and the second source read. Linux keeps the exact dev check.
+    const pathComparable = process.platform === "win32" && before.startsWith("0:")
+      ? [0n, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":") : openedSignature;
+    check(info.isFile() && pathComparable === before && info.size <= BigInt(MAX_BYTES));
     const hash = createHash("sha256");
     const buffer = Buffer.alloc(65536);
     const small = info.size <= 65536n ? [] : null;
@@ -44,9 +50,9 @@ async function source(file, { sync = false } = {}) {
       if (small) small.push(Buffer.from(buffer.subarray(0, read.bytesRead)));
     }
     if (sync) await handle.sync();
-    check(BigInt(bytes) === info.size && signature(await handle.stat({ bigint: true })) === before);
+    check(BigInt(bytes) === info.size && signature(await handle.stat({ bigint: true })) === openedSignature);
     check(await regular(file) === before);
-    return { bytes, sha256: hash.digest("hex"), signature: before, text: small ? Buffer.concat(small).toString("utf8") : null };
+    return { bytes, sha256: hash.digest("hex"), signature: before, handleSignature: openedSignature, text: small ? Buffer.concat(small).toString("utf8") : null };
   } finally { await handle.close(); }
 }
 
@@ -151,7 +157,7 @@ export async function snapshotConnectorAuthority(dataDir, { syncLegacy = false }
       if (!terminal.has(job.status)) activeJobs.push({ id: job.id, status: job.status });
     }
     const after = await source(legacyFile);
-    check(after.signature === original.signature && after.sha256 === original.sha256);
+    check(after.signature === original.signature && after.handleSignature === original.handleSignature && after.sha256 === original.sha256);
     check(await regular(dbFile, true) === databaseBefore);
     const walAfter = await regular(dbFile + "-wal", true);
     // SQLite's readonly connection can create an empty WAL sidecar. It has no
