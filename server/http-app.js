@@ -62,10 +62,13 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel } = {}) {
     agentModelProxy: connectors.modelProxy,
     applicationModelProxy: connectors.applicationModelProxy
   }));
-  app.get("/ready", (_req, res) => {
-    const ready = connectors.modelProxy.ready === true;
+  app.get("/ready", async (_req, res) => {
+    let storageReady = false;
+    try { await connectors.store.readable(); storageReady = !connectors.store.maintenance(); } catch { /* Report unavailable without exposing storage data. */ }
+    const ready = storageReady && connectors.modelProxy.ready === true && connectors.applicationModelProxy.ready === true;
     res.status(ready ? 200 : 503).json({
       ok: ready,
+      storageReady,
       agentModelProxy: connectors.modelProxy,
       applicationModelProxy: connectors.applicationModelProxy
     });

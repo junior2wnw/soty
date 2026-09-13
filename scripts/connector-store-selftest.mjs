@@ -4,7 +4,11 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createConnectorStore } from "../server/connector-store.js";
+import { createConnectorStore as createStore } from "../server/connector-store.js";
+
+import { readConnectorState } from "../server/connector-registry.js";
+const stores = [];
+const createConnectorStore = (...args) => { const store=createStore(...args); stores.push(store); return store; };
 
 const root = await mkdtemp(path.join(tmpdir(), "soty-connector-store-"));
 let now = Date.parse("2026-08-09T00:00:00.000Z");
@@ -94,6 +98,7 @@ try {
   const finished = await store.finishJob(auth, created.job.id, { ok: true, text: "Готово", exitCode: 0, sessionId: "session-1" });
   assert.equal(finished.job.status, "succeeded");
 
+  await store.close();
   const persisted = createConnectorStore(root, { now: () => now, leaseMs: 5_000 });
   assert.equal((await persisted.getJob(linkId, created.job.id)).job.result.text, "Готово");
 
@@ -101,8 +106,10 @@ try {
   assert.equal((await persisted.poll(auth)).jobs[0].id, retry.job.id);
   now += 6_000;
   const reLeased = await persisted.poll(auth);
-  assert.equal(reLeased.jobs[0].id, retry.job.id);
-  assert.equal(reLeased.jobs[0].attempt, 2);
+  assert.deepEqual(reLeased.jobs, []);
+  const uncertain = (await persisted.getJob(linkId, retry.job.id)).job;
+  assert.equal(uncertain.executionUncertain, true);
+  assert.equal(uncertain.attempts, 1); // legacy missing-start ACK cannot establish safe redelivery
 
   const cancelled = await persisted.cancelJob(linkId, retry.job.id);
   assert.equal(cancelled.job.cancelRequested, true);
@@ -141,7 +148,8 @@ try {
   assert.match(issued.token, /^[A-Za-z0-9_-]{40,160}$/u);
   assert.deepEqual(issued.grant.capabilities, ["status", "agent", "command", "script", "events", "cancel"]);
   assert.equal("token" in issued.grant, false);
-  assert.equal((await readFile(path.join(root, "connector-store.json"), "utf8")).includes(issued.token), false);
+  assert.equal(JSON.stringify(await readConnectorState(root)).includes(issued.token), false);
+  await persisted.close();
   const grantStore = createConnectorStore(root, { now: () => now, leaseMs: 5_000 });
   const delegatedAuth = {
     linkId: controllerLinkId,
@@ -157,7 +165,7 @@ try {
 
   const delegated = await grantStore.createJob({ deviceId: "device-1", kind: "agent", text: "Запусти с другого Link" }, delegatedAuth);
   assert.equal(delegated.ok, true);
-  const delegatedState = JSON.parse(await readFile(path.join(root, "connector-store.json"), "utf8"));
+  const delegatedState = await readConnectorState(root);
   const delegatedRecord = delegatedState.jobs.find((job) => job.id === delegated.job.id);
   assert.equal(delegatedRecord.schema, "soty.connector-job.v3");
   assert.equal(
@@ -235,7 +243,7 @@ try {
 
   const legacyRoot = path.join(root, "legacy");
   await mkdir(legacyRoot);
-  const legacyState = JSON.parse(await readFile(path.join(root, "connector-store.json"), "utf8"));
+  const legacyState = await readConnectorState(root);
   legacyState.schema = "soty.connector-store.v1";
   legacyState.connectors = [{
     linkId,
@@ -272,5 +280,6 @@ try {
 
   process.stdout.write("connector-store:selftest:ok\n");
 } finally {
+  for (const store of stores) await store.close();
   await rm(root, { recursive: true, force: true });
 }

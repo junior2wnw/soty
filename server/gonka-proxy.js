@@ -5,7 +5,7 @@ import { Readable } from "node:stream";
 export const defaultGonkaProxyModel = "deepseek-ai/DeepSeek-V4-Flash-0731";
 
 const maxRequestBytes = 4 * 1024 * 1024;
-const maxConcurrentPerInstallation = 2;
+const maxConcurrentPerInstallation = 100;
 
 export function createGonkaProxy({
   store,

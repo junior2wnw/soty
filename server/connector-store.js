@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { ConnectorPersistence, metadata } from "./connector-persistence.js";
 import path from "node:path";
+import { statSync } from "node:fs";
 import { EventEmitter } from "node:events";
 
 // Keep v2 so the current production rollback image can still read connectors
@@ -27,22 +28,39 @@ export function createConnectorStore(dataDir, options = {}) {
 class ConnectorStore {
   constructor(filePath, options) {
     this.filePath = filePath;
+    this.maintenancePath = path.join(path.dirname(filePath), "connector-maintenance.json");
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
+    this.maxRequestRecords = safeInteger(options.maxRequestRecords, 1, 100_000, 100_000);
+    this.requestIndex = new Map();
     this.leaseMs = safeInteger(options.leaseMs, 5_000, 10 * 60_000, defaultLeaseMs);
     this.events = new EventEmitter();
+    this.changeSequence = 0;
+    this.routeVersions = new Map();
     this.events.setMaxListeners(0);
     this.state = emptyState();
-    this.writeQueue = this.load();
+    this.persistence = new ConnectorPersistence(filePath);
+    this.ready = this.load();
+    this.ready.catch(() => undefined);
+    this.writeQueue = this.ready;
   }
 
   async load() {
-    try {
-      const parsed = JSON.parse(await readFile(this.filePath, "utf8"));
-      this.state = normalizeState(parsed);
-    } catch {
-      this.state = emptyState();
-    }
-    this.expire(this.now());
+    const loaded = await this.persistence.call("load");
+    this.state = loaded.state;
+    this.requestIndex = new Map(this.state.requests.map((item) => [item.id,item]));
+    this.revision = loaded.revision;
+  }
+
+  maintenance() { try { statSync(this.maintenancePath); return true; } catch(error) { if(error.code === "ENOENT") return false; throw error; } }
+
+  async close() {
+    await this.writeQueue.catch(() => undefined);
+    await this.persistence.close();
+  }
+
+  async readable() {
+    await this.ready;
+    if (this.persistence.failed || this.failed) throw this.persistence.failed || this.failed;
   }
 
   async register(input, token) {
@@ -66,7 +84,7 @@ class ConnectorStore {
   }
 
   async status(auth, deviceId = "") {
-    await this.writeQueue;
+    await this.readable();
     const now = this.now();
     const access = this.authorizeController(auth, { deviceId, capability: "status" }, now);
     if (!access.ok) return access;
@@ -90,7 +108,7 @@ class ConnectorStore {
   }
 
   async authenticateModelToken(token) {
-    await this.writeQueue;
+    await this.readable();
     const secret = safeToken(token);
     if (!secret) return false;
     const tokenHash = hashToken(secret);
@@ -149,8 +167,9 @@ class ConnectorStore {
 
   async createJob(input, auth = input?.linkId) {
     const requested = cleanNewJob(input, { requireLink: false });
-    if (!requested) return { ok: false, error: "invalid-job" };
+    if (!requested || (input?.requestId !== undefined && !/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.requestId))) return { ok: false, error: "invalid-job" };
     return await this.mutate(() => {
+      if (this.maintenance()) return { ok: false, error: "connector-maintenance" };
       const now = this.now();
       this.expire(now);
       const access = this.authorizeController(auth, { deviceId: requested.deviceId, capability: requested.kind }, now);
@@ -159,6 +178,17 @@ class ConnectorStore {
       if (!this.state.connectors.some((item) => item.linkId === clean.linkId && (!clean.deviceId || item.deviceId === clean.deviceId))) {
         return { ok: false, error: "connector-access-denied" };
       }
+      const requestId = input?.requestId || "";
+      const requestKey = requestId ? hashToken(JSON.stringify([clean.linkId, clean.deviceId, access.grant?.id || "", requestId])) : "";
+      const fingerprint = requestId ? hashToken(JSON.stringify({ ...clean, threadId: input?.threadId || "", connectorId: input?.connectorId || "" })) : "";
+      const previous = requestKey ? this.requestIndex.get(requestKey) : null;
+      if (previous) {
+        if (previous.fingerprint !== fingerprint) return { ok: false, error: "job-request-conflict" };
+        const priorJob = this.state.jobs.find((item) => item.id === previous.jobId);
+        return priorJob ? { ok: true, reused: true, job: publicJob(priorJob, { summary: true }) }
+          : { ok: false, error: "job-request-retired", jobId: previous.jobId };
+      }
+      if (requestKey && this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: "connector-request-limit" };
       const activeJobs = this.state.jobs.filter((job) => !terminalStatuses.has(job.status)).length;
       if (activeJobs >= maxJobs) return { ok: false, error: "connector-queue-full" };
       const job = {
@@ -169,6 +199,7 @@ class ConnectorStore {
         linkId: clean.linkId,
         deviceId: clean.deviceId,
         threadId: clean.threadId,
+        requestedConnectorId: safeId(input?.connectorId, 160),
         kind: clean.kind,
         input: clean.input,
         permissions: clean.permissions,
@@ -185,39 +216,52 @@ class ConnectorStore {
         finishedAt: 0
       };
       this.state.jobs.push(job);
+      if (requestKey) this.state.requests = [...this.state.requests, { id: requestKey, fingerprint, jobId: job.id }];
       this.pushEvent(job, { type: "queued", text: "Задание принято" }, now);
       this.expire(now);
       this.signal(job.linkId, job.deviceId);
-      return { ok: true, job: publicJob(job) };
+      return { ok: true, job: publicJob(job, { summary: true }) };
     });
   }
 
-  async getJob(auth, jobId) {
-    await this.writeQueue;
+  async getJob(auth, jobId, options = {}) {
+    await this.readable();
     const access = this.authorizeJob(auth, jobId, "events", this.now());
     if (!access.ok) return access;
-    return { ok: true, job: publicJob(access.job) };
+    return { ok: true, job: publicJob(access.job, options) };
   }
 
   async getAssignedConnectorJob(auth, jobId) {
-    await this.writeQueue;
+    await this.readable();
     const connector = this.authenticate(auth);
     const job = connector ? this.assignedJob(connector, jobId) : null;
-    return connector && job ? { ok: true, job: publicJob(job) } : { ok: false, error: "connector-auth-failed" };
+    return connector && job ? { ok: true, job: publicJob(job, { summary: true }) } : { ok: false, error: "connector-auth-failed" };
   }
 
   async getEvents(auth, jobId, after = 0) {
-    await this.writeQueue;
+    await this.readable();
     const access = this.authorizeJob(auth, jobId, "events", this.now());
     if (!access.ok) return access;
     const job = access.job;
     const cursor = Math.max(0, Number.isSafeInteger(after) ? after : 0);
+    const available = job.events.filter((event) => event.seq > cursor);
+    const page = [];
+    let bytes = 0;
+    for (const event of available) {
+      const cost = Buffer.byteLength(JSON.stringify(event));
+      if (page.length && (page.length >= 32 || bytes + cost > 128_000)) break;
+      page.push(publicEvent(event));
+      bytes += cost;
+    }
+    const more = page.length < available.length;
     return {
       ok: true,
-      job: publicJob(job, { events: false }),
-      events: job.events.filter((event) => event.seq > cursor).map(publicEvent),
-      cursor: job.events.at(-1)?.seq || cursor,
-      done: terminalStatuses.has(job.status)
+      job: publicJob(job, { events: false, summary: more || !terminalStatuses.has(job.status) }),
+      events: page,
+      cursor: page.at(-1)?.seq || cursor,
+      more,
+      changeVersion: this.routeVersion(job.linkId, job.deviceId),
+      done: terminalStatuses.has(job.status) && !more
     };
   }
 
@@ -228,7 +272,7 @@ class ConnectorStore {
       const access = this.authorizeJob(auth, jobId, "cancel", now);
       if (!access.ok) return access;
       const job = access.job;
-      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job) };
+      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job, { summary: true }) };
       job.cancelRequested = true;
       job.updatedAt = now;
       this.pushEvent(job, { type: "cancel_requested", text: "Запрошена отмена" }, now);
@@ -238,14 +282,15 @@ class ConnectorStore {
         job.result = { ok: false, text: "Отменено", exitCode: 130 };
       }
       this.signal(job.linkId, job.deviceId);
-      return { ok: true, job: publicJob(job) };
+      return { ok: true, job: publicJob(job, { summary: true }) };
     });
   }
 
   async poll(auth, waitMs = 0, signal) {
+    const observedVersion = this.routeVersion(safeLinkId(auth?.linkId), safeDeviceId(auth?.deviceId));
     const first = await this.lease(auth);
     if (!first.ok || first.jobs.length > 0 || first.cancel.length > 0 || waitMs <= 0) return first;
-    await this.waitForChange(first.connector.linkId, first.connector.deviceId, waitMs, signal);
+    await this.waitForChange(safeLinkId(auth?.linkId), first.connector.deviceId, waitMs, signal, observedVersion);
     return await this.lease(auth);
   }
 
@@ -257,9 +302,9 @@ class ConnectorStore {
       connector.lastSeenAt = now;
       this.expire(now);
       const cancel = this.state.jobs
-        .filter((job) => job.connectorId === connector.connectorId && job.deviceId === connector.deviceId && job.cancelRequested && !terminalStatuses.has(job.status))
+        .filter((job) => job.linkId === connector.linkId && job.connectorId === connector.connectorId && job.deviceId === connector.deviceId && job.cancelRequested && !terminalStatuses.has(job.status))
         .map((job) => job.id);
-      const candidate = this.state.jobs.find((job) => this.jobGrantActive(job, now) && canLease(job, connector, now));
+      const candidate = this.maintenance() ? null : this.state.jobs.find((job) => this.jobGrantActive(job, now) && canLease(job, connector, now));
       const jobs = [];
       if (candidate) {
         candidate.status = "leased";
@@ -282,15 +327,16 @@ class ConnectorStore {
       const connector = this.authenticate(auth);
       const job = connector ? this.assignedJob(connector, jobId) : null;
       if (!connector || !job) return { ok: false, error: "connector-auth-failed" };
-      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job) };
+      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job, { summary: true }) };
       const now = this.now();
       connector.lastSeenAt = now;
       job.status = job.cancelRequested ? job.status : "running";
+      job.executionUncertain = false;
       job.leaseUntil = now + this.leaseMs;
       job.updatedAt = now;
       this.pushEvent(job, event, now);
       this.signal(job.linkId, job.deviceId);
-      return { ok: true, job: publicJob(job) };
+      return { ok: true, job: publicJob(job, { summary: true }) };
     });
   }
 
@@ -301,7 +347,7 @@ class ConnectorStore {
       const connector = this.authenticate(auth);
       const job = connector ? this.assignedJob(connector, jobId) : null;
       if (!connector || !job) return { ok: false, error: "connector-auth-failed" };
-      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job) };
+      if (terminalStatuses.has(job.status)) return { ok: true, job: publicJob(job, { summary: true }) };
       const now = this.now();
       connector.lastSeenAt = now;
       job.result = result;
@@ -311,7 +357,7 @@ class ConnectorStore {
       job.updatedAt = now;
       this.pushEvent(job, { type: job.status, text: result.text.slice(0, 4_000) }, now);
       this.signal(job.linkId, job.deviceId);
-      return { ok: true, job: publicJob(job) };
+      return { ok: true, job: publicJob(job, { summary: true }) };
     });
   }
 
@@ -407,8 +453,7 @@ class ConnectorStore {
     const clean = cleanEvent(event);
     if (!clean) return;
     const seq = (job.events.at(-1)?.seq || 0) + 1;
-    job.events.push({ ...clean, seq, at: now });
-    if (job.events.length > maxEvents) job.events.splice(0, job.events.length - maxEvents);
+    job.events = [...job.events.slice(-(maxEvents - 1)), { ...clean, seq, at: now }];
   }
 
   expire(now) {
@@ -418,7 +463,7 @@ class ConnectorStore {
       }
     }
     for (const job of this.state.jobs) {
-      if (!terminalStatuses.has(job.status) && now - job.createdAt >= finishedRetentionMs) {
+      if (job.status === "queued" && now - job.createdAt >= finishedRetentionMs) {
         job.status = "failed";
         job.result = { ok: false, text: "Срок хранения задания истёк", exitCode: 124 };
         job.leaseUntil = 0;
@@ -427,21 +472,14 @@ class ConnectorStore {
         this.pushEvent(job, { type: "failed", text: "Срок хранения задания истёк" }, now);
         continue;
       }
-      if ((job.status === "leased" || job.status === "running") && job.leaseUntil > 0 && job.leaseUntil <= now) {
-        if (job.cancelRequested) {
-          job.status = "cancelled";
-          job.result = { ok: false, text: "Отменено", exitCode: 130 };
-          job.finishedAt = now;
-        } else {
-          job.status = "queued";
-          job.connectorId = "";
-          job.leaseUntil = 0;
-          this.pushEvent(job, { type: "retry", text: "Коннектор отключился, задание возвращено в очередь" }, now);
-        }
-        job.updatedAt = now;
+      if ((job.status === "leased" || job.status === "running") && job.leaseUntil > 0 && job.leaseUntil <= now && !job.executionUncertain) {
+        job.executionUncertain = true;
+        this.pushEvent(job, { type: "execution_uncertain", text: "Подтверждение коннектора задержано; назначение сохранено, повторный запуск запрещён" }, now);
+        this.signal(job.linkId, job.deviceId);
       }
     }
-    this.state.connectors = this.state.connectors.filter((item) => now - item.lastSeenAt < finishedRetentionMs);
+
+    this.state.connectors = this.state.connectors.filter((item) => now - item.lastSeenAt < finishedRetentionMs || this.state.jobs.some((job) => !terminalStatuses.has(job.status) && job.linkId === item.linkId && job.deviceId === item.deviceId && job.connectorId === item.connectorId));
     const retained = this.state.jobs
       .filter((job) => !job.finishedAt || now - job.finishedAt < finishedRetentionMs)
       .sort((a, b) => a.createdAt - b.createdAt);
@@ -457,57 +495,123 @@ class ConnectorStore {
   }
 
   signal(linkId, deviceId) {
-    this.events.emit(changeKey(linkId, deviceId));
-    this.events.emit(changeKey(linkId, ""));
+    // Notifications are emitted only after the corresponding transaction commits.
+    this.pendingSignals?.add(changeKey(linkId, deviceId));
+    this.pendingSignals?.add(changeKey(linkId, "@all"));
   }
 
-  waitForChange(linkId, deviceId, waitMs, signal) {
+  routeVersion(linkId, deviceId) {
+    // Device polls also observe untargeted jobs, but never another device's
+    // targeted traffic. Owner watches without a device observe the whole link.
+    return deviceId
+      ? Math.max(this.routeVersions.get(changeKey(linkId, deviceId)) || 0, this.routeVersions.get(changeKey(linkId, "")) || 0)
+      : this.routeVersions.get(changeKey(linkId, "@all")) || 0;
+  }
+
+  waitForChange(linkId, deviceId, waitMs, signal, observedVersion) {
     if (signal?.aborted) return Promise.resolve();
     return new Promise((resolve) => {
-      const key = changeKey(linkId, deviceId);
+      const keys = deviceId ? [changeKey(linkId, deviceId), changeKey(linkId, "")] : [changeKey(linkId, "@all")];
       let timer;
       const done = () => {
         clearTimeout(timer);
-        this.events.removeListener(key, done);
+        for (const key of keys) this.events.removeListener(key, done);
         signal?.removeEventListener("abort", done);
         resolve();
       };
       timer = setTimeout(done, safeInteger(waitMs, 100, 30_000, 25_000));
       timer.unref?.();
-      this.events.once(key, done);
+      for (const key of keys) this.events.once(key, done);
       signal?.addEventListener("abort", done, { once: true });
+      if (observedVersion !== undefined && observedVersion !== this.routeVersion(linkId, deviceId)) done();
     });
   }
 
-  async waitForControllerChange(auth, deviceId, waitMs, signal) {
-    await this.writeQueue;
+  async waitForControllerChange(auth, deviceId, waitMs, signal, observedVersion) {
+    await this.readable();
     const access = this.authorizeController(auth, { deviceId, capability: "events" }, this.now());
     if (!access.ok) return;
-    await this.waitForChange(access.linkId, access.deviceId, waitMs, signal);
+    await this.waitForChange(access.linkId, access.deviceId, waitMs, signal, observedVersion);
   }
 
   async mutate(callback) {
     const run = this.writeQueue.then(async () => {
-      const result = callback();
-      await this.persist();
+      await this.readable();
+      const committed = this.state;
+      const draft = {
+        ...committed,
+        connectors: committed.connectors.map((item) => ({ ...item })),
+        accessGrants: committed.accessGrants.map((item) => ({ ...item })),
+        jobs: committed.jobs.map((item) => ({ ...item }))
+      };
+      this.pendingSignals = new Set();
+      let result;
+      try {
+        this.state = draft;
+        result = callback(); // synchronous; no reader can observe this draft
+      } finally {
+        this.state = committed;
+      }
+      const signals = this.pendingSignals;
+      this.pendingSignals = null;
+      const delta = changesSince(committed, draft, this.revision);
+      if (delta) await this.persist(delta);
+      this.state = draft;
+      for (const request of delta?.requests || []) this.requestIndex.set(request.id,request);
+      if (signals.size) this.changeSequence += 1;
+      for (const key of signals) this.routeVersions.set(key, this.changeSequence);
+      for (const key of signals) this.events.emit(key);
       return result;
     });
     this.writeQueue = run.then(() => undefined, () => undefined);
     return await run;
   }
 
-  async persist() {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    const next = `${this.filePath}.${process.pid}.next`;
-    await writeFile(next, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 });
-    await chmod(next, 0o600).catch(() => undefined);
-    await rename(next, this.filePath);
+  async persist(delta) {
+    try {
+      const result = await this.persistence.call("commit", delta);
+      this.revision = result.revision;
+    } catch (error) {
+      if (["STORE_STALE_WRITER","STORE_COMMIT_AMBIGUOUS"].includes(error.code) || this.persistence.failed) this.failed = error;
+      throw error;
+    }
   }
+}
+
+function sameRecord(left, right) {
+  if (!left || !right) return left === right;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
+}
+
+function changesSince(before, after, revision) {
+  const delta = { revision, requests: after.requests.slice(before.requests.length) };
+  let dirty = delta.requests.length > 0;
+  for (const kind of ["connectors", "accessGrants", "jobs"]) {
+    const key = kind === "connectors" ? connectorKey : (item) => item.id;
+    const old = new Map(before[kind].map((item) => [key(item), item]));
+    const current = new Set(after[kind].map(key));
+    const changed = after[kind].filter((item) => !sameRecord(old.get(key(item)), item)).map((item) => {
+      if (kind !== "jobs") return item;
+      const prior = old.get(item.id);
+      return {
+        id: item.id, metadata: metadata(item),
+        ...(prior?.input !== item.input ? { input: item.input } : {}),
+        ...(prior?.result !== item.result ? { result: item.result } : {}),
+        events: prior?.events === item.events ? [] : item.events.filter((event) => event.seq > (prior?.events.at(-1)?.seq || 0)),
+        firstSeq: item.events[0]?.seq || 0
+      };
+    });
+    const removed = [...old.keys()].filter((id) => !current.has(id));
+    delta[kind] = { changed, removed };
+    dirty ||= changed.length > 0 || removed.length > 0;
+  }
+  return dirty ? delta : null;
 }
 
 function canLease(job, connector, now) {
   if (job.status !== "queued" || job.cancelRequested || job.leaseUntil > now) return false;
-  if (job.linkId !== connector.linkId || (job.deviceId && job.deviceId !== connector.deviceId)) return false;
+  if (job.linkId !== connector.linkId || (job.deviceId && job.deviceId !== connector.deviceId) || (job.requestedConnectorId && job.requestedConnectorId !== connector.connectorId)) return false;
   if (job.kind === "agent") return connector.protocol === 2 && connector.agent?.available === true;
   if (!connector.capabilities.includes(job.kind)) return false;
   const runAs = job.input?.runAs === "system" ? "system" : "user";
@@ -515,17 +619,36 @@ function canLease(job, connector, now) {
 }
 
 function emptyState() {
-  return { schema: storeSchema, connectors: [], accessGrants: [], jobs: [] };
+  return { schema: storeSchema, connectors: [], accessGrants: [], jobs: [], requests: [] };
 }
 
-function normalizeState(value) {
+export function normalizeConnectorState(value) {
   const state = emptyState();
-  if (value?.schema !== storeSchema && !previousStoreSchemas.has(value?.schema)) return state;
+  if (value?.schema !== storeSchema && !previousStoreSchemas.has(value?.schema)) throw new Error("Unknown connector store schema; preserve data for recovery");
+  if (!Array.isArray(value.connectors) || !Array.isArray(value.jobs) || (value.accessGrants !== undefined && !Array.isArray(value.accessGrants))) throw new Error("Partial connector store; preserve data for recovery");
+  if (value.connectors.some((item) => !validStoredConnector(item)) || (value.accessGrants || []).some((item) => !normalizeStoredAccessGrant(item))) throw new Error("Invalid connector identity or access grant; preserve data for recovery");
+  for (const job of value.jobs) {
+    if (![delegatedJobSchema,jobSchema,previousJobSchema].includes(job?.schema) || !safeId(job.id,160) || !safeLinkId(job.linkId)
+      || !["queued","leased","running",...terminalStatuses].includes(job.status) || !job.input || !Array.isArray(job.events)
+      || !Number.isFinite(job.createdAt) || !Number.isFinite(job.updatedAt)
+      || job.events.some((event) => !normalizeStoredEvent(event))) throw new Error("Invalid connector job or event history; preserve data for recovery");
+    if (!["agent","chat","command","script"].includes(job.kind || job.input?.kind)) throw new Error("Unknown persisted connector job kind");
+    if (terminalStatuses.has(job.status) && (!job.result || typeof job.result.text !== "string" || !Number.isInteger(job.result.exitCode) || job.result.exitCode < 0 || job.result.exitCode > 65535 || typeof job.result.ok !== "boolean" || !Number.isFinite(job.finishedAt) || job.finishedAt <= 0)) throw new Error("Terminal connector job is missing its native result");
+    const seqs = job.events.map((event) => event.seq);
+    if (seqs.some((seq, index) => index > 0 && seq <= seqs[index-1])) throw new Error("Invalid event sequence; preserve data for recovery");
+    if (job.schema === delegatedJobSchema && !safeId(job.accessGrantId,160)) throw new Error("Delegated job missing access grant binding");
+  }
+  for (const [records,key] of [[value.connectors,connectorKey],[value.jobs,(job)=>job.id],[value.accessGrants || [],(grant)=>grant.id]]) {
+    if (new Set(records.map(key)).size !== records.length) throw new Error("Duplicate connector records; preserve data for recovery");
+  }
+  state.requests = value.requests || [];
+  if (!Array.isArray(state.requests) || state.requests.some((item) => !/^[a-f0-9]{64}$/u.test(item.id) || !/^[a-f0-9]{64}$/u.test(item.fingerprint) || !safeId(item.jobId,160))) throw new Error("Invalid request identity history");
+  if (new Set(state.requests.map((item) => item.id)).size !== state.requests.length) throw new Error("Duplicate request identities");
   state.connectors = Array.isArray(value.connectors)
     ? value.connectors.filter(validStoredConnector).map(normalizeStoredConnector)
     : [];
   state.accessGrants = Array.isArray(value.accessGrants)
-    ? value.accessGrants.map(normalizeStoredAccessGrant).filter(Boolean).slice(-maxAccessGrants)
+    ? value.accessGrants.map(normalizeStoredAccessGrant).filter(Boolean)
     : [];
   state.jobs = Array.isArray(value.jobs)
     ? value.jobs
@@ -537,7 +660,7 @@ function normalizeState(value) {
           schema: job.schema === delegatedJobSchema ? delegatedJobSchema : jobSchema,
           kind: cleanJobKind(job.kind || job.input?.kind),
           accessGrantId: safeId(job.accessGrantId, 160),
-          events: Array.isArray(job.events) ? job.events.map(normalizeStoredEvent).filter(Boolean).slice(-maxEvents) : []
+          events: Array.isArray(job.events) ? job.events.map(normalizeStoredEvent).filter(Boolean) : []
         };
       })
     : [];
@@ -704,8 +827,11 @@ function publicJob(job, options = {}) {
     status: job.status,
     attempts: job.attempts,
     cancelRequested: job.cancelRequested,
-    result: job.result,
-    ...(options.events === false ? {} : { events: job.events.map(publicEvent) }),
+    executionUncertain: job.executionUncertain === true,
+    connectorId: job.connectorId,
+    result: options.summary && job.result ? { ...job.result, text: "", textOmitted: true } : job.result,
+    ...(options.events === false || options.summary ? {} : { events: job.events.map(publicEvent) }),
+    ...(options.summary ? { artifactUrl: `/api/connectors/jobs/${job.id}?view=full` } : {}),
     createdAt: new Date(job.createdAt).toISOString(),
     updatedAt: new Date(job.updatedAt).toISOString(),
     finishedAt: job.finishedAt ? new Date(job.finishedAt).toISOString() : ""
@@ -782,7 +908,7 @@ function validStoredConnector(value) {
 }
 
 function connectorKey(value) {
-  return `${value.linkId}\u0000${value.deviceId}\u0000${value.connectorId}`;
+  return JSON.stringify([value.linkId, value.deviceId, value.connectorId]);
 }
 
 function changeKey(linkId, deviceId) {

@@ -1,0 +1,11 @@
+# Soty-only rollout plan
+
+1. Inspect exact original container ID/image and candidate image ID/revision; derive create config in memory, preserving all Config/HostConfig and requested networking fields. Persist only hashes, exact IDs, phase and transaction labels.
+2. Create a uniquely transaction-labelled stopped candidate before disrupting old service. Reconcile dropped create/start/rename responses by exact owned identity, never by a broad name match.
+3. Recheck the prepared candidate ownership/revision/configuration and original configuration before stop. Run candidate-image maintenance status in isolated short helper: strict read-only store status, no migration. Abort on any active or unknown jobs.
+4. For legacy c0ca, stop exact old ID and confirm stopped; offline status recheck closes admission race. If jobs appeared, restart same old ID without migration or cancellation. Then enter maintenance atomically and recheck quiescence.
+5. Rename old to transaction backup; rename candidate to original name; start exact candidate, confirm identity/config fingerprint, exact candidate revision label, maintenance-aware storage readiness, and unchanged ready agent/application proxy contracts from the preflight /health.
+6. Leave maintenance only after all checks. This is the automatic rollback boundary. A dropped leave response is reconciled against helper status; never roll back after admissions reopen.
+7. Any earlier failure: stop exact owned candidate, use candidate-image rollback helper only while app containers stopped and jobs quiescent; restore JSON/history/auth, rename and start SAME old container ID; verify /health, then leave maintenance to remove its marker. If state cannot be proven, report recovery_required, retain evidence and do not remove containers. No automatic old-image restore after leave.
+
+Synthetic mock-Docker tests cover preservation of secrets in memory only, config hashes, create/stop/start/rename failures, applied-but-dropped replies, raced queued job after legacy precheck, rollback failure, and independent sentinel untouched. No real Docker/server call from this implementation task. Root/controller must approve exact package before use. No traffic rollout helper, Caddy, Docker daemon, clients, or 3D work changes.
