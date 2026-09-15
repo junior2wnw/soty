@@ -26,6 +26,8 @@ export function createGonkaProxy({
   maximumQueued = process.env.SOTY_GONKA_MAX_QUEUED,
   queueWaitMs = process.env.SOTY_GONKA_QUEUE_WAIT_MS,
   internalStream = process.env.SOTY_GONKA_INTERNAL_STREAM !== "0",
+  providerStrategy = process.env.SOTY_GONKA_PROVIDER_STRATEGY || "race",
+  emptyToolFallback = process.env.SOTY_GONKA_EMPTY_TOOL_FALLBACK !== "0",
   onEvent = process.env.SOTY_GONKA_LOG_METRICS === "1" ? (event) => process.stdout.write(`${JSON.stringify(event)}\n`) : undefined,
   fetchImpl = fetch
 } = {}) {
@@ -49,13 +51,15 @@ export function createGonkaProxy({
     concurrency: safeInteger(providerConcurrency, 1, 100, 8),
     maximumQueued: safeInteger(maximumQueued, 0, 1000, 64),
     queueWaitMs: safeInteger(queueWaitMs, 100, 30000, 5000),
-    internalStream: Boolean(internalStream), normalizeTools: upstreamModel === miniMaxProxyModel, onEvent
+    internalStream: Boolean(internalStream), normalizeTools: upstreamModel === miniMaxProxyModel,
+    providerStrategy, emptyToolFallback: Boolean(emptyToolFallback) && upstreamModel === miniMaxProxyModel, onEvent
   });
 
   return {
     ready,
     model,
     upstreamModel,
+    providerStrategy,
     transport: "authenticated-server-proxy",
     upstreamStatus: () => relay.snapshot(),
     async handleChatCompletions(req, res, { authenticateToken, client = "connector" } = {}) {

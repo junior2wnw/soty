@@ -21,6 +21,64 @@ export function hasMeaningfulOutput(chunk) {
   });
 }
 
+// Provider activity is not yet a usable answer. In particular, MiniMax may
+// return only <think>...</think>, or stop halfway through a tool's arguments.
+// Keep the original chunks intact for tool continuations; this gate only
+// decides when a candidate can be committed to the client.
+export function createAnswerGate() {
+  const choices = new Map();
+  let visible = false;
+  return {
+    add(chunk) {
+      for (const choice of chunk.choices || []) {
+        const index = choice.index ?? 0;
+        let state = choices.get(index);
+        if (!state) { state = { thinking: false, pending: "" }; choices.set(index, state); }
+        const message = choice.delta || choice.message || {};
+        if (typeof message.refusal === "string" && message.refusal.trim()) visible = true;
+        if (typeof message.content !== "string") continue;
+        state.pending += message.content;
+        while (state.pending) {
+          const marker = state.thinking ? "</think>" : "<think>";
+          const lower = state.pending.toLowerCase(), at = lower.indexOf(marker);
+          if (at >= 0) {
+            if (!state.thinking && state.pending.slice(0, at).trim()) visible = true;
+            state.pending = state.pending.slice(at + marker.length);
+            state.thinking = !state.thinking;
+            continue;
+          }
+          let keep = 0;
+          for (let n = 1; n < marker.length; n++) if (lower.endsWith(marker.slice(0, n))) keep = n;
+          const take = state.pending.length - keep;
+          if (!state.thinking && state.pending.slice(0, take).trim()) visible = true;
+          state.pending = state.pending.slice(take);
+          break;
+        }
+      }
+      return visible;
+    }
+  };
+}
+
+export function hasUsableCompletion(value) {
+  const validArguments = text => {
+    if (typeof text !== "string") return false;
+    try { const parsed = JSON.parse(text); return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed); }
+    catch { return false; }
+  };
+  return Boolean(value.choices?.length) && value.choices.every(choice => {
+    if (!choice.finish_reason || responseWasAborted({ choices: [choice] })) return false;
+    if (choice.finish_reason === "content_filter") return true;
+    const message = choice.message || choice.delta || {};
+    if (message.tool_calls?.length) return new Set(message.tool_calls.map(call => call.id)).size === message.tool_calls.length
+      && message.tool_calls.every(call => typeof call.id === "string" && call.id.trim()
+      && call.type === "function" && typeof call.function?.name === "string" && call.function.name.trim()
+      && validArguments(call.function.arguments));
+    if (message.function_call) return Boolean(message.function_call.name && validArguments(message.function_call.arguments));
+    return createAnswerGate().add({ choices: [choice] });
+  });
+}
+
 export function responseWasAborted(chunk) {
   return Boolean(chunk.error) || (chunk.choices || []).some((choice) => ["abort", "error", "cancelled", "canceled"].includes(choice.finish_reason));
 }

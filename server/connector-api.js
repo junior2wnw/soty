@@ -99,14 +99,18 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
       ready: modelProxy.ready,
       model: modelProxy.model,
       upstreamModel: modelProxy.upstreamModel,
-      transport: modelProxy.transport
+      transport: modelProxy.transport,
+      providerStrategy: modelProxy.providerStrategy,
+      get providers() { return modelProxy.upstreamStatus(); }
     },
     applicationModelProxy: {
       ready: modelProxy.ready && applicationAuthenticator.ready,
       model: modelProxy.model,
       upstreamModel: modelProxy.upstreamModel,
       transport: "application-token-server-proxy",
-      path: "/api/inference/v1/chat/completions"
+      path: "/api/inference/v1/chat/completions",
+      providerStrategy: modelProxy.providerStrategy,
+      get providers() { return modelProxy.upstreamStatus(); }
     }
   };
 }

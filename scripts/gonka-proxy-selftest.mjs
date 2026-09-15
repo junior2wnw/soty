@@ -61,6 +61,9 @@ try {
   assert.equal(readiness.agentModelProxy.transport, "authenticated-server-proxy");
   assert.equal(readiness.applicationModelProxy.ready, true);
   assert.equal(readiness.applicationModelProxy.path, "/api/inference/v1/chat/completions");
+  assert.equal(readiness.agentModelProxy.providerStrategy, "race");
+  assert.equal(readiness.applicationModelProxy.providerStrategy, "race");
+  assert.equal(readiness.applicationModelProxy.providers[0].active, 0);
 
   const registration = await requestJson(`${appBase}/api/connectors/register`, {
     method: "POST",

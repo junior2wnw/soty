@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { cleanProviderChunk, createCompletionCollector, createSseDecoder, hasMeaningfulOutput, responseWasAborted } from "./inference-stream.js";
+import { cleanProviderChunk, createAnswerGate, createCompletionCollector, createSseDecoder, hasMeaningfulOutput, hasUsableCompletion, responseWasAborted } from "./inference-stream.js";
 
 const retryableStatuses = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
 
@@ -67,8 +67,9 @@ export function createInferenceRelay({
   providers, fetchImpl = fetch, requestTimeoutMs = 75000, firstTokenTimeoutMs = 20000,
   idleTimeoutMs = 30000, streamTimeoutMs = 1800000, concurrency = 8, maximumQueued = 64,
   queueWaitMs = 5000, failureThreshold = 3, cooldownMs = 30000, internalStream = true,
-  normalizeTools = true, onEvent = () => {}
+  normalizeTools = true, providerStrategy = "fallback", emptyToolFallback = false, onEvent = () => {}
 }) {
+  if (!["race", "fallback"].includes(providerStrategy)) throw new Error("invalid-provider-strategy");
   const states = providers.map((provider) => ({ ...provider, failures: 0, cooldownUntil: 0, probing: false,
     queue: createProviderQueue({ concurrency, maximumQueued, waitMs: queueWaitMs }) }));
   const emit = (value) => { try { onEvent(value); } catch { /* Metrics never interrupt inference. */ } };
@@ -97,6 +98,12 @@ export function createInferenceRelay({
         }
       };
       try {
+        if (providerStrategy === "race") {
+          await raceProviders({ states, body, res, signal: requestSignal, fetchImpl, firstTokenTimeoutMs,
+            idleTimeoutMs, internalStream, normalizeTools, onFirstOutput, emit, requestId, started,
+            failureThreshold, cooldownMs, emptyToolFallback });
+          return;
+        }
         for (const state of states) {
           if (requestSignal.aborted) throw abortError(requestSignal);
           if (state.cooldownUntil > Date.now() || state.probing) continue;
@@ -108,8 +115,9 @@ export function createInferenceRelay({
             release = await state.queue.acquire(requestSignal);
             if (!recovering && state.cooldownUntil > Date.now()) continue;
             attempts++;
-            const metrics = await relayAttempt({ state, body, res, signal: requestSignal, fetchImpl,
-              firstTokenTimeoutMs, idleTimeoutMs, internalStream, normalizeTools, onFirstOutput });
+            const metrics = await compatibleAttempt({ state, body, res, signal: requestSignal, fetchImpl,
+              firstTokenTimeoutMs, idleTimeoutMs, internalStream, normalizeTools, onFirstOutput, emptyToolFallback,
+              onCompatibilityRetry: () => { attempts++; emit({ event: "inference_compatibility_retry", requestId, provider: state.name, reason: "empty-auto-tool-answer" }); } });
             state.failures = 0; state.cooldownUntil = 0;
             emit({ event: "inference_complete", requestId, provider: state.name, attempts,
               firstOutputMs: metrics.firstOutputMs, durationMs: Math.round(performance.now() - started) });
@@ -144,8 +152,104 @@ export function createInferenceRelay({
   };
 }
 
+async function raceProviders({ states, body, res, signal, fetchImpl, firstTokenTimeoutMs, idleTimeoutMs,
+  internalStream, normalizeTools, onFirstOutput, emit, requestId, started, failureThreshold, cooldownMs, emptyToolFallback }) {
+  const candidates = states.filter(state => state.cooldownUntil <= Date.now() && !state.probing)
+    .map(state => ({ state, controller: new AbortController() }));
+  let winner = null, winnerError, attempts = 0;
+  const select = candidate => {
+    if (signal.aborted) throw abortError(signal);
+    if (winner && winner !== candidate) throw failure("model-race-lost", 499, false);
+    if (winner) return;
+    winner = candidate;
+    emit({ event: "inference_provider_selected", requestId, provider: candidate.state.name,
+      strategy: "race", attempts, firstOutputMs: Math.round(performance.now() - started) });
+    for (const other of candidates) if (other !== candidate) other.controller.abort(failure("model-race-lost", 499, false));
+  };
+  const jobs = candidates.map(async candidate => {
+    const { state, controller } = candidate;
+    const attemptSignal = AbortSignal.any([signal, controller.signal]);
+    const recovering = state.failures >= failureThreshold;
+    if (recovering) state.probing = true;
+    let release;
+    const attemptStart = performance.now();
+    try {
+      release = await state.queue.acquire(attemptSignal);
+      if (!recovering && state.cooldownUntil > Date.now()) throw failure("model-upstream-cooling-down", 503);
+      attempts++;
+      const metrics = await compatibleAttempt({ state, body, res, signal: attemptSignal, fetchImpl,
+        firstTokenTimeoutMs, idleTimeoutMs, internalStream, normalizeTools, onFirstOutput,
+        beforeOutput: () => select(candidate), emptyToolFallback,
+        onCompatibilityRetry: () => { attempts++; emit({ event: "inference_compatibility_retry", requestId, provider: state.name, reason: "empty-auto-tool-answer" }); } });
+      state.failures = 0; state.cooldownUntil = 0;
+      emit({ event: "inference_complete", requestId, provider: state.name, strategy: "race", attempts,
+        firstOutputMs: metrics.firstOutputMs, durationMs: Math.round(performance.now() - started) });
+    } catch (error) {
+      if (controller.signal.aborted && !signal.aborted) {
+        emit({ event: "inference_attempt_cancelled", requestId, provider: state.name, reason: "race-lost",
+          durationMs: Math.round(performance.now() - attemptStart) });
+        throw abortError(controller.signal);
+      }
+      if (signal.aborted || res.destroyed) throw abortError(signal);
+      const problem = error?.publicCode ? error : failure("model-upstream-unavailable");
+      if (winner === candidate) winnerError = problem;
+      if (!["model-upstream-busy", "model-upstream-cooling-down"].includes(problem.publicCode) && problem.retryable !== false) {
+        state.failures++;
+        if (state.failures >= failureThreshold || problem.retryAfterMs) {
+          state.failures = Math.max(state.failures, failureThreshold);
+          state.cooldownUntil = Date.now() + Math.max(cooldownMs, problem.retryAfterMs || 0);
+        }
+      }
+      emit({ event: "inference_attempt_failed", requestId, provider: state.name,
+        code: problem.publicCode, status: problem.httpStatus,
+        durationMs: Math.round(performance.now() - attemptStart), outputCommitted: winner === candidate && res.headersSent });
+      throw problem;
+    } finally {
+      release?.();
+      if (recovering) state.probing = false;
+    }
+  });
+  try {
+    await Promise.any(jobs);
+  } catch (aggregate) {
+    if (signal.aborted) throw abortError(signal);
+    const nextReady = Math.min(...states.map(state => state.cooldownUntil).filter(time => time > Date.now()));
+    if (Number.isFinite(nextReady) && !res.headersSent) res.setHeader("Retry-After", String(Math.max(1, Math.ceil((nextReady - Date.now()) / 1000))));
+    throw winnerError || aggregate.errors?.find(error => error.publicCode && error.publicCode !== "model-race-lost")
+      || failure("model-upstream-unavailable", 503);
+  } finally {
+    for (const candidate of candidates) candidate.controller.abort(failure("model-race-lost", 499, false));
+    // Losers must release queue slots before this request is considered finished.
+    await Promise.allSettled(jobs);
+  }
+}
+
+function unusableCompletion(value, body) {
+  const optionalTools = body.tools?.length && [undefined, "auto", "none"].includes(body.tool_choice);
+  const stoppedWithoutCall = value.choices?.length && value.choices.every(choice => {
+    const message = choice.message || choice.delta || {};
+    return choice.finish_reason === "stop" && !message.tool_calls?.length && !message.function_call && !message.refusal;
+  });
+  return failure(optionalTools && stoppedWithoutCall ? "model-upstream-tool-selection-empty" : "model-upstream-empty-response");
+}
+
+async function compatibleAttempt(options) {
+  try { return await relayAttempt(options); }
+  catch (error) {
+    if (!options.emptyToolFallback || error.publicCode !== "model-upstream-tool-selection-empty"
+      || options.res.headersSent || options.signal.aborted) throw error;
+    // A MiniMax/Gonka auto-tool response can end with stop but contain only
+    // an unclosed reasoning block. No answer or tool call has been committed.
+    // Retry that final-answer case once; required/explicit tools are never disabled.
+    const body = { ...options.body };
+    delete body.tools; delete body.tool_choice; delete body.parallel_tool_calls;
+    options.onCompatibilityRetry?.();
+    return await relayAttempt({ ...options, body });
+  }
+}
+
 async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTimeoutMs, idleTimeoutMs,
-  internalStream, normalizeTools, onFirstOutput }) {
+  internalStream, normalizeTools, onFirstOutput, beforeOutput = () => {} }) {
   const controller = new AbortController();
   const attemptSignal = AbortSignal.any([signal, controller.signal]);
   const started = performance.now();
@@ -154,11 +258,16 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
   timeout.unref?.();
   let upstream;
   let reader;
-  const meaningful = () => {
-    if (firstOutputMs === null) { firstOutputMs = Math.round(performance.now() - started); onFirstOutput(); }
+  const progress = () => {
     clearTimeout(timeout);
     timeout = setTimeout(() => controller.abort(failure("model-upstream-timeout", 504)), idleTimeoutMs);
     timeout.unref?.();
+  };
+  const accept = () => {
+    if (firstOutputMs !== null) return;
+    beforeOutput();
+    firstOutputMs = Math.round(performance.now() - started);
+    onFirstOutput();
   };
   const header = (stream) => {
     res.status(200);
@@ -192,8 +301,9 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
     const tools = new Set();
     if (upstream.headers.get("content-type")?.includes("application/json")) {
       const value = cleanProviderChunk(await abortable(upstream.json(), attemptSignal), tools, normalizeTools);
-      if (responseWasAborted(value) || !hasMeaningfulOutput(value) || !(value.choices || []).every((choice) => choice.finish_reason)) throw failure("model-upstream-incomplete");
-      meaningful();
+      if (responseWasAborted(value)) throw failure("model-upstream-incomplete");
+      if (!hasUsableCompletion(value)) throw unusableCompletion(value, body);
+      progress(); accept();
       if (body.stream === true) {
         header(true);
         const chunk = { ...value, object: "chat.completion.chunk", choices: value.choices.map(({ message, ...choice }) => ({ ...choice, delta: message })) };
@@ -206,16 +316,21 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
     reader = upstream.body.getReader();
     const decoder = createSseDecoder();
     const collector = createCompletionCollector({ normalizeTools });
+    const answerGate = createAnswerGate();
     const prelude = [];
     let preludeBytes = 0;
     let done = false;
     const event = async (item) => {
       if (done) return;
       if (item.type === "done") {
-        if (firstOutputMs === null) throw failure("model-upstream-empty-response");
         const completed = collector.finish();
+        if (!hasUsableCompletion(completed)) throw unusableCompletion(completed, body);
+        accept();
         done = true;
-        if (body.stream === true) await write("data: [DONE]\n\n");
+        if (body.stream === true) {
+          if (!res.headersSent) { header(true); for (const part of prelude) await write(part); prelude.length = 0; }
+          await write("data: [DONE]\n\n");
+        }
         else { header(false); res.json(completed); }
         return;
       }
@@ -226,7 +341,8 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
         if (responseWasAborted(value)) throw failure("model-upstream-incomplete");
         collector.add(value);
         encoded = `data: ${JSON.stringify(value)}\n\n`;
-        if (hasMeaningfulOutput(value)) meaningful();
+        if (hasMeaningfulOutput(value)) progress();
+        if (answerGate.add(value) && body.stream === true) accept();
       }
       if (body.stream !== true) return;
       if (firstOutputMs === null) {
