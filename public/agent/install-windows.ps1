@@ -8,8 +8,7 @@
   [string]$RelayId = "",
   [string]$DeviceId = "",
   [string]$DeviceNick = "",
-  [switch]$SourceCompanion,
-  [switch]$InstallCodex
+  [switch]$SourceCompanion
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,7 +30,7 @@ function Resolve-AgentDir {
 }
 
 $AgentDir = Resolve-AgentDir
-$AgentPath = Join-Path $AgentDir "soty-agent.mjs"
+$AgentPath = Join-Path $AgentDir "soty-connector.mjs"
 $RunnerPath = Join-Path $AgentDir "start-agent.ps1"
 $CtlPath = Join-Path $AgentDir "sotyctl.cmd"
 $LogPath = Join-Path $AgentDir "install.log"
@@ -39,7 +38,6 @@ $RunnerStdoutPath = Join-Path $AgentDir "start-agent.out.log"
 $RunnerStderrPath = Join-Path $AgentDir "start-agent.err.log"
 $RunnerStatusPath = Join-Path $AgentDir "start-agent.status.log"
 $ManifestUrl = "$Base/manifest.json"
-$AgentUrl = "$Base/soty-agent.mjs"
 $RelayBaseUrl = "https://xn--n1afe0b.online"
 try {
   $BaseUri = [Uri]$Base
@@ -109,38 +107,26 @@ try {
     $stdoutPath = Join-Path $AgentDir ($safeName + ".out.log")
     $stderrPath = Join-Path $AgentDir ($safeName + ".err.log")
     Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
-    $stdoutBuilder = New-Object System.Text.StringBuilder
-    $stderrBuilder = New-Object System.Text.StringBuilder
     $processInfo = New-Object System.Diagnostics.ProcessStartInfo
     $processInfo.FileName = $FilePath
     $processInfo.Arguments = ConvertTo-SotyProcessArguments $ArgumentList
     $processInfo.UseShellExecute = $false
     $processInfo.CreateNoWindow = $true
+    try { $processInfo.EnvironmentVariables["NODE_OPTIONS"] = "" } catch {}
     $processInfo.RedirectStandardOutput = $true
     $processInfo.RedirectStandardError = $true
-    try { $processInfo.EnvironmentVariables["NODE_OPTIONS"] = "" } catch {}
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $processInfo
-    $outputHandler = [System.Diagnostics.DataReceivedEventHandler]{
-      param($sender, $eventArgs)
-      if ($null -ne $eventArgs.Data) { [void]$stdoutBuilder.AppendLine($eventArgs.Data) }
-    }
-    $errorHandler = [System.Diagnostics.DataReceivedEventHandler]{
-      param($sender, $eventArgs)
-      if ($null -ne $eventArgs.Data) { [void]$stderrBuilder.AppendLine($eventArgs.Data) }
-    }
-    $process.add_OutputDataReceived($outputHandler)
-    $process.add_ErrorDataReceived($errorHandler)
     [void]$process.Start()
-    $process.BeginOutputReadLine()
-    $process.BeginErrorReadLine()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit([math]::Max(1, $TimeoutSec) * 1000)) {
       try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
       throw ("Process timed out after " + $TimeoutSec + "s: " + $FilePath)
     }
     $process.WaitForExit()
-    $stdoutText = $stdoutBuilder.ToString()
-    $stderrText = $stderrBuilder.ToString()
+    $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+    $stderrText = $stderrTask.GetAwaiter().GetResult()
     if (-not [string]::IsNullOrWhiteSpace($stdoutText)) { $stdoutText | Set-Content -LiteralPath $stdoutPath -Encoding UTF8 }
     if (-not [string]::IsNullOrWhiteSpace($stderrText)) { $stderrText | Set-Content -LiteralPath $stderrPath -Encoding UTF8 }
     if ([int]$process.ExitCode -ne 0) {
@@ -614,7 +600,7 @@ try {
             ($_.CommandLine -match "AppData\\Local\\soty-agent") -or
             ($_.CommandLine -match "ProgramData\\soty-agent")
           ) -and
-          (($_.CommandLine -match "soty-agent\.mjs") -or ($_.CommandLine -match "start-agent\.ps1") -or ($_.CommandLine -match "sotyctl\.cmd"))
+          (($_.CommandLine -match "soty-agent\.mjs") -or ($_.CommandLine -match "start-agent\.ps1") -or ($_.CommandLine -match "start-user-agent\.(ps1|vbs)") -or ($_.CommandLine -match "sotyctl\.cmd"))
         }
       foreach ($process in @($processes)) {
         try {
@@ -625,6 +611,27 @@ try {
     } catch {
       Write-SotyLog "soty-agent:stop-existing-skipped"
     }
+  }
+
+  function Remove-LegacyUserCompanion {
+    if ($Scope -ne "Machine") { return }
+    Write-SotyStep "migration:legacy-user-companion"
+    foreach ($taskName in @("soty-agent-user-companion-now", "soty-agent")) {
+      try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch {}
+      try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+    }
+    try {
+      Remove-ItemProperty -LiteralPath "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "soty-agent-user" -Force -ErrorAction SilentlyContinue
+    } catch {}
+    try {
+      Remove-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "soty-agent" -Force -ErrorAction SilentlyContinue
+    } catch {}
+    try {
+      $legacyStartup = Join-Path ([Environment]::GetFolderPath("Startup")) "soty-agent.vbs"
+      Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
+    } catch {}
+    Stop-ExistingSotyAgents
+    Write-SotyLog "soty-agent:migration:legacy-user-companion-removed"
   }
 
   function Wait-AgentHealth {
@@ -676,7 +683,6 @@ try {
       $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew -StartWhenAvailable
       $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
       Register-ScheduledTask -TaskName "soty-agent-machine" -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description "soty.online machine local agent" -Force | Out-Null
-      Start-ScheduledTask -TaskName "soty-agent-machine"
       Write-SotyLog "soty-agent:autostart:machine-task"
       return "machine-task"
     }
@@ -753,10 +759,7 @@ shell.Run "$escapedCommand", 0, False
   }
 
   function Enable-BrowserLocalNetworkAccessPolicy {
-    $origins = @(
-      "https://xn--n1afe0b.online",
-      "https://СЃРѕС‚С‹.online"
-    )
+    $origins = @("https://xn--n1afe0b.online")
     $browserPolicyRoots = @(
       "Software\Policies\Google\Chrome",
       "Software\Policies\Microsoft\Edge"
@@ -811,39 +814,80 @@ shell.Run "$escapedCommand", 0, False
   }
 
   function Write-AgentConfigSeed {
-    $configPath = Join-Path $AgentDir "agent-config.json"
+    $configPath = Join-Path $AgentDir "connector-config.json"
+    $legacyConfigPath = Join-Path $AgentDir "agent-config.json"
     $existing = $null
     try {
       if (Test-Path -LiteralPath $configPath) {
         $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+      } elseif (Test-Path -LiteralPath $legacyConfigPath) {
+        $existing = Get-Content -LiteralPath $legacyConfigPath -Raw | ConvertFrom-Json
       }
     } catch {
       $existing = $null
     }
 
-    $relayId = $SafeRelayId
-    if (-not $relayId -and $existing -and $existing.relayId) { $relayId = [string]$existing.relayId }
-    $relayBaseUrl = $RelayBaseUrl
-    if ($existing -and $existing.relayBaseUrl -and -not $relayBaseUrl) { $relayBaseUrl = [string]$existing.relayBaseUrl }
+    $linkId = $SafeRelayId
+    if (-not $linkId -and $existing -and $existing.linkId) { $linkId = [string]$existing.linkId }
+    if (-not $linkId -and $existing -and $existing.relayId) { $linkId = [string]$existing.relayId }
+    $serverUrl = $RelayBaseUrl
+    if (-not $serverUrl -and $existing -and $existing.serverUrl) { $serverUrl = [string]$existing.serverUrl }
+    if (-not $serverUrl -and $existing -and $existing.relayBaseUrl) { $serverUrl = [string]$existing.relayBaseUrl }
     $deviceId = $SafeDeviceId
     if (-not $deviceId -and $existing -and $existing.deviceId) { $deviceId = [string]$existing.deviceId }
     $deviceNick = $SafeDeviceNick
     if (-not $deviceNick -and $existing -and $existing.deviceNick) { $deviceNick = [string]$existing.deviceNick }
     $installId = ""
     if ($existing -and $existing.installId) { $installId = [string]$existing.installId }
+    $gonkaModel = "deepseek-ai/DeepSeek-V4-Flash-0731"
+    if ($existing -and $existing.gonkaModel -and [string]$existing.gonkaModel -ne "moonshotai/Kimi-K2.6") {
+      $gonkaModel = [string]$existing.gonkaModel
+    }
 
     [ordered]@{
-      relayId = $relayId
-      relayBaseUrl = $relayBaseUrl
+      schema = "soty.agent-runtime.v1"
+      linkId = $linkId
+      serverUrl = $serverUrl
       deviceId = $deviceId
       deviceNick = $deviceNick
       installId = $installId
-    } | ConvertTo-Json | Set-Content -Path $configPath -Encoding UTF8
+      connectorToken = if ($existing -and $existing.connectorToken) { [string]$existing.connectorToken } else { "" }
+      workspaceRoot = if ($existing -and $existing.workspaceRoot) { [string]$existing.workspaceRoot } else { "" }
+      allowedRoots = if ($existing -and $existing.allowedRoots) { @($existing.allowedRoots) } else { @() }
+      gonkaBaseUrl = if ($existing -and $existing.gonkaBaseUrl) { [string]$existing.gonkaBaseUrl } else { "https://gate.joingonka.ai/v1" }
+      gonkaModel = $gonkaModel
+      trafficFabric = if ($existing -and $existing.trafficFabric) { $existing.trafficFabric } else { $null }
+      trafficCoreSettings = if ($existing -and $existing.trafficCoreSettings) { $existing.trafficCoreSettings } else { $null }
+      trafficCoreEnabled = if ($existing -and $existing.trafficCoreEnabled) { [bool]$existing.trafficCoreEnabled } else { $false }
+    } | ConvertTo-Json -Depth 8 | Set-Content -Path $configPath -Encoding UTF8
     Write-SotyLog "soty-agent:config-seeded"
+  }
+
+  function Install-AgentRuntime {
+    $manifestPath = Join-Path $AgentDir "manifest.json"
+    $nextPath = "$AgentPath.next"
+    Invoke-SotyDownload -Uri $ManifestUrl -OutFile $manifestPath -TimeoutSec 45 -Retries 3
+    try {
+      $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+      if ([string]$manifest.schema -ne "soty.connector.release.v1") { throw "Unsupported release manifest" }
+      $asset = if ($manifest.connectorUrl) { [string]$manifest.connectorUrl } elseif ($manifest.agentUrl) { [string]$manifest.agentUrl } else { "" }
+      $expected = ([string]$manifest.sha256).Trim().ToLowerInvariant()
+      if (-not $asset) { throw "Release manifest has no agent runtime URL" }
+      if ($expected -notmatch '^[a-f0-9]{64}$') { throw "Release manifest has no valid SHA-256" }
+      $downloadUri = [Uri]::new([Uri]$ManifestUrl, $asset)
+      if (@("http", "https") -notcontains $downloadUri.Scheme.ToLowerInvariant()) { throw "Unsupported agent runtime URL" }
+      Invoke-SotyDownload -Uri $downloadUri.AbsoluteUri -OutFile $nextPath -TimeoutSec 90 -Retries 3
+      $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $nextPath).Hash.ToLowerInvariant()
+      if ($actual -ne $expected) { throw "Agent runtime checksum mismatch" }
+      Move-Item -LiteralPath $nextPath -Destination $AgentPath -Force
+    } finally {
+      Remove-Item -LiteralPath $nextPath -Force -ErrorAction SilentlyContinue
+    }
   }
 
   function Resolve-ExistingAgentRelayId {
     foreach ($path in @(
+      (Join-Path $AgentDir "connector-config.json"),
       (Join-Path $AgentDir "agent-config.json"),
       (Join-Path $AgentDir "start-agent.ps1")
     )) {
@@ -851,11 +895,11 @@ shell.Run "$escapedCommand", 0, False
       try {
         if ($path -like "*.json") {
           $config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-          $candidate = Normalize-AgentRelayId ([string]$config.relayId)
+          $candidate = Normalize-AgentRelayId ([string]$(if ($config.linkId) { $config.linkId } else { $config.relayId }))
           if ($candidate) { return $candidate }
         } else {
           $text = Get-Content -LiteralPath $path -Raw
-          $match = [regex]::Match($text, 'SOTY_AGENT_RELAY_ID\s*=\s*"([^"]+)"')
+          $match = [regex]::Match($text, 'SOTY_(?:CONNECTOR_LINK_ID|AGENT_RELAY_ID)\s*=\s*"([^"]+)"')
           if ($match.Success) {
             $candidate = Normalize-AgentRelayId $match.Groups[1].Value
             if ($candidate) { return $candidate }
@@ -870,6 +914,7 @@ shell.Run "$escapedCommand", 0, False
 
   function Resolve-ExistingAgentDeviceId {
     foreach ($path in @(
+      (Join-Path $AgentDir "connector-config.json"),
       (Join-Path $AgentDir "agent-config.json"),
       (Join-Path $AgentDir "start-agent.ps1")
     )) {
@@ -881,7 +926,7 @@ shell.Run "$escapedCommand", 0, False
           if ($candidate) { return $candidate }
         } else {
           $text = Get-Content -LiteralPath $path -Raw
-          $match = [regex]::Match($text, 'SOTY_AGENT_DEVICE_ID\s*=\s*"([^"]+)"')
+          $match = [regex]::Match($text, 'SOTY_(?:CONNECTOR_DEVICE_ID|AGENT_DEVICE_ID)\s*=\s*"([^"]+)"')
           if ($match.Success) {
             $candidate = Normalize-AgentDeviceId $match.Groups[1].Value
             if ($candidate) { return $candidate }
@@ -895,7 +940,7 @@ shell.Run "$escapedCommand", 0, False
   }
 
   $NodePath = Resolve-Node
-  Write-SotyLog "soty-codex-cli:disabled:server-relay-only"
+  Write-SotyLog "soty-agent:opencode:managed"
   $NodeDir = Split-Path -Parent $NodePath
   $RunnerPathParts = @($NodeDir)
   $SafeRelayId = Normalize-AgentRelayId $RelayId
@@ -923,28 +968,31 @@ shell.Run "$escapedCommand", 0, False
   }
   $RelayEnv = if ($SafeRelayId) {
 @"
-`$env:SOTY_AGENT_RELAY_ID = "$SafeRelayId"
-`$env:SOTY_AGENT_RELAY_URL = "$RelayBaseUrl"
+`$env:SOTY_CONNECTOR_LINK_ID = "$SafeRelayId"
+`$env:SOTY_CONNECTOR_SERVER_URL = "$RelayBaseUrl"
 "@
   } else {
     ""
   }
   $CompanionEnv = if ($SourceCompanion) {
 @"
-`$env:SOTY_AGENT_COMPANION = "1"
-`$env:SOTY_AGENT_PORT = "0"
+`$env:SOTY_CONNECTOR_COMPANION = "1"
+`$env:SOTY_CONNECTOR_PORT = "0"
 "@
   } else {
-    ""
+@"
+`$env:SOTY_CONNECTOR_COMPANION = "0"
+`$env:SOTY_CONNECTOR_PORT = "49424"
+"@
   }
   $DeviceEnv = if ($SafeDeviceId) {
     $nickLine = if ($SafeDeviceNick) {
-      "`$env:SOTY_AGENT_DEVICE_NICK = `"$(Escape-PowerShellDoubleQuoted $SafeDeviceNick)`""
+      "`$env:SOTY_CONNECTOR_DEVICE_NICK = `"$(Escape-PowerShellDoubleQuoted $SafeDeviceNick)`""
     } else {
       ""
     }
 @"
-`$env:SOTY_AGENT_DEVICE_ID = "$SafeDeviceId"
+`$env:SOTY_CONNECTOR_DEVICE_ID = "$SafeDeviceId"
 $nickLine
 "@
   } else {
@@ -958,39 +1006,19 @@ $nickLine
   } else {
     ""
   }
-  $RunnerSecretEnv = @'
-$secretPath = Join-Path $PSScriptRoot "agent-secrets.json"
-if (Test-Path -LiteralPath $secretPath) {
-  try {
-    $secretData = Get-Content -LiteralPath $secretPath -Raw -ErrorAction Stop | ConvertFrom-Json
-    foreach ($property in @($secretData.PSObject.Properties)) {
-      $name = [string]$property.Name
-      if ($name -eq "NODE_OPTIONS") { continue }
-      if ($name -match "^(SOTY_|GONKA_|JOIN_GONKA_|ANTHROPIC_AUTH_TOKEN$)") {
-        [Environment]::SetEnvironmentVariable($name, [string]$property.Value, "Process")
-      }
-    }
-  } catch {
-    try { ("secret-load-error " + (Get-Date).ToString("o") + " " + $_.Exception.Message) | Out-File -LiteralPath $statusPath -Encoding UTF8 -Append } catch {}
-  }
-}
-if ($env:SOTY_GONKA_API_KEY -or $env:GONKA_API_KEY -or $env:GONKA_BROKER_API_KEY -or $env:JOIN_GONKA_API_KEY) {
-  $env:SOTY_CODEX_PROVIDER = "gonka"
-  $env:SOTY_GONKA_DIRECT_AGENT = "1"
-}
-$env:NODE_OPTIONS = ""
-'@
   Write-SotyStep "agent:download"
-  Invoke-SotyDownload -Uri $ManifestUrl -OutFile (Join-Path $AgentDir "manifest.json") -TimeoutSec 45 -Retries 3
-  Invoke-SotyDownload -Uri $AgentUrl -OutFile $AgentPath -TimeoutSec 90 -Retries 3
+  Install-AgentRuntime
+  Remove-Item -LiteralPath (Join-Path $AgentDir "soty-agent.mjs") -Force -ErrorAction SilentlyContinue
   Write-AgentConfigSeed
+  Write-SotyStep "agent:opencode"
+  Invoke-SotyProcess -FilePath $NodePath -ArgumentList @($AgentPath, "ctl", "bootstrap") -TimeoutSec 300 -LogName "opencode-bootstrap"
 
 @"
 `$env:NODE_OPTIONS = ""
-`$env:SOTY_AGENT_MANAGED = "1"
-`$env:SOTY_AGENT_AUTO_UPDATE = "1"
-`$env:SOTY_AGENT_SCOPE = "$Scope"
-`$env:SOTY_AGENT_UPDATE_URL = "$ManifestUrl"
+`$env:SOTY_CONNECTOR_MANAGED = "1"
+`$env:SOTY_CONNECTOR_AUTO_UPDATE = "1"
+`$env:SOTY_CONNECTOR_SCOPE = "$Scope"
+`$env:SOTY_CONNECTOR_UPDATE_URL = "$ManifestUrl"
 $RelayEnv
 $CompanionEnv
 $DeviceEnv
@@ -998,7 +1026,6 @@ $RunnerPathEnv
 `$stdoutPath = Join-Path `$PSScriptRoot "start-agent.out.log"
 `$stderrPath = Join-Path `$PSScriptRoot "start-agent.err.log"
 `$statusPath = Join-Path `$PSScriptRoot "start-agent.status.log"
-$RunnerSecretEnv
 while (`$true) {
   try {
     ("start " + (Get-Date).ToString("o") + " node=$NodePath agent=$AgentPath") | Out-File -LiteralPath `$statusPath -Encoding UTF8 -Append
@@ -1020,6 +1047,7 @@ set NODE_OPTIONS=
 "$NodePath" "$AgentPath" ctl %*
 "@ | Set-Content -Path $CtlPath -Encoding ASCII
 
+  Remove-LegacyUserCompanion
   $Autostart = Enable-AgentAutostart
   Enable-BrowserLocalNetworkAccessPolicy
   Enable-AppLaunchAtLogon

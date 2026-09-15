@@ -1,0 +1,22 @@
+[
+  {
+    "id": "product_owns_exchange_store",
+    "patch": { "product_may_implement_exchange_store_or_signer": true }
+  },
+  {
+    "id": "product_issues_or_redeems_exchange",
+    "patch": { "workflow_exchange_issuer_and_redeemer": "product_runtime" }
+  },
+  {
+    "id": "product_signs_or_hosts_outbox",
+    "patch": { "service_event_signer_and_outbox": "product_runtime" }
+  },
+  {
+    "id": "product_becomes_authority",
+    "patch": { "product_runtime_role": "identity_authority" }
+  },
+  {
+    "id": "production_test_double",
+    "patch": { "product_test_double_exception": "production_allowed" }
+  }
+]

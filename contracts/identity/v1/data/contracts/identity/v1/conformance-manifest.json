@@ -1,0 +1,167 @@
+{
+  "schema": "identity.wire-conformance-manifest.v1",
+  "canonical_wire_version": 1,
+  "authority_model": {
+    "identity_provider": "provider_neutral_oidc",
+    "organization_control_plane": "separate_provider_neutral_service",
+    "workflow_exchange_issuer_and_redeemer": "organization_control_plane_only",
+    "service_event_signer_and_outbox": "organization_control_plane_only",
+    "product_runtime_role": "relying_party_consumer_only",
+    "product_may_implement_exchange_store_or_signer": false,
+    "product_test_double_exception": "isolated_nonproduction_conformance_only",
+    "forbidden_master_idps": ["soty", "tavysh"]
+  },
+  "browser_login": {
+    "schema_ref": "schemas/identity/v1/browser-login-profile.schema.json",
+    "profile_ref": "data/contracts/identity/v1/browser-login-profile.json"
+  },
+  "workflow_exchange": {
+    "schema_ref": "schemas/identity/v1/workflow-exchange-record.schema.json",
+    "serialization": "opaque_base64url_no_padding",
+    "code_entropy_bytes": 32,
+    "max_ttl_seconds": 60,
+    "stored_form": "sha256_of_ascii_code",
+    "redeem_transport": "authenticated_server_to_server_post",
+    "semantic_rules": [
+      "account_link_requires_explicit_authenticated_consent",
+      "atomic_single_consume",
+      "bind_exact_organization",
+      "bind_exact_purpose",
+      "bind_exact_resources",
+      "bind_exact_state",
+      "bind_exact_target_client",
+      "bind_exact_target_origin",
+      "constant_time_hash_compare",
+      "exchange_never_creates_browser_login_session",
+      "expired_exchange_rejected",
+      "never_infer_subject_link_from_email_or_phone",
+      "raw_code_never_persisted",
+      "redeem_requires_existing_target_oidc_bff_session",
+      "revoked_subject_or_membership_rejected"
+    ],
+    "rationale": [
+      "bounded_60_second_replay_window",
+      "database_disclosure_does_not_reveal_live_code",
+      "opaque_code_carries_no_pii_roles_or_secrets",
+      "two_hundred_fifty_six_bit_csprng_resists_guessing"
+    ]
+  },
+  "service_event": {
+    "envelope_schema_ref": "schemas/identity/v1/service-event-jws.schema.json",
+    "protected_header_schema_ref": "schemas/identity/v1/service-event-protected-header.schema.json",
+    "payload_schema_ref": "schemas/identity/v1/service-event-payload.schema.json",
+    "serialization": "rfc7515_flattened_jws_json",
+    "algorithm": "EdDSA",
+    "curve": "Ed25519",
+    "payload_canonicalization": "rfc8785_jcs_utf8",
+    "key_resolution": "pinned_issuer_and_kid_registry",
+    "test_public_key_ref": "tests/fixtures/identity-wire-v1/service-event-test-public-key.json",
+    "semantic_rules": [
+      "audience_must_equal_consumer_client",
+      "duplicate_issuer_event_id_identical_bytes_is_idempotent",
+      "duplicate_issuer_event_id_mismatched_bytes_is_security_incident",
+      "event_contains_no_pii_or_secrets",
+      "previous_event_id_matches_applied_head",
+      "revision_gap_is_quarantined_without_apply",
+      "revision_must_equal_applied_revision_plus_one",
+      "security_epoch_never_decreases",
+      "signature_verified_before_event_apply",
+      "tenant_and_resource_ids_must_match_local_binding",
+      "unknown_event_or_field_rejected"
+    ],
+    "rationale": [
+      "eddsa_ed25519_has_deterministic_fixed_size_signatures",
+      "eddsa_ed25519_avoids_ecdsa_nonce_and_der_encoding_ambiguity",
+      "flattened_jws_has_one_machine_parseable_envelope",
+      "pinned_key_registry_blocks_attacker_selected_header_urls",
+      "rfc8785_produces_stable_cross_language_payload_bytes"
+    ]
+  },
+  "authorization_catalog": {
+    "schema_ref": "schemas/identity/v1/authorization-catalog.schema.json",
+    "catalog_ref": "data/contracts/identity/v1/authorization-catalog.json"
+  },
+  "vectors": [
+    { "id": "authority_model_negative", "path": "tests/fixtures/identity-wire-v1/authority-model-negative.json", "kind": "negative", "expected": "reject" },
+    { "id": "authorization_catalog_positive", "path": "data/contracts/identity/v1/authorization-catalog.json", "kind": "positive", "expected": "accept" },
+    { "id": "browser_login_positive", "path": "tests/fixtures/identity-wire-v1/browser-login-positive.json", "kind": "positive", "expected": "accept" },
+    { "id": "browser_login_negative", "path": "tests/fixtures/identity-wire-v1/browser-login-negative.json", "kind": "negative", "expected": "reject" },
+    { "id": "workflow_exchange_positive", "path": "tests/fixtures/identity-wire-v1/workflow-exchange-positive.json", "kind": "positive", "expected": "accept" },
+    { "id": "workflow_exchange_negative", "path": "tests/fixtures/identity-wire-v1/workflow-exchange-negative.json", "kind": "negative", "expected": "reject" },
+    { "id": "service_event_payloads_positive", "path": "tests/fixtures/identity-wire-v1/service-event-payloads-positive.json", "kind": "positive", "expected": "accept" },
+    { "id": "service_event_negative", "path": "tests/fixtures/identity-wire-v1/service-event-negative.json", "kind": "negative", "expected": "reject" },
+    { "id": "service_event_jws_positive", "path": "tests/fixtures/identity-wire-v1/service-event-jws-positive.json", "kind": "positive", "expected": "accept" },
+    { "id": "authorization_catalog_negative", "path": "tests/fixtures/identity-wire-v1/authorization-catalog-negative.json", "kind": "negative", "expected": "reject" },
+    { "id": "legacy_soty_es256_flat", "path": "tests/fixtures/identity-wire-v1/legacy-soty-es256-flat.json", "kind": "legacy_noncanonical", "expected": "reject" },
+    { "id": "legacy_tavysh_eddsa_nested", "path": "tests/fixtures/identity-wire-v1/legacy-tavysh-eddsa-nested.json", "kind": "legacy_noncanonical", "expected": "reject" }
+  ],
+  "consumer_migrations": {
+    "soty": {
+      "status": "adapter_required",
+      "legacy_profile": "es256_compact_flat_300_second",
+      "required_steps": [
+        "adapt_flat_payload_to_canonical_event_payload",
+        "map_legacy_roles_and_scopes_to_catalog",
+        "ordinary_login_uses_oidc_authorization_code_pkce_bff",
+        "preserve_device_identity_as_linked_credential_not_master_identity",
+        "replace_signed_link_jwt_with_opaque_exchange",
+        "resign_as_eddsa_ed25519_flattened_jws",
+        "shadow_validate_canonical_without_authorization_effect",
+        "store_exchange_hash_only_and_cap_ttl_at_60_seconds"
+      ],
+      "cutover_gate": [
+        "canonical_positive_and_negative_vectors_pass",
+        "legacy_artifacts_rejected_as_canonical_v1",
+        "no_dual_wire_interpretation_under_v1",
+        "pinned_issuer_key_rotation_drill_passes",
+        "replay_revision_and_tenant_isolation_tests_pass"
+      ],
+      "rollback": [
+        "disable_canonical_adapter_feature_flag",
+        "preserve_append_only_receipts_and_replay_tombstones",
+        "restore_last_known_good_local_projection",
+        "stop_event_apply_without_accepting_legacy_as_v1"
+      ]
+    },
+    "tavysh": {
+      "status": "adapter_required",
+      "legacy_profile": "eddsa_compact_nested_120_second",
+      "required_steps": [
+        "adapt_nested_event_data_to_canonical_event_payload",
+        "map_legacy_roles_and_scopes_to_catalog",
+        "ordinary_login_uses_oidc_authorization_code_pkce_bff",
+        "preserve_local_device_and_cloud_token_as_product_credentials_only",
+        "replace_signed_exchange_jwt_with_opaque_exchange",
+        "serialize_as_flattened_jws_with_canonical_type",
+        "shadow_validate_canonical_without_authorization_effect",
+        "store_exchange_hash_only_and_cap_ttl_at_60_seconds"
+      ],
+      "cutover_gate": [
+        "canonical_positive_and_negative_vectors_pass",
+        "legacy_artifacts_rejected_as_canonical_v1",
+        "no_dual_wire_interpretation_under_v1",
+        "pinned_issuer_key_rotation_drill_passes",
+        "replay_revision_and_tenant_isolation_tests_pass"
+      ],
+      "rollback": [
+        "disable_canonical_adapter_feature_flag",
+        "preserve_append_only_receipts_and_replay_tombstones",
+        "restore_last_known_good_local_projection",
+        "stop_event_apply_without_accepting_legacy_as_v1"
+      ]
+    }
+  },
+  "human_gates": [
+    "approve_data_publication_rights",
+    "approve_high_risk_recovery",
+    "approve_identity_control_plane_ownership",
+    "approve_key_ceremony_rotation_and_recovery",
+    "approve_last_organization_owner_transfer",
+    "approve_oidc_provider_and_issuer_domain",
+    "approve_representative_authority",
+    "approve_role_scope_catalog",
+    "approve_soty_tavysh_adapter_cutover",
+    "approve_subject_linking_consent_ui",
+    "resolve_ambiguous_legal_entity_match"
+  ]
+}

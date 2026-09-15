@@ -95,16 +95,6 @@ while [ "$#" -gt 0 ]; do
       APP_URL="${1#--app-url=}"
       shift
       ;;
-    --install-codex)
-      shift
-      ;;
-    --codex-proxy-url)
-      [ "$#" -ge 2 ] || die "--codex-proxy-url requires a value"
-      shift 2
-      ;;
-    --codex-proxy-url=*)
-      shift
-      ;;
     --help|-h)
       usage
       exit 0
@@ -195,7 +185,7 @@ resolve_agent_dir() {
 request_machine_privileges
 
 AGENT_DIR="$(resolve_agent_dir)"
-AGENT_PATH="${AGENT_DIR}/soty-agent.mjs"
+AGENT_PATH="${AGENT_DIR}/soty-connector.mjs"
 RUNNER_PATH="${AGENT_DIR}/start-agent.sh"
 CTL_PATH="${AGENT_DIR}/sotyctl"
 MANIFEST_URL="${BASE}/manifest.json"
@@ -324,10 +314,10 @@ resolve_node() {
 install_agent_script() {
   manifest_path="${AGENT_DIR}/manifest.json"
   fetch_file "$MANIFEST_URL" "$manifest_path"
-  meta="$("$NODE_PATH" -e 'const fs=require("fs"); const base=process.argv[1]; const file=process.argv[2]; const m=JSON.parse(fs.readFileSync(file,"utf8")); const url=typeof m.agentUrl==="string"?new URL(m.agentUrl,base).href:""; const hash=typeof m.sha256==="string"&&/^[a-f0-9]{64}$/i.test(m.sha256)?m.sha256.toLowerCase():""; console.log(url); console.log(hash);' "$MANIFEST_URL" "$manifest_path" 2>/dev/null || true)"
+  meta="$("$NODE_PATH" -e 'const fs=require("fs"); const base=process.argv[1]; const file=process.argv[2]; const m=JSON.parse(fs.readFileSync(file,"utf8")); const asset=typeof m.connectorUrl==="string"?m.connectorUrl:m.agentUrl; const url=typeof asset==="string"?new URL(asset,base).href:""; const hash=typeof m.sha256==="string"&&/^[a-f0-9]{64}$/i.test(m.sha256)?m.sha256.toLowerCase():""; console.log(url); console.log(hash);' "$MANIFEST_URL" "$manifest_path" 2>/dev/null || true)"
   agent_url="$(printf '%s\n' "$meta" | sed -n '1p')"
   expected_hash="$(printf '%s\n' "$meta" | sed -n '2p')"
-  [ -n "$agent_url" ] || agent_url="${BASE}/soty-agent.mjs"
+  [ -n "$agent_url" ] || agent_url="${BASE}/soty-connector.mjs"
   next_path="${AGENT_PATH}.next"
   fetch_file "$agent_url" "$next_path"
   if [ -n "$expected_hash" ]; then
@@ -337,50 +327,24 @@ install_agent_script() {
   fi
   mv "$next_path" "$AGENT_PATH"
   chmod 755 "$AGENT_PATH"
+  rm -f "${AGENT_DIR}/soty-agent.mjs"
 }
 
 write_agent_config() {
-  if [ -z "$RELAY_ID" ]; then
-    return
-  fi
-  "$NODE_PATH" -e 'const fs=require("fs"); const path=process.argv[1]; const relayId=process.argv[2]; const relayBaseUrl=process.argv[3]; let existing={}; try { existing=JSON.parse(fs.readFileSync(path,"utf8")); } catch {} fs.writeFileSync(path, JSON.stringify({relayId, relayBaseUrl, installId: typeof existing.installId==="string"?existing.installId:""}, null, 2));' "${AGENT_DIR}/agent-config.json" "$RELAY_ID" "https://xn--n1afe0b.online"
+  "$NODE_PATH" -e 'const fs=require("fs"); const current=process.argv[1]; const legacy=process.argv[2]; const linkId=process.argv[3]; const base=process.argv[4]; let existing={}; for (const file of [current, legacy]) { try { existing=JSON.parse(fs.readFileSync(file,"utf8")); break; } catch {} } const legacyDefault="moonshotai/Kimi-K2.6"; const defaultModel="deepseek-ai/DeepSeek-V4-Flash-0731"; const gonkaModel=existing.gonkaModel&&existing.gonkaModel!==legacyDefault?existing.gonkaModel:defaultModel; const next={...existing,schema:"soty.agent-runtime.v1",serverUrl:new URL(base).origin,gonkaBaseUrl:existing.gonkaBaseUrl||"https://gate.joingonka.ai/v1",gonkaModel}; if(linkId) next.linkId=linkId; delete next.relayId; delete next.relayBaseUrl; delete next.adapters; fs.writeFileSync(current,JSON.stringify(next,null,2),{mode:0o600});' "${AGENT_DIR}/connector-config.json" "${AGENT_DIR}/agent-config.json" "$RELAY_ID" "$BASE"
 }
 
 write_runner() {
   node_bin_dir="$(dirname "$NODE_PATH")"
   cat > "$RUNNER_PATH" <<EOF
 #!/usr/bin/env sh
-export SOTY_AGENT_MANAGED=1
-export SOTY_AGENT_AUTO_UPDATE=1
-export SOTY_AGENT_SCOPE="${SCOPE}"
-export SOTY_AGENT_UPDATE_URL="${MANIFEST_URL}"
-export SOTY_AGENT_RELAY_ID="${RELAY_ID}"
-export SOTY_AGENT_RELAY_URL="https://xn--n1afe0b.online"
+export SOTY_CONNECTOR_MANAGED=1
+export SOTY_CONNECTOR_AUTO_UPDATE=1
+export SOTY_CONNECTOR_SCOPE="${SCOPE}"
+export SOTY_CONNECTOR_UPDATE_URL="${MANIFEST_URL}"
+export SOTY_CONNECTOR_LINK_ID="${RELAY_ID}"
+export SOTY_CONNECTOR_SERVER_URL="https://xn--n1afe0b.online"
 export PATH="${node_bin_dir}:\${PATH}"
-secret_json="${AGENT_DIR}/agent-secrets.json"
-if [ -f "\$secret_json" ]; then
-  eval "\$("${NODE_PATH}" - "\$secret_json" <<'NODE'
-const fs = require("fs");
-const path = process.argv[2];
-const allowed = /^(SOTY_|GONKA_|JOIN_GONKA_|ANTHROPIC_AUTH_TOKEN$)/;
-function quote(value) {
-  return "'" + String(value ?? "").replace(/'/g, "'\\''") + "'";
-}
-try {
-  const data = JSON.parse(fs.readFileSync(path, "utf8").replace(/^\uFEFF/u, ""));
-  for (const [name, value] of Object.entries(data && typeof data === "object" ? data : {})) {
-    if (name === "NODE_OPTIONS" || !allowed.test(name)) continue;
-    process.stdout.write(`export ${name}=${quote(value)}\n`);
-  }
-} catch {}
-NODE
-)"
-fi
-if [ -n "\${SOTY_GONKA_API_KEY:-}\${GONKA_API_KEY:-}\${GONKA_BROKER_API_KEY:-}\${JOIN_GONKA_API_KEY:-}" ]; then
-  SOTY_CODEX_PROVIDER=gonka
-  SOTY_GONKA_DIRECT_AGENT=1
-  export SOTY_CODEX_PROVIDER SOTY_GONKA_DIRECT_AGENT
-fi
 unset NODE_OPTIONS
 while true; do
   "${NODE_PATH}" "${AGENT_PATH}"
@@ -396,7 +360,7 @@ EOF
 
   cat > "$CTL_PATH" <<EOF
 #!/usr/bin/env sh
-export PATH="${node_bin_dir}${codex_bin_dir:+:$codex_bin_dir}:\${PATH}"
+export PATH="${node_bin_dir}:\${PATH}"
 exec "${NODE_PATH}" "${AGENT_PATH}" ctl "\$@"
 EOF
   chmod 755 "$CTL_PATH"
@@ -591,9 +555,10 @@ enable_autostart() {
 }
 
 NODE_PATH="$(resolve_node)"
-printf '%s\n' "soty-codex-cli:disabled:server-relay-only" >>"$LOG_PATH"
+printf '%s\n' "soty-agent:opencode:managed" >>"$LOG_PATH"
 install_agent_script
 write_agent_config
+SOTY_CONNECTOR_MANAGED=1 SOTY_CONNECTOR_AUTO_UPDATE=1 "$NODE_PATH" "$AGENT_PATH" ctl bootstrap >>"$LOG_PATH" 2>&1
 write_runner
 enable_autostart
 start_now

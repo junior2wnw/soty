@@ -1,0 +1,47 @@
+[
+  {
+    "id": "custom_login_token",
+    "value": {
+      "schema": "identity.browser-login-profile.v1",
+      "protocol": "custom-login-token",
+      "flow": "authorization_code",
+      "response_type": "code",
+      "pkce_method": "S256",
+      "client_kind": "confidential_bff",
+      "browser_session": "server_side_secure_http_only_samesite_lax_cookie",
+      "browser_token_storage": "forbidden",
+      "custom_login_token_protocol": true,
+      "required_checks": ["issuer", "audience", "signature", "expiration", "state", "nonce"]
+    }
+  },
+  {
+    "id": "implicit_browser_tokens",
+    "value": {
+      "schema": "identity.browser-login-profile.v1",
+      "protocol": "openid-connect-core-1.0",
+      "flow": "implicit",
+      "response_type": "token",
+      "pkce_method": "none",
+      "client_kind": "public_spa",
+      "browser_session": "browser_token",
+      "browser_token_storage": "local_storage",
+      "custom_login_token_protocol": false,
+      "required_checks": ["issuer", "audience", "signature", "expiration", "state", "nonce"]
+    }
+  },
+  {
+    "id": "missing_nonce_check",
+    "value": {
+      "schema": "identity.browser-login-profile.v1",
+      "protocol": "openid-connect-core-1.0",
+      "flow": "authorization_code",
+      "response_type": "code",
+      "pkce_method": "S256",
+      "client_kind": "confidential_bff",
+      "browser_session": "server_side_secure_http_only_samesite_lax_cookie",
+      "browser_token_storage": "forbidden",
+      "custom_login_token_protocol": false,
+      "required_checks": ["issuer", "audience", "signature", "expiration", "state"]
+    }
+  }
+]

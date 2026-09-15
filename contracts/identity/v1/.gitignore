@@ -1,0 +1,5 @@
+!data/
+!data/contracts/
+!data/contracts/identity/
+!data/contracts/identity/v1/
+!data/contracts/identity/v1/*.json

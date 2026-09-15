@@ -1,0 +1,26 @@
+[
+  {
+    "id": "ttl_61_seconds",
+    "patch": { "expires_at": "2026-08-12T10:01:01Z" }
+  },
+  {
+    "id": "raw_code_persisted",
+    "patch": { "code": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" }
+  },
+  {
+    "id": "target_origin_has_path",
+    "patch": { "target_origin": "https://mykosyk.ru/callback" }
+  },
+  {
+    "id": "caller_state_too_short",
+    "patch": { "state": "not-bound" }
+  },
+  {
+    "id": "consumed_without_timestamp",
+    "patch": { "status": "consumed" }
+  },
+  {
+    "id": "wrong_hash_form",
+    "patch": { "code_hash": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" }
+  }
+]

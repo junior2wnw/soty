@@ -1,0 +1,88 @@
+{
+  "fixture_set": "soty.identity-adapter.experimental.conformance",
+  "fixture_version": 1,
+  "canonical": false,
+  "owner": "soty.online",
+  "upstream": {
+    "authority_repository": "D:\\уфановостройка",
+    "status": "STABLE",
+    "adoption": "direct",
+    "translator_allowed": false
+  },
+  "canonical_checkpoint": {
+    "login": "oidc-authorization-code-pkce-s256-confidential-bff-local-httponly-session",
+    "custom_login_token_allowed": false,
+    "workflow_continuation": "32-byte-csprng-opaque-base64url-code-authenticated-server-to-server-redeem",
+    "workflow_max_ttl_seconds": 60,
+    "workflow_at_rest": "sha256-of-code-ascii-only",
+    "workflow_consume": "atomic-single-consume",
+    "workflow_binding": [
+      "target_client",
+      "target_origin",
+      "purpose",
+      "state",
+      "organization",
+      "resources"
+    ],
+    "service_event_serialization": "rfc7515-flattened-jws-json",
+    "service_event_members": ["protected", "payload", "signature"],
+    "service_event_algorithm": "EdDSA",
+    "service_event_key": "Ed25519",
+    "service_event_type": "identity-service-event+jws",
+    "service_event_payload": "rfc8785-jcs-utf8",
+    "service_event_registry": "pinned-issuer-and-kid",
+    "service_event_model": "one-flat-payload-schema",
+    "service_event_domains": [
+      "subject",
+      "membership",
+      "project",
+      "unlink",
+      "security_epoch"
+    ],
+    "service_event_identifiers": "stable-opaque",
+    "service_event_pii_or_secrets_allowed": false,
+    "service_event_ordering": ["replay", "revision", "security_epoch"],
+    "conformance_status": "STABLE"
+  },
+  "wire": {
+    "adapter_schema": "soty.identity-adapter.experimental.v1",
+    "exchange_schema": "soty.identity-adapter.link-exchange.experimental.v1",
+    "exchange_type": "soty-identity-link-experimental+jwt",
+    "event_schema": "soty.identity-adapter.event.experimental.v1",
+    "event_type": "soty-identity-event-experimental+jwt",
+    "algorithm": "ES256",
+    "max_exchange_ttl_seconds": 60,
+    "transport": "opaque-server-to-server-post-body"
+  },
+  "readiness": {
+    "login_supported": false,
+    "required_login_architecture": "oidc-authorization-code-pkce-bff-local-server-session",
+    "file_store_production_ready": false,
+    "in_process_rate_limiter_production_ready": false,
+    "canonical_event_ingress_enabled": false
+  },
+  "required_invariants": [
+    "issuer",
+    "audience",
+    "project",
+    "scope",
+    "replay",
+    "idempotency",
+    "tenant-isolation",
+    "device-revoke-recovery-unlink",
+    "no-pii-or-secrets",
+    "feature-flag-off-by-default"
+  ],
+  "expected_failures": {
+    "wrong_audience": "identity_audience_denied",
+    "wrong_project": "identity_tenant_denied",
+    "replayed_exchange": "identity_exchange_replayed",
+    "idempotency_conflict": "identity_idempotency_conflict",
+    "pii": "identity_pii_forbidden",
+    "secret": "identity_secret_forbidden",
+    "production_file_store": "identity_production_store_required",
+    "canonical_workflow_pending": "identity_legacy_workflow_disabled",
+    "canonical_events_pending": "identity_legacy_event_disabled",
+    "browser_exchange": "identity_server_to_server_required"
+  }
+}

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "pii_email_field",
+    "base_index": 0,
+    "patch": { "email": "person@example.test" }
+  },
+  {
+    "id": "membership_without_tenant",
+    "base_index": 1,
+    "patch": { "organization_id": null }
+  },
+  {
+    "id": "revision_without_predecessor",
+    "base_index": 2,
+    "patch": { "revision": 2 }
+  },
+  {
+    "id": "unknown_scope",
+    "base_index": 1,
+    "data_patch": { "scopes": ["root:everything"] }
+  },
+  {
+    "id": "secret_field",
+    "base_index": 3,
+    "data_patch": { "access_token": "forbidden" }
+  }
+]

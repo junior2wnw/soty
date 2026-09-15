@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufanovostroyka.ru/schemas/identity/v1/service-event-payload.schema.json",
+  "title": "Canonical identity service event payload v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "event_type",
+    "issuer",
+    "audience",
+    "occurred_at",
+    "subject_id",
+    "organization_id",
+    "aggregate_id",
+    "revision",
+    "previous_event_id",
+    "data"
+  ],
+  "properties": {
+    "schema": { "const": "identity.service-event.v1" },
+    "event_id": { "$ref": "#/$defs/event_id" },
+    "event_type": {
+      "enum": [
+        "identity.subject.changed.v1",
+        "identity.membership.changed.v1",
+        "identity.project-access.changed.v1",
+        "identity.subject.unlinked.v1",
+        "identity.security-epoch.advanced.v1"
+      ]
+    },
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "maxLength": 255
+    },
+    "audience": { "$ref": "#/$defs/client_id" },
+    "occurred_at": { "$ref": "#/$defs/date_time" },
+    "subject_id": { "$ref": "#/$defs/subject_id" },
+    "organization_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/organization_id" },
+        { "type": "null" }
+      ]
+    },
+    "aggregate_id": { "$ref": "#/$defs/stable_id" },
+    "revision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "previous_event_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/event_id" },
+        { "type": "null" }
+      ]
+    },
+    "data": {
+      "oneOf": [
+        { "$ref": "#/$defs/subject_changed" },
+        { "$ref": "#/$defs/membership_changed" },
+        { "$ref": "#/$defs/project_access_changed" },
+        { "$ref": "#/$defs/subject_unlinked" },
+        { "$ref": "#/$defs/security_epoch_advanced" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "revision": { "const": 1 } } },
+      "then": { "properties": { "previous_event_id": { "type": "null" } } },
+      "else": { "properties": { "previous_event_id": { "$ref": "#/$defs/event_id" } } }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "identity.subject.changed.v1" } } },
+      "then": {
+        "properties": {
+          "organization_id": { "type": "null" },
+          "data": { "$ref": "#/$defs/subject_changed" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "identity.membership.changed.v1" } } },
+      "then": {
+        "properties": {
+          "organization_id": { "$ref": "#/$defs/organization_id" },
+          "data": { "$ref": "#/$defs/membership_changed" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "identity.project-access.changed.v1" } } },
+      "then": {
+        "properties": {
+          "organization_id": { "$ref": "#/$defs/organization_id" },
+          "data": { "$ref": "#/$defs/project_access_changed" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "identity.subject.unlinked.v1" } } },
+      "then": {
+        "properties": {
+          "organization_id": { "$ref": "#/$defs/organization_id" },
+          "data": { "$ref": "#/$defs/subject_unlinked" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_type": { "const": "identity.security-epoch.advanced.v1" } } },
+      "then": {
+        "properties": {
+          "organization_id": { "type": "null" },
+          "data": { "$ref": "#/$defs/security_epoch_advanced" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "date_time": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "client_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9.-]+$"
+    },
+    "stable_id": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 132,
+      "pattern": "^[a-z][a-z0-9]*_[A-Za-z0-9][A-Za-z0-9_-]{4,127}$"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^evt_[A-Za-z0-9_-]{5,127}$"
+    },
+    "subject_id": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^sub_[A-Za-z0-9_-]{5,127}$"
+    },
+    "organization_id": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^org_[A-Za-z0-9_-]{5,127}$"
+    },
+    "membership_id": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^mem_[A-Za-z0-9_-]{5,127}$"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^prj_[A-Za-z0-9_-]{5,127}$"
+    },
+    "link_id": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 132,
+      "pattern": "^lnk_[A-Za-z0-9_-]{5,127}$"
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "role_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 96,
+      "pattern": "^[a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)+$"
+    },
+    "roles": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/role_id" }
+    },
+    "scopes": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/scope_id" }
+    },
+    "subject_changed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason_code"],
+      "properties": {
+        "status": { "enum": ["active", "suspended", "deleted"] },
+        "reason_code": { "$ref": "#/$defs/reason_code" }
+      }
+    },
+    "membership_changed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["membership_id", "status", "roles", "scopes"],
+      "properties": {
+        "membership_id": { "$ref": "#/$defs/membership_id" },
+        "status": { "enum": ["active", "suspended", "revoked"] },
+        "roles": { "$ref": "#/$defs/roles" },
+        "scopes": { "$ref": "#/$defs/scopes" }
+      }
+    },
+    "project_access_changed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_id", "membership_id", "status", "scopes"],
+      "properties": {
+        "project_id": { "$ref": "#/$defs/project_id" },
+        "membership_id": { "$ref": "#/$defs/membership_id" },
+        "status": { "enum": ["active", "suspended", "revoked"] },
+        "scopes": { "$ref": "#/$defs/scopes" }
+      }
+    },
+    "subject_unlinked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["link_id", "status", "reason_code"],
+      "properties": {
+        "link_id": { "$ref": "#/$defs/link_id" },
+        "status": { "const": "unlinked" },
+        "reason_code": { "$ref": "#/$defs/reason_code" }
+      }
+    },
+    "security_epoch_advanced": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["security_epoch", "reason_code"],
+      "properties": {
+        "security_epoch": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "reason_code": { "$ref": "#/$defs/reason_code" }
+      }
+    }
+  }
+}

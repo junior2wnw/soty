@@ -1,12 +1,19 @@
 import express from "express";
 import path from "node:path";
 import { attachAccountTransfer } from "./account-transfer.js";
-import { attachAgentLearning } from "./agent-learning.js";
-import { attachAgentRelay } from "./agent-relay.js";
+import { attachConnectorApi } from "./connector-api.js";
+import { attachCanonicalIdentityApi } from "./identity-wire-v1-api.js";
+import { attachSotyIdentityAdapterApi } from "./soty-identity-adapter-api.js";
+import { attachTrafficControl } from "./traffic-control.js";
 
-export function createHttpApp(distDir, { dataDir } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel } = {}) {
   const app = express();
   app.disable("x-powered-by");
+  app.use((req, res, next) => {
+    if (!trafficTunnel?.handleRequest(req, res)) {
+      next();
+    }
+  });
   const devConnectSrc = String(process.env.SOTY_DEV_CONNECT_SRC || "")
     .split(/\s+/u)
     .map((item) => item.trim())
@@ -21,7 +28,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' blob: data:",
       "font-src 'self'",
-      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ws://127.0.0.1:49424 ws://localhost:49424${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
+      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
       "manifest-src 'self'",
       "worker-src 'self'",
       "frame-ancestors 'none'",
@@ -46,10 +53,24 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     res.setHeader("X-Frame-Options", "DENY");
     next();
   });
-  app.get("/health", (_req, res) => res.json({ ok: true }));
   attachAccountTransfer(app, { dataDir });
-  attachAgentRelay(app);
-  attachAgentLearning(app, { dataDir });
+  attachCanonicalIdentityApi(app, { dataDir });
+  attachSotyIdentityAdapterApi(app, { dataDir });
+  const connectors = attachConnectorApi(app, { dataDir });
+  app.get("/health", (_req, res) => res.json({
+    ok: true,
+    agentModelProxy: connectors.modelProxy,
+    applicationModelProxy: connectors.applicationModelProxy
+  }));
+  app.get("/ready", (_req, res) => {
+    const ready = connectors.modelProxy.ready === true;
+    res.status(ready ? 200 : 503).json({
+      ok: ready,
+      agentModelProxy: connectors.modelProxy,
+      applicationModelProxy: connectors.applicationModelProxy
+    });
+  });
+  attachTrafficControl(app, { dataDir, isRelayConnected: (linkId) => connectors.store.isConnected(linkId) });
   app.use(express.static(distDir, {
     etag: true,
     index: false,
@@ -64,7 +85,7 @@ export function createHttpApp(distDir, { dataDir } = {}) {
     }
   }));
   app.use("/agent", (_req, res) => {
-    res.status(404).json({ ok: false, error: "agent_asset_not_found" });
+    res.status(404).json({ ok: false, error: "connector_asset_not_found" });
   });
   app.get("*", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");

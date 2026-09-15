@@ -1,0 +1,12 @@
+{
+  "schema": "identity.browser-login-profile.v1",
+  "protocol": "openid-connect-core-1.0",
+  "flow": "authorization_code",
+  "response_type": "code",
+  "pkce_method": "S256",
+  "client_kind": "confidential_bff",
+  "browser_session": "server_side_secure_http_only_samesite_lax_cookie",
+  "browser_token_storage": "forbidden",
+  "custom_login_token_protocol": false,
+  "required_checks": ["issuer", "audience", "signature", "expiration", "state", "nonce"]
+}

@@ -1,0 +1,27 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: soty-traffic-gateway:26.7.11
+    container_name: soty-traffic-gateway
+    restart: unless-stopped
+    ports:
+      - "172.17.0.1:24444:24444/tcp"
+      - "172.17.0.1:24445:24445/tcp"
+      - "172.17.0.1:24446:24446/tcp"
+    volumes:
+      - ./server.json:/etc/soty-traffic/server.json:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/xray", "run", "-test", "-c", "/etc/soty-traffic/server.json"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
