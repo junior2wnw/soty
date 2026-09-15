@@ -1,0 +1,31 @@
+# Deliberately expose inference only until the complete data volume is recovered.
+# Do not replace this with the regular Caddyfile merely because /health is 200.
+xn--n1afe0b.online, soty.pochinit.online {
+  @inference {
+    method POST
+    path /api/inference/v1/chat/completions /api/connectors/gonka/v1/chat/completions
+  }
+  handle @inference {
+    reverse_proxy app:8080 {
+      transport http {
+        versions 1.1
+        dial_timeout 3s
+        response_header_timeout 80s
+        keepalive 30s
+      }
+    }
+  }
+  @api path /api/* /ws/*
+  handle @api {
+    header Retry-After 30
+    header Cache-Control no-store
+    header Content-Type application/json
+    respond `{"ok":false,"error":"soty-data-recovery","retryable":true}` 503
+  }
+  handle {
+    header Retry-After 30
+    header Cache-Control no-store
+    header Content-Type "text/html; charset=utf-8"
+    respond `<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Соты — восстановление</title><style>body{font:18px/1.55 system-ui,sans-serif;background:#f5f3ec;color:#242923;margin:0;display:grid;min-height:100vh;place-items:center}main{max-width:34rem;padding:2rem}h1{font-size:2rem;line-height:1.2}p{color:#51584d}</style><main><h1>Соты временно недоступны</h1><p>Идёт восстановление данных после переноса сервера.</p><p>Сохраните данные сайта в браузере до завершения восстановления: локальные копии могут помочь вернуть историю.</p></main></html>` 503
+  }
+}

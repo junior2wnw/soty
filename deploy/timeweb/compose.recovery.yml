@@ -1,0 +1,17 @@
+# Use only with the snapshot recovery fence present in /srv/soty/data.
+# /ready deliberately remains 503 while jobs and rooms are unavailable.
+services:
+  app:
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all(['/health','/api/connectors/storage-ready'].map(p=>fetch('http://127.0.0.1:8080'+p,{signal:AbortSignal.timeout(4000)}).then(r=>r.json()))).then(([h,s])=>{if(!h.agentModelProxy?.ready||!h.applicationModelProxy?.ready||!s.storageReady||!s.maintenance)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      start_period: 5s
+      timeout: 5s
+      retries: 3
+  caddy:
+    volumes:
+      - ./Caddyfile.recovery:/etc/caddy/Caddyfile:ro
