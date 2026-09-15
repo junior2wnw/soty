@@ -1,0 +1,17 @@
+{
+  admin localhost:2019
+}
+
+xn--n1afe0b.online, soty.pochinit.online {
+  reverse_proxy app:8080 {
+    # SSE is flushed automatically. Negative flush_interval prevents timely
+    # upstream cancellation when an inference client disconnects.
+    stream_close_delay 5m
+    transport http {
+      versions 1.1
+      dial_timeout 3s
+      response_header_timeout 80s
+      keepalive 30s
+    }
+  }
+}

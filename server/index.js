@@ -22,6 +22,10 @@ const trafficTunnel = combineTunnelProxies([
 ]);
 const app = createHttpApp(distDir, { dataDir, trafficTunnel });
 const server = createServer(app);
+// The front proxy keeps idle connections for 30 seconds. Closing them first
+// can race a reused POST connection and produce an avoidable reset.
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 70_000;
 const wss = new WebSocketServer({ noServer: true, maxPayload: 34_000_000 });
 const store = createRoomStore(dataDir);
 

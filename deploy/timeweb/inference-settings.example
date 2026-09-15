@@ -1,0 +1,15 @@
+# Apply these values to the existing protected online-chat.env, preserving all
+# application tokens and every unrelated setting. Supply both provider keys
+# privately; do not paste them into shell arguments or commit them.
+SOTY_GONKA_BASE_URL=https://gate.joingonka.ai/v1
+SOTY_GONKA_UPSTREAM_MODEL=MiniMaxAI/MiniMax-M2.7
+SOTY_GONKA_FALLBACK_BASE_URL=https://api.openbroker.gonka.gg/v1
+SOTY_GONKA_REQUEST_TIMEOUT_MS=75000
+SOTY_GONKA_FIRST_TOKEN_TIMEOUT_MS=20000
+SOTY_GONKA_IDLE_TIMEOUT_MS=30000
+SOTY_GONKA_STREAM_TIMEOUT_MS=1800000
+SOTY_GONKA_PROVIDER_CONCURRENCY=8
+SOTY_GONKA_MAX_QUEUED=64
+SOTY_GONKA_QUEUE_WAIT_MS=5000
+SOTY_GONKA_INTERNAL_STREAM=1
+SOTY_GONKA_LOG_METRICS=1

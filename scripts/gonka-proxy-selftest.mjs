@@ -5,7 +5,9 @@ import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApplicationTokenAuthenticator, defaultGonkaProxyModel } from "../server/gonka-proxy.js";
+import { createApplicationTokenAuthenticator, defaultGonkaProxyModel, miniMaxProxyModel } from "../server/gonka-proxy.js";
+
+const expectedUpstreamModel = process.env.SOTY_GONKA_UPSTREAM_MODEL || defaultGonkaProxyModel;
 
 const root = await mkdtemp(join(tmpdir(), "soty-gonka-proxy-"));
 const appPort = await freePort();
@@ -26,6 +28,7 @@ const upstream = createServer(async (request, response) => {
   }
   response.writeHead(200, { "Content-Type": "text/event-stream" });
   response.write(`data: ${JSON.stringify({ id: "chatcmpl-proxy", object: "chat.completion.chunk", created: 1, model: defaultGonkaProxyModel, choices: [{ index: 0, delta: body.tools ? { tool_calls: [{ index: 0, id: "call_status", type: "function", function: { name: "get_status", arguments: "{}" } }] } : { content: "proxy-ok" }, finish_reason: null }] })}\n\n`);
+  response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
   response.end("data: [DONE]\n\n");
 });
 await listen(upstream, upstreamPort);
@@ -53,6 +56,8 @@ app.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-8_000); }
 try {
   const readiness = await waitJson(`${appBase}/ready`, (value) => value.ok === true);
   assert.equal(readiness.agentModelProxy.model, defaultGonkaProxyModel);
+  assert.equal(readiness.agentModelProxy.upstreamModel, expectedUpstreamModel);
+  assert.equal(readiness.applicationModelProxy.upstreamModel, expectedUpstreamModel);
   assert.equal(readiness.agentModelProxy.transport, "authenticated-server-proxy");
   assert.equal(readiness.applicationModelProxy.ready, true);
   assert.equal(readiness.applicationModelProxy.path, "/api/inference/v1/chat/completions");
@@ -87,7 +92,7 @@ try {
   assert.equal(requests[0].url, "/v1/chat/completions");
   assert.equal(requests[0].authorization, `Bearer ${upstreamKey}`);
   assert.notEqual(requests[0].authorization, `Bearer ${token}`);
-  assert.equal(requests[0].body.model, defaultGonkaProxyModel);
+  assert.equal(requests[0].body.model, expectedUpstreamModel);
 
   const applicationProxied = await fetch(`${appBase}/api/inference/v1/chat/completions`, {
     method: "POST",
@@ -101,10 +106,13 @@ try {
     })
   });
   assert.equal(applicationProxied.status, 200);
-  assert.match(await applicationProxied.text(), /get_status/u);
+  const applicationStream = await applicationProxied.text();
+  assert.match(applicationStream, /get_status/u);
+  assert.match(applicationStream, expectedUpstreamModel === miniMaxProxyModel ? /"finish_reason":"tool_calls"/u : /"finish_reason":"stop"/u);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].authorization, `Bearer ${upstreamKey}`);
   assert.equal(requests[1].body.messages[0].content, "app-ping");
+  assert.equal(requests[1].body.model, expectedUpstreamModel);
 
   const unauthenticated = await requestJson(`${appBase}/api/inference/v1/chat/completions`, {
     method: "POST",
@@ -157,6 +165,17 @@ try {
   });
   assert.equal(timeout.response.status, 504);
   assert.equal(timeout.body.error.message, "model-upstream-timeout");
+
+  if (expectedUpstreamModel === miniMaxProxyModel) {
+    const canonical = await fetch(`${appBase}/api/inference/v1/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${applicationToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: miniMaxProxyModel, stream: true, messages: [{ role: "user", content: "canonical-ping" }] })
+    });
+    assert.equal(canonical.status, 200);
+    assert.match(await canonical.text(), /proxy-ok/u);
+    assert.equal(requests.at(-1).body.model, miniMaxProxyModel);
+  }
 
   const legacy = createApplicationTokenAuthenticator(JSON.stringify({ legacy: "l".repeat(48) }), { filePath: "" });
   assert.equal(legacy.ready, true);

@@ -1,0 +1,92 @@
+name: soty
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    image: ${SOTY_IMAGE:?Set SOTY_IMAGE to the verified release image}
+    container_name: soty-online-chat
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    env_file:
+      - path: ${SOTY_CONFIG_DIR:-/etc/soty}/online-chat.env
+        format: raw
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      DATA_DIR: /data
+      SOTY_GONKA_APPLICATION_TOKENS_FILE: /run/secrets/soty-application-tokens.json
+      SOTY_TRAFFIC_TUNNEL_TARGET: http://traffic-gateway:24444/inside
+      SOTY_TRAFFIC_WS_TARGET: ws://traffic-gateway:24446/inside-ws
+      SOTY_TRAFFIC_XRAY_API: traffic-gateway:24445
+    volumes:
+      - ${SOTY_DATA_DIR:-/srv/soty/data}:/data
+      - ${SOTY_CONFIG_DIR:-/etc/soty}/application-tokens.json:/run/secrets/soty-application-tokens.json:ro
+    ports:
+      - "127.0.0.1:18182:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 256
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/ready',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      traffic-gateway:
+        condition: service_started
+    logging: *logging
+
+  traffic-gateway:
+    image: ${SOTY_TRAFFIC_IMAGE:?Set SOTY_TRAFFIC_IMAGE to the verified traffic gateway image}
+    container_name: soty-traffic-gateway
+    restart: unless-stopped
+    volumes:
+      - ${SOTY_CONFIG_DIR:-/etc/soty}/traffic-server.json:/etc/soty-traffic/server.json:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    pids_limit: 128
+    logging: *logging
+
+  caddy:
+    image: ${SOTY_CADDY_IMAGE:?Set SOTY_CADDY_IMAGE to a verified Caddy image digest}
+    container_name: soty-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    pids_limit: 128
+    depends_on:
+      app:
+        condition: service_healthy
+    logging: *logging
+
+volumes:
+  caddy-data:
+  caddy-config:
