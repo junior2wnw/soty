@@ -351,6 +351,24 @@ await test("race-concurrent-requests-stay-bounded-and-cancelled-losers-do-not-tr
 });
 
 const optionalTools = [{type:'function',function:{name:'lookup',parameters:{type:'object',properties:{}}}}];
+await test("tool-fragments-remain-buffered-even-after-visible-intro", async () => {
+  const s=await scenario((_req,res)=>{
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.end(encode(chunk('visible intro'))+encode({choices:[{index:0,delta:{tool_calls:[{index:0,id:'call_1',type:'function',function:{name:'NEVER_EXECUTE',arguments:'{'}}]},finish_reason:null}]})+encode(chunk('', 'abort')));
+  },(_req,res)=>success(res));
+  try{const text=await(await s.request(true)).text();assert.match(text,/visible intro/);assert.match(text,/upstream_error/);assert.doesNotMatch(text,/NEVER_EXECUTE|\[DONE\]/);assert.deepEqual(s.hits,[1,0]);}
+  finally{await s.close();}
+});
+
+await test("mixed-text-and-tool-chunk-does-not-win-before-tool-validation", async () => {
+  const s=await scenario((_req,res)=>{
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.end(encode({choices:[{index:0,delta:{content:'UNCOMMITTED_INTRO',tool_calls:[{index:0,id:'call_1',type:'function',function:{name:'NEVER_EXECUTE',arguments:'{'}}]},finish_reason:'stop'}]})+'data: [DONE]\n\n');
+  },async(_req,res)=>{await sleep(20);success(res,'valid fallback');},{providerStrategy:'race'});
+  try{const text=await(await s.request(true)).text();assert.match(text,/valid fallback/);assert.doesNotMatch(text,/UNCOMMITTED_INTRO|NEVER_EXECUTE/);}
+  finally{await s.close();}
+});
+
 await test("minimax-auto-tool-empty-answer-retries-once-and-preserves-context", async () => {
   const bodies=[];
   const s=await scenario((_req,res,body)=>{

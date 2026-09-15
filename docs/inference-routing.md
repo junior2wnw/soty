@@ -17,7 +17,8 @@ is admitted after cooldown.
   Role-only events, heartbeat comments and reasoning do not win the race.
 - Tool calls are buffered until the provider has completed the response and
   their IDs and JSON arguments have been validated. A partial tool call must
-  never escape and cause a duplicate action.
+  never escape and cause a duplicate action, even after introductory text from
+  that same provider has already been streamed.
 - For JSON clients, the first complete usable response wins. Early partial
   text cannot commit a JSON response.
 - Explicit refusals and content-filter terminations are valid outcomes.
@@ -75,11 +76,13 @@ References: [MiniMax OpenAI-compatible API](https://platform.minimax.io/docs/api
 
 ## Verified deployment, 2026-09-15
 
-Runtime source: `3e4992fc7966c5e517f1393cc52f96e9d662c8c6`. The immutable
+Initial runtime source: `3e4992fc7966c5e517f1393cc52f96e9d662c8c6`. The immutable
 inference overlay uses the previous recovery image as its base and replaces only
 the four connector modules. Its server receipt is
 `/srv/soty/releases/inference-race-3e4992fc7966/deployment.json`; the previous
-image remains available for rollback. Runtime environment, application-key
+image remains available for rollback. Later inference overlays retain their
+own receipts under `/srv/soty/releases/`; `/etc/soty/release.env` selects the
+current image, whose OCI revision identifies its runtime code. Runtime environment, application-key
 registry, recovery override, maintenance marker and Caddy config were compared
 before/after and remained unchanged.
 

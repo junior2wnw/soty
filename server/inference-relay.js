@@ -319,6 +319,7 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
     const answerGate = createAnswerGate();
     const prelude = [];
     let preludeBytes = 0;
+    let pendingTools = false;
     let done = false;
     const event = async (item) => {
       if (done) return;
@@ -328,7 +329,9 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
         accept();
         done = true;
         if (body.stream === true) {
-          if (!res.headersSent) { header(true); for (const part of prelude) await write(part); prelude.length = 0; }
+          if (!res.headersSent) header(true);
+          for (const part of prelude) await write(part);
+          prelude.length = 0;
           await write("data: [DONE]\n\n");
         }
         else { header(false); res.json(completed); }
@@ -340,12 +343,16 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
         const value = cleanProviderChunk(item.value, tools, normalizeTools);
         if (responseWasAborted(value)) throw failure("model-upstream-incomplete");
         collector.add(value);
+        pendingTools ||= (value.choices || []).some(choice => {
+          const message = choice.delta || choice.message || {};
+          return message.tool_calls?.length || message.function_call;
+        });
         encoded = `data: ${JSON.stringify(value)}\n\n`;
         if (hasMeaningfulOutput(value)) progress();
-        if (answerGate.add(value) && body.stream === true) accept();
+        if (answerGate.add(value) && body.stream === true && !pendingTools) accept();
       }
       if (body.stream !== true) return;
-      if (firstOutputMs === null) {
+      if (firstOutputMs === null || pendingTools) {
         preludeBytes += Buffer.byteLength(encoded);
         if (preludeBytes > 2 * 1024 * 1024) throw failure("model-upstream-invalid-response");
         prelude.push(encoded);
