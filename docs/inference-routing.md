@@ -72,3 +72,22 @@ Soty features or changing recovered job/data state.
 References: [MiniMax OpenAI-compatible API](https://platform.minimax.io/docs/api-reference/text-openai-api),
 [Node.js AbortSignal](https://nodejs.org/docs/latest-v24.x/api/globals.html#class-abortsignal),
 [Node.js stream backpressure](https://nodejs.org/docs/latest-v24.x/api/stream.html).
+
+## Verified deployment, 2026-09-15
+
+Runtime source: `3e4992fc7966c5e517f1393cc52f96e9d662c8c6`. The immutable
+inference overlay uses the previous recovery image as its base and replaces only
+the four connector modules. Its server receipt is
+`/srv/soty/releases/inference-race-3e4992fc7966/deployment.json`; the previous
+image remains available for rollback. Runtime environment, application-key
+registry, recovery override, maintenance marker and Caddy config were compared
+before/after and remained unchanged.
+
+The built image passed the inference suite, including 25 resilience scenarios
+and 10 race/isolation cases across five synthetic application/device keys. A live
+isolated canary verified Pluton's complete context and a tool/result continuation.
+After rollout all three configured application keys returned usable answers;
+both Pluton modes returned and stored replies through public HTTPS. The two new
+chat checks took approximately 35 and 52 seconds to complete, so these checks do
+not establish a low-latency guarantee. The relay logs selection and total timing
+separately to make remaining provider latency measurable.

@@ -7,7 +7,9 @@ marker on the strength of a passing inference test.
 
 ## What is preserved
 
-- The deployed application image is built from `f033bafb42b1d4f272c7121425030f3583680680`.
+- The recovered base application image is built from `f033bafb42b1d4f272c7121425030f3583680680`.
+  The later inference-only overlay is recorded in `docs/inference-routing.md`;
+  it preserves this recovery fence and the recovered data.
 - Both application API credentials, upstream credentials, TLS certificates and
   64 traffic bridge credentials were copied before the outage and compared privately.
 - A Windows DPAPI backup captured at `2026-09-13T22:38:49Z` was recovered into
