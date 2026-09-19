@@ -2,8 +2,12 @@
 # application tokens and every unrelated setting. Supply both provider keys
 # privately; do not paste them into shell arguments or commit them.
 SOTY_GONKA_BASE_URL=https://gate.joingonka.ai/v1
-SOTY_GONKA_UPSTREAM_MODEL=MiniMaxAI/MiniMax-M2.7
+SOTY_GONKA_UPSTREAM_MODEL=deepseek-ai/DeepSeek-V4-Flash-0731
 SOTY_GONKA_FALLBACK_BASE_URL=https://api.openbroker.gonka.gg/v1
+# The secondary DeepSeek route looped in two bounded neutral probes on 2026-09-19.
+# Keep its credentials but exclude it for DeepSeek until it passes recovery tests.
+# '*' restores both configured providers; 'none' disables the secondary for all models.
+SOTY_GONKA_FALLBACK_MODELS=MiniMaxAI/MiniMax-M2.7
 SOTY_GONKA_PROVIDER_STRATEGY=race
 SOTY_GONKA_EMPTY_TOOL_FALLBACK=1
 SOTY_GONKA_REQUEST_TIMEOUT_MS=75000

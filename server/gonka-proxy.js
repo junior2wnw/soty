@@ -19,6 +19,7 @@ export function createGonkaProxy({
   timeoutMs = process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS,
   fallbackBaseUrl = process.env.SOTY_GONKA_FALLBACK_BASE_URL || "",
   fallbackApiKey = process.env.SOTY_GONKA_FALLBACK_API_KEY || "",
+  fallbackModels = process.env.SOTY_GONKA_FALLBACK_MODELS ?? "*",
   firstTokenTimeoutMs = process.env.SOTY_GONKA_FIRST_TOKEN_TIMEOUT_MS,
   idleTimeoutMs = process.env.SOTY_GONKA_IDLE_TIMEOUT_MS,
   streamTimeoutMs = process.env.SOTY_GONKA_STREAM_TIMEOUT_MS,
@@ -37,12 +38,14 @@ export function createGonkaProxy({
   const fallbackUrl = safeUpstreamBaseUrl(fallbackBaseUrl);
   const fallbackKey = safeSecret(fallbackApiKey);
   const fallbackValid = !fallbackBaseUrl && !fallbackApiKey || Boolean(fallbackUrl && fallbackKey);
-  const ready = Boolean(store && upstreamBaseUrl && upstreamKey && fallbackValid && supportedModels.has(model) && supportedModels.has(upstreamModel));
+  const fallbackPolicy = fallbackModelPolicy(fallbackModels);
+  const fallbackAllowed = Boolean(fallbackPolicy && (fallbackPolicy.has("*") || fallbackPolicy.has(upstreamModel)));
+  const ready = Boolean(store && upstreamBaseUrl && upstreamKey && fallbackValid && fallbackPolicy && supportedModels.has(model) && supportedModels.has(upstreamModel));
   const active = new Map();
   const relay = createInferenceRelay({
     providers: [
       { name: "primary", baseUrl: upstreamBaseUrl, apiKey: upstreamKey },
-      ...(fallbackUrl && fallbackKey ? [{ name: "fallback", baseUrl: fallbackUrl, apiKey: fallbackKey }] : [])
+      ...(fallbackAllowed && fallbackUrl && fallbackKey ? [{ name: "fallback", baseUrl: fallbackUrl, apiKey: fallbackKey }] : [])
     ],
     fetchImpl, requestTimeoutMs,
     firstTokenTimeoutMs: safeInteger(firstTokenTimeoutMs, 1000, 150000, 20000),
@@ -205,7 +208,7 @@ function uniqueApplicationTokenEntries(entries) {
 function cleanChatRequest(value, model, upstreamModel) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   // Existing DeepSeek and MiniMax client identifiers address the operator's
-  // selected MiniMax upstream, including short OpenAI-compatible model aliases.
+  // selected upstream. A model switch must not invalidate existing clients.
   if (!acceptedClientModel(value.model, model, upstreamModel) || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 2_048) return null;
   if (value.stream != null && typeof value.stream !== "boolean") return null;
   if (value.n != null && value.n !== 1) return null;
@@ -224,10 +227,18 @@ function cleanChatRequest(value, model, upstreamModel) {
 function acceptedClientModel(value, model, upstreamModel) {
   if (typeof value !== "string" || value.length > 160) return false;
   const name = value.trim().toLowerCase();
-  if ([model, upstreamModel].some((item) => item.toLowerCase() === name)) return true;
-  if (upstreamModel !== miniMaxProxyModel) return false;
+  if ([...supportedModels, model, upstreamModel].some((item) => item.toLowerCase() === name)) return true;
   return /^(?:deepseek-ai\/|deepseek\/)?deepseek(?:[-_.][a-z0-9][a-z0-9._-]*)?$/u.test(name)
     || /^(?:minimaxai\/|minimax\/)?minimax(?:[-_.][a-z0-9][a-z0-9._-]*)?$/u.test(name);
+}
+
+function fallbackModelPolicy(value) {
+  if (typeof value !== "string") return null;
+  const names = value.split(",").map((name) => name.trim());
+  if (names.length === 1 && names[0] === "none") return new Set();
+  if (names.length === 1 && names[0] === "*") return new Set(["*"]);
+  if (!names.length || names.some((name) => !supportedModels.has(name))) return null;
+  return new Set(names);
 }
 
 function compatibleMiniMaxSchema(value) {

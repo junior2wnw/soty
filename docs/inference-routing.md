@@ -34,6 +34,37 @@ processed. It improves tail latency, not provider capacity. Switch the environme
 value to `fallback` to restore sequential routing. A normal service restart is
 required after changing environment settings.
 
+## DeepSeek transition, 2026-09-19
+
+The operator-selected upstream is `SOTY_GONKA_UPSTREAM_MODEL`. Both the historic
+MiniMax names and DeepSeek aliases continue to address that selected model;
+aliases are compatibility identifiers, not a per-request model selector. The
+current target is `deepseek-ai/DeepSeek-V4-Flash-0731`. Client authentication,
+application keys, request limits, queues and generation parameters are unchanged.
+
+The primary route passed a bounded arithmetic stream, a required tool call and
+a tool-result continuation. The secondary advertised the same DeepSeek model
+but twice repeated a simple arithmetic answer until the token limit. A first-token
+race cannot detect that later repetition before showing text, so the secondary
+must not race or act as fallback for this model until separately requalified.
+
+`SOTY_GONKA_FALLBACK_MODELS=MiniMaxAI/MiniMax-M2.7` keeps the secondary configured
+and eligible for MiniMax but excludes it for DeepSeek. The default `*` allows all
+supported models; `none` excludes all; a comma-separated list allows only those
+exact supported model IDs. Invalid lists make readiness fail rather than silently
+enabling a provider. Credentials stay in the existing protected configuration.
+`SOTY_GONKA_PROVIDER_STRATEGY=race` is preserved, including queues, cancellation,
+cooldown and timeouts. With one eligible provider it safely has one participant.
+This temporary choice reduces redundancy: a primary outage returns a bounded
+error instead of sending a user to the known-bad secondary.
+
+When the secondary passes fresh streamed text and tool continuation probes,
+setting the allowlist to `*` and restarting the connector restores the race.
+Rolling the selected model back to MiniMax also restores both providers without
+rotating keys. `node scripts/deepseek-routing-selftest.mjs` checks aliases, the
+exclusion even after a primary failure, re-enabling, malformed policies, separate
+credentials, unauthorized requests and unmodified DeepSeek tool schemas.
+
 ## MiniMax auto-tool compatibility
 
 On 2026-09-15 both Gonka routes reproduced a specific failure: with optional
