@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createGonkaProxy, defaultGonkaProxyModel, miniMaxProxyModel } from '../server/gonka-proxy.js';
+import { createGonkaProxy, defaultGonkaProxyModel, miniMaxProxyModel, glmProxyModel } from '../server/gonka-proxy.js';
 
 const token='synthetic-client-'.repeat(4);
 let observed=[];
@@ -26,10 +26,12 @@ async function call(model,auth=token){
 }
 try{
   const aliases=[defaultGonkaProxyModel,miniMaxProxyModel,'MiniMax-M2.7','minimax-m2.7','MiniMaxAI/minimax-m2.7','minimax/minimax-m2.7','minimax','DeepSeek-V4-Flash-0731','deepseek-chat','deepseek-reasoner','deepseek-r1','deepseek-ai/DeepSeek-R1','deepseek','  MINIMAX-M2.7  '];
+  aliases.push(glmProxyModel, 'glm', 'GLM-5.3-Flash', 'zai/glm-5.3-flash');
   for(const name of aliases){
+    const expected = /deepseek/i.test(name) ? defaultGonkaProxyModel : /glm/i.test(name) ? glmProxyModel : miniMaxProxyModel;
     const response=await call(name);assert.equal(response.status,200,name);
-    assert.equal((await response.json()).model,miniMaxProxyModel);
-    assert.equal(observed.at(-1).model,miniMaxProxyModel);
+    assert.equal((await response.json()).model,expected);
+    assert.equal(observed.at(-1).model,expected);
     assert.equal(observed.at(-1).max_tokens,128);
   }
   const before=observed.length;
@@ -39,5 +41,5 @@ try{
   assert.equal(observed.length,before);
   const response=await call('MiniMax-M2.7','wrong-client-'.repeat(4));assert.equal(response.status,401);await response.arrayBuffer();
   assert.equal(observed.length,before);
-  console.log(JSON.stringify({ok:true,aliasCount:aliases.length,rejectedInvalidNames:true,unauthorizedNotForwarded:true,allAliasesRoutedTo:miniMaxProxyModel}));
+  console.log(JSON.stringify({ok:true,aliasCount:aliases.length,rejectedInvalidNames:true,unauthorizedNotForwarded:true,routing:'client-choice'}));
 }finally{server.closeAllConnections();await new Promise(r=>server.close(r));}

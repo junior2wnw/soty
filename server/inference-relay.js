@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { cleanProviderChunk, createAnswerGate, createCompletionCollector, createSseDecoder, hasMeaningfulOutput, hasUsableCompletion, responseWasAborted } from "./inference-stream.js";
 
-const retryableStatuses = new Set([401, 403, 408, 429, 500, 502, 503, 504]);
+const retryableStatuses = new Set([401, 402, 403, 408, 429, 500, 502, 503, 504]);
 
 function failure(code, status = 502, retryable = true) {
   return Object.assign(new Error(code), { publicCode: code, httpStatus: status, retryable });
@@ -71,7 +71,7 @@ export function createInferenceRelay({
 }) {
   if (!["race", "fallback"].includes(providerStrategy)) throw new Error("invalid-provider-strategy");
   const states = providers.map((provider) => ({ ...provider, failures: 0, cooldownUntil: 0, probing: false,
-    queue: createProviderQueue({ concurrency, maximumQueued, waitMs: queueWaitMs }) }));
+    queue: provider.queue || createProviderQueue({ concurrency, maximumQueued, waitMs: queueWaitMs }) }));
   const emit = (value) => { try { onEvent(value); } catch { /* Metrics never interrupt inference. */ } };
 
   return {
@@ -120,7 +120,7 @@ export function createInferenceRelay({
               onCompatibilityRetry: () => { attempts++; emit({ event: "inference_compatibility_retry", requestId, provider: state.name, reason: "empty-auto-tool-answer" }); } });
             state.failures = 0; state.cooldownUntil = 0;
             emit({ event: "inference_complete", requestId, provider: state.name, attempts,
-              firstOutputMs: metrics.firstOutputMs, durationMs: Math.round(performance.now() - started) });
+              ...metrics, durationMs: Math.round(performance.now() - started) });
             return;
           } catch (error) {
             if (signal.aborted || res.destroyed) throw abortError(signal.aborted ? signal : requestSignal);
@@ -134,6 +134,7 @@ export function createInferenceRelay({
             }
             emit({ event: "inference_attempt_failed", requestId, provider: state.name,
               code: lastError.publicCode, status: lastError.httpStatus,
+              ...lastError.safeMetrics,
               durationMs: Math.round(performance.now() - attemptStart), outputCommitted: res.headersSent });
             // Once any output is visible, replaying a tool call or text would corrupt the conversation.
             if (res.headersSent || lastError.retryable === false || requestSignal.aborted) throw lastError;
@@ -183,14 +184,14 @@ async function raceProviders({ states, body, res, signal, fetchImpl, firstTokenT
         onCompatibilityRetry: () => { attempts++; emit({ event: "inference_compatibility_retry", requestId, provider: state.name, reason: "empty-auto-tool-answer" }); } });
       state.failures = 0; state.cooldownUntil = 0;
       emit({ event: "inference_complete", requestId, provider: state.name, strategy: "race", attempts,
-        firstOutputMs: metrics.firstOutputMs, durationMs: Math.round(performance.now() - started) });
+        ...metrics, durationMs: Math.round(performance.now() - started) });
     } catch (error) {
       if (controller.signal.aborted && !signal.aborted) {
         emit({ event: "inference_attempt_cancelled", requestId, provider: state.name, reason: "race-lost",
           durationMs: Math.round(performance.now() - attemptStart) });
         throw abortError(controller.signal);
       }
-      if (signal.aborted || res.destroyed) throw abortError(signal);
+      if ((signal.aborted && signal.reason?.publicCode !== "model-upstream-timeout") || res.destroyed) throw abortError(signal);
       const problem = error?.publicCode ? error : failure("model-upstream-unavailable");
       if (winner === candidate) winnerError = problem;
       if (!["model-upstream-busy", "model-upstream-cooling-down"].includes(problem.publicCode) && problem.retryable !== false) {
@@ -202,6 +203,7 @@ async function raceProviders({ states, body, res, signal, fetchImpl, firstTokenT
       }
       emit({ event: "inference_attempt_failed", requestId, provider: state.name,
         code: problem.publicCode, status: problem.httpStatus,
+        ...problem.safeMetrics,
         durationMs: Math.round(performance.now() - attemptStart), outputCommitted: winner === candidate && res.headersSent });
       throw problem;
     } finally {
@@ -233,6 +235,28 @@ function unusableCompletion(value, body) {
   return failure(optionalTools && stoppedWithoutCall ? "model-upstream-tool-selection-empty" : "model-upstream-empty-response");
 }
 
+function validateRequestedContract(value, body, complete = false) {
+  if (value.model && value.model.toLowerCase() !== body.model?.toLowerCase()) throw failure("model-upstream-model-mismatch");
+  if (!complete || !["json_object", "json_schema"].includes(body.response_format?.type)) return;
+  for (const choice of value.choices || []) {
+    const message = choice.message || {};
+    // Preserve explicit refusals and tool calls for the client's own policy checks.
+    if (message.tool_calls?.length || message.function_call || message.refusal || choice.finish_reason === "content_filter") continue;
+    // Gonka MiniMax sometimes embeds a complete reasoning block in content,
+    // even in JSON mode. Separate it without inventing or repairing answer bytes.
+    if (typeof message.content === "string") {
+      const thinking = /^\s*<think>([\s\S]*?)<\/think>\s*/u.exec(message.content);
+      if (thinking) {
+        message.content = message.content.slice(thinking[0].length);
+        message.reasoning_content = [message.reasoning_content, thinking[1]].filter(Boolean).join("\n");
+      }
+    }
+    let parsed;
+    try { parsed = JSON.parse(message.content); } catch { throw failure("model-upstream-invalid-json"); }
+    if (body.response_format.type === "json_object" && (!parsed || typeof parsed !== "object" || Array.isArray(parsed))) throw failure("model-upstream-invalid-json");
+  }
+}
+
 async function compatibleAttempt(options) {
   try { return await relayAttempt(options); }
   catch (error) {
@@ -254,11 +278,15 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
   const attemptSignal = AbortSignal.any([signal, controller.signal]);
   const started = performance.now();
   let firstOutputMs = null;
+  let upstreamHeadersMs = null, firstTokenMs = null;
+  let contentBytes = 0, reasoningBytes = 0;
+  const safeMetrics = () => ({ upstreamHeadersMs, firstTokenMs, contentBytes, reasoningBytes });
   let timeout = setTimeout(() => controller.abort(failure("model-upstream-timeout", 504)), firstTokenTimeoutMs);
   timeout.unref?.();
   let upstream;
   let reader;
   const progress = () => {
+    firstTokenMs ??= Math.round(performance.now() - started);
     clearTimeout(timeout);
     timeout = setTimeout(() => controller.abort(failure("model-upstream-timeout", 504)), idleTimeoutMs);
     timeout.unref?.();
@@ -289,8 +317,9 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
         Accept: outgoing.stream === true ? "text/event-stream" : "application/json" },
       body: JSON.stringify(outgoing)
     }), attemptSignal);
+    upstreamHeadersMs = Math.round(performance.now() - started);
     if (!upstream.ok) {
-      const error = failure("model-upstream-rejected", upstream.status, retryableStatuses.has(upstream.status));
+      const error = failure("model-upstream-rejected", [401, 402, 403].includes(upstream.status) ? 502 : upstream.status, retryableStatuses.has(upstream.status));
       const retry = upstream.headers.get("retry-after");
       if (retry) {
         const seconds = Number(retry);
@@ -303,6 +332,7 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
       const value = cleanProviderChunk(await abortable(upstream.json(), attemptSignal), tools, normalizeTools);
       if (responseWasAborted(value)) throw failure("model-upstream-incomplete");
       if (!hasUsableCompletion(value)) throw unusableCompletion(value, body);
+      validateRequestedContract(value, body, true);
       progress(); accept();
       if (body.stream === true) {
         header(true);
@@ -310,7 +340,7 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
         await write(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`);
         res.end();
       } else { header(false); res.json(value); }
-      return { firstOutputMs };
+      return { firstOutputMs, ...safeMetrics() };
     }
     if (!upstream.headers.get("content-type")?.includes("text/event-stream") || !upstream.body) throw failure("model-upstream-invalid-response");
     reader = upstream.body.getReader();
@@ -326,11 +356,15 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
       if (item.type === "done") {
         const completed = collector.finish();
         if (!hasUsableCompletion(completed)) throw unusableCompletion(completed, body);
+        validateRequestedContract(completed, body, true);
         accept();
         done = true;
         if (body.stream === true) {
           if (!res.headersSent) header(true);
-          for (const part of prelude) await write(part);
+          if (["json_object", "json_schema"].includes(body.response_format?.type)) {
+            const chunk = { ...completed, object: "chat.completion.chunk", choices: completed.choices.map(({ message, ...choice }) => ({ ...choice, delta: message })) };
+            await write(`data: ${JSON.stringify(chunk)}\n\n`);
+          } else for (const part of prelude) await write(part);
           prelude.length = 0;
           await write("data: [DONE]\n\n");
         }
@@ -342,6 +376,12 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
       else {
         const value = cleanProviderChunk(item.value, tools, normalizeTools);
         if (responseWasAborted(value)) throw failure("model-upstream-incomplete");
+        validateRequestedContract(value, body);
+        for (const choice of value.choices || []) {
+          const delta = choice.delta || choice.message || {};
+          contentBytes += typeof delta.content === "string" ? Buffer.byteLength(delta.content) : 0;
+          reasoningBytes += typeof delta.reasoning_content === "string" ? Buffer.byteLength(delta.reasoning_content) : 0;
+        }
         collector.add(value);
         pendingTools ||= (value.choices || []).some(choice => {
           const message = choice.delta || choice.message || {};
@@ -349,7 +389,7 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
         });
         encoded = `data: ${JSON.stringify(value)}\n\n`;
         if (hasMeaningfulOutput(value)) progress();
-        if (answerGate.add(value) && body.stream === true && !pendingTools) accept();
+        if (answerGate.add(value) && body.stream === true && !pendingTools && !["json_object", "json_schema"].includes(body.response_format?.type)) accept();
       }
       if (body.stream !== true) return;
       if (firstOutputMs === null || pendingTools) {
@@ -372,7 +412,12 @@ async function relayAttempt({ state, body, res, signal, fetchImpl, firstTokenTim
     }
     if (!done) throw failure("model-upstream-incomplete");
     if (body.stream === true) res.end();
-    return { firstOutputMs };
+    return { firstOutputMs, ...safeMetrics() };
+  } catch (error) {
+    // Only durations and sizes are logged, never the generated or supplied text.
+    const problem = error?.publicCode ? error : failure("model-upstream-unavailable");
+    throw Object.assign(new Error(problem.message), { publicCode: problem.publicCode, httpStatus: problem.httpStatus,
+      retryable: problem.retryable, retryAfterMs: problem.retryAfterMs, safeMetrics: safeMetrics() });
   } finally {
     clearTimeout(timeout);
     controller.abort();

@@ -78,6 +78,14 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
     respond(res, await store.finishJob(connectorAuth(req, req.body), req.params.id, req.body?.result || req.body));
   }));
 
+  for (const [prefix, auth] of [["/api/connectors/gonka/v1", {}], ["/api/inference/v1", { authenticateToken: applicationAuthenticator }]]) {
+    for (const [suffix, handler] of [["models", "handleModels"], ["health", "handleHealth"]]) {
+      app.get(`${prefix}/${suffix}`, (req, res) => {
+        void modelProxy[handler](req, res, auth).catch(() => respond(res, { ok: false, error: "model-proxy-internal-error" }, 500));
+      });
+    }
+  }
+
   app.post("/api/connectors/gonka/v1/chat/completions", modelJsonParser, (req, res) => {
     void modelProxy.handleChatCompletions(req, res).catch(() => {
       respond(res, { ok: false, error: "model-proxy-internal-error" }, 500);
@@ -99,6 +107,8 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
       ready: modelProxy.ready,
       model: modelProxy.model,
       upstreamModel: modelProxy.upstreamModel,
+      routing: modelProxy.routing,
+      models: modelProxy.models,
       transport: modelProxy.transport,
       providerStrategy: modelProxy.providerStrategy,
       get providers() { return modelProxy.upstreamStatus(); }
@@ -107,6 +117,8 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
       ready: modelProxy.ready && applicationAuthenticator.ready,
       model: modelProxy.model,
       upstreamModel: modelProxy.upstreamModel,
+      routing: modelProxy.routing,
+      models: modelProxy.models,
       transport: "application-token-server-proxy",
       path: "/api/inference/v1/chat/completions",
       providerStrategy: modelProxy.providerStrategy,

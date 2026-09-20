@@ -15,6 +15,13 @@ xn--n1afe0b.online, soty.pochinit.online {
       }
     }
   }
+  @inferenceInfo {
+    method GET
+    path /api/inference/v1/models /api/inference/v1/health /api/connectors/gonka/v1/models /api/connectors/gonka/v1/health
+  }
+  handle @inferenceInfo {
+    reverse_proxy app:8080
+  }
   @api path /api/* /ws/*
   handle @api {
     header Retry-After 30

@@ -402,5 +402,41 @@ await test("auto-tool-compatibility-retry-is-bounded-and-does-not-repeat-tool-ca
   finally{await malformed.close();}
 });
 
-assert.doesNotMatch(JSON.stringify(metrics), /synthetic-provider-secret|PRIVATE_SYNTHETIC_PROMPT|PRIVATE_PROVIDER_BALANCE|PRIVATE_LOSER_REASONING|TOOL_REASONING|EMPTY_AUTO_TOOL_REASONING/);
+await test("race-json-contract-is-validated-before-stream-commit", async () => {
+  for (const stream of [false, true]) {
+    const s = await scenario((_req,res)=>success(res,'NOT_JSON'), async (_req,res)=>{
+      await sleep(25); success(res,'{"ok":true}');
+    }, { providerStrategy: 'race' });
+    try {
+      const response = await s.request(stream, undefined, { response_format: { type: 'json_object' } });
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      assert.doesNotMatch(text, /NOT_JSON/);
+      assert.match(text, /ok/);
+      assert.deepEqual(s.hits, [1, 1]);
+    } finally { await s.close(); }
+  }
+});
+
+await test("json-mode-separates-closed-minimax-reasoning-without-repairing-json", async () => {
+  for (const stream of [false, true]) {
+    const s = await scenario((_req,res)=>success(res,'<think>PRIVATE_JSON_REASONING</think>{"ok":true}'), null);
+    try {
+      const response = await s.request(stream, undefined, { response_format: { type: 'json_object' } });
+      assert.equal(response.status, 200);
+      const text = await response.text();
+      const value = stream ? JSON.parse(text.split('\n').find(line=>line.startsWith('data: {')).slice(6)) : JSON.parse(text);
+      const message = value.choices[0][stream ? 'delta' : 'message'];
+      assert.deepEqual(JSON.parse(message.content), { ok: true });
+      assert.equal(message.reasoning_content, 'PRIVATE_JSON_REASONING');
+    } finally { await s.close(); }
+  }
+  for (const invalid of ['<think>unclosed {"ok":true}', '<think>closed</think>{"broken":']) {
+    const s = await scenario((_req,res)=>success(res,invalid), null);
+    try { const response=await s.request(false,undefined,{response_format:{type:'json_object'}}); assert.equal(response.status,502); await response.arrayBuffer(); }
+    finally { await s.close(); }
+  }
+});
+
+assert.doesNotMatch(JSON.stringify(metrics), /synthetic-provider-secret|PRIVATE_SYNTHETIC_PROMPT|PRIVATE_PROVIDER_BALANCE|PRIVATE_LOSER_REASONING|TOOL_REASONING|EMPTY_AUTO_TOOL_REASONING|PRIVATE_JSON_REASONING/);
 console.log(JSON.stringify({ ok: true, checks, sensitiveMetricsAbsent: true }));

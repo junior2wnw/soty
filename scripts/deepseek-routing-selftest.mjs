@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { createGonkaProxy, defaultGonkaProxyModel, miniMaxProxyModel } from '../server/gonka-proxy.js';
+import { createGonkaProxy, defaultGonkaProxyModel, miniMaxProxyModel, glmProxyModel } from '../server/gonka-proxy.js';
 
 const clientToken = 'synthetic-client-'.repeat(4);
 const primaryKey = 'synthetic-primary-provider-key';
@@ -53,12 +53,12 @@ await scenario({}, async ({ proxy, observed, call }) => {
   for (const alias of aliases) {
     const response = await call(alias);
     assert.equal(response.status, 200, alias);
-    assert.equal(response.body.model, defaultGonkaProxyModel);
+    const expected = /deepseek/i.test(alias) ? defaultGonkaProxyModel : miniMaxProxyModel;
+    assert.equal(response.body.model, expected);
     const sent = observed.at(-1);
-    assert.equal(sent.provider, 'primary');
-    assert.equal(sent.body.model, defaultGonkaProxyModel);
+    assert.equal(sent.body.model, expected);
     assert.equal(sent.body.max_tokens, 128);
-    assert.equal(sent.authorization, `Bearer ${primaryKey}`);
+    assert.equal(sent.authorization, `Bearer ${sent.provider === 'primary' ? primaryKey : fallbackKey}`);
     assert.notEqual(sent.authorization, `Bearer ${clientToken}`);
   }
   const count = observed.length;
@@ -70,7 +70,7 @@ await scenario({}, async ({ proxy, observed, call }) => {
 });
 
 await scenario({ respond: () => Response.json({ error: { message: 'synthetic outage' } }, { status: 503 }) }, async ({ observed, call }) => {
-  assert.equal((await call(miniMaxProxyModel)).status, 503);
+  assert.equal((await call(defaultGonkaProxyModel)).status, 503);
   assert.deepEqual(observed.map(p => p.provider), ['primary'], 'quarantined secondary must never receive a failed DeepSeek request');
 });
 
@@ -80,7 +80,7 @@ await scenario({ fallbackModels: miniMaxProxyModel, upstreamModel: miniMaxProxyM
     : Response.json({ model: body.model, choices: [{ message: { role: 'assistant', content: '4' }, finish_reason: 'stop' }] })
 }, async ({ proxy, observed, call }) => {
   assert.deepEqual(proxy.upstreamStatus().map(p => p.name), ['primary', 'fallback']);
-  assert.equal((await call(defaultGonkaProxyModel)).status, 200);
+  assert.equal((await call(miniMaxProxyModel)).status, 200);
   assert.deepEqual(observed.map(p => p.provider), ['primary', 'fallback']);
   assert.equal(observed[1].authorization, `Bearer ${fallbackKey}`);
 });
@@ -113,13 +113,47 @@ const tools = [{ type: 'function', function: { name: 'qa_reference', description
 await scenario({ respond: ({ body }) => Response.json({ model: body.model, choices: [{ finish_reason: 'stop',
   message: { role: 'assistant', content: null, tool_calls: [{ id: 'qa_tool_1', type: 'function', function: { name: 'qa_reference', arguments: '{}' } }] } }] })
 }, async ({ observed, call }) => {
-  const response = await call('MiniMax-M2.7', { tools, tool_choice: { type: 'function', function: { name: 'qa_reference' } } });
+  const response = await call('deepseek', { tools, tool_choice: { type: 'function', function: { name: 'qa_reference' } } });
   assert.equal(response.status, 200);
   assert.deepEqual(observed[0].body.tools, tools, 'DeepSeek must receive the original tool schema, without MiniMax RE2 rewrites');
   assert.equal(response.body.choices[0].message.tool_calls[0].id, 'qa_tool_1');
   assert.equal(response.body.choices[0].message.tool_calls[0].function.arguments, '{}');
+  assert.equal(response.body.choices[0].finish_reason, 'tool_calls');
+});
+
+for (const model of [defaultGonkaProxyModel, miniMaxProxyModel, glmProxyModel]) {
+  await scenario({ fallbackModels: '*', providerStrategy: 'race' }, async ({ observed, call, proxy }) => {
+    assert.deepEqual(proxy.upstreamStatus(model).map(p => p.name), ['primary', 'fallback']);
+    assert.equal((await call(model)).body.model, model);
+    assert.deepEqual(observed.map(p => p.provider), ['primary', 'fallback']);
+    assert.ok(observed.every(p => p.body.model === model));
+  });
+}
+await scenario({ fallbackModels: '*', providerStrategy: 'fallback' }, async ({ observed, call }) => {
+  assert.equal((await call(glmProxyModel)).status, 200);
+  assert.deepEqual(observed.map(p => p.provider), ['primary'], 'reserve is unused while primary is healthy');
+});
+for (const mismatch of [false, true]) {
+  await scenario({ fallbackModels: '*', respond: ({ provider, body }) => Response.json({
+    model: mismatch && provider === 'primary' ? miniMaxProxyModel : body.model,
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: provider === 'primary' && !mismatch ? 'invalid JSON' : '{"ok":true}' } }]
+  }) }, async ({ call }) => {
+    const response = await call(glmProxyModel, { response_format: { type: 'json_object' } });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.model, glmProxyModel);
+    assert.deepEqual(JSON.parse(response.body.choices[0].message.content), { ok: true });
+  });
+}
+await scenario({ fallbackModels: '*', providerConcurrency: 1, respond: async ({ body }) => {
+  await new Promise(resolve => setTimeout(resolve, 30));
+  return Response.json({ model: body.model, choices: [{ finish_reason: 'stop', message: { content: 'ok' } }] });
+} }, async ({ call, proxy }) => {
+  const pending = [defaultGonkaProxyModel, miniMaxProxyModel, glmProxyModel].map(model => call(model));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  for (const model of proxy.models) assert.ok(proxy.upstreamStatus(model).every(p => p.active <= 1));
+  assert.ok((await Promise.all(pending)).every(r => r.status === 200));
 });
 
 console.log(JSON.stringify({ ok: true, checks, aliasCount: aliases.length,
-  route: defaultGonkaProxyModel, primaryOnlyForDeepSeek: true, miniMaxRollbackPreserved: true,
+  routing: 'client-choice', modelCount: 3, raceAndFallback: true,
   providerCredentialsRemainSeparateFromClientCredentials: true, originalToolSchemaPreserved: true }));

@@ -36,7 +36,7 @@ try {
   for(const stream of [false,true]) for(const tool of [false,true]) {
     const response=await fetch('http://127.0.0.1:'+server.address().port,{
       method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-      body:JSON.stringify({model:defaultGonkaProxyModel,stream,messages:[{role:'user',content:'fixture'}],...(tool?{tools:[{type:'function',function:{name:'test'}}]}:{})})
+      body:JSON.stringify({model:miniMaxProxyModel,stream,messages:[{role:'user',content:'fixture'}],...(tool?{tools:[{type:'function',function:{name:'test'}}]}:{})})
     });
     assert.equal(response.status,200);
     assert.equal(observed.body.model,miniMaxProxyModel);

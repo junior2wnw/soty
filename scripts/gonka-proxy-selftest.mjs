@@ -65,6 +65,18 @@ try {
   assert.equal(readiness.applicationModelProxy.providerStrategy, "race");
   assert.equal(readiness.applicationModelProxy.providers[0].active, 0);
 
+  for (const endpoint of ['models', 'health']) {
+    const url = `${appBase}/api/inference/v1/${endpoint}`;
+    const unauthenticated = await fetch(url);
+    assert.equal(unauthenticated.status, 401); await unauthenticated.arrayBuffer();
+    const authorized = await fetch(url, { headers: { Authorization: `Bearer ${applicationToken}` } });
+    assert.equal(authorized.status, 200);
+    const info = await authorized.json();
+    assert.equal(endpoint === 'models' ? info.data.length : info.models.length, 3);
+    const wrongScope = await fetch(`${appBase}/api/connectors/gonka/v1/${endpoint}`, { headers: { Authorization: `Bearer ${applicationToken}` } });
+    assert.equal(wrongScope.status, 401); await wrongScope.arrayBuffer();
+  }
+
   const registration = await requestJson(`${appBase}/api/connectors/register`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -111,7 +123,7 @@ try {
   assert.equal(applicationProxied.status, 200);
   const applicationStream = await applicationProxied.text();
   assert.match(applicationStream, /get_status/u);
-  assert.match(applicationStream, expectedUpstreamModel === miniMaxProxyModel ? /"finish_reason":"tool_calls"/u : /"finish_reason":"stop"/u);
+  assert.match(applicationStream, /"finish_reason":"tool_calls"/u);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].authorization, `Bearer ${upstreamKey}`);
   assert.equal(requests[1].body.messages[0].content, "app-ping");
