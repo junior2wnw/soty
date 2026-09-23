@@ -37,6 +37,14 @@ must never overwrite the dev room, profile, job or durable-request history.
    running jobs, drain accepted requests, and take a consistent encrypted full
    data backup. Stop exactly the observed container and retain it for rollback.
    Never run two serving owners against the same volume.
+6. Set `SOTY_CONNECTOR_PRESERVE_HISTORY=1` on the recovered dev instance before
+   resuming connector writes. The ordinary seven-day cleanup otherwise removes
+   older completed jobs and offline connector registrations on the first poll.
+   This option retains historical records; grant expiry, stale queued-job
+   failure, uncertain execution handling and active queue limits still apply.
+   If cleanup has already run, restore only missing terminal jobs and their
+   related rows from the encrypted snapshot while offline. Keep every newer
+   row, including an expired queued job's terminal outcome, unchanged.
 
 ## Validation and cutover
 

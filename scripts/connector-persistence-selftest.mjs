@@ -99,6 +99,45 @@ try {
     const again=make(target);await again.ready;assert.deepEqual(await readConnectorState(target),fixture);
   });
 
+  await test("recovery retention preserves durable history without reviving access or replaying work", async () => {
+    const dir = path.join(root,"recovery-retention");
+    let now = Date.now();
+    const options = { now:()=>now, preserveHistory:true };
+    const store = make(dir,options);
+    await store.register(registration,token);
+    const finished = await store.createJob({...input,requestId:"retained-finished"});
+    await store.poll(auth);
+    await store.finishJob(auth,finished.job.id,{ok:true,exitCode:0,text:"preserved result"});
+    const finishedBefore = (await readConnectorState(dir)).jobs.find(j=>j.id===finished.job.id);
+    const queued = await store.createJob({...input,requestId:"stale-queued"});
+    const other = {...auth,deviceId:"uncertain-device",token:"u".repeat(48)};
+    await store.register({...registration,deviceId:other.deviceId},other.token);
+    const assigned = await store.createJob({...input,deviceId:other.deviceId});
+    await store.poll(other);
+    await store.register({...registration,deviceId:"offline-device"},"o".repeat(48));
+    const grant = await store.createAccessGrant(linkId,{deviceId:auth.deviceId,controllerDeviceId:"expired-controller",capabilities:["status"],expiresInMs:1000});
+    now += 8 * 24 * 60 * 60_000;
+    assert.deepEqual((await store.poll(auth)).jobs,[]);
+    const state = await readConnectorState(dir);
+    assert.deepEqual(state.jobs.find(j=>j.id===finished.job.id),finishedBefore);
+    assert.equal(state.jobs.find(j=>j.id===queued.job.id).status,"failed");
+    assert.equal(state.jobs.find(j=>j.id===queued.job.id).attempts,0);
+    assert.equal(state.jobs.find(j=>j.id===assigned.job.id).executionUncertain,true);
+    assert.equal(state.connectors.length,3);
+    assert.equal((await store.status({grantId:grant.grant.id,controllerDeviceId:"expired-controller",token:grant.token})).error,"connector-access-expired");
+    await store.close();
+    const reopened = make(dir,options);
+    const replay = await reopened.createJob({...input,requestId:"retained-finished"});
+    assert.equal(replay.reused,true);
+    assert.equal(replay.job.id,finished.job.id);
+    assert.equal((await readConnectorState(dir)).jobs.length,3);
+    await reopened.close();
+    const normal = make(dir,{now:()=>now,preserveHistory:false});
+    await normal.poll(auth);
+    assert.equal((await readConnectorState(dir)).jobs.some(j=>j.id===finished.job.id),false);
+    assert.equal((await readConnectorState(dir)).connectors.some(c=>c.deviceId==="offline-device"),false);
+  });
+
   await test("malformed, partial and inaccessible legacy stores remain unchanged and fail closed", async () => {
     for (const [index,content] of ["{",JSON.stringify({schema:"soty.connector-store.v2",connectors:[]}),JSON.stringify({...fixture,jobs:[{...fixture.jobs[0],events:[{seq:0}]}]}),JSON.stringify({...fixture,connectors:[{...fixture.connectors[0],tokenHash:"invalid"}]})].entries()) {
       const dir=path.join(root,`invalid-${index}`);await mkdir(dir);const file=path.join(dir,"connector-store.json");await writeFile(file,content);

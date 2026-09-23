@@ -30,6 +30,7 @@ class ConnectorStore {
     this.filePath = filePath;
     this.maintenancePath = path.join(path.dirname(filePath), "connector-maintenance.json");
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
+    this.preserveHistory = options.preserveHistory ?? process.env.SOTY_CONNECTOR_PRESERVE_HISTORY === "1";
     this.maxRequestRecords = safeInteger(options.maxRequestRecords, 1, 100_000, 100_000);
     this.requestIndex = new Map();
     this.leaseMs = safeInteger(options.leaseMs, 5_000, 10 * 60_000, defaultLeaseMs);
@@ -478,6 +479,11 @@ class ConnectorStore {
         this.signal(job.linkId, job.deviceId);
       }
     }
+
+    // A recovered installation may contain history older than the normal
+    // retention window. Keep its records without reviving expired grants,
+    // replaying stale queued jobs, or changing uncertain execution handling.
+    if (this.preserveHistory) return;
 
     this.state.connectors = this.state.connectors.filter((item) => now - item.lastSeenAt < finishedRetentionMs || this.state.jobs.some((job) => !terminalStatuses.has(job.status) && job.linkId === item.linkId && job.deviceId === item.deviceId && job.connectorId === item.connectorId));
     const retained = this.state.jobs
