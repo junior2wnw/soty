@@ -1,8 +1,12 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 
 export const defaultGonkaProxyModel = "deepseek-ai/DeepSeek-V4-Flash-0731";
+export const miniMaxProxyModel = "MiniMaxAI/MiniMax-M2.7";
+
+const supportedModels = new Set([defaultGonkaProxyModel, miniMaxProxyModel]);
 
 const maxRequestBytes = 4 * 1024 * 1024;
 const maxConcurrentPerInstallation = 100;
@@ -12,18 +16,20 @@ export function createGonkaProxy({
   baseUrl = process.env.SOTY_GONKA_BASE_URL || "https://gate.joingonka.ai/v1",
   apiKey = process.env.SOTY_GONKA_API_KEY || "",
   model = defaultGonkaProxyModel,
+  upstreamModel = process.env.SOTY_GONKA_UPSTREAM_MODEL || model,
   timeoutMs = process.env.SOTY_GONKA_REQUEST_TIMEOUT_MS,
   fetchImpl = fetch
 } = {}) {
   const upstreamBaseUrl = safeUpstreamBaseUrl(baseUrl);
   const upstreamKey = safeSecret(apiKey);
   const requestTimeoutMs = safeInteger(timeoutMs, 10_000, 10 * 60_000, 120_000);
-  const ready = Boolean(store && upstreamBaseUrl && upstreamKey && model === defaultGonkaProxyModel);
+  const ready = Boolean(store && upstreamBaseUrl && upstreamKey && supportedModels.has(model) && supportedModels.has(upstreamModel));
   const active = new Map();
 
   return {
     ready,
     model,
+    upstreamModel,
     transport: "authenticated-server-proxy",
     async handleChatCompletions(req, res, { authenticateToken, client = "connector" } = {}) {
       if (!ready) {
@@ -37,7 +43,7 @@ export function createGonkaProxy({
         respondJson(res, 401, { error: { message: "connector-auth-failed", type: "authentication_error" } });
         return;
       }
-      const body = cleanChatRequest(req.body, model);
+      const body = cleanChatRequest(req.body, model, upstreamModel);
       if (!body) {
         respondJson(res, 400, { error: { message: "invalid-model-request", type: "invalid_request_error" } });
         return;
@@ -85,8 +91,14 @@ export function createGonkaProxy({
           res.end();
           return;
         }
+        if (upstreamModel === miniMaxProxyModel && upstream.ok && contentType?.includes("application/json")) {
+          res.json(normalizeMiniMaxToolFinish(await upstream.json(), new Set()));
+          return;
+        }
         await new Promise((resolvePipe, reject) => {
-          const stream = Readable.fromWeb(upstream.body);
+          const stream = upstreamModel === miniMaxProxyModel && upstream.ok && contentType?.includes("text/event-stream")
+            ? Readable.from(normalizeMiniMaxStream(upstream.body))
+            : Readable.fromWeb(upstream.body);
           stream.once("error", reject);
           res.once("error", reject);
           res.once("finish", resolvePipe);
@@ -108,6 +120,47 @@ export function createGonkaProxy({
       }
     }
   };
+}
+
+// Some MiniMax nodes emit structured tool_calls but terminate a forced call
+// with "stop". Preserve the calls and restore the OpenAI completion contract.
+function normalizeMiniMaxToolFinish(value, toolChoices) {
+  for (const choice of value?.choices || []) {
+    if (choice.message?.tool_calls?.length || choice.delta?.tool_calls?.length) toolChoices.add(choice.index ?? 0);
+    if (choice.finish_reason === "stop" && toolChoices.has(choice.index ?? 0)) choice.finish_reason = "tool_calls";
+  }
+  return value;
+}
+
+async function* normalizeMiniMaxStream(body) {
+  const decoder = new StringDecoder("utf8");
+  const toolChoices = new Set();
+  let pending = "";
+  const normalize = (block) => {
+    const lines = block.split(/\r?\n/u);
+    const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+    if (!data || data === "[DONE]") return block;
+    let parsed;
+    try { parsed = JSON.parse(data); } catch { return block; }
+    const normalized = JSON.stringify(normalizeMiniMaxToolFinish(parsed, toolChoices));
+    let written = false;
+    return lines.flatMap((line) => {
+      if (!line.startsWith("data:")) return [line];
+      if (written) return [];
+      written = true;
+      return [`data: ${normalized}`];
+    }).join("\n");
+  };
+  for await (const chunk of body) {
+    pending += decoder.write(Buffer.from(chunk));
+    let boundary;
+    while ((boundary = /\r?\n\r?\n/u.exec(pending))) {
+      yield normalize(pending.slice(0, boundary.index)) + "\n\n";
+      pending = pending.slice(boundary.index + boundary[0].length);
+    }
+  }
+  pending += decoder.end();
+  if (pending) yield normalize(pending);
 }
 
 export function createApplicationTokenAuthenticator(
@@ -194,15 +247,48 @@ function uniqueApplicationTokenEntries(entries) {
   return { ok: true, entries };
 }
 
-function cleanChatRequest(value, model) {
+function cleanChatRequest(value, model, upstreamModel) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  if (value.model !== model || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 2_048) return null;
+  // Existing DeepSeek and MiniMax client identifiers address the operator's
+  // selected MiniMax upstream, including short OpenAI-compatible model aliases.
+  if (!acceptedClientModel(value.model, model, upstreamModel) || !Array.isArray(value.messages) || value.messages.length < 1 || value.messages.length > 2_048) return null;
   if (value.stream != null && typeof value.stream !== "boolean") return null;
   if (value.n != null && value.n !== 1) return null;
   for (const name of ["max_tokens", "max_completion_tokens"]) {
     if (value[name] != null && (!Number.isSafeInteger(value[name]) || value[name] < 1 || value[name] > 8_192)) return null;
   }
-  return value;
+  const body = { ...value, model: upstreamModel };
+  if (upstreamModel === miniMaxProxyModel && Array.isArray(value.tools)) {
+    body.tools = value.tools.map((tool) => tool?.type === "function" && tool.function?.parameters
+      ? { ...tool, function: { ...tool.function, parameters: compatibleMiniMaxSchema(tool.function.parameters) } }
+      : tool);
+  }
+  return body;
+}
+
+function acceptedClientModel(value, model, upstreamModel) {
+  if (typeof value !== "string" || value.length > 160) return false;
+  const name = value.trim().toLowerCase();
+  if ([model, upstreamModel].some((item) => item.toLowerCase() === name)) return true;
+  if (upstreamModel !== miniMaxProxyModel) return false;
+  return /^(?:deepseek-ai\/|deepseek\/)?deepseek(?:[-_.][a-z0-9][a-z0-9._-]*)?$/u.test(name)
+    || /^(?:minimaxai\/|minimax\/)?minimax(?:[-_.][a-z0-9][a-z0-9._-]*)?$/u.test(name);
+}
+
+function compatibleMiniMaxSchema(value) {
+  if (Array.isArray(value)) return value.map(compatibleMiniMaxSchema);
+  if (!value || typeof value !== "object") return value;
+  const schema = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compatibleMiniMaxSchema(item)]));
+  // OpenBroker validates patterns with RE2, which has no lookahead. Express
+  // these existing client constraints with equivalent JSON Schema negation.
+  if (schema.pattern === "^(?!)$") {
+    delete schema.pattern;
+    schema.allOf = [...(schema.allOf || []), { not: { type: "string" } }];
+  } else if (schema.pattern === "^(?![\\s\\S]*(?:[hH][tT][tT][pP][sS]?://))[\\s\\S]+$") {
+    schema.pattern = "^[\\s\\S]+$";
+    schema.allOf = [...(schema.allOf || []), { not: { type: "string", pattern: "[hH][tT][tT][pP][sS]?://" } }];
+  }
+  return schema;
 }
 
 function safeUpstreamBaseUrl(value) {
