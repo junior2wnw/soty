@@ -208,10 +208,12 @@ try {
 while($true){Start-Sleep -Seconds 1}`,
         runAs: "user",
         cwd: root,
-        timeoutMs: 1_200
+        // Include cold PowerShell startup before asserting descendant cleanup.
+        // The short generic timeout case above still checks the 1.2s deadline.
+        timeoutMs: 8_000
       }
     });
-    const treeTimedState = await waitJob(treeTimed.id, 15_000);
+    const treeTimedState = await waitJob(treeTimed.id, 25_000);
     assert.equal(treeTimedState.status, "failed");
     assert.equal(treeTimedState.result.exitCode, 124);
     const childPid = Number((await readFile(childPidPath, "utf8")).trim());

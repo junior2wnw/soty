@@ -1,0 +1,10 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG REVISION
+LABEL org.opencontainers.image.revision=${REVISION}
+WORKDIR /app
+# Keep the verified dev frontend, installed dependencies and traffic binary.
+# The return release changes the server to the reviewed complete source tree.
+COPY package.json ./package.json
+COPY server/ ./server/
+COPY contracts/ ./contracts/
