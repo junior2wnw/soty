@@ -50,6 +50,17 @@ export function modelReadiness(health) {
   const p=health?.[name];
   if(p?.ready!==true||typeof p.model!=='string'||!p.model||typeof p.transport!=='string'||!p.transport||(name==='applicationModelProxy'&&p.path!=='/api/inference/v1/chat/completions'))throw new SafeError('model_readiness_failed');
   fields[name]={ready:p.ready,model:p.model,transport:p.transport,...(name==='applicationModelProxy'?{path:p.path}:{})};
+  // Configuration participates in rollout identity; live provider counters and
+  // circuit snapshots must never make an otherwise unchanged deployment drift.
+  for(const field of ['upstreamModel','routing','providerStrategy']){
+   if(p[field]===undefined)continue;
+   if(typeof p[field]!=='string'||!p[field]||p[field].length>256)throw new SafeError('model_readiness_failed');
+   fields[name][field]=p[field];
+  }
+  if(p.models!==undefined){
+   if(!Array.isArray(p.models)||!p.models.length||p.models.length>128||p.models.some(model=>typeof model!=='string'||!model||model.length>256)||new Set(p.models).size!==p.models.length||!p.models.includes(p.model)||(p.upstreamModel!==undefined&&!p.models.includes(p.upstreamModel)))throw new SafeError('model_readiness_failed');
+   fields[name].models=[...p.models].sort();
+  }
  }
  return fields;
 }

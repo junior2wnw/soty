@@ -1,0 +1,23 @@
+{
+  "name": "@soty/connect",
+  "version": "0.1.1",
+  "description": "Portable project-local accounts, contacts, device grants and controlled updates",
+  "type": "module",
+  "private": true,
+  "files": ["browser", "server", "ui", "update", "test", "examples", "README.md", "UPDATES.md", "ACCOUNT-CONTINUITY.md", "VERIFICATION.md"],
+  "engines": { "node": ">=24.13.1" },
+  "exports": {
+    "./browser": { "types": "./browser/index.d.mts", "default": "./browser/index.mjs" },
+    "./server": "./server/index.mjs",
+    "./http": "./server/http.mjs",
+    "./ui": { "types": "./ui/index.d.mts", "default": "./ui/index.mjs" },
+    "./ui/style.css": "./ui/style.css",
+    "./update": "./update/index.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "update": "node update/cli.mjs",
+    "example": "node examples/server.mjs"
+  },
+  "connectCompatibility": { "protocol": 1, "storage": 1, "minReader": 1 }
+}

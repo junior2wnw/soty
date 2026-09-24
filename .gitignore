@@ -31,3 +31,6 @@ scripts/sotyctl.ps1
 /deploy/traffic/traffic-exit-pool.json
 /deploy/traffic/*.test.json
 /upstream/
+
+output/
+.local/

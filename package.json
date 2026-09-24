@@ -5,6 +5,9 @@
   "packageManager": "pnpm@10.30.0",
   "type": "module",
   "scripts": {
+    "connect:test": "node --test modules/connect/test/*.test.mjs",
+    "connect:update": "node modules/connect/update/cli.mjs",
+    "connect:release:test": "node --test deploy/connect/*.test.mjs",
     "dev": "vite --host 0.0.0.0",
     "prebuild": "node scripts/build-agent-release.mjs",
     "build": "vite build",
@@ -47,6 +50,6 @@
     "vite": "^7.2.4"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=24.13.1"
   }
 }

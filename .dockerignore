@@ -28,3 +28,10 @@ scripts/codex-stock-home
 scripts/codex-workspaces
 scripts/learning-outbox.jsonl
 scripts/learning-sent.jsonl
+
+output
+.local
+.playwright-cli
+modules/connect.stage-*
+modules/connect.previous-*
+modules/connect.*.failed

@@ -1,0 +1,14 @@
+[Unit]
+Description=Verify and apply signed compatible Soty Connect releases
+ConditionPathExists=!%h/.local/share/soty-connect/state/paused
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/share/soty-connect/source
+ExecStart=%h/.local/share/soty-connect/node/bin/node %h/.local/share/soty-connect/source/deploy/connect/host-controller.mjs %h/.local/share/soty-connect/config.json
+UMask=0077
+TimeoutStartSec=45min
+TimeoutStopSec=90s
+KillMode=control-group
+NoNewPrivileges=true
+

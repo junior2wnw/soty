@@ -10,6 +10,8 @@ import { agentSide, applyChessMove, boardSquares, buildGeniusLine, chessFromSnap
 import type { ChessCoach, ChessMode, ChessSnapshot } from "./features/chess";
 import { accountTransferButtonWidth, accountTransferChoices, accountTransferOperation, accountTransferSchema, createAccountTransferPayload, importDeviceFromAccountTransferPayload, isAccountTransferPayload, loadAccountPhraseBackup, phraseRecommendedWords, saveAccountPhraseBackup, validateAccountPhrase } from "./features/account-transfer";
 import type { AccountTransferOperation, AccountTransferRootAction, AccountTransferStage } from "./features/account-transfer";
+import { initializeConnect, showConnect, hasPendingConnect, isConnectLink } from "./features/connect";
+import { idbSet } from "./trustlink/storage";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
 import { clearRemoteSessionState, loadConnectorAccess, loadIssuedConnectorAccess, loadRemoteAccess, loadRemoteEnabled, setConnectorAccess, setIssuedConnectorAccess, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { capabilitiesAllowTraffic, clearTrafficState, loadTrafficAccess, loadTrafficShare, setTrafficAccess, setTrafficShare, trafficGrantCapabilities, trafficModeFromCapabilities } from "./features/traffic";
@@ -459,7 +461,7 @@ window.addEventListener("beforeinstallprompt", (event) => {
 
 window.addEventListener("appinstalled", () => {
   rememberAppRuntime();
-  void boot();
+  void safeBoot();
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -476,9 +478,22 @@ window.addEventListener("online", () => {
   void retryPendingConnectorRevocations();
 });
 
-void boot();
+void safeBoot();
 
 let serviceWorkerReloading = false;
+
+async function safeBoot(): Promise<void> {
+  try { await boot(); }
+  catch {
+    app.replaceChildren();
+    const message = document.createElement("p");
+    message.textContent = "Не удалось прочитать сохранённый профиль. Данные не сброшены. Закройте старые вкладки и повторите; если проблема остаётся, воспользуйтесь сохранённой копией.";
+    const retry = document.createElement("button");
+    retry.textContent = "Повторить";
+    retry.addEventListener("click", () => window.location.reload());
+    app.append(message, retry);
+  }
+}
 
 async function boot(): Promise<void> {
   const spreadExPairCode = spreadExPairCodeFromUrl();
@@ -491,7 +506,13 @@ async function boot(): Promise<void> {
   void retryPendingConnectorRevocations();
   trafficProfileWasAdopted = adoptTrafficProfileFromUrl() || trafficProfileWasAdopted;
 
-  if (shouldResetLocalState()) {
+  const resetRequested = shouldResetLocalState();
+  if (resetRequested) {
+    const cleanUrl = new URL(window.location.href);
+    for (const parameter of ["reset-local", "soty-reset", "repair"]) cleanUrl.searchParams.delete(parameter);
+    window.history.replaceState({}, "", cleanUrl);
+  }
+  if (resetRequested && window.confirm("Удалить местные комнаты и ключ старого формата в этом браузере? Сначала сохраните копию и проверьте восстановление. Обычное обновление не требует сброса.")) {
     if (await revokeAllIssuedConnectorAccess()) {
       await resetLocalSotyState();
       clearRemoteSessionState();
@@ -525,9 +546,9 @@ async function boot(): Promise<void> {
 
   device = await loadDevice();
   if (!device) {
-    renderNick();
-    return;
+    device = await createDevice("Гость");
   }
+  initializeConnect(device.nick);
 
   const pending = loadPendingJoin();
   if (pending) {
@@ -649,19 +670,26 @@ async function registerServiceWorker(): Promise<void> {
       if (!hadController || serviceWorkerReloading) {
         return;
       }
-      serviceWorkerReloading = true;
-      window.location.reload();
+      offerSafeUpdate(() => window.location.reload());
     });
 
     if (registration.waiting) {
-      registration.waiting.postMessage({ type: "skipWaiting" });
+      offerSafeUpdate(() => {
+        serviceWorkerReloading = true;
+        navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });
+        registration.waiting?.postMessage({ type: "skipWaiting" });
+      });
     }
 
     registration.addEventListener("updatefound", () => {
       const worker = registration.installing;
       worker?.addEventListener("statechange", () => {
         if (worker.state === "installed" && navigator.serviceWorker.controller) {
-          worker.postMessage({ type: "skipWaiting" });
+          offerSafeUpdate(() => {
+            serviceWorkerReloading = true;
+            navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });
+            worker.postMessage({ type: "skipWaiting" });
+          });
         }
       });
     });
@@ -753,6 +781,29 @@ async function restoreFromOperatorExportText(textOrPromise: string | Promise<str
     markRestoreInputFailed(nickInput);
     return null;
   }
+}
+
+function offerSafeUpdate(activate: () => void): void {
+  if (document.querySelector(".connect-update-notice")) return;
+  const notice = document.createElement("aside");
+  notice.className = "connect-update-notice";
+  notice.textContent = "Доступно обновление. Выберите удобный момент для перезапуска.";
+  const button = document.createElement("button");
+  button.textContent = "Сохранить работу и обновить";
+  button.addEventListener("click", async () => {
+    try {
+      // Saving must finish before reload; a quota error keeps the page open.
+      if (composer?.value || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream) {
+        notice.firstChild!.textContent = "Сначала завершите ввод сообщения, сканирование или выполняемое действие.";
+        return;
+      }
+      const snapshot = buildConnectSnapshot();
+      await idbSet("connect:before-update:v1", snapshot);
+      for (const [id, value] of texts) saveTextSnapshotNow(id, value);
+      activate();
+    } catch { notice.firstChild!.textContent = "Не удалось сохранить копию. Страница останется открыта; освободите место и повторите."; }
+  });
+  notice.append(button); document.body.append(notice);
 }
 
 async function restoreFromAccountTransferText(textOrPromise: string | Promise<string>, nickInput?: HTMLInputElement | null): Promise<RestoreResult | null> {
@@ -1517,6 +1568,7 @@ function renderApp(): void {
             <b>SOTY</b>
             <small>Чаты</small>
           </span>
+          <button class="connect-open" type="button" aria-label="Профиль и устройства" title="Профиль, друзья и устройства">${icon("person")}</button>
         </div>
         <button class="agent-open retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
         <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
@@ -1632,6 +1684,8 @@ function renderApp(): void {
   lineMeta = app.querySelector(".line-meta");
   fileInput = app.querySelector(".file-input");
   accountTransferFileInput = app.querySelector(".account-transfer-file");
+  app.querySelector<HTMLButtonElement>(".connect-open")?.addEventListener("click", () => openSotyConnect());
+  if (hasPendingConnect()) window.setTimeout(() => openSotyConnect(), 0);
   app.querySelector<HTMLDivElement>(".chat-scroll")?.addEventListener("scroll", () => {
     rememberCurrentChatScroll();
     updateChatBottomButton();
@@ -1823,7 +1877,7 @@ function renderTiles(): void {
     });
     renderEmptyHiveActions(field);
     renderDialogChrome();
-    void showQr(true);
+    if (!hasPendingConnect()) void showQr(true);
     return;
   }
   if (qrMode === "auto") {
@@ -2772,6 +2826,51 @@ function bindAccountTransferMenu(): void {
     accountTransferStage = "root";
     renderAccountTransferMenu();
   });
+}
+
+function buildConnectSnapshot(): unknown {
+  const exported = parseOperatorExportPayload(buildOperatorExport());
+  return { ...exported, localStorage: {}, tunnels: (exported.tunnels || []).filter((row) => !isRecord(row) || row.agent !== true) };
+}
+
+function openSotyConnect(link?: string): void {
+  if (!device) return;
+  closeQrOverlay();
+  showConnect({ label: device.nick, snapshot: buildConnectSnapshot, restore: restoreConnectSnapshot,
+    onRename: async (label) => {
+      if (!device) return;
+      const nick = cleanNick(label);
+      await idbSet("device", { ...device, nick });
+      // Existing realtime connections share this record, so the new name applies without disconnecting.
+      Object.assign(device, { nick });
+    },
+    invitation: async () => {
+      const room = loadTunnels().find(item => item.id === selectedId);
+      if (!room || !device || room.agent) throw new Error("room-unavailable");
+      const url = new URL(await inviteUrl(room, device));
+      url.host = window.location.host;
+      url.protocol = window.location.protocol;
+      return { url: url.href, label: room.label === "." ? "Приглашение в Соту" : room.label };
+    }, ...(link ? { link } : {}) });
+}
+
+async function restoreConnectSnapshot(value: unknown): Promise<void> {
+  const parsed = parseOperatorExportPayloadFromParsed(value);
+  if ((parsed.tunnels || []).some(row => isRecord(row) && typeof row.text === "string" && row.text.length > 200_000)) {
+    throw new Error("snapshot-text-too-large");
+  }
+  const incoming = restoredTunnelsFromPayload(parsed);
+  // Keep an independent local checkpoint. Restoring a profile never clones its old private key.
+  await idbSet(`connect:before-restore:${Date.now()}`, buildConnectSnapshot());
+  const existing = loadTunnels();
+  const known = new Set(existing.map(room => room.id));
+  const added = incoming.tunnels.filter(room => !known.has(room.id) && !room.agent);
+  saveTunnels([...existing, ...added]);
+  const addedIds = new Set(added.map(room => room.id));
+  const restoredTexts = new Map([...incoming.texts].filter(([id]) => addedIds.has(id)));
+  tunnels = loadTunnels();
+  renderApp();
+  applyRestoredTextSnapshots(restoredTexts);
 }
 
 function renderAccountTransferMenu(): void {
@@ -7106,6 +7205,12 @@ async function startQrScanner(overlay: HTMLDivElement): Promise<void> {
     }
     try {
       const raw = await detectQrFromVideo(video, detector, frame);
+      if (raw && isConnectLink(raw)) {
+        stopQrScanner();
+        overlay.remove();
+        openSotyConnect(raw);
+        return;
+      }
       const joinCode = joinCodeFromScannedQr(raw);
       if (joinCode) {
         status.textContent = "QR найден";
@@ -7186,7 +7291,7 @@ function attachQrResetGesture(canvas: HTMLCanvasElement): void {
     qrResetClicks += 1;
     if (qrResetClicks >= 10) {
       resetQrResetGesture();
-      window.location.assign("/?pwa=1&reset-local=1");
+      openSotyConnect();
       return;
     }
     qrResetTimer = window.setTimeout(resetQrResetGesture, 6500);

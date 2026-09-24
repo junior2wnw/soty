@@ -1,14 +1,21 @@
 import { stableJson } from "trustlink-kernel";
 import { webSha256Base64Url } from "trustlink-kernel/platform/web";
 import { cleanNick } from "./codec";
-import { deviceKey, idbGet, idbSet } from "./storage";
+import { deviceKey, idbGet, idbClaim } from "./storage";
 import { DeviceRecord } from "./types";
 
 export async function loadDevice(): Promise<DeviceRecord | null> {
-  return (await idbGet<DeviceRecord>(deviceKey)) ?? null;
+  const record = await idbGet<DeviceRecord>(deviceKey);
+  if (record === undefined) return null;
+  if (!record || typeof record.id !== "string" || !record.id.startsWith("dev_") || !(record.privateKey instanceof CryptoKey) || !record.publicJwk) {
+    throw new Error("existing-device-needs-recovery");
+  }
+  return record;
 }
 
 export async function createDevice(nick: string): Promise<DeviceRecord> {
+  const existing = await loadDevice();
+  if (existing) return existing;
   const keys = await crypto.subtle.generateKey(
     { name: "ECDSA", namedCurve: "P-256" },
     true,
@@ -23,6 +30,5 @@ export async function createDevice(nick: string): Promise<DeviceRecord> {
     privateKey: keys.privateKey,
     createdAt: new Date().toISOString()
   };
-  await idbSet(deviceKey, record);
-  return record;
+  return idbClaim(deviceKey, record);
 }

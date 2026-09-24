@@ -5,6 +5,8 @@ import { attachConnectorApi } from "./connector-api.js";
 import { attachCanonicalIdentityApi } from "./identity-wire-v1-api.js";
 import { attachSotyIdentityAdapterApi } from "./soty-identity-adapter-api.js";
 import { attachTrafficControl } from "./traffic-control.js";
+import { attachConnectModule } from "./connect-module.js";
+import { attachConnectReleaseSource } from "./connect-release-source.js";
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel } = {}) {
   const app = express();
@@ -53,6 +55,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel } = {}) {
     res.setHeader("X-Frame-Options", "DENY");
     next();
   });
+  attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
+  attachConnectModule(app, { dataDir });
   attachAccountTransfer(app, { dataDir });
   attachCanonicalIdentityApi(app, { dataDir });
   attachSotyIdentityAdapterApi(app, { dataDir });

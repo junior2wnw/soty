@@ -3092,3 +3092,6 @@ svg {
     display: none;
   }
 }
+
+:root .connect-open { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; flex:0 0 36px; margin-left:auto; border:1px solid currentColor; border-radius:9px; color:inherit; background:transparent; cursor:pointer; }
+:root .connect-open svg { width:20px; height:20px; }

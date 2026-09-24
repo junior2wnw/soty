@@ -13,6 +13,11 @@ to the user's computer.
 
 ## Architecture
 
+Portable project-local accounts, contact QR codes, additional devices and recovery
+are implemented in [`modules/connect`](modules/connect/README.md). Production
+signed releases, encrypted backups and the `ssh dev` update controller are documented
+in [`deploy/connect`](deploy/connect/README.md).
+
 - `src/` — PWA, encrypted links, files, terminal UI, and agent client.
 - `server/` — room relay plus durable jobs, ordered events, cancellation, and
   device presence.

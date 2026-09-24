@@ -1,0 +1,11 @@
+{
+  "source": "https://YOUR-RELEASE-HOST/connect/stable.json",
+  "trustFile": "connect-release-trust.json",
+  "target": "modules/connect",
+  "stateDir": ".connect-update-state",
+  "projectDirectory": ".",
+  "deploymentId": "soty-primary",
+  "channel": "stable",
+  "intervalMs": 21600000,
+  "validate": ["node", "scripts/validate-connect-update.mjs"]
+}

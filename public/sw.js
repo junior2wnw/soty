@@ -1,16 +1,19 @@
-const cacheName = "soty-online-v19";
+const cacheName = "soty-online-v20";
+const buildAssets = [];
 const shell = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(shell)));
-  self.skipWaiting();
+  event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll([...shell, ...buildAssets])));
+  // A waiting update is activated by an explicit safe reload, never during an edit.
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== cacheName).map((key) => caches.delete(key)))
-    )
+    caches.keys().then((keys) => {
+      const owned = keys.filter(key => key.startsWith("soty-online-"));
+      const keep = new Set([cacheName, ...owned.filter(key => key !== cacheName).slice(-1)]);
+      return Promise.all(owned.filter(key => !keep.has(key)).map(key => caches.delete(key)));
+    })
   );
   self.clients.claim();
 });
@@ -31,7 +34,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (request.mode === "navigate") {
-    event.respondWith(fetch(request).catch(() => caches.match("/")));
+    event.respondWith(fetch(request).catch(() => caches.open(cacheName).then(cache => cache.match("/"))));
     return;
   }
   if (url.origin !== self.location.origin || url.search) {
@@ -52,6 +55,6 @@ self.addEventListener("fetch", (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(request).then((cached) => cached || caches.match("/")))
+      .catch(() => caches.match(request).then((cached) => cached || Response.error()))
   );
 });

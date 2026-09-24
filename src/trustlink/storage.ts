@@ -62,11 +62,30 @@ export async function idbSet<T>(key: string, value: T): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction("kv", "readwrite");
     tx.objectStore("kv").put(value, key);
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error || new Error("storage-write-aborted")); };
     tx.oncomplete = () => {
       db.close();
       resolve();
     };
+  });
+}
+
+/** A concurrent first visit must claim one identity, not overwrite the other tab. */
+export async function idbClaim<T>(key: string, candidate: T): Promise<T> {
+  const db = await openDb();
+  return new Promise<T>((resolve, reject) => {
+    const tx = db.transaction("kv", "readwrite");
+    const store = tx.objectStore("kv");
+    const request = store.get(key);
+    let result = candidate;
+    request.onsuccess = () => {
+      if (request.result !== undefined) result = request.result as T;
+      else store.add(candidate, key);
+    };
+    tx.onabort = () => { db.close(); reject(tx.error || new Error("identity-storage-aborted")); };
+    tx.onerror = () => { db.close(); reject(tx.error || new Error("identity-storage-error")); };
+    tx.oncomplete = () => { db.close(); resolve(result); };
   });
 }
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Soty Connect signed stable feed every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:00:00 UTC
+RandomizedDelaySec=10min
+Persistent=true
+Unit=soty-connect-update.service
+
+[Install]
+WantedBy=timers.target
+
