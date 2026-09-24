@@ -29,6 +29,8 @@ class Engine {
   async create(name, config) {
     assert.ok(![...this.items.values()].some(c => c.Name === '/' + name));
     const { HostConfig, NetworkingConfig, ...Config } = clones(config), key = id(this.next++);
+    // Docker merges image labels into the container even when create supplies labels.
+    Config.Labels = { ...(this.images.get(Config.Image)?.Config?.Labels || {}), ...(Config.Labels || {}) };
     const mounts = (HostConfig.Mounts || []).map(m => ({ Type: m.Type, ...(m.Type === 'volume' ? { Name: m.Source } : {}), Source: m.Source, Destination: m.Target, RW: !m.ReadOnly }));
     for (const bind of HostConfig.Binds || []) { const [Source, Destination, flags] = bind.split(':'); mounts.push({ Type: 'bind', Source, Destination, RW: flags !== 'ro' }); }
     this.items.set(key, { Id: key, Image: Config.Image, Name: '/' + name, Config, HostConfig, Mounts: mounts, NetworkSettings: { Networks: NetworkingConfig.EndpointsConfig }, State: { Running: false, Status: 'created' } });
@@ -90,6 +92,21 @@ test('candidate preserves runtime fields, realised volumes and networks with onl
   assert.ok(result.Env.find(x => x.startsWith('SOTY_CONNECT_ORIGINS=')).includes('https://xn--n1afe0b.online,https://soty.pochinit.online'));
   old.Mounts.push({ Source: '/var/run/docker.sock', Destination: '/var/run/docker.sock' });
   assert.throws(() => candidateConfig(old, image(2), 'a'.repeat(32), f.config), /socket_forbidden/);
+});
+
+test('candidate explicitly pins inherited image module-tree label and rejects a changed tree', async () => {
+  const f = await fixture(), tree = 'f'.repeat(64);
+  const config = candidateConfig(original(), image(2), 'a'.repeat(32), f.config, tree);
+  assert.equal(config.Labels['io.soty.connect.tree'], tree);
+  assert.throws(() => candidateConfig(original(), image(2), 'a'.repeat(32), f.config, 'invalid'), /candidate_tree_invalid/);
+  let prepared;
+  f.deps.write = async (file, value) => { if (value.transaction?.phase === 'prepared') prepared = clones(value); return atomicState(file, value); };
+  await f.create().run();
+  const state = await f.readState(), candidate = await f.engine.inspect(state.active.containerId);
+  assert.equal(candidate.Config.Labels['io.soty.connect.tree'], state.active.tree);
+  const controller = f.create(); controller.state = prepared; controller.validateCandidate(candidate);
+  candidate.Config.Labels['io.soty.connect.tree'] = '0'.repeat(64);
+  assert.throws(() => controller.validateCandidate(candidate), /candidate_identity_changed/);
 });
 
 test('full bootstrap builds and maps before sole-writer switch, encrypted backup, no journal secrets', async () => {

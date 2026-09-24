@@ -87,8 +87,12 @@ export function runCommand(argv, { cwd, timeoutMs = 60_000, capture = false } = 
   });
 }
 
-export function candidateConfig(original, image, transaction, c) {
+export function candidateConfig(original, image, transaction, c, moduleTreeHash) {
   const result = createConfig(original, image, transaction, c.revision);
+  if (moduleTreeHash !== undefined) {
+    requireThat(TREE.test(moduleTreeHash), 'candidate_tree_invalid');
+    result.Labels['io.soty.connect.tree'] = moduleTreeHash;
+  }
   for (const mount of original.Mounts || []) requireThat(!/docker\.sock$/i.test(mount.Source || '') && !/docker\.sock$/i.test(mount.Destination || ''), 'runtime_docker_socket_forbidden');
   const env = new Map();
   for (const item of result.Env || []) { const i = item.indexOf('='); requireThat(i > 0 && !env.has(item.slice(0, i)), 'runtime_env_duplicate'); env.set(item.slice(0, i), item.slice(i + 1)); }
@@ -247,7 +251,7 @@ export class HostController {
     // Only our durable rollback intent permits this exact restart-policy change.
     // A crash after Docker applies it must not make the retained candidate foreign.
     if (t.candidateRestartDisabled === true && c.Id === t.nextId && hash(c.HostConfig.RestartPolicy) === hash({ Name: 'no', MaximumRetryCount: 0 })) checked.HostConfig.RestartPolicy = t.restartPolicy;
-    requireThat(c.Image === t.nextImage && c.Config.Labels?.[LABEL] === t.id && c.Config.Labels?.[LABEL + '.original'] === t.oldId && preservationHash(createConfig(checked, t.nextImage, t.id, this.config.revision)) === t.configHash, 'candidate_identity_changed');
+    requireThat(c.Image === t.nextImage && c.Config.Labels?.[LABEL] === t.id && c.Config.Labels?.[LABEL + '.original'] === t.oldId && c.Config.Labels?.['io.soty.connect.tree'] === t.nextTree && preservationHash(createConfig(checked, t.nextImage, t.id, this.config.revision)) === t.configHash, 'candidate_identity_changed');
   }
   async original() {
     const t = this.state.transaction; const c = await this.engine.inspect(t.oldId);
@@ -277,7 +281,7 @@ export class HostController {
     }
     const original = await this.engine.inspect(this.config.runtimeName);
     requireThat(original.Id === this.state.active.containerId && original.Image === this.state.active.image && original.State.Running, 'active_runtime_changed');
-    const id = randomBytes(16).toString('hex'), config = candidateConfig(original, entry.image, id, this.config);
+    const id = randomBytes(16).toString('hex'), config = candidateConfig(original, entry.image, id, this.config, module.tree);
     const oldEntry = await this.imageEntry(this.state.active.tree);
     const health = await this.ready({ entry: oldEntry, maintenance: false, idle: true });
     const preflight = await this.probe('status', original);

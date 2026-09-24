@@ -20,8 +20,6 @@ RUN apk add --no-cache curl unzip \
   && mkdir /out && unzip -q /tmp/xray.zip -d /out
 
 FROM node:24-trixie-slim@sha256:4f2b45e32dc7d2caf66b6dbd59fac50e32f8077769efe0ef4d4c3f114672537d
-ARG REVISION
-LABEL org.opencontainers.image.revision=${REVISION}
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
@@ -36,6 +34,8 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/contracts ./contracts
 COPY --from=build /app/modules ./modules
 COPY --from=traffic-core /out/xray /usr/local/bin/xray
+ARG REVISION
+LABEL org.opencontainers.image.revision=${REVISION}
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]
