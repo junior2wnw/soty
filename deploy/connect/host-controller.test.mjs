@@ -134,6 +134,21 @@ test('candidate health failure restores old immutable image on latest data witho
   assert.equal(await readFile(data, 'utf8'), 'durable latest sqlite data'); assert.ok(!f.engine.events.some(x => x.includes('rollback')));
 });
 
+test('rollback fences automatic daemon restart before stopping the candidate', async () => {
+  const f = await fixture({ healthFailure: true });
+  const stop = f.engine.stop.bind(f.engine);
+  f.engine.stop = async key => {
+    await stop(key);
+    if (key === id(2) && f.engine.items.get(key).HostConfig.RestartPolicy.Name === 'always') {
+      f.engine.items.get(key).State = { Running: true, Status: 'running' };
+    }
+  };
+  await assert.rejects(f.create().run(), /readiness_deadline/);
+  assert.equal((await f.engine.inspect(id(1))).State.Running, true);
+  assert.equal((await f.engine.inspect(id(2))).State.Running, false);
+  assert.ok(f.engine.events.indexOf('policy:' + id(2)) < f.engine.events.indexOf('stop:' + id(2)));
+});
+
 test('interrupted rollback resumes after its journaled candidate restart-policy change', async () => {
   const f = await fixture({ healthFailure: true }); let interrupted = false;
   f.deps.write = async (file, value) => {

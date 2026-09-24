@@ -339,6 +339,12 @@ export class HostController {
       this.validateCandidate(next); await this.note(t.phase, { nextId: next.Id });
     }
     let old = await this.original();
+    if (next) {
+      // Fence daemon-driven restart before STOP, including a resumed rollback.
+      await this.note(this.state.transaction.phase, { candidateRestartDisabled: true });
+      await this.action('restartPolicy', next.Id, { Name: 'no', MaximumRetryCount: 0 }, c => hash(c.HostConfig.RestartPolicy) === hash({ Name: 'no', MaximumRetryCount: 0 }));
+      next = await this.engine.inspect(next.Id);
+    }
     if (next?.State.Running) {
       const status = await this.probe('status', next);
       requireThat(status.count === 0 && (!status.maintenance || status.owned), 'rollback_active_jobs');
@@ -356,13 +362,9 @@ export class HostController {
       }
       if (next?.Name === '/' + this.config.runtimeName) await this.action('rename', next.Id, t.candidateName, c => c.Name === '/' + t.candidateName);
       if (old.Name !== '/' + this.config.runtimeName) await this.action('rename', old.Id, this.config.runtimeName, c => c.Name === '/' + this.config.runtimeName);
-      // Disable candidate restart before restoring the former sole writer.
-      if (next) {
-        await this.note(this.state.transaction.phase, { candidateRestartDisabled: true });
-        await this.action('restartPolicy', next.Id, { Name: 'no', MaximumRetryCount: 0 }, c => hash(c.HostConfig.RestartPolicy) === hash({ Name: 'no', MaximumRetryCount: 0 }));
-      }
       await this.action('restartPolicy', old.Id, t.restartPolicy, c => hash(c.HostConfig.RestartPolicy) === hash(t.restartPolicy));
       await this.note('restoring_original');
+      if (next) await this.ensureStopped(await this.engine.inspect(next.Id));
       await this.action('start', old.Id, undefined, c => c.State.Running && c.Image === t.oldImage);
       const marked = current.maintenance || Boolean(t.candidateStartAttempted);
       const fresh = await this.ready({ entry: await this.imageEntry(t.oldTree), maintenance: marked }); this.compareHealth(fresh);
