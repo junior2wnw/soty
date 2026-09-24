@@ -9,6 +9,15 @@ import { DockerApi } from '../connector/docker-api.mjs';
 
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 export const MAGIC = Buffer.from('SOTYBAK1');
+export function archiveHelperArgs({ containerId, helperName, image }) {
+  // Existing volumes can contain files owned by several UIDs. Root without
+  // DAC_READ_SEARCH cannot archive another owner's 0600 files after cap-drop.
+  // This capability grants reads/search only; both rootfs and inherited mounts
+  // remain read-only, and the helper has no network or other capabilities.
+  return ['run', '--rm', '--name', helperName, '--network', 'none', '--read-only', '--user', '0:0',
+    '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH', '--security-opt', 'no-new-privileges',
+    '--volumes-from', `${containerId}:ro`, '--entrypoint', 'tar', image, '-C', '/data', '-cf', '-', '.'];
+}
 export async function encryptBackup({ output, publicKey, metadata, stream }) {
   const key = createPublicKey(publicKey);
   if (key.asymmetricKeyType !== 'rsa' || key.asymmetricKeyDetails.modulusLength < 3072) fail('backup_key_invalid');
@@ -53,8 +62,7 @@ export async function backupStoppedContainer({ containerId, publicKeyFile, direc
   }
   const file = path.join(directory, `soty-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(4).toString('hex')}.enc`);
   const helperName = `soty-connect-backup-${randomBytes(8).toString('hex')}`;
-  const helper = spawn('docker', ['run', '--rm', '--name', helperName, '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-    '--security-opt', 'no-new-privileges', '--volumes-from', `${containerId}:ro`, '--entrypoint', 'tar', original.Image, '-C', '/data', '-cf', '-', '.'],
+  const helper = spawn('docker', archiveHelperArgs({ containerId, helperName, image: original.Image }),
     { stdio: ['ignore', 'pipe', 'ignore'] });
   const done = new Promise((resolve, reject) => { helper.once('error', () => reject(new Error('backup_helper_start'))); helper.once('exit', code => code === 0 ? resolve() : reject(new Error('backup_helper_failed'))); });
   done.catch(() => {});
