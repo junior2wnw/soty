@@ -111,6 +111,14 @@ export function candidateConfig(original, image, transaction, c, moduleTreeHash)
   return result;
 }
 
+export function originalPreservationHash(original, image, transaction) {
+  const config = createConfig(original, image, transaction);
+  // NetworkSettings contains the observed endpoint MAC, which Docker clears on
+  // stop. Config.MacAddress is the explicit requested value and remains guarded.
+  for (const endpoint of Object.values(config.NetworkingConfig.EndpointsConfig)) delete endpoint.MacAddress;
+  return preservationHash(config);
+}
+
 function statusValue(s) {
   requireThat(s?.ok === true && s.schema === 'soty.connect.maintenance.v1' && Number.isSafeInteger(s.count) && s.count >= 0 && typeof s.maintenance === 'boolean' && typeof s.owned === 'boolean', 'maintenance_status_invalid');
   return { ok: true, schema: s.schema, count: s.count, maintenance: s.maintenance, owned: s.owned };
@@ -257,7 +265,7 @@ export class HostController {
     const t = this.state.transaction; const c = await this.engine.inspect(t.oldId);
     requireThat(c.Id === t.oldId && c.Image === t.oldImage, 'original_identity_changed');
     const clone = structuredClone(c); clone.HostConfig.RestartPolicy = t.restartPolicy;
-    requireThat(preservationHash(createConfig(clone, t.oldImage, t.id)) === t.oldConfigHash, 'original_configuration_changed'); return c;
+    requireThat(originalPreservationHash(clone, t.oldImage, t.id) === t.oldConfigHash, 'original_configuration_changed'); return c;
   }
   async ensureStopped(c) { if (c.State.Running) await this.action('stop', c.Id, undefined, x => !x.State.Running); else requireThat(!c.State.Running, 'container_stop_unconfirmed'); }
   async backup(containerId) {
@@ -286,7 +294,7 @@ export class HostController {
     const health = await this.ready({ entry: oldEntry, maintenance: false, idle: true });
     const preflight = await this.probe('status', original);
     requireThat(preflight.count === 0 && !preflight.maintenance, 'precheck_not_quiescent');
-    this.state.transaction = { id, phase: 'preparing', oldId: original.Id, oldImage: original.Image, oldTree: this.state.active.tree, nextTree: module.tree, nextImage: entry.image, candidateName: 'soty-connect-next-' + id, previousName: 'soty-connect-previous-' + id, restartPolicy: original.HostConfig.RestartPolicy || { Name: 'no' }, oldConfigHash: preservationHash(createConfig(original, original.Image, id)), configHash: preservationHash(config), modelsHash: health.modelsHash, policyHash: health.policyHash, operation: null, helper: null };
+    this.state.transaction = { id, phase: 'preparing', oldId: original.Id, oldImage: original.Image, oldTree: this.state.active.tree, nextTree: module.tree, nextImage: entry.image, candidateName: 'soty-connect-next-' + id, previousName: 'soty-connect-previous-' + id, restartPolicy: original.HostConfig.RestartPolicy || { Name: 'no' }, oldConfigHash: originalPreservationHash(original, original.Image, id), configHash: preservationHash(config), modelsHash: health.modelsHash, policyHash: health.policyHash, operation: null, helper: null };
     await this.save();
     try {
       await this.note('creating_candidate');

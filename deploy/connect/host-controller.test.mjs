@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, unlink, rename } from 'node:fs/pro
 import { generateKeyPairSync } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import { HostController, candidateConfig, moduleTree, validateConfig, productionReady, atomicState } from './host-controller.mjs';
+import { HostController, candidateConfig, moduleTree, validateConfig, productionReady, atomicState, originalPreservationHash } from './host-controller.mjs';
 import { createRelease, recoverRelease } from '../../modules/connect/update/index.mjs';
 
 const id = n => n.toString(16).padStart(64, '0');
@@ -36,7 +36,7 @@ class Engine {
     this.items.set(key, { Id: key, Image: Config.Image, Name: '/' + name, Config, HostConfig, Mounts: mounts, NetworkSettings: { Networks: NetworkingConfig.EndpointsConfig }, State: { Running: false, Status: 'created' } });
     this.events.push('create'); return { Id: key };
   }
-  async stop(key) { this.events.push('stop:' + key); if (this.ignore === 'stop') return; const c = this.items.get(key); c.State = { Running: false, Status: 'exited', ExitCode: 0 }; if (this.drop === 'stop') throw new Error('lost'); }
+  async stop(key) { this.events.push('stop:' + key); if (this.ignore === 'stop') return; const c = this.items.get(key); c.State = { Running: false, Status: 'exited', ExitCode: 0 }; for (const endpoint of Object.values(c.NetworkSettings.Networks)) delete endpoint.MacAddress; if (this.drop === 'stop') throw new Error('lost'); }
   async start(key) { this.events.push('start:' + key); if (this.ignore === 'start') return; assert.ok(![...this.items.values()].some(c => c.Id !== key && c.State.Running), 'two application writers'); const c = this.items.get(key); c.State = { Running: true, Status: 'running' }; if (this.drop === 'start') throw new Error('lost'); }
   async rename(key, name) { this.events.push('rename'); assert.ok(![...this.items.values()].some(c => c.Id !== key && c.Name === '/' + name)); this.items.get(key).Name = '/' + name; }
   async request(method, route, body) { assert.equal(method, 'POST'); const match = route.match(/^\/containers\/([a-f0-9]{64})\/update$/); assert.ok(match); this.items.get(match[1]).HostConfig.RestartPolicy = clones(body.RestartPolicy); this.events.push('policy:' + match[1]); return {}; }
@@ -92,6 +92,27 @@ test('candidate preserves runtime fields, realised volumes and networks with onl
   assert.ok(result.Env.find(x => x.startsWith('SOTY_CONNECT_ORIGINS=')).includes('https://xn--n1afe0b.online,https://soty.pochinit.online'));
   old.Mounts.push({ Source: '/var/run/docker.sock', Destination: '/var/run/docker.sock' });
   assert.throws(() => candidateConfig(old, image(2), 'a'.repeat(32), f.config), /socket_forbidden/);
+});
+
+test('original fingerprint tolerates only observed endpoint MAC clearing and guards explicit requested settings', () => {
+  const live = original(), tx = 'e'.repeat(32);
+  live.NetworkSettings.Networks.bridge.MacAddress = '02:42:ac:11:00:02';
+  const stopped = clones(live); delete stopped.NetworkSettings.Networks.bridge.MacAddress;
+  assert.equal(originalPreservationHash(live, image(1), tx), originalPreservationHash(stopped, image(1), tx));
+  live.Config.MacAddress = '02:42:ac:11:00:03'; stopped.Config.MacAddress = live.Config.MacAddress;
+  assert.equal(originalPreservationHash(live, image(1), tx), originalPreservationHash(stopped, image(1), tx));
+  stopped.Config.MacAddress = '02:42:ac:11:00:04';
+  assert.notEqual(originalPreservationHash(live, image(1), tx), originalPreservationHash(stopped, image(1), tx));
+  stopped.Config.MacAddress = live.Config.MacAddress; stopped.NetworkSettings.Networks.custom.IPAMConfig.IPv4Address = '172.20.0.10';
+  assert.notEqual(originalPreservationHash(live, image(1), tx), originalPreservationHash(stopped, image(1), tx));
+});
+
+test('activation passes the stopped-original guard when Docker clears its assigned endpoint MAC', async () => {
+  const f = await fixture(); f.engine.items.get(id(1)).NetworkSettings.Networks.bridge.MacAddress = '02:42:ac:11:00:02';
+  assert.equal((await f.create().run()).status, 'updated');
+  assert.equal(f.counters().backups, 1);
+  assert.equal((await f.engine.inspect(id(1))).NetworkSettings.Networks.bridge.MacAddress, undefined);
+  assert.equal((await f.engine.inspect('soty-online-chat')).NetworkSettings.Networks.bridge.MacAddress, '02:42:ac:11:00:02');
 });
 
 test('candidate explicitly pins inherited image module-tree label and rejects a changed tree', async () => {
