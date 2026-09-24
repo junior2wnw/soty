@@ -2,6 +2,7 @@
 // Read-only, aggregate evidence; no tokens, record contents, or account IDs leave the process.
 import { DatabaseSync } from 'node:sqlite';
 import { readdir, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 const root = '/data';
@@ -9,6 +10,13 @@ const result = { format: 'soty.storage-audit.v1', rootJsonFiles: 0, rootJsonName
 const files = (await readdir(root)).filter(name => name.endsWith('.json') && name !== 'connector-maintenance.json').sort();
 result.rootJsonFiles = files.length;
 result.rootJsonNamesSha256 = createHash('sha256').update(JSON.stringify(files)).digest('hex');
+const roomContents = createHash('sha256');
+for (const name of files) {
+  const content = createHash('sha256');
+  for await (const chunk of createReadStream(path.join(root, name))) content.update(chunk);
+  roomContents.update(JSON.stringify([name, content.digest('hex')]));
+}
+result.rootJsonContentsSha256 = roomContents.digest('hex');
 for (const [key, file, tables] of [
   ['connector', 'connector-store.sqlite', ['records', 'jobs', 'inputs', 'results', 'events', 'requests']],
   ['connect', 'connect/accounts.sqlite', ['accounts', 'devices', 'contacts', 'enrollments', 'recoveries']],

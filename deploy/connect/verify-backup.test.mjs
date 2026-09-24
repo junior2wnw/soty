@@ -16,7 +16,7 @@ const privateKeyPem = keys.privateKey.export({ type: 'pkcs8', format: 'pem' });
 const publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' });
 const metadata = { offline: true, dataFormat: 'tar', original: { State: { Running: false },
   Mounts: [{ Destination: '/data', Type: 'volume' }], Config: { Env: ['SECRET=synthetic-only'] } }, secrets: {} };
-async function fixture(t) {
+async function fixture(t, { emptySqlite = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'connect-verify-'));
   t.after(async () => {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir())); assert.match(path.basename(root), /^connect-verify-/);
@@ -25,6 +25,13 @@ async function fixture(t) {
   const source = path.join(root, 'source'); await mkdir(path.join(source, 'rooms'), { recursive: true });
   const db = new DatabaseSync(path.join(source, 'connector-store.sqlite'));
   db.exec('CREATE TABLE fixture(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO fixture(value) VALUES (\'synthetic\')'); db.close();
+  if (emptySqlite) {
+    // This is the real SQLite lifecycle found in the Linux canary volume:
+    // opening and closing a database without writes leaves an empty file.
+    const emptyFile = path.join(source, 'not-yet-written.sqlite');
+    const empty = new DatabaseSync(emptyFile); empty.close();
+    assert.equal((await readFile(emptyFile)).length, 0);
+  }
   await writeFile(path.join(source, 'rooms', 'sample.json'), Buffer.alloc(180_000, 0x61));
   await writeFile(path.join(source, 'legacy-flat-room.json'), '{historical room bytes are preserved without JSON parsing');
   const archive = path.join(root, 'synthetic.tar');
@@ -73,6 +80,25 @@ test('streaming verification accepts a real tar with SQLite and reports only aft
   assert.equal(receipt.sqliteFiles, 1); assert.equal(receipt.roomFiles, 2);
   assert.equal(receipt.sha256, createHash('sha256').update(await readFile(file)).digest('hex'));
   assert.ok(!result.stdout.includes('SECRET')); assert.ok(!result.stdout.includes(f.root));
+});
+
+test('a real unopened-for-writing SQLite file is preserved, while the required connector store cannot be empty', async t => {
+  const f = await fixture(t, { emptySqlite: true });
+  const result = await verify(await f.encrypt(f.tar));
+  assert.equal(result.code, 0, result.stderr);
+  const receipt = JSON.parse(result.stdout);
+  assert.equal(receipt.sqliteFiles, 1); assert.equal(receipt.emptySqliteFiles, 1);
+  assert.equal(receipt.authenticated, true); assert.equal(receipt.roomFiles, 2);
+
+  const requiredEmpty = Buffer.from(f.tar);
+  const fullAt = headerAt(requiredEmpty, 'connector-store.sqlite');
+  const emptyAt = headerAt(requiredEmpty, 'not-yet-written.sqlite');
+  assert.ok(fullAt >= 0 && emptyAt >= 0);
+  for (const [at, name] of [[fullAt, './other.sqlite'], [emptyAt, './connector-store.sqlite']]) {
+    const header = requiredEmpty.subarray(at, at + 512);
+    header.fill(0, 0, 100); header.write(name); checksum(header);
+  }
+  failed(await verify(await f.encrypt(requiredEmpty, metadata, 'required-empty')));
 });
 
 test('tampered tag and truncated ciphertext never produce a success receipt', async t => {

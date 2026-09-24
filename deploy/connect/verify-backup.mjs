@@ -1,7 +1,6 @@
 // Plaintext is parsed in bounded memory, never written to a file or stdout.
 // No success receipt is emitted before GCM authentication and full tar checks.
 import { open } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
 import { createDecipheriv, privateDecrypt, createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 
 const MAX_INPUT = 64 * 1024, MAX_HEADER = 16 * 1024, MAX_METADATA = 4 * 1024 * 1024;
@@ -48,7 +47,7 @@ function pax(bytes) {
 }
 class TarVerifier {
   header = Buffer.alloc(512); headerUsed = 0; remaining = 0; padding = 0;
-  entry = null; zeroBlocks = 0; ended = false; count = 0; rooms = 0; sqlite = 0;
+  entry = null; zeroBlocks = 0; ended = false; count = 0; rooms = 0; sqlite = 0; emptySqlite = 0;
   connectorStore = false; nextPax = {}; globalPax = {}; longName = null; longLink = null;
   feed(chunk) {
     let at = 0;
@@ -100,9 +99,14 @@ class TarVerifier {
       if ((!name && type !== '5') || (['1', '2', '5'].includes(type) && size !== 0)) invalid();
       if (['1', '2'].includes(type)) safeName(linkName);
     } else if (size > MAX_METADATA) invalid();
-    const sqlite = !extension && name.endsWith('.sqlite');
+    const sqliteName = !extension && name.endsWith('.sqlite');
+    // SQLite creates a zero-byte file when a database is opened but has never
+    // been written. Preserve those files, while still requiring the actual
+    // connector store to have a valid, nonempty database header.
+    const emptySqlite = sqliteName && size === 0 && name !== 'connector-store.sqlite' && ['0', '7'].includes(type);
+    const sqlite = sqliteName && !emptySqlite;
     if (sqlite && (!['0', '7'].includes(type) || size < 100)) invalid();
-    this.entry = { name, type, size, extension, sqlite, prefix: Buffer.alloc(0), parts: [] };
+    this.entry = { name, type, size, extension, sqlite, emptySqlite, prefix: Buffer.alloc(0), parts: [] };
     this.remaining = size; this.padding = (512 - size % 512) % 512;
     if (!size) this.finishEntry();
   }
@@ -117,6 +121,7 @@ class TarVerifier {
       bytes.fill(0);
     } else {
       this.count++;
+      if (entry.emptySqlite) this.emptySqlite++;
       if ((entry.name.startsWith('rooms/') || /^[^/]+\.json$/.test(entry.name))
           && entry.size > 0 && ['0', '7'].includes(entry.type)) this.rooms++;
       if (entry.sqlite) {
@@ -134,7 +139,7 @@ class TarVerifier {
     if (!this.ended || this.headerUsed || this.remaining || this.padding || this.entry
         || Object.keys(this.nextPax).length || this.longName !== null || this.longLink !== null
         || !this.connectorStore || !this.count) invalid();
-    return { archiveEntries: this.count, roomFiles: this.rooms, sqliteFiles: this.sqlite };
+    return { archiveEntries: this.count, roomFiles: this.rooms, sqliteFiles: this.sqlite, emptySqliteFiles: this.emptySqlite };
   }
 }
 class PlaintextVerifier {
@@ -196,9 +201,17 @@ try {
     const tag = await readExactly(handle, 16, stat.size - 16);
     cipher.setAAD(prefix); cipher.setAuthTag(tag);
     const digest = createHash('sha256').update(prefix), parser = new PlaintextVerifier();
-    for await (const encrypted of createReadStream(file, { fd: handle.fd, autoClose: false, start: end, end: stat.size - 17, highWaterMark: 64 * 1024 })) {
-      digest.update(encrypted); const plain = cipher.update(encrypted);
+    // Keep one owner of the descriptor. A ReadStream destroyed by a parser
+    // exception can close an externally supplied fd and mask that exception
+    // with EBADF when the FileHandle is later closed.
+    const encrypted = Buffer.alloc(64 * 1024), ciphertextEnd = stat.size - 16;
+    for (let position = end; position < ciphertextEnd;) {
+      const { bytesRead } = await handle.read(encrypted, 0, Math.min(encrypted.length, ciphertextEnd - position), position);
+      if (!bytesRead) invalid();
+      const bytes = encrypted.subarray(0, bytesRead);
+      digest.update(bytes); const plain = cipher.update(bytes);
       try { parser.feed(plain); } finally { plain.fill(0); }
+      position += bytesRead;
     }
     const final = cipher.final();
     try { parser.feed(final); } finally { final.fill(0); }
