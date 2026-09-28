@@ -1,0 +1,9 @@
+.sw-chat-draft-status { color: var(--sw-muted); font-size: 11px; line-height: 1.4; }
+.sw-chat-draft-status.is-error { color: var(--sw-danger); }
+.sw-chat-error:has(.sw-chat-draft-status:not([hidden])) { padding-top: 4px; }
+.sw-chat-header .sw-grow { min-width: 0; }
+.sw-chat-header h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-composer>textarea { min-width: 0; }
+.sw-composer>.sw-button { flex-shrink: 0; }
+.sw-chat .sw-message-delete { min-width: 32px; min-height: 32px; }
+@media (pointer:coarse) { .sw-chat .sw-message-delete { min-width: 44px; min-height: 44px; } }

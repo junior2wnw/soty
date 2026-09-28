@@ -30,7 +30,7 @@ const MAX_WRAPPED_BYTES = 256 * 1024;
 const MAX_ARGS_BYTES = MAX_ENVELOPE_BYTES + 16 * 1024;
 const OPERATIONS = new Set([
   'bootstrap', 'status', 'profile.rename', 'card.get', 'card.rotate', 'contacts.request', 'contacts.list',
-  'contacts.accept', 'contacts.decline', 'contacts.cancel', 'contacts.remove', 'contacts.block', 'contacts.unblock',
+  'contacts.accept', 'contacts.decline', 'contacts.cancel', 'contacts.remove', 'contacts.block', 'contacts.unblock', 'contacts.requestAccount',
   'contacts.sendInvite', 'contacts.dismissInvite',
   'enrollment.start', 'enrollment.inspect', 'enrollment.approve', 'enrollment.preview', 'enrollment.finish',
   'device.revoke', 'vault.get', 'vault.put', 'recovery.set', 'recovery.confirm', 'recovery.use',
@@ -129,6 +129,17 @@ function publicError(error) {
   return { ok: false, error: { code: error instanceof ConnectError ? error.code : 'storage_unavailable',
     message: error instanceof ConnectError ? error.message : 'Connect storage is unavailable' } };
 }
+function extensionResult(result) {
+  assert(record(result) && !Object.hasOwn(result, 'ok') && !Object.hasOwn(result, 'error'), 'invalid_extension_result');
+  assert(Buffer.byteLength(canonicalJson(result), 'utf8') <= MAX_ARGS_BYTES, 'extension_result_too_large');
+  return result;
+}
+function extensionError(error) {
+  if (error instanceof ConnectError) return error;
+  const code = typeof error?.code === 'string' && /^[a-z][a-z0-9_-]{0,79}$/u.test(error.code)
+    ? error.code : 'extension_unavailable';
+  return new ConnectError(code); // Never expose driver errors or arbitrary exception messages.
+}
 function originValue(value) {
   assert(typeof value === 'string' && value.length <= 512, 'origin_not_allowed');
   let parsed;
@@ -150,12 +161,28 @@ function roomInviteUrl(value, origin) {
 }
 
 /** Local product identity + contacts. Not an OIDC provider or shared identity authority. */
-export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now } = {}) {
+export function createConnectService({ databasePath, projectId, allowedOrigins, clock = Date.now, extensions = [], canRequestContact = () => false } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(Array.isArray(allowedOrigins) && allowedOrigins.length > 0 && allowedOrigins.length <= 64, 'allowed_origins_required');
   const origins = new Set(allowedOrigins.map(originValue));
   assert(typeof clock === 'function', 'invalid_clock');
+  assert(typeof canRequestContact === 'function', 'invalid_contact_policy');
+  assert(Array.isArray(extensions) && extensions.length <= 32, 'invalid_extensions');
+  const extensionOperations = new Map();
+  for (const extension of extensions) {
+    const sync = extension && typeof extension.execute === 'function' && extension.execute.constructor.name !== 'AsyncFunction';
+    const async = extension && typeof extension.executeAsync === 'function';
+    assert(extension && extension.operations instanceof Set && ((sync && !extension.executeAsync) || (async && !extension.execute)), 'invalid_extension');
+    for (const operation of extension.operations) {
+      assert(typeof operation === 'string' && /^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
+        && operation.length <= 100 && !OPERATIONS.has(operation) && operation !== 'card.resolve'
+        && !extensionOperations.has(operation), 'invalid_extension_operation');
+      extensionOperations.set(operation, extension);
+    }
+  }
+  const supports = operation => OPERATIONS.has(operation) || extensionOperations.has(operation);
+  const revocationListeners = new Set();
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') {
     assert(!moduleContains(file), 'database_must_be_outside_module');
@@ -339,6 +366,27 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     }
 
     const { device, account } = authenticated(ctx.deviceId);
+    if (extensionOperations.has(op)) {
+      // The verified active installation, never request arguments, determines the caller.
+      const actor = Object.freeze({ accountId: account.id, deviceId: device.id, label: account.label });
+      try {
+        const result = extensionOperations.get(op).execute({ op, args, actor });
+        if (result && typeof result.then === 'function') {
+          result.catch(() => {});
+          fail('invalid_extension_result');
+        }
+        return extensionResult(result);
+      } catch (error) {
+        throw extensionError(error);
+      }
+    }
+    if (op === 'contacts.requestAccount') {
+      exactArgs(args, ['accountId']);
+      const targetId = textId(args.accountId);
+      assert(targetId !== account.id && canRequestContact(account.id, targetId) === true
+        && get('SELECT id FROM accounts WHERE id=?', targetId), 'contact_unavailable');
+      return act('contacts.request', { cardId: activeCard(targetId, timestamp).id }, ctx, timestamp);
+    }
     if (op === 'profile.rename') {
       exactArgs(args, ['label']);
       run('UPDATE accounts SET label=? WHERE id=?', label(args.label), account.id);
@@ -553,13 +601,25 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     projectId,
     schemaVersion: SCHEMA_VERSION,
     readerEpoch: READER_EPOCH,
-    close() { if (!closed) { closed = true; db.close(); } },
+    close() { if (!closed) { closed = true; revocationListeners.clear(); db.close(); } },
+    /** Host-only check for sessions created by a signed extension operation. */
+    isActorActive(actor) {
+      if (closed || !actor || typeof actor.accountId !== 'string' || typeof actor.deviceId !== 'string') return false;
+      const device = installation(actor.deviceId);
+      return Boolean(device && device.state === 'active' && device.account_id === actor.accountId);
+    },
+    subscribeRevocations(listener) {
+      assert(typeof listener === 'function', 'invalid_listener');
+      revocationListeners.add(listener);
+      return () => revocationListeners.delete(listener);
+    },
     async handle(input) {
       try {
         assert(!closed, 'service_closed');
         assert(record(input), 'invalid_request');
         const origin = originValue(input.origin);
         assert(origins.has(origin), 'origin_not_allowed');
+        const peer = typeof input.peer === 'string' && input.peer.length > 0 && input.peer.length <= 128 ? sha256(input.peer) : origin;
         const { op, args = {} } = input;
         assert(typeof op === 'string', 'unsupported_operation');
         const argsJson = canonicalJson(args);
@@ -567,11 +627,11 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         const timestamp = now();
         if (op === 'challenge') {
           exactArgs(args, ['operation', 'digest']);
-          assert(OPERATIONS.has(args.operation), 'unsupported_operation');
+          assert(supports(args.operation), 'unsupported_operation');
           base64(args.digest, 32, 'invalid_digest');
           return transaction(() => {
             cleanup(timestamp);
-            hitLimit('challenge:origin:' + origin, 1200, 60_000, timestamp);
+            hitLimit('challenge:peer:' + peer, 1200, 60_000, timestamp);
             const challengeId = randomId('challenge');
             const expiresAt = timestamp + CHALLENGE_MS;
             const message = canonicalJson({ schema: 'connect.proof.v1', projectId, origin, operation: args.operation, digest: args.digest, challengeId, expiresAt });
@@ -582,7 +642,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         if (op === 'card.resolve') {
           exactArgs(args, ['cardId']);
           return transaction(() => {
-            hitLimit('card-resolve:origin:' + origin, 1200, 60_000, timestamp);
+            hitLimit('card-resolve:peer:' + peer, 1200, 60_000, timestamp);
             try {
               const card = get('SELECT c.id,a.label FROM cards c JOIN accounts a ON a.id=c.account_id WHERE c.id=? AND c.revoked_at IS NULL', textId(args.cardId));
               assert(card, 'card_unavailable');
@@ -590,7 +650,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             } catch (error) { return publicError(error); }
           });
         }
-        assert(OPERATIONS.has(op), 'unsupported_operation');
+        assert(supports(op), 'unsupported_operation');
         const proof = input.proof;
         assert(record(proof), 'proof_required');
         textId(proof.challengeId);
@@ -599,7 +659,8 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
         const deviceId = deviceIdForKey(publicJwk);
         const signature = base64(proof.signature, 64, 'invalid_signature');
         const digest = sha256(argsJson);
-        return transaction(() => {
+        let deferred = null;
+        const reply = transaction(() => {
           cleanup(timestamp);
           const challenge = get('SELECT * FROM challenges WHERE id=?', proof.challengeId);
           assert(challenge && challenge.expires_at > timestamp, 'challenge_expired');
@@ -614,10 +675,16 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
           // writes roll back together, independently of the proof and persisted rate limit.
           try {
             hitLimit('signed:' + deviceId, 240, 60_000, timestamp);
-            if (op === 'recovery.use') hitLimit('recovery:origin:' + origin, 120, 60_000, timestamp);
+            if (op === 'recovery.use') hitLimit('recovery:peer:' + peer, 120, 60_000, timestamp);
           } catch (error) { return publicError(error); }
           db.exec('SAVEPOINT connect_action');
           try {
+            if (extensionOperations.get(op)?.executeAsync) {
+              const { account, device } = authenticated(deviceId);
+              deferred = { actor: Object.freeze({ accountId: account.id, deviceId: device.id, label: account.label }), args: JSON.parse(argsJson) };
+              db.exec('RELEASE connect_action');
+              return { ok: true };
+            }
             const result = act(op, args, { origin, publicJwk, publicJson, deviceId, digest }, timestamp);
             db.exec('RELEASE connect_action');
             return { ok: true, ...result };
@@ -627,6 +694,20 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
             return publicError(error);
           }
         });
+        if (reply.ok && deferred) {
+          // Proof and rate limit are committed before external I/O. Never hold an SQLite
+          // transaction across an await. Async modules recheck authorization at commit and
+          // persist their own request IDs for safe retry after a lost network response.
+          try {
+            const value = await extensionOperations.get(op).executeAsync({ op, ...deferred });
+            return { ok: true, ...extensionResult(value) };
+          } catch (error) { return publicError(extensionError(error)); }
+        }
+        if (reply.ok && op === 'device.revoke') {
+          const event = Object.freeze({ deviceId: args.deviceId });
+          for (const listener of revocationListeners) { try { listener(event); } catch { /* A committed revocation cannot be undone by an observer. */ } }
+        }
+        return reply;
       } catch (error) { return publicError(error); }
     },
   };

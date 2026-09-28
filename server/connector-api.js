@@ -3,6 +3,8 @@ import { createConnectorStore } from "./connector-store.js";
 import { createApplicationTokenAuthenticator, createGonkaProxy } from "./gonka-proxy.js";
 
 const jsonParser = express.json({ limit: "1mb", type: "application/json" });
+// One million stored UTF-16 characters can need six JSON bytes each. Keep this
+// larger bound on the authenticated result upload, not on every connector route.
 const resultJsonParser = express.json({ limit: "6mb", type: "application/json" });
 const modelJsonParser = express.json({ limit: "4mb", type: "application/json" });
 
@@ -48,6 +50,10 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
     respond(res, result);
   }));
 
+  app.get("/api/connectors/jobs/:id/runtime-status", route(async (req, res) => {
+    respondRuntimeState(res, await store.getAssignedJobState(connectorAuth(req), req.params.id));
+  }));
+
   app.get("/api/connectors/jobs/:id/events", route(async (req, res) => {
     const after = Number.parseInt(String(req.query.after || "0"), 10) || 0;
     const auth = controllerAuth(req);
@@ -71,11 +77,11 @@ export function attachConnectorApi(app, { dataDir, gonka, storeOptions } = {}) {
   }));
 
   app.post("/api/connectors/jobs/:id/events", jsonParser, route(async (req, res) => {
-    respond(res, await store.appendEvent(connectorAuth(req, req.body), req.params.id, req.body?.event || req.body));
+    respondRuntimeState(res, await store.appendEvent(connectorAuth(req, req.body), req.params.id, req.body?.event || req.body));
   }));
 
   app.post("/api/connectors/jobs/:id/result", resultJsonParser, route(async (req, res) => {
-    respond(res, await store.finishJob(connectorAuth(req, req.body), req.params.id, req.body?.result || req.body));
+    respondRuntimeState(res, await store.finishJob(connectorAuth(req, req.body), req.params.id, req.body?.result || req.body));
   }));
 
   for (const [prefix, auth] of [["/api/connectors/gonka/v1", {}], ["/api/inference/v1", { authenticateToken: applicationAuthenticator }]]) {
@@ -172,6 +178,15 @@ function bearerToken(req) {
 function respond(res, result, preferredStatus) {
   const status = preferredStatus || (result?.ok ? 200 : errorStatus(result?.error));
   if (!res.headersSent && !res.destroyed) res.status(status).json(result);
+}
+
+function respondRuntimeState(res, result) {
+  res.setHeader('Cache-Control', 'no-store');
+  // A connector has just sent the content; echoing every prior event or its large
+  // result creates quadratic traffic. It needs only acknowledgement and control.
+  respond(res, result?.ok ? { ok: true, job: {
+    id: result.job.id, status: result.job.status, cancelRequested: result.job.cancelRequested,
+  } } : result);
 }
 
 function errorStatus(error) {

@@ -42,6 +42,7 @@ export interface LocalAgentReply {
   readonly terminal?: readonly string[];
   readonly exitCode?: number;
   readonly sessionId?: string;
+  readonly appProposal?: { readonly schema: 'soty.local-app.v1'; readonly name: string; readonly port: number; readonly entryPath: string; readonly sourceJobId: string };
 }
 
 export type LocalAgentMessageHandler = (message: string) => void;
@@ -102,6 +103,7 @@ export interface ConnectorJobInput {
   readonly script?: string;
   readonly runAs?: "user" | "system";
   readonly timeoutMs?: number;
+  readonly output?: 'local-app';
 }
 
 export interface ConnectorJobEvent {
@@ -431,6 +433,7 @@ async function waitForJob(
         exitCode,
         messages: uniqueTail(messages),
         terminal: uniqueTail(terminal),
+        ...(reply.appProposal?.schema === 'soty.local-app.v1' ? { appProposal: reply.appProposal } : {}),
         ...(typeof reply.sessionId === "string" && reply.sessionId ? { sessionId: reply.sessionId } : {})
       };
     }

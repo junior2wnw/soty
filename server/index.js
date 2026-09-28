@@ -9,9 +9,10 @@ import { createTrafficTunnelProxy } from "./traffic-tunnel-proxy.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
-const distDir = path.join(rootDir, "dist");
+const distDir = process.env.SOTY_DIST_DIR ? path.resolve(process.env.SOTY_DIST_DIR) : path.join(rootDir, "dist");
 const dataDir = process.env.DATA_DIR || path.join(rootDir, "data");
 const port = Number.parseInt(process.env.PORT || "8080", 10);
+const host = process.env.HOST || "0.0.0.0";
 
 const trafficTunnel = combineTunnelProxies([
   createTrafficTunnelProxy(),
@@ -32,10 +33,16 @@ const store = createRoomStore(dataDir);
 attachRealtime(wss, store);
 
 server.on("upgrade", (request, socket, head) => {
+  let url;
+  try { url = new URL(request.url || "/", "http://localhost"); }
+  catch {
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
+  if (app.locals.appsService.handleUpgrade(request, socket, head)) return;
   if (trafficTunnel.handleUpgrade(request, socket, head)) {
     return;
   }
-  const url = new URL(request.url || "/", "http://localhost");
   const match = url.pathname.match(/^\/ws\/([A-Za-z0-9_-]{16,96})$/u);
   if (!match?.[1] || !isAllowedOrigin(request)) {
     socket.destroy();
@@ -46,10 +53,26 @@ server.on("upgrade", (request, socket, head) => {
   });
 });
 
-server.listen(port, "0.0.0.0", () => {
+server.listen(port, host, () => {
   console.log(`soty.online listening on ${port}`);
   console.log(`traffic tunnel ${trafficTunnel.enabled ? `enabled on ${trafficTunnel.publicPath}` : "disabled"}`);
+  if (process.send) process.send({ type: 'soty:ready', port: server.address().port });
 });
+
+let closing = false;
+function shutdown() {
+  if (closing) return;
+  closing = true;
+  for (const client of wss.clients) client.close(1001, 'server_shutdown');
+  server.close(); server.closeAllConnections();
+  wss.close();
+  void app.locals.closeServices().catch(() => { process.exitCode = 1; });
+}
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
+// Only supervised local development has an IPC parent. Losing it must not
+// leave an API process behind; a normal production start has no IPC channel.
+if (process.send) process.once('disconnect', shutdown);
 
 function isAllowedOrigin(request) {
   const origin = request.headers.origin;

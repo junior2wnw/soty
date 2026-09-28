@@ -94,6 +94,15 @@ test('candidate preserves runtime fields, realised volumes and networks with onl
   assert.throws(() => candidateConfig(old, image(2), 'a'.repeat(32), f.config), /socket_forbidden/);
 });
 
+test('host can explicitly configure an isolated HTTPS application origin without changing credentials', async () => {
+  const f = await fixture();
+  const config = validateConfig({ ...f.config, appOriginTemplate: 'https://{appId}.soty.example.org' });
+  const result = candidateConfig(original(), image(2), 'a'.repeat(32), config);
+  assert.ok(result.Env.includes('SOTY_APP_ORIGIN_TEMPLATE=https://{appId}.soty.example.org'));
+  assert.ok(result.Env.includes('SECRET_TEST=must-never-reach-journal'));
+  for (const invalid of ['http://{appId}.example.org', 'https://example.org/{appId}', 'https://{appId}.example.org/','https://user:password@{appId}.example.org']) assert.throws(() => validateConfig({ ...f.config, appOriginTemplate: invalid }), /config_app_origin_invalid/);
+});
+
 test('original fingerprint tolerates only observed endpoint MAC clearing and guards explicit requested settings', () => {
   const live = original(), tx = 'e'.repeat(32);
   live.NetworkSettings.Networks.bridge.MacAddress = '02:42:ac:11:00:02';

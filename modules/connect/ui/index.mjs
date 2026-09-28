@@ -38,7 +38,7 @@ export function parseConnectLink(value, origin = globalThis.location?.origin) {
   } catch { return null; }
 }
 export function openConnectPanel({ client, label = 'Мой профиль', productName = 'Соты', qr, snapshot, restore, invitation, onRename,
-  snapshotDescription = 'Комнаты и тексты. Вложения сохраняйте отдельно.', initialIntent = null }) {
+  snapshotDescription = 'Комнаты и тексты. Вложения сохраняйте отдельно.', initialIntent = null, initialTab = 'profile' }) {
   const previousFocus = document.activeElement;
   const dialog = document.createElement('dialog');
   dialog.className = 'connect-panel';
@@ -49,7 +49,7 @@ export function openConnectPanel({ client, label = 'Мой профиль', prod
   document.body.append(dialog); dialog.showModal();
   const content = dialog.querySelector('.connect-content');
   const message = dialog.querySelector('.connect-message');
-  let tab = 'profile', busy = false, stopped = false, status, local, enrollment, recoveryKit, timer, intent = initialIntent;
+  let tab = ['profile', 'people', 'devices', 'recovery'].includes(initialTab) ? initialTab : 'profile', busy = false, stopped = false, status, local, enrollment, recoveryKit, timer, intent = initialIntent;
   const note = text => { if (!stopped) message.textContent = text; };
   const guard = fn => async event => {
     event?.preventDefault(); if (busy || stopped) return;

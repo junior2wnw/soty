@@ -1,0 +1,18 @@
+body[data-soty-surface="world"] { margin:0; background:var(--sw-bg); color:var(--sw-ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+body[data-soty-surface="world"] #app { min-height:100dvh; }
+.soty-start { min-height:100dvh; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:20px; padding:24px; box-sizing:border-box; text-align:center; }
+.soty-start h1 { font-size:24px; margin:0; font-weight:600; }
+.soty-start p { margin:0; color:var(--sw-muted); }
+.soty-start button { min-height:48px; border:0; border-radius:16px; padding:12px 28px; background:var(--sw-honey); color:var(--sw-on-accent); font:inherit; cursor:pointer; }
+.soty-start button:focus-visible { outline:3px solid var(--sw-focus); outline-offset:4px; }
+.soty-start-mark { --hex-width:52px; background:var(--sw-honey); animation:soty-breathe 1.4s ease-in-out infinite alternate; }
+@keyframes soty-breathe { to { transform:scale(.92); opacity:.6; } }
+@media(prefers-reduced-motion:reduce) { .soty-start-mark { animation:none; } }
+.world-return { display:flex; align-items:center; justify-content:space-between; min-height:44px; margin:0 10px 12px; padding:9px 12px; color:var(--sw-on-accent); font:13px/1.4 system-ui,sans-serif; text-decoration:none; background:var(--sw-honey); border-radius:10px; }
+.world-return svg { width:16px; height:16px; }
+.legacy-file-dialog { width:min(540px,calc(100vw - 24px)); max-height:85dvh; overflow:auto; padding:22px; border:1px solid var(--sw-control-border); border-radius:20px; background:var(--sw-surface); color:var(--sw-ink); font:14px/1.5 system-ui,sans-serif; }
+.legacy-file-dialog::backdrop { background:var(--sw-backdrop); }
+.legacy-file-dialog header { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:20px; }
+.legacy-file-dialog h2 { margin:0; font-size:20px; }
+.legacy-file-dialog button { border:1px solid var(--sw-control-border); padding:10px 14px; border-radius:10px; color:var(--sw-ink); background:var(--sw-surface-raised); cursor:pointer; }
+.legacy-file-dialog .file-rail { min-height:100px; margin-bottom:18px; }

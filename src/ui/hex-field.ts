@@ -1,3 +1,6 @@
+import { axialToPixel, hexMetrics, hexSpiral, type Axial, type HexMetrics } from '../geometry/hex.mjs';
+import '../geometry/dom';
+
 export interface HexItem {
   readonly id: string;
   readonly label: string;
@@ -15,19 +18,13 @@ let panX = 0;
 let panY = 0;
 let movedDuringPointer = false;
 const panCleanups = new WeakMap<HTMLElement, () => void>();
-const hexStepX = 62;
-const hexStepY = 72;
-
-type HexMetrics = {
-  readonly stepX: number;
-  readonly stepY: number;
-};
 
 export function renderHexField(
   root: HTMLElement,
   items: readonly HexItem[],
   actions: HexFieldActions
 ): void {
+  panCleanups.get(root)?.();
   root.innerHTML = `<div class="hex-map"></div>`;
   const map = root.querySelector<HTMLDivElement>(".hex-map");
   if (!map) {
@@ -35,32 +32,43 @@ export function renderHexField(
   }
   map.style.transform = `translate(${panX}px, ${panY}px)`;
   const rect = root.getBoundingClientRect();
+  const metrics = readMetrics(root);
   const fieldRadius = Math.max(
     5,
-    Math.ceil(Math.max(rect.width / 110, rect.height / 92)) + 2,
+    Math.ceil(Math.hypot(rect.width, rect.height) / metrics.stepY) + 2,
     Math.ceil(Math.sqrt(Math.max(items.length, 1))) + 4
   );
-  const metrics = hexMetrics(root);
-  const positions = gridPositions(fieldRadius);
+  const positions = hexSpiral(fieldRadius);
   const itemByIndex = new Map(items.map((item, index) => [index, item]));
   map.innerHTML = positions.map((position, index) => {
     const { left, top } = positionPoint(position, metrics);
     const item = itemByIndex.get(index);
     if (!item) {
-      return `<div class="retro-hex hex hex-cell" style="--x:${left}px;--y:${top}px"></div>`;
+      return `<div class="retro-hex soty-hex hex hex-cell" style="--x:${left}px;--y:${top}px"></div>`;
     }
     return `
-      <button class="retro-hex hex filled${item.active ? " active" : ""}" data-id="${item.id}" type="button"
+      <button class="retro-hex soty-hex hex filled${item.active ? " active" : ""}" data-id="${escapeHtml(item.id)}" type="button"
         style="--x:${left}px;--y:${top}px;--color:${item.color}" aria-label="${escapeHtml(item.label)}" data-tooltip="Открыть ${escapeHtml(item.label)}">
-        <span class="hex-core"><span>${escapeHtml(initials(item.label))}</span></span>
-        <b>${escapeHtml(item.label)}</b>
+        <span class="hex-safe"><span class="hex-core"><span>${escapeHtml(initials(item.label))}</span></span>
+        <b>${escapeHtml(item.label)}</b></span>
         <em></em>
         ${item.unread ? "<i></i>" : ""}
       </button>
     `;
   }).join("");
 
-  installPan(root, map);
+  const removePan = installPan(root, map);
+  const resize = new ResizeObserver(() => {
+    const currentMetrics = readMetrics(root);
+    map.querySelectorAll<HTMLElement>('.hex').forEach((node, index) => {
+      const coordinate = positions[index];
+      if (!coordinate) return;
+      const { left, top } = positionPoint(coordinate, currentMetrics);
+      node.style.setProperty('--x', `${left}px`); node.style.setProperty('--y', `${top}px`);
+    });
+  });
+  resize.observe(root);
+  panCleanups.set(root, () => { removePan(); resize.disconnect(); });
   map.querySelectorAll<HTMLButtonElement>(".hex.filled").forEach((button) => {
     let timer = 0;
     let held = false;
@@ -101,8 +109,7 @@ export function renderHexField(
   });
 }
 
-function installPan(root: HTMLElement, map: HTMLElement): void {
-  panCleanups.get(root)?.();
+function installPan(root: HTMLElement, map: HTMLElement): () => void {
   let dragging = false;
   let startX = 0;
   let startY = 0;
@@ -141,43 +148,17 @@ function installPan(root: HTMLElement, map: HTMLElement): void {
   root.addEventListener("pointermove", move);
   root.addEventListener("pointerup", up);
   root.addEventListener("pointercancel", up);
-  panCleanups.set(root, () => {
+  return () => {
     root.removeEventListener("pointerdown", down);
     root.removeEventListener("pointermove", move);
     root.removeEventListener("pointerup", up);
     root.removeEventListener("pointercancel", up);
-  });
-}
-
-function gridPositions(radius: number): [number, number][] {
-  const result: [number, number][] = [[0, 0]];
-  for (let ring = 1; ring <= radius; ring += 1) {
-    result.push(...ringPositions(ring));
-  }
-  return result;
-}
-
-function ringPositions(radius: number): [number, number][] {
-  const result: [number, number][] = [];
-  const dirs: [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
-  let q = -radius;
-  let r = radius;
-  for (const [dq, dr] of dirs) {
-    for (let step = 0; step < radius; step += 1) {
-      result.push([q, r]);
-      q += dq;
-      r += dr;
-    }
-  }
-  return result;
-}
-
-function hexMetrics(root: HTMLElement): HexMetrics {
-  const style = getComputedStyle(root);
-  return {
-    stepX: readCssPixel(style, "--hex-step-x", hexStepX),
-    stepY: readCssPixel(style, "--hex-step-y", hexStepY)
   };
+}
+
+function readMetrics(root: HTMLElement): HexMetrics {
+  const style = getComputedStyle(root);
+  return hexMetrics(readCssPixel(style, '--hex-field-width', 78) / 2, readCssPixel(style, '--hex-gap', 6));
 }
 
 function readCssPixel(style: CSSStyleDeclaration, property: string, fallback: number): number {
@@ -185,11 +166,9 @@ function readCssPixel(style: CSSStyleDeclaration, property: string, fallback: nu
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function positionPoint([q, r]: [number, number], metrics: HexMetrics): { readonly left: number; readonly top: number } {
-  return {
-    left: q * metrics.stepX,
-    top: (r + q / 2) * metrics.stepY
-  };
+function positionPoint(axial: Axial, metrics: HexMetrics): { readonly left: number; readonly top: number } {
+  const point = axialToPixel(axial, metrics.radius, metrics.gap);
+  return { left: point.x, top: point.y };
 }
 
 function initials(value: string): string {

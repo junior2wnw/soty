@@ -1,9 +1,8 @@
 import QRCode from 'qrcode';
-import { createConnectClient } from '../../modules/connect/browser/index.mjs';
+import { accountClient as client } from '../core/connect-client';
 import { openConnectPanel, parseConnectLink } from '../../modules/connect/ui/index.mjs';
 import '../../modules/connect/ui/style.css';
 
-const client = createConnectClient({ projectId: 'soty', endpoint: '/api/connect/rpc', dbName: 'soty-connect-v1' });
 let opening = false;
 let bootstrapping: Promise<unknown> | null = null;
 let firstIntent = parseConnectLink(window.location.href);

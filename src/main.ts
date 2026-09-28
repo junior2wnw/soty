@@ -1,4 +1,6 @@
 import QRCode from "qrcode";
+import { getPwaController, registerUpdateGuard, watchFormEdits } from './platform/pwa';
+import { createLegacyDraftStore } from './platform/legacy-drafts.mjs';
 import jsQR from "jsqr";
 import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
@@ -52,6 +54,7 @@ import {
   upsertTunnel
 } from "./trustlink";
 import "./style.css";
+import { chooseTool, toolsNavigation, type ToolChoice } from './platform/tools-shell';
 import type { Color, Move, PieceSymbol, Square } from "chess.js";
 
 type BarcodeResult = {
@@ -199,7 +202,7 @@ const remoteGrantCloseCounts = new Map<string, number>();
 const syncStates = new Map<string, "open" | "closed" | "connecting">();
 const files = new Map<string, ReceivedFile[]>();
 const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
-const localDrafts = new Map<string, string>();
+const localDrafts = createLegacyDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) }, () => device?.id ?? '');
 const liveDrafts = new Map<string, Map<string, LiveDraftState>>();
 const liveDraftTimers = new Map<string, number>();
 const liveDraftSendTimers = new Map<string, number>();
@@ -475,12 +478,18 @@ document.addEventListener("visibilitychange", () => {
 
 window.addEventListener("online", () => {
   startAgentButtonWatcher(true);
+  localDrafts.flush();
   void retryPendingConnectorRevocations();
 });
 
-void safeBoot();
+window.addEventListener('beforeunload', event => {
+  if (device && selectedId && composer) { if (composer.value) localDrafts.set(selectedId, composer.value); else localDrafts.delete(selectedId); }
+  if (!localDrafts.flush()) { event.preventDefault(); event.returnValue = ''; }
+});
 
-let serviceWorkerReloading = false;
+let pwaGuardRegistered = false;
+
+void safeBoot();
 
 async function safeBoot(): Promise<void> {
   try { await boot(); }
@@ -494,6 +503,7 @@ async function safeBoot(): Promise<void> {
     app.append(message, retry);
   }
 }
+
 
 async function boot(): Promise<void> {
   const spreadExPairCode = spreadExPairCodeFromUrl();
@@ -566,6 +576,7 @@ async function boot(): Promise<void> {
     saveSelectedTunnelId(selectedId);
   }
   renderApp();
+  openRequestedTool();
   startAgentButtonWatcher(true);
   resumePendingAgentDialogReplies();
   if (trafficProfileWasAdopted) {
@@ -658,45 +669,44 @@ async function watchSpreadExPairing(pairCode: string, onSuccess: () => void, sta
 }
 
 async function registerServiceWorker(): Promise<void> {
-  if (!("serviceWorker" in navigator)) {
-    return;
+  if (pwaGuardRegistered) return;
+  pwaGuardRegistered = true;
+  const pwa = getPwaController(), edits = watchFormEdits();
+  const unguard = registerUpdateGuard(async () => {
+    if (!localDrafts.flush() || composer?.value || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream || edits.hasUnsavedChanges()) return false;
+    await idbSet('connect:before-update:v1', buildConnectSnapshot());
+    for (const [id, value] of texts) saveTextSnapshotNow(id, value);
+    return true;
+  });
+  const unsubscribe = pwa.subscribe(state => {
+    if (['available', 'blocked', 'failed'].includes(state.update)) offerSafeUpdate(() => { void pwa.applyUpdate(); });
+  });
+  window.addEventListener('pagehide', event => { if (!event.persisted) { unsubscribe(); unguard(); edits.destroy(); } });
+}
+
+function openRequestedTool(): void {
+  const tool = new URL(location.href).searchParams.get('tool');
+  if (tool === 'internet') void openTrafficFabricModal();
+  else if (tool === 'terminal') {
+    const available = sortedVisibleTunnels().filter(tunnel => remoteAccess.has(tunnel.id) || isAgentLinkedTunnel(tunnel.id));
+    const choices: ToolChoice[] = available.map(tunnel => ({ label: tunnel.label || 'Устройство', description: 'Открыть команды подключённого устройства', symbol: 'tools', run: () => { selectTunnel(tunnel.id); renderApp(); openRemoteCommands(tunnel.id); } }));
+    choices.push({ label: 'Подключить компьютер', description: 'Установить коннектор на свой компьютер', symbol: 'laptop', run: () => { location.assign('/?action=connect-device#mine'); } });
+    chooseTool('Команды', 'Выберите устройство, которому вы предоставили доступ.', choices);
   }
-
-  try {
-    const hadController = Boolean(navigator.serviceWorker.controller);
-    const registration = await navigator.serviceWorker.register("/sw.js");
-
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (!hadController || serviceWorkerReloading) {
-        return;
-      }
-      offerSafeUpdate(() => window.location.reload());
-    });
-
-    if (registration.waiting) {
-      offerSafeUpdate(() => {
-        serviceWorkerReloading = true;
-        navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });
-        registration.waiting?.postMessage({ type: "skipWaiting" });
-      });
-    }
-
-    registration.addEventListener("updatefound", () => {
-      const worker = registration.installing;
-      worker?.addEventListener("statechange", () => {
-        if (worker.state === "installed" && navigator.serviceWorker.controller) {
-          offerSafeUpdate(() => {
-            serviceWorkerReloading = true;
-            navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });
-            worker.postMessage({ type: "skipWaiting" });
-          });
-        }
-      });
-    });
-
-    void registration.update();
-  } catch (error) {
-    console.warn("[soty] Service worker registration failed", error);
+  else if (tool === 'chess') {
+    const choices: ToolChoice[] = [{ label: 'С компьютером', description: 'Партия и подсказки — можно начать сразу', symbol: 'sparkle', run: () => startAgentChess() },
+      { label: 'Пригласить друга', description: 'Создать комнату и поделиться приглашением', symbol: 'people', run: async () => { createFreshDialog('Шахматы', { archiveCurrent: false }); renderApp(); await openChessForSelected(); await showQr(); } }];
+    for (const tunnel of sortedVisibleTunnels().filter(item => !isAgentTunnel(item))) choices.push({ label: tunnel.label || 'Общая комната', description: 'Продолжить партию в этой комнате', symbol: 'game', run: async () => { selectTunnel(tunnel.id); renderApp(); await openChessForSelected(); } });
+    chooseTool('С кем играем?', 'Выберите соперника.', choices);
+  }
+  else if (tool === 'notes') composer?.focus();
+  else if (tool === 'files') {
+    const dialog = document.createElement('dialog'); dialog.className = 'legacy-file-dialog'; dialog.setAttribute('aria-label', 'Файлы текущей комнаты');
+    const header = document.createElement('header'); const title = document.createElement('h2'); title.textContent = 'Файлы комнаты';
+    const close = document.createElement('button'); close.type = 'button'; close.textContent = 'Закрыть'; close.addEventListener('click', () => dialog.close()); header.append(title, close);
+    const rail = document.createElement('div'); rail.className = 'file-rail';
+    const attach = document.createElement('button'); attach.type = 'button'; attach.textContent = 'Прикрепить файл'; attach.addEventListener('click', () => fileInput?.click());
+    dialog.append(header, rail, attach); app.append(dialog); dialog.addEventListener('close', () => dialog.remove(), { once: true }); renderFiles(); dialog.showModal();
   }
 }
 
@@ -713,8 +723,8 @@ function renderNick(): void {
       <form class="nick-form">
         <span>${icon("person")}</span>
         <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
-        <button class="restore-button" type="button" aria-label="restore" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
-        <button type="submit" aria-label="ok" data-tooltip="Сохранить имя">${icon("check")}</button>
+        <button class="restore-button" type="button" aria-label="Восстановить копию" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
+        <button type="submit" aria-label="Сохранить" data-tooltip="Сохранить имя">${icon("check")}</button>
         <input class="restore-file" type="file" accept="application/json,.json" />
       </form>
     </section>
@@ -1174,14 +1184,14 @@ function openActionMenu(): void {
   const overlay = document.createElement("div");
   overlay.className = "action-modal";
   overlay.innerHTML = `
-    <section class="action-sheet" role="dialog" aria-modal="true" aria-label="actions">
+    <section class="action-sheet" role="dialog" aria-modal="true" aria-label="Действия">
       <header class="action-head">
         <span class="action-mark">${icon("check")}</span>
         <span>
           <b>ДЕЙСТВИЯ</b>
           <small>${escapeHtml(counterpartyLabelForSelected())}</small>
         </span>
-        <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
+        <button class="action-close icon-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть">${icon("close")}</button>
       </header>
       <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="что сделать" />
       ${comment ? `<div class="action-comment"><b>Комментарий</b><span>${escapeHtml(comment.slice(0, 180))}</span></div>` : ""}
@@ -1376,7 +1386,7 @@ function renderJoinWaiting(invite: JoinInvite): void {
         <b>${escapeHtml(nick)}</b>
       </div>
       <div class="pair-actions">
-        <button class="icon-button deny-button" type="button" aria-label="close" data-tooltip="Отменить подключение">${icon("close")}</button>
+        <button class="icon-button deny-button" type="button" aria-label="Закрыть" data-tooltip="Отменить подключение">${icon("close")}</button>
       </div>
     </section>
   `;
@@ -1565,13 +1575,13 @@ function renderApp(): void {
         <div class="retro-brand">
           <span class="retro-brand-mark">S</span>
           <span>
-            <b>SOTY</b>
-            <small>Чаты</small>
+            <b>Комнаты</b>
+            <small>Совместные инструменты</small>
           </span>
           <button class="connect-open" type="button" aria-label="Профиль и устройства" title="Профиль, друзья и устройства">${icon("person")}</button>
         </div>
         <button class="agent-open retro-icon-button" type="button" aria-label="поговорить с агентом" data-tooltip="Поговорить с агентом">${icon("person")}</button>
-        <button class="qr-open retro-icon-button" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
+        <button class="qr-open retro-icon-button" type="button" aria-label="Показать QR-код" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
       <main class="dialog-shell">
@@ -1581,18 +1591,18 @@ function renderApp(): void {
             <b class="dialog-name">.</b>
             <small class="dialog-state">OFFLINE</small>
           </span>
-          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="clear dialog" data-tooltip="Очистить диалог">${icon("refresh")}</button>
+          <button class="clear-dialog-button retro-icon-button" type="button" aria-label="Очистить диалог" data-tooltip="Очистить диалог">${icon("refresh")}</button>
           <span class="dialog-id">0000</span>
         </header>
         <section class="editor retro-screen">
-          <div class="chat-tools" role="toolbar" aria-label="chat tools">
+          <div class="chat-tools" role="toolbar" aria-label="Инструменты чата">
             <label class="chat-search-box">
               <span>${icon("search")}</span>
-              <input class="chat-search-input" type="search" autocomplete="off" spellcheck="false" aria-label="search messages" />
+              <input class="chat-search-input" type="search" autocomplete="off" spellcheck="false" aria-label="Поиск сообщений" />
               <small class="chat-search-count"></small>
             </label>
-            <button class="chat-copy-button retro-icon-button" type="button" aria-label="copy chat" data-tooltip="Copy chat">${icon("copy")}</button>
-            <button class="chat-bottom-button retro-icon-button" type="button" aria-label="scroll bottom" data-tooltip="Scroll bottom">${icon("download")}</button>
+            <button class="chat-copy-button retro-icon-button" type="button" aria-label="Скопировать чат" data-tooltip="Скопировать чат">${icon("copy")}</button>
+            <button class="chat-bottom-button retro-icon-button" type="button" aria-label="К последним сообщениям" data-tooltip="К последним сообщениям">${icon("download")}</button>
           </div>
           <div class="chat-pin-host"></div>
           <div class="chat-scroll">
@@ -1604,38 +1614,38 @@ function renderApp(): void {
           <div class="chat-status-bar" aria-live="polite"></div>
           <div class="composer-mode-host"></div>
           <form class="composer-bar">
-            <button class="composer-attach retro-icon-button" type="button" aria-label="attach" data-tooltip="Прикрепить файл">${icon("clip")}</button>
-            <button class="composer-voice retro-icon-button" type="button" aria-label="voice input" aria-pressed="false" data-tooltip="Голосовой ввод">${icon("mic")}</button>
-            <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="message"></textarea>
-            <button class="send-button retro-icon-button" type="submit" aria-label="send" data-tooltip="Отправить сообщение">${icon("send")}</button>
+            <button class="composer-attach retro-icon-button" type="button" aria-label="Прикрепить файл" data-tooltip="Прикрепить файл">${icon("clip")}</button>
+            <button class="composer-voice retro-icon-button" type="button" aria-label="Голосовой ввод" aria-pressed="false" data-tooltip="Голосовой ввод">${icon("mic")}</button>
+            <textarea class="chat-composer" rows="1" spellcheck="false" autocapitalize="sentences" aria-label="Сообщение"></textarea>
+            <button class="send-button retro-icon-button" type="submit" aria-label="Отправить" data-tooltip="Отправить сообщение">${icon("send")}</button>
           </form>
         <div class="terminal-panel" data-tooltip="Окно удаленных команд" data-tooltip-side="top">
           <div class="terminal-head">
             <span class="terminal-led"></span>
             <span class="terminal-peer"></span>
             <span class="terminal-glyph">$</span>
-            <button class="terminal-collapse" type="button" aria-label="collapse" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
-            <button class="terminal-close" type="button" aria-label="close" data-tooltip="Закрыть удаленные команды">${icon("close")}</button>
+            <button class="terminal-collapse" type="button" aria-label="Свернуть" data-tooltip="Свернуть окно команд">${icon("collapse")}</button>
+            <button class="terminal-close" type="button" aria-label="Закрыть" data-tooltip="Закрыть удаленные команды">${icon("close")}</button>
           </div>
           <div class="terminal-output"></div>
           <form class="terminal-form">
             <span>$</span>
             <input autocomplete="off" autocapitalize="off" spellcheck="false" data-tooltip="off" />
-            <button type="submit" aria-label="run" data-tooltip="Выполнить команду">${icon("check")}</button>
+            <button type="submit" aria-label="Выполнить команду" data-tooltip="Выполнить команду">${icon("check")}</button>
           </form>
         </div>
         <div class="chess-panel" data-mode="peer">
           <div class="chess-head">
             <span class="chess-led"></span>
-            <b class="chess-title">CHESS</b>
-            <small class="chess-status">READY</small>
+            <b class="chess-title">Шахматы</b>
+            <small class="chess-status">Начало партии</small>
             <button class="chess-coach" type="button" data-tooltip="Гений">${icon("person")}<span>ГЕНИЙ</span></button>
-            <button class="chess-flip" type="button" aria-label="flip" data-tooltip="Развернуть доску">${icon("refresh")}</button>
-            <button class="chess-new" type="button" aria-label="new chess game" data-tooltip="Новая партия">${icon("check")}</button>
-            <button class="chess-close" type="button" aria-label="close chess" data-tooltip="Закрыть шахматы">${icon("close")}</button>
+            <button class="chess-flip" type="button" aria-label="Развернуть доску" data-tooltip="Развернуть доску">${icon("refresh")}</button>
+            <button class="chess-new" type="button" aria-label="Новая партия" data-tooltip="Новая партия">${icon("check")}</button>
+            <button class="chess-close" type="button" aria-label="Закрыть шахматы" data-tooltip="Закрыть шахматы">${icon("close")}</button>
           </div>
           <div class="chess-body">
-            <div class="chess-board" aria-label="chess board"></div>
+            <div class="chess-board" aria-label="Шахматная доска"></div>
             <aside class="chess-desk">
               <div class="chess-turn"></div>
               <div class="chess-stats"></div>
@@ -1659,15 +1669,15 @@ function renderApp(): void {
         <section class="side-block action-block">
           <h2>Действия</h2>
           <div class="side-actions">
-            <button class="side-action attach-action" type="button" aria-label="attach" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Отправить файл">${icon("clip")}<span>Файл</span></button>
-            <button class="side-action knock-action" type="button" aria-label="knock" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Позвать собеседника">${icon("bell")}<span>Позвать</span></button>
+            <button class="side-action attach-action" type="button" aria-label="Прикрепить файл" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Отправить файл">${icon("clip")}<span>Файл</span></button>
+            <button class="side-action knock-action" type="button" aria-label="Позвать собеседника" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Позвать собеседника">${icon("bell")}<span>Позвать</span></button>
             <button class="side-action agent-action" type="button" aria-label="поговорить с агентом" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Поговорить с агентом">${icon("person")}<span>Агент</span></button>
             <button class="side-action quick-actions-action" type="button" aria-label="действия" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Действия">${icon("check")}<span>Задачи</span></button>
-            <button class="side-action remote-action" type="button" aria-label="remote" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>Доступ</span></button>
-            <button class="side-action close-action" type="button" aria-label="close" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Закрыть соту">${icon("close")}<span>Закрыть</span></button>
-            <button class="side-action chess-action" type="button" aria-label="chess" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Шахматы">${icon("chess")}<span>Шахматы</span></button>
+            <button class="side-action remote-action" type="button" aria-label="Удалённый доступ" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Включить удаленное подключение">${icon("remote")}<span>Доступ</span></button>
+            <button class="side-action close-action" type="button" aria-label="Закрыть" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Закрыть соту">${icon("close")}<span>Закрыть</span></button>
+            <button class="side-action chess-action" type="button" aria-label="Шахматы" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Шахматы">${icon("chess")}<span>Шахматы</span></button>
             <button class="side-action internet-action" type="button" aria-label="Интернет через Соты" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Интернет через этот компьютер">${icon("traffic")}<span>Интернет</span></button>
-            <button class="side-action traffic-action" type="button" aria-label="traffic" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Link traffic">${icon("traffic")}<span>Traffic</span></button>
+            <button class="side-action traffic-action" type="button" aria-label="Общий интернет" data-button-width="${accountTransferButtonWidth("standard")}" data-tooltip="Общий интернет">${icon("traffic")}<span>Интернет</span></button>
             ${accountTransferSideActionsHtml()}
           </div>
           <input class="account-transfer-file" type="file" accept="application/json,.json" />
@@ -1677,8 +1687,12 @@ function renderApp(): void {
     </section>
   `;
 
+  const tool = new URL(location.href).searchParams.get('tool');
+  document.body.dataset.tool = ['chess', 'terminal', 'files', 'notes', 'internet'].includes(tool ?? '') ? tool! : '';
+  app.prepend(toolsNavigation(tool));
   textarea = app.querySelector(".dialog-buffer");
   composer = app.querySelector(".chat-composer");
+  if (composer) composer.dataset.pwaIgnore = ''; // The update guard explicitly checks this live draft.
   textPaint = app.querySelector<HTMLDivElement>(".text-paint-inner");
   lineGutter = app.querySelector(".line-gutter");
   lineMeta = app.querySelector(".line-meta");
@@ -1877,7 +1891,8 @@ function renderTiles(): void {
     });
     renderEmptyHiveActions(field);
     renderDialogChrome();
-    if (!hasPendingConnect()) void showQr(true);
+    const requestedTool = new URL(location.href).searchParams.get('tool');
+    if (!hasPendingConnect() && !['notes', 'files', 'chess', 'terminal', 'internet'].includes(requestedTool ?? '')) void showQr(true);
     return;
   }
   if (qrMode === "auto") {
@@ -1946,7 +1961,7 @@ function renderEmptyHiveActions(field: HTMLDivElement): void {
       ${icon("person")}
       <span>Агент</span>
     </button>
-    <button class="empty-hive-action empty-qr-action" type="button" aria-label="qr" data-tooltip="Показать QR для подключения">
+    <button class="empty-hive-action empty-qr-action" type="button" aria-label="Показать QR-код" data-tooltip="Показать QR для подключения">
       ${icon("qr")}
       <span>QR</span>
     </button>
@@ -2601,6 +2616,7 @@ function createFreshDialog(
   }
   const current = loadTunnels();
   const active = current.find((tunnel) => tunnel.id === selectedId);
+  if (active && composer?.value) localDrafts.set(active.id, composer.value);
   const activeLabel = cleanNick(active ? counterpartyLabel(active) : "");
   const rawRequestedLabel = cleanNick(labelOverride);
   const requestedLabel = rawRequestedLabel === "." ? "" : rawRequestedLabel;
@@ -2623,7 +2639,6 @@ function createFreshDialog(
   selectedId = fresh.id;
   saveSelectedTunnelId(fresh.id);
   tunnels = next;
-  localDrafts.delete(active?.id || "");
   texts.set(fresh.id, "");
   saveTextSnapshotNow(fresh.id, "");
   ensureSync(fresh);
@@ -3007,7 +3022,7 @@ function requestAccountPhrase(kind: AccountTransferRootAction): Promise<string |
             <b>${kind === "export" ? "Сохранить фразой" : "Импорт фразой"}</b>
             <small>минимум 6 слов, лучше ${phraseRecommendedWords}+</small>
           </span>
-          <button class="action-close icon-button" type="button" aria-label="close" data-tooltip="Закрыть">${icon("close")}</button>
+          <button class="action-close icon-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть">${icon("close")}</button>
         </header>
         <textarea class="account-phrase-input" rows="4" autocomplete="off" spellcheck="false" placeholder="Ваша уникальная фраза на любом языке"></textarea>
         <output class="account-phrase-status">Чем больше и уникальнее фраза, тем лучше.</output>
@@ -3726,8 +3741,8 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
         <b>${escapeHtml(nick)}</b>
       </div>
       <div class="pair-actions">
-        <button class="icon-button deny-button" type="button" aria-label="close" data-tooltip="Отклонить подключение">${icon("close")}</button>
-        <button class="icon-button accept-button" type="button" aria-label="ok" data-tooltip="Разрешить подключение">${icon("check")}</button>
+        <button class="icon-button deny-button" type="button" aria-label="Закрыть" data-tooltip="Отклонить подключение">${icon("close")}</button>
+        <button class="icon-button accept-button" type="button" aria-label="Сохранить" data-tooltip="Разрешить подключение">${icon("check")}</button>
       </div>
     </div>
   `;
@@ -3875,14 +3890,12 @@ async function sendFiles(list?: FileList | null): Promise<void> {
 }
 
 function renderFiles(): void {
-  const rail = app.querySelector<HTMLDivElement>(".file-rail");
-  if (!rail) {
-    return;
-  }
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
-  renderFileRail(rail, files.get(selectedId) ?? [], color, deleteFile);
-  renderFileNotice(rail, color);
+  for (const rail of app.querySelectorAll<HTMLDivElement>('.file-rail')) {
+    renderFileRail(rail, files.get(selectedId) ?? [], color, deleteFile);
+    renderFileNotice(rail, color);
+  }
 }
 
 function setFileNotice(tunnelId: string, text: string): void {
@@ -4349,6 +4362,7 @@ function handleChessPanelClick(event: MouseEvent): void {
     return;
   }
   if (target.closest(".chess-close")) {
+    if (document.body.dataset.tool === 'chess') { location.assign('/#library'); return; }
     closeChessPanel();
     return;
   }
@@ -4428,10 +4442,10 @@ function renderChess(): void {
   panel.dataset.mode = snapshot.mode;
   panel.dataset.result = snapshot.result || "play";
   if (title) {
-    title.textContent = snapshot.mode === "agent" ? "CHESS / ГЕНИЙ" : "CHESS";
+    title.textContent = snapshot.mode === "agent" ? "С компьютером" : "Шахматы";
   }
   if (status) {
-    status.textContent = snapshot.result ? "DONE" : game.isCheck() ? "CHECK" : `${game.moveNumber()}`;
+    status.textContent = snapshot.result ? "Завершена" : game.isCheck() ? "Шах" : `Ход ${game.moveNumber()}`;
   }
   coach.hidden = snapshot.mode !== "agent";
   coach.classList.toggle("is-on", snapshot.coach === geniusCoach);
@@ -4454,7 +4468,8 @@ function renderChess(): void {
       legal && piece ? "is-capture" : "",
       last ? "is-last" : ""
     ].filter(Boolean).join(" ");
-    const label = piece ? `${sideName(piece.color)} ${piece.type} ${square}` : square;
+    const pieceNames = { p: "пешка", n: "конь", b: "слон", r: "ладья", q: "ферзь", k: "король" };
+    const label = piece ? `${sideName(piece.color)}, ${pieceNames[piece.type]}, ${square}` : `Пустое поле ${square}`;
     return `<button class="${classes}" type="button" data-square="${square}" aria-label="${escapeHtml(label)}"${canMove ? "" : " disabled"}>${pieceGlyph(piece)}</button>`;
   }).join("");
 
@@ -7118,7 +7133,7 @@ async function showQr(autoOpened = false): Promise<void> {
       <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Создать новый QR">${icon("refresh")}</button>
       <button class="icon-button scan-button" type="button" aria-label="scan" data-tooltip="Сканировать QR камерой">${icon("scan")}</button>
       <button class="icon-button copy-button" type="button" aria-label="copy" data-tooltip="Скопировать ссылку подключения">${icon("copy")}</button>
-      <button class="icon-button close-button" type="button" aria-label="close" data-tooltip="Закрыть QR">${icon("close")}</button>
+      <button class="icon-button close-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть QR">${icon("close")}</button>
     </div>
   `;
   document.body.append(overlay);

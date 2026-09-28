@@ -4,14 +4,11 @@ import { createConnectService } from '../modules/connect/server/index.mjs';
 import { createConnectHandler } from '../modules/connect/server/http.mjs';
 const moduleVersion = JSON.parse(readFileSync(new URL('../modules/connect/package.json', import.meta.url), 'utf8')).version;
 
-export function attachConnectModule(app, { dataDir, origins } = {}) {
-  const port = Number(process.env.PORT || 8080);
-  const allowedOrigins = origins || (process.env.SOTY_CONNECT_ORIGINS
-    ? process.env.SOTY_CONNECT_ORIGINS.split(',').map(value => new URL(value.trim()).origin)
-    : ['https://xn--n1afe0b.online', 'https://soty.pochinit.online', `http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+export function attachConnectModule(app, { dataDir, origins, extensions = [], canRequestContact } = {}) {
+  const allowedOrigins = connectAllowedOrigins(origins);
   const service = createConnectService({
     databasePath: path.join(dataDir || path.resolve('data'), 'connect', 'accounts.sqlite'),
-    projectId: 'soty', allowedOrigins
+    projectId: 'soty', allowedOrigins, extensions, canRequestContact
   });
   app.use(createConnectHandler(service));
   app.get('/api/connect/capabilities', (_req, res) => {
@@ -21,4 +18,11 @@ export function attachConnectModule(app, { dataDir, origins } = {}) {
       legacyRoomRevocation: false, updates: 'signed-host-release' });
   });
   return service;
+}
+
+export function connectAllowedOrigins(origins) {
+  const port = Number(process.env.PORT || 8080);
+  return origins || (process.env.SOTY_CONNECT_ORIGINS
+    ? process.env.SOTY_CONNECT_ORIGINS.split(',').map(value => new URL(value.trim()).origin)
+    : ['https://xn--n1afe0b.online', 'https://soty.pochinit.online', `http://127.0.0.1:${port}`, `http://localhost:${port}`]);
 }

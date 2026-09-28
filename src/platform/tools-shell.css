@@ -1,0 +1,84 @@
+body[data-soty-surface=classic] #app { padding-top: 64px; }
+.tools-navigation~.shell { height: 100%; min-height: 0; padding: 14px; gap: 14px; background: var(--sw-bg); }
+body[data-soty-surface=classic] { overflow: hidden; background: var(--sw-bg); }
+.hive-panel, .side-panel, .dialog-head, .editor { border-radius: 20px; }
+.dialog-shell { gap: 10px; }
+.retro-brand { grid-template-columns: minmax(0, 1fr) auto; }
+.retro-brand-mark { display: none; }
+.retro-brand b { font: 650 15px/1.4 var(--app-font); letter-spacing: -.02em; }
+.retro-brand small { font: 11px/1.4 var(--app-font); color: var(--muted); }
+.retro-icon-button, .icon-button, .side-action, .empty-hive-action, .chat-search-box, .chat-bubble, .chat-pin-strip, .chat-status-bar, .composer-mode, .file-chip, .terminal-panel, .chess-panel, .access-sheet, .qr-sheet, .counterparty-menu { border-radius: 12px; }
+.retro-icon-button, .icon-button { color: var(--ink); background: var(--panel-2); box-shadow: none; }
+.retro-icon-button:hover, .icon-button:hover { background: var(--sw-selected); }
+.retro-icon-button:active, .icon-button:active { transform: scale(.97); }
+.retro-icon-button, .icon-button { transition: transform 160ms ease, background 160ms ease; }
+body[data-soty-surface=classic] button:focus-visible, body[data-soty-surface=classic] input:focus-visible, body[data-soty-surface=classic] textarea:focus-visible { outline: 3px solid var(--sw-focus); outline-offset: 2px; }
+.hex-map::before { background: transparent; }
+.chess-panel { grid-template-rows: 44px minmax(0, 1fr) auto; }
+.chess-head { grid-template-columns: 10px auto minmax(0, 1fr) auto 44px 44px 44px; }
+.chess-head button, .terminal-collapse, .terminal-close { min-width: 44px; min-height: 44px; border-radius: 10px; }
+.chess-head button:hover, .terminal-collapse:hover, .terminal-close:hover { background: var(--sw-selected); }
+.chess-board { border-radius: 8px; overflow: hidden; box-shadow: var(--sw-shadow); }
+.chess-title { font-size: 14px; font-weight: 650; }
+.chess-status { color: var(--muted); }
+.terminal-output, .terminal-form { font-family: "Cascadia Mono", Consolas, monospace; }
+.terminal-head { min-height: 44px; }
+.tools-header { position: fixed; inset: 0 0 auto; height: 64px; z-index: 30; display: flex; align-items: center; gap: 24px; padding: 0 22px; background: var(--sw-header); color: var(--sw-header-ink); border-bottom: 1px solid var(--sw-header-line); font: 14px/1.4 var(--app-font); }
+.tools-header a { color: inherit; text-decoration: none; }
+.tools-brand { display: flex; align-items: center; gap: 12px; letter-spacing: 1.5px; font-size: 23px; }
+.tools-brand>.soty-hex { --hex-width: 34px; display: grid; place-items: center; background: var(--sw-honey); color: var(--sw-on-accent); clip-path: var(--hex-clip); font-weight: 750; }
+.tools-context { color: var(--sw-header-muted); padding-left: 20px; border-left: 1px solid var(--sw-header-line); font-size: 13px; }
+.tools-header nav { display: flex; gap: 4px; margin-left: auto; }
+.tools-header nav a { min-height: 44px; display: flex; align-items: center; gap: 7px; padding: 10px; border-radius: 12px; font-size: 13px; }
+.tools-header nav a[aria-current] { color: var(--sw-header-accent); background: var(--sw-header-selected); }
+.tools-header nav a:hover { background: var(--sw-header-hover); }
+.tools-header .sw-icon, .tools-dialog .sw-icon { width: 20px; height: 20px; fill: none; flex: none; }
+.tools-header a:focus-visible, .tools-dialog button:focus-visible { outline: 3px solid var(--sw-focus); outline-offset: 2px; }
+.tools-dialog { width: min(480px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); padding: 24px; color: var(--sw-ink); background: var(--sw-surface); border: 1px solid var(--sw-line); border-radius: 24px; box-shadow: var(--sw-shadow-dialog); font: 14px/1.5 var(--app-font); }
+.tools-dialog::backdrop { background: var(--sw-backdrop); }
+.tools-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tools-dialog h2 { margin: 0; font-size: 22px; letter-spacing: -.035em; }
+.tools-dialog p { color: var(--sw-muted); margin: 12px 0 20px; }
+.tools-dialog-close { min-width: 44px; min-height: 44px; border: 1px solid var(--sw-line); border-radius: 12px; background: transparent; color: var(--sw-ink); display: grid; place-items: center; cursor: pointer; }
+.tools-choices { display: grid; gap: 10px; }
+.tools-choices>button { display: flex; align-items: center; gap: 14px; width: 100%; padding: 16px; text-align: left; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--sw-surface-raised); color: var(--sw-ink); cursor: pointer; }
+.tools-choices>button:hover { background: var(--sw-surface-hover); border-color: var(--sw-control-border); }
+.tools-choices>button>span { flex: 1; min-width: 0; }
+.tools-choices strong, .tools-choices small { display: block; overflow-wrap: anywhere; }
+.tools-choices small { color: var(--sw-muted); margin-top: 4px; font-size: 12px; }
+/* A tool opened from the library gets the working area, while its rooms remain reachable. */
+body[data-tool=chess] .shell, body[data-tool=terminal] .shell { grid-template-columns: minmax(210px, 23%) minmax(0, 1fr); }
+body:is([data-tool=chess],[data-tool=terminal]) .side-panel { display: none; }
+body[data-tool=chess] .editor.chess-active, body[data-tool=terminal] .editor.terminal-active { display: flex; flex-direction: column; }
+body[data-tool=chess] .editor.chess-active>:not(.chess-panel), body[data-tool=terminal] .editor.terminal-active>:not(.terminal-panel) { display: none; }
+body[data-tool=chess] .chess-panel, body[data-tool=terminal] .terminal-panel { position: relative; inset: auto; height: 100%; min-height: 0; width: 100%; flex: 1; border: 0; border-radius: 0; padding: 18px; box-shadow: none; }
+body[data-tool=chess] .chess-body { grid-template-columns: minmax(220px, 1.6fr) minmax(150px, 1fr); align-items: center; gap: 26px; }
+body[data-tool=chess] .chess-board { width: min(100%, 560px, calc(100dvh - 250px)); justify-self: center; }
+body[data-tool=chess] .chess-desk { align-self: stretch; }
+@media (max-width: 760px) {
+  body[data-soty-surface=classic] #app { padding-top: 58px; padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .tools-header { height: 58px; padding: 0 14px; gap: 14px; }
+  .tools-brand { font-size: 21px; }
+  .tools-context { margin-left: auto; padding-left: 0; border: 0; font-size: 12px; }
+  .tools-header nav { position: fixed; inset: auto 0 0; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: var(--sw-surface); color: var(--sw-ink); border-top: 1px solid var(--sw-line); }
+  .tools-header nav a { flex-direction: column; gap: 4px; min-height: 52px; padding: 6px 2px; font-size: 0; }
+  .tools-header nav a span::after { content: attr(data-short); font-size: 10px; }
+  .tools-header nav a[aria-current] { color: var(--sw-honey-ink); background: var(--sw-honey-light); }
+  .tools-header nav a:hover { background: var(--sw-surface-hover); }
+  body:is([data-tool=chess],[data-tool=terminal]) .shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  body:is([data-tool=chess],[data-tool=terminal]) .hive-panel { height: 116px; padding: 8px; gap: 6px; }
+  body[data-tool=chess] .chess-panel, body[data-tool=terminal] .terminal-panel { padding: 10px; }
+  body[data-tool=chess] .chess-body { grid-template-columns: 1fr; gap: 10px; }
+  body[data-tool=chess] .chess-board { width: min(100%, calc(100dvh - 330px)); }
+  body[data-tool=chess] .chess-desk { grid-template-rows: auto; }
+  body[data-tool=chess] .chess-turn { padding: 0; border: 0; text-align: center; }
+  .tools-navigation~.shell { padding: 8px; gap: 8px; grid-template-rows: 116px minmax(0, 1fr); }
+  .retro-brand { grid-template-columns: minmax(0, 1fr) auto; }
+  .retro-brand small { display: none; }
+  .chess-head { grid-template-columns: minmax(0, 1fr) 44px 44px 44px; gap: 4px; }
+  .chess-head .chess-led, .chess-head .chess-status { display: none; }
+  .chess-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hive-panel, .side-panel, .dialog-head, .editor { border-radius: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { body[data-soty-surface=classic] *, body[data-soty-surface=classic] ::before, body[data-soty-surface=classic] ::after { animation: none !important; transition: none !important; } }
+body[data-soty-surface=classic][data-motion=off] *, body[data-soty-surface=classic][data-motion=off] ::before, body[data-soty-surface=classic][data-motion=off] ::after { animation: none !important; transition: none !important; }

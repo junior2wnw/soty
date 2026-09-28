@@ -119,12 +119,12 @@ async function bundleLocalModules(sourceText) {
     if (modulePath !== modulesDir && !modulePath.startsWith(`${modulesDir}${sep}`)) throw new Error(`Module outside connector modules: ${specifier}`);
     const moduleSource = (await readFile(modulePath, "utf8")).replace(/\r\n/g, "\n");
     if (/^import\s/mu.test(moduleSource)) throw new Error(`Nested imports are not supported: ${specifier}`);
-    const exported = [...moduleSource.matchAll(/^export\s+(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gmu)].map((match) => match[1]);
+    const exported = [...moduleSource.matchAll(/^export\s+(?:(?:async\s+)?function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gmu)].map((match) => match[1]);
     const imported = imports.split(",").map((item) => item.trim()).filter(Boolean);
     for (const name of imported) {
       if (!exported.includes(name)) throw new Error(`${specifier} does not export ${name}`);
     }
-    const body = moduleSource.replace(/^export\s+(?=(?:function|const|let|var|class)\b)/gmu, "");
+    const body = moduleSource.replace(/^export\s+(?=(?:(?:async\s+)?function|const|let|var|class)\b)/gmu, "");
     return `// bundled connector module: ${specifier}\nconst { ${imported.join(", ")} } = (() => {\n${body}\nreturn { ${imported.join(", ")} };\n})();\n`;
   });
 }

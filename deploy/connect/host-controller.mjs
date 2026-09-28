@@ -31,6 +31,9 @@ export function validateConfig(input) {
   const canary = c.canary === true;
   requireThat((canary ? /^soty-connect-canary-[a-z0-9-]+$/.test(c.runtimeName || '') && health.port !== '18182' : c.runtimeName === 'soty-online-chat' && health.port === '18182') && /^[a-f0-9]{40}$/.test(c.revision) && ['stable', 'preview'].includes(c.channel), 'config_runtime_invalid');
   requireThat(typeof c.initialRuntimeHasConnect === 'boolean', 'config_initial_runtime_required');
+  if (c.appOriginTemplate !== undefined) {
+    requireThat(typeof c.appOriginTemplate === 'string' && /^https:\/\/\{appId\}\.(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(c.appOriginTemplate), 'config_app_origin_invalid');
+  }
   requireThat(!inside(c.sourceRoot, c.stateDir) && !inside(c.stateDir, c.sourceRoot), 'config_state_must_be_external');
   requireThat(!inside(c.sourceRoot, c.releaseDirectory), 'config_feed_must_be_external');
   requireThat(Array.isArray(c.backupCommand) && c.backupCommand.length >= 2 && c.backupCommand.every(x => typeof x === 'string' && x && !x.includes('\0')) && path.isAbsolute(c.backupCommand[0]) && c.backupCommand.includes('{containerId}'), 'config_backup_command_invalid');
@@ -99,6 +102,7 @@ export function candidateConfig(original, image, transaction, c, moduleTreeHash)
   env.set('SOTY_CONNECT_RELEASE_DIR', FEED);
   const origins = (env.get('SOTY_CONNECT_ORIGINS') || '').split(',').map(x => x.trim()).filter(Boolean);
   env.set('SOTY_CONNECT_ORIGINS', [...new Set([...origins, ...ORIGINS])].join(','));
+  if (c.appOriginTemplate !== undefined) env.set('SOTY_APP_ORIGIN_TEMPLATE', c.appOriginTemplate);
   result.Env = [...env].map(([key, value]) => `${key}=${value}`);
   const realised = (original.Mounts || []).filter(m => m.Destination === FEED);
   requireThat(realised.length <= 1, 'runtime_feed_mount_conflict');

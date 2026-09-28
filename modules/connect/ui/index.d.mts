@@ -7,5 +7,5 @@ export function openConnectPanel(options: {
   restore?: (payload: unknown) => void | Promise<void>;
   invitation?: () => { url: string; label: string } | Promise<{ url: string; label: string }>;
   onRename?: (label: string) => void | Promise<void>;
-  snapshotDescription?: string; initialIntent?: ConnectIntent | null;
+  snapshotDescription?: string; initialIntent?: ConnectIntent | null; initialTab?: 'profile' | 'people' | 'devices' | 'recovery';
 }): { close(): void; refresh(): Promise<void> };

@@ -27,3 +27,27 @@ Docker create/start/stop/rename responses can be lost. The controller journals e
 After a crash, an operator must first establish that the recorded controller process is no longer running before removing a stale lock. Do not delete `host-state.json`, the module state, image mapping, failed containers, markers or SQLite files to unblock an update. Verify the exact recorded action/container/helper; unresolved state is intentionally not interpreted as permission to start a second writer. After admission but before the module commit, recovery may require stopping work or explicit operator reconciliation. This controller is not a general database-downgrade tool or an automatic repair for arbitrary manual Docker changes.
 
 The local tests cover signed-code update/rollback, immutable mappings, configuration preservation, encrypted-backup ordering/failure, an offline admission race, lost responses, unresolved starts, stale locks, no-fetch-before-recovery and actual read-only SQLite marker behaviour. Real Linux Docker round-trip normalization and a synthetic canary remain separate deployment gates.
+
+## Moving to a reviewed whole-application revision
+
+`rebase-host.mjs` prepares a new pinned generation. It does not build, activate, restart, rename or remove containers, execute a process in Docker, change systemd, or edit the old source and journals. The operator must stop the update timer and verify no controller remains active before invoking it. Existing locks require operator reconciliation; the helper never steals them. Immediately before preparation, use the read-only maintenance probe to verify no queued/running jobs or maintenance marker. The helper itself performs only Docker inspection and HTTP readiness checks, including exact Connect version, SQLite readiness, and idle inference. The usual controller separately repeats the work/maintenance gates when it later activates the candidate.
+
+Prepare a clean checkout of the new reviewed commit at an independent absolute source path. Replace only its `modules/connect` baseline with the exact currently installed module tree. The future signed module must have a different tree and a greater sequence. Do not copy the old host journal to this source or reset its update sequence. Choose an unused external state directory and an unused config filename whose parent directories already exist.
+
+```sh
+node /absolute/source-NEW/deploy/connect/rebase-host.mjs \
+  --old-config /absolute/config-OLD.json \
+  --new-config /absolute/config-NEW.json \
+  --source-root /absolute/source-NEW \
+  --state-dir /absolute/state-NEW \
+  --revision FULL_40_CHARACTER_COMMIT \
+  --app-origin-template 'https://{appId}.soty.example.org'
+```
+
+The optional application origin must pass the controller's HTTPS subdomain policy. Omitting it preserves the old value. All other deployment identity, trust, update feed, channel, Docker socket, runtime identity, health and backup settings are copied from the existing configuration. There is no arbitrary policy override. The new generation sets `initialRuntimeHasConnect:true`; the already installed runtime must actually have Connect.
+
+Preparation holds the old host and module locks together, rejects pending recovery, checks both Git revisions and changes outside Connect, compares both module hashes against the active image's tree, and verifies image/container revision labels and identities. The new host journal retains only that verified baseline image; its image revision remains the actual older build revision while the source revision becomes the new commit. The module journal retains the exact `lastSequence`, `releaseHash` and version, rebinds the target to the new canonical module directory, and sets `previous` and `pending` to null. Old backup/stage paths belong to the old generation and must not be transplanted.
+
+Both new journals are synced before a complete config is atomically published with no overwrite. Old config/journal bytes are checked again immediately before publication and remain unchanged. The successful receipt says `prepared`, not deployed. The operator then explicitly selects the new controller/config and follows the signed-release and runtime verification process. Keep the timer stopped until that selection is verified; never operate old and new generations concurrently against one runtime.
+
+If preparation fails after creating new state, it deliberately retains the incomplete, unpublished generation for inspection. It will not retry over existing state or config. If the final publication result is uncertain, inspect the new config and both journals before any action; do not infer failure means nothing was written. Reconcile the evidence or choose another unused generation path. Normal application rollback keeps the latest live data and requires a reader compatible with every persisted schema; restoring an older data snapshot is a separate recovery procedure, never an automatic part of this migration.

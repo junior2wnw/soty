@@ -1,0 +1,137 @@
+/* Geometry only. All dimensions originate in hex.mjs; themes supply semantic colours. */
+.soty-geometry-defs { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+:where(.soty-hex, .sw-logo, .sw-avatar, .sw-emblem, .sw-empty-cell, .soty-start-mark, .sw-loading:before,
+  .counterparty-mark span, .retro-brand-mark, .traffic-route-mark, .dialog-avatar,
+  .bubble-meta span, .writer-pop span, .access-mark, .hex-core) {
+  --hex-width: 66px;
+  --hex-border: 3px;
+  box-sizing: border-box;
+  position: relative;
+  width: var(--hex-width);
+  height: auto;
+  min-height: 0;
+  aspect-ratio: var(--hex-aspect-ratio);
+  padding: 0;
+  flex: none;
+  align-self: center;
+}
+.soty-hex.soty-hex-placed { position: absolute; }
+.sw-logo, .sw-avatar, .sw-empty-cell, .sw-island-vacant, .sw-island-others, .soty-start-mark, .sw-loading:before { clip-path: var(--hex-clip, var(--hex-polygon)); }
+.sw-emblem:before, .sw-emblem:after, .sw-avatar:before, .soty-hex-shell:before, .soty-hex-shell:after {
+  clip-path: var(--hex-clip, var(--hex-polygon));
+}
+.sw-emblem:before, .soty-hex-shell:before { inset: 0; }
+.sw-emblem:after, .sw-avatar:before, .sw-avatar>img, .soty-hex-shell:after {
+  position: absolute;
+  inset: var(--hex-border) calc(var(--hex-border) * var(--hex-inset-factor));
+}
+.sw-avatar>img {
+  width: calc(100% - var(--hex-border) * var(--hex-inset-factor) * 2);
+  height: calc(100% - var(--hex-border) * 2);
+  object-fit: cover;
+  clip-path: var(--hex-clip, var(--hex-polygon));
+}
+.sw-avatar>span, .sw-island-others>span {
+  display: grid;
+  place-items: center;
+  width: calc((100% - var(--hex-border) * var(--hex-inset-factor) * 2) * var(--hex-safe-width));
+  height: calc((100% - var(--hex-border) * 2) * var(--hex-safe-height));
+  min-width: 0;
+  line-height: 1;
+  font-size: min(28px, calc(var(--hex-width) * .28));
+}
+.sw-emblem>.sw-icon, .sw-island-vacant>.sw-icon, .sw-empty-cell>.sw-icon {
+  width: 43%;
+  height: auto;
+  aspect-ratio: 1;
+}
+.sw-emblem { --hex-width: 120px; --hex-border: 3px; }
+.sw-island {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.sw-island-outline { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sw-island-title { position: absolute; top: 0; left: 12px; right: 12px; }
+.sw-island .sw-unread { right: 12px; top: 5px; }
+.sw-empty-art { position: relative; flex: none; margin: 0 0 8px; }
+
+.soty-hex-shell {
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+  border: 0;
+  color: var(--sw-ink);
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+  clip-path: var(--hex-clip, var(--hex-polygon));
+}
+.soty-hex-shell:before, .soty-hex-shell:after { content: ''; position: absolute; z-index: -1; }
+.soty-hex-shell:before { background: var(--sw-cell-border, var(--sw-line)); }
+.soty-hex-shell:after { background: var(--sw-cell-light, var(--sw-surface)); }
+.soty-hex-shell:hover:after { background: var(--sw-surface-hover); }
+.soty-hex-shell:focus-visible, .hex.filled:focus-visible { outline: none; }
+.soty-hex-shell:focus-visible:before, .hex.filled:focus-visible:before { background: var(--sw-focus, var(--cyan)); }
+.soty-hex-shell:focus-visible:after, .hex.filled:focus-visible:after { inset: 4px calc(4px * var(--hex-inset-factor)); }
+.hex.filled { clip-path: var(--hex-clip, var(--hex-polygon)); }
+.soty-hex-safe {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc((100% - var(--hex-border) * var(--hex-inset-factor) * 2) * var(--hex-safe-width));
+  height: calc((100% - var(--hex-border) * 2) * var(--hex-safe-height));
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 0;
+}
+.soty-hex-visual {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 0;
+}
+.soty-hex-visual>.sw-icon { width: 28px; height: 28px; max-width: 100%; max-height: 100%; }
+.soty-hex-visual>.sw-avatar, .soty-hex-visual>.sw-emblem {
+  --hex-width: 38px;
+  --hex-border: 2px;
+  width: auto;
+  height: 100%;
+  max-height: calc(38px * var(--hex-height-factor));
+}
+.soty-hex-label, .soty-hex-status {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  flex: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.soty-hex-label { font-size: 13px; font-weight: 650; }
+.soty-hex-status { color: var(--sw-muted); font-size: 10px; }
+.hex-safe {
+  position: relative;
+  z-index: 2;
+  width: calc((100% - 6px * var(--hex-inset-factor)) * var(--hex-safe-width));
+  height: calc((100% - 6px) * var(--hex-safe-height));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.2;
+}
+.hex-safe>.hex-core { flex: none; }
+.hex-safe>b { flex: none; }
+.hex-core>span { max-width: 66%; overflow: hidden; line-height: 1; }

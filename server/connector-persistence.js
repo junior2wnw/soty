@@ -11,7 +11,9 @@ export class ConnectorPersistence {
     this.sequence = 0;
     this.worker = new Worker(new URL(import.meta.url), {
       workerData: { connectorPersistence: true, filePath },
-      execArgv: process.execArgv.filter((arg) => !arg.startsWith("--input-type")),
+      // Keep module preloads (including instrumented fault checks), while test
+      // runners may add process-only V8/TLS flags that Worker rejects.
+      execArgv: workerModuleArguments(process.execArgv),
       resourceLimits: { maxOldGenerationSizeMb: 512 }
     });
     this.worker.on("message", ({ id, value, error }) => {
@@ -46,6 +48,18 @@ export class ConnectorPersistence {
     if (!this.failed) await this.call("close");
     await this.worker.terminate();
   }
+}
+
+function workerModuleArguments(args) {
+  const options = new Set(['--import', '--require', '-r', '--loader', '--experimental-loader', '--conditions', '-C']);
+  const result = [];
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index], name = value.split('=', 1)[0];
+    if (!options.has(name)) continue;
+    result.push(value);
+    if (!value.includes('=') && index + 1 < args.length) result.push(args[++index]);
+  }
+  return result;
 }
 
 export const databaseName = "connector-store.sqlite";

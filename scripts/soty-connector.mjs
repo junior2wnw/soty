@@ -2,8 +2,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, createPublicKey, randomBytes, randomUUID, verify as verifySignature } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { createServer, request as httpRequest } from "node:http";
 import { homedir, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,8 +11,9 @@ import { createTrafficFabric, trafficFabricSchema } from "./agent-modules/traffi
 import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSettings, trafficCoreSchema } from "./agent-modules/traffic-core.mjs";
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
+import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 
-const connectorVersion = "1.2.12";
+const connectorVersion = "1.3.0";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -65,6 +66,14 @@ let updateState = {
   latestVersion: "",
   lastError: ""
 };
+
+const localApps = createLocalAppsRuntime({
+  randomSecret: () => randomBytes(32).toString('base64url'),
+  digest: value => createHash('sha256').update(value).digest('hex'),
+  createWebSocket: url => new globalThis.WebSocket(url),
+  httpRequest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: value => Buffer.from(value, 'base64'),
+}, { serverUrl: () => relayBaseUrl, token: () => connectorToken,
+  identity: () => ({ linkId, hostDeviceId: deviceId, connectorId, name: deviceNick }), blockedPorts: [port] });
 
 const trafficFabric = createTrafficFabric({
   uuid: randomUUID,
@@ -153,9 +162,14 @@ async function startConnector() {
   });
   await spreadExMl.initialize().catch(() => undefined);
   const server = createServer((request, response) => {
-    void handleHttp(request, response).catch((error) => {
-      const pathname = new URL(request.url || "/", "http://127.0.0.1").pathname;
-      if (!response.headersSent) sendJson(response, 500, corsHeaders(request, pathname.startsWith("/integrations/spreadex/v1")), { ok: false, error: safeError(error) });
+    let url;
+    try { url = new URL(request.url || "/", "http://127.0.0.1"); }
+    catch {
+      sendJson(response, 400, { "Cache-Control": "no-store" }, { ok: false, error: "invalid-request-target" });
+      return;
+    }
+    void handleHttp(request, response, url).catch((error) => {
+      if (!response.headersSent) sendJson(response, 500, corsHeaders(request, url.pathname.startsWith("/integrations/spreadex/v1")), { ok: false, error: safeError(error) });
       else response.end();
     });
   });
@@ -185,6 +199,7 @@ async function startConnector() {
     shuttingDown = true;
     activeJob?.controller.abort();
     spreadExMl.stop();
+    localApps.stop();
     await trafficCoreRuntime.stop().catch(() => undefined);
     server.close(() => process.exit(process.exitCode || 0));
     const timer = setTimeout(() => process.exit(process.exitCode || 0), 2_000);
@@ -194,8 +209,22 @@ async function startConnector() {
   process.on("SIGTERM", () => void stop());
 }
 
-async function handleHttp(request, response) {
-  const url = new URL(request.url || "/", "http://127.0.0.1");
+async function handleHttp(request, response, url) {
+  if (url.pathname === '/apps/claim') {
+    const origin = String(request.headers.origin || '');
+    const allowed = origin !== '' && origin === relayBaseUrl;
+    const headers = { 'Cache-Control': 'no-store', 'Vary': 'Origin', 'X-Content-Type-Options': 'nosniff',
+      ...(allowed ? { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Private-Network': 'true' } : {}) };
+    if (!allowed) { sendJson(response, 403, headers, { ok: false, error: 'origin-not-allowed' }); return; }
+    if (request.method === 'OPTIONS') { response.writeHead(204, headers); response.end(); return; }
+    if (request.method !== 'POST') { sendJson(response, 405, headers, { ok: false, error: 'method-not-allowed' }); return; }
+    try {
+      const body = await readJsonBody(request, 1024);
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) throw new Error('invalid-claim-request');
+      sendJson(response, 200, headers, await localApps.claim());
+    } catch { sendJson(response, 409, headers, { ok: false, error: 'apps_connector_offline' }); }
+    return;
+  }
   const spreadExRoute = url.pathname.startsWith("/integrations/spreadex/v1");
   const headers = corsHeaders(request, spreadExRoute);
   const origin = String(request.headers.origin || "");
@@ -307,6 +336,7 @@ async function handleBind(request, response, headers, origin) {
   deviceId = nextDeviceId;
   deviceNick = safeText(body.deviceNick || deviceNick, 120) || nextDeviceId;
   await saveConfig();
+  localApps.stop();
   const registered = await registerConnector(true);
   sendJson(response, registered.ok ? 200 : 502, headers, {
     ok: registered.ok,
@@ -377,13 +407,14 @@ async function registerConnector(forceAgent = false) {
         version: connectorVersion,
         platform: `${process.platform}-${process.arch}`,
         scope,
-        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "spreadex-ml"],
+        capabilities: ["agent", "command", "script", "events", "cancel", "traffic", "spreadex-ml", "local-apps"],
         agent: await detectAgent(forceAgent)
       }
     });
     if (!result.ok) throw new Error(result.error || "registration-rejected");
     registrationError = "";
     lastRegisteredAt = new Date().toISOString();
+    localApps.start();
     return result;
   } catch (error) {
     registrationError = safeError(error);
@@ -405,7 +436,9 @@ async function connectorLoop() {
     try {
       const result = await serverJson(`/api/connectors/poll?linkId=${encodeURIComponent(linkId)}&deviceId=${encodeURIComponent(deviceId)}&connectorId=${encodeURIComponent(connectorId)}&wait=1`, { timeoutMs: 35_000 });
       if (!result.ok) {
-        if (result.error === "connector-auth-failed") await registerConnector(true);
+        // A successful registration has recovered this old poll denial. Retry
+        // polling instead of replacing its fresh health state with that error.
+        if (result.error === "connector-auth-failed" && (await registerConnector(true)).ok) continue;
         throw new Error(result.error || "poll-rejected");
       }
       failures = 0;
@@ -469,7 +502,7 @@ async function watchCancellation(jobId, controller) {
   while (!controller.signal.aborted && !shuttingDown) {
     await sleep(1_000);
     try {
-      const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(jobId)}`, { linkHeader: true, timeoutMs: 5_000 });
+      const state = await serverJson(`/api/connectors/jobs/${encodeURIComponent(jobId)}/runtime-status`, { timeoutMs: 5_000 });
       if (!state.ok || state.job?.cancelRequested === true || ["cancelled", "failed", "succeeded"].includes(state.job?.status)) {
         controller.abort();
         return;
@@ -530,7 +563,14 @@ function agentStatus(available, version, reason) {
 async function runOpenCode(job, { signal, emit }) {
   const command = await resolveOpenCodeCommand(managed && autoUpdate);
   if (!command) return { ok: false, text: "OpenCode не установлен", exitCode: 126 };
-  const cwd = resolveJobCwd(job.input?.cwd);
+  const appOutput = job.input?.output === 'local-app';
+  if (appOutput && job.input?.cwd && !isAbsolute(job.input.cwd)) throw new Error('app_workspace_not_absolute');
+  let cwd = resolveJobCwd(job.input?.cwd);
+  const startedAt = Date.now();
+  if (appOutput) {
+    cwd = await prepareLocalAppWorkspace({ realpath, lstat, mkdir, join, isWithin },
+      { workspace: cwd, allowedRoots: allowedJobRoots(), jobId: job.id, create: !job.input?.cwd });
+  }
   await prepareOpenCodeState();
   const prompt = [job.input?.context, job.input?.text].filter(Boolean).join("\n\n").slice(0, 192_000);
   const args = ["--pure", "run", "--format", "json", "--model", `gonka/${gonkaModel}`, "--agent", "soty", "--auto", "--dir", cwd];
@@ -569,7 +609,16 @@ async function runOpenCode(job, { signal, emit }) {
     }
   });
   const text = (lastMessage || cleanOpenCodeError(result.stderr) || `OpenCode завершился с кодом ${result.exitCode}`).slice(0, maxResultChars);
-  return { ok: result.exitCode === 0 && Boolean(lastMessage), text, exitCode: result.exitCode === 0 && !lastMessage ? 1 : result.exitCode, sessionId };
+  const reply = { ok: result.exitCode === 0 && Boolean(lastMessage), text, exitCode: result.exitCode === 0 && !lastMessage ? 1 : result.exitCode, sessionId };
+  if (appOutput && reply.ok) {
+    try {
+      reply.appProposal = await readLocalAppProposal({ realpath, stat, readFile, join, isWithin, httpRequest },
+        { workspace: cwd, allowedRoots: allowedJobRoots(), jobId: job.id, blockedPorts: [port], completedAfter: startedAt });
+    } catch {
+      return { ...reply, ok: false, exitCode: 1, text: `${text}\n\nПриложение пока не готово: проверьте .soty/app.json и запущенный локальный сервис.` };
+    }
+  }
+  return reply;
 }
 
 async function runShellJob(job, runtime) {
@@ -1031,6 +1080,11 @@ function resolveJobCwd(value) {
   if (!allowed.some((root) => isWithin(root, requested))) throw new Error("Рабочая папка не разрешена настройками коннектора");
   if (!existsSync(requested)) throw new Error("Рабочая папка не существует");
   return requested;
+}
+
+function allowedJobRoots() {
+  const allowed = cleanStrings(persisted.allowedRoots, 16, 2_000).filter(isAbsolute).map(item => resolve(item)).filter(existsSync);
+  return allowed.length ? allowed : [resolveJobCwd()];
 }
 
 function isWithin(root, target) {

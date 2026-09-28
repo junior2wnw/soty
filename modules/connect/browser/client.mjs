@@ -247,6 +247,15 @@ export function createClientWithStorage(options, storage) {
 
   const client = {
     getLocalState: () => serialize(async () => view(await read())),
+    extension: (operation, args = {}) => {
+      if (typeof operation !== 'string' || !/^[a-z][a-z0-9]*(?:\.[a-z][a-zA-Z0-9]*){1,4}$/u.test(operation)
+        || operation.length > 100) return Promise.reject(new ConnectError('INVALID_ARGUMENT', 'Invalid extension operation.'));
+      // Capture JSON before queueing so the caller cannot change an in-flight payload.
+      let payload;
+      try { payload = JSON.parse(canonicalJson(args)); }
+      catch { return Promise.reject(new ConnectError('INVALID_ARGUMENT', 'Extension arguments must be JSON.')); }
+      return serialize(() => rpc(operation, payload));
+    },
     dispose: () => { disposed = true; channel?.close(); channel = null; },
     bootstrap: label => serialize(async () => {
       label = deviceLabel(label);

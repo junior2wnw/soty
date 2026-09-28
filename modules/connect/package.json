@@ -1,6 +1,6 @@
 {
   "name": "@soty/connect",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Portable project-local accounts, contacts, device grants and controlled updates",
   "type": "module",
   "private": true,

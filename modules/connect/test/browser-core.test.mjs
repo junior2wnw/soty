@@ -40,8 +40,8 @@ function memoryStorage(initial = null) {
   };
 }
 
-function fixture(t) {
-  const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin] });
+function fixture(t, serviceOptions = {}) {
+  const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], ...serviceOptions });
   t.after(() => service.close());
   const traffic = [];
   let responseMutation = null, dropOperation = null;
@@ -66,6 +66,24 @@ async function finishConfirmed(client, requestId) {
   assert.ok(preview.account);
   return client.finishEnrollment(requestId, preview.account.accountId);
 }
+
+test('product extension signs a captured payload with the existing browser identity', async t => {
+  const f = fixture(t, { extensions: [{ operations: new Set(['world.echo']), execute({ args, actor }) {
+    return { text: args.text, accountId: actor.accountId, deviceId: actor.deviceId };
+  } }] });
+  const { client } = f.client();
+  const account = await client.bootstrap('Alice');
+  const args = { text: 'captured' };
+  const pending = client.extension('world.echo', args);
+  args.text = 'mutated after call';
+  const result = await pending;
+  assert.equal(result.text, 'captured');
+  assert.equal(result.accountId, account.accountId);
+  assert.equal(result.deviceId, account.deviceId);
+  await assert.rejects(client.extension('unknown'), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(client.extension('world.echo', { text: undefined }), { code: 'INVALID_ARGUMENT' });
+  client.dispose();
+});
 
 test('browser/server canonical JSON, digest, key identity and native nonextractable keys agree', async t => {
   const value = { z: ['Ж', -0, true, null], a: { b: 2, a: 1 } };

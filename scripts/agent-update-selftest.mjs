@@ -11,7 +11,7 @@ const root = resolve(import.meta.dirname, "..");
 const releaseRuntime = await readFile(join(root, "public", "agent", "soty-connector.mjs"));
 const releaseManifest = JSON.parse(await readFile(join(root, "public", "agent", "manifest.json"), "utf8"));
 const releaseText = releaseRuntime.toString("utf8");
-const previousVersion = previousPatch(releaseManifest.version);
+const previousVersion = previousReleaseVersion(releaseManifest.version);
 const versionLine = `const connectorVersion = "${releaseManifest.version}";`;
 assert.equal(releaseText.split(versionLine).length - 1, 1);
 
@@ -114,11 +114,16 @@ function updateEnv() {
   };
 }
 
-function previousPatch(version) {
+function previousReleaseVersion(version) {
+  assert.match(version, /^\d+\.\d+\.\d+$/u);
   const parts = version.split(".").map(Number);
-  assert.equal(parts.length, 3);
-  assert.ok(parts[2] > 0, "release update self-test requires a non-zero patch version");
-  return `${parts[0]}.${parts[1]}.${parts[2] - 1}`;
+  assert.ok(parts.every(Number.isSafeInteger));
+  const index = parts.findLastIndex((part) => part > 0);
+  assert.ok(index >= 0, "release update self-test requires a version above 0.0.0");
+  parts[index] -= 1;
+  // Minor/major releases with a zero patch must exercise the same real update
+  // path. A synthetic older version is enough; it need not be a shipped build.
+  return parts.join(".");
 }
 
 function sha256(value) {

@@ -12,6 +12,70 @@ import { MIGRATIONS, migrateDatabase } from '../server/schema.mjs';
 const ORIGIN = 'https://connect.test';
 const OTHER_ORIGIN = 'https://other.test';
 const PROJECT = 'connect-test';
+test('product extensions inherit a verified principal, signed payload and revocation', async t => {
+  const calls = [];
+  const extension = { operations: new Set(['world.test.read']), execute({ op, args, actor }) {
+    assert.equal(Object.isFrozen(actor), true);
+    calls.push({ op, args, actor });
+    return { caller: actor.accountId, deviceId: actor.deviceId, value: args.value };
+  } };
+  const f = fixture(t, { extensions: [extension] });
+  const a = identity('Owner'), b = identity('Second installation'), stranger = identity('Unregistered');
+  const account = await boot(f.service, a);
+  expectError(await invoke(f.service, stranger, 'world.test.read', { value: 'not authenticated' }), 'authentication_required');
+  const reply = await invoke(f.service, a, 'world.test.read', { accountId: 'forged_account', value: 'signed' });
+  assert.equal(reply.caller, account.accountId);
+  assert.equal(calls.length, 1);
+  const tampered = await signed(f.service, a, 'world.test.read', { value: 'original' });
+  tampered.args.value = 'changed';
+  expectError(await f.service.handle(tampered), 'challenge_mismatch');
+  assert.equal(calls.length, 1);
+  const other = await enroll(f.service, a, b);
+  assert.equal(f.service.isActorActive(other), true);
+  const events = [];
+  f.service.subscribeRevocations(event => { events.push(event); assert.equal(f.service.isActorActive(other), false); });
+  f.service.subscribeRevocations(() => { throw new Error('Observer failure must not undo revoke'); });
+  assert.equal((await invoke(f.service, a, 'device.revoke', { deviceId: other.deviceId })).ok, true);
+  assert.deepEqual(events, [{ deviceId: other.deviceId }]);
+  expectError(await invoke(f.service, b, 'world.test.read', { value: 'revoked' }), 'device_revoked');
+  assert.equal(calls.length, 1);
+});
+
+test('extensions cannot shadow core operations or disclose exception details', async t => {
+  const options = { databasePath: ':memory:', projectId: PROJECT, allowedOrigins: [ORIGIN] };
+  for (const name of ['status', 'card.resolve', 'Bad.operation']) {
+    assert.throws(() => createConnectService({ ...options, extensions: [{ operations: new Set([name]), execute() {} }] }), { code: 'invalid_extension_operation' });
+  }
+  assert.throws(() => createConnectService({ ...options, extensions: [{ operations: new Set(['world.async']), async execute() {} }] }), { code: 'invalid_extension' });
+  const extension = { operations: new Set(['world.fail', 'world.bad', 'world.promise']), execute({ op }) {
+    if (op === 'world.fail') throw Object.assign(new Error('private driver path and credential'), { code: 'member_required' });
+    if (op === 'world.bad') return { ok: false, error: 'spoofed response' };
+    return Promise.resolve({ value: true });
+  } };
+  const f = fixture(t, { extensions: [extension] }), a = identity();
+  await boot(f.service, a);
+  const failed = await invoke(f.service, a, 'world.fail');
+  expectError(failed, 'member_required');
+  assert.equal(failed.error.message, 'member_required');
+  expectError(await invoke(f.service, a, 'world.bad'), 'invalid_extension_result');
+  expectError(await invoke(f.service, a, 'world.promise'), 'invalid_extension_result');
+  expectError(await f.service.handle({ origin: ORIGIN, op: 'challenge', args: { operation: 'world.unknown', digest: digestArgs({}) } }), 'unsupported_operation');
+});
+
+test('discovery contact requests respect host visibility policy and existing contact blocks', async t => {
+  let allowed = false;
+  const f = fixture(t, { canRequestContact: () => allowed });
+  const a = identity('Alice'), b = identity('Bob');
+  const alice = await boot(f.service, a), bob = await boot(f.service, b);
+  expectError(await invoke(f.service, a, 'contacts.requestAccount', { accountId: bob.accountId }), 'contact_unavailable');
+  allowed = true;
+  const request = await invoke(f.service, a, 'contacts.requestAccount', { accountId: bob.accountId });
+  assert.equal(request.status, 'pending');
+  const repeated = await invoke(f.service, a, 'contacts.requestAccount', { accountId: bob.accountId });
+  assert.equal(repeated.requestId, request.requestId);
+  assert.equal((await invoke(f.service, b, 'contacts.block', { peerAccountId: alice.accountId })).ok, true);
+  expectError(await invoke(f.service, a, 'contacts.requestAccount', { accountId: bob.accountId }), 'contact_unavailable');
+});
 test('account database cannot be placed in the replaceable module directory', () => {
   const databasePath = fileURLToPath(new URL('../data/do-not-create.sqlite', import.meta.url));
   assert.throws(() => createConnectService({ databasePath, projectId: PROJECT, allowedOrigins: [ORIGIN] }), { code: 'database_must_be_outside_module' });
@@ -405,7 +469,7 @@ test('failed public card lookup still consumes the persisted abuse counter', asy
   expectError(await f.service.handle({ op: 'card.resolve', args: { cardId: 'card_unknown' }, origin: ORIGIN }), 'card_unavailable');
   expectError(await f.service.handle({ op: 'card.resolve', args: { cardId: 'card_unknown' }, origin: ORIGIN }), 'card_unavailable');
   const db = new DatabaseSync(f.databasePath);
-  assert.equal(db.prepare('SELECT count FROM rate_limits WHERE key=?').get('card-resolve:origin:' + ORIGIN).count, 2);
+  assert.deepEqual(db.prepare("SELECT count FROM rate_limits WHERE key LIKE 'card-resolve:%'").all().map(row => row.count), [2]);
   db.close();
 });
 

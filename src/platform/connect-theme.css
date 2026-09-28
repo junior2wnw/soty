@@ -1,0 +1,53 @@
+/* Host skin: the standalone Connect module keeps its own independent defaults. */
+:root .connect-panel {
+  border-color: var(--sw-line);
+  background: var(--sw-surface-raised);
+  color: var(--sw-ink);
+  color-scheme: var(--sw-color-scheme);
+  font: 14px/1.5 Inter, "Segoe UI", system-ui, sans-serif;
+  box-shadow: var(--sw-shadow-dialog);
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sw-control-border) transparent;
+}
+:root .connect-panel::backdrop { background: var(--sw-backdrop); }
+:root .connect-panel :is(h2,h3,h4,p) { overflow-wrap: anywhere; }
+:root .connect-panel :is(small,.connect-muted) { color: var(--sw-muted); }
+:root .connect-panel nav, :root .connect-panel .connect-row { border-color: var(--sw-line); }
+:root .connect-panel button {
+  min-height: 44px;
+  color: var(--sw-ink);
+  border-color: var(--sw-line);
+  border-radius: 12px;
+  background: var(--sw-surface);
+  transition: background-color var(--sw-motion-fast) var(--sw-ease), border-color var(--sw-motion-fast) var(--sw-ease);
+}
+:root .connect-panel button:hover { background: var(--sw-surface-hover); color: var(--sw-ink); border-color: var(--sw-control-border); }
+:root .connect-panel button[aria-current="page"] { background: var(--sw-honey-light); color: var(--sw-honey-ink); border-color: var(--sw-honey-ink); }
+:root .connect-panel button:disabled { cursor: default; }
+:root .connect-panel input { min-height: 44px; background: var(--sw-bg); color: var(--sw-ink); border-color: var(--sw-control-border); border-radius: 12px; }
+:root .connect-panel input::placeholder { color: var(--sw-muted); opacity: 1; }
+:root .connect-panel :focus-visible { outline-color: var(--sw-focus); }
+:root .connect-panel .connect-message { color: var(--sw-ink); background: var(--sw-surface-subtle); padding: 10px 12px; border-radius: 12px; }
+/* QR pixels and quiet zone stay high contrast for camera scanners. */
+:root .connect-panel [data-qr] img { background: #fff; }
+:root .connect-update-notice {
+  border-color: var(--sw-line);
+  background: var(--sw-surface-raised);
+  color: var(--sw-ink);
+  font: 14px/1.5 Inter, "Segoe UI", system-ui, sans-serif;
+  box-shadow: var(--sw-shadow);
+}
+:root .connect-update-notice button { min-height: 44px; background: var(--sw-honey); color: var(--sw-on-accent); border-radius: 10px; }
+:root .connect-update-notice button:hover { background: var(--sw-primary-hover); }
+:root .connect-update-notice :focus-visible { outline: 3px solid var(--sw-focus); outline-offset: 3px; }
+@media(max-width:1024px) {
+  body[data-soty-surface="world"] .connect-update-notice { bottom: calc(80px + env(safe-area-inset-bottom)); }
+}
+@media(prefers-reduced-motion:reduce) { :root .connect-panel button { transition: none; } }
+:root:has([data-motion="off"]) .connect-panel button { transition: none; }
+@media(forced-colors:active) {
+  :root .connect-panel, :root .connect-update-notice { border-color: CanvasText; background: Canvas; color: CanvasText; box-shadow: none; }
+  :root .connect-panel button[aria-current="page"] { border-color: Highlight; }
+  :root .connect-panel :focus-visible, :root .connect-update-notice :focus-visible { outline-color: Highlight; }
+}

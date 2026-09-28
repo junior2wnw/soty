@@ -34,7 +34,9 @@ export function createConnectHandler(service, { path = '/api/connect/rpc', maxBy
       if (!body || typeof body !== 'object' || Array.isArray(body) || body.protocol !== 1) {
         reply(400, error('protocol_unsupported')); return true;
       }
-      const result = await service.handle({ op: body.op, args: body.args || {}, proof: body.proof, origin });
+      // req.ip is Express's explicitly configured trusted-proxy result; the neutral
+      // adapter uses the socket peer. Never accept a peer identifier from RPC JSON.
+      const result = await service.handle({ op: body.op, args: body.args || {}, proof: body.proof, origin, peer: req.ip || req.socket?.remoteAddress });
       reply(result.ok ? 200 : 400, result);
     } catch { reply(400, error('request_failed')); }
     return true;
