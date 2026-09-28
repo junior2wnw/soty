@@ -63,6 +63,9 @@ let closing = false;
 function shutdown() {
   if (closing) return;
   closing = true;
+  // A disconnect listener refs fork's IPC channel on POSIX. Close it during
+  // signal shutdown too, otherwise a supervised child outlives its services.
+  if (process.connected) process.disconnect();
   for (const client of wss.clients) client.close(1001, 'server_shutdown');
   server.close(); server.closeAllConnections();
   wss.close();

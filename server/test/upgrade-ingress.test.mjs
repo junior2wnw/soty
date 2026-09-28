@@ -7,6 +7,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAppsService } from '../../modules/apps/server/index.mjs';
 
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  let forced = false;
+  const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+  child.kill('SIGTERM');
+  const timer = setTimeout(() => { forced = true; child.kill('SIGKILL'); }, 3000);
+  try {
+    const exit = await exited;
+    assert.equal(forced, false, 'SIGTERM must close services and the supervised IPC channel without a forced kill');
+    if (process.platform !== 'win32') assert.equal(exit.code, 0);
+  } finally { clearTimeout(timer); }
+}
+
 test('malformed upgrade target is rejected by the standalone application gateway', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'soty-upgrade-gateway-'));
   const service = createAppsService({ dataDir: directory, shellOrigins: ['http://localhost'] });
@@ -41,11 +54,8 @@ test('a malformed raw websocket upgrade cannot terminate the real HTTP process',
     assert.equal(health.status, 200); assert.equal((await health.json()).ok, true);
     assert.equal(child.exitCode, null);
   } finally {
-    if (child.exitCode === null) {
-      child.kill();
-      await new Promise(resolve => child.once('exit', resolve));
-    }
-    await rm(directory, { recursive: true, force: true });
+    try { await stopChild(child); }
+    finally { await rm(directory, { recursive: true, force: true }); }
   }
 });
 
@@ -74,7 +84,7 @@ test('a malformed raw HTTP target cannot terminate the local connector inside it
     assert.equal(health.status, 200); assert.equal((await health.json()).ok, true);
     assert.equal(child.exitCode, null);
   } finally {
-    if (child.exitCode === null) { child.kill(); await new Promise(resolve => child.once('exit', resolve)); }
-    await rm(directory, { recursive: true, force: true });
+    try { await stopChild(child); }
+    finally { await rm(directory, { recursive: true, force: true }); }
   }
 });
