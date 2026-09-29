@@ -1849,8 +1849,25 @@ function write(stream, chunk) { return new Promise((resolve, reject) => { if (!s
 
 return { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal };
 })();
+// bundled connector module: ./agent-modules/executor-policy.mjs
+const { resolveJobExecutor } = (() => {
+// Keep the wire kind distinct from future executor versions. A server upgrade
+// must never turn an unfamiliar operation into an AI prompt or a shell command.
+function resolveJobExecutor(job) {
+  const aliases = { agent: 'agent', chat: 'agent', command: 'command', script: 'script' };
+  if (!job || typeof job !== 'object' || Array.isArray(job)
+    || typeof job.kind !== 'string' || !Object.hasOwn(aliases, job.kind)) return null;
+  const kind = aliases[job.kind];
+  if (!job.input || typeof job.input !== 'object' || Array.isArray(job.input)) return null;
+  if (job.input.kind !== undefined && (typeof job.input.kind !== 'string'
+    || !Object.hasOwn(aliases, job.input.kind) || aliases[job.input.kind] !== kind)) return null;
+  return kind;
+}
 
-const connectorVersion = "1.3.0";
+return { resolveJobExecutor };
+})();
+
+const connectorVersion = "1.3.1";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -2290,7 +2307,11 @@ async function connectorLoop() {
 }
 
 async function executeJob(job) {
-  const kind = ["agent", "command", "script"].includes(job.kind) ? job.kind : "agent";
+  const kind = resolveJobExecutor(job);
+  if (!kind) {
+    await finishRemoteJob(job.id, { ok: false, text: "Этот тип задания не поддерживается исполнителем. Обновите подключение.", exitCode: 126 });
+    return;
+  }
   const detected = kind === "agent" ? await detectAgent() : null;
   if (kind === "agent" && !detected?.available) {
     await finishRemoteJob(job.id, { ok: false, text: detected?.reason || "OpenCode недоступен", exitCode: 126, agentId: "opencode" });

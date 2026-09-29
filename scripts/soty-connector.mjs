@@ -12,8 +12,9 @@ import { buildTrafficClientUri, createTrafficCoreRuntime, normalizeBridgeSetting
 import { defaultGonkaModel, gonkaModelLimitsFor, openCodeLicenseText, openCodeReleaseFor } from "./agent-modules/opencode-release.mjs";
 import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema, spreadExOriginAllowed } from "./agent-modules/spreadex-ml.mjs";
 import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
+import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
 
-const connectorVersion = "1.3.0";
+const connectorVersion = "1.3.1";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));
@@ -453,7 +454,11 @@ async function connectorLoop() {
 }
 
 async function executeJob(job) {
-  const kind = ["agent", "command", "script"].includes(job.kind) ? job.kind : "agent";
+  const kind = resolveJobExecutor(job);
+  if (!kind) {
+    await finishRemoteJob(job.id, { ok: false, text: "Этот тип задания не поддерживается исполнителем. Обновите подключение.", exitCode: 126 });
+    return;
+  }
   const detected = kind === "agent" ? await detectAgent() : null;
   if (kind === "agent" && !detected?.available) {
     await finishRemoteJob(job.id, { ok: false, text: detected?.reason || "OpenCode недоступен", exitCode: 126, agentId: "opencode" });

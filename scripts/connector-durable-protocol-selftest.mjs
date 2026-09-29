@@ -10,6 +10,9 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const serverRoot=path.resolve(process.env.SOTY_TEST_SERVER_ROOT || path.join(path.dirname(fileURLToPath(import.meta.url)),'..'));
 const sourceRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const connectorSource=await readFile(path.join(sourceRoot,'scripts/soty-connector.mjs'),'utf8');
+const clientVersion=/const connectorVersion = ["']([^"']+)["']/.exec(connectorSource)?.[1];
+assert.ok(clientVersion,'the receipt must identify the connector source actually exercised');
 const require=createRequire(path.join(serverRoot,'package.json'));
 const express=require('express');
 const {attachConnectorApi}=await import(pathToFileURL(path.join(serverRoot,'server/connector-api.js')));
@@ -56,5 +59,5 @@ try{
  for(const child of children){if(child.exitCode===null){child.kill();await new Promise(r=>child.once('exit',r));}}
  for(const server of servers.splice(0)){server.closeAllConnections();await new Promise(r=>server.close(r));}
  await pause(100);await store.writeQueue;await store.close();store=null;const reopened=createConnectorStore(dataDir,{now:()=>now,leaseMs:5000});try{const persisted=await reopened.createJob({...lost.body,linkId},linkId);assert.equal(persisted.job.id,recreated.id);assert.equal(persisted.job.status,'succeeded');assert.equal((await reopened.getJob(linkId,large.id)).job.result.text,resultText);}finally{await reopened.close();}checks.push('request identity and full artifacts survive persistence reopen');
- console.log(JSON.stringify({ok:true,fixture,clientVersion:'1.2.12',clientSha256:createHash('sha256').update(await readFile(path.join(sourceRoot,'scripts/soty-connector.mjs'))).digest('hex'),checks,network:'loopback synthetic only',faults:requests.filter(r=>r.fault),maxAck},null,2));
+ console.log(JSON.stringify({ok:true,fixture,clientVersion,clientSha256:createHash('sha256').update(connectorSource).digest('hex'),checks,network:'loopback synthetic only',faults:requests.filter(r=>r.fault),maxAck},null,2));
 }catch(e){console.error(JSON.stringify({ok:false,fixture,checks,error:e.stack,jobs:store?.state.jobs.map(j=>({id:j.id,name:j.input.name,status:j.status,attempts:j.attempts,result:j.result,eventTypes:j.events.map(e=>e.type)})),requests:requests.slice(-30)}));process.exitCode=1;}finally{for(const child of children){if(child.exitCode!==null||child.signalCode)continue;child.kill();await Promise.race([new Promise(r=>child.once('exit',r)),pause(3000)]);}for(const server of servers){server.closeAllConnections();await new Promise(r=>server.close(r));}if(store){await pause(100);await store.writeQueue;await store.close();}}

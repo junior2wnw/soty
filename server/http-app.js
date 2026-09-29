@@ -11,6 +11,7 @@ import { createWorldService } from "../modules/world/server/index.mjs";
 import { createNotesService } from "../modules/notes/server/index.mjs";
 import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
+import { createCapabilitiesService } from "../modules/capabilities/server/index.mjs";
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
   const app = express();
@@ -71,6 +72,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   const connectors = attachConnectorApi(app, { dataDir, gonka });
   const shellOrigins = connectAllowedOrigins(connectOrigins);
   let connect;
+  const capabilities = createCapabilitiesService({
+    databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
+    actorActive: actor => connect?.isActorActive(actor) === true,
+  });
   const apps = createAppsService({ dataDir, appOriginTemplate, shellOrigins,
     actorActive: actor => connect?.isActorActive(actor) === true,
     canAccessCommunity: (accountId, communityId) => world.canAccessCommunity(accountId, communityId),
@@ -90,10 +95,11 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     res.status(apps.allowsTlsDomain(req.query.domain) ? 204 : 403).end();
   });
   app.locals.worldService = world;
-  app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, appJobs, notes],
+  app.locals.capabilitiesService = capabilities;
+  app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, appJobs, notes, capabilities],
     canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
   const unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
-  app.locals.closeServices = async () => { unsubscribeRevocations(); apps.close(); world.close(); notes.close(); connect.close(); await connectors.store.close(); };
+  app.locals.closeServices = async () => { unsubscribeRevocations(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close(); await connectors.store.close(); };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1 });

@@ -157,3 +157,13 @@ P4: positive create→receipt→PWA; lost ACK до/после эффекта; re
 - [Codex MCP](https://learn.chatgpt.com/docs/extend/mcp) и [OpenCode MCP](https://opencode.ai/docs/mcp-servers/): источники для двух клиентских профилей; описанные в docs возможности всё равно испытываются на закреплённых бинарниках.
 
 Неопределённости ограничены соответствующими gates: конкретный AS и совместимость клиентов — P4; Notes durable create reconciliation — до публичного create; enforcement долгого стороннего исполнения — P5/P6. Они не скрыты за словами «универсально» и не требуют перепроектировать существующий Connect.
+
+## 11. Уточнения после первого P1 implementation review
+
+В утверждённом стыке сохранён один DatabaseSync. Добавлены durable `cap_contracts` pins и `cap_audit`; изменение semantic digest при прежнем capability/version отклоняется после рестарта. Operational `executionEnabled` исключён из digest: включение уже согласованного обработчика не меняет версию. Списки principals/grants/events ограничены и имеют account/filter-bound cursor; grant DTO показывает reserved/spent/remaining/uncertain в единицах бесплатных вызовов.
+
+Конфигурация лимитов разделена: `limits.access.maxGrantTtlMs` и `limits.invocations.{inputBytes,metadataBytes,pageSize}`. Неизвестные поля отклоняются до открытия базы. Создатель service principal и каждого grant остаётся связан с доверенным Connect device; его отзыв закрывает полномочие при следующей проверке, даже без доставки observer event.
+
+Служебный read/history scoped по account+client+principal+grant. Для человеческого «Доступы и действия» добавлен отдельный подписанный `access.invocations.list`: host проверяет Connect actor и expectedAccountId, затем вызывает internal `listForOwner`; service actor не имитируется. Результат минимален и не содержит input, authorization snapshot или token. `access.events.list` показывает content-free выдачу/отзыв доступа владельцу.
+
+Детали API и фактические команды тестов — [README модуля](../../modules/capabilities/README.md). Реализация P1 не снимает перечисленные выше gates OAuth/MCP/Notes P4 и не объявляет внешние клиентские интеграции проверенными.
