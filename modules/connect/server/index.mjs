@@ -190,7 +190,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   }
   const db = new DatabaseSync(file);
   try { migrateDatabase(db, projectId); } catch (error) { db.close(); throw error; }
-  let closed = false;
+  let closed = false, transactionActive = false;
   const now = () => {
     const value = clock();
     assert(Number.isSafeInteger(value) && value >= 0, 'invalid_clock');
@@ -199,10 +199,53 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
   const get = (sql, ...params) => db.prepare(sql).get(...params);
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
+  function requireIdle() {
+    assert(!closed, 'service_closed');
+    assert(!transactionActive && !db.isTransaction, 'connect_transaction_nested');
+  }
   function transaction(action) {
-    db.exec('BEGIN IMMEDIATE');
-    try { const result = action(); db.exec('COMMIT'); return result; }
-    catch (error) { db.exec('ROLLBACK'); throw error; }
+    requireIdle();
+    transactionActive = true;
+    let began = false;
+    try {
+      db.exec('BEGIN IMMEDIATE'); began = true;
+      const result = action();
+      db.exec('COMMIT'); began = false;
+      return result;
+    } catch (error) {
+      // A failed or nested BEGIN must never roll back somebody else's work.
+      if (began && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the primary failure. */ } }
+      throw error;
+    } finally { transactionActive = false; }
+  }
+  /** Serializes a trusted synchronous coordinator with other Connect writers.
+   * It grants no identity and does not make downstream databases one commit. */
+  function withAuthorityFence(action) {
+    requireIdle();
+    assert(typeof action === 'function' && !['AsyncFunction', 'AsyncGeneratorFunction'].includes(action.constructor?.name),
+      'connect_authority_callback_invalid');
+    const priorTimeout = Number(db.prepare('PRAGMA busy_timeout').get().timeout);
+    let entered = false, hasPrimaryFailure = false;
+    try {
+      db.exec('PRAGMA busy_timeout=100');
+      return transaction(() => {
+        entered = true;
+        const result = action();
+        if (result && typeof result.then === 'function') {
+          // Consume a rejected Promise without treating it as synchronous work.
+          void Promise.resolve(result).catch(() => {});
+          fail('connect_authority_callback_async');
+        }
+        return result;
+      });
+    } catch (error) {
+      hasPrimaryFailure = true;
+      if (!entered && [5, 6].includes(Number(error?.errcode) & 255)) fail('connect_authority_busy');
+      throw error;
+    } finally {
+      try { db.exec(`PRAGMA busy_timeout=${priorTimeout}`); }
+      catch (error) { if (!hasPrimaryFailure) throw error; }
+    }
   }
   function hitLimit(key, max, interval, timestamp) {
     const bucket = Math.floor(timestamp / interval);
@@ -601,7 +644,8 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     projectId,
     schemaVersion: SCHEMA_VERSION,
     readerEpoch: READER_EPOCH,
-    close() { if (!closed) { closed = true; revocationListeners.clear(); db.close(); } },
+    close() { if (!closed) { requireIdle(); db.close(); closed = true; revocationListeners.clear(); } },
+    withAuthorityFence,
     /** Host-only check for sessions created by a signed extension operation. */
     isActorActive(actor) {
       if (closed || !actor || typeof actor.accountId !== 'string' || typeof actor.deviceId !== 'string') return false;
@@ -615,7 +659,7 @@ export function createConnectService({ databasePath, projectId, allowedOrigins, 
     },
     async handle(input) {
       try {
-        assert(!closed, 'service_closed');
+        requireIdle();
         assert(record(input), 'invalid_request');
         const origin = originValue(input.origin);
         assert(origins.has(origin), 'origin_not_allowed');
