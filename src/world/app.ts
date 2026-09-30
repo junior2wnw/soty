@@ -9,6 +9,7 @@ import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { createApplicationCard } from './application-card';
+import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent, type AppResolvedEntry } from './app-launch.mjs';
 import { mountAppSettings } from './app-settings';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
@@ -23,7 +24,7 @@ import { entityId, entityName, worldColor, worldColors, type WorldApi, type Worl
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
-interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId: string; deviceName?: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; port?: number; }
+interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId: string; deviceName?: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; publication?: WorldAppRecord['publication']; port?: number; }
 interface DeviceProjection { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; }
 interface HomeNote { noteId: string; title: string; preview: string; pinned: boolean; updatedAt: number; }
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
@@ -898,7 +899,8 @@ class WorldApplication {
   private inspectApplication(app: WorldAppRecord): void {
     const dialog = this.dialog(app.name); const body = el('div', 'sw-stack');
     const status = el('p', 'sw-muted', this.appStateLabel(app.status));
-    body.append(status, el('p', '', app.audience || (app.grants?.communityIds.length ? 'Доступно выбранным сообществам' : app.grants?.accountIds.length ? 'Доступно выбранным людям' : 'Личное приложение')));
+    const audience = describeAppAudience(app, this.deskAccount);
+    body.append(status, ...(audience.details.length ? audience.details : [audience.label]).map(text => el('p', '', text)));
     if (app.deviceLabel) body.append(button(app.deviceLabel, 'laptop', 'sw-button-quiet', () => { dialog.close(); this.openResources('devices'); }));
     for (const group of this.communities.filter(value => value.membership?.state === 'active' && (value.communityId === app.communityId || app.grants?.communityIds.includes(value.communityId)))) {
       body.append(button(group.name, 'people', 'sw-button-quiet', () => { dialog.close(); void this.openGroup(group.communityId); }));
@@ -1037,7 +1039,13 @@ class WorldApplication {
     if (!current()) throw Object.assign(new Error('No current account'), { code: 'authentication_required' });
     const apps = this.options.listApps ? await this.options.listApps(communityId)
       : (await this.api.request<{ apps: AppProjection[] }>('apps.list', { ...(communityId ? { communityId } : {}), expectedAccountId: accountId })).apps
-        .map(app => ({ appId: app.id, name: app.name, deviceId: app.hostDeviceId, ...(app.deviceName ? { deviceLabel: app.deviceName } : {}), status: app.state, ownerAccountId: app.ownerAccountId, ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants, audience: app.grants.communityIds.length ? 'Сообществу' : app.grants.accountIds.length ? 'Выбранным людям' : 'Только вам' } : {}) }));
+        .map(app => {
+          const record: WorldAppRecord = { appId: app.id, name: app.name, deviceId: app.hostDeviceId,
+            ...(app.deviceName ? { deviceLabel: app.deviceName } : {}), status: app.state, ownerAccountId: app.ownerAccountId,
+            ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants } : {}),
+            ...(app.publication ? { publication: app.publication } : {}) };
+          return { ...record, audience: describeAppAudience(record, accountId).label };
+        });
     if (!current()) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
     return apps;
   }
@@ -1148,12 +1156,13 @@ class WorldApplication {
     const handle = mountAppSettings({ host: dialog.body, accountId, appId: app.appId, api: this.api, communities: [...this.communities], isCurrent,
       onChanged: snapshot => {
         if (!isCurrent()) return;
-        const before = JSON.stringify([app.name, app.grants, app.status, app.audience, app.deviceId, app.deviceLabel]);
+        const before = JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel]);
         app = { ...app, name: snapshot.app.name, grants: snapshot.app.grants,
           deviceId: snapshot.source.hostDeviceId, deviceLabel: snapshot.source.deviceName,
           status: snapshot.app.state === 'revoked' ? 'revoked' : ({ offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' } as const)[snapshot.source.observation.state],
-          audience: snapshot.publication.launchPolicy === 'anyone' ? 'Доступ по активным ссылкам' : snapshot.app.grants.communityIds.length ? 'Доступно выбранным сообществам' : snapshot.app.grants.accountIds.length ? 'Доступно выбранным людям' : 'Личное приложение' };
-        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.audience, app.deviceId, app.deviceLabel]);
+          publication: publicationFromInspection(snapshot) };
+        app.audience = describeAppAudience(app, accountId).label;
+        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.publication, app.audience, app.deviceId, app.deviceLabel]);
         this.apps = this.apps.map(value => value.appId === app.appId ? { ...value, ...app } : value);
         // Updating metadata must not recreate the running iframe or its chat.
         onUpdated?.(app);

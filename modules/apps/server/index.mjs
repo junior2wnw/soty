@@ -159,17 +159,31 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return matches.find(item => !item.connectorId.endsWith(':machine')) || matches[0];
   }
   function publicApp(app, actor) {
-    const target = activeTarget(app.id);
-    assertApps(target?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
-    const device = binding(target.connector_key);
-    assertApps(device?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
-    const observed = inspectSource({ app, target: { connectorKey: target.connector_key, revision: target.revision, digest: target.digest } });
+    // One statement observes the current app, target and publication together.
+    // A candidates row can predate another writer's revoke or source change.
+    const current = db.prepare(`SELECT a.*,t.connector_key AS target_connector_key,t.revision AS target_revision,
+      t.digest AS target_digest,t.port AS target_port,t.entry_path AS target_entry_path,
+      d.identity_json,d.name AS device_name,p.launch_policy,
+      CASE WHEN a.state='enabled' THEN (SELECT count(*) FROM app_publication_domains pd
+        JOIN app_domains ad ON ad.id=pd.domain_id AND ad.app_id=pd.app_id AND ad.owner_account_id=pd.owner_account_id
+        JOIN app_domain_zones z ON z.id=ad.zone_id AND z.kind='named'
+        WHERE pd.app_id=a.id AND pd.owner_account_id=a.owner_account_id AND ad.role='alias' AND ad.state='bound')
+        ELSE 0 END AS active_named_address_count
+      FROM local_apps a JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
+      JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
+      JOIN app_devices d ON d.connector_key=t.connector_key AND d.owner_account_id=a.owner_account_id
+      WHERE a.id=?`).get(app.id);
+    assertApps(current, 'apps_registry_corrupt', 500);
+    assertApps(current.owner_account_id === actor.accountId || canUse(actor, current), 'apps_access_denied', 403);
+    const identity = JSON.parse(current.identity_json);
+    const observed = inspectSource({ app: current, target: { connectorKey: current.target_connector_key, revision: current.target_revision, digest: current.target_digest } });
     const legacyState = { offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' };
-    const state = app.state === 'revoked' ? 'revoked' : legacyState[observed.state];
-    return { id: app.id, name: app.name, ownerAccountId: app.owner_account_id, hostDeviceId: JSON.parse(device.identity_json).hostDeviceId,
-      state, createdAt: app.created_at, updatedAt: app.updated_at,
-      ...(actor.accountId === app.owner_account_id ? { connectorId: JSON.parse(device.identity_json).connectorId, deviceName: device.name,
-        port: target.port, entryPath: target.entry_path, grants: JSON.parse(app.grants_json) } : {}) };
+    const state = current.state === 'revoked' ? 'revoked' : legacyState[observed.state];
+    return { id: current.id, name: current.name, ownerAccountId: current.owner_account_id, hostDeviceId: identity.hostDeviceId,
+      state, createdAt: current.created_at, updatedAt: current.updated_at,
+      ...(actor.accountId === current.owner_account_id ? { connectorId: identity.connectorId, deviceName: current.device_name,
+        port: current.target_port, entryPath: current.target_entry_path, grants: JSON.parse(current.grants_json),
+        publication: { launchPolicy: current.launch_policy, activeNamedAddressCount: current.active_named_address_count } } : {}) };
   }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });

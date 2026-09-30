@@ -38,6 +38,9 @@ function click(name: string, parent: ParentNode = host): void { key<HTMLButtonEl
 function visible(node: HTMLElement): boolean { return !node.closest('[hidden]') && getComputedStyle(node).display !== 'none' && node.getClientRects().length > 0; }
 function type(value: string): HTMLTextAreaElement { const input = key<HTMLTextAreaElement>('discussion-input'); input.focus(); input.value = value;
   input.dispatchEvent(new Event('input', { bubbles: true })); return input; }
+const paint = (): Promise<void> => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+const AUTOSIZE_CASE = 'Многострочный черновик читается после восстановления и изменения размера без потери позиции';
+const ARCHIVE_FOCUS_CASE = 'Переходы в архив и обратно сохраняют фокус, поздний ответ не забирает его';
 const scopedBrowserKeys = new Set<string>(), errors: string[] = [];
 let mounted: { dispose(): void } | null = null, restoreFrames: (() => void) | null = null;
 let generation = 0, running = false, theme: 'light' | 'dark' = 'dark';
@@ -95,7 +98,7 @@ function backend(forcedAccountId?: string): Backend {
       author: { accountId, label: 'Участник стенда' }, body, replyTo: null, createdAt: ++timestamp, removedAt: null, canRemove: true };
       f.messages.get(conversationId)!.push(row); return clone(row); },
     context(conversationId = f.current, administrative = false) { const isCurrent = conversationId === f.current;
-      return { appId: APP, entry: administrative ? null : clone(f.entry), conversationId, mode: isCurrent ? 'current' : 'archive', isCurrent,
+      return { appId: APP, entry: administrative ? null : clone(f.entry), conversationId, mode: administrative || !isCurrent ? 'archive' : 'current', isCurrent,
         ownerAdministrative: administrative, audience: conversationId === NEXT ? 'public' : 'shared', canPost: isCurrent && !administrative, canModerate: true }; },
     async launch(args) { callLog.push({ op: 'fixture.launch', args: { ...clone(args) } }); f.launchCount++;
       if (f.failLaunch) throw error('app_offline');
@@ -208,8 +211,62 @@ const cases: Array<[string, () => Promise<void>]> = [
     const f = backend(), h = stage(f, { panel: 'discussion', administrative: true }); await h.ready;
     await until(() => key('discussion-audience').textContent?.includes('Управление'), 'administrative read');
     const panel = key('discussion'); assert(f.launchCount === 0 && !host.querySelector('iframe'), 'administrative read minted ticket');
+    assert(!visible(key('discussion-input')), 'administrative current view exposed a composer');
+    assert(!panel.querySelector('.se-discussion-banner')?.textContent?.includes('Этот разговор завершён'), 'administrative read falsely declared the current conversation closed');
     const ordinary = route({ panel: 'discussion' }); applyRoute(ordinary); h.updateRoute(ordinary); await readyComposer(); await frameOf();
     assert(key('discussion') === panel && Number(f.launchCount) === 1 && h.entry()?.path === ENTRY.path, 'null entry hydration replaced panel or failed');
+  }],
+  [ARCHIVE_FOCUS_CASE, async () => {
+    const f = backend(), h = discussion(f), draft = 'Черновик остаётся в текущем разговоре';
+    await readyComposer(); type(draft); await h.flush(); await archives();
+    const samples: Array<Record<string, unknown>> = [];
+    function focusInPanel(step: string): HTMLElement {
+      const node = document.activeElement;
+      assert(node instanceof HTMLElement && host.contains(node) && node.isConnected && visible(node), `${step}: focus fell outside the visible panel`);
+      assert(!!(node.getAttribute('aria-label') || node.textContent?.trim()), `${step}: focus target has no readable name`);
+      samples.push({ step, tag: node.tagName, key: node.dataset.engagementKey ?? null, name: node.getAttribute('aria-label') || node.textContent?.trim(), connected: node.isConnected });
+      output.dataset.archiveFocusMetrics = JSON.stringify(samples);
+      return node;
+    }
+    async function transition(control: string, target: string, moveDuringWait = false): Promise<void> {
+      const gate = deferred<unknown>(); let captured: unknown;
+      f.hold = async (op, args, value) => {
+        if (op === 'apps.discussion.context' && String(args.conversationId ?? f.current) === target) { captured = value; return gate.promise; }
+        return value;
+      };
+      const trigger = key<HTMLButtonElement>(control); trigger.focus();
+      assert(document.activeElement === trigger, `${control}: actual control did not take focus`);
+      trigger.click();
+      try {
+        await until(() => captured !== undefined, `${control}: context held after activation`);
+        // Give the browser a layout turn: an immediately settled Promise can
+        // hide the fact that removal of a focused button sends focus to BODY.
+        await delay(40); await paint();
+        let expectedFocus = focusInPanel(`${control}: pending`);
+        assert(!key('discussion-archives').textContent?.includes('Доступных архивов нет.'), `${control}: pending read falsely reported an empty archive`);
+        if (moveDuringWait) {
+          expectedFocus = key<HTMLButtonElement>('discussion-refresh'); expectedFocus.focus();
+          assert(document.activeElement === expectedFocus, 'user could not move focus during the read');
+        }
+        f.hold = null; gate.resolve(captured);
+        if (target === CURRENT) await readyComposer();
+        else await until(() => key('discussion-audience').textContent?.includes('Архив')
+          && host.querySelector('[data-engagement-key="discussion-archive"][aria-pressed="true"]'), 'archive selected after held response');
+        await delay(40); await paint();
+        assert(document.activeElement === expectedFocus, `${control}: completion moved the user's focus`);
+        focusInPanel(`${control}: complete${moveDuringWait ? ' after user moved focus' : ''}`);
+        if (target === CURRENT) assert(key<HTMLTextAreaElement>('discussion-input').value === draft, 'return from archive lost the scoped current draft');
+        else assert(!visible(key('discussion-input')), 'archive exposed a writable current draft');
+      } finally { f.hold = null; gate.resolve(captured); }
+    }
+    await transition('discussion-archive', ARCHIVE);
+    await transition('discussion-current', CURRENT);
+    await transition('discussion-archive', ARCHIVE, true);
+    const externalSelectionFocus = document.activeElement;
+    await h.updateSelection({}); await readyComposer(); await paint();
+    assert(document.activeElement === externalSelectionFocus, 'programmatic route selection stole focus');
+    assert(key<HTMLTextAreaElement>('discussion-input').value === draft, 'programmatic current selection lost the scoped draft');
+    assert(f.sendEffects === 0, 'focus/navigation produced a send effect');
   }],
   ['Неудачный первый launch допускает позднее точное разрешение входа', async () => {
     const f = backend(); f.failLaunch = f.failEntry = true; const h = stage(f, { panel: 'discussion' }); await h.ready;
@@ -238,6 +295,120 @@ const cases: Array<[string, () => Promise<void>]> = [
     await refresh; await readyComposer();
     assert(key('discussion-input') === input && input.value === 'Текст пользователя перед обновлением', 'refresh replaced or reset composer');
     assert(document.activeElement === input && input.selectionStart === 5 && input.selectionEnd === 14, 'refresh stole input focus or selection');
+  }],
+  [AUTOSIZE_CASE, async () => {
+    const originalWidth = host.style.width, originalDisplay = host.style.display;
+    const f = backend(), adapters = persistence(), samples: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < 24; index++) f.message(`Сообщение ${index + 1} для проверки положения истории, без сетевой отправки.`);
+    let h = discussion(f, adapters); await readyComposer();
+    const restored = 'Первая строка\nВторая строка';
+    type(restored); await h.flush();
+    h = discussion(f, adapters);
+    let input = await readyComposer(); const identity = input;
+    const history = host.querySelector<HTMLElement>('.se-discussion-scroll')!;
+    const height = (): number => input.getBoundingClientRect().height;
+    const unclipped = (): boolean => input.scrollHeight <= input.clientHeight + 1;
+    const sample = (step: string): void => {
+      const css = getComputedStyle(input), box = input.getBoundingClientRect();
+      samples.push({ step, viewport: `${innerWidth}x${innerHeight}`, width: box.width, height: box.height,
+        clientHeight: input.clientHeight, scrollHeight: input.scrollHeight, min: css.minHeight, max: css.maxHeight,
+        selection: [input.selectionStart, input.selectionEnd], focused: document.activeElement === input,
+        historyTop: history.scrollTop, historyGap: history.scrollHeight - history.clientHeight - history.scrollTop });
+      output.dataset.autosizeMetrics = JSON.stringify(samples);
+    };
+    const intact = (value: string, start: number, end: number, step: string): void => {
+      assert(key('discussion-input') === identity && input.value === value, `${step}: textarea identity or text changed`);
+      assert(document.activeElement === input && input.selectionStart === start && input.selectionEnd === end, `${step}: focus or selection changed`);
+      assert(f.sendEffects === 0, `${step}: sizing sent a message`);
+    };
+    const replace = async (value: string): Promise<void> => {
+      input.setSelectionRange(0, input.value.length); input.setRangeText(value, 0, input.value.length, 'end');
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+      await h.flush(); await paint();
+    };
+    try {
+      input.focus(); input.setSelectionRange(2, 8);
+      await until(unclipped, 'restored two-line value fits without an input event');
+      intact(restored, 2, 8, 'restored'); sample('restored');
+      const restoredHeight = height();
+
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.setRangeText('\nЕщё строка', input.value.length, input.value.length, 'end');
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertLineBreak', data: '\nЕщё строка' }));
+      const inserted = input.value, insertionEnd = input.selectionEnd;
+      await h.flush(); await until(() => unclipped() && height() > restoredHeight + 1, 'insertion grows the actual textarea');
+      intact(inserted, insertionEnd, insertionEnd, 'insertion'); sample('insertion');
+
+      await replace('Коротко');
+      await until(() => unclipped() && height() < restoredHeight - 1, 'deletion returns unused height');
+      intact('Коротко', 7, 7, 'deletion'); sample('deletion');
+      const shortHeight = height();
+      assert(history.scrollHeight > history.clientHeight + 200, 'fixture needs a real scrollable history');
+      history.scrollTop = history.scrollHeight;
+      await replace(restored);
+      await until(() => height() > shortHeight + 1, 'growth while history is at its end');
+      assert(Math.abs(history.scrollHeight - history.clientHeight - history.scrollTop) <= 2, 'growing draft moved history away from its end');
+      sample('history-bottom');
+      await replace('Коротко'); await until(() => height() <= shortHeight + 1, 'short draft before history midpoint');
+      history.scrollTop = Math.floor((history.scrollHeight - history.clientHeight) / 2);
+      const middle = history.scrollTop;
+      await replace(restored); await until(() => height() > shortHeight + 1, 'growth while history is in the middle');
+      assert(Math.abs(history.scrollTop - middle) <= 2, 'growing draft moved the reader from the middle of history');
+      sample('history-middle');
+
+      const wrapping = 'Список покупок для дома на неделю: хлеб, молоко, яблоки.';
+      await replace(wrapping); input.setSelectionRange(4, 11); await paint();
+      const wideWidth = input.getBoundingClientRect().width, wideHeight = height();
+      const durableBeforeResize = JSON.stringify([...adapters.values]); sample('wide');
+      host.style.width = `${Math.max(216, Math.min(320, Math.floor(host.clientWidth * 0.7)))}px`;
+      await until(() => input.getBoundingClientRect().width < wideWidth - 1 && height() > wideHeight + 1, 'width-only narrowing changes wrapped height');
+      intact(wrapping, 4, 11, 'narrow'); sample('narrow');
+      host.style.width = originalWidth;
+      await until(() => input.getBoundingClientRect().width >= wideWidth - 1 && height() <= wideHeight + 1, 'width-only widening releases height');
+      intact(wrapping, 4, 11, 'wide-again'); sample('wide-again');
+      assert(JSON.stringify([...adapters.values]) === durableBeforeResize, 'width changes wrote a new draft revision');
+
+      const long = 'Длинная строка черновика для прокрутки.\n'.repeat(130).slice(0, 4000);
+      await replace(long); input.setSelectionRange(long.length - 10, long.length - 2); await paint();
+      const css = getComputedStyle(input), maximum = Number.parseFloat(css.maxHeight);
+      assert(Number.isFinite(maximum) && height() <= maximum + 1, 'long draft exceeded the CSS height budget');
+      assert(input.scrollHeight > input.clientHeight + 40 && /auto|scroll/u.test(css.overflowY), 'capped long draft has no internal scrolling');
+      input.scrollTop = input.scrollHeight;
+      assert(input.scrollTop > 0, 'capped text cannot be reached by scrolling');
+      const sendBox = key('discussion-send').getBoundingClientRect(), hostBox = host.getBoundingClientRect();
+      assert(sendBox.top >= hostBox.top - 1 && sendBox.bottom <= hostBox.bottom + 1, 'long draft displaced send outside its panel');
+      assert(host.scrollWidth <= host.clientWidth + 1, 'draft introduced horizontal overflow');
+      intact(long, long.length - 10, long.length - 2, 'bounded-long'); sample('bounded-long');
+
+      await replace(restored); await until(unclipped, 'short draft before hidden layout');
+      const hiddenHeight = input.style.height;
+      host.style.display = 'none'; assert(input.getBoundingClientRect().width === 0, 'fixture parent was not actually hidden');
+      await h.refresh(); await paint();
+      assert(input.style.height === hiddenHeight, 'zero-width hidden layout replaced the last usable size');
+      host.style.display = originalDisplay;
+      await until(() => visible(input) && unclipped(), 'parent becomes measurable again');
+      h.setVisible(false); await paint(); h.setVisible(true); await readyComposer(); await until(unclipped, 'same composer returns after hidden panel');
+      input.focus(); input.setSelectionRange(2, 8); intact(restored, 2, 8, 'shown-again'); sample('shown-again');
+
+      // Inline height is the browser's native resize signal. This is not a
+      // pointer-drag claim; actual pointer/keyboard geometry belongs to root QA.
+      const manualCss = getComputedStyle(input), minimum = Number.parseFloat(manualCss.minHeight), limit = Number.parseFloat(manualCss.maxHeight);
+      const manual = Math.round(minimum + (limit - minimum) / 2);
+      input.style.height = `${manual}px`; await paint();
+      await replace('Сохраняем ручной размер');
+      assert(Math.abs(height() - manual) <= 1, 'automatic fit overwrote the explicit manual height');
+      const manualStable = height(); await h.refresh(); await paint();
+      assert(Math.abs(height() - manualStable) <= 1, 'unchanged render oscillated manual height');
+      sample('manual-size');
+
+      // A fresh mount returns to automatic sizing. Dispose immediately after
+      // input, before the queued frame can resize its detached textarea.
+      h = discussion(f, adapters); input = await readyComposer(); await paint();
+      input.value = restored; input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: restored }));
+      h.dispose(); mounted = null; const afterDispose = input.style.height;
+      await paint(); assert(input.style.height === afterDispose, 'queued sizing wrote to a disposed component');
+      assert(f.sendEffects === 0, 'sizing lifecycle sent a message');
+    } finally { host.style.width = originalWidth; host.style.display = originalDisplay; }
   }],
   ['Смена аудитории оставляет старый текст отдельно и новый composer пустым', async () => {
     const f = backend(), h = discussion(f); await readyComposer(); type('Текст прежней закрытой аудитории'); await h.flush();
@@ -342,16 +513,21 @@ const cases: Array<[string, () => Promise<void>]> = [
 
 async function run(): Promise<void> {
   if (running) return; running = true; output.dataset.testStatus = 'running'; errors.length = 0;
+  const requestedCase = new URL(location.href).searchParams.get('case');
+  const selectedName = requestedCase === 'autosize' ? AUTOSIZE_CASE : requestedCase === 'archive-focus' ? ARCHIVE_FOCUS_CASE : null;
+  const selected = selectedName ? cases.filter(([name]) => name === selectedName) : cases;
+  delete output.dataset.autosizeMetrics;
+  delete output.dataset.archiveFocusMetrics;
   let passed = 0, failed = 0; completedLines = []; output.textContent = 'Проверяем настоящий DOM с вымышленными ответами…';
   try {
-    for (const [name, check] of cases) {
+    for (const [name, check] of selected) {
       const startErrors = errors.length; output.dataset.currentTest = name; output.dataset.currentStep = 'начало';
       try { await check(); assert(errors.length === startErrors, `unhandled browser error: ${errors.slice(startErrors).join('; ')}`);
         passed++; completedLines.push(`PASS ${name}`);
       } catch (reason) { failed++; completedLines.push(`FAIL ${name} — ${reason instanceof Error ? reason.message : String(reason)}`); }
       finally { stop(); output.textContent = completedLines.join('\n'); }
     }
-    output.dataset.testStatus = failed ? 'fail' : 'pass'; output.textContent = `${failed ? 'FAIL' : 'PASS'} ${passed}/${cases.length} · ошибок ${failed} · фактический viewport ${innerWidth}×${innerHeight}\n${completedLines.join('\n')}`;
+    output.dataset.testStatus = failed ? 'fail' : 'pass'; output.textContent = `${failed ? 'FAIL' : 'PASS'} ${passed}/${selected.length} · ошибок ${failed} · фактический viewport ${innerWidth}×${innerHeight}\n${completedLines.join('\n')}`;
   }
   finally { running = false; stop(); }
 }

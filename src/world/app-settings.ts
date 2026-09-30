@@ -3,6 +3,7 @@ import { button, el, iconButton, labeledField, textInput } from './dom';
 import { errorText } from './dialogs';
 import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateArgs, createAppSettingsDraftState, createAppSettingsState, dispatchAppSettingsIntent } from './app-settings-state.mjs';
 import { createAppSourceState } from './app-source-state.mjs';
+import { describeAppAudience, publicationFromInspection } from './app-audience.mjs';
 import { deviceKey } from '../platform/device-key.mjs';
 import type { AppInspection, AppSettingsOptions, SettingsPending } from './app-settings.types';
 
@@ -604,13 +605,15 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     disable(confirmYes, busy && confirmation?.kind !== 'leave'); disable(confirmNo, busy && confirmation?.kind !== 'leave');
     if (!model) { conflictBox.hidden = true; messages.hidden = !notice && !error && !storageError && !copyFallback && !pending && !confirmation; return; }
     const state = model.read(), { snapshot, draft } = state, blocked = busy || Boolean(pending) || Boolean(storageError) || Boolean(confirmation);
+    const savedAudience = describeAppAudience({ status: snapshot.app.state, ownerAccountId: accountId,
+      grants: snapshot.app.grants, publication: publicationFromInspection(snapshot) }, accountId);
     text(summaryName, snapshot.app.name);
-    text(summaryState, `${staleInspection ? 'Последнее полученное состояние: ' : ''}${snapshot.app.state === 'revoked' ? 'приложение закрыто в Сотах' : snapshot.publication.launchPolicy === 'anyone' ? 'доступ всем по активным ссылкам' : 'доступ владельцу и выбранным людям'}`);
+    text(summaryState, `${staleInspection ? 'Последнее полученное состояние: ' : ''}${savedAudience.details.join(' ')}`);
     disable(open, busy || staleInspection || !snapshot.actions.canPreview);
     disable(copyPrimary, busy || staleInspection || !(snapshot.addresses.aliases.some(value => value.active && value.shareUrl) || snapshot.addresses.canonical?.shareUrl));
     conflictBox.hidden = !(state.nameConflict || state.grantsConflict || state.publicationConflict);
     messages.hidden = !notice && !error && !storageError && !copyFallback && !pending && !confirmation && conflictBox.hidden;
-    text(conflictDetail, `Сейчас: «${snapshot.app.name}», ${snapshot.publication.launchPolicy === 'anyone' ? 'всем по активным ссылкам' : 'ограниченный доступ'}, контактов ${snapshot.app.grants.accountIds.length}, групп ${snapshot.app.grants.communityIds.length}.`);
+    text(conflictDetail, `Сейчас: «${snapshot.app.name}». ${savedAudience.details.join(' ')} Контактов ${snapshot.app.grants.accountIds.length}, групп ${snapshot.app.grants.communityIds.length}.`);
     disable(reset, busy || Boolean(pending) || Boolean(confirmation));
     unavailableDetail.hidden = removeUnavailable.hidden = !state.unavailableDomainIds.length;
     text(unavailableDetail, `Недоступны выбранные адреса: ${state.unavailableDomainIds.map(id => snapshot.addresses.aliases.find(alias => alias.id === id)?.origin ?? 'ранее выбранный адрес').join(', ')}. Остальные правки сохранены.`);

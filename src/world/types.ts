@@ -53,6 +53,10 @@ export interface WorldMember extends WorldMembership { profile: WorldProfile }
 export interface WorldSearch { people: WorldProfile[]; communities: WorldCommunity[]; nextCursor: string | null; totals: { people: number; communities: number; peopleExact?: boolean; communitiesExact?: boolean } }
 export interface WorldApi { request<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface WorldDevice { deviceId: string; label: string; state: string; }
+export interface WorldAppPublication {
+  launchPolicy: 'restricted' | 'anyone';
+  activeNamedAddressCount: number;
+}
 export interface WorldAppRecord {
   appId: string;
   name: string;
@@ -62,6 +66,7 @@ export interface WorldAppRecord {
   communityId?: string;
   status: string;
   audience?: string;
+  publication?: WorldAppPublication;
   symbol?: string;
   color?: string;
   ownerAccountId?: string;

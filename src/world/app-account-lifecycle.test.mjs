@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
+import * as appAudience from './app-audience.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
@@ -51,6 +52,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './product': { loadDeskPreferences: accountId => ({ favorites: [`favorite-${accountId}`], recent: [], pinnedApps: [`pin-${accountId}`] }) },
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
+    './app-audience.mjs': appAudience,
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() {}, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },

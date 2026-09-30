@@ -89,7 +89,7 @@
 .se-discussion-older .sw-button { background:transparent; }
 .se-discussion-bottom { flex:none; display:grid; gap:8px; padding:10px 12px 12px; border-top:1px solid var(--sw-line); background:var(--sw-surface); }
 .se-discussion-composer { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:8px; }
-.se-discussion-composer textarea { display:block; width:100%; min-height:48px; height:48px; max-height:160px; resize:vertical; padding:12px; border:1px solid var(--sw-control-border); border-radius:13px; color:var(--sw-ink); background:var(--sw-bg); font:inherit; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
+.se-discussion-composer textarea { display:block; width:100%; min-width:0; overflow-x:hidden; overflow-y:auto; min-height:48px; height:48px; max-height:160px; resize:vertical; padding:12px; border:1px solid var(--sw-control-border); border-radius:13px; color:var(--sw-ink); background:var(--sw-bg); font:inherit; font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
 .se-discussion-composer .sw-button { height:48px; padding:10px 12px; border-radius:12px; }
 .se-discussion-reply { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--sw-muted); }
 .se-discussion-reply>span { flex:1; min-width:0; overflow-wrap:anywhere; }

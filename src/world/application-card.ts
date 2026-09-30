@@ -1,6 +1,7 @@
 import { button, el, iconButton } from './dom';
 import { icon } from './icons';
 import { worldColor, type WorldAppRecord, type WorldCommunity } from './types';
+import { describeAppAudience } from './app-audience.mjs';
 
 export function appStatusLabel(status: string): string {
   return ({ ready: 'Работает', starting: 'Запускается', offline: 'Устройство не в сети', stopped: 'Остановлено', revoked: 'Доступ закрыт' } as Record<string, string>)[status] ?? 'Проверяем состояние';
@@ -24,6 +25,10 @@ export interface ApplicationCardOptions {
 /** One app identity in every placement. A conversation always names its actual community. */
 export function createApplicationCard(options: ApplicationCardOptions): HTMLElement {
   const { app } = options, symbol = app.symbol || 'app';
+  const audience = describeAppAudience(app, options.accountId);
+  const groups = options.communities.filter(group => group.membership?.state === 'active' &&
+    (group.communityId === app.communityId || app.grants?.communityIds.includes(group.communityId)));
+  const group = groups.find(value => value.communityId === options.contextCommunityId) ?? groups[0];
   const card = el('article', `sx-app-card sw-color-${appTone(app)}`);
   const launch = el('button', 'sx-app-launch'); launch.type = 'button'; launch.dataset.entityId = `app:${app.appId}`;
   launch.setAttribute('aria-label', `Открыть ${app.name}`);
@@ -35,18 +40,16 @@ export function createApplicationCard(options: ApplicationCardOptions): HTMLElem
   cover.append(backdrop, glyph, el('strong', 'sx-cover-name', app.name), status);
   const identity = el('div', 'sx-card-identity'); const mark = el('span', 'sx-card-mark soty-hex'); mark.append(icon(symbol));
   const text = el('span', 'sx-card-copy'); text.append(el('strong', '', app.name), el('span', '', app.description || app.deviceLabel || 'Приложение в Сотах'));
+  // A community placement is independent from public named addresses. Keep
+  // its actual community/chat controls while also showing the owner's policy.
+  if (group && (audience.publicNamed || app.status === 'revoked')) text.append(el('span', '', audience.label));
   identity.append(mark, text, icon('diagonal')); launch.append(cover, identity);
   const context = el('div', 'sx-card-context');
-  const groups = options.communities.filter(group => group.membership?.state === 'active' &&
-    (group.communityId === app.communityId || app.grants?.communityIds.includes(group.communityId)));
-  const group = groups.find(value => value.communityId === options.contextCommunityId) ?? groups[0];
   if (group) {
     context.append(button(group.name, 'people', 'sx-card-scope', () => options.openCommunity(group)));
     context.append(iconButton(`Чат сообщества ${group.name}`, 'chat', () => options.openCommunity(group, true)));
   } else {
-    const shared = !!app.grants?.accountIds.length || !!app.grants?.communityIds.length;
-    const scope = el('span', 'sx-card-scope'); scope.append(icon(shared ? 'people' : 'lock'),
-      el('span', '', app.audience || (shared ? 'Выбранным участникам' : app.ownerAccountId === options.accountId ? 'Личное' : 'Вам доступно'))); context.append(scope);
+    const scope = el('span', 'sx-card-scope'); scope.append(icon(audience.icon), el('span', '', audience.label)); context.append(scope);
   }
   context.append(iconButton(`Связи и доступ: ${app.name}`, 'connections', options.inspect));
   const pin = iconButton(`${options.pinned ? 'Открепить здесь' : 'Закрепить здесь'}: ${app.name}`, 'pin', () => {

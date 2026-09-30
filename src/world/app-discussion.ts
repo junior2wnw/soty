@@ -51,6 +51,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   const root = el('section', 'se-discussion'); root.setAttribute('aria-label', 'Обсуждение приложения'); root.dataset.engagementKey = 'discussion';
   const header = el('header', 'se-discussion-header'), heading = el('div', 'se-discussion-heading');
   const title = el('h2', '', 'Обсуждение'), audience = el('span', 'se-discussion-audience'); audience.dataset.engagementKey = 'discussion-audience';
+  title.tabIndex = -1;
   heading.append(title, audience); const headerActions = el('div', 'se-actions');
   const refreshButton = iconButton('Обновить обсуждение', 'refresh', () => { void refresh(); }); refreshButton.dataset.engagementKey = 'discussion-refresh';
   headerActions.append(refreshButton);
@@ -88,6 +89,63 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   input.placeholder = 'Сообщение'; input.setAttribute('aria-label', 'Сообщение в обсуждение'); input.dataset.engagementKey = 'discussion-input';
   const sendButton = button('Отправить', 'send', 'sw-button-primary'); sendButton.type = 'submit'; sendButton.dataset.engagementKey = 'discussion-send';
   composer.append(input, sendButton); bottom.append(latest, status, pendingBox, conflict, reply, composer); root.append(header, scroll, bottom); host.replaceChildren(root);
+
+  let composerFrame: number | null = null, composerTyping = false, observedComposerWidth = 0;
+  let appliedComposerHeight = '', manualComposerHeight: number | null = null;
+  let measuredComposerValue: string | null = null, measuredComposerLayout = '';
+  function fitComposer(typing: boolean): void {
+    if (!view || !foreground() || composer.hidden || !input.isConnected) return;
+    const width = input.getBoundingClientRect().width;
+    if (width <= 0) return; // A hidden panel has no useful wrapping width; reveal will measure again.
+    const styles = view.getComputedStyle(input), minimum = Number.parseFloat(styles.minHeight), maximum = Number.parseFloat(styles.maxHeight);
+    const borders = Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth);
+    if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || !Number.isFinite(borders)) return;
+    // CSS UI specifies that native manual resizing writes the inline height.
+    // Keep that preference distinct from our own writes, including orientation clamps.
+    if (input.style.height !== appliedComposerHeight) {
+      const requested = Number.parseFloat(input.style.height);
+      manualComposerHeight = Number.isFinite(requested) ? requested : null;
+    }
+    const layout = [width, minimum, maximum, borders, styles.paddingTop, styles.paddingBottom, styles.font, styles.lineHeight, styles.letterSpacing, manualComposerHeight].join('|');
+    if (measuredComposerValue === input.value && measuredComposerLayout === layout) return;
+    const historyTop = scroll.scrollTop, atEnd = scroll.scrollHeight - historyTop - scroll.clientHeight < 2;
+    const inputTop = input.scrollTop, inputLeft = input.scrollLeft;
+    const typingAtEnd = typing && document.activeElement === input && input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+    let preferred = manualComposerHeight;
+    if (preferred === null) {
+      input.style.overflowY = 'hidden'; input.style.height = 'auto';
+      preferred = input.scrollHeight + borders;
+    }
+    appliedComposerHeight = `${Math.max(minimum, Math.min(maximum, Math.ceil(preferred)))}px`;
+    input.style.height = appliedComposerHeight; input.style.overflowY = 'auto';
+    if (!typing) { input.scrollTop = inputTop; input.scrollLeft = inputLeft; }
+    else if (typingAtEnd) input.scrollTop = input.scrollHeight;
+    scroll.scrollTop = atEnd ? scroll.scrollHeight : historyTop;
+    measuredComposerValue = input.value; measuredComposerLayout = layout;
+  }
+  function scheduleComposerFit(typing = false): void {
+    composerTyping ||= typing;
+    if (!view || !foreground() || composerFrame !== null) return;
+    composerFrame = view.requestAnimationFrame(() => {
+      composerFrame = null; const fromInput = composerTyping; composerTyping = false; fitComposer(fromInput);
+    });
+  }
+  function cancelComposerFit(): void {
+    if (composerFrame !== null) view?.cancelAnimationFrame(composerFrame);
+    composerFrame = null; composerTyping = false;
+  }
+  const composerResize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+    const width = input.getBoundingClientRect().width;
+    if (width !== observedComposerWidth || input.style.height !== appliedComposerHeight) {
+      observedComposerWidth = width; scheduleComposerFit();
+    }
+  });
+  composerResize?.observe(input);
+  const onComposerResize = (): void => scheduleComposerFit();
+  const onComposerFontLoad = (): void => { measuredComposerLayout = ''; scheduleComposerFit(); };
+  view?.addEventListener('resize', onComposerResize); view?.visualViewport?.addEventListener('resize', onComposerResize);
+  document.fonts?.addEventListener('loadingdone', onComposerFontLoad);
+  void document.fonts?.ready.then(onComposerFontLoad);
 
   function closeDialog(): void { const previous = dialog; dialog = null; previous?.close(); }
   function openDialog(label: string): WorldDialog {
@@ -136,7 +194,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     try { activeDraft.edit({ text: value, replyTo }); notice = ''; void activeDraft.flush().then(() => { if (current()) { refreshRetained(); render(); } }); }
     catch (reason) { error = engagementError(reason); render(); }
   }
-  input.addEventListener('input', () => { if (activeDraft) edit(input.value, activeDraft.read().draft.replyTo); });
+  input.addEventListener('input', () => { scheduleComposerFit(true); if (activeDraft) edit(input.value, activeDraft.read().draft.replyTo); });
   input.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.isComposing) { event.preventDefault(); submit(); } });
   composer.addEventListener('submit', event => { event.preventDefault(); submit(); });
   function submit(): void {
@@ -259,7 +317,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   }
   function render(): void {
     if (rendering) { if (!renderQueued) { renderQueued = true; queueMicrotask(() => { renderQueued = false; render(); }); } return; }
-    if (!current()) { root.replaceChildren(); closeDialog(); stopPoll(); return; }
+    if (!current()) { cancelComposerFit(); root.replaceChildren(); closeDialog(); stopPoll(); return; }
     if (!visible) return;
     rendering = true;
     try {
@@ -273,8 +331,8 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       const readonly = !!context && !context.canPost;
       banner.hidden = !readonly && !state?.resetRequired && !((requestedConversationId || resolvedConversationId) && !context && !state?.loading);
       text(bannerText, state?.resetRequired ? 'Обновите историю, чтобы продолжить. Черновик сохранён отдельно.'
-        : context?.mode === 'archive' ? 'Этот разговор завершён. Его история доступна только для чтения.'
-          : context?.ownerAdministrative ? 'Просмотр и удаление сообщений владельцем.' : context ? 'Этот разговор доступен только для чтения.' : 'Этот разговор сейчас недоступен.');
+        : context?.ownerAdministrative ? 'Просмотр и удаление сообщений владельцем.'
+          : context?.mode === 'archive' ? 'Этот разговор завершён. Его история доступна только для чтения.' : context ? 'Этот разговор доступен только для чтения.' : 'Этот разговор сейчас недоступен.');
       currentButton.hidden = !!context?.isCurrent || !entry && !administrative;
       disabled(currentButton, busy || switching);
       archiveFold.hidden = !feed; disabled(refreshButton, switching || !!state?.loading);
@@ -312,7 +370,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       const message = error || draft?.error && engagementError(draft.error) || localError || state?.error && engagementError(state.error) || notice
         || (state?.loading && !context ? 'Обновляем…' : draft && !draft.durable ? 'Черновик ещё не сохранён на устройстве.' : '');
       text(status, message); status.dataset.tone = error || draft?.error || localError || state?.error ? 'error' : '';
-      renderRetained(showComposer); renderArchives();
+      renderRetained(showComposer); renderArchives(); scheduleComposerFit();
     } finally { rendering = false; }
   }
   function renderArchives(): void {
@@ -325,7 +383,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
       text(node.querySelector('span')!, `Разговор ${index + 1} · ${audienceLabel(value.audience)}`); node.setAttribute('aria-pressed', String(state?.context?.conversationId === value.conversationId)); disabled(node, busy || switching);
       const reference: ChildNode | null = previous ? previous.nextSibling : archiveList.firstChild; if (reference !== node) archiveList.insertBefore(node, reference); previous = node;
     }
-    text(archiveStatus, archiveError || (!values.length && archiveLoaded ? 'Доступных архивов нет.' : ''));
+    text(archiveStatus, archiveError || (!values.length && archiveLoaded && !state?.loading && !switching ? 'Доступных архивов нет.' : ''));
     archiveOlder.hidden = !state?.nextArchiveCursor; disabled(archiveOlder, !!state?.loading || switching); disabled(archiveLatest, !!state?.loading || switching);
   }
   async function flush(): Promise<void> {
@@ -352,6 +410,16 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   }
   async function choose(next: DiscussionSelection): Promise<void> {
     if (!foreground() || busy || switching) return;
+    const context = feed?.read().context;
+    const sameSelection = next.conversationId
+      ? next.conversationId === requestedConversationId && next.conversationId === context?.conversationId
+      : !requestedConversationId && context?.isCurrent === true;
+    if ((next.administrative === true) === administrative && sameSelection) return;
+    // Selection clears the old feed and its archive buttons. Move only the
+    // active opener to a stable landmark now; a later response never takes
+    // focus back from the user's next Tab or click.
+    const opener = document.activeElement;
+    if (opener === currentButton || [...archiveRows.values()].some(node => node === opener)) title.focus({ preventScroll: true });
     try { await updateSelection(next); if (foreground()) options.onConversationChange?.(next); }
     catch (reason) { if (foreground()) { error = engagementError(reason); render(); } }
   }
@@ -394,7 +462,7 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
   archiveFold.addEventListener('toggle', () => { if (archiveFold.open && !archiveLoaded) void loadArchives(false); });
   function onStorage(): void { if (!current()) return; for (const { model } of drafts.values()) model.refreshLocal(); refreshRetained(); render(); }
   function onVisibility(): void {
-    if (!foreground()) { stopPoll(); feed?.invalidate(); closeDialog(); }
+    if (!foreground()) { cancelComposerFit(); stopPoll(); feed?.invalidate(); closeDialog(); }
     else { for (const { model } of drafts.values()) model.refreshLocal(); refreshRetained(); void refresh(); }
   }
   const onPageHide = (): void => { for (const { model } of drafts.values()) void model.flush(); };
@@ -412,11 +480,14 @@ export function mountAppDiscussion(host: HTMLElement, options: AppDiscussionOpti
     focus() { if (!foreground()) return; (canWrite() ? input : refreshButton).focus(); },
     setVisible(value) {
       if (!current() || visible === value) return; visible = value; root.hidden = !value; selectionVersion++; closeDialog(); stopPoll();
-      if (!value) { feed?.invalidate(); onPageHide(); }
+      if (!value) { cancelComposerFit(); feed?.invalidate(); onPageHide(); }
       else { onStorage(); void refresh(); }
     },
     dispose() {
       if (disposed) return; disposed = true; selectionVersion++; stopPoll(); unsubscribeFeed?.(); feed?.dispose(); closeDialog();
+      cancelComposerFit(); composerResize?.disconnect();
+      view?.removeEventListener('resize', onComposerResize); view?.visualViewport?.removeEventListener('resize', onComposerResize);
+      document.fonts?.removeEventListener('loadingdone', onComposerFontLoad);
       document.removeEventListener('visibilitychange', onVisibility); view?.removeEventListener('storage', onStorage); view?.removeEventListener('pagehide', onPageHide);
       for (const { model, unsubscribe } of drafts.values()) { unsubscribe(); model.dispose(); } drafts.clear(); root.remove();
     } };
