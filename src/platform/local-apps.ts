@@ -281,26 +281,33 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     const availability = el('div', 'sw-stack'), recovery = el('div', 'sw-stack'); recovery.hidden = true;
     form.append(labeledField('Что создаём?', prompt), labeledField('На устройстве', hosts), advanced, availability, status, error, recovery, create, privilege);
     panel.body.replaceChildren(form);
-    let devices: HostDevice[] = [], modelReady = false, busy = false, loading = true, editGeneration = 0, loadGeneration = 0;
+    let devices: HostDevice[] = [], modelReady = false, busy = false, loading = true, editGeneration = 0, loadGeneration = 0, closeGeneration = 0;
     const keyOf = (value: Pick<AppCreateDraft, 'hostDeviceId' | 'connectorId'>) => JSON.stringify([value.hostDeviceId, value.connectorId]);
-    function recoverBeforeClose(event?: Event): boolean {
-      if (!creation.hasVolatileDraft() || accountInvalid) return false;
+    function requestClose(action: () => void = panel.close, event?: Event): void {
       event?.preventDefault(); event?.stopImmediatePropagation();
+      if (closed) return;
+      if (accountInvalid || !creation.hasVolatileDraft()) { action(); return; }
+      const requested = ++closeGeneration, generation = editGeneration;
       recovery.hidden = false;
-      recovery.replaceChildren(el('p', 'sw-error', 'Черновик не сохранён. Сохраните его или скачайте текст перед закрытием.'),
-        button('Сохранить снова', 'refresh', 'sw-button-quiet', () => {
-          void creation.flush().then(() => { if (!closed) { recovery.hidden = true; error.textContent = ''; updateControls(); } })
-            .catch(cause => { if (!closed) error.textContent = friendly(cause); });
-        }),
-        button('Скачать черновик', 'download', 'sw-button-quiet', () => {
-          const value = creation.read().draft, url = URL.createObjectURL(new Blob([value.text, '\n\nПапка: ', value.cwd], { type: 'text/plain;charset=utf-8' }));
-          const link = el('a'); link.href = url; link.download = 'soty-app-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-        }),
-        button('Закрыть без несохранённых изменений', 'close', 'sw-button-quiet', () => { creation.discardLocalDraft(); panel.close(); }));
-      return true;
+      const saving = el('p', 'sw-muted', 'Сохраняем черновик…'); saving.setAttribute('role', 'status'); recovery.replaceChildren(saving);
+      void creation.flush().then(() => {
+        if (closed || requested !== closeGeneration || generation !== editGeneration) return;
+        recovery.hidden = true; error.textContent = ''; updateControls();
+        if (!creation.hasVolatileDraft()) action();
+      }).catch(cause => {
+        if (closed || requested !== closeGeneration || generation !== editGeneration) return;
+        error.textContent = friendly(cause);
+        recovery.replaceChildren(el('p', 'sw-error', 'Черновик не сохранён. Сохраните его или скачайте текст перед закрытием.'),
+          button('Сохранить снова', 'refresh', 'sw-button-quiet', () => { requestClose(action); }),
+          button('Скачать черновик', 'download', 'sw-button-quiet', () => {
+            const value = creation.read().draft, url = URL.createObjectURL(new Blob([value.text, '\n\nПапка: ', value.cwd], { type: 'text/plain;charset=utf-8' }));
+            const link = el('a'); link.href = url; link.download = 'soty-app-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }),
+          button('Закрыть без несохранённых изменений', 'close', 'sw-button-quiet', () => { creation.discardLocalDraft(); action(); }));
+      });
     }
-    panel.element.addEventListener('cancel', event => { recoverBeforeClose(event); }, { capture: true, signal: eventsAbort.signal });
-    panel.element.querySelector('.sw-dialog-header button')?.addEventListener('click', event => { recoverBeforeClose(event); }, { capture: true, signal: eventsAbort.signal });
+    panel.element.addEventListener('cancel', event => { requestClose(panel.close, event); }, { capture: true, signal: eventsAbort.signal });
+    panel.element.querySelector('.sw-dialog-header button')?.addEventListener('click', event => { requestClose(panel.close, event); }, { capture: true, signal: eventsAbort.signal });
     function fill(preserveInput = false): void {
       const snapshot = creation.read(), bound = snapshot.pending?.payload ?? snapshot.draft;
       const keep = preserveInput && !snapshot.pending;
@@ -327,6 +334,7 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     }
     async function saveDraft(): Promise<void> {
       const revision = ++editGeneration, device = devices.find(value => keyOf(value) === hosts.value);
+      closeGeneration++; recovery.hidden = true;
       const previous = creation.read().draft;
       const patch = { text: prompt.value, cwd: cwd.value, hostDeviceId: device?.hostDeviceId ?? previous.hostDeviceId,
         connectorId: device?.connectorId ?? previous.connectorId };
@@ -336,6 +344,7 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
         if (!await sameAccount()) return;
         if (revision !== editGeneration) return;
         await creation.persistDraft(staged);
+        if (!closed && revision === editGeneration) { recovery.hidden = true; error.textContent = ''; }
       } catch (cause) { if (!closed && revision === editGeneration) error.textContent = friendly(cause); }
       if (!closed && revision === editGeneration) updateControls();
     }
@@ -353,7 +362,7 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
       modelReady = values[1].status === 'fulfilled' && values[1].value.agentConfigured === true;
       availability.replaceChildren();
       if (!devices.length) availability.append(el('p', 'sw-muted', 'Нет доступного компьютера для новой задачи.'),
-        button('Подключить компьютер', 'laptop', 'sw-button-quiet', () => { if (!recoverBeforeClose()) { panel.close(); void connectDevice(); } }));
+        button('Подключить компьютер', 'laptop', 'sw-button-quiet', () => { requestClose(() => { panel.close(); void connectDevice(); }); }));
       if (!modelReady) availability.append(el('p', 'sw-muted', 'Подключение к ИИ пока недоступно. Сохранённую отправку можно проверить.'));
       if (!devices.length || !modelReady) availability.append(button('Проверить доступность', 'refresh', 'sw-button-quiet', () => { void loadDevices(); }));
       fill(true);

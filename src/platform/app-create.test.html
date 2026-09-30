@@ -63,14 +63,28 @@ run.onclick=async()=>{
   await wait(80);check(!document.querySelector('dialog[open]'),'old account dialog remained visible');
   const old=JSON.parse(localStorage.getItem('soty.app-create.v1:'+oldAccount));check(Boolean(old.pending)&&!old.accepted,'late foreign-account callback altered prior intent');
   accountId='qa_app_create_reset_'+crypto.randomUUID();accounts.push(accountId);actions.resetAccount();devices=[first,second];modelReady=true;
-  await actions.agentCreate();const afterReset=await fill(),newPrompt=afterReset.querySelector('textarea');quotaKey='soty.app-create.v1:'+accountId;
+  await actions.agentCreate();const immediateForm=await fill(),immediatePrompt=immediateForm.querySelector('textarea');
+  immediatePrompt.value='Immediate Escape saves before closing';immediatePrompt.dispatchEvent(new Event('input'));
+  immediateForm.closest('dialog').dispatchEvent(new Event('cancel',{cancelable:true}));await until(()=>!document.querySelector('dialog[open]'));
+  check(state()?.draft.text===immediatePrompt.value,'immediate Escape closed before storing the exact draft');
+  await actions.agentCreate();const editingForm=activeForm(),editingPrompt=editingForm.querySelector('textarea');
+  let unlock;const held=navigator.locks.request('soty.app-create.v1:'+accountId,()=>new Promise(resolve=>{unlock=resolve;}));await until(()=>Boolean(unlock));
+  try{
+   editingPrompt.value='First text before close';editingPrompt.dispatchEvent(new Event('input'));
+   editingForm.closest('dialog').dispatchEvent(new Event('cancel',{cancelable:true}));
+   check(!editingForm.textContent.includes('Закрыть без несохранённых изменений'),'pending persistence was presented as failure');
+   editingPrompt.value='New edit cancels old close intent';editingPrompt.dispatchEvent(new Event('input'));
+  }finally{unlock();await held;}
+  await until(()=>state()?.draft.text===editingPrompt.value);await wait(25);check(Boolean(activeForm()),'old close intent discarded a newer edit');
+  const afterReset=activeForm(),newPrompt=afterReset.querySelector('textarea');quotaKey='soty.app-create.v1:'+accountId;
   newPrompt.value='Unsaved after account reset';newPrompt.dispatchEvent(new Event('input'));
   const immediate=new Event('beforeunload',{cancelable:true});window.dispatchEvent(immediate);check(immediate.defaultPrevented,'account reset removed the immediate unload guard');
   await until(()=>afterReset.querySelector('.sw-error').textContent.includes('Браузер не смог'));
   const escape=new Event('cancel',{cancelable:true});afterReset.closest('dialog').dispatchEvent(escape);check(escape.defaultPrevented&&Boolean(activeForm()),'quota draft was closable without recovery');
+  await until(()=>afterReset.textContent.includes('Закрыть без несохранённых изменений'));
   quotaKey='';newPrompt.dispatchEvent(new Event('input'));await until(()=>state()?.draft.text===newPrompt.value);
   const durable=new Event('beforeunload',{cancelable:true});window.dispatchEvent(durable);check(!durable.defaultPrevented,'saved draft remained volatile after storage recovery');
-  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / remount / A-B reorder / model-off retry / late accepted ACK after close / account change / reused account reset guards / immediate quota draft recovery. Real side effects: 0.';
+  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / remount / A-B reorder / model-off retry / late accepted ACK after close / account change / reused account reset guards / immediate Escape flush / newer edit cancels close / quota recovery. Real side effects: 0.';
  }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
  finally{quotaKey='';Storage.prototype.setItem=originalSetItem;actions?.destroy();for(const account of accounts){localStorage.removeItem('soty.app-create.v1:'+account);localStorage.removeItem('soty.world.agent:'+account);}run.disabled=false;}
 };
