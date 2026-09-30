@@ -35,6 +35,19 @@ export function toolsNavigation(tool: string | null): HTMLElement {
   const context = document.createElement('span'); context.className = 'tools-context';
   context.textContent = ({ chess: 'Шахматы', terminal: 'Команды', files: 'Файлы комнаты', notes: 'Совместный текст', internet: 'Общий интернет' } as Record<string, string>)[tool ?? ''] ?? 'Комнаты';
   const actions = document.createElement('div'); actions.className = 'tools-header-actions';
+  if (tool === 'chess') {
+    const conversation = document.createElement('button'); conversation.type = 'button'; conversation.className = 'tools-header-link tools-game-view';
+    const render = () => {
+      const chat = document.body.dataset.chessView === 'chat';
+      const name = chat ? 'К партии' : 'Чат партии';
+      const label = document.createElement('span'); label.textContent = name;
+      conversation.replaceChildren(icon(chat ? 'game' : 'chat'), label);
+      conversation.setAttribute('aria-label', name); conversation.title = name;
+      conversation.setAttribute('aria-pressed', String(chat));
+    };
+    conversation.addEventListener('click', () => { document.body.dataset.chessView = document.body.dataset.chessView === 'chat' ? 'board' : 'chat'; render(); });
+    render(); actions.append(conversation);
+  }
   actions.append(link('/#notes', 'Записки', 'list', 'tools-header-link'), link('/#access', 'Доступы и действия', 'lock', 'tools-header-link'));
   // Keep the original hook: main.ts binds this very button after mounting navigation.
   const profile = document.querySelector<HTMLButtonElement>('.hive-panel .connect-open');

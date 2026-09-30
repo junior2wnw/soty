@@ -1,4 +1,4 @@
-export type IconName = "install" | "qr" | "scan" | "search" | "reply" | "edit" | "pin" | "close" | "check" | "person" | "clip" | "mic" | "remote" | "traffic" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
+export type IconName = "install" | "qr" | "scan" | "search" | "reply" | "edit" | "pin" | "close" | "check" | "plus" | "person" | "clip" | "mic" | "remote" | "traffic" | "download" | "upload" | "refresh" | "copy" | "bell" | "shield" | "send" | "stop" | "chess" | "collapse" | "expand";
 
 const paths: Record<IconName, string> = {
   install: "M17 1H7C5.9 1 5 1.9 5 3v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2Zm0 18H7V5h10v14Zm-5-1 4-4h-3V8h-2v6H8l4 4Z",
@@ -10,6 +10,7 @@ const paths: Record<IconName, string> = {
   pin: "M14 2 22 10l-2 2-2-2-4.8 4.8.3 3.7-1.5 1.5-4.2-4.2L3 20l-1-1 4.2-4.8L2 10l1.5-1.5 3.7.3L12 4l-2-2 2-2Z",
   close: "M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6 6.4 5Z",
   check: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7 19.6 5.6 9 16.2Z",
+  plus: "M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7V4Z",
   person: "M12 12c2.2 0 4-1.8 4-4s-1.8-4-4-4-4 1.8-4 4 1.8 4 4 4Zm0 2c-2.7 0-8 1.4-8 4v2h16v-2c0-2.6-5.3-4-8-4Z",
   clip: "M16.5 6.5 8.4 14.6c-1.2 1.2-1.2 3.1 0 4.2 1.2 1.2 3.1 1.2 4.2 0l8.8-8.8c1.9-1.9 1.9-5 0-6.9s-5-1.9-6.9 0L5.3 12.4c-2.7 2.7-2.7 7.1 0 9.8s7.1 2.7 9.8 0l8.1-8.1-1.4-1.4-8.1 8.1c-1.9 1.9-5 1.9-6.9 0s-1.9-5 0-6.9l9.2-9.2c1.1-1.1 2.9-1.1 4 0s1.1 2.9 0 4l-8.8 8.8c-.4.4-1 .4-1.4 0s-.4-1 0-1.4l8.1-8.1-1.4-1.5Z",
   mic: "M12 14c1.7 0 3-1.3 3-3V5c0-1.7-1.3-3-3-3S9 3.3 9 5v6c0 1.7 1.3 3 3 3Zm5-3c0 2.8-2.2 5-5 5s-5-2.2-5-5H5c0 3.5 2.6 6.4 6 6.9V21H8v2h8v-2h-3v-3.1c3.4-.5 6-3.4 6-6.9h-2Z",

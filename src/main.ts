@@ -1632,13 +1632,13 @@ function renderApp(): void {
             <span class="chess-led"></span>
             <b class="chess-title">Шахматы</b>
             <small class="chess-status">Начало партии</small>
-            <button class="chess-coach" type="button" data-tooltip="Гений">${icon("person")}<span>ГЕНИЙ</span></button>
+            <button class="chess-coach" type="button" aria-label="Подсказки в чате партии" aria-pressed="false" data-tooltip="Подсказки в чате партии">${icon("person")}<span>Подсказки</span></button>
             <button class="chess-flip" type="button" aria-label="Развернуть доску" data-tooltip="Развернуть доску">${icon("refresh")}</button>
-            <button class="chess-new" type="button" aria-label="Новая партия" data-tooltip="Новая партия">${icon("check")}</button>
+            <button class="chess-new" type="button" aria-label="Новая партия" data-tooltip="Новая партия">${icon("plus")}</button>
             <button class="chess-close" type="button" aria-label="Закрыть шахматы" data-tooltip="Закрыть шахматы">${icon("close")}</button>
           </div>
           <div class="chess-body">
-            <div class="chess-board" aria-label="Шахматная доска"></div>
+            <div class="chess-board-frame"><div class="chess-board" role="group" tabindex="-1" aria-label="Шахматная доска" aria-description="Стрелки — выбрать клетку. Enter — выбрать фигуру и ход."></div></div>
             <aside class="chess-desk">
               <div class="chess-turn"></div>
               <div class="chess-stats"></div>
@@ -1801,6 +1801,23 @@ function renderApp(): void {
   });
   app.querySelector<HTMLDivElement>(".chess-panel")?.addEventListener("click", (event) => {
     handleChessPanelClick(event);
+  });
+  app.querySelector<HTMLDivElement>('.chess-board')?.addEventListener('keydown', event => {
+    const board = event.currentTarget as HTMLDivElement;
+    const squares = [...board.querySelectorAll<HTMLButtonElement>('.chess-square')];
+    const index = squares.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    const column = index % 8;
+    const next = event.key === 'ArrowUp' && index >= 8 ? index - 8
+      : event.key === 'ArrowDown' && index < 56 ? index + 8
+        : event.key === 'ArrowLeft' && column > 0 ? index - 1
+          : event.key === 'ArrowRight' && column < 7 ? index + 1
+            : event.key === 'Home' ? index - column : event.key === 'End' ? index + 7 - column : index;
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const target = squares[next]; if (!target || target.disabled) return;
+    squares[index]!.tabIndex = -1; target.tabIndex = 0; board.dataset.focusSquare = target.dataset.square;
+    target.focus({ preventScroll: true });
   });
   app.querySelector<HTMLButtonElement>(".attach-action")?.addEventListener("click", () => fileInput?.click());
   app.querySelector<HTMLButtonElement>(".knock-action")?.addEventListener("click", () => {
@@ -3084,6 +3101,9 @@ function friendlyChatState(mode: AgentButtonMode = agentButtonMode()): string {
   if (syncState === "closed") {
     return "Нет связи";
   }
+  if (document.body.dataset.tool === 'chess') {
+    return "Готов к сообщениям";
+  }
   if (mode === "download") {
     return "Нужен Soty Agent";
   }
@@ -4324,6 +4344,18 @@ function activeChessTunnelId(): string {
   return chessOpenId && chessOpenId === selectedId ? chessOpenId : "";
 }
 
+function focusChessWorkspace(): void {
+  const url = new URL(location.href);
+  const previous = url.searchParams.get('tool');
+  if (previous !== 'chess') {
+    url.searchParams.set('chess-back', ['terminal', 'files', 'notes', 'internet'].includes(previous ?? '') ? previous! : 'rooms');
+    url.searchParams.set('tool', 'chess');
+    history.replaceState(history.state, '', url);
+  }
+  document.body.dataset.chessView = 'board';
+  renderApp();
+}
+
 async function openChessForSelected(): Promise<void> {
   if (!selectedId) {
     return;
@@ -4340,6 +4372,7 @@ async function openChessForSelected(): Promise<void> {
   chessSelectedSquare = "";
   chessPromotion = null;
   ensureChessSnapshot(selectedId, "peer");
+  focusChessWorkspace();
   renderTerminal();
   renderChess();
 }
@@ -4357,11 +4390,13 @@ async function startAgentChess(): Promise<void> {
   if (!tunnel) {
     return;
   }
-  renderApp();
+  focusChessWorkspace();
   chessOpenId = tunnel.id;
   chessSelectedSquare = "";
   chessPromotion = null;
+  const continuingStoredGame = loadStoredChessSnapshot(tunnel.id) !== null;
   const snapshot = ensureChessSnapshot(tunnel.id, "agent");
+  if (continuingStoredGame) chessWelcomedGames.add(snapshot.gameId);
   maybeWelcomeChessAgent(tunnel.id, snapshot);
   renderTerminal();
   renderChess();
@@ -4397,7 +4432,15 @@ function handleChessPanelClick(event: MouseEvent): void {
     return;
   }
   if (target.closest(".chess-close")) {
-    if (document.body.dataset.tool === 'chess') { location.assign('/#library'); return; }
+    if (document.body.dataset.tool === 'chess') {
+      const url = new URL(location.href), back = url.searchParams.get('chess-back');
+      if (back && ['rooms', 'terminal', 'files', 'notes', 'internet'].includes(back)) {
+        closeChessPanel(); url.searchParams.delete('chess-back');
+        if (back === 'rooms') url.searchParams.delete('tool'); else url.searchParams.set('tool', back);
+        history.replaceState(history.state, '', url); renderApp();
+      } else location.assign('/#library');
+      return;
+    }
     closeChessPanel();
     return;
   }
@@ -4484,11 +4527,16 @@ function renderChess(): void {
   }
   coach.hidden = snapshot.mode !== "agent";
   coach.classList.toggle("is-on", snapshot.coach === geniusCoach);
+  coach.setAttribute('aria-pressed', String(snapshot.coach === geniusCoach));
 
   const selectedMoves = chessSelectedSquare ? legalMovesForSquare(snapshot, chessSelectedSquare) : [];
   const legalTargets = new Set(selectedMoves.map((move) => move.to));
   const canMove = canMoveOnChessBoard(snapshot);
   const orientation: Color = chessFlipped.has(tunnelId) ? "b" : "w";
+  const ownedFocus = board.contains(document.activeElement);
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.square : '';
+  const focusSquare = focused && isSquare(focused) ? focused : board.dataset.focusSquare || (orientation === 'w' ? 'e2' : 'e7');
+  board.dataset.focusSquare = focusSquare;
   board.innerHTML = boardSquares(orientation).map((square) => {
     const piece = game.get(square);
     const selected = chessSelectedSquare === square;
@@ -4505,12 +4553,16 @@ function renderChess(): void {
     ].filter(Boolean).join(" ");
     const pieceNames = { p: "пешка", n: "конь", b: "слон", r: "ладья", q: "ферзь", k: "король" };
     const label = piece ? `${sideName(piece.color)}, ${pieceNames[piece.type]}, ${square}` : `Пустое поле ${square}`;
-    return `<button class="${classes}" type="button" data-square="${square}" aria-label="${escapeHtml(label)}"${canMove ? "" : " disabled"}>${pieceGlyph(piece)}</button>`;
+    return `<button class="${classes}" type="button" data-square="${square}" tabindex="${square === focusSquare ? 0 : -1}" aria-label="${escapeHtml(label)}"${canMove ? "" : " disabled"}>${pieceGlyph(piece)}</button>`;
   }).join("");
+  if (ownedFocus) {
+    const target = [...board.querySelectorAll<HTMLButtonElement>('.chess-square')].find(square => square.dataset.square === focusSquare && !square.disabled);
+    (target ?? board).focus({ preventScroll: true });
+  }
 
   turn.innerHTML = `
     <b>${escapeHtml(statusText(snapshot))}</b>
-    <small>${escapeHtml(snapshot.mode === "agent" ? "ГЕНИЙ" : "ЛЮДИ")}</small>
+    <small>${snapshot.mode === "agent" ? "С компьютером" : "Вдвоём"}</small>
   `;
   stats.innerHTML = renderChessStats(snapshot);
   moves.innerHTML = renderChessMoves(snapshot.history);
@@ -4657,9 +4709,10 @@ function renderChessPromotion(snapshot: ChessSnapshot, promotion: HTMLDivElement
   }
   const color = chessFromSnapshot(snapshot).get(chessPromotion.from)?.color ?? "w";
   promotion.hidden = false;
+  const names: Record<string, string> = { q: 'Ферзь', r: 'Ладья', b: 'Слон', n: 'Конь' };
   promotion.innerHTML = `
-    <span>Пешка</span>
-    ${choices.map((piece) => `<button type="button" data-promotion="${piece}">${pieceGlyph({ color, type: piece })}</button>`).join("")}
+    <span>Превращение пешки</span>
+    ${choices.map((piece) => `<button type="button" data-promotion="${piece}" aria-label="${names[piece]}">${pieceGlyph({ color, type: piece })}</button>`).join("")}
   `;
 }
 
@@ -4667,23 +4720,23 @@ function renderChessStats(snapshot: ChessSnapshot): string {
   const stats = snapshot.stats;
   if (snapshot.mode === "agent") {
     return `
-      <span><b>${stats.humanWins}</b><small>YOU</small></span>
-      <span><b>${stats.draws}</b><small>DRAW</small></span>
-      <span><b>${stats.agentWins}</b><small>GENIUS</small></span>
-      <span><b>${stats.longestPly}</b><small>PLY</small></span>
+      <span><b>${stats.humanWins}</b><small>Вы</small></span>
+      <span><b>${stats.draws}</b><small>Ничьи</small></span>
+      <span><b>${stats.agentWins}</b><small>Компьютер</small></span>
+      <span title="Самая длинная завершённая партия, полуходы" aria-label="Рекорд завершённой партии: ${stats.longestPly} полуходов"><b>${stats.longestPly}</b><small>Рекорд</small></span>
     `;
   }
   return `
-    <span><b>${stats.whiteWins}</b><small>WHITE</small></span>
-    <span><b>${stats.draws}</b><small>DRAW</small></span>
-    <span><b>${stats.blackWins}</b><small>BLACK</small></span>
-    <span><b>${stats.longestPly}</b><small>PLY</small></span>
+    <span><b>${stats.whiteWins}</b><small>Белые</small></span>
+    <span><b>${stats.draws}</b><small>Ничьи</small></span>
+    <span><b>${stats.blackWins}</b><small>Чёрные</small></span>
+    <span title="Самая длинная завершённая партия, полуходы" aria-label="Рекорд завершённой партии: ${stats.longestPly} полуходов"><b>${stats.longestPly}</b><small>Рекорд</small></span>
   `;
 }
 
 function renderChessMoves(history: readonly string[]): string {
   if (history.length === 0) {
-    return `<li class="is-empty"><b>1</b><span>START</span><span></span></li>`;
+    return `<li class="is-empty"><b>1</b><span>Начало</span><span></span></li>`;
   }
   const rows: string[] = [];
   for (let index = 0; index < history.length; index += 2) {
@@ -6215,7 +6268,7 @@ function renderComposerModeHost(): void {
         <b>${mode} · ${escapeHtml(target.nick)}</b>
         <small>${escapeHtml(compactChatPreview(target.text, 132))}</small>
       </button>
-      <button class="composer-mode-clear retro-icon-button" type="button" data-chat-action="${action}" aria-label="cancel" data-tooltip="Cancel">${icon("close")}</button>
+      <button class="composer-mode-clear retro-icon-button" type="button" data-chat-action="${action}" aria-label="${edit ? 'Отменить изменение' : 'Отменить ответ'}" data-tooltip="${edit ? 'Отменить изменение' : 'Отменить ответ'}">${icon("close")}</button>
     </div>
   `;
 }
