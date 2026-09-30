@@ -3,6 +3,7 @@ import { Provider, errors } from 'oidc-provider';
 import { OAUTH_SCOPE } from './capabilities-oauth-profile.js';
 import { createOAuthIngress, OAuthIngressError } from './capabilities-oauth-ingress.js';
 import { AccessError } from '../modules/capabilities/server/validation.mjs';
+import { OAUTH_FAILURE_DOCUMENT, OAUTH_FAILURE_POLICY } from './capabilities-oauth-document.js';
 
 const epoch = () => Math.floor(Date.now() / 1000);
 const boundedModels = new Set(['Grant', 'AuthorizationCode', 'RefreshToken', 'AccessToken']);
@@ -123,7 +124,8 @@ export function createSotyOAuthProvider({ profile, oauth }) {
     interactions: { url: (_ctx, interaction) => `${profile.issuer}/interaction/${interaction.uid}` },
     renderError: async ctx => {
       ctx.type = 'html'; ctx.set('Cache-Control', 'no-store');
-      ctx.body = '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключение — Соты</title><main><h1>Не удалось подключиться</h1><p>Вернитесь в клиент и начните подключение ещё раз.</p><a href="/">Открыть Соты</a></main></html>';
+      ctx.set('Content-Security-Policy', OAUTH_FAILURE_POLICY);
+      ctx.body = OAUTH_FAILURE_DOCUMENT;
     },
   });
   provider.on('server_error', () => {}); // The HTTP boundary returns a safe code; never log raw request/token errors.

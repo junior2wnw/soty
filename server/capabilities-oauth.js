@@ -63,14 +63,14 @@ function safeFailure(req, res, error) {
 /** Mount only on the trusted shell. Resource servers still perform their own
  * live permission checks; an AS session/cookie is never a resource credential. */
 export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {}) {
-  if (!profile?.enabled) return null;
-  const oauth = service?.oauth, runtime = createSotyOAuthProvider({ profile, oauth });
-  const { provider, ingress, bindGrant } = runtime, browser = browserBinding(profile);
+  if (!profile) return null;
+  const oauth = service?.oauth, runtime = profile.enabled ? createSotyOAuthProvider({ profile, oauth }) : null;
+  const { provider, ingress, bindGrant } = runtime ?? {}, browser = runtime ? browserBinding(profile) : null;
   // Only the outer boundary admits transport/Host and overwrites forwarding
   // headers from the trusted Express result before Koa uses them.
-  provider.proxy = true;
+  if (provider) provider.proxy = true;
   const expectedHost = new URL(profile.origin).host;
-  const callback = provider.callback();
+  const callback = provider?.callback();
   const noBody = req => check(oauthSingleHeader(req, 'transfer-encoding') === undefined
     && [undefined, '0'].includes(oauthSingleHeader(req, 'content-length')));
   const actualMethod = (req, res, method) => {
@@ -94,6 +94,13 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
       const split = target.indexOf('?'), pathname = split < 0 ? target : target.slice(0, split);
       check(!pathname.includes('%'));
       const query = split < 0 ? '' : target.slice(split + 1);
+      if (pathname === '/.well-known/oauth-protected-resource' || pathname === '/.well-known/oauth-protected-resource/mcp') {
+        actualMethod(req, res, 'GET'); check(split < 0); noBody(req);
+        res.json(profile.protectedResource(pathname.endsWith('/mcp') ? profile.resources.mcp : profile.resources.http)); return;
+      }
+      // Stable public resource metadata remains discoverable when issuance is
+      // paused. No Provider, signing key or browser session exists in that mode.
+      if (!runtime) throw new OAuthIngressError('temporarily_unavailable');
       const interaction = interactionPath.exec(pathname);
       if (interaction) {
         check(split < 0);
@@ -142,10 +149,6 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
         }
         return;
       }
-      if (pathname === '/.well-known/oauth-protected-resource' || pathname === '/.well-known/oauth-protected-resource/mcp') {
-        actualMethod(req, res, 'GET'); check(split < 0); noBody(req);
-        res.json(profile.protectedResource(pathname.endsWith('/mcp') ? profile.resources.mcp : profile.resources.http)); return;
-      }
       if (pathname === '/mcp') {
         check(split < 0);
         // Transport belongs to C2. Discovery must not invent an initialized MCP
@@ -186,5 +189,5 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
     } catch (error) { safeFailure(req, res, error); }
     finally { lease?.release(); }
   });
-  return Object.freeze({ enabled: true, issuer: profile.issuer });
+  return Object.freeze({ enabled: profile.enabled, issuer: profile.issuer });
 }

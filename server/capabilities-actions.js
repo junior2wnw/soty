@@ -39,6 +39,7 @@ const LARGE = new Set(['payload_too_large', 'invocation_payload_too_large', 'not
 const LIMITED = new Set(['ingress_capacity', 'ingress_rate_limit', 'budget_exceeded', 'native_admission_limit', 'native_rate_limit', 'native_ledger_limit']);
 const UNAVAILABLE = new Set(['capability_disabled', 'native_unavailable', 'native_store_mismatch', 'native_storage_busy',
   'connect_authority_busy', 'service_closed', 'notes_storage_corrupt', 'capabilities_storage_corrupt',
+  'oauth_unavailable', 'oauth_storage_busy', 'oauth_storage_key_unavailable',
   'native_legacy_invocation_unsupported', 'native_attempt_not_started']);
 function errorResponse(error) {
   if (!(error instanceof CapabilityHttpError || error instanceof AccessError || error instanceof InvocationError
@@ -99,10 +100,13 @@ function send(res, status, value) {
 }
 
 /** Host composition only. This is not a generic invocation/executor gateway. */
-export function attachCapabilitiesActions(app, { service, audience = '', ingressOptions } = {}) {
+export function attachCapabilitiesActions(app, { service, audience = '', ingressOptions, resourceMetadata = null } = {}) {
   requireValue(service && typeof service.authenticateCredential === 'function', 'capability_configuration_invalid');
+  requireValue(resourceMetadata === null || (audience !== ''
+    && resourceMetadata === `${audience}/.well-known/oauth-protected-resource`), 'capability_configuration_invalid');
   const ingress = createNativeIngress(ingressOptions);
   const host = audience ? new URL(audience).host : null;
+  const secureResource = resourceMetadata !== null && new URL(audience).protocol === 'https:';
   const status = () => {
     let ready = false;
     try { ready = Boolean(audience) && service.nativeNotes?.readiness().ready === true; } catch { /* Fail closed. */ }
@@ -119,6 +123,9 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
       requireValue(typeof requestedHost === 'string' && requestedHost.toLowerCase() === host, 'invalid_input');
       const origin = singleHeader(req, 'origin');
       requireValue(origin === undefined || origin === audience, 'access_denied');
+      // Express derives this only from TLS or the host's explicitly trusted
+      // proxy. An arbitrary Forwarded/X-Forwarded-Proto header is not authority.
+      requireValue(!secureResource || req.secure === true, 'access_denied');
       if (req.method !== route.method) { res.set('Allow', route.method); throw new CapabilityHttpError('method_not_allowed'); }
       if (route.kind === 'create') lease = ingress.enter(req);
       else requireValue(singleHeader(req, 'transfer-encoding') === undefined
@@ -129,7 +136,13 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
       requireValue(bearer, 'authorization_required');
       // No lock spans the network read. Admission and the final read repeat the
       // live authority check under Connect -> Capabilities.
-      const actor = service.authenticateCredential({ token: bearer[1], audience });
+      const token = bearer[1];
+      let actor;
+      if (token.startsWith('soty_cap_')) actor = service.authenticateCredential({ token, audience });
+      else {
+        requireValue(typeof service.oauth?.authenticateBearer === 'function', 'authorization_required');
+        actor = service.oauth.authenticateBearer({ token, audience });
+      }
       const coordinator = service.nativeNotes;
       requireValue(coordinator, 'native_unavailable');
       let id = route.invocationId, reused;
@@ -169,7 +182,7 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
       res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       const safe = errorResponse(error);
       if (!req.complete || !req.readableEnded) { res.shouldKeepAlive = false; res.set('Connection', 'close'); }
-      if (safe.status === 401) res.set('WWW-Authenticate', 'Bearer realm="soty"');
+      if (safe.status === 401) res.set('WWW-Authenticate', `Bearer realm="soty"${resourceMetadata ? `, resource_metadata="${resourceMetadata}"` : ''}`);
       if (safe.retry) res.set('Retry-After', String(safe.retry));
       send(res, safe.status, { error: { code: safe.code } });
     } finally { lease?.release(); }

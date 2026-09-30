@@ -18,7 +18,7 @@ export function nativeIdentity(label) {
 }
 export function good(value) { assert.equal(value.ok, true, value.error?.code); return value; }
 
-export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2 } = {}) {
+export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, capabilitiesVersion = 2, oauth } = {}) {
   const parent = realpathSync(tmpdir()), directory = realpathSync(mkdtempSync(join(parent, 'soty-native-http-')));
   const nonce = randomUUID(), marker = join(directory, 'test-owner'); writeFileSync(marker, nonce, { flag: 'wx' });
   let app, front;
@@ -39,7 +39,8 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const create = enabled => createHttpApp(resolve('dist'), { dataDir: directory, connectOrigins: [origin],
-    capabilityAudience: origin, nativeNotesEnabled: enabled, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' } });
+    capabilityAudience: origin, nativeNotesEnabled: enabled, gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' },
+    ...(oauth ? { oauth: oauth(origin) } : {}) });
   app = create(enabled);
   const send = async value => {
     const response = await fetch(`${origin}/api/connect/rpc`, { method: 'POST',
@@ -84,7 +85,9 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
   return { directory, notesFile, capsFile, origin, call, proof, bootstrap, issue, http, server,
     get app() { return app; },
     setFront(value) { front = value; },
-    async restart({ enabled = false } = {}) { await app.locals.closeServices(); app = create(enabled); },
+    async restart({ enabled = false } = {}) {
+      await app?.locals.closeServices(); app = undefined; app = create(enabled);
+    },
     sql(file, action) { const db = new DatabaseSync(file, { readOnly: true }); try { return action(db); } finally { db.close(); } },
   };
 }

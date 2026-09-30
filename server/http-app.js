@@ -17,14 +17,17 @@ import { attachCapabilitiesDiscovery, validateDiscoveryOrigin } from './capabili
 import { attachCapabilitiesActions, validateCapabilityAudience } from './capabilities-actions.js';
 import { buildCapabilitiesOpenApi } from './capabilities-openapi.js';
 import { startNativeRecovery } from './capabilities-recovery.js';
-import { reserveOAuthNamespaces } from './capabilities-oauth-profile.js';
+import { createOAuthHostProfile, reserveOAuthNamespaces } from './capabilities-oauth-profile.js';
+import { attachCapabilitiesOAuth } from './capabilities-oauth.js';
+import { startOAuthCleanup } from './capabilities-oauth-cleanup.js';
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
   const shellOrigins = connectAllowedOrigins(connectOrigins);
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate });
   const admittedDiscoveryOrigin = validateDiscoveryOrigin({ discoveryOrigin, shellOrigins });
   const admittedCapabilityAudience = validateCapabilityAudience({ audience: capabilityAudience, shellOrigins, enabled: nativeNotesEnabled });
+  const oauthProfile = createOAuthHostProfile(oauth, { shellOrigins, audience: admittedCapabilityAudience });
   const legacyFrameSource = legacyAppFrameSource(appOriginTemplate);
   const app = express();
   const safeConnectorPort = Number.isSafeInteger(localConnectorPort) && localConnectorPort >= 1024 && localConnectorPort <= 65535 ? localConnectorPort : 49424;
@@ -80,8 +83,9 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
   attachAccountTransfer(app, { dataDir });
-  let world, notes, connectors, capabilities, connect, apps;
+  let world, notes, connectors, capabilities, connect, apps, nativeRecovery, oauthCleanup, unsubscribeRevocations;
   const failedStart = () => {
+    nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations?.();
     for (const service of [apps, capabilities, notes, world, connect]) {
       try { service?.close(); } catch { /* Preserve the startup failure. */ }
     }
@@ -104,6 +108,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
         if (!connect) throw new AccessError('native_unavailable');
         return connect.withAuthorityFence(action);
       } },
+      ...(oauthProfile ? { oauth: oauthProfile.domainConfiguration(action => {
+        if (!connect) throw new AccessError('oauth_unavailable');
+        return connect.withAuthorityFence(action);
+      }) } : {}),
     });
   } catch (error) { failedStart(); throw error; }
   try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, shellOrigins,
@@ -135,21 +143,28 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.locals.worldService = world;
   app.locals.notesService = notes;
   app.locals.capabilitiesService = capabilities;
-  app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience }).status;
+  app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
+    resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
     openApi: buildCapabilitiesOpenApi(),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, apps.sourcePreparationExtension, appJobs, notes, capabilities],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
+    if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
+      || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
+    app.locals.oauthStatus = attachCapabilitiesOAuth(app, { profile: oauthProfile, service: capabilities, distDir });
+    unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
+    // Timers start only after actual Connect and provider admission. Disabled
+    // issuance still permits bounded keyless cleanup and committed recovery.
+    nativeRecovery = notes.schemaVersion === 2 && [2, 3].includes(capabilities.schemaVersion)
+      ? startNativeRecovery({ coordinator: capabilities.nativeNotes }) : null;
+    oauthCleanup = oauthProfile && capabilities.schemaVersion === 3
+      ? startOAuthCleanup({ oauth: capabilities.oauth }) : null;
   } catch (error) { failedStart(); throw error; }
-  const unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
-  // Disabling new execution must still allow recovery of an already committed
-  // effect. Ordinary v1/mixed stores never start the native recovery scanner.
-  const nativeRecovery = notes.schemaVersion === 2 && [2, 3].includes(capabilities.schemaVersion)
-    ? startNativeRecovery({ coordinator: capabilities.nativeNotes }) : null;
   app.locals.nativeRecovery = nativeRecovery;
-  app.locals.closeServices = async () => { nativeRecovery?.close(); unsubscribeRevocations(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close(); await connectors.store.close(); };
+  app.locals.oauthCleanup = oauthCleanup;
+  app.locals.closeServices = async () => { nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close(); await connectors.store.close(); };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2] });

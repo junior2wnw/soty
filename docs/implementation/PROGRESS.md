@@ -292,3 +292,9 @@ DDL неизменён. Readiness=false и внешний bearer пока зак
 [Авторский срез](p4-oauth-access-panel.md), [независимый аудит](p4-oauth-access-panel-independent.md) и [root browser receipt](p4-oauth-access-panel-browser.md): отдельные OAuth connections и manual keys, bounded страницы, точный отзыв, честная потеря ответа, сохранение disclosure/focus и account/dispose fences. Независимый audit нашёл неразличимость одинаковых карточек; root добавил полный код выбранного субъекта. Native browser выявил обрезание кнопки на667×375; статус/действия вынесены из прокручиваемых подробностей.
 
 Финальные13 controller +10 dialog-focus: **23/23 PASS,0SKIP**; typecheck/prebuild/build PASS. Native IAB320dark/667light/1280dark проверен с измерениями и визуальным осмотром. Это dev-only synthetic RPC component proof; настоящий OAuth/PWA/CLI цикл и полная приёмка всего плана остаются отдельными этапами.
+
+## P4-C1 — полная локальная HTTP composition принята
+
+[Root integration receipt](p4-oauth-host-integration.md) связывает bounded operator configuration, настоящий Provider/Connect/Notes2/Caps3, current bearer, native create, refresh/replay и signed revoke. Реальный HTTP gate **5/5 PASS**: общий AS browser session A→B→A, wrong-resource/PKCE до consume, reuse-family revoke без повреждения sibling, keyless AS-off restart, deny/foreign account и безопасный error document. Root исправил пропущенный resume переход в новом test helper; ложная аутентификация/готовность для прохождения не вводились.
+
+Host/source независимый review и actual-flow source review приняты. Общий capabilities/HTTP/executor gate **338/338 PASS,0SKIP**, typecheck/prebuild/build PASS. Error page использует общую палитру/hex и проверена native на320/667 с видимым клавиатурным фокусом. Default-off и отсутствие автоматической миграции сохранены. Остаток C1: две AS OS instances/crash, signed browser/callback/PWA и реальные CLI; C2/D и последующие P5–P7 сохраняются, release/restore пока не закрыты.
