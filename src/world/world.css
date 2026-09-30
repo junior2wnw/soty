@@ -1,4 +1,5 @@
 .sw-app,.sw-dialog {
+  box-sizing: border-box;
   --sw-radius: 16px;
   font-family: Inter,"Segoe UI",system-ui,sans-serif;
   font-size: 15px;
@@ -22,7 +23,7 @@
   display: grid;
   grid-template-columns: 80px minmax(0,1fr);
   grid-template-rows: 56px auto minmax(0,1fr);
-  overflow: hidden;
+  overflow: clip;
 }
 
 :where(.sw-app,.sw-dialog) :where(button,input,textarea,select) {

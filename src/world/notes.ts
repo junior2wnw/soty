@@ -68,6 +68,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   let listMode: 'server' | 'cache' | 'unavailable' = 'server';
   let openedSnapshot: CachedNoteRead | undefined; let recoveredSource: { branchId: string; savedAt: number } | null = null;
   let purgeDialog: ReturnType<typeof createDialog> | null = null;
+  let noteActionsDialog: ReturnType<typeof createDialog> | null = null;
   const request = <T>(method: string, args: Record<string, unknown> = {}) => options.api.request<T>(method, { expectedAccountId: options.accountId, ...args });
 
   for (const key of ['active', 'archived', 'trashed'] as const) {
@@ -250,26 +251,30 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   function edit(patch: Parameters<NoteSession['edit']>[0]) { session?.edit(patch); }
   function renderEditor() {
     if (!session) return; const note = session.state().note; const readOnly = note.state === 'trashed'; editor.replaceChildren(); editor.dataset.color = note.color;
+    noteActionsDialog?.close();
     const toolbar = el('div', 'sn-editor-toolbar');
     const back = iconButton('К списку записок', 'back', () => { void safeAction(() => { root.classList.remove('sn-editing'); search.focus(); }); }); back.classList.add('sn-mobile-back');
     status = el('div', 'sn-save-status'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); statusText = el('span'); status.append(el('i'), statusText);
     pin = iconButton(note.pinned ? 'Открепить' : 'Закрепить', 'pin', () => edit({ pinned: !session!.state().note.pinned })); pin.disabled = readOnly;
     const actions = el('div', 'sn-editor-actions');
     const addList = iconButton('Добавить пункт списка', 'list', () => { addItem(); }); addList.disabled = readOnly;
-    const menu = el('details', 'sn-note-menu'); const summary = el('summary'); summary.title = 'Действия с запиской'; summary.setAttribute('aria-label', 'Действия с запиской'); summary.append(icon('more'));
-    menu.addEventListener('keydown', event => { if (event.key === 'Escape' && menu.open) { event.preventDefault(); event.stopPropagation(); menu.open = false; summary.focus(); } });
-    menu.addEventListener('focusout', event => { if (event.relatedTarget instanceof Node && !menu.contains(event.relatedTarget)) menu.open = false; });
-    const menuBody = el('div', 'sn-menu-body');
-    if (!readOnly) {
-      const palette = el('div', 'sn-palette'); palette.setAttribute('aria-label', 'Цвет записки');
-      for (const color of NOTE_COLORS) {
-        const swatch = el('button', `sn-swatch sn-color-${color}`); swatch.type = 'button'; swatch.title = colorNames[color]; swatch.setAttribute('aria-label', colorNames[color]); swatch.setAttribute('aria-pressed', String(note.color === color));
-        swatch.addEventListener('click', () => { edit({ color }); for (const item of palette.querySelectorAll('button')) item.setAttribute('aria-pressed', String(item === swatch)); }); palette.append(swatch);
-      }
-      menuBody.append(palette, button(note.state === 'archived' ? 'Вернуть в записки' : 'В архив', 'folder', '', () => { menu.open = false; void changeState(note.state === 'archived' ? 'active' : 'archived'); }),
-        button('В корзину', 'close', '', () => { menu.open = false; void changeState('trashed'); }));
-    } else menuBody.append(button('Восстановить', 'refresh', '', () => { menu.open = false; void changeState('active'); }), button('Удалить навсегда', 'close', 'sn-danger', confirmPurge));
-    menuBody.append(button('Скачать текст', 'external', '', () => { downloadNote(); menu.open = false; })); menu.append(summary, menuBody); actions.append(pin, addList, menu); toolbar.append(back, status, actions);
+    const menu = iconButton('Действия с запиской', 'more', () => {
+      if (!session || disposed) return; noteActionsDialog?.close();
+      const current = session.state().note;
+      const dialog = createDialog('Действия с запиской', () => { if (noteActionsDialog === dialog) noteActionsDialog = null; });
+      noteActionsDialog = dialog; dialog.element.classList.add('sn-actions-dialog');
+      const menuBody = el('div', 'sn-note-actions');
+      if (current.state !== 'trashed') {
+        const palette = el('div', 'sn-palette'); palette.setAttribute('role', 'group'); palette.setAttribute('aria-label', 'Цвет записки');
+        for (const color of NOTE_COLORS) {
+          const swatch = el('button', `sn-swatch sn-color-${color}`); swatch.type = 'button'; swatch.title = colorNames[color]; swatch.setAttribute('aria-label', colorNames[color]); swatch.setAttribute('aria-pressed', String(current.color === color));
+          swatch.addEventListener('click', () => { edit({ color }); for (const item of palette.querySelectorAll('button')) item.setAttribute('aria-pressed', String(item === swatch)); }); palette.append(swatch);
+        }
+        menuBody.append(palette, button(current.state === 'archived' ? 'Вернуть в записки' : 'В архив', 'folder', '', () => { dialog.close(); void changeState(current.state === 'archived' ? 'active' : 'archived'); }),
+          button('В корзину', 'close', '', () => { dialog.close(); void changeState('trashed'); }));
+      } else menuBody.append(button('Восстановить', 'refresh', '', () => { dialog.close(); void changeState('active'); }), button('Удалить навсегда', 'close', 'sn-danger', () => { dialog.close(); confirmPurge(); }));
+      menuBody.append(button('Скачать текст', 'external', '', () => { downloadNote(); dialog.close(); })); dialog.body.append(menuBody);
+    }); actions.append(pin, addList, menu); toolbar.append(back, status, actions);
     const banner = el('div', 'sn-note-banner');
     if (note.state !== 'active') banner.append(el('span', '', note.state === 'trashed' ? 'В корзине' : 'В архиве'), button('Восстановить', 'refresh', '', () => { void changeState('active'); })); else banner.hidden = true;
     alert = el('p', 'sn-save-alert'); alert.setAttribute('role', 'status'); alert.hidden = true;
@@ -287,7 +292,9 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     noteTitle.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); body.focus(); } });
     const checklist = el('div', 'sn-checklist'); checklist.setAttribute('aria-label', 'Чеклист');
     const add = button('Пункт списка', 'plus', 'sn-add-item', () => addItem()); add.hidden = readOnly;
-    content.append(noteTitle, body, checklist, add); editor.append(toolbar, banner, alert, recovery, content); renderItems(); fitTextarea(noteTitle); fitTextarea(body);
+    const viewport = el('div', 'sn-editor-viewport');
+    content.append(noteTitle, body, checklist, add); viewport.append(banner, alert, recovery, content);
+    editor.append(toolbar, viewport); renderItems(); fitTextarea(noteTitle); fitTextarea(body);
     function renderItems(focusId?: string) {
       checklist.replaceChildren(); if (!session) return;
       for (const item of session.state().note.items) {
@@ -395,7 +402,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   window.addEventListener('online', online); document.addEventListener('visibilitychange', hidden); window.addEventListener('beforeunload', beforeUnload);
   root.addEventListener('keydown', event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void flush().catch(() => {}); }
-    if (event.key === 'Escape' && !root.querySelector('details[open]')) root.classList.remove('sn-editing');
+    if (event.key === 'Escape') root.classList.remove('sn-editing');
   });
   void loadDrafts().finally(() => { if (!disposed) void loadList(); });
   return {
@@ -403,7 +410,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     focus: () => (root.classList.contains('sn-editing') ? editor.querySelector<HTMLTextAreaElement>('.sn-note-title') : search)?.focus(),
     dispose() {
       disposed = true; listRequest++; openRequest++; clearTimeout(searchTimer); clearTimeout(listRefreshTimer); session?.dispose();
-      purgeDialog?.close(); purgeDialog = null; openedSnapshot = undefined; recoveredSource = null; rows = []; drafts = [];
+      purgeDialog?.close(); purgeDialog = null; noteActionsDialog?.close(); noteActionsDialog = null; openedSnapshot = undefined; recoveredSource = null; rows = []; drafts = [];
       editor.replaceChildren(); list.replaceChildren(); draftList.replaceChildren();
       resizeObserver.disconnect();
       window.removeEventListener('online', online); document.removeEventListener('visibilitychange', hidden); window.removeEventListener('beforeunload', beforeUnload); root.remove();

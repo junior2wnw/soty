@@ -4,7 +4,8 @@
 .sw-pwa-banner { grid-column: 2; grid-row: 2; }
 .sx-skip { position: absolute; z-index: 40; left: 96px; top: -100px; padding: 12px 18px; border-radius: 12px; background: var(--sw-action); color: var(--sw-action-ink); }
 .sx-skip:focus { top: 8px; }
-.sx-rail { grid-column: 1; grid-row: 1 / 4; display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 8px 8px 16px; background: var(--sw-chrome); border-right: 1px solid var(--sw-line); z-index: 12; }
+.sx-rail { grid-column: 1; grid-row: 1 / 4; display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 8px 8px 16px; min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; background: var(--sw-chrome); border-right: 1px solid var(--sw-line); z-index: 12; }
+.sx-rail>* { flex-shrink: 0; }
 .sx-brand-mark { width: 48px; height: 48px; min-height: 48px; border: 0; padding: 3px; background: none; }
 .sx-brand-mark:hover { background: none; box-shadow: none; }
 .sx-brand-mark .soty-hex { --hex-width: 38px; display: grid; place-items: center; clip-path: var(--hex-clip,var(--hex-polygon)); background: var(--sw-action); color: var(--sw-action-ink); font-size: 23px; font-weight: 800; }
@@ -148,5 +149,6 @@
   .sx-field-viewport { max-height: calc(100dvh - 330px); }
 }
 @media (max-width: 359px) { .sx-app-grid { grid-template-columns: minmax(0,1fr); } .sx-page-heading { flex-wrap: wrap; } .sx-app-cover { height: 148px; } .sx-header { padding: 0 10px; } .sx-header-actions { gap: 0; } .sx-mobile-profile { margin-left: 0; } .sx-add-button { margin-left: 0; } }
+@media (max-height: 500px) { .sx-rail { gap: 8px; padding-block: 4px; } .sx-rail-bottom { gap: 4px; } }
 @media (prefers-reduced-motion: reduce) { .sx-app-card, .sx-field-cell { transition: none; } }
 @media (forced-colors: active) { .sx-app-card, .sx-community-chip, .sx-presentation { border-color: CanvasText; } .sx-nav-button[aria-current=page], .sx-lens[aria-pressed=true] { outline: 2px solid Highlight; outline-offset: -2px; } }
