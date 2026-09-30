@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, createWebSocketLimiter, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
-import { migrateAppsSchema, inspectAppsSchema } from './schema.mjs';
+import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
@@ -33,7 +33,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (schema === 'v2' || schema === 'v3') validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
+    if (['v2', 'v3', 'v4'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
     migrateAppsSchema(db, { legacyTemplate: template, now });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, domainLimits: limits,
@@ -55,6 +55,15 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const activeTarget = id => db.prepare(`SELECT t.* FROM app_publications p
     JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
     WHERE p.app_id=?`).get(id);
+  function bindingFloor(id) {
+    return requiredBindingVersion(db, id);
+  }
+  function assertRuntimeBinding(decision) {
+    // C2-A understands Apps4 storage but only serves the legacy binding. A
+    // reader-only binary must fail closed for a source that requires v2,
+    // including rollback to initial target1; parsing a schema is not routing it.
+    assertApps(bindingFloor(decision.appId) === 1, 'app_source_protocol_required', 503);
+  }
   function assertActor(actor) {
     assertApps(actor && textId(actor.accountId) && textId(actor.deviceId) && actorActive(actor) === true, 'apps_authentication_required', 401);
   }
@@ -97,7 +106,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });
-    const channel = channels.get(target.connectorKey), candidate = channel?.observations.get(app.id);
+    const channel = channels.get(target.connectorKey), candidate = bindingFloor(app.id) === 1 ? channel?.observations.get(app.id) : undefined;
     const observed = candidate?.targetRevision === target.revision && candidate?.targetDigest === target.digest ? candidate : undefined;
     return describeSourceObservation({ connected: Boolean(channel), observed, now: now() });
   }
@@ -118,6 +127,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     // signed public visitors, keep their original absolute deadline.
     holder.decision = publications.recheckAccess(holder.decision,
       renewPublic && holder.decision.subject === 'public' ? { ttlMs: publicLeaseMs } : {});
+    assertRuntimeBinding(holder.decision);
     return holder.decision;
   }
   function checkStream(stream) {
@@ -170,7 +180,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const apps = db.prepare(`SELECT a.id,t.port,t.entry_path FROM local_apps a
       JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
       JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
-      WHERE t.connector_key=? AND a.state='enabled'`).all(channel.key)
+      JOIN app_source_heads h ON h.app_id=a.id
+      WHERE t.connector_key=? AND a.state='enabled' AND h.required_binding_version=1`).all(channel.key)
       .map(app => ({ id: app.id, port: app.port, entryPath: app.entry_path }));
     send(channel, { type: 'sync', apps });
   }
@@ -224,9 +235,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(!entryPath.startsWith('/_soty/'), 'reserved_app_path'); assertGrants(actor, grants);
       const id = transaction(() => {
         assertActor(actor); assertApps(binding(device.connector_key)?.owner_account_id === actor.accountId, 'apps_device_not_owned', 403); assertGrants(actor, grants);
-        const existing = db.prepare("SELECT * FROM local_apps WHERE connector_key=? AND port=? AND state='enabled'").get(device.connector_key, port);
+        const existing = db.prepare(`SELECT a.*,t.entry_path AS current_entry_path FROM local_apps a
+          JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
+          JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
+          WHERE t.connector_key=? AND t.port=? AND a.state='enabled'`).get(device.connector_key, port);
         if (existing) {
-          assertApps(existing.name === name && existing.entry_path === entryPath && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
+          assertApps(existing.owner_account_id === actor.accountId && existing.name === name && existing.current_entry_path === entryPath
+            && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
           publications.execute({ actor, op: 'apps.publication.get', args: { appId: existing.id } });
           return existing.id;
         }
@@ -247,6 +262,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(args.domainId));
       assertApps(domain, args.domainId === undefined ? 'apps_origin_not_configured' : 'apps_access_denied', args.domainId === undefined ? 503 : 403);
       const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor });
+      assertRuntimeBinding(decision);
       const entryPath = runtimePath(args.path ?? decision.route.entryPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
@@ -265,9 +281,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           db.prepare("UPDATE local_apps SET state='revoked',revision=revision+1,updated_at=? WHERE id=?").run(now(), id);
           publications.revokeInTransaction(id);
         }
-        return current;
+        const target = activeTarget(id);
+        assertApps(target?.owner_account_id === actor.accountId, 'apps_registry_corrupt', 500);
+        return target.connector_key;
       });
-      invalidateAccess({ appId: id }); sync(channels.get(revoked.connector_key)); return { app: publicApp(row(id), actor) };
+      invalidateAccess({ appId: id }); sync(channels.get(revoked)); return { app: publicApp(row(id), actor) };
     }
     exact(args, ['appId', 'name', 'grants', 'expectedRevision']);
     if (args.expectedRevision !== undefined) assertApps(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 1, 'invalid_app_revision');
@@ -398,6 +416,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // The request body was asynchronous: only this fresh branded recheck may
       // mint a session. A stale app row or successful launch is not authority.
       const decision = publications.recheckAccess(ticket.decision, { ttlMs: accountSessionMs });
+      assertRuntimeBinding(decision);
       assertApps(sessions.size < 4096, 'apps_sessions_busy', 429);
       const value = secret(), sessionKey = digest(value), sessionCheck = secret();
       sessions.set(sessionKey, { decision, sessionKey, entryPath: ticket.entryPath, checkDigest: digest(sessionCheck), checkExpiresAt: now() + 30_000 });
@@ -539,7 +558,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (frame.type === 'observation') {
           const app = row(appId(frame.appId)), target = app && activeTarget(app.id);
           assertApps(target?.connector_key === channel.key && ['ready', 'stopped'].includes(frame.state), 'app_bad_observation');
-          if (app.state !== 'enabled') return;
+          if (app.state !== 'enabled' || bindingFloor(app.id) !== 1) return;
           // These pins associate a legacy report with current configuration;
           // they are not an acknowledgement or attestation from connector v1.
           channel.observations.set(app.id, { state: frame.state, at: now(), targetRevision: target.revision, targetDigest: target.digest }); return;

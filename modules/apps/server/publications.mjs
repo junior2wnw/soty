@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { assertApps, appId, textId } from './protocol.mjs';
-import { ensureInitialPublication, runtimeTargetDigest, RUNTIME_PROFILE } from './schema.mjs';
+import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE } from './schema.mjs';
 
 export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
 export const PUBLICATION_RECEIPTS_PER_APP = 64;
@@ -42,16 +42,16 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
         connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
     const device = db.prepare('SELECT owner_account_id FROM app_devices WHERE connector_key=?').get(target.connector_key);
     assertApps(device?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
-    return { app, policy, target };
+    return { app, policy, target, requiredBindingVersion: requiredBindingVersion(db, app.id) };
   }
   function activeIds(id) {
     return db.prepare('SELECT domain_id FROM app_publication_domains WHERE app_id=? ORDER BY domain_id').all(id).map(item => item.domain_id);
   }
   function view(app) {
-    const { policy, target } = state(app);
+    const { policy, target, requiredBindingVersion } = state(app);
     return { schema: 'soty.app-publication.v1', appId: app.id, appState: app.state,
       launchPolicy: policy.launch_policy, listed: Boolean(policy.listed), policyEpoch: policy.policy_epoch,
-      activeTargetRevision: target.revision, activeDomainIds: activeIds(app.id),
+      activeTargetRevision: target.revision, requiredBindingVersion, activeDomainIds: activeIds(app.id),
       target: { revision: target.revision, digest: target.digest, profile: target.profile, port: target.port, entryPath: target.entry_path },
       updatedAt: policy.updated_at, runtimeReady: false, receiptRetention: { perApp: PUBLICATION_RECEIPTS_PER_APP } };
   }
@@ -140,7 +140,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     const domain = db.prepare('SELECT * FROM app_domains WHERE id=?').get(id), app = domain && appRow(domain.app_id);
     assertApps(domain && domain.origin === origin && domain.state === 'bound' && app?.state === 'enabled'
       && domain.owner_account_id === app.owner_account_id, 'apps_access_denied', 403);
-    const { policy, target } = state(app);
+    const { policy, target, requiredBindingVersion } = state(app);
     if (domain.role === 'alias') assertApps(db.prepare('SELECT 1 FROM app_publication_domains WHERE app_id=? AND domain_id=? AND owner_account_id=?')
       .get(app.id, domain.id, app.owner_account_id), 'apps_access_denied', 403);
     const subject = actor === undefined ? 'public' : 'account';
@@ -154,7 +154,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     else assertApps(accessBasis === 'public' && domain.role === 'alias' && policy.launch_policy === 'anyone', 'apps_access_denied', 403);
     return { subject, accessBasis, ...(subject === 'account' ? { actor: { accountId: actor.accountId, deviceId: actor.deviceId } } : {}),
       appId: app.id, domainId: domain.id, origin: domain.origin, policyEpoch: policy.policy_epoch,
-      targetRevision: target.revision, targetDigest: target.digest, profile: target.profile,
+      targetRevision: target.revision, targetDigest: target.digest, profile: target.profile, requiredBindingVersion,
       route: { connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path } };
   }
   function brand(value, expiresAt) {
@@ -174,7 +174,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
     return snapshot(() => {
       const timestamp = now(); assertApps(decision.expiresAt > timestamp, 'app_access_expired', 403);
       const fresh = loadAccess({ domainId: decision.domainId, origin: decision.origin, actor: decision.actor }, decision.accessBasis);
-      assertApps(['subject', 'accessBasis', 'appId', 'domainId', 'origin', 'policyEpoch', 'targetRevision', 'targetDigest', 'profile']
+      assertApps(['subject', 'accessBasis', 'appId', 'domainId', 'origin', 'policyEpoch', 'targetRevision', 'targetDigest', 'profile', 'requiredBindingVersion']
         .every(key => fresh[key] === decision[key]), 'app_access_changed', 403);
       return brand(fresh, options.ttlMs === undefined ? decision.expiresAt : timestamp + ttl(options.ttlMs, fresh.subject));
     });
@@ -186,6 +186,29 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       return update(actor, args);
     },
     initForApp(app) { ensureInitialPublication(db, app); },
+    sourceStateInTransaction(id) {
+      assertApps(db.isTransaction, 'apps_transaction_required', 500);
+      const app = appRow(appId(id)); assertApps(app, 'apps_registry_corrupt', 500);
+      return state(app);
+    },
+    promoteSourceInTransaction({ appId: id, targetRevision, launchPolicy, listed, exposureAck }) {
+      assertApps(db.isTransaction, 'apps_transaction_required', 500);
+      appId(id); positive(targetRevision);
+      assertApps(['restricted', 'anyone'].includes(launchPolicy) && typeof listed === 'boolean'
+        && (!listed || launchPolicy === 'anyone'), 'invalid_publication_policy');
+      assertApps(!listed || activeIds(id).length > 0, 'app_publication_domain_required');
+      const target = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=?').get(id, targetRevision);
+      assertApps(target, 'apps_registry_corrupt', 500);
+      if (launchPolicy === 'anyone') {
+        exact(exposureAck, ['scope', 'targetRevision', 'targetDigest', 'profile']);
+        assertApps(exposureAck.scope === 'whole-port' && exposureAck.targetRevision === targetRevision
+          && exposureAck.targetDigest === target.digest && exposureAck.profile === target.profile, 'app_exposure_ack_required');
+      } else assertApps(exposureAck === null || exposureAck === undefined, 'unexpected_exposure_ack');
+      const changed = bumpEpoch(id);
+      db.prepare(`UPDATE app_publications SET active_target_revision=?,launch_policy=?,listed=?,exposure_ack_revision=?,exposure_ack_json=? WHERE app_id=?`)
+        .run(targetRevision, launchPolicy, Number(listed), exposureAck ? targetRevision : null, exposureAck ? JSON.stringify(exposureAck) : null, id);
+      return { ...changed, current: view(appRow(id)) };
+    },
     grantsChangedInTransaction(id) { return bumpEpoch(appId(id)); },
     revokeInTransaction(id) {
       assertApps(db.isTransaction, 'apps_transaction_required', 500); appId(id);

@@ -26,11 +26,23 @@ const appPublications = {
   app_publication_domains: 'app_id,domain_id,owner_account_id',
   app_publication_receipts: 'account_id,request_key,intent_hash,app_id,committed_epoch,value_json,created_at',
 };
+const appSources = {
+  app_source_heads: 'app_id,required_binding_version',
+  app_source_receipts: 'account_id,request_key,intent_hash,app_id,committed_epoch,value_json,created_at',
+};
 // Frozen host-side recognition of the two v3 immutable-target guards. Matching
 // names alone would also admit a replaced trigger with different behavior.
 const appTargetGuards = {
-  app_runtime_target_no_update: "CREATE TRIGGER app_runtime_target_no_update BEFORE UPDATE ON app_runtime_targets BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END",
-  app_runtime_target_no_delete: "CREATE TRIGGER app_runtime_target_no_delete BEFORE DELETE ON app_runtime_targets BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END",
+  app_runtime_target_no_update: { table: 'app_runtime_targets', sql: "CREATE TRIGGER app_runtime_target_no_update BEFORE UPDATE ON app_runtime_targets BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END" },
+  app_runtime_target_no_delete: { table: 'app_runtime_targets', sql: "CREATE TRIGGER app_runtime_target_no_delete BEFORE DELETE ON app_runtime_targets BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END" },
+};
+// The v4 floor may only increase. These definitions are frozen independently of
+// the application migration and do not attest that a runtime speaks binding v2.
+const appSourceGuards = {
+  app_source_head_no_downgrade: { table: 'app_source_heads', sql: "CREATE TRIGGER app_source_head_no_downgrade BEFORE UPDATE ON app_source_heads WHEN NEW.app_id<>OLD.app_id OR NEW.required_binding_version<OLD.required_binding_version BEGIN SELECT RAISE(ABORT,'app_source_binding_downgrade'); END" },
+  app_source_head_no_delete: { table: 'app_source_heads', sql: "CREATE TRIGGER app_source_head_no_delete BEFORE DELETE ON app_source_heads BEGIN SELECT RAISE(ABORT,'app_source_head_required'); END" },
+  app_source_head_no_replace_downgrade: { table: 'app_source_heads', sql: "CREATE TRIGGER app_source_head_no_replace_downgrade BEFORE INSERT ON app_source_heads WHEN EXISTS (SELECT 1 FROM app_source_heads WHERE app_id=NEW.app_id AND required_binding_version>NEW.required_binding_version) BEGIN SELECT RAISE(ABORT,'app_source_binding_downgrade'); END" },
+  app_runtime_target_no_replace: { table: 'app_runtime_targets', sql: "CREATE TRIGGER app_runtime_target_no_replace BEFORE INSERT ON app_runtime_targets WHEN EXISTS (SELECT 1 FROM app_runtime_targets WHERE app_id=NEW.app_id AND revision=NEW.revision) BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END" },
 };
 const normalizedSql = sql => typeof sql === 'string' ? sql.split(/('(?:[^']|'')*')/gu)
   .map((part, index) => index % 2 ? part : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('') : null;
@@ -102,14 +114,15 @@ async function readAppsFormat(dataDir) {
     if (markers.length !== 1) fail('storage_format_unreadable');
     const format = markers[0].value === 'soty.apps-registry.v1' && [0, 1].includes(version) ? 1
       : markers[0].value === 'soty.apps-registry.v2' && version === 2 ? 2
-        : markers[0].value === 'soty.apps-registry.v3' && version === 3 ? 3 : null;
+        : markers[0].value === 'soty.apps-registry.v3' && version === 3 ? 3
+          : markers[0].value === 'soty.apps-registry.v4' && version === 4 ? 4 : null;
     if (!format) fail('storage_format_unknown');
-    const projections = { ...appCore, ...(format >= 2 ? appDomains : {}), ...(format === 3 ? appPublications : {}) };
-    const guards = format === 3 ? appTargetGuards : {};
+    const projections = { ...appCore, ...(format >= 2 ? appDomains : {}), ...(format >= 3 ? appPublications : {}), ...(format === 4 ? appSources : {}) };
+    const guards = { ...(format >= 3 ? appTargetGuards : {}), ...(format === 4 ? appSourceGuards : {}) };
     if (objects.length !== Object.keys(projections).length + Object.keys(guards).length || objects.some(row =>
       row.type === 'table' ? !Object.hasOwn(projections, row.name)
-        : row.type !== 'trigger' || !Object.hasOwn(guards, row.name) || row.tbl_name !== 'app_runtime_targets'
-          || normalizedSql(row.sql) !== normalizedSql(guards[row.name]))) fail('storage_format_unreadable');
+        : row.type !== 'trigger' || !Object.hasOwn(guards, row.name) || row.tbl_name !== guards[row.name].table
+          || normalizedSql(row.sql) !== normalizedSql(guards[row.name].sql))) fail('storage_format_unreadable');
     // Independent format recognition, not row/constraint integrity attestation.
     // Every identifier below is a trusted constant, never database contents.
     for (const [table, columns] of Object.entries(projections)) db.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`).all();

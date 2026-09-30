@@ -92,14 +92,14 @@ async function fixture(t, { version = 2 } = {}) {
 
 function currentRows(db, table) { return db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(); }
 
-test('historical v2 migrates once to v3 with private publication, initial pinned targets and unchanged apps/domains/grants', async t => {
+test('historical v2 migrates once to v4 with private publication, initial pinned targets and unchanged apps/domains/grants', async t => {
   const f = await fixture(t);
   assert.equal(inspectAppsSchema(f.db), 'v2');
   const preserved = ['app_devices', 'local_apps', 'local_app_grants', 'app_domain_zones', 'app_domain_heads', 'app_domains', 'app_domain_receipts'];
   const before = Object.fromEntries(preserved.map(table => [table, currentRows(f.db, table)]));
   const result = migrateAppsSchema(f.db, { legacyTemplate: legacy, now: () => 10 });
   assert.equal(result.schema, APPS_REGISTRY_SCHEMA); assert.equal(result.migrated, true);
-  assert.equal(inspectAppsSchema(f.db), 'v3'); assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(inspectAppsSchema(f.db), 'v4'); assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 4);
   for (const table of preserved) assert.deepEqual(currentRows(f.db, table), before[table]);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publication_domains').get().n, 0);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publication_receipts').get().n, 0);
@@ -115,14 +115,14 @@ test('historical v2 migrates once to v3 with private publication, initial pinned
   assert.equal(migrateAppsSchema(f.db, { legacyTemplate: legacy, now: () => 20 }).migrated, false);
   assert.deepEqual(currentRows(f.db, 'app_publications'), all);
   const reopened = new DatabaseSync(f.databasePath);
-  try { assert.equal(inspectAppsSchema(reopened), 'v3'); assert.deepEqual(currentRows(reopened, 'app_publications'), all); } finally { reopened.close(); }
+  try { assert.equal(inspectAppsSchema(reopened), 'v4'); assert.deepEqual(currentRows(reopened, 'app_publications'), all); } finally { reopened.close(); }
 });
 
-test('empty and historical v1 versions 0/1 initialize v3 without named activation or reset of source/grants', async t => {
+test('empty and historical v1 versions 0/1 initialize v4 without named activation or reset of source/grants', async t => {
   for (const version of ['empty', 0, 1]) {
     const f = await fixture(t, { version }), before = version === 'empty' ? [] : currentRows(f.db, 'local_apps');
     migrateAppsSchema(f.db, { legacyTemplate: legacy });
-    assert.equal(inspectAppsSchema(f.db), 'v3'); assert.deepEqual(currentRows(f.db, 'local_apps'), before);
+    assert.equal(inspectAppsSchema(f.db), 'v4'); assert.deepEqual(currentRows(f.db, 'local_apps'), before);
     assert.equal(currentRows(f.db, 'app_runtime_targets').length, before.length);
     assert.deepEqual(currentRows(f.db, 'app_publication_domains'), []);
   }
@@ -143,6 +143,7 @@ test('target rows are immutable and composite foreign keys never select a differ
   const f = await fixture(t); migrateAppsSchema(f.db, { legacyTemplate: legacy });
   assert.throws(() => f.db.prepare('UPDATE app_runtime_targets SET port=9010 WHERE app_id=?').run(appA), /app_runtime_target_immutable/);
   assert.throws(() => f.db.prepare('DELETE FROM app_runtime_targets WHERE app_id=?').run(appA), /app_runtime_target_immutable/);
+  f.db.prepare('UPDATE app_source_heads SET required_binding_version=2 WHERE app_id=?').run(appC);
   f.db.prepare('INSERT INTO app_runtime_targets SELECT app_id,2,owner_account_id,connector_key,port,entry_path,profile,digest,created_at FROM app_runtime_targets WHERE app_id=?').run(appC);
   assert.throws(() => f.db.prepare('UPDATE app_publications SET active_target_revision=2 WHERE app_id=?').run(appA), /FOREIGN KEY/);
   assert.throws(() => f.db.prepare('INSERT INTO app_publication_domains VALUES (?,?,?)').run(appA, aliasB, owner.accountId), /FOREIGN KEY/);
@@ -152,8 +153,8 @@ test('target rows are immutable and composite foreign keys never select a differ
   assert.throws(() => f.db.prepare("UPDATE app_publications SET launch_policy='anyone' WHERE app_id=?").run(appA), /CHECK/);
 });
 
-test('unrecognized future schema and altered v3 constraints fail before migration writes', async t => {
-  const unknown = await fixture(t); unknown.db.exec("UPDATE apps_meta SET value='soty.apps-registry.v4' WHERE key='schema'; PRAGMA user_version=4");
+test('unrecognized future schema and altered v4 constraints fail before migration writes', async t => {
+  const unknown = await fixture(t); unknown.db.exec("UPDATE apps_meta SET value='soty.apps-registry.v5' WHERE key='schema'; PRAGMA user_version=5");
   const before = await readFile(unknown.databasePath);
   assert.throws(() => migrateAppsSchema(unknown.db, { legacyTemplate: legacy }), /apps_schema_unsupported/);
   assert.deepEqual(await readFile(unknown.databasePath), before);
@@ -437,7 +438,7 @@ test('community membership and owner administration are checked again on each br
   assert.throws(() => f.service.policy.decideAccess({ domainId: aliasA, origin: 'https://alpha.apps.example' }), code('apps_access_denied'));
 });
 
-test('partial v3 publication is not repaired and domain mutation requires explicit atomic policy integration', async t => {
+test('partial v4 publication is not repaired and domain mutation requires explicit atomic policy integration', async t => {
   const f = await serviceFixture(t);
   assert.throws(() => createDomainRegistry({ db: f.db, assertActor: () => {}, legacyTemplate: legacy,
     namedAppZone: named, shellOrigins: ['https://shell.example'] }), code('apps_policy_validator_required'));
@@ -445,8 +446,7 @@ test('partial v3 publication is not repaired and domain mutation requires explic
   const before = f.db.prepare('SELECT * FROM local_apps WHERE id=?').get(appA);
   assert.throws(() => f.rpc('apps.revoke', { appId: appA }), code('apps_registry_corrupt'));
   assert.deepEqual(f.db.prepare('SELECT * FROM local_apps WHERE id=?').get(appA), before);
-  const reopened = createAppsService(f.config); f.services.push(reopened);
-  assert.throws(() => reopened.execute({ actor: owner, op: 'apps.publication.get', args: { appId: appA } }), code('apps_registry_corrupt'));
+  assert.throws(() => createAppsService(f.config), code('apps_registry_corrupt'));
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publications WHERE app_id=?').get(appA).n, 0);
 });
 

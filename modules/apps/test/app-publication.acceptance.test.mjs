@@ -114,8 +114,8 @@ async function fixture(t, { version = 2, autoStart = true } = {}) {
 
 for (const version of [0, 1, 2]) test(`independent historical Apps${version === 0 ? '1/user_version0' : version} preserves data and remains private across migration and reopen`, async t => {
   const f = await fixture(t, { version });
-  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 3);
-  assert.equal(f.db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get().value, 'soty.apps-registry.v3');
+  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(f.db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get().value, 'soty.apps-registry.v4');
   assert.deepEqual(snapshot(f.db, Object.keys(f.preserved)), f.preserved);
   for (const appId of [appA, appB, appC, appR]) {
     const value = f.get(appId, appId === appC ? bob : alice);
@@ -425,7 +425,7 @@ test('domain coupling is mandatory and a missing publication stays corrupt inste
   const before = snapshot(f.db, [...ownerTables, ...policyTables]);
   assert.throws(() => f.rpc('apps.update', { appId: appA, grants: {} }), code('apps_registry_corrupt'));
   assert.deepEqual(snapshot(f.db, [...ownerTables, ...policyTables]), before);
-  f.reopen(); assert.throws(() => f.get(), code('apps_registry_corrupt'));
+  assert.throws(() => f.reopen(), code('apps_registry_corrupt'));
   assert.deepEqual(snapshot(f.db, [...ownerTables, ...policyTables]), before);
 });
 

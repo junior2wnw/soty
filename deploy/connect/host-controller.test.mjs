@@ -11,6 +11,7 @@ import { createRelease, recoverRelease } from '../../modules/connect/update/inde
 import { storageReaderLabel, currentStorageReaders } from '../connector/storage-guard.mjs';
 import { readStorageFormat } from '../connector/storage-probe.mjs';
 import { createHistoricalAppsV2 } from '../connector/apps-v2.fixture.mjs';
+import { createHistoricalAppsV3 } from '../connector/apps-v3.fixture.mjs';
 
 const id = n => n.toString(16).padStart(64, '0');
 const image = n => 'sha256:' + id(n);
@@ -313,13 +314,13 @@ test('v2 candidate failure never restarts JSON-only original or restores its aut
   assert.ok((await f.readState()).transaction);
 });
 
-test('real Apps v2 to v3 migration after candidate failure blocks an Apps2-only original before any rollback helper or automatic restart', async () => {
+for (const previous of [2, 3]) test(`real Apps v${previous} to v4 migration after candidate failure blocks an Apps${previous}-only original before any rollback helper or automatic restart`, async () => {
   const f = await fixture(), dataDir = path.join(f.root, 'data'); await mkdir(dataDir);
   await mkdir(path.join(dataDir, 'apps'));
   const file = path.join(dataDir, 'apps', 'registry.sqlite'), originalDb = new DatabaseSync(file);
-  try { createHistoricalAppsV2(originalDb); } finally { originalDb.close(); }
-  assert.equal((await readStorageFormat(dataDir)).apps, 2);
-  f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1, 2] } });
+  try { if (previous === 3) createHistoricalAppsV3(originalDb); else createHistoricalAppsV2(originalDb); } finally { originalDb.close(); }
+  assert.equal((await readStorageFormat(dataDir)).apps, previous);
+  f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: previous }, (_, i) => i + 1) } });
   f.engine.items.get(id(1)).Config.Labels[storageReaderLabel] = currentStorageReaders;
   f.deps.storageProbe = async () => readStorageFormat(dataDir);
   const ready = f.deps.ready, probes = [], probe = f.deps.probe;
@@ -337,7 +338,7 @@ test('real Apps v2 to v3 migration after candidate failure blocks an Apps2-only 
     probes.push({ verb, id: runtime.Id, migrated: Boolean(migratedBytes) }); return probe(verb, runtime, ...rest);
   };
   await assert.rejects(f.create().run());
-  assert.deepEqual(await readStorageFormat(dataDir), { ok: true, schema: 'soty.storage-format.v2', rooms: 'empty', apps: 3 });
+  assert.deepEqual(await readStorageFormat(dataDir), { ok: true, schema: 'soty.storage-format.v2', rooms: 'empty', apps: 4 });
   const old = await f.engine.inspect(id(1));
   assert.equal(old.State.Running, false); assert.equal(old.HostConfig.RestartPolicy.Name, 'no');
   assert.ok(!f.engine.events.includes('start:' + id(1)));
@@ -401,38 +402,38 @@ test('recovered v2 START receipt rechecks current Apps format and never repeats 
   const state = await f.readState(), operation = state.transaction.operation;
   assert.equal(operation.storageGuard.schema, 'soty.storage-start.v2'); assert.equal(operation.storageGuard.apps, 'empty');
   f.engine.items.get(operation.id).State = { Running: true, Status: 'running' };
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 4 });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 5 });
   const controller = f.create(); controller.state = state;
   const starts = f.engine.events.filter(event => event.startsWith('start:')).length;
   await assert.rejects(controller.reconcileOperation(), /storage_probe_invalid/);
   assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
   assert.ok(controller.state.transaction.operation);
-  controller.storageProbeOverride = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 3 });
+  controller.storageProbeOverride = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 4 });
   await controller.reconcileOperation();
   assert.equal(controller.state.transaction.operation, null);
   assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
 });
 
-test('pending Apps2 START receipt cannot settle against Apps3 data or repeat an already submitted start', async () => {
+for (const previous of [2, 3]) test(`pending Apps${previous} START receipt cannot settle against Apps${previous + 1} data or repeat an already submitted start`, async () => {
   const f = await fixture(); f.engine.ignore = 'start';
   const command = f.deps.command;
   f.deps.command = async (...args) => {
     const value = await command(...args);
     if (args[0][0] === 'docker') f.engine.images.get(image(2)).Config.Labels[storageReaderLabel]
-      = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1, 2] } });
+      = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: previous }, (_, i) => i + 1) } });
     return value;
   };
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 2 });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: previous });
   await assert.rejects(f.create().run());
   const state = await f.readState(), operation = state.transaction.operation;
-  assert.equal(operation.kind, 'start'); assert.equal(operation.storageGuard.apps, 2);
+  assert.equal(operation.kind, 'start'); assert.equal(operation.storageGuard.apps, previous);
   f.engine.items.get(operation.id).State = { Running: true, Status: 'running' };
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 3 });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: previous + 1 });
   const controller = f.create(); controller.state = state;
   const events = [...f.engine.events];
   await assert.rejects(controller.reconcileOperation(), /storage_reader_incompatible/);
   assert.deepEqual(f.engine.events, events);
-  assert.ok(controller.state.transaction.operation); assert.equal(controller.state.transaction.operation.storageGuard.apps, 2);
+  assert.ok(controller.state.transaction.operation); assert.equal(controller.state.transaction.operation.storageGuard.apps, previous);
 });
 
 test('restored journal from an older controller needs a fresh compatible reader proof before settlement', async () => {

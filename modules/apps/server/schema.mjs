@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, requestPath, cleanGrants, textId } from './protocol.mjs';
 import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-policy.mjs';
 
-export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v3';
+export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v4';
 const v1Schema = 'soty.apps-registry.v1';
 const v2Schema = 'soty.apps-registry.v2';
+const v3Schema = 'soty.apps-registry.v3';
 export const RUNTIME_PROFILE = 'soty.relay-restricted.v1';
 const core = {
   apps_meta: ['key', 'value'],
@@ -23,6 +24,10 @@ const publications = {
   app_publications: ['app_id', 'owner_account_id', 'launch_policy', 'listed', 'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'exposure_ack_json', 'updated_at'],
   app_publication_domains: ['app_id', 'domain_id', 'owner_account_id'],
   app_publication_receipts: ['account_id', 'request_key', 'intent_hash', 'app_id', 'committed_epoch', 'value_json', 'created_at'],
+};
+const sources = {
+  app_source_heads: ['app_id', 'required_binding_version'],
+  app_source_receipts: ['account_id', 'request_key', 'intent_hash', 'app_id', 'committed_epoch', 'value_json', 'created_at'],
 };
 const digest = value => createHash('sha256').update(value).digest('hex');
 export const domainZoneId = zone => `zone_${digest(zone.origin_template ?? zone.template).slice(0, 32)}`;
@@ -50,25 +55,28 @@ export function inspectAppsSchema(db) {
   assertApps(JSON.stringify(meta.map(item => item.name)) === JSON.stringify(core.apps_meta), 'apps_schema_unsupported');
   const schema = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
   const state = schema === v1Schema && [0, 1].includes(version) ? 'v1'
-    : schema === v2Schema && version === 2 ? 'v2' : schema === APPS_REGISTRY_SCHEMA && version === 3 ? 'v3' : '';
+    : schema === v2Schema && version === 2 ? 'v2' : schema === v3Schema && version === 3 ? 'v3'
+      : schema === APPS_REGISTRY_SCHEMA && version === 4 ? 'v4' : '';
   assertApps(state, 'apps_schema_unsupported');
-  const expected = state === 'v1' ? core : { ...core, ...domains, ...(state === 'v3' ? publications : {}) };
+  const modern = state === 'v3' || state === 'v4';
+  const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(state === 'v4' ? sources : {}) };
   const sqlDefinitions = new Map([...definitions(coreDdl()), ...(state !== 'v1' ? definitions(domainDdl()) : []),
-    ...(state === 'v3' ? [...definitions(publicationDdl()), ...definitions(targetGuards())] : [])]);
+    ...(modern ? [...definitions(publicationDdl()), ...definitions(targetGuards())] : []),
+    ...(state === 'v4' ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
     const actual = db.prepare(`PRAGMA table_info(${name})`).all();
     assertApps(JSON.stringify(actual.map(item => item.name)) === JSON.stringify(columns), 'apps_schema_unsupported');
     const primaryKeys = name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
-      : ['app_domain_receipts', 'app_publication_receipts'].includes(name) ? ['account_id', 'request_key']
+      : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts'].includes(name) ? ['account_id', 'request_key']
         : name === 'app_runtime_targets' ? ['app_id', 'revision']
           : name === 'app_publication_domains' ? ['app_id', 'domain_id']
             : [name === 'apps_meta' ? 'key' : name === 'app_devices' ? 'connector_key'
-              : ['app_domain_heads', 'app_publications'].includes(name) ? 'app_id' : 'id'];
+              : ['app_domain_heads', 'app_publications', 'app_source_heads'].includes(name) ? 'app_id' : 'id'];
     for (const column of actual) {
       const integer = ['revision', 'created_at', 'updated_at', 'retired_at', 'committed_revision', 'port', 'listed',
-        'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch'].includes(column.name)
+        'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version'].includes(column.name)
         && !(name === 'app_domain_zones' && column.name === 'port');
       assertApps(column.type.toUpperCase() === (integer ? 'INTEGER' : 'TEXT')
         && column.pk === primaryKeys.indexOf(column.name) + 1, 'apps_schema_unsupported');
@@ -148,12 +156,39 @@ function targetGuards() {
   ];
 }
 
+function sourceDdl() {
+  return `CREATE TABLE app_source_heads (
+      app_id TEXT PRIMARY KEY REFERENCES local_apps(id),required_binding_version INTEGER NOT NULL CHECK(required_binding_version IN (1,2)));
+    CREATE TABLE app_source_receipts (
+      account_id TEXT NOT NULL,request_key TEXT NOT NULL,intent_hash TEXT NOT NULL,app_id TEXT NOT NULL,
+      committed_epoch INTEGER NOT NULL CHECK(committed_epoch BETWEEN 2 AND 9007199254740991),value_json TEXT NOT NULL,created_at INTEGER NOT NULL,
+      PRIMARY KEY(account_id,request_key),FOREIGN KEY(app_id,account_id) REFERENCES local_apps(id,owner_account_id));
+    CREATE UNIQUE INDEX app_source_receipt_epoch ON app_source_receipts(app_id,committed_epoch);`;
+}
+
+function sourceGuards() {
+  return [
+    "CREATE TRIGGER app_source_head_no_downgrade BEFORE UPDATE ON app_source_heads WHEN NEW.app_id<>OLD.app_id OR NEW.required_binding_version<OLD.required_binding_version BEGIN SELECT RAISE(ABORT,'app_source_binding_downgrade'); END",
+    "CREATE TRIGGER app_source_head_no_delete BEFORE DELETE ON app_source_heads BEGIN SELECT RAISE(ABORT,'app_source_head_required'); END",
+    "CREATE TRIGGER app_source_head_no_replace_downgrade BEFORE INSERT ON app_source_heads WHEN EXISTS (SELECT 1 FROM app_source_heads WHERE app_id=NEW.app_id AND required_binding_version>NEW.required_binding_version) BEGIN SELECT RAISE(ABORT,'app_source_binding_downgrade'); END",
+    "CREATE TRIGGER app_runtime_target_no_replace BEFORE INSERT ON app_runtime_targets WHEN EXISTS (SELECT 1 FROM app_runtime_targets WHERE app_id=NEW.app_id AND revision=NEW.revision) BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END",
+  ];
+}
+
 export function runtimeTargetDigest(value) {
   return digest(JSON.stringify(['soty.runtime-target.v1', value.appId, value.revision, value.ownerAccountId,
     value.connectorKey, value.port, value.entryPath, value.profile]));
 }
 
-// Shared by the migration and registration; source changes are a separate stage.
+export function requiredBindingVersion(db, id) {
+  const head = db.prepare('SELECT required_binding_version FROM app_source_heads WHERE app_id=?').get(id);
+  assertApps(head && [1, 2].includes(head.required_binding_version), 'apps_registry_corrupt', 500);
+  assertApps(head.required_binding_version === 2 || !db.prepare('SELECT 1 FROM app_runtime_targets WHERE app_id=? AND revision>1 LIMIT 1').get(id), 'apps_registry_corrupt', 500);
+  return head.required_binding_version;
+}
+
+// Shared by initial migration and registration. Existing v4 records are only
+// validated; missing state must never be silently repaired with a weaker floor.
 export function ensureInitialPublication(db, app) {
   assertApps(db.isTransaction === true, 'apps_transaction_required', 500);
   const port = appPort(app.port), entryPath = requestPath(app.entry_path);
@@ -163,12 +198,44 @@ export function ensureInitialPublication(db, app) {
   const target = { appId: app.id, revision: 1, ownerAccountId: app.owner_account_id, connectorKey: app.connector_key,
     port, entryPath, profile: RUNTIME_PROFILE };
   const targetDigest = runtimeTargetDigest(target);
-  db.prepare('INSERT OR IGNORE INTO app_runtime_targets VALUES (?,?,?,?,?,?,?,?,?)')
-    .run(app.id, 1, app.owner_account_id, app.connector_key, port, entryPath, RUNTIME_PROFILE, targetDigest, app.created_at);
   const existing = db.prepare('SELECT digest FROM app_runtime_targets WHERE app_id=? AND revision=1').get(app.id);
-  assertApps(existing?.digest === targetDigest, 'apps_initial_target_changed', 409);
-  db.prepare("INSERT OR IGNORE INTO app_publications VALUES (?,?,'restricted',0,1,1,NULL,NULL,?)")
+  const policy = db.prepare('SELECT app_id FROM app_publications WHERE app_id=?').get(app.id);
+  const head = db.prepare('SELECT app_id FROM app_source_heads WHERE app_id=?').get(app.id);
+  const anyTarget = existing || db.prepare('SELECT 1 FROM app_runtime_targets WHERE app_id=? LIMIT 1').get(app.id);
+  if (anyTarget || policy || head) {
+    assertApps(existing && policy && head, 'apps_registry_corrupt', 500);
+    assertApps(existing.digest === targetDigest, 'apps_initial_target_changed', 409);
+    requiredBindingVersion(db, app.id); return;
+  }
+  db.prepare('INSERT INTO app_runtime_targets VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(app.id, 1, app.owner_account_id, app.connector_key, port, entryPath, RUNTIME_PROFILE, targetDigest, app.created_at);
+  db.prepare("INSERT INTO app_publications VALUES (?,?,'restricted',0,1,1,NULL,NULL,?)")
     .run(app.id, app.owner_account_id, app.updated_at);
+  db.prepare('INSERT INTO app_source_heads VALUES (?,1)').run(app.id);
+}
+
+function validateSourceRows(db, { historical = false } = {}) {
+  assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
+  for (const app of db.prepare('SELECT * FROM local_apps').iterate()) {
+    const policy = db.prepare('SELECT * FROM app_publications WHERE app_id=?').get(app.id);
+    assertApps(policy?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
+    let initial = false, active = false, count = 0;
+    for (const target of db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=?').iterate(app.id)) {
+      count++;
+      assertApps(target.owner_account_id === app.owner_account_id && Number.isSafeInteger(target.revision) && target.revision >= 1
+        && target.profile === RUNTIME_PROFILE && target.digest === runtimeTargetDigest({ appId: app.id, revision: target.revision,
+          ownerAccountId: app.owner_account_id, connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile }), 'apps_registry_corrupt', 500);
+      appPort(target.port); requestPath(target.entry_path);
+      if (target.revision === 1) {
+        initial = true;
+        assertApps(target.connector_key === app.connector_key && target.port === app.port && target.entry_path === app.entry_path, 'apps_initial_target_changed', 409);
+      }
+      if (target.revision === policy.active_target_revision) active = true;
+    }
+    assertApps(initial && active, 'apps_registry_corrupt', 500);
+    if (historical) assertApps(count === 1 && policy.active_target_revision === 1, 'apps_source_history_unsupported', 409);
+    else requiredBindingVersion(db, app.id);
+  }
 }
 
 function initializePublications(db) {
@@ -231,14 +298,16 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
   db.exec('BEGIN IMMEDIATE');
   try {
     const before = inspectAppsSchema(db); // another process may have migrated while this connection waited
-    if (before === 'v2' || before === 'v3') {
+    if (before === 'v2' || before === 'v3' || before === 'v4') {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
       assertApps(pinned && pinned.value === normalizedTemplate, 'apps_origin_template_changed', 409);
-      if (before === 'v3') {
+      if (before === 'v4') {
+        validateSourceRows(db);
         db.exec('COMMIT');
         return { schema: APPS_REGISTRY_SCHEMA, migrated: false, legacyTemplate: pinned.value };
       }
     }
+    if (before === 'v3') validateSourceRows(db, { historical: true });
     if (before === 'empty') db.exec(coreDdl());
     if (before === 'empty' || before === 'v1') {
       db.exec(domainDdl());
@@ -246,12 +315,17 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
       if (normalizedTemplate) insertDomainZone(db, legacyZone(normalizedTemplate), timestamp);
       validateAndRebuildGrants(db, app => ensureCanonicalDomain(db, app, normalizedTemplate));
     }
-    db.exec(publicationDdl());
-    for (const statement of targetGuards()) db.exec(statement);
-    initializePublications(db);
+    if (before !== 'v3') {
+      db.exec(publicationDdl());
+      for (const statement of targetGuards()) db.exec(statement);
+    }
+    db.exec(sourceDdl());
+    for (const statement of sourceGuards()) db.exec(statement);
+    if (before === 'v3') db.exec('INSERT INTO app_source_heads SELECT id,1 FROM local_apps');
+    else initializePublications(db);
     db.prepare("INSERT OR REPLACE INTO apps_meta(key,value) VALUES ('schema',?),('legacy_origin_template',?)")
       .run(APPS_REGISTRY_SCHEMA, normalizedTemplate);
-    db.exec('PRAGMA user_version=3; COMMIT');
+    db.exec('PRAGMA user_version=4; COMMIT');
     return { schema: APPS_REGISTRY_SCHEMA, migrated: true, legacyTemplate: normalizedTemplate };
   } catch (error) {
     if (db.isTransaction) db.exec('ROLLBACK');

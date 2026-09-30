@@ -9,6 +9,7 @@ import { createRoomStore } from '../../server/room-store.js';
 import { readStorageFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, currentStorageReaders, storageReaderLabel } from './storage-guard.mjs';
 import { createHistoricalAppsV2 } from './apps-v2.fixture.mjs';
+import { createHistoricalAppsV3, seedHistoricalPublicationV3 } from './apps-v3.fixture.mjs';
 
 const format = (apps, rooms = 'empty') => ({ ok: true, schema: 'soty.storage-format.v2', rooms, apps });
 const image = readers => ({ Id: 'sha256:' + '1'.repeat(64), Config: { Labels: { [storageReaderLabel]: readers ?? currentStorageReaders } } });
@@ -50,20 +51,39 @@ async function v1(root, version = 1) {
   } finally { db.close(); }
 }
 
-async function v2(root) {
+async function v2(root, version = 2) {
   await mkdir(path.join(root, 'apps'));
   const db = new DatabaseSync(filename(root));
   try {
-    createHistoricalAppsV2(db); seedPrivateApp(db);
+    if (version === 3) createHistoricalAppsV3(db); else createHistoricalAppsV2(db);
+    seedPrivateApp(db);
     db.prepare('INSERT INTO app_domain_heads VALUES (?,2)').run(privateAppId);
     db.exec("INSERT INTO app_domain_zones VALUES ('zone_test','named','https://{slug}.apps.example','apps.example','https','',1)");
     db.prepare("INSERT INTO app_domains VALUES ('dom_retired','zone_test','retired.apps.example','https://retired.apps.example','retired',?,?,'alias','tombstone',1,2)")
       .run(privateAppId, 'account-private');
+    if (version === 3) {
+      seedHistoricalPublicationV3(db, privateAppId);
+      const target = db.prepare('SELECT digest,profile FROM app_runtime_targets WHERE app_id=?').get(privateAppId);
+      const ack = JSON.stringify({ scope: 'whole-port', targetRevision: 1, targetDigest: target.digest, profile: target.profile });
+      db.prepare("INSERT INTO app_domains VALUES ('dom_live','zone_test','live.apps.example','https://live.apps.example','live',?,?,'alias','bound',3,NULL)")
+        .run(privateAppId, 'account-private');
+      db.prepare('INSERT INTO app_publication_domains VALUES (?,?,?)').run(privateAppId, 'dom_live', 'account-private');
+      db.prepare("UPDATE app_publications SET launch_policy='anyone',listed=1,policy_epoch=4,exposure_ack_revision=1,exposure_ack_json=?,updated_at=4 WHERE app_id=?")
+        .run(ack, privateAppId);
+      db.prepare("INSERT INTO app_publication_receipts VALUES (?,?,?,?,?,?,?)")
+        .run('account-private', 'historical-request', 'historical-intent', privateAppId, 4, '{"synthetic":"historical-publication"}', 4);
+      db.prepare("INSERT INTO app_domain_receipts VALUES (?,?,?,'retire','dom_retired',2,2)")
+        .run('account-private', 'historical-domain-request', 'historical-domain-intent');
+    }
   } finally { db.close(); }
 }
 
 async function v3(root) {
-  await v2(root);
+  await v2(root, 3);
+}
+
+async function v4(root) {
+  await v3(root);
   const db = new DatabaseSync(filename(root));
   try { migrateAppsSchema(db); } finally { db.close(); }
 }
@@ -79,10 +99,10 @@ test('Apps absent or genuinely empty directory is explicit and no store is creat
   await assert.rejects(readStorageFormat(root), /storage_format_unreadable/);
 });
 
-test('historical Apps v1 and v2 plus current v3 are readable without disclosing or rewriting data', async t => {
-  for (const version of [0, 1, 2, 3]) {
+test('historical Apps v1, v2 and v3 plus current v4 are readable without disclosing or rewriting data', async t => {
+  for (const version of [0, 1, 2, 3, 4]) {
     const root = await directory(t);
-    if (version === 3) await v3(root); else if (version === 2) await v2(root); else await v1(root, version);
+    if (version === 4) await v4(root); else if (version === 3) await v3(root); else if (version === 2) await v2(root); else await v1(root, version);
     const before = await readFile(filename(root));
     const observed = await readStorageFormat(root);
     assert.deepEqual(observed, format(version >= 2 ? version : 1));
@@ -100,44 +120,51 @@ test('rooms and Apps formats coexist without one masking the other', async t => 
   assert.deepEqual(await readStorageFormat(root), format(1, 2));
   const db = new DatabaseSync(filename(root));
   try { migrateAppsSchema(db); } finally { db.close(); }
-  assert.deepEqual(await readStorageFormat(root), format(3, 2));
+  assert.deepEqual(await readStorageFormat(root), format(4, 2));
 });
 
-for (const previous of [1, 2]) test(`committed real Apps v${previous} to v3 migration is observed in WAL without checkpointing or weakening old data`, async t => {
-  const root = await directory(t); if (previous === 2) await v2(root); else await v1(root);
+for (const previous of [1, 2, 3]) test(`committed real Apps v${previous} to v4 migration is observed in WAL without checkpointing or weakening old data`, async t => {
+  const root = await directory(t); if (previous === 3) await v3(root); else if (previous === 2) await v2(root); else await v1(root);
   const db = new DatabaseSync(filename(root));
   try {
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
     const before = await readFile(filename(root));
     assert.equal(before.readUInt32BE(60), previous);
     assert.deepEqual(await readStorageFormat(root), format(previous));
-    const preserved = ['app_devices', 'local_apps', 'local_app_grants', ...(previous === 2
-      ? ['app_domain_zones', 'app_domain_heads', 'app_domains', 'app_domain_receipts'] : [])];
+    const preserved = ['app_devices', 'local_apps', 'local_app_grants', ...(previous >= 2
+      ? ['app_domain_zones', 'app_domain_heads', 'app_domains', 'app_domain_receipts'] : []), ...(previous === 3
+      ? ['app_runtime_targets', 'app_publications', 'app_publication_domains', 'app_publication_receipts'] : [])];
     const rows = Object.fromEntries(preserved.map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    const originalDdl = db.prepare("SELECT name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all();
     migrateAppsSchema(db);
     assert.ok((await lstat(filename(root) + '-wal')).size > 32);
     assert.deepEqual(await readFile(filename(root)), before, 'the migration is still in the WAL');
     const observed = await readStorageFormat(root);
-    assert.deepEqual(observed, format(3));
-    const oldReader = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1, 2] } });
+    assert.deepEqual(observed, format(4));
+    const oldReader = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1, 2, 3] } });
     assert.throws(() => assertStorageCompatible(image(oldReader), observed), /storage_reader_incompatible/);
     assertStorageCompatible(image(), observed);
     assert.deepEqual(await readFile(filename(root)), before, 'the format probe did not checkpoint or rewrite data');
     for (const table of preserved) assert.deepEqual(db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(), rows[table]);
-    assert.deepEqual({ ...db.prepare('SELECT launch_policy,listed,policy_epoch,active_target_revision,exposure_ack_revision FROM app_publications').get() },
-      { launch_policy: 'restricted', listed: 0, policy_epoch: 1, active_target_revision: 1, exposure_ack_revision: null });
-    assert.equal(db.prepare('SELECT count(*) AS n FROM app_publication_domains').get().n, 0);
+    for (const item of originalDdl) assert.equal(db.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(item.name).sql, item.sql, item.name);
+    if (previous < 3) {
+      assert.deepEqual({ ...db.prepare('SELECT launch_policy,listed,policy_epoch,active_target_revision,exposure_ack_revision FROM app_publications').get() },
+        { launch_policy: 'restricted', listed: 0, policy_epoch: 1, active_target_revision: 1, exposure_ack_revision: null });
+      assert.equal(db.prepare('SELECT count(*) AS n FROM app_publication_domains').get().n, 0);
+    }
+    assert.deepEqual({ ...db.prepare('SELECT * FROM app_source_heads').get() }, { app_id: privateAppId, required_binding_version: 1 });
+    assert.equal(db.prepare('SELECT count(*) AS n FROM app_source_receipts').get().n, 0);
   } finally { db.close(); }
-  assert.deepEqual(await readStorageFormat(root), format(3));
+  assert.deepEqual(await readStorageFormat(root), format(4));
 });
 
-test('future Apps v4 in WAL refuses even while the main file is accepted v3', async t => {
-  const root = await directory(t); await v3(root);
+test('future Apps v5 in WAL refuses even while the main file is accepted v4', async t => {
+  const root = await directory(t); await v4(root);
   const db = new DatabaseSync(filename(root));
   try {
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
-    const before = await readFile(filename(root)); assert.equal(before.readUInt32BE(60), 3);
-    db.exec("BEGIN; UPDATE apps_meta SET value='soty.apps-registry.v4' WHERE key='schema'; PRAGMA user_version=4; COMMIT");
+    const before = await readFile(filename(root)); assert.equal(before.readUInt32BE(60), 4);
+    db.exec("BEGIN; UPDATE apps_meta SET value='soty.apps-registry.v5' WHERE key='schema'; PRAGMA user_version=5; COMMIT");
     await assert.rejects(readStorageFormat(root), /storage_format_unknown/);
     assert.deepEqual(await readFile(filename(root)), before);
   } finally { db.close(); }
@@ -162,7 +189,8 @@ test('both Apps marker and user_version must agree, including rejection of a dec
   for (const [schema, version] of [['soty.apps-registry.v1', 2], ['soty.apps-registry.v1', 3],
     ['soty.apps-registry.v2', 0], ['soty.apps-registry.v2', 1], ['soty.apps-registry.v2', 3],
     ['soty.apps-registry.v3', 0], ['soty.apps-registry.v3', 1], ['soty.apps-registry.v3', 2], ['soty.apps-registry.v3', 4],
-    ['soty.apps-registry.v4', 4], ['unknown', 1]]) {
+    ['soty.apps-registry.v4', 0], ['soty.apps-registry.v4', 1], ['soty.apps-registry.v4', 2], ['soty.apps-registry.v4', 3],
+    ['soty.apps-registry.v4', 5], ['soty.apps-registry.v5', 5], ['unknown', 1]]) {
     const root = await directory(t); await v1(root);
     const db = new DatabaseSync(filename(root));
     try { db.prepare("UPDATE apps_meta SET value=? WHERE key='schema'").run(schema); db.exec('PRAGMA user_version=' + version); } finally { db.close(); }
@@ -188,12 +216,38 @@ test('Apps required tables, projections and the pinned origin marker must actual
     [3, 'ALTER TABLE app_publication_domains RENAME COLUMN owner_account_id TO previous_owner'],
     [3, 'ALTER TABLE app_publication_receipts RENAME COLUMN committed_epoch TO previous_epoch'],
     [3, "DELETE FROM apps_meta WHERE key='legacy_origin_template'"],
+    [3, "UPDATE apps_meta SET value='soty.apps-registry.v4' WHERE key='schema'; PRAGMA user_version=4"],
+    [4, 'DROP TABLE app_source_receipts'],
+    [4, 'DROP TABLE app_source_heads'],
+    [4, 'ALTER TABLE app_source_heads RENAME COLUMN required_binding_version TO previous_binding_version'],
+    [4, 'ALTER TABLE app_source_receipts RENAME COLUMN committed_epoch TO previous_epoch'],
+    [4, 'ALTER TABLE app_source_receipts RENAME COLUMN intent_hash TO previous_intent_hash'],
   ];
   for (const [version, mutation] of cases) {
-    const root = await directory(t); if (version === 3) await v3(root); else if (version === 2) await v2(root); else await v1(root);
+    const root = await directory(t); if (version === 4) await v4(root); else if (version === 3) await v3(root); else if (version === 2) await v2(root); else await v1(root);
     const db = new DatabaseSync(filename(root));
-    try { db.exec(mutation); } finally { db.close(); }
+    // This case deliberately creates an invalid database shape; live writers
+    // keep foreign keys enabled. Disabling only here lets DROP reach the probe.
+    try { db.exec('PRAGMA foreign_keys=OFF'); db.exec(mutation); } finally { db.close(); }
     await assert.rejects(readStorageFormat(root), /storage_format_unreadable/, mutation);
+  }
+});
+
+test('Apps v4 requires the exact table and body of every sticky floor and target replacement guard', async t => {
+  const guards = ['app_runtime_target_no_update', 'app_runtime_target_no_delete', 'app_source_head_no_downgrade',
+    'app_source_head_no_delete', 'app_source_head_no_replace_downgrade', 'app_runtime_target_no_replace'];
+  for (const name of guards) {
+    for (const kind of ['missing', 'wrong-body', 'wrong-table']) {
+      const root = await directory(t); await v4(root);
+      const db = new DatabaseSync(filename(root));
+      try {
+        const before = db.prepare('SELECT sql,tbl_name FROM sqlite_schema WHERE name=?').get(name);
+        db.exec(`DROP TRIGGER ${name}`);
+        if (kind === 'wrong-body') db.exec(`CREATE TRIGGER ${name} BEFORE UPDATE ON ${before.tbl_name} BEGIN SELECT 1; END`);
+        if (kind === 'wrong-table') db.exec(before.sql.replace(` ON ${before.tbl_name} `, ' ON local_apps '));
+      } finally { db.close(); }
+      await assert.rejects(readStorageFormat(root), /storage_format_unreadable/, `${name}:${kind}`);
+    }
   }
 });
 
