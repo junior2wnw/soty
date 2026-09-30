@@ -1,3 +1,5 @@
+import { invalidateNoteCache } from './cache.mjs';
+
 // A draft is a separate branch. Two tabs never silently replace each other's text.
 export const NOTE_COLORS = Object.freeze(['plain', 'honey', 'sage', 'lilac', 'blue', 'coral']);
 export const uid = () => crypto.randomUUID();
@@ -62,18 +64,18 @@ export function createDraftStore(accountId, projectId = 'default') {
 
 /** Autosave is a durable local outbox followed by a serialized compare-and-swap.
  * A lost response retries the identical mutation, including after reload. */
-export function createNoteSession({ api, accountId, store, note, draft, onChange = () => {}, debounceMs = 650 }) {
+export function createNoteSession({ api, accountId, store, note, draft, cache, onChange = () => {}, debounceMs = 650 }) {
   let current = clone(draft?.note || note); const branchId = uid();
   let generation = draft ? draft.generation : 0;
   let committedGeneration = draft ? draft.committedGeneration : 0;
   let durableGeneration = draft ? generation : 0;
   let pending = draft?.pending ? clone(draft.pending) : null;
   let localQueue = Promise.resolve(); let sending = null; let retryFlight = null; let timer; let disposed = false; let abandoned = false;
-  let conflict = Boolean(draft?.conflict); let error = ''; let localError = ''; let lastSavedAt = 0;
+  let conflict = Boolean(draft?.conflict); let error = ''; let localError = ''; let cacheError = ''; let confirmedAt = 0; let lastSavedAt = 0;
   let source = draft ? { noteId: draft.note.noteId, branchId: draft.branchId, savedAt: draft.savedAt } : null;
   const notify = () => { if (!disposed) onChange(state()); };
   const state = () => ({ note: clone(current), dirty: generation > committedGeneration || Boolean(pending), localDurable: durableGeneration >= generation,
-    saving: Boolean(sending), conflict, error, localError, branchId });
+    saving: Boolean(sending), conflict, error, localError, cacheError, confirmedAt, branchId });
   function snapshot() { lastSavedAt = Math.max(Date.now(), lastSavedAt + 1); return { note: clone(current), branchId, generation, committedGeneration,
     pending: pending ? clone(pending) : null, conflict, savedAt: lastSavedAt }; }
   function persist() {
@@ -112,16 +114,29 @@ export function createNoteSession({ api, accountId, store, note, draft, onChange
           await persist();
           if (disposed || abandoned) break;
           const outbox = clone(pending);
+          let cacheToken = null;
+          if (cache) { try { cacheToken = await cache.capture(); } catch { cacheError = 'notes_cache_unavailable'; } }
+          if (disposed || abandoned) break;
           const ack = await api.request('notes.put', { expectedAccountId: accountId, noteId: current.noteId,
             mutationId: outbox.mutationId, expectedRevision: outbox.expectedRevision, ...outbox.document });
           current.revision = ack.revision; current.updatedAt = ack.updatedAt;
+          if (outbox.expectedRevision === 0) current.createdAt = ack.updatedAt;
           current.preview = (current.body.trim() || current.items.map(item => `${item.done ? '✓ ' : '□ '}${item.text}`).join(' · ')).replace(/\s+/gu, ' ').slice(0, 180);
-          committedGeneration = outbox.generation; pending = null; error = '';
+          committedGeneration = outbox.generation; pending = null; error = ''; confirmedAt = Date.now();
+          if (cache) {
+            // An ACK confirms the captured outbox, never the newer text typed
+            // while this request was running. Cache failure cannot undo the ACK.
+            const confirmed = { ...clone(current), ...clone(outbox.document) };
+            confirmed.preview = (confirmed.body.trim() || confirmed.items.map(item => `${item.done ? '✓ ' : '□ '}${item.text}`).join(' · ')).replace(/\s+/gu, ' ').slice(0, 180);
+            try { cacheError = await cache.remember(confirmed, cacheToken, confirmedAt) ? '' : 'notes_cache_unavailable'; }
+            catch { cacheError = 'notes_cache_unavailable'; }
+          }
           await persist(); await clean();
           if (disposed) break;
         }
       } catch (cause) {
         error = noteErrorCode(cause);
+        if (cache) await invalidateNoteCache(cache, cause, current.noteId);
         if (['notes_revision_conflict', 'notes_note_deleted', 'notes_note_not_found'].includes(error)) { conflict = true; await persist().catch(() => {}); }
       } finally { sending = null; notify(); }
     })();

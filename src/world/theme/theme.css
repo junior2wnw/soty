@@ -2,19 +2,19 @@
   --sw-ease: cubic-bezier(.2, .7, .2, 1);
   --sw-motion-fast: 160ms;
   --sw-motion-enter: 200ms;
-  --sw-bg: #f3f1ea;
-  --sw-surface: #f7f6ef;
-  --sw-ink: #202b23;
-  --sw-muted: #4f5c50;
+  --sw-bg: #f5f4f0;
+  --sw-surface: #fffefa;
+  --sw-ink: #222320;
+  --sw-muted: #565951;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-soty-theme]) {
-    --sw-bg: #1c251f;
-    --sw-surface: #27332a;
-    --sw-ink: #f1f5eb;
-    --sw-muted: #c5d1c1;
+    --sw-bg: #101112;
+    --sw-surface: #1a1b1d;
+    --sw-ink: #f3f2ee;
+    --sw-muted: #c1c1bd;
     color-scheme: dark;
   }
 }

@@ -15,20 +15,34 @@ import {
   isRemoteScript,
   isShortText
 } from "./validators.js";
+import { pruneWaiting } from './room-waiting.mjs';
 
 const rateWindowMs = 10_000;
 const maxMessagesPerWindow = 600;
 const maxBytesPerWindow = 70_000_000;
-const maxStoredFiles = 3000;
-const maxStoredFileBytes = 512_000_000;
-const joinRequestTtlMs = 10 * 60_000;
-const joinDecisionTtlMs = 60_000;
+const maxReplaySocketBytes = 1_000_000;
+const replayAckTimeoutMs = 90_000;
 const maxPendingJoinRequests = 16;
 const maxQueuedHandshakeBytes = 128_000;
+const roomOperations = new WeakMap();
+
+// Serialize the state transition, persistence and acknowledgement, not merely
+// the filesystem writes. Admission is bounded before retaining waiting closures.
+function serializeRoom(room, bytes, operation) {
+  let gate = roomOperations.get(room);
+  if (!gate) { gate = { tail: Promise.resolve(), count: 0, bytes: 0 }; roomOperations.set(room, gate); }
+  const capacity = gate.count === 0 ? Math.max(8_000_000, Math.min(bytes, 34_000_000)) : 8_000_000;
+  if (gate.count >= 64 || gate.bytes + bytes > capacity) return Promise.reject(new Error("room_busy"));
+  gate.count++; gate.bytes += bytes;
+  const result = gate.tail.then(operation);
+  gate.tail = result.then(() => undefined, () => undefined);
+  return result.finally(() => { gate.count--; gate.bytes -= bytes; });
+}
 
 export function attachRealtime(wss, store) {
   wss.on("connection", (ws, _request, roomId) => {
     let room = null;
+    let retainedRoom = false;
     const queuedMessages = [];
     let queuedBytes = 0;
     const peer = {
@@ -44,6 +58,14 @@ export function attachRealtime(wss, store) {
       rateStartedAt: Date.now(),
       messageCount: 0,
       byteCount: 0,
+      replayCursor: 0,
+      replayInFlight: 0,
+      replaySentAt: 0,
+      replayTimer: null,
+      replayAcknowledged: false,
+      replayInitialEnd: 0,
+      replayFileId: '',
+      skippedFiles: new Set(),
       ws
     };
     ws.isAlive = true;
@@ -67,6 +89,8 @@ export function attachRealtime(wss, store) {
     };
     ws.on("message", receiveMessage);
     ws.on("close", () => {
+      if (peer.replayTimer !== null) clearTimeout(peer.replayTimer);
+      peer.replayTimer = null;
       if (!room) {
         return;
       }
@@ -84,10 +108,13 @@ export function attachRealtime(wss, store) {
           peers: [...room.peers.values()].map(publicPeer)
         });
       }
+      if (retainedRoom) { retainedRoom = false; store.release(room); }
     });
-    void store.load(roomId).then((loaded) => {
+    void store.load(roomId, { retain: true }).then((loaded) => {
       room = loaded;
+      retainedRoom = true;
       if (ws.readyState >= 2) {
+        retainedRoom = false; store.release(room);
         return;
       }
       for (const raw of queuedMessages.splice(0)) {
@@ -113,14 +140,24 @@ export function attachRealtime(wss, store) {
 }
 
 async function handleMessage(room, peer, ws, store, raw) {
-  if (!allowMessage(peer, raw)) {
-    ws.close(1008, "rate limit");
-    return;
-  }
+  const rawBytes = Buffer.byteLength(raw);
+  if (rawBytes > 512 && !allowMessage(peer, raw)) { ws.close(1008, 'rate limit'); return; }
   let message;
   try {
     message = JSON.parse(raw.toString());
   } catch {
+    return;
+  }
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return;
+  const replayControl = rawBytes <= 512 && peer.id && room.peers.get(peer.id) === peer && peer.replayInFlight > 0
+    && Number.isSafeInteger(message.sequence) && message.sequence === peer.replayInFlight
+    && ((message.type === 'replay.ack' && Object.keys(message).every(key => key === 'type' || key === 'sequence'))
+      || (message.type === 'replay.skip' && message.fileId === peer.replayFileId
+        && Object.keys(message).every(key => key === 'type' || key === 'sequence' || key === 'fileId')));
+  // Only the exact, tiny, authenticated in-flight ACK is free. Padded,
+  // unsolicited or repeated control frames use the normal abuse budget.
+  if (rawBytes <= 512 && !replayControl && !allowMessage(peer, raw)) {
+    ws.close(1008, "rate limit");
     return;
   }
   pruneWaiting(room);
@@ -131,7 +168,7 @@ async function handleMessage(room, peer, ws, store, raw) {
   }
 
   if (message.type === "hello") {
-    await handleHello(room, peer, ws, store, message);
+    await serializeRoom(room, Buffer.byteLength(raw), () => handleHello(room, peer, ws, store, message));
     return;
   }
 
@@ -142,13 +179,31 @@ async function handleMessage(room, peer, ws, store, raw) {
   if (!joinedPeer) {
     return;
   }
+  if (message.type === 'replay.ack' || message.type === 'replay.skip') {
+    if (!replayControl) return;
+    if (peer.replayAcknowledged && Number.isSafeInteger(message.sequence) && message.sequence === peer.replayInFlight) {
+      if (message.type === 'replay.skip') {
+        if (!peer.replayFileId || message.fileId !== peer.replayFileId || peer.skippedFiles.size >= 4096) return;
+        peer.skippedFiles.add(message.fileId);
+      }
+      peer.replayCursor = message.sequence; peer.replayInFlight = 0;
+      if (peer.replayTimer !== null) clearTimeout(peer.replayTimer);
+      peer.replayTimer = null;
+      scheduleReplay(room, peer, store, 0);
+    }
+    return;
+  }
 
   if (message.type === "update" && isEncryptedUpdate(message.update)) {
-    await storeUpdate(room, peer, ws, store, message.update);
+    await serializeRoom(room, Buffer.byteLength(raw), () => storeUpdate(room, peer, ws, store, message.update));
     return;
   }
   if (message.type === "file" && isEncryptedFile(message.file)) {
-    await storeFile(room, peer, ws, store, message.file);
+    try { await serializeRoom(room, Buffer.byteLength(raw), () => storeFile(room, peer, ws, store, message.file)); }
+    catch (error) {
+      if (!error.code) throw error;
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'file.error', id: message.file.id, code: error.code }));
+    }
     return;
   }
   if (message.type === "notice.knock" && isNoticeKnock(message.knock)) {
@@ -263,13 +318,11 @@ async function handleMessage(room, peer, ws, store, raw) {
     return;
   }
   if (message.type === "close") {
-    room.state.closed = { deviceId: peer.id, at: new Date().toISOString() };
-    room.state.snapshot = null;
-    room.state.updates = [];
-    room.state.files = [];
-    room.waiting.clear();
-    await store.save(room);
-    broadcast(room, "", { type: "closed", closed: room.state.closed });
+    await serializeRoom(room, Buffer.byteLength(raw), async () => {
+      await store.closeRoom(room, { deviceId: peer.id, at: new Date().toISOString() });
+      room.waiting.clear();
+      broadcast(room, "", { type: "closed", closed: room.state.closed });
+    });
   }
 }
 
@@ -326,22 +379,28 @@ async function handleHello(room, peer, ws, store, message) {
     ws.close(1008, "missing auth");
     return;
   }
-  if (!room.state.auth) {
-    room.state.auth = message.roomAuth;
-    await store.save(room);
-  }
-  if (room.state.auth !== message.roomAuth) {
+  try { await store.claimAuth(room, message.roomAuth); }
+  catch (error) {
+    if (error.code !== 'room_auth_mismatch') throw error;
     ws.close(1008, "bad auth");
     return;
   }
+  if (ws.readyState !== 1) return;
+  const previous = room.peers.get(peer.id);
+  if (previous && previous !== peer) previous.ws?.close(1000, 'connection replaced');
   room.peers.set(peer.id, peer);
+  peer.replayAcknowledged = message.replay === 'ack-v1';
+  peer.replayInitialEnd = room.state.sequence;
   const peers = [...room.peers.values()].map(publicPeer);
   ws.send(JSON.stringify({
     type: "hello",
     roomId: room.id,
-    snapshot: room.state.snapshot,
-    updates: room.state.updates,
-    files: room.state.files,
+    snapshot: null,
+    updates: [],
+    files: [],
+    pendingFiles: store.pendingFiles(room),
+    storageFormat: store.format,
+    replay: peer.replayAcknowledged ? 'ack-v1' : 'paced-v1',
     peers,
     joinRequests: pendingJoinRequests(room, peer.id)
   }));
@@ -349,48 +408,65 @@ async function handleHello(room, peer, ws, store, message) {
     type: "presence",
     peers
   });
+  scheduleReplay(room, peer, store, 0);
 }
 
 async function storeUpdate(room, peer, ws, store, update) {
-  const stored = withPeer(peer, update, false);
-  if (room.seen.has(stored.id)) {
-    ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-    return;
-  }
-  if (stored.kind === "snapshot") {
-    room.state.snapshot = stored;
-    room.state.updates = [];
-  } else {
-    room.state.updates.push(stored);
-    if (room.state.updates.length > 5000) {
-      room.state.updates.splice(0, room.state.updates.length - 5000);
-    }
-  }
-  room.seen.add(stored.id);
-  await store.save(room);
+  if (room.state.closed) throw new Error("room_closed");
+  const stored = withPeer(peer, update, true);
+  await store.appendUpdate(room, stored);
   ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-  broadcast(room, peer.id, { type: "update", update: withPeer(peer, stored, true) });
+  for (const recipient of room.peers.values()) scheduleReplay(room, recipient, store, 0);
 }
 
 async function storeFile(room, peer, ws, store, file) {
-  const stored = withPeer(peer, file, false);
-  if (room.seen.has(stored.id)) {
-    ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-    return;
-  }
-  room.seen.add(stored.id);
-  if (stored.kind === "delete") {
-    room.state.files = room.state.files.filter((item) => fileIdentity(item) !== stored.fileId);
-    await store.save(room);
-    ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-    broadcast(room, peer.id, { type: "file", file: withPeer(peer, stored, true) });
-    return;
-  }
-  room.state.files.push(stored);
-  trimStoredFiles(room.state.files);
-  await store.save(room);
+  if (room.state.closed) throw new Error("room_closed");
+  const stored = withPeer(peer, file, true);
+  const result = await store.appendFile(room, stored);
   ws.send(JSON.stringify({ type: "ack", id: stored.id }));
-  broadcast(room, peer.id, { type: "file", file: withPeer(peer, stored, true) });
+  if (result.pendingChanged) broadcast(room, '', { type: 'files.pending', files: store.pendingFiles(room) });
+  else if (result.progress) broadcast(room, '', { type: 'file.progress', ...result.progress });
+  for (const recipient of room.peers.values()) scheduleReplay(room, recipient, store, 0);
+}
+
+// One cursor and one in-flight sequence per peer. No history array, serialized
+// backlog or read transaction survives a socket wait. New clients acknowledge
+// after decrypting/storing each frame; legacy clients receive paced old frames.
+function scheduleReplay(room, peer, store, delay = 25) {
+  if (peer.replayTimer !== null || peer.ws?.readyState !== 1 || room.peers.get(peer.id) !== peer || room.state.closed) return;
+  peer.replayTimer = setTimeout(() => {
+    peer.replayTimer = null;
+    try { pumpReplay(room, peer, store); }
+    catch { peer.ws?.close(1011, 'history unavailable'); }
+  }, delay);
+}
+
+function pumpReplay(room, peer, store) {
+  if (peer.ws?.readyState !== 1 || room.peers.get(peer.id) !== peer || room.state.closed) return;
+  if (peer.replayInFlight) {
+    if (Date.now() - peer.replaySentAt > replayAckTimeoutMs) { peer.ws.close(1013, 'history stalled'); return; }
+    scheduleReplay(room, peer, store, 100); return;
+  }
+  if (peer.ws.bufferedAmount > 0) { scheduleReplay(room, peer, store); return; }
+  const event = store.nextEvent(room, peer.replayCursor, [...peer.skippedFiles]);
+  if (!event) return;
+  const message = JSON.stringify({ type: event.type, [event.type]: event.payload,
+    sequence: event.sequence, replay: event.sequence <= peer.replayInitialEnd });
+  // Chunk frames fit this bound; a legacy encrypted complete/snapshot is one
+  // explicitly documented larger record and cannot be split without its key.
+  if (peer.ws.bufferedAmount + Buffer.byteLength(message) > maxReplaySocketBytes && peer.ws.bufferedAmount > 0) {
+    scheduleReplay(room, peer, store); return;
+  }
+  peer.replayInFlight = event.sequence; peer.replaySentAt = Date.now();
+  peer.replayFileId = event.type === 'file' ? (event.payload.fileId ?? event.payload.id) : '';
+  peer.ws.send(message, error => {
+    if (error) { peer.ws.close(1011, 'history send failed'); return; }
+    if (!peer.replayAcknowledged) {
+      peer.replayCursor = event.sequence; peer.replayInFlight = 0;
+      scheduleReplay(room, peer, store, Math.max(100, Math.ceil(event.wireBytes / 2_000)));
+    }
+  });
+  if (peer.replayAcknowledged) scheduleReplay(room, peer, store, 100);
 }
 
 function withPeer(peer, payload, includeNick = true) {
@@ -410,6 +486,7 @@ function broadcast(room, exceptDeviceId, message) {
   const json = JSON.stringify(message);
   for (const peer of room.peers.values()) {
     if (peer.id !== exceptDeviceId && peer.ws.readyState === 1) {
+      if ((message.type === 'files.pending' || message.type === 'file.progress') && peer.ws.bufferedAmount + Buffer.byteLength(json) > maxReplaySocketBytes) continue;
       peer.ws.send(json);
     }
   }
@@ -432,29 +509,8 @@ function pendingJoinRequests(room, ownerDeviceId) {
   return requests.slice(0, maxPendingJoinRequests);
 }
 
-function pruneWaiting(room) {
-  const now = Date.now();
-  for (const [requestId, waiting] of room.waiting) {
-    const decisionAt = waiting.acceptedAt || waiting.deniedAt || 0;
-    const startedAt = waiting.joinCreatedAt || waiting.disconnectedAt || waiting.rateStartedAt || now;
-    const ttl = decisionAt ? joinDecisionTtlMs : joinRequestTtlMs;
-    const since = decisionAt || startedAt;
-    if (now - since <= ttl) {
-      continue;
-    }
-    if (!decisionAt && waiting.ws?.readyState === 1) {
-      waiting.ws.close(1000, "join expired");
-    }
-    room.waiting.delete(requestId);
-  }
-}
-
 function publicPeer(peer) {
   return { id: peer.id, nick: peer.nick };
-}
-
-function fileIdentity(file) {
-  return typeof file?.fileId === "string" ? file.fileId : file?.id;
 }
 
 function allowMessage(peer, raw) {
@@ -467,15 +523,4 @@ function allowMessage(peer, raw) {
   peer.messageCount += 1;
   peer.byteCount += Buffer.byteLength(raw);
   return peer.messageCount <= maxMessagesPerWindow && peer.byteCount <= maxBytesPerWindow;
-}
-
-function trimStoredFiles(files) {
-  while (files.length > maxStoredFiles) {
-    files.shift();
-  }
-  let total = files.reduce((sum, file) => sum + (Number.isSafeInteger(file.bytes) ? file.bytes : 0), 0);
-  while (total > maxStoredFileBytes && files.length > 0) {
-    const removed = files.shift();
-    total -= Number.isSafeInteger(removed?.bytes) ? removed.bytes : 0;
-  }
 }

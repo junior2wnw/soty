@@ -1,0 +1,3 @@
+dialog.workspace-dialog{width:100%;height:100%;max-width:none;max-height:none;margin:0;border:0;color:inherit;box-sizing:border-box}
+dialog.workspace-dialog::backdrop{background:transparent}
+dialog.workspace-dialog:not([open]){display:none}

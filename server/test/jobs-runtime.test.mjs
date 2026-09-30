@@ -132,7 +132,8 @@ test('HTTP result uploads accept the bounded escaped-text maximum, cap stored me
   const read = await f.invoke('apps.agent.read', f.target(jobId));
   assert.equal(read.ok, true, read.error?.code);
   assert.equal(read.job.result.textLength, 1_000_000);
-  assert.equal(read.job.result.sessionId.length, 200);
+  assert.equal(Object.hasOwn(read.job.result, 'sessionId'), false, 'runtime continuation credentials stay server-side');
+  assert.equal(f.store.state.jobs.find(job => job.id === jobId).result.sessionId.length, 200, 'the stored continuation metadata remains bounded');
   assert.equal(read.job.result.appProposal.name.length, 64);
   assert.equal(Object.hasOwn(read.job.result, 'ignored'), false);
   const first = await f.invoke('apps.agent.result', { ...f.target(jobId), offset: 0 });

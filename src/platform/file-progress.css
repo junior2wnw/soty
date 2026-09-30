@@ -1,0 +1,8 @@
+.file-chip-pending{min-width:240px;max-width:280px;align-items:start}
+.file-chip-pending>div{display:grid;gap:7px;min-width:0;padding:4px}
+.file-chip-pending small{grid-column:auto;white-space:normal;line-height:1.4}
+.file-chip-pending progress{width:100%;height:6px;accent-color:var(--sw-action)}
+.file-chip-pending[aria-busy=true]{opacity:.7}
+body[data-soty-surface=classic] .file-chip button{min-width:44px;min-height:44px;width:44px}
+.file-chip{grid-template-columns:minmax(0,1fr) 44px}
+@media(max-width:360px){.file-chip-pending{min-width:220px;max-width:250px}}

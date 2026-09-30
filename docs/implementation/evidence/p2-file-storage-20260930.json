@@ -1,0 +1,58 @@
+{
+  "date": "2026-09-30",
+  "environment": "isolated local tests; no production access",
+  "format": 2,
+  "focused": {
+    "passed": 36,
+    "failed": 0,
+    "files": [
+      "server/test/realtime-file-durability.test.mjs",
+      "server/test/room-storage-acceptance.test.mjs",
+      "src/transport/file-transfer.test.mjs",
+      "src/transport/file-receive-store.test.mjs",
+      "src/platform/command-file-transfer.test.mjs"
+    ]
+  },
+  "nodeLarge": {
+    "test": "server/test/room-storage-large.test.mjs",
+    "optIn": "SOTY_LARGE_FILE_TEST=1",
+    "passed": true,
+    "sourceBytes": 512000000,
+    "chunks": 2000,
+    "sha256": "d002f5af1c28f9dc2477bc1d4929bcf373d51f792aa7532eea1928709e9a2b96",
+    "elapsedSeconds": 248,
+    "peakRss": 133197824,
+    "peakHeap": 33720720,
+    "maxBufferedSample": 0,
+    "maxReceiveOperations": 1,
+    "databaseBytesBeforeFinalCheckpoint": 681652224,
+    "scope": "real disk source, AES-GCM, loopback WS ACK, SQLite restart, authenticated replay, decrypt, disk hash; later pending-inventory/discard changes have separate focused regressions"
+  },
+  "desktopBrowser": {
+    "test": "src/transport/file-storage.test.html",
+    "browser": "Chrome via local 127.0.0.1:5300",
+    "passed": true,
+    "bytes": 512000000,
+    "chunks": 2000,
+    "verification": "every output byte compared via File.stream",
+    "fileClass": "File",
+    "reservedMemory": 0,
+    "peakOperations": 1,
+    "seconds": 18,
+    "coarsePerformanceMemory": {
+      "baseline": 184608311,
+      "write": 469528747,
+      "assembly": 161804823,
+      "verification": 528356209
+    },
+    "cleanup": "helper close completed; temporary session cache removed",
+    "scope": "actual desktop OPFS helper; not total RSS or mobile hardware; performance.memory affected by process sharing and GC"
+  },
+  "unverified": [
+    "production legacy inventory and encrypted backup restore",
+    "streaming legacy importer for JSON >64 MiB",
+    "weak-phone/iOS memory and OPFS compatibility",
+    "production concurrent load/disk capacity",
+    "automatic browser-reload source resume"
+  ]
+}

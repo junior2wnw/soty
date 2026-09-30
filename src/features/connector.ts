@@ -120,7 +120,8 @@ export interface RunConnectorJobOptions {
   readonly input: ConnectorJobInput;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
-  readonly onEvent?: (event: ConnectorJobEvent) => void;
+  // A consumer may replace raw transport text with the human-readable transcript.
+  readonly onEvent?: (event: ConnectorJobEvent) => void | string | Promise<void | string>;
   readonly access?: ConnectorAccessCredential;
 }
 
@@ -396,7 +397,7 @@ async function waitForJob(
   auth: ControllerAuth,
   id: string,
   timeoutMs: number,
-  onEvent?: (event: ConnectorJobEvent) => void,
+  onEvent?: (event: ConnectorJobEvent) => void | string | Promise<void | string>,
   signal?: AbortSignal,
   initialAfter = 0
 ): Promise<LocalAgentReply> {
@@ -417,11 +418,14 @@ async function waitForJob(
     for (const value of Array.isArray(result.events) ? result.events : []) {
       const event = readEvent(value);
       if (!event || event.seq <= after) continue;
+      const consumed = await onEvent?.(event);
       after = event.seq;
-      onEvent?.(event);
-      if (event.type === "message" && event.text) messages.push(event.text);
-      else if (event.text && ["terminal", "stdout", "stderr", "error"].includes(event.type)) terminal.push(event.text);
-      recordPendingEvent(id, after, event);
+      const transcript = (typeof consumed === 'string' ? consumed : event.text).slice(0, 12_000);
+      if (event.type === "message" && transcript) messages.push(transcript);
+      else if (transcript && ["terminal", "stdout", "stderr", "error"].includes(event.type)) terminal.push(transcript);
+      if (messages.length > maxMessages) messages.splice(0, messages.length - maxMessages);
+      if (terminal.length > maxMessages) terminal.splice(0, terminal.length - maxMessages);
+      recordPendingEvent(id, after, { ...event, text: transcript });
     }
     if (result.done === true) {
       clearPendingAgentRelayReply(id);

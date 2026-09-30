@@ -68,8 +68,10 @@ function shutdown() {
   if (process.connected) process.disconnect();
   for (const client of wss.clients) client.close(1001, 'server_shutdown');
   server.close(); server.closeAllConnections();
-  wss.close();
-  void app.locals.closeServices().catch(() => { process.exitCode = 1; });
+  const closeRooms = new Promise((resolveClose, rejectClose) => wss.close(() => {
+    try { store.close(); resolveClose(); } catch (error) { rejectClose(error); }
+  }));
+  void Promise.all([closeRooms, app.locals.closeServices()]).catch(() => { process.exitCode = 1; });
 }
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);

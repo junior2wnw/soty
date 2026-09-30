@@ -5,6 +5,13 @@ const cellIconOffset = { x: (24 - cellIcon.width) / 2, y: (24 - cellIcon.height)
 const cellsPath = cellIcon.cells.map(cell => `<polygon points="${hexPolygonPoints(cellIcon.radius, { x: cell.x + cellIconOffset.x, y: cell.y + cellIconOffset.y })}"/>`).join('');
 
 const paths: Record<string, string> = {
+  app: '<path d="m12 2 9 5v10l-9 5-9-5V7ZM3 7l9 5 9-5M12 12v10M7.5 4.5l9 5"/>',
+  note: '<path d="M5 3h14v18H5ZM8 7h8M8 11h8M8 15h5"/>',
+  connections: '<circle cx="5" cy="5" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M7 5h10M6 7l5 10M18 7l-5 10"/>',
+  diagonal: '<path d="M6 18 18 6M6 6h12v12"/>',
+  shield: '<path d="m12 2 9 4v6c0 5-9 10-9 10S3 17 3 12V6ZM8 12l3 3 5-6"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1 1m12 12 1 1M5 19l1-1M18 6l1-1"/>',
+  history: '<path d="M3 11a9 9 0 1 1 2 7M3 4v7h7M12 7v6l4 2"/>',
   world: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 4 6 4 9s-1 6-4 9c-3-3-4-6-4-9s1-6 4-9Z"/>',
   cells: cellsPath,
   chat: '<path d="M20 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2V11.5A8.5 8.5 0 0 1 10.5 3H12a8 8 0 0 1 8 8Z"/>',

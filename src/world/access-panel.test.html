@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Access panel — isolated UI fixture</title>
+<style>
+  body{margin:0;font-family:Inter,system-ui,sans-serif;background:var(--sw-bg);color:var(--sw-ink)}
+  .qa-bar{padding:10px 14px;border-bottom:1px solid var(--sw-line);background:var(--sw-surface);display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px}
+  .qa-bar button,.qa-bar select{font:inherit;min-height:32px;padding:5px 8px;border:1px solid var(--sw-control-border);background:var(--sw-surface);color:var(--sw-ink);border-radius:6px}
+  #qa-result{min-height:22px;font-size:12px;padding:5px 14px;color:var(--sw-ink)}
+  #qa-host{min-height:calc(100dvh - 105px)}
+</style>
+<div class="qa-bar">
+  <strong>Изолированный тест · данные вымышлены · API не вызывается</strong>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="disabled">Подключение выключено</option><option value="revoke-fails">Нет подтверждения отзыва</option><option value="key-switch">Смена аккаунта перед выдачей ключа</option><option value="late-list">Поздний ответ списка</option><option value="key-fails">Ключ не подтверждён</option></select></label>
+  <button id="qa-reset">Открыть сценарий</button><button id="qa-dark">Тёмная тема</button><button id="qa-light">Светлая тема</button><button id="qa-dispose">Закрыть экран</button>
+</div>
+<div id="qa-result" role="status"></div><main id="qa-host"></main>
+<script type="module">
+import './world.css';
+import { createPalette } from './theme/palette.mjs';
+import { mountAccessPanel } from './access-panel.ts';
+const root = document.querySelector('#qa-host');
+const result = document.querySelector('#qa-result');
+const mode = document.querySelector('#qa-mode');
+let handle; let generation = 0; let called = 0;
+const accountId = 'qa_account_alice';
+const audience = 'https://qa.invalid/api/capabilities/v1';
+const fakeToken = `soty_cap_${'q'.repeat(43)}`; // Test-only literal, never valid on a server.
+function theme(scheme) { for (const [key,value] of Object.entries(createPalette(scheme,50))) document.documentElement.style.setProperty(key,value); document.documentElement.style.colorScheme=scheme; }
+theme('dark');
+document.querySelector('#qa-dark').onclick=()=>theme('dark'); document.querySelector('#qa-light').onclick=()=>theme('light');
+function reset() {
+  handle?.dispose(); const run = ++generation; called = 0; result.textContent='';
+  const time = Date.now(); const principals = [
+    {id:'qa_principal_writer',accountId,clientId:'qa_client_writer',label:'Личный помощник',state:'active',createdAt:time-3600000,revokedAt:null},
+    {id:'qa_principal_old',accountId,clientId:'qa_client_old',label:'Архивный клиент',state:'revoked',createdAt:time-86400000,revokedAt:time-1000}
+  ];
+  const grants = [{id:'qa_grant_writer',principalId:principals[0].id,clientId:principals[0].clientId,parentGrantId:null,rootGrantId:'qa_grant_writer',
+    capabilities:[{capabilityId:'notes.createDraft',version:1}],resources:['notes:new'],effects:['create'],recipients:['soty:notes'],
+    expiresAt:time+86400000,createdAt:time-3600000,revokedAt:null,allowDelegation:false,budget:{unit:'invocations',limit:10,reserved:1,spent:2,remaining:7,uncertain:1}}];
+  const history=[
+    {invocationId:'qa_inv_good',clientId:principals[0].clientId,principalId:principals[0].id,grantId:grants[0].id,capabilityId:'notes.createDraft',version:1,status:'succeeded',cancelRequested:false,effectState:'committed',effects:[{kind:'created',resourceType:'note',resourceId:'qa_note_one',revision:1}],createdAt:time-120000,updatedAt:time-119000,receipt:{verificationMethod:'domain_read',artifacts:[{type:'note',id:'qa_note_one',revision:1}]}},
+    {invocationId:'qa_inv_unknown',clientId:principals[0].clientId,principalId:principals[0].id,grantId:grants[0].id,capabilityId:'notes.createDraft',version:1,status:'execution_uncertain',cancelRequested:true,effectState:'unknown',effects:[],createdAt:time-60000,updatedAt:time-50000}
+  ];
+  const api={async request(method,args){
+    if(args.expectedAccountId!==accountId) throw Object.assign(new Error('account mismatch'),{code:'account_mismatch'});
+    called++; result.textContent=`Синтетических запросов: ${called}. Реальных записей в базе: 0.`;
+    if(method==='access.principals.list'){
+      if(mode.value==='late-list') {
+        const response={principals:structuredClone(principals),cursor:null};
+        return new Promise(resolve=>setTimeout(()=>{handle.dispose();root.textContent='Другой аккаунт';resolve(response);setTimeout(()=>{if(run===generation)result.textContent=root.textContent==='Другой аккаунт'?'PASS: поздний список не вернулся после dispose':'FAIL: поздний список';},30);},50));
+      }
+      return {principals:structuredClone(principals),cursor:null};
+    }
+    if(method==='access.grants.list') return {grants:structuredClone(grants.filter(item=>item.principalId===args.principalId)),cursor:null};
+    if(method==='access.invocations.list') return {invocations:structuredClone(history),nextCursor:null};
+    if(method==='access.events.list') return {events:[{id:'qa_event_one',kind:'access.grants.issue',objectType:'grant',objectId:grants[0].id,actorType:'connect',actorId:'qa_device_alice',createdAt:time-3600000}],cursor:null};
+    if(method==='access.principals.revoke') {
+      if(mode.value==='revoke-fails') throw new TypeError('synthetic connection lost');
+      const principal=principals.find(item=>item.id===args.principalId);principal.state='revoked';principal.revokedAt=Date.now(); return {principal:structuredClone(principal)};
+    }
+    if(method==='access.grants.revoke') {
+      if(mode.value==='revoke-fails') throw new TypeError('synthetic connection lost');
+      const grant=grants.find(item=>item.id===args.grantId);grant.revokedAt=Date.now();return {grant:structuredClone(grant)};
+    }
+    if(method==='access.principals.create') { const principal={id:`qa_new_${principals.length}`,accountId,clientId:`qa_client_${principals.length}`,label:args.label,state:'active',createdAt:Date.now(),revokedAt:null};principals.unshift(principal);return {principal:structuredClone(principal)}; }
+    if(method==='access.grants.issue'){const grant={...args,id:`qa_grant_${grants.length}`,clientId:principals.find(item=>item.id===args.principalId).clientId,parentGrantId:null,rootGrantId:`qa_grant_${grants.length}`,createdAt:Date.now(),revokedAt:null,budget:{unit:'invocations',limit:args.budget.limit,remaining:args.budget.limit,reserved:0,spent:0,uncertain:0}};grants.push(grant);return {grant:structuredClone(grant)};}
+    if(method==='access.credentials.issue'){
+      if(mode.value==='key-fails') throw new TypeError('synthetic lost ACK');
+      const issued={token:fakeToken,credential:{id:'qa_credential',grantId:args.grantId,audience:args.audience,expiresAt:args.expiresAt}};
+      if(mode.value==='key-switch'){handle.dispose();root.textContent='Другой аккаунт';return new Promise(resolve=>setTimeout(()=>{resolve(issued);setTimeout(()=>{if(run===generation)result.textContent=!document.querySelector('.sa-secret')&&!document.querySelector('dialog')&&root.textContent==='Другой аккаунт'?'PASS: ключ и диалог отсутствуют после смены аккаунта':'FAIL: поздний ключ';},30);},50));}
+      return issued;
+    }
+    throw new Error('Unknown test operation');
+  }};
+  handle=mountAccessPanel(root,{api,accountId,accountLabel:'Алиса · тест',availability:async()=>({notesCreateEnabled:mode.value!=='disabled',audience:mode.value==='disabled'?null:audience})});
+}
+document.querySelector('#qa-reset').onclick=reset;
+document.querySelector('#qa-dispose').onclick=()=>{handle.dispose();root.textContent='Экран закрыт';result.textContent=!document.querySelector('.sa-secret')&&!document.querySelector('dialog')?'PASS: DOM и диалог очищены':'FAIL: очистка';};
+const frameWidth=Number(new URL(location.href).searchParams.get('width'));
+if([320,390,768,1440].includes(frameWidth)) {
+  const frame=document.createElement('iframe');frame.title=`Проверка ширины ${frameWidth}`;frame.src=location.pathname;
+  frame.style.cssText=`display:block;width:${frameWidth}px;max-width:100%;height:100dvh;border:0;margin:0 auto;background:var(--sw-bg)`;
+  document.body.replaceChildren(frame);
+} else reset();
+</script>
+</html>

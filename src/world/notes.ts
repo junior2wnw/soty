@@ -4,6 +4,8 @@ import { createDialog } from './dialogs';
 import type { WorldApi } from './types';
 import { blankNote, createDraftStore, createNoteSession, NOTE_COLORS, noteErrorCode, uid } from '../../modules/notes/browser/state.mjs';
 import type { Draft, Note, NoteColor, NoteMetadata, NoteSession, NotesList, NoteState, SessionState } from '../../modules/notes/browser/state.mjs';
+import { createNoteCache, invalidateNoteCache, noteCacheErrorPolicy, readNoteWithCache } from '../../modules/notes/browser/cache.mjs';
+import type { CachedNoteRead } from '../../modules/notes/browser/cache.mjs';
 import './notes.css';
 
 export interface NotesOptions {
@@ -14,9 +16,12 @@ export interface NotesHandle { dispose(): void; focus(): void; flush(): Promise<
 const bucketNames: Record<NoteState, string> = { active: 'Все', archived: 'Архив', trashed: 'Корзина' };
 const colorNames: Record<NoteColor, string> = { plain: 'Без цвета', honey: 'Мёд', sage: 'Шалфей', lilac: 'Сирень', blue: 'Небо', coral: 'Коралл' };
 export function notesErrorText(error: unknown): string {
-  const code = noteErrorCode(error);
+  const code = noteErrorCode(error).toLowerCase();
   const messages: Record<string, string> = {
     notes_account_changed: 'Аккаунт изменился. Откройте записки заново.',
+    active_profile_changed: 'Аккаунт изменился. Откройте записки заново.',
+    no_local_profile: 'Подключите аккаунт, чтобы открыть записки.',
+    bootstrap_required: 'Подключите аккаунт, чтобы открыть записки.',
     device_revoked: 'Устройство отключено от аккаунта. Черновик остался здесь.',
     authentication_required: 'Подключите аккаунт, чтобы сохранить записку на сервере.',
     notes_revision_conflict: 'Эту записку изменили на другом устройстве.',
@@ -28,14 +33,18 @@ export function notesErrorText(error: unknown): string {
     notes_identity_quota: 'Достигнут лимит созданных записок для этого аккаунта.',
     notes_local_quota: 'Место для черновиков на устройстве заполнено. Сохраните или скачайте их.',
     notes_local_unavailable: 'Браузер не сохранил черновик. Скачайте текст перед закрытием.',
+    notes_cache_unavailable: 'Сохранено на сервере. Копия для открытия без сети сейчас недоступна.',
     notes_invalid_arguments: 'Проверьте размер записки и пунктов списка.',
     rate_limited: 'Подождите немного и повторите сохранение.',
   };
-  return messages[code] || 'Нет связи с сервером. Сохранённый на устройстве черновик отправится после подключения.';
+  return messages[code] || (noteCacheErrorPolicy(error) === 'network'
+    ? 'Нет связи с сервером. Изменения останутся на устройстве до подключения.'
+    : 'Не удалось проверить записки. Повторите запрос.');
 }
 
 export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandle {
   const store = createDraftStore(options.accountId, options.projectId);
+  const cache = createNoteCache(options.accountId, options.projectId);
   const root = el('section', 'sn-workspace'); root.setAttribute('aria-label', 'Личные записки');
   const sidebar = el('aside', 'sn-sidebar'); const editor = el('section', 'sn-editor'); editor.setAttribute('aria-label', 'Редактор записки');
   const heading = el('div', 'sn-heading'); const title = el('div'); title.append(el('h1', '', 'Записки'), el('span', 'sn-private', 'Личные'));
@@ -56,6 +65,9 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   let drafts: Draft[] = []; let initialOpening = true; let status: HTMLElement | null = null; let alert: HTMLElement | null = null;
   let statusText: HTMLElement | null = null; let retry: HTMLButtonElement | null = null; let copyConflict: HTMLButtonElement | null = null; let currentConflict: HTMLButtonElement | null = null;
   let pin: HTMLButtonElement | null = null; let lastCleanRevision = -1; let listRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  let listMode: 'server' | 'cache' | 'unavailable' = 'server';
+  let openedSnapshot: CachedNoteRead | undefined; let recoveredSource: { branchId: string; savedAt: number } | null = null;
+  let purgeDialog: ReturnType<typeof createDialog> | null = null;
   const request = <T>(method: string, args: Record<string, unknown> = {}) => options.api.request<T>(method, { expectedAccountId: options.accountId, ...args });
 
   for (const key of ['active', 'archived', 'trashed'] as const) {
@@ -80,6 +92,11 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     const activeId = session?.state().note.noteId; list.replaceChildren();
     if (!rows.length) {
       const empty = el('div', 'sn-list-empty');
+      if (listMode !== 'server') {
+        empty.append(el('strong', '', listMode === 'cache' ? 'Здесь пока нет копий' : 'Список недоступен'),
+          el('p', '', listMode === 'cache' ? 'Без сети доступны недавно открытые записки. Черновики хранятся отдельно.' : 'Проверьте подключение или доступ к аккаунту.'));
+        list.append(empty); return;
+      }
       empty.append(el('strong', '', search.value.trim() ? 'Ничего не найдено' : bucket === 'active' ? 'Место для ваших мыслей' : bucket === 'archived' ? 'В архиве пусто' : 'В корзине пусто'));
       empty.append(el('p', '', search.value.trim() ? 'Попробуйте другое слово.' : bucket === 'active' ? 'Идея, список или важная мелочь — всё под рукой.' : bucket === 'archived' ? 'Сюда можно убрать завершённые записки.' : 'Удалённые записки можно восстановить.'));
       list.append(empty); return;
@@ -95,10 +112,12 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   }
   async function loadList(append = false) {
     const seq = ++listRequest; const cursor = append ? nextCursor : null; loadMore.disabled = true;
+    const token = await cache.capture().catch(() => null); if (disposed || seq !== listRequest) return;
     if (!append) message.textContent = 'Открываем записки…';
     try {
       const result = await request<NotesList>('notes.list', { bucket, query: search.value.trim(), limit: 30, ...(cursor ? { cursor } : {}) });
       if (disposed || seq !== listRequest) return;
+      listMode = 'server';
       rows = append ? [...rows, ...result.notes.filter(note => !rows.some(old => old.noteId === note.noteId))] : result.notes;
       nextCursor = result.nextCursor; loadMore.hidden = !nextCursor; message.replaceChildren(); updateFilters(result.usage.counts); renderRows();
       if (initialOpening) {
@@ -110,11 +129,23 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
       }
     } catch (error) {
       if (disposed || seq !== listRequest) return;
-      message.replaceChildren(el('span', '', notesErrorText(error)), button('Повторить', 'refresh', '', () => { void loadList(); }));
+      const policy = await invalidateNoteCache(cache, error);
+      if (disposed || seq !== listRequest) return;
+      const local = policy === 'network' && token ? await cache.list(token).catch(() => []) : [];
+      if (disposed || seq !== listRequest) return;
+      const terms = search.value.trim().normalize('NFKC').toLocaleLowerCase('ru').split(/\s+/u).filter(Boolean);
+      rows = local.map(snapshot => snapshot.note).filter(note => note.state === bucket && terms.every(term =>
+        `${note.title} ${note.body} ${note.items.map(item => item.text).join(' ')}`.normalize('NFKC').toLocaleLowerCase('ru').includes(term)));
+      listMode = policy === 'network' ? 'cache' : 'unavailable'; nextCursor = null; loadMore.hidden = true; updateFilters(); renderRows();
+      message.replaceChildren(el('span', '', policy === 'network' ? 'Без сети · Недавно открытые' : notesErrorText(error)), button('Повторить', 'refresh', '', () => { void loadList(); }));
+      if (policy === 'authorization' && session && !session.state().dirty) { session.dispose(); session = null; showUnavailable(error); }
       if (initialOpening) {
         initialOpening = false;
-        const recovery = drafts.find(draft => draft.note.noteId === options.initialNoteId);
-        if (recovery) await openDraft(recovery); else if (options.initialNoteId === 'new') await openNew(); else showLanding();
+        if (policy !== 'network') { showUnavailable(error); return; }
+        if (options.initialNoteId === 'new') await openNew();
+        else if (options.initialNoteId) await openNote(options.initialNoteId);
+        else if (rows[0] && matchMedia('(min-width: 801px)').matches) await openNote(rows[0].noteId, false);
+        else showLanding();
       }
     } finally { if (!disposed && seq === listRequest) loadMore.disabled = false; }
   }
@@ -125,7 +156,9 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   function renderDrafts() {
     draftList.replaceChildren();
     const activeBranch = session?.state().branchId;
-    const recoverable = drafts.filter(draft => draft.branchId !== activeBranch && (draft.generation > draft.committedGeneration || draft.pending || draft.conflict));
+    const recoverable = drafts.filter(draft => draft.branchId !== activeBranch
+      && !(draft.branchId === recoveredSource?.branchId && draft.savedAt === recoveredSource.savedAt)
+      && (draft.generation > draft.committedGeneration || draft.pending || draft.conflict));
     if (!recoverable.length) { draftList.hidden = true; return; } draftList.hidden = false;
     draftList.append(el('h2', '', 'На этом устройстве'));
     for (const draft of recoverable) {
@@ -139,6 +172,11 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     for (let index = 0; index < 3; index++) paper.append(el('span'));
     blank.append(paper, el('h2', '', 'Мысль появилась — запишите'), el('p', '', 'Текст, списки и идеи в одном спокойном месте.'),
       button('Создать записку', 'plus', 'sw-primary', () => { void openNew(); })); editor.append(blank);
+  }
+  function showUnavailable(error: unknown) {
+    if (disposed || session) return; editor.replaceChildren();
+    const blank = el('div', 'sn-landing'); blank.append(el('h2', '', 'Записка недоступна'), el('p', '', notesErrorText(error)));
+    editor.append(blank); root.classList.add('sn-editing');
   }
   async function flush() { if (session) await session.flush(); }
   async function safeAction(action: () => void) {
@@ -164,32 +202,43 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     try {
       await releaseSession(); if (disposed || seq !== openRequest) return;
       await loadDrafts();
+      if (disposed || seq !== openRequest) return;
       const savedDraft = drafts.find(draft => draft.note.noteId === noteId && (draft.generation > draft.committedGeneration || draft.pending || draft.conflict));
       if (savedDraft) { installSession(savedDraft.note, savedDraft); root.classList.add('sn-editing'); return; }
-      const result = await request<{ note: Note }>('notes.get', { noteId });
+      const result = await readNoteWithCache({ api: options.api, accountId: options.accountId, noteId, cache, active: () => !disposed && seq === openRequest });
       if (disposed || seq !== openRequest) return;
-      installSession(result.note); if (focus) root.classList.add('sn-editing');
-    } catch (error) { if (!disposed && seq === openRequest) { message.textContent = notesErrorText(error); showLanding(); } }
+      installSession(result.note, undefined, result); if (focus) root.classList.add('sn-editing');
+    } catch (error) { if (!disposed && seq === openRequest) { message.textContent = notesErrorText(error); showUnavailable(error); } }
   }
   async function openDraft(draft: Draft) {
     const seq = ++openRequest;
     try { await releaseSession(); if (disposed || seq !== openRequest) return; installSession(draft.note, draft); root.classList.add('sn-editing'); }
     catch (error) { message.textContent = notesErrorText(error); }
   }
-  function installSession(note: Note, draft?: Draft) {
+  function installSession(note: Note, draft?: Draft, snapshot?: CachedNoteRead) {
     lastCleanRevision = note.revision;
-    session = createNoteSession({ api: options.api, accountId: options.accountId, store, note, ...(draft ? { draft } : {}), onChange: updateStatus });
+    openedSnapshot = snapshot; recoveredSource = draft ? { branchId: draft.branchId, savedAt: draft.savedAt } : null;
+    session = createNoteSession({ api: options.api, accountId: options.accountId, store, cache, note, ...(draft ? { draft } : {}), onChange: updateStatus });
     renderEditor(); renderRows(); renderDrafts(); updateStatus(session.state());
     options.onOpenNote?.(note.revision || draft ? note.noteId : 'new', displayTitle(note));
   }
   function updateStatus(state: SessionState) {
     if (disposed || !status || !statusText) return;
-    status.dataset.state = state.localError ? 'error' : state.conflict ? 'conflict' : state.saving ? 'saving' : state.dirty ? 'local' : 'saved';
-    statusText.textContent = state.localError ? 'Не сохранено на устройстве' : state.conflict ? 'Две версии' : state.saving ? 'Сохраняем…' : state.dirty ? 'На устройстве' : state.note.revision ? 'Сохранено' : 'Новая записка';
-    if (retry) retry.hidden = !state.error || state.conflict || Boolean(state.localError);
+    if (state.confirmedAt) openedSnapshot = undefined;
+    const stale = openedSnapshot?.source === 'cache';
+    const cacheUnavailable = state.cacheError || (openedSnapshot?.source === 'server' && !openedSnapshot.cached);
+    status.dataset.state = state.localError ? 'error' : state.conflict ? 'conflict' : state.saving ? 'saving' : state.dirty ? 'local' : stale ? 'stale' : 'saved';
+    statusText.textContent = state.localError ? 'Не сохранено на устройстве' : state.conflict ? 'Две версии' : state.saving ? 'Сохраняем…' : state.dirty ? 'На устройстве' : stale ? 'Копия на устройстве' : state.note.revision ? (cacheUnavailable ? 'Сохранено на сервере' : 'Сохранено') : 'Новая записка';
+    if (retry) { retry.hidden = (!state.error && !stale) || state.conflict || Boolean(state.localError); retry.title = stale && !state.dirty ? 'Проверить актуальную версию' : 'Повторить сохранение'; }
     if (copyConflict) copyConflict.hidden = !state.conflict;
     if (currentConflict) currentConflict.hidden = !state.conflict;
-    if (alert) { alert.textContent = state.localError ? notesErrorText({ code: state.localError }) : state.error ? notesErrorText({ code: state.error }) : ''; alert.hidden = !alert.textContent; }
+    if (alert) {
+      alert.dataset.kind = stale || cacheUnavailable ? 'info' : 'error';
+      alert.textContent = state.localError ? notesErrorText({ code: state.localError }) : state.error ? notesErrorText({ code: state.error })
+        : stale ? `Последняя проверка: ${new Date(openedSnapshot!.verifiedAt).toLocaleString('ru-RU')}. Актуальность проверим после подключения.`
+          : cacheUnavailable ? notesErrorText({ code: 'notes_cache_unavailable' }) : '';
+      alert.hidden = !alert.textContent;
+    }
     if (pin) { pin.setAttribute('aria-pressed', String(state.note.pinned)); pin.title = state.note.pinned ? 'Открепить' : 'Закрепить'; pin.setAttribute('aria-label', pin.title); }
     editor.dataset.color = state.note.color;
     if (!state.dirty && state.note.revision !== lastCleanRevision) {
@@ -225,7 +274,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     if (note.state !== 'active') banner.append(el('span', '', note.state === 'trashed' ? 'В корзине' : 'В архиве'), button('Восстановить', 'refresh', '', () => { void changeState('active'); })); else banner.hidden = true;
     alert = el('p', 'sn-save-alert'); alert.setAttribute('role', 'status'); alert.hidden = true;
     const recovery = el('div', 'sn-recovery-actions');
-    retry = button('Повторить', 'refresh', '', () => { void session?.retry(); }); retry.hidden = true;
+    retry = button('Повторить', 'refresh', '', () => { if (session?.state().dirty) void session.retry(); else void refreshSnapshot(); }); retry.hidden = true;
     copyConflict = button('Сохранить копию', 'plus', 'sw-primary', () => { void saveCopy(); }); copyConflict.hidden = true;
     currentConflict = button('Открыть актуальную', 'refresh', '', () => { void openCurrent(); }); currentConflict.hidden = true;
     recovery.append(retry, copyConflict, currentConflict);
@@ -270,7 +319,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     try {
       await old.flush(); if (disposed) return;
       const copy = { ...old.state().note, noteId: uid(), revision: 0, createdAt: Date.now(), updatedAt: Date.now(), state: 'active' as const };
-      const newSession = createNoteSession({ api: options.api, accountId: options.accountId, store, note: copy }); newSession.edit({ title: copy.title });
+      const newSession = createNoteSession({ api: options.api, accountId: options.accountId, store, cache, note: copy }); newSession.edit({ title: copy.title });
       await newSession.flush();
       // The copy must be durable before retiring the conflicting branch.
       if (!newSession.state().localDurable) throw new Error('notes_local_unavailable');
@@ -283,10 +332,25 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
   async function openCurrent() {
     if (!session) return; const previous = session; const noteId = previous.state().note.noteId; editor.inert = true;
     try {
-      await previous.flush(); const result = await request<{ note: Note }>('notes.get', { noteId });
-      if (disposed) return; previous.dispose(); session = null; installSession(result.note); void loadDrafts();
+      await previous.flush(); const result = await readNoteWithCache({ api: options.api, accountId: options.accountId, noteId, cache,
+        allowStale: false, active: () => !disposed && session === previous });
+      if (disposed) return; previous.dispose(); session = null; installSession(result.note, undefined, result); void loadDrafts();
     } catch (error) { if (alert) { alert.textContent = notesErrorText(error); alert.hidden = false; } }
     finally { editor.inert = false; }
+  }
+  async function refreshSnapshot() {
+    const previous = session; if (!previous || previous.state().dirty || disposed) return;
+    const noteId = previous.state().note.noteId;
+    const active = () => !disposed && session === previous && !previous.state().dirty;
+    try {
+      const result = await readNoteWithCache({ api: options.api, accountId: options.accountId, noteId, cache, allowStale: false, active });
+      if (!active()) return; previous.dispose(); session = null; installSession(result.note, undefined, result);
+    } catch (error) {
+      if (!active()) return;
+      if (['authorization', 'missing'].includes(noteCacheErrorPolicy(error))) {
+        previous.dispose(); session = null; rows = rows.filter(note => note.noteId !== noteId); renderRows(); showUnavailable(error);
+      } else if (alert) { alert.textContent = notesErrorText(error); alert.hidden = false; }
+    }
   }
   function downloadNote() {
     if (!session) return; const note = session.state().note;
@@ -295,22 +359,31 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     link.download = `${(note.title || 'Записка').replace(/[<>:"/\\|?*\u0000-\u001f]/gu, '').slice(0, 80) || 'Записка'}.txt`; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   function confirmPurge() {
-    if (!session) return; const dialog = createDialog('Удалить записку навсегда?');
+    if (!session || disposed) return; purgeDialog?.close();
+    const target = session;
+    const dialog = createDialog('Удалить записку навсегда?', () => { if (purgeDialog === dialog) purgeDialog = null; }); purgeDialog = dialog;
     const mutationId = uid();
     dialog.body.append(el('p', '', 'Текст и список будут удалены из аккаунта. Это действие нельзя отменить.'));
     const error = el('p', 'sn-save-alert'); error.hidden = true;
     const confirm = button('Удалить навсегда', undefined, 'sn-danger', () => { void (async () => {
-      if (!session) return; confirm.disabled = true;
+      if (disposed || session !== target) return; confirm.disabled = true;
       try {
-        await session.flush(); const state = session.state(); if (state.dirty || state.conflict) throw new Error('notes_revision_conflict');
+        await target.flush(); if (disposed || session !== target) return;
+        const state = target.state(); if (state.dirty || state.conflict) throw new Error('notes_revision_conflict');
         await request('notes.purge', { noteId: state.note.noteId, expectedRevision: state.note.revision, mutationId });
-        await session.discardBranch(); session.dispose(); session = null; dialog.close(); root.classList.remove('sn-editing'); showLanding(); void loadList(); void loadDrafts();
-      } catch (cause) { error.textContent = notesErrorText(cause); error.hidden = false; }
+        await cache.remove(state.note.noteId).catch(() => {});
+        await target.discardBranch().catch(() => {}); target.dispose();
+        if (disposed || session !== target) return;
+        session = null; openedSnapshot = undefined; recoveredSource = null; dialog.close(); root.classList.remove('sn-editing'); showLanding(); void loadList(); void loadDrafts();
+      } catch (cause) {
+        await invalidateNoteCache(cache, cause, target.state().note.noteId);
+        if (!disposed && session === target) { error.textContent = notesErrorText(cause); error.hidden = false; }
+      }
       finally { confirm.disabled = false; }
     })(); });
     dialog.body.append(error, button('Оставить', undefined, '', dialog.close), confirm);
   }
-  const online = () => { if (disposed) return; void session?.retry(); void loadList(); };
+  const online = () => { if (disposed) return; if (session?.state().dirty) void session.retry(); else if (openedSnapshot?.source === 'cache') void refreshSnapshot(); void loadList(); };
   let measuredWidth = -1;
   const resizeObserver = new ResizeObserver(() => {
     if (!editor.clientWidth || editor.clientWidth === measuredWidth) return; measuredWidth = editor.clientWidth;
@@ -330,6 +403,8 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     focus: () => (root.classList.contains('sn-editing') ? editor.querySelector<HTMLTextAreaElement>('.sn-note-title') : search)?.focus(),
     dispose() {
       disposed = true; listRequest++; openRequest++; clearTimeout(searchTimer); clearTimeout(listRefreshTimer); session?.dispose();
+      purgeDialog?.close(); purgeDialog = null; openedSnapshot = undefined; recoveredSource = null; rows = []; drafts = [];
+      editor.replaceChildren(); list.replaceChildren(); draftList.replaceChildren();
       resizeObserver.disconnect();
       window.removeEventListener('online', online); document.removeEventListener('visibilitychange', hidden); window.removeEventListener('beforeunload', beforeUnload); root.remove();
     },

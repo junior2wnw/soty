@@ -65,6 +65,12 @@ export interface WorldAppRecord {
   ownerAccountId?: string;
   grants?: { accountIds: string[]; communityIds: string[] };
 }
+export interface WorldAssistantHandle {
+  dispose(): void;
+  refresh?(): void | Promise<void>;
+  flush?(): Promise<void>;
+  hasUnsavedChanges?(): boolean;
+}
 export interface WorldAppOptions {
   api: WorldApi;
   localAccount?: () => Promise<{ accountId: string | null; label: string }>;
@@ -72,6 +78,8 @@ export interface WorldAppOptions {
   openAccount: (tab?: 'profile' | 'people' | 'devices' | 'recovery') => void | Promise<void>;
   connectDevice: () => void | Promise<void>;
   agentCreate: (communityId?: string) => void | Promise<void>;
+  openAssistant?: (host: HTMLElement) => WorldAssistantHandle | Promise<WorldAssistantHandle>;
+  accessAvailability?: () => Promise<{ notesCreateEnabled: boolean; audience: string | null }>;
   requestContact?: (profile: WorldProfile) => void | Promise<void>;
   listDevices?: () => Promise<WorldDevice[]>;
   listApps?: (communityId?: string) => Promise<WorldAppRecord[]>;

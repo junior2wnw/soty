@@ -96,6 +96,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   app.locals.worldService = world;
   app.locals.capabilitiesService = capabilities;
+  app.get('/api/capabilities/v1/status', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null });
+  });
   app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, appJobs, notes, capabilities],
     canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
   const unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));

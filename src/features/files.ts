@@ -1,8 +1,9 @@
 import { clock } from "../core/time";
 import { icon } from "../icons";
-import { ReceivedFile } from "../sync";
+import type { ReceivedFile, PendingFileTransfer } from "../sync";
+import { maxFileBytes } from "../transport/file-transfer.mjs";
 
-export const maxFileBytes = 512_000_000;
+export { maxFileBytes };
 
 export function filesFrom(list?: FileList | null): File[] {
   return list ? Array.from(list).filter((file) => file.size <= maxFileBytes) : [];
@@ -29,7 +30,9 @@ export function renderFileRail(
   root: HTMLElement,
   files: readonly ReceivedFile[],
   color: string,
-  onDelete: (fileId: string) => void
+  onDelete: (fileId: string) => void | Promise<void>,
+  pending: readonly PendingFileTransfer[] = [],
+  onDiscard?: (fileId: string) => void | Promise<void>
 ): void {
   root.innerHTML = files.map((file) => `
     <div class="file-chip" style="--color:${color}" data-id="${escapeHtml(file.id)}">
@@ -38,7 +41,16 @@ export function renderFileRail(
         <b>${escapeHtml(file.name)}</b>
         <small>${escapeHtml(clock(new Date(file.createdAt)))}</small>
       </a>
-      <button type="button" aria-label="close" data-tooltip="Убрать файл из списка" data-id="${escapeHtml(file.id)}">${icon("close")}</button>
+      <button type="button" aria-label="Удалить файл из комнаты" data-tooltip="Удалить файл из комнаты" data-id="${escapeHtml(file.id)}">${icon("close")}</button>
+    </div>
+  `).join("") + pending.map((file) => `
+    <div class="file-chip file-chip-pending" style="--color:${color}" data-id="${escapeHtml(file.id)}">
+      <div role="group" aria-label="Незавершённая передача ${escapeHtml(file.name)}">
+        <b>${escapeHtml(file.name)}</b>
+        <small>Сохранено ${formatFileSize(file.receivedBytes)} из ${formatFileSize(file.size)}</small>
+        <progress max="${Math.max(1, file.size)}" value="${file.receivedBytes}" aria-label="Получено байт"></progress>
+      </div>
+      <button type="button" data-discard="${escapeHtml(file.id)}" aria-label="Удалить передачу ${escapeHtml(file.name)}" data-tooltip="Удалить незавершённую передачу">${icon("close")}</button>
     </div>
   `).join("");
   const byId = new Map(files.map((file) => [file.id, file]));
@@ -53,22 +65,34 @@ export function renderFileRail(
     });
   });
   root.querySelectorAll<HTMLButtonElement>("button[data-id]").forEach((button) => {
-    button.addEventListener("click", (event) => {
+    button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
       const id = button.dataset.id;
       if (id) {
-        onDelete(id);
+        button.disabled = true;
+        try { await onDelete(id); }
+        catch { button.disabled = false; button.title = 'Удаление не подтверждено. Повторить'; }
       }
+    });
+  });
+  root.querySelectorAll<HTMLButtonElement>('button[data-discard]').forEach((button) => {
+    button.disabled = !onDiscard;
+    button.addEventListener('click', async event => {
+      event.preventDefault(); event.stopPropagation();
+      if (!onDiscard || !button.dataset.discard) return;
+      button.disabled = true;
+      try { await onDiscard(button.dataset.discard); }
+      catch { button.disabled = false; button.title = 'Удаление не подтверждено. Повторить'; }
     });
   });
   installRailScroll(root);
 }
 
 export function downloadReceivedFile(file: ReceivedFile): void {
-  const body = file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer;
-  const blob = new Blob([body], { type: file.type || "application/octet-stream" });
-  const url = URL.createObjectURL(blob);
+  // The original Blob URL also supports sent files, whose legacy bytes cache is
+  // intentionally empty. Rebuilding that cache used to download an empty file.
+  const url = file.blob ? URL.createObjectURL(file.blob) : file.url;
   const link = document.createElement("a");
   link.href = url;
   link.download = file.name || "file";
@@ -77,7 +101,7 @@ export function downloadReceivedFile(file: ReceivedFile): void {
   document.body.append(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  if (file.blob) window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 function installRailScroll(root: HTMLElement): void {

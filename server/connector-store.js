@@ -193,12 +193,20 @@ class ConnectorStore {
       const projection = ownerAccountId ? { events: false, resultPreview: true } : { summary: true };
       const previous = requestKey ? this.requestIndex.get(requestKey) : null;
       if (previous) {
+        if (previous.requestIntent && auth.requestIntent && previous.requestIntent !== auth.requestIntent) return { ok: false, error: 'job-request-conflict' };
         if (previous.fingerprint !== fingerprint) return { ok: false, error: "job-request-conflict" };
         const priorJob = this.state.jobs.find((item) => item.id === previous.jobId);
         return priorJob ? { ok: true, reused: true, job: publicJob(priorJob, projection) }
           : { ok: false, error: "job-request-retired", jobId: previous.jobId };
       }
       if (requestKey && this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: "connector-request-limit" };
+      if (ownerAccountId && auth.conversationGuard === true) {
+        const conversation = this.state.jobs.filter(item => item.ownerAccountId === ownerAccountId && item.threadId === clean.threadId
+          && item.deviceId === clean.deviceId && item.requestedConnectorId === ownedConnectorId);
+        if (conversation.some(item => !terminalStatuses.has(item.status) || item.executionUncertain === true)) return { ok: false, error: 'assistant-conversation-busy' };
+        const latest = conversation.at(-1);
+        if (latest && latest.id !== auth.previousJobId) return { ok: false, error: 'assistant-conversation-stale' };
+      }
       const activeJobs = this.state.jobs.filter((job) => !terminalStatuses.has(job.status)).length;
       if (activeJobs >= maxJobs) return { ok: false, error: "connector-queue-full" };
       const job = {
@@ -227,7 +235,8 @@ class ConnectorStore {
         finishedAt: 0
       };
       this.state.jobs.push(job);
-      if (requestKey) this.state.requests = [...this.state.requests, { id: requestKey, fingerprint, jobId: job.id }];
+      if (requestKey) this.state.requests = [...this.state.requests, { id: requestKey, fingerprint, jobId: job.id,
+        ...(/^[a-f0-9]{64}$/u.test(auth?.requestIntent || '') ? { requestIntent: auth.requestIntent } : {}) }];
       this.pushEvent(job, { type: "queued", text: "Задание принято" }, now);
       this.expire(now);
       this.signal(job.linkId, job.deviceId);
@@ -246,6 +255,83 @@ class ConnectorStore {
     const access = this.authorizeJob(auth, jobId, "events", this.now());
     if (!access.ok) return access;
     return { ok: true, job: publicJob(access.job, options) };
+  }
+
+  /** Account history uses the same current device guard as signed reads, before pagination. */
+  async listOwnedJobs({ ownerAccountId, guard, canRead, limit = 30, cursor } = {}) {
+    await this.writeQueue; await this.readable();
+    if (!safeId(ownerAccountId, 160) || typeof guard !== 'function' || !guard() || typeof canRead !== 'function') return { ok: false, error: 'job-access-denied' };
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return { ok: false, error: 'invalid-page' };
+    const scope = hashToken(`assistant-history:${ownerAccountId}`);
+    let before;
+    if (cursor !== undefined) {
+      if (typeof cursor !== 'string' || cursor.length > 500) return { ok: false, error: 'invalid-page' };
+      try { before = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { return { ok: false, error: 'invalid-page' }; }
+      if (before?.scope !== scope || !Number.isSafeInteger(before.at) || !safeId(before.id, 160)) return { ok: false, error: 'invalid-page' };
+    }
+    const values = this.state.jobs.filter(job => job.ownerAccountId === ownerAccountId && job.kind === 'agent'
+      && (() => { try { return canRead({ hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId }) === true; } catch { return false; } })()
+      && (!before || job.createdAt < before.at || (job.createdAt === before.at && job.id < before.id)))
+      .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    const page = values.slice(0, limit), last = page.at(-1);
+    if (!guard()) return { ok: false, error: 'job-access-denied' };
+    return { ok: true, jobs: page.map(job => ({ id: job.id, hostDeviceId: job.deviceId, connectorId: job.requestedConnectorId,
+      threadId: job.threadId, text: job.input.text.slice(0, 180), cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
+      status: job.status, cancelRequested: job.cancelRequested, executionUncertain: job.executionUncertain === true,
+      createdAt: new Date(job.createdAt).toISOString(), updatedAt: new Date(job.updatedAt).toISOString() })),
+      nextCursor: values.length > limit ? Buffer.from(JSON.stringify({ scope, at: last.createdAt, id: last.id })).toString('base64url') : null };
+  }
+
+  async getOwnedContinuation(auth, jobId, options) {
+    await this.writeQueue; await this.readable();
+    if (typeof options.guard !== 'function' || !options.guard()) return null;
+    const job = this.findOwnedJob(auth, jobId, options);
+    if (!job || !terminalStatuses.has(job.status) || job.executionUncertain === true || job.kind !== 'agent' || job.input.output === 'local-app' || !job.result?.sessionId) return null;
+    return { threadId: job.threadId, cwd: job.input.cwd, sessionId: job.result.sessionId };
+  }
+
+  async getOwnedTask(auth, jobId, options) {
+    await this.writeQueue; await this.readable();
+    if (typeof options.guard !== 'function' || !options.guard()) return null;
+    const job = this.findOwnedJob(auth, jobId, options);
+    if (!job || job.kind !== 'agent') return null;
+    return { text: job.input.text, cwd: job.input.cwd, appCreation: job.input.output === 'local-app',
+      canContinue: terminalStatuses.has(job.status) && job.executionUncertain !== true && job.input.output !== 'local-app' && Boolean(job.result?.sessionId) };
+  }
+
+  async getOwnedRequest(auth, options) {
+    await this.writeQueue; await this.readable();
+    if (!safeId(options.ownerAccountId, 160) || !safeId(options.requestId, 160) || !/^[a-f0-9]{64}$/u.test(options.requestIntent || '')
+      || typeof options.guard !== 'function' || !options.guard()) return { ok: false, error: 'job-access-denied' };
+    const previous = this.requestIndex.get(hashToken(JSON.stringify(['account', options.ownerAccountId, options.requestId])));
+    if (!previous) return { ok: true, found: false };
+    if (!previous.requestIntent) return { ok: false, error: 'job-request-unverifiable' };
+    if (previous.requestIntent !== options.requestIntent) return { ok: false, error: 'job-request-conflict' };
+    if (previous.rejection) return { ok: true, found: true, admission: { status: 'rejected', requestId: options.requestId, reason: previous.rejection } };
+    const job = this.findOwnedJob(auth, previous.jobId, options);
+    if (!job) return { ok: false, error: 'job-request-retired' };
+    return { ok: true, found: true, reused: true, job: publicJob(job, { events: false, resultPreview: true }) };
+  }
+
+  async rejectOwnedRequest(auth, options, reason) {
+    return this.mutate(() => {
+      if (typeof options.guard !== 'function' || !options.guard() || !safeId(options.ownerAccountId, 160)
+        || !safeId(options.requestId, 160) || !/^[a-f0-9]{64}$/u.test(options.requestIntent || '') || !/^[a-z_]{3,80}$/u.test(reason)) return { ok: false, error: 'job-access-denied' };
+      const key = hashToken(JSON.stringify(['account', options.ownerAccountId, options.requestId]));
+      const previous = this.requestIndex.get(key);
+      if (previous) {
+        if (previous.requestIntent !== options.requestIntent) return { ok: false, error: 'job-request-conflict' };
+        if (previous.rejection) return { ok: true, admission: { status: 'rejected', requestId: options.requestId, reason: previous.rejection } };
+        const job = this.findOwnedJob(auth, previous.jobId, options);
+        return job ? { ok: true, reused: true, job: publicJob(job, { events: false, resultPreview: true }) } : { ok: false, error: 'job-request-retired' };
+      }
+      if (this.state.requests.length >= this.maxRequestRecords) return { ok: false, error: 'connector-request-limit' };
+      // A rejection is an immutable receipt too. A racing request with this ID
+      // can never turn it into a later execution after the UI has corrected it.
+      this.state.requests = [...this.state.requests, { id: key, fingerprint: options.requestIntent, requestIntent: options.requestIntent,
+        jobId: `rejected_${randomUUID().replaceAll('-', '')}`, rejection: reason }];
+      return { ok: true, admission: { status: 'rejected', requestId: options.requestId, reason } };
+    });
   }
 
   async getAssignedConnectorJob(auth, jobId) {
@@ -702,6 +788,8 @@ export function normalizeConnectorState(value) {
   }
   state.requests = value.requests || [];
   if (!Array.isArray(state.requests) || state.requests.some((item) => !/^[a-f0-9]{64}$/u.test(item.id) || !/^[a-f0-9]{64}$/u.test(item.fingerprint) || !safeId(item.jobId,160))) throw new Error("Invalid request identity history");
+  if (state.requests.some(item => item.requestIntent !== undefined && !/^[a-f0-9]{64}$/u.test(item.requestIntent))) throw new Error('Invalid request intent history');
+  if (state.requests.some(item => item.rejection !== undefined && (!item.requestIntent || !/^[a-z_]{3,80}$/u.test(item.rejection)))) throw new Error('Invalid request rejection history');
   if (new Set(state.requests.map((item) => item.id)).size !== state.requests.length) throw new Error("Duplicate request identities");
   state.connectors = Array.isArray(value.connectors)
     ? value.connectors.filter(validStoredConnector).map(normalizeStoredConnector)
@@ -888,6 +976,8 @@ function connectorJob(job) {
 }
 
 function publicJob(job, options = {}) {
+  let result = job.result;
+  if (job.ownerAccountId && result) { const { sessionId, ...visible } = result; result = visible; }
   return {
     schema: job.schema,
     id: job.id,
@@ -899,9 +989,9 @@ function publicJob(job, options = {}) {
     cancelRequested: job.cancelRequested,
     executionUncertain: job.executionUncertain === true,
     connectorId: job.connectorId,
-    result: options.summary && job.result ? { ...job.result, text: "", textOmitted: true }
-      : job.result && options.resultPreview && job.result.text.length > 32_000
-        ? { ...job.result, text: job.result.text.slice(0, 32_000), textTruncated: true, textLength: job.result.text.length } : job.result,
+    result: options.summary && result ? { ...result, text: "", textOmitted: true }
+      : result && options.resultPreview && result.text.length > 32_000
+        ? { ...result, text: result.text.slice(0, 32_000), textTruncated: true, textLength: result.text.length } : result,
     ...(options.events === false || options.summary ? {} : { events: job.events.map(publicEvent) }),
     ...(options.summary ? { artifactUrl: `/api/connectors/jobs/${job.id}?view=full` } : {}),
     createdAt: new Date(job.createdAt).toISOString(),

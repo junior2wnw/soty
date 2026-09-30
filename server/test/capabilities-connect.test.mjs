@@ -123,3 +123,15 @@ test('a real issuer device revoke invalidates credentials and signed management 
   assert.equal(denied(await f.call(phone, 'access.principals.list', { expectedAccountId: account.accountId })), 'device_revoked');
   assert.equal(good(await f.call(owner, 'access.principals.list', { expectedAccountId: account.accountId })).principals.length, 1);
 });
+
+test('the real signed app route accepts the account-bound UI and rejects an old view after an account change', async t => {
+  const f = await fixture(t);
+  const alice = identity('App owner'), bob = identity('Another account');
+  const a = await f.bootstrap(alice), b = await f.bootstrap(bob);
+  assert.deepEqual(good(await f.call(alice, 'apps.devices', { expectedAccountId: a.accountId })).devices, []);
+  assert.deepEqual(good(await f.call(alice, 'apps.list', { expectedAccountId: a.accountId })).apps, []);
+  assert.deepEqual(good(await f.call(bob, 'apps.devices', { expectedAccountId: b.accountId })).devices, []);
+  assert.equal(denied(await f.call(bob, 'apps.devices', { expectedAccountId: a.accountId })), 'authentication_required');
+  assert.equal(denied(await f.call(bob, 'apps.revoke', { expectedAccountId: a.accountId, appId: 'app-00000000000000000000000000000000' })), 'authentication_required');
+  assert.equal(denied(await f.call(alice, 'apps.devices', { expectedAccountId: a.accountId, extra: true })), 'unexpected_argument');
+});

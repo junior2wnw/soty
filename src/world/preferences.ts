@@ -1,5 +1,5 @@
 import { normalizeTheme, type ThemePreferences } from './theme/palette.mjs';
-export type WorldView = 'world' | 'mine' | 'messages' | 'notes' | 'library';
+export type WorldView = 'world' | 'mine' | 'messages' | 'notes' | 'library' | 'assistant' | 'access';
 export interface WorldPreferences extends ThemePreferences { view: WorldView; presentation: 'field' | 'list'; scale: number; compact: boolean; motion: boolean; pinned: string[]; }
 const key = 'soty.world.ui.v1';
 const defaults: WorldPreferences = { view: 'mine', presentation: 'field', scale: 1, compact: false, motion: true, pinned: [], themeMode: 'system', themeBrightness: 50 };
@@ -8,7 +8,7 @@ export function loadPreferences(): WorldPreferences {
   try {
     const value = JSON.parse(localStorage.getItem(key) ?? '{}') as Partial<WorldPreferences>;
     return {
-      view: ['world', 'mine', 'messages', 'notes', 'library'].includes(value.view ?? '') ? value.view! : defaults.view,
+      view: ['world', 'mine', 'messages', 'notes', 'library', 'assistant', 'access'].includes(value.view ?? '') ? value.view! : defaults.view,
       presentation: value.presentation === 'list' ? 'list' : 'field',
       scale: typeof value.scale === 'number' && Number.isFinite(value.scale) ? Math.max(0.65, Math.min(1.4, value.scale)) : 1,
       compact: value.compact === true,

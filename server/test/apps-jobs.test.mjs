@@ -107,6 +107,89 @@ function target(f, jobId, extra = {}) {
   return { hostDeviceId: f.host.hostDeviceId, connectorId: f.host.connectorId, jobId, ...extra };
 }
 
+test('the personal assistant resumes only its own finished session and history is filtered before pagination', async t => {
+  const f = await setup(t);
+  const args = { ...f.createArgs, requestId: 'assistant-first-turn', expectedAccountId: f.accountId, conversationId: 'conversation-one' };
+  const first = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', args));
+  assert.equal((await invoke(f.service, f.owner, 'apps.assistant.send', args)).job.id, first.job.id);
+  const firstLease = await f.store.poll(f.auth, 0);
+  assert.equal(firstLease.jobs[0].input.output, undefined, 'an ordinary request must not silently become app creation');
+  assert.equal(firstLease.jobs[0].threadId, 'assistant_conversation-one');
+  const premature = await invoke(f.service, f.owner, 'apps.assistant.send', { ...args, requestId: 'assistant-premature', previousJobId: first.job.id });
+  assert.equal(premature.admission.reason, 'assistant_continuation_unavailable');
+  await f.store.finishJob(f.auth, first.job.id, { ok: true, exitCode: 0, text: 'Проверено', sessionId: 'session_server_verified' });
+  const nextArgs = { ...args, requestId: 'assistant-second-turn', previousJobId: first.job.id, text: 'Продолжи' };
+  const second = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', nextArgs));
+  assert.notEqual(second.job.id, first.job.id);
+  assert.equal((await f.store.poll(f.auth, 0)).jobs[0].input.sessionId, 'session_server_verified');
+  for (const [index, changed] of [{ conversationId: 'conversation-other' }, { cwd: 'C:\\another-project' }, { sessionId: 'caller-chosen' }].entries()) {
+    const reply = await invoke(f.service, f.owner, 'apps.assistant.send', { ...nextArgs, requestId: `invalid-continuation-${index}`, ...changed });
+    assert.ok(reply.ok === false || reply.admission?.status === 'rejected');
+  }
+  const page = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.history', { expectedAccountId: f.accountId, limit: 1 }));
+  assert.equal(page.jobs.length, 1); assert.ok(page.nextCursor);
+  const rest = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.history', { expectedAccountId: f.accountId, limit: 1, cursor: page.nextCursor }));
+  assert.equal(rest.jobs.length, 1); assert.notEqual(rest.jobs[0].id, page.jobs[0].id);
+  assert.equal(rest.nextCursor, null);
+  assert.equal(JSON.stringify(page).includes('session_server_verified'), false);
+  const strangerAccount = (await invoke(f.service, f.stranger, 'status')).accountId;
+  assert.deepEqual(boundedReply(await invoke(f.service, f.stranger, 'apps.assistant.history', { expectedAccountId: strangerAccount })).jobs, []);
+  assert.equal((await invoke(f.service, f.stranger, 'apps.assistant.history', { expectedAccountId: f.accountId })).ok, false);
+  assert.equal((await invoke(f.service, f.stranger, 'apps.assistant.history', { expectedAccountId: strangerAccount, cursor: page.nextCursor })).ok, false);
+  f.disable();
+  assert.deepEqual(boundedReply(await invoke(f.service, f.owner, 'apps.assistant.history', { expectedAccountId: f.accountId })).jobs, []);
+});
+
+test('lost ACK replay precedes changing model readiness; rejected requests stay non-executable after recovery', async t => {
+  const f = await setup(t);
+  const args = { ...f.createArgs, expectedAccountId: f.accountId, conversationId: 'conversation-replay' };
+  const first = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', args));
+  f.setInferenceReady(false);
+  const replay = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', args));
+  assert.equal(replay.job.id, first.job.id); assert.equal(f.store.state.jobs.length, 1);
+  const rejectedArgs = { ...args, conversationId: 'conversation-rejected', requestId: 'request-rejected' };
+  const rejected = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', rejectedArgs));
+  assert.equal(rejected.admission.status, 'rejected'); assert.equal(rejected.admission.requestId, rejectedArgs.requestId);
+  f.setInferenceReady(true);
+  assert.deepEqual(boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', rejectedArgs)).admission, rejected.admission);
+  assert.equal(f.store.state.jobs.length, 1, 'a receipt of rejection must never turn into an effect');
+  const changed = await invoke(f.service, f.owner, 'apps.assistant.send', { ...args, text: 'Другое намерение' });
+  assert.equal(changed.error.code, 'job_request_conflict');
+  const accepted = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', { ...rejectedArgs, requestId: 'corrected-request' }));
+  assert.ok(accepted.job.id); assert.equal(f.store.state.jobs.length, 2);
+  await f.store.close();
+  const reopened = createConnectorStore(dirname(f.store.filePath));
+  try {
+    await reopened.readable();
+    assert.equal(reopened.state.requests.filter(value => value.rejection).length, 1);
+    assert.equal(normalizeConnectorState(structuredClone(reopened.state)).requests.length, 3);
+  } finally { await reopened.close(); }
+});
+
+test('parallel continuations serialize one conversation; session IDs stay internal and throwing revoked-device filters cannot break history', async t => {
+  const f = await setup(t);
+  const args = { ...f.createArgs, expectedAccountId: f.accountId, requestId: 'initial-conversation', conversationId: 'conversation-serial' };
+  const first = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', args));
+  await f.store.poll(f.auth, 0);
+  await f.store.finishJob(f.auth, first.job.id, { ok: true, text: 'Первый ответ', sessionId: 'internal-session-value' });
+  for (const op of ['apps.agent.read', 'apps.agent.cancel']) {
+    const reply = boundedReply(await invoke(f.service, f.owner, op, target(f, first.job.id)));
+    assert.equal(JSON.stringify(reply).includes('internal-session-value'), false);
+    if (op === 'apps.agent.read') { assert.equal(reply.task.text, args.text); assert.equal(reply.task.canContinue, true); }
+  }
+  const next = { ...args, previousJobId: first.job.id, text: 'Продолжи' };
+  const replies = await Promise.all(['parallel-first', 'parallel-second'].map(requestId => invoke(f.service, f.owner, 'apps.assistant.send', { ...next, requestId })));
+  assert.equal(replies.filter(reply => reply.job).length, 1);
+  assert.equal(replies.filter(reply => reply.admission?.reason === 'assistant_conversation_busy').length, 1);
+  const active = replies.find(reply => reply.job);
+  await f.store.poll(f.auth, 0); await f.store.finishJob(f.auth, active.job.id, { ok: true, text: 'Второй ответ', sessionId: 'internal-session-value' });
+  const stale = boundedReply(await invoke(f.service, f.owner, 'apps.assistant.send', { ...next, requestId: 'stale-predecessor' }));
+  assert.equal(stale.admission.reason, 'assistant_conversation_stale');
+  const history = await f.store.listOwnedJobs({ ownerAccountId: f.accountId, guard: () => true,
+    canRead: () => { throw new Error('apps_device_not_owned'); } });
+  assert.equal(history.ok, true); assert.deepEqual(history.jobs, []);
+});
+
 test('large escaped job output remains bounded through signed cancellation, replay, events and complete result pages', async t => {
   const f = await setup(t);
   const created = boundedReply(await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs));
@@ -236,19 +319,23 @@ test('each signed output page and cancellation checks the selected owner, device
 test('unavailable inference prevents new jobs while existing results and cancellation remain accessible', async t => {
   const f = await setup(t);
   f.setInferenceReady(false);
-  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs)).error?.code, 'app_model_unavailable');
+  const rejected = boundedReply(await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs));
+  assert.deepEqual(rejected.admission, { status: 'rejected', requestId: f.createArgs.requestId, reason: 'app_model_unavailable' });
   assert.equal(f.store.state.jobs.length, 0);
   f.setInferenceReady(true);
-  const created = await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs);
+  assert.deepEqual(boundedReply(await invoke(f.service, f.owner, 'apps.agent.create', f.createArgs)).admission, rejected.admission, 'a definitive rejection cannot become an accepted job after readiness changes');
+  const acceptedArgs = { ...f.createArgs, requestId: 'accepted-after-model-recovery' };
+  const created = await invoke(f.service, f.owner, 'apps.agent.create', acceptedArgs);
   const jobId = created.job.id;
   assert.equal((await f.store.poll(f.auth, 0)).jobs[0].id, jobId);
   assert.equal((await f.store.finishJob(f.auth, jobId, { ok: true, text: 'Created before inference went offline', exitCode: 0 })).ok, true);
   const pending = await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, requestId: 'queued-before-inference-offline' });
   f.setInferenceReady(false);
+  assert.equal(boundedReply(await invoke(f.service, f.owner, 'apps.agent.create', acceptedArgs)).job.id, jobId, 'a lost acceptance ACK is found before mutable readiness');
   const read = boundedReply(await invoke(f.service, f.owner, 'apps.agent.read', target(f, jobId)));
   assert.equal(read.done, true);
   assert.equal((await invoke(f.service, f.owner, 'apps.agent.result', target(f, jobId))).text, 'Created before inference went offline');
   assert.equal((await invoke(f.service, f.owner, 'apps.agent.cancel', target(f, pending.job.id))).job.status, 'cancelled');
-  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, requestId: 'must-not-queue' })).error?.code, 'app_model_unavailable');
+  assert.equal((await invoke(f.service, f.owner, 'apps.agent.create', { ...f.createArgs, requestId: 'must-not-queue' })).admission?.reason, 'app_model_unavailable');
   assert.equal(f.store.state.jobs.length, 2);
 });

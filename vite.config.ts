@@ -30,7 +30,10 @@ export default defineConfig({
         };
         const worldEntries = Object.values(bundle).filter(item => item.type === 'chunk' && (item.isEntry || ['/platform/world-adapter.ts', '/world/notes.ts'].some(path => item.facadeModuleId?.replaceAll('\\', '/').endsWith(path)))).map(item => item.fileName);
         const classicEntries = Object.values(bundle).filter(item => item.type === 'chunk' && item.facadeModuleId?.replaceAll('\\', '/').endsWith('/src/main.ts')).map(item => item.fileName);
-        const assets = graph(worldEntries);
+        // CSS font URLs are assets, not JS imports. Keep the new local typeface
+        // available with the offline shell from the first successful install.
+        const fonts = Object.keys(bundle).filter(name => /\.(woff2?|otf|ttf)$/.test(name));
+        const assets = [...new Set([...graph(worldEntries), ...fonts])].sort();
         const classicAssets = graph(classicEntries);
         const workerSource = readFileSync(new URL("./public/sw.js", import.meta.url), "utf8");
         const digest = createHash("sha256").update(workerSource);

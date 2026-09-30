@@ -3,6 +3,7 @@ import { icon } from './icons';
 import { entityId, entityName, worldColor, type WorldEntity, type WorldCommunity } from './types';
 import { HEX_FLOWER, hexCluster, polygonPoints } from '../geometry/hex.mjs';
 import { placeHex } from '../geometry/dom';
+import { createFieldLayoutState, stableFieldLayout, type FieldLayoutState } from './field-layout.mjs';
 
 const ISLAND = hexCluster(HEX_FLOWER, 44, 6, 14);
 const COMPACT_ISLAND = hexCluster(HEX_FLOWER, 25, 4, 8);
@@ -61,9 +62,11 @@ export function communityIsland(community: WorldCommunity, selected = false, com
 
 interface Position { entity: WorldEntity; x: number; y: number; width: number; height: number; }
 export interface HexField { element: HTMLElement; update(entities: WorldEntity[], selectedId?: string): void; setScale(scale: number): void; destroy(): void; }
+export interface HexFieldState { layout: FieldLayoutState; scrollLeft: number; scrollTop: number; }
+export function createHexFieldState(): HexFieldState { return { layout: createFieldLayoutState(), scrollLeft: 0, scrollTop: 0 }; }
 
 /** Native scrolling preserves touch panning and browser pinch zoom; rendering is viewport bounded. */
-export function createHexField(onSelect: (entity: WorldEntity) => void, initialScale = 1): HexField {
+export function createHexField(onSelect: (entity: WorldEntity) => void, initialScale = 1, state = createHexFieldState()): HexField {
   const viewport = el('div', 'sw-world-viewport');
   viewport.setAttribute('aria-label', 'Поле людей и сообществ');
   const dimensions = el('div', 'sw-world-dimensions');
@@ -73,7 +76,6 @@ export function createHexField(onSelect: (entity: WorldEntity) => void, initialS
   dimensions.append(plane); viewport.append(dimensions);
   let entities: WorldEntity[] = [], positions: Position[] = [], selectedId = '', focusedId = '';
   let zoom = initialScale, scale = initialScale, raf = 0, columns = 2, compact = false, destroyed = false;
-  const slots = new Map<string, number>();
   const nodes = new Map<string, HTMLElement>();
   const controller = new AbortController();
   const signal = controller.signal;
@@ -85,24 +87,22 @@ export function createHexField(onSelect: (entity: WorldEntity) => void, initialS
     const islandWidth = compact ? Math.max(COMPACT_ISLAND.width + 92, logicalWidth - FIELD_PADDING * 2) : ISLAND.width;
     const islandHeight = compact ? COMPACT_ISLAND.height : ISLAND_HEIGHT;
     columns = compact ? 1 : Math.max(1, Math.min(4, Math.floor((logicalWidth - FIELD_PADDING * 2 + ISLAND_GAP) / (islandWidth + ISLAND_GAP))));
-    const communities = entities.filter(entity => entity.type === 'community');
-    const people = entities.filter(entity => entity.type === 'person');
-    communities.forEach(entity => { if (!slots.has(entityId(entity))) slots.set(entityId(entity), slots.size); });
-    const stable = [...communities].sort((a, b) => slots.get(entityId(a))! - slots.get(entityId(b))!);
     const width = Math.max(FIELD_PADDING * 2 + columns * islandWidth + (columns - 1) * ISLAND_GAP, logicalWidth);
     const pitch = (width - FIELD_PADDING * 2 + ISLAND_GAP) / columns;
     const firstColumnInset = FIELD_PADDING + (pitch - ISLAND_GAP - islandWidth) / 2;
-    positions = stable.map((entity, index) => ({ entity,
-      x: stable.length === 1 ? (logicalWidth - islandWidth) / 2 : firstColumnInset + (index % columns) * pitch,
-      y: FIELD_PADDING + Math.floor(index / columns) * (islandHeight + ISLAND_GAP), width: islandWidth, height: islandHeight }));
-    const peopleTop = communities.length ? FIELD_PADDING + Math.ceil(communities.length / columns) * (islandHeight + ISLAND_GAP) : FIELD_PADDING;
     const peopleColumns = Math.max(2, Math.floor((width - FIELD_PADDING * 2) / 124));
     const peoplePitch = (width - FIELD_PADDING * 2) / peopleColumns;
-    people.forEach((entity, index) => positions.push({ entity, x: FIELD_PADDING + (index % peopleColumns) * peoplePitch, y: peopleTop + Math.floor(index / peopleColumns) * 130, width: 112, height: 118 }));
-    const height = Math.max(viewport.clientHeight / scale, ...positions.map(position => position.y + position.height + FIELD_PADDING + 64 / scale));
+    const byId = new Map(entities.map(entity => [entityId(entity), entity]));
+    positions = stableFieldLayout(state.layout, entities.map(entity => ({ id: entityId(entity), type: entity.type })), {
+      padding: FIELD_PADDING, gap: ISLAND_GAP,
+      community: { left: firstColumnInset, columns, pitch, width: islandWidth, height: islandHeight },
+      person: { left: FIELD_PADDING, columns: peopleColumns, pitch: peoplePitch, width: 112, height: 118 },
+    }).map(position => ({ ...position, entity: byId.get(position.id)! }));
+    const height = Math.max(viewport.clientHeight / scale, state.layout.bottom + FIELD_PADDING + 64 / scale);
     dimensions.style.width = `${width * scale}px`; dimensions.style.height = `${height * scale}px`;
     plane.style.width = `${width}px`; plane.style.height = `${height}px`;
     plane.style.transform = `scale(${scale})`;
+    viewport.scrollLeft = state.scrollLeft; viewport.scrollTop = state.scrollTop;
     render();
   }
 
@@ -149,7 +149,7 @@ export function createHexField(onSelect: (entity: WorldEntity) => void, initialS
   }
 
   function schedule(): void { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); }
-  viewport.addEventListener('scroll', schedule, { passive: true, signal });
+  viewport.addEventListener('scroll', () => { state.scrollLeft = viewport.scrollLeft; state.scrollTop = viewport.scrollTop; schedule(); }, { passive: true, signal });
   plane.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
     const current = positions.find(position => entityId(position.entity) === focusedId) ?? positions[0];
@@ -188,13 +188,10 @@ export function createHexField(onSelect: (entity: WorldEntity) => void, initialS
     element: viewport,
     update(next, selected = '') {
       const incoming = new Set(next.map(entityId));
-      // Keep existing relative order only within this page. Compact ranks before assigning new ones.
-      const retained = [...slots].filter(([id]) => incoming.has(id)).sort((a, b) => a[1] - b[1]);
-      slots.clear(); retained.forEach(([id], index) => slots.set(id, index));
       if (!incoming.has(focusedId)) focusedId = '';
       entities = next; selectedId = selected; layout();
     },
     setScale(next) { zoom = Math.max(0.65, Math.min(1.4, next)); layout(); },
-    destroy() { destroyed = true; controller.abort(); resize.disconnect(); if (raf) cancelAnimationFrame(raf); nodes.clear(); slots.clear(); },
+    destroy() { state.scrollLeft = viewport.scrollLeft; state.scrollTop = viewport.scrollTop; destroyed = true; controller.abort(); resize.disconnect(); if (raf) cancelAnimationFrame(raf); nodes.clear(); },
   };
 }

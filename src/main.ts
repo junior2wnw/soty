@@ -2,7 +2,7 @@ import QRCode from "qrcode";
 import { getPwaController, registerUpdateGuard, watchFormEdits } from './platform/pwa';
 import { createLegacyDraftStore } from './platform/legacy-drafts.mjs';
 import jsQR from "jsqr";
-import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
+import { JoinRequest, LiveDraft, NoticeKnock, PeerInfo, ReceivedFile, PendingFileTransfer, RemoteCancel, RemoteCommand, RemoteGrant, RemoteOutput, RemoteRequest, RemoteScript, SyncedChessState, TerminalSnapshot, TunnelSync, WriterActivity } from "./sync";
 import { icon } from "./icons";
 import { colorFor, safeColor } from "./core/color";
 import { clock } from "./core/time";
@@ -14,7 +14,9 @@ import { accountTransferButtonWidth, accountTransferChoices, accountTransferOper
 import type { AccountTransferOperation, AccountTransferRootAction, AccountTransferStage } from "./features/account-transfer";
 import { initializeConnect, showConnect, hasPendingConnect, isConnectLink } from "./features/connect";
 import { idbSet } from "./trustlink/storage";
+import { createCommandFileTransfer, type CommandFileTransfer } from "./platform/command-file-transfer.mjs";
 import { downloadReceivedFile, filesFrom, formatFileSize, maxFileBytes, oversizedFilesFrom, renderFileRail } from "./features/files";
+import { FileTransferError } from './transport/file-transfer.mjs';
 import { clearRemoteSessionState, loadConnectorAccess, loadIssuedConnectorAccess, loadRemoteAccess, loadRemoteEnabled, setConnectorAccess, setIssuedConnectorAccess, setRemoteAccess, setRemoteEnabled } from "./features/remote";
 import { capabilitiesAllowTraffic, clearTrafficState, loadTrafficAccess, loadTrafficShare, setTrafficAccess, setTrafficShare, trafficGrantCapabilities, trafficModeFromCapabilities } from "./features/traffic";
 import { adoptTrafficProfileFromUrl, provisionTraffic, provisionTrafficClient, readTrafficProfile, revokeTrafficClient, saveTrafficProfile, stopTraffic, trafficFabricStatus, trafficInterfaces, trafficProfileInviteUrl, trafficServerStatus } from "./features/traffic-fabric";
@@ -53,8 +55,10 @@ import {
   tunnelFromAcceptedJoin,
   upsertTunnel
 } from "./trustlink";
-import "./style.css";
+import "./platform/rooms.css";
+import './platform/file-progress.css';
 import { chooseTool, toolsNavigation, type ToolChoice } from './platform/tools-shell';
+import { createWorkspaceDialog, showWorkspaceDialog } from './platform/workspace-dialog';
 import type { Color, Move, PieceSymbol, Square } from "chess.js";
 
 type BarcodeResult = {
@@ -201,7 +205,10 @@ const remoteGrantMutations = new Map<string, Promise<boolean>>();
 const remoteGrantCloseCounts = new Map<string, number>();
 const syncStates = new Map<string, "open" | "closed" | "connecting">();
 const files = new Map<string, ReceivedFile[]>();
+const pendingFiles = new Map<string, readonly PendingFileTransfer[]>();
+const fileDeletions = new Map<string, Promise<void>>();
 const fileNotices = new Map<string, { readonly text: string; readonly until: number }>();
+const fileNoticeTimers = new Map<string, number>();
 const localDrafts = createLegacyDraftStore({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), removeItem: key => localStorage.removeItem(key) }, () => device?.id ?? '');
 const liveDrafts = new Map<string, Map<string, LiveDraftState>>();
 const liveDraftTimers = new Map<string, number>();
@@ -213,7 +220,7 @@ let issuedConnectorAccess = loadIssuedConnectorAccess();
 let trafficShare = loadTrafficShare();
 let trafficAccess = loadTrafficAccess();
 let trafficProfileWasAdopted = false;
-let trafficModal: HTMLDivElement | null = null;
+let trafficModal: HTMLDialogElement | null = null;
 let trafficLastProfile = "";
 let terminalOpenId = "";
 const terminalLogs = new Map<string, string[]>();
@@ -428,8 +435,8 @@ let joinCompleted = false;
 let joinWakeCleanup: (() => void) | null = null;
 const joinHeartbeatIntervalMs = 8000;
 const joinStaleMs = 22_000;
-let qrOverlay: HTMLDivElement | null = null;
-let actionOverlay: HTMLDivElement | null = null;
+let qrOverlay: HTMLDialogElement | null = null;
+let actionOverlay: HTMLDialogElement | null = null;
 let actionSearchText = "";
 let qrMode: "manual" | "auto" | null = null;
 let qrResetClicks = 0;
@@ -438,21 +445,8 @@ let qrScanStream: MediaStream | null = null;
 let qrScanFrame = 0;
 let terminalCollapsed = loadTerminalCollapsed();
 const localAgentRuns = new Map<string, AbortController>();
-type SotyFileStreamState = {
-  readonly tunnelId: string;
-  readonly commandId: string;
-  readonly fileId: string;
-  readonly name: string;
-  readonly type: string;
-  readonly size: number;
-  readonly total: number;
-  readonly autoDownload: boolean;
-  readonly delivery: string;
-  readonly sourceCommandId: string;
-  sent: number;
-};
-const sotyFileLineBuffers = new Map<string, string>();
-const sotyFileStreams = new Map<string, SotyFileStreamState>();
+const commandFileTransfers = new Map<string, CommandFileTransfer>();
+let activeFileSends = 0;
 const agentReplyQueues = new Map<string, Promise<LocalAgentReply | null | void>>();
 const agentReplyControllers = new Map<string, AbortController>();
 const agentThinking = new Set<string>();
@@ -484,7 +478,7 @@ window.addEventListener("online", () => {
 
 window.addEventListener('beforeunload', event => {
   if (device && selectedId && composer) { if (composer.value) localDrafts.set(selectedId, composer.value); else localDrafts.delete(selectedId); }
-  if (!localDrafts.flush()) { event.preventDefault(); event.returnValue = ''; }
+  if (!localDrafts.flush() || activeFileSends > 0 || fileDeletions.size > 0 || commandFileTransfers.size > 0) { event.preventDefault(); event.returnValue = ''; }
 });
 
 let pwaGuardRegistered = false;
@@ -673,7 +667,7 @@ async function registerServiceWorker(): Promise<void> {
   pwaGuardRegistered = true;
   const pwa = getPwaController(), edits = watchFormEdits();
   const unguard = registerUpdateGuard(async () => {
-    if (!localDrafts.flush() || composer?.value || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream || edits.hasUnsavedChanges()) return false;
+    if (!localDrafts.flush() || composer?.value || activeFileSends > 0 || fileDeletions.size > 0 || commandFileTransfers.size > 0 || localAgentRuns.size || agentReplyControllers.size || voiceRecognition || qrScanStream || edits.hasUnsavedChanges()) return false;
     await idbSet('connect:before-update:v1', buildConnectSnapshot());
     for (const [id, value] of texts) saveTextSnapshotNow(id, value);
     return true;
@@ -722,7 +716,7 @@ function renderNick(): void {
     <section class="nick-screen">
       <form class="nick-form">
         <span>${icon("person")}</span>
-        <input name="nick" maxlength="32" autocomplete="nickname" autofocus />
+        <input name="nick" maxlength="32" autocomplete="nickname" autofocus aria-label="Имя в комнатах" />
         <button class="restore-button" type="button" aria-label="Восстановить копию" data-tooltip="Восстановить backup Сот">${icon("upload")}</button>
         <button type="submit" aria-label="Сохранить" data-tooltip="Сохранить имя">${icon("check")}</button>
         <input class="restore-file" type="file" accept="application/json,.json" />
@@ -1181,10 +1175,9 @@ function openActionMenu(): void {
   const comment = selectedId
     ? normalizeChatMessage(composer?.value || localDrafts.get(selectedId) || "")
     : "";
-  const overlay = document.createElement("div");
-  overlay.className = "action-modal";
+  const overlay = createWorkspaceDialog('action-modal', 'Действия', closeActionMenu);
   overlay.innerHTML = `
-    <section class="action-sheet" role="dialog" aria-modal="true" aria-label="Действия">
+    <section class="action-sheet">
       <header class="action-head">
         <span class="action-mark">${icon("check")}</span>
         <span>
@@ -1193,7 +1186,7 @@ function openActionMenu(): void {
         </span>
         <button class="action-close icon-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть">${icon("close")}</button>
       </header>
-      <input class="action-search" type="search" value="${escapeHtml(actionSearchText)}" placeholder="что сделать" />
+        <input class="action-search" type="search" aria-label="Найти действие" value="${escapeHtml(actionSearchText)}" placeholder="что сделать" />
       ${comment ? `<div class="action-comment"><b>Комментарий</b><span>${escapeHtml(comment.slice(0, 180))}</span></div>` : ""}
       <div class="action-list">
         ${actions.map((action) => quickActionRowHtml(action)).join("")}
@@ -1201,7 +1194,7 @@ function openActionMenu(): void {
       ${actions.length === 0 ? `<output class="action-empty">Ничего не найдено</output>` : ""}
     </section>
   `;
-  document.body.append(overlay);
+  showWorkspaceDialog(overlay, '.action-search');
   actionOverlay = overlay;
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay) {
@@ -1223,7 +1216,7 @@ function openActionMenu(): void {
 }
 
 function closeActionMenu(): void {
-  actionOverlay?.remove();
+  actionOverlay?.close();
   actionOverlay = null;
 }
 
@@ -1584,7 +1577,7 @@ function renderApp(): void {
         <button class="qr-open retro-icon-button" type="button" aria-label="Показать QR-код" data-tooltip="Показать QR для подключения">${icon("qr")}</button>
         <div class="hex-field"></div>
       </aside>
-      <main class="dialog-shell">
+      <main class="dialog-shell" id="tools-workspace" tabindex="-1">
         <header class="dialog-head">
           <span class="dialog-avatar">.</span>
           <span class="dialog-copy">
@@ -1630,7 +1623,7 @@ function renderApp(): void {
           <div class="terminal-output"></div>
           <form class="terminal-form">
             <span>$</span>
-            <input autocomplete="off" autocapitalize="off" spellcheck="false" data-tooltip="off" />
+            <input autocomplete="off" autocapitalize="off" spellcheck="false" data-tooltip="off" aria-label="Команда на подключённом устройстве" />
             <button type="submit" aria-label="Выполнить команду" data-tooltip="Выполнить команду">${icon("check")}</button>
           </form>
         </div>
@@ -2728,8 +2721,8 @@ function renderDialogChrome(): void {
   if (sendButton) {
     const stopping = agentThinking.has(selectedId);
     sendButton.classList.toggle("is-stop", stopping);
-    sendButton.setAttribute("aria-label", stopping ? "stop" : "send");
-    sendButton.dataset.tooltip = stopping ? "Stop agent" : "Send message";
+    sendButton.setAttribute("aria-label", stopping ? "Остановить ответ" : "Отправить сообщение");
+    sendButton.dataset.tooltip = stopping ? "Остановить ответ" : "Отправить сообщение";
     sendButton.innerHTML = icon(stopping ? "stop" : "send");
   }
   if (remoteButton) {
@@ -2740,17 +2733,17 @@ function renderDialogChrome(): void {
     remoteButton.classList.toggle("is-on", !needsAgent && remoteEnabled.has(selectedId));
     remoteButton.classList.toggle("has-access", !needsAgent && remoteAccess.has(selectedId));
     remoteButton.classList.toggle("needs-agent", needsAgent);
-    remoteButton.setAttribute("aria-label", needsAgent ? "download" : "remote");
+    remoteButton.setAttribute("aria-label", needsAgent ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent") : "Удалённые команды");
     remoteButton.innerHTML = needsAgent
       ? `${icon("download")}<span>${mode === "update" ? "Обновить" : "Скачать"}</span>`
       : `${icon("remote")}<span>${incomingAccess && !remoteEnabled.has(selectedId) ? "Управлять" : "Доступ"}</span>`;
     remoteButton.dataset.tooltip = needsAgent
       ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent")
       : remoteEnabled.has(selectedId)
-        ? "Turn off remote link"
+        ? "Отключить доступ к командам"
         : remoteAccess.has(selectedId)
-          ? "Open remote commands"
-          : "Enable remote link";
+          ? "Открыть удалённые команды"
+          : "Настроить доступ к командам";
   }
   if (trafficButton) {
     const needsAgent = mode !== "link";
@@ -2760,17 +2753,17 @@ function renderDialogChrome(): void {
     trafficButton.classList.toggle("has-access", !needsAgent && trafficIn);
     trafficButton.classList.toggle("needs-agent", needsAgent);
     trafficButton.hidden = Boolean(selectedId && isAgentTunnelId(selectedId));
-    trafficButton.setAttribute("aria-label", needsAgent ? "download" : "traffic");
+    trafficButton.setAttribute("aria-label", needsAgent ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent") : "Общий интернет");
     trafficButton.innerHTML = needsAgent
       ? `${icon("download")}<span>${mode === "update" ? "Обновить" : "Скачать"}</span>`
-      : `${icon("traffic")}<span>Traffic</span>`;
+      : `${icon("traffic")}<span>Интернет</span>`;
     trafficButton.dataset.tooltip = needsAgent
       ? (mode === "update" ? "Обновить Soty Agent" : "Скачать Soty Agent")
       : trafficOut
-        ? "Stop sharing traffic"
+        ? "Отключить общий интернет"
         : trafficIn
-          ? "Traffic exit available"
-          : "Share traffic over Link";
+          ? "Доступен общий интернет"
+          : "Настроить общий интернет";
   }
   renderVoiceComposerState();
   renderChatStatusBar();
@@ -3012,10 +3005,9 @@ function friendlyAccountTransferError(error: unknown): string {
 
 function requestAccountPhrase(kind: AccountTransferRootAction): Promise<string | null> {
   return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "action-modal account-phrase-modal";
+    const overlay = createWorkspaceDialog('action-modal account-phrase-modal', kind === 'export' ? 'Сохранить фразой' : 'Импорт фразой', () => close(null));
     overlay.innerHTML = `
-      <section class="action-sheet account-phrase-sheet" role="dialog" aria-modal="true" aria-label="${kind === "export" ? "export phrase" : "import phrase"}">
+      <section class="action-sheet account-phrase-sheet">
         <header class="action-head">
           <span class="action-mark">${icon("shield")}</span>
           <span>
@@ -3024,7 +3016,7 @@ function requestAccountPhrase(kind: AccountTransferRootAction): Promise<string |
           </span>
           <button class="action-close icon-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть">${icon("close")}</button>
         </header>
-        <textarea class="account-phrase-input" rows="4" autocomplete="off" spellcheck="false" placeholder="Ваша уникальная фраза на любом языке"></textarea>
+        <textarea class="account-phrase-input" aria-label="Фраза для зашифрованной копии" rows="4" autocomplete="off" spellcheck="false" placeholder="Ваша уникальная фраза на любом языке"></textarea>
         <output class="account-phrase-status">Чем больше и уникальнее фраза, тем лучше.</output>
         <div class="account-phrase-actions">
           <button class="account-phrase-cancel" type="button">Отмена</button>
@@ -3033,7 +3025,7 @@ function requestAccountPhrase(kind: AccountTransferRootAction): Promise<string |
       </section>
     `;
     const close = (value: string | null) => {
-      overlay.remove();
+      overlay.close();
       resolve(value);
     };
     const input = overlay.querySelector<HTMLTextAreaElement>(".account-phrase-input");
@@ -3062,7 +3054,7 @@ function requestAccountPhrase(kind: AccountTransferRootAction): Promise<string |
       }
     });
     input?.addEventListener("input", refresh);
-    document.body.append(overlay);
+    showWorkspaceDialog(overlay, '.account-phrase-input');
     input?.focus();
     refresh();
   });
@@ -3171,7 +3163,7 @@ function renderVoiceComposerState(): void {
     button.classList.toggle("is-unsupported", !supported);
     button.setAttribute("aria-pressed", String(listening));
     button.setAttribute("aria-disabled", String(!supported));
-    button.setAttribute("aria-label", listening ? "stop voice input" : "voice input");
+    button.setAttribute("aria-label", listening ? "Остановить голосовой ввод" : "Голосовой ввод");
     button.dataset.tooltip = !supported
       ? "Голосовой ввод доступен в Chrome или Edge"
       : listening
@@ -3616,6 +3608,17 @@ function ensureSync(tunnel: TunnelRecord): void {
         renderFiles();
       }
     },
+    onFilePending: (transfers) => {
+      pendingFiles.set(tunnel.id, transfers);
+      if (tunnel.id === selectedId) renderFiles();
+    },
+    onFileError: ({ code }) => {
+      const reason = code === 'file_storage_capacity' ? 'В браузере недостаточно места для файла.'
+        : code === 'file_storage_unavailable' ? 'Браузер не поддерживает безопасный приём файла такого размера.'
+        : 'Не удалось подготовить скачивание файла.';
+      setFileNotice(tunnel.id, `${reason} Сохранённые данные остаются на сервере. После устранения причины обновите страницу.`, true);
+      if (tunnel.id === selectedId) renderFiles();
+    },
     onKnock: (knock) => {
       applyKnock(tunnel.id, knock);
     },
@@ -3732,8 +3735,7 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
   }
   joinPrompts.add(request.requestId);
   const nick = cleanNick(request.nick);
-  const overlay = document.createElement("div");
-  overlay.className = "pair-modal";
+  const overlay = createWorkspaceDialog('pair-modal', 'Запрос подключения', () => { syncs.get(tunnel.id)?.denyJoin(request); remove(); });
   overlay.innerHTML = `
     <div class="pair-screen">
       <div class="counterparty-mark">
@@ -3741,14 +3743,14 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
         <b>${escapeHtml(nick)}</b>
       </div>
       <div class="pair-actions">
-        <button class="icon-button deny-button" type="button" aria-label="Закрыть" data-tooltip="Отклонить подключение">${icon("close")}</button>
-        <button class="icon-button accept-button" type="button" aria-label="Сохранить" data-tooltip="Разрешить подключение">${icon("check")}</button>
+        <button class="icon-button deny-button" type="button" aria-label="Отклонить подключение" data-tooltip="Отклонить подключение">${icon("close")}</button>
+        <button class="icon-button accept-button" type="button" aria-label="Разрешить подключение" data-tooltip="Разрешить подключение">${icon("check")}</button>
       </div>
     </div>
   `;
   const remove = () => {
     joinPrompts.delete(request.requestId);
-    overlay.remove();
+    overlay.close();
   };
   overlay.querySelector(".accept-button")?.addEventListener("click", () => {
     void (async () => {
@@ -3769,7 +3771,7 @@ function renderOwnerJoinConfirm(tunnel: TunnelRecord, request: JoinRequest): voi
     syncs.get(tunnel.id)?.denyJoin(request);
     remove();
   });
-  document.body.append(overlay);
+  showWorkspaceDialog(overlay, '.deny-button');
 }
 
 async function closeTunnel(id: string): Promise<void> {
@@ -3808,6 +3810,7 @@ async function closeTunnel(id: string): Promise<void> {
     agentThinking.delete(id);
     localDrafts.delete(id);
     files.delete(id);
+    pendingFiles.delete(id);
     fileNotices.delete(id);
     tunnels = removeTunnel(id);
     normalizeSelectedTunnel();
@@ -3837,6 +3840,7 @@ function rotateInviteTunnel(preserveSelection = false): TunnelRecord | null {
     chessFlipped.delete(tunnel.id);
     forgetChessSnapshot(tunnel.id);
     files.delete(tunnel.id);
+    pendingFiles.delete(tunnel.id);
     fileNotices.delete(tunnel.id);
   }
   const tunnel = createTunnel();
@@ -3866,21 +3870,38 @@ async function sendFiles(list?: FileList | null): Promise<void> {
   }
   const accepted = filesFrom(list);
   const oversized = oversizedFilesFrom(list);
-  let failed = 0;
+  const failures = new Set<string>();
+  activeFileSends++;
   for (const file of accepted) {
     try {
-      const localFile = await sync.sendFile(file);
+      setFileNotice(tunnelId, `${file.name} · передаём…`);
+      if (tunnelId === selectedId) renderFiles();
+      let lastProgress = -1;
+      const localFile = await sync.sendFile(file, ({ sentBytes, totalBytes }) => {
+        const percent = totalBytes ? Math.floor(sentBytes * 100 / totalBytes) : 100;
+        if (percent === lastProgress) return; lastProgress = percent;
+        setFileNotice(tunnelId, `${file.name} · ${percent}% сохранено для передачи`);
+        if (tunnelId === selectedId) renderFiles();
+      });
       files.set(tunnelId, [localFile, ...(files.get(tunnelId) ?? []).filter((item) => item.id !== localFile.id)]);
-    } catch {
-      failed += 1;
+    } catch (error) {
+      const code = error instanceof FileTransferError ? error.code : '';
+      failures.add(code === 'file_transfer_cancelled' ? 'Передача остановлена. Удаление сохранённых частей подтверждается отдельно.'
+        : code === 'room_transfer_capacity' ? 'Есть незавершённые передачи. Удалите ненужную карточку, чтобы освободить место.'
+        : code.endsWith('_capacity') ? 'Недостаточно места. Удалите ненужные файлы или незавершённые передачи.'
+        : code === 'file_transfer_busy' || code === 'room_busy' ? 'Канал занят. Дождитесь завершения текущей передачи.'
+        : code === 'file_transfer_invalid' ? 'Не удалось прочитать или проверить файл.'
+        : 'Передача не подтверждена. Проверьте карточку файла после восстановления связи; сохранённые части остаются в комнате.');
     }
   }
-  if (oversized.length > 0 || failed > 0) {
+  activeFileSends--;
+  if (accepted.length && !failures.size && !oversized.length) setFileNotice(tunnelId, 'Файлы сохранены для передачи участникам комнаты.');
+  if (oversized.length > 0 || failures.size > 0) {
     const parts = [
       oversized.length > 0 ? `Слишком большой файл: максимум ${formatFileSize(maxFileBytes)}` : "",
-      failed > 0 ? "Не отправилось, связь восстановится и можно повторить" : ""
+      ...failures
     ].filter(Boolean);
-    setFileNotice(tunnelId, parts.join(". "));
+    setFileNotice(tunnelId, parts.join(" "), true);
   }
   tunnels = touchTunnel(tunnelId);
   renderTiles();
@@ -3893,14 +3914,22 @@ function renderFiles(): void {
   const tunnel = loadTunnels().find((item) => item.id === selectedId);
   const color = safeColor(tunnel?.color, (tunnel?.label || selectedId) + selectedId);
   for (const rail of app.querySelectorAll<HTMLDivElement>('.file-rail')) {
-    renderFileRail(rail, files.get(selectedId) ?? [], color, deleteFile);
+    const tunnelId = selectedId;
+    renderFileRail(rail, files.get(tunnelId) ?? [], color, fileId => deleteFile(fileId, tunnelId), pendingFiles.get(tunnelId) ?? [], fileId => deleteFile(fileId, tunnelId));
+    for (const control of rail.querySelectorAll<HTMLButtonElement>('button[data-id],button[data-discard]')) {
+      if (fileDeletions.has(`${tunnelId}:${control.dataset.id || control.dataset.discard}`)) { control.disabled = true; control.setAttribute('aria-busy', 'true'); }
+    }
     renderFileNotice(rail, color);
   }
 }
 
-function setFileNotice(tunnelId: string, text: string): void {
-  fileNotices.set(tunnelId, { text, until: Date.now() + 9000 });
-  window.setTimeout(() => {
+function setFileNotice(tunnelId: string, text: string, persistent = false): void {
+  fileNotices.set(tunnelId, { text, until: persistent ? Infinity : Date.now() + 9000 });
+  clearTimeout(fileNoticeTimers.get(tunnelId));
+  fileNoticeTimers.delete(tunnelId);
+  if (persistent) return;
+  fileNoticeTimers.set(tunnelId, window.setTimeout(() => {
+    fileNoticeTimers.delete(tunnelId);
     const notice = fileNotices.get(tunnelId);
     if (notice && notice.until <= Date.now()) {
       fileNotices.delete(tunnelId);
@@ -3908,7 +3937,7 @@ function setFileNotice(tunnelId: string, text: string): void {
         renderFiles();
       }
     }
-  }, 9200);
+  }, 9200));
 }
 
 function renderFileNotice(rail: HTMLDivElement, color: string): void {
@@ -3924,16 +3953,23 @@ function renderFileNotice(rail: HTMLDivElement, color: string): void {
   chip.className = "file-chip file-notice";
   chip.style.setProperty("--color", color);
   chip.textContent = notice.text;
+  chip.setAttribute('role', 'status');
   rail.prepend(chip);
 }
 
-function deleteFile(fileId: string): void {
-  if (!selectedId) {
-    return;
-  }
-  files.set(selectedId, (files.get(selectedId) ?? []).filter((item) => item.id !== fileId));
-  syncs.get(selectedId)?.deleteFile(fileId);
-  renderFiles();
+function deleteFile(fileId: string, tunnelId = selectedId): Promise<void> {
+  const key = `${tunnelId}:${fileId}`, existing = fileDeletions.get(key);
+  if (existing) return existing;
+  const sync = syncs.get(tunnelId);
+  if (!sync) return Promise.reject(new Error('file_transfer_closed'));
+  const operation = sync.discardFileTransfer(fileId).then(() => {
+    setFileNotice(tunnelId, 'Файл удалён из комнаты.');
+  }).catch(error => {
+    setFileNotice(tunnelId, 'Удаление не подтверждено. Проверьте соединение и повторите.', true);
+    throw error;
+  }).finally(() => { fileDeletions.delete(key); if (selectedId === tunnelId) renderFiles(); });
+  fileDeletions.set(key, operation);
+  return operation;
 }
 
 function applyKnock(tunnelId: string, knock: NoticeKnock): void {
@@ -3969,11 +4005,10 @@ function applyRemoteRequest(tunnelId: string, request: RemoteRequest): void {
 }
 
 function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
-  document.querySelector(".access-modal")?.remove();
+  document.querySelector<HTMLDialogElement>(".access-modal")?.close();
   const tunnel = tunnels.find((item) => item.id === tunnelId);
   const requester = cleanNick(request.nick || (tunnel ? counterpartyLabel(tunnel) : ""));
-  const overlay = document.createElement("div");
-  overlay.className = "access-modal";
+  const overlay = createWorkspaceDialog('access-modal', 'Удалённое управление');
   overlay.innerHTML = `
     <div class="access-sheet">
       <span class="access-mark">${icon("remote")}</span>
@@ -3985,18 +4020,18 @@ function renderRemoteRequest(tunnelId: string, request: RemoteRequest): void {
       </div>
     </div>
   `;
-  document.body.append(overlay);
+  showWorkspaceDialog(overlay, '.access-deny');
   overlay.querySelector(".access-accept")?.addEventListener("click", () => {
     void (async () => {
       const granted = await enableRemoteGrant(tunnelId, request.deviceId);
       if (!granted) {
-        overlay.remove();
+        overlay.close();
         return;
       }
-      overlay.remove();
+      overlay.close();
     })();
   });
-  overlay.querySelector(".access-deny")?.addEventListener("click", () => overlay.remove());
+  overlay.querySelector(".access-deny")?.addEventListener("click", () => overlay.close());
 }
 
 function applyRemoteGrant(tunnelId: string, grant: RemoteGrant): void {
@@ -4238,7 +4273,7 @@ function renderTerminal(): void {
   peer.textContent = tunnel ? initials(counterpartyLabel(tunnel)) : ".";
   if (collapseButton) {
     collapseButton.innerHTML = icon(terminalCollapsed ? "expand" : "collapse");
-    collapseButton.setAttribute("aria-label", terminalCollapsed ? "expand" : "collapse");
+    collapseButton.setAttribute("aria-label", terminalCollapsed ? "Развернуть команды" : "Свернуть команды");
     collapseButton.dataset.tooltip = terminalCollapsed ? "Развернуть окно команд" : "Свернуть окно команд";
   }
   output.innerHTML = (terminalLogs.get(tunnelId) ?? [])
@@ -4825,184 +4860,30 @@ function localAgentRunTimeoutMs(value: unknown): number {
   return Math.max(1_000, Math.min(Math.trunc(timeoutMs), 2 * 60 * 60_000));
 }
 
-function processLocalAgentDataPlaneOutput(tunnelId: string, commandId: string, rawText: string, flush = false): string {
-  if (!rawText && !flush) {
-    return "";
-  }
-  const previous = sotyFileLineBuffers.get(commandId) || "";
-  const combined = `${previous}${rawText || ""}`;
-  const lines = combined.split("\n");
-  const tail = flush ? "" : lines.pop() ?? "";
-  if (tail) {
-    sotyFileLineBuffers.set(commandId, tail.slice(0, 900_000));
-  } else {
-    sotyFileLineBuffers.delete(commandId);
-  }
-  const visible: string[] = [];
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r$/u, "");
-    if (handleSotyFileProtocolLine(tunnelId, commandId, line)) {
-      continue;
-    }
-    visible.push(line);
-  }
-  if (flush && tail && !handleSotyFileProtocolLine(tunnelId, commandId, tail.replace(/\r$/u, ""))) {
-    visible.push(tail);
-  }
-  if (visible.length === 0) {
-    return "";
-  }
-  return `${visible.join("\n")}${rawText.endsWith("\n") || flush ? "\n" : ""}`;
-}
-
-function handleSotyFileProtocolLine(tunnelId: string, commandId: string, line: string): boolean {
-  if (!line.startsWith("SOTY_FILE_")) {
-    return false;
-  }
-  if (line.startsWith("SOTY_FILE_BEGIN ")) {
-    const meta = parseSotyFileMetadata(line.slice("SOTY_FILE_BEGIN ".length));
-    if (!meta) {
-      appendTerminalLine(tunnelId, "! file transfer metadata");
-      return true;
-    }
-    sotyFileStreams.set(meta.fileId, {
-      tunnelId,
-      commandId,
-      fileId: meta.fileId,
-      name: meta.name,
-      type: meta.type,
-      size: meta.size,
-      total: meta.total,
-      autoDownload: meta.autoDownload,
-      delivery: meta.delivery,
-      sourceCommandId: commandId,
-      sent: 0
-    });
-    appendTerminalLine(tunnelId, `+ file ${meta.name} ${formatFileSize(meta.size)}`);
-    return true;
-  }
-  if (line.startsWith("SOTY_FILE_CHUNK ")) {
-    const match = /^SOTY_FILE_CHUNK\s+([A-Za-z0-9_-]{1,120})\s+(\d{1,8})\s+([+/=0-9A-Za-z]+)$/u.exec(line);
-    if (!match) {
-      appendTerminalLine(tunnelId, "! file transfer chunk");
-      return true;
-    }
-    const fileId = match[1] || "";
-    const index = Number.parseInt(match[2] || "0", 10);
-    const state = sotyFileStreams.get(fileId);
-    const sync = syncs.get(tunnelId);
-    if (!state || !sync || !Number.isSafeInteger(index)) {
-      appendTerminalLine(tunnelId, "! file transfer state");
-      return true;
-    }
-    try {
-      const chunk = base64ToBytes(match[3] || "");
-      void sync.sendFileChunkFromBytes(fileId, {
-        name: state.name,
-        type: state.type,
-        size: state.size,
-        autoDownload: state.autoDownload,
-        delivery: state.delivery,
-        commandId: state.sourceCommandId
-      }, chunk, index, state.total).catch(() => {
-        appendTerminalLine(tunnelId, "! file transfer send");
+async function processLocalAgentDataPlaneOutput(tunnelId: string, commandId: string, rawText: string, flush = false): Promise<string> {
+  let transfer = commandFileTransfers.get(commandId);
+  if (!transfer) {
+    transfer = createCommandFileTransfer({ maxBytes: maxFileBytes,
+      sendChunk: async (fileId, metadata, chunk, index, total) => {
+        const sync = syncs.get(tunnelId);
+        if (!sync) throw new Error("file_transfer_closed");
+        await sync.sendFileChunkFromBytes(fileId, { ...metadata, commandId }, chunk, index, total);
+      },
+      report: event => {
+        appendTerminalLine(tunnelId, event.state === 'stored'
+          ? '+ Файл сохранён для передачи: ' + event.name
+          : '+ Передаём ' + event.name + ' · ' + formatFileSize(event.size));
         renderTerminal();
-      });
-      state.sent += 1;
-    } catch {
-      appendTerminalLine(tunnelId, "! file transfer decode");
-    }
-    return true;
+      }
+    });
+    commandFileTransfers.set(commandId, transfer);
   }
-  if (line.startsWith("SOTY_FILE_END ")) {
-    const payload = parseSotyFileEnd(line.slice("SOTY_FILE_END ".length));
-    const state = payload?.fileId ? sotyFileStreams.get(payload.fileId) : null;
-    if (state) {
-      appendTerminalLine(tunnelId, `+ file ready ${state.name}`);
-      sotyFileStreams.delete(state.fileId);
-    }
-    return true;
-  }
-  return true;
-}
-
-function parseSotyFileMetadata(value: string): SotyFileStreamState | null {
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(value.trim()))) as {
-      readonly id?: unknown;
-      readonly name?: unknown;
-      readonly type?: unknown;
-      readonly size?: unknown;
-      readonly total?: unknown;
-      readonly autoDownload?: unknown;
-      readonly delivery?: unknown;
-    };
-    const fileId = String(parsed.id || "").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
-    const name = cleanDownloadedFileName(String(parsed.name || "file"));
-    const type = String(parsed.type || "application/octet-stream").slice(0, 160);
-    const size = Number.isSafeInteger(parsed.size) ? Math.max(0, Number(parsed.size)) : 0;
-    const total = Number.isSafeInteger(parsed.total) ? Math.max(1, Math.min(Number(parsed.total), 8192)) : 1;
-    if (!fileId || !name) {
-      return null;
-    }
-    const delivery = String(parsed.delivery || "").slice(0, 80);
-    return {
-      tunnelId: "",
-      commandId: "",
-      fileId,
-      name,
-      type,
-      size,
-      total,
-      autoDownload: parsed.autoDownload === true,
-      delivery,
-      sourceCommandId: "",
-      sent: 0
-    };
-  } catch {
-    return null;
-  }
-}
-
-function parseSotyFileEnd(value: string): { readonly fileId: string; readonly sha256?: string } | null {
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(base64ToBytes(value.trim()))) as {
-      readonly id?: unknown;
-      readonly sha256?: unknown;
-    };
-    const fileId = String(parsed.id || "").replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
-    if (!fileId) {
-      return null;
-    }
-    const sha256 = typeof parsed.sha256 === "string" && /^[a-f0-9]{64}$/iu.test(parsed.sha256)
-      ? parsed.sha256.toLowerCase()
-      : undefined;
-    return { fileId, ...(sha256 ? { sha256 } : {}) };
-  } catch {
-    return null;
-  }
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value.replace(/-/gu, "+").replace(/_/gu, "/"));
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function cleanDownloadedFileName(value: string): string {
-  return value.replace(/[\\/:*?"<>|]/gu, "_").slice(0, 120) || "file";
+  return transfer.write(rawText, flush);
 }
 
 function cleanupSotyFileDataPlane(commandId: string): void {
-  sotyFileLineBuffers.delete(commandId);
-  for (const [fileId, state] of [...sotyFileStreams.entries()]) {
-    if (state.commandId === commandId) {
-      sotyFileStreams.delete(fileId);
-    }
-  }
+  commandFileTransfers.get(commandId)?.close();
+  commandFileTransfers.delete(commandId);
 }
 
 function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
@@ -5015,15 +4896,17 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
   setTerminalState(tunnelId, "run");
   renderTerminal();
   let streamed = false;
-  const sendChunk = (rawText: string) => {
-    const text = processLocalAgentDataPlaneOutput(tunnelId, command.id, rawText);
+  const sendChunk = async (rawText: string) => {
+    streamed ||= Boolean(rawText);
+    const text = await processLocalAgentDataPlaneOutput(tunnelId, command.id, rawText);
     if (!text) {
-      return;
+      return '';
     }
     streamed = true;
     appendTerminalLine(tunnelId, text);
     renderTerminal();
     void sync.sendRemoteOutput(command.deviceId, command.id, text);
+    return text;
   };
   void runConnectorJob({
     deviceId: device.id,
@@ -5036,13 +4919,13 @@ function runLocalAgentCommand(tunnelId: string, command: RemoteCommand): void {
     },
     timeoutMs: localAgentRunTimeoutMs(command.timeoutMs) + 5_000,
     signal: controller.signal,
-    onEvent: (event) => {
+    onEvent: async (event) => {
       if (event.type === "stdout" || event.type === "stderr") {
-        sendChunk(event.text);
+        return await sendChunk(event.text);
       }
     }
-  }).then((reply) => {
-    const trailing = processLocalAgentDataPlaneOutput(tunnelId, command.id, "", true);
+  }).then(async (reply) => {
+    const trailing = await processLocalAgentDataPlaneOutput(tunnelId, command.id, "", true);
     if (trailing) {
       streamed = true;
       appendTerminalLine(tunnelId, trailing);
@@ -5082,15 +4965,17 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
   setTerminalState(tunnelId, "run");
   renderTerminal();
   let streamed = false;
-  const sendChunk = (rawText: string) => {
-    const text = processLocalAgentDataPlaneOutput(tunnelId, script.id, rawText);
+  const sendChunk = async (rawText: string) => {
+    streamed ||= Boolean(rawText);
+    const text = await processLocalAgentDataPlaneOutput(tunnelId, script.id, rawText);
     if (!text) {
-      return;
+      return '';
     }
     streamed = true;
     appendTerminalLine(tunnelId, text);
     renderTerminal();
     void sync.sendRemoteOutput(script.deviceId, script.id, text);
+    return text;
   };
   void runConnectorJob({
     deviceId: device.id,
@@ -5105,13 +4990,13 @@ function runLocalAgentScript(tunnelId: string, script: RemoteScript): void {
     },
     timeoutMs: localAgentRunTimeoutMs(script.timeoutMs) + 5_000,
     signal: controller.signal,
-    onEvent: (event) => {
+    onEvent: async (event) => {
       if (event.type === "stdout" || event.type === "stderr") {
-        sendChunk(event.text);
+        return await sendChunk(event.text);
       }
     }
-  }).then((reply) => {
-    const trailing = processLocalAgentDataPlaneOutput(tunnelId, script.id, "", true);
+  }).then(async (reply) => {
+    const trailing = await processLocalAgentDataPlaneOutput(tunnelId, script.id, "", true);
     if (trailing) {
       streamed = true;
       appendTerminalLine(tunnelId, trailing);
@@ -6194,7 +6079,6 @@ function renderTextPaint(): void {
     const pinned = chatPins.get(selectedId);
     const isPinned = Boolean(pinned && pinned.id === ref.id);
     const actions = actionable ? chatBubbleActionsHtml(ref, isPinned) : "";
-    const status = chatBubbleStatusHtml(bubble);
     const body = bubble.className === "is-agent-thinking"
       ? `<span class="thinking-label">${escapeHtml(bubble.lines[0] || "думаю")}</span><span class="thinking-rig" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>`
       : renderChatBody(bubble.lines, query);
@@ -6210,7 +6094,6 @@ function renderTextPaint(): void {
           <b>${escapeHtml(bubble.nick)}</b>
           <small>${escapeHtml(bubble.time)}</small>
           ${live}
-          ${status}
         </div>
         <p>${body}</p>
       </article>
@@ -6258,27 +6141,20 @@ function chatRefFromBubble(bubble: ChatRenderBubble): ChatMessageRef {
 function chatBubbleActionsHtml(ref: ChatMessageRef, isPinned: boolean): string {
   const id = escapeHtml(ref.id);
   const edit = ref.side === "local"
-    ? `<button type="button" data-chat-action="edit" data-message-id="${id}" aria-label="edit" data-tooltip="Edit">${icon("edit")}</button>`
+    ? `<button type="button" data-chat-action="edit" data-message-id="${id}" aria-label="Изменить сообщение" data-tooltip="Изменить">${icon("edit")}</button>`
     : "";
   const retry = ref.side === "local"
-    ? `<button type="button" data-chat-action="retry" data-message-id="${id}" aria-label="retry" data-tooltip="Retry">${icon("refresh")}</button>`
+    ? `<button type="button" data-chat-action="retry" data-message-id="${id}" aria-label="Повторить сообщение" data-tooltip="Повторить">${icon("refresh")}</button>`
     : "";
   return `
-    <div class="bubble-actions" aria-label="message actions">
-      <button type="button" data-chat-action="reply" data-message-id="${id}" aria-label="reply" data-tooltip="Reply">${icon("reply")}</button>
-      <button type="button" data-chat-action="copy" data-message-id="${id}" aria-label="copy" data-tooltip="Copy">${icon("copy")}</button>
-      <button type="button" data-chat-action="${isPinned ? "unpin" : "pin"}" data-message-id="${id}" aria-label="${isPinned ? "unpin" : "pin"}" data-tooltip="${isPinned ? "Unpin" : "Pin"}">${icon("pin")}</button>
+    <div class="bubble-actions" aria-label="Действия с сообщением">
+      <button type="button" data-chat-action="reply" data-message-id="${id}" aria-label="Ответить на сообщение" data-tooltip="Ответить">${icon("reply")}</button>
+      <button type="button" data-chat-action="copy" data-message-id="${id}" aria-label="Скопировать сообщение" data-tooltip="Скопировать">${icon("copy")}</button>
+      <button type="button" data-chat-action="${isPinned ? "unpin" : "pin"}" data-message-id="${id}" aria-label="${isPinned ? "Открепить сообщение" : "Закрепить сообщение"}" data-tooltip="${isPinned ? "Открепить" : "Закрепить"}">${icon("pin")}</button>
       ${edit}
       ${retry}
     </div>
   `;
-}
-
-function chatBubbleStatusHtml(bubble: ChatRenderBubble): string {
-  if (bubble.side !== "local" || bubble.className === "is-live-draft" || bubble.className === "is-agent-thinking") {
-    return "";
-  }
-  return `<span class="bubble-status" aria-label="sent">${icon("check")}</span>`;
 }
 
 function renderChatMessengerChrome(matchCount: number): void {
@@ -6313,7 +6189,7 @@ function renderChatPinHost(): void {
         <b>${escapeHtml(pin.nick)}</b>
         <small>${escapeHtml(compactChatPreview(pin.text, 132))}</small>
       </button>
-      <button class="chat-pin-clear retro-icon-button" type="button" data-chat-action="clear-pin" aria-label="unpin" data-tooltip="Unpin">${icon("close")}</button>
+      <button class="chat-pin-clear retro-icon-button" type="button" data-chat-action="clear-pin" aria-label="Открепить сообщение" data-tooltip="Открепить">${icon("close")}</button>
     </div>
   `;
 }
@@ -7121,22 +6997,21 @@ async function showQr(autoOpened = false): Promise<void> {
     return;
   }
   closeQrOverlay();
-  const overlay = document.createElement("div");
-  overlay.className = "qr-modal";
+  const overlay = createWorkspaceDialog('qr-modal', 'Подключение по QR-коду', closeQrOverlay);
   overlay.innerHTML = `
     <div class="qr-sheet" data-tooltip="Окно приглашения по QR-коду" data-tooltip-side="bottom">
-      <canvas data-tooltip="Покажи этот QR на втором устройстве"></canvas>
+      <canvas role="img" aria-label="QR-код приглашения" data-tooltip="Покажи этот QR на втором устройстве"></canvas>
       <div class="qr-scanner" aria-live="polite">
         <video playsinline muted></video>
         <div class="qr-scan-status">Наведи камеру на QR</div>
       </div>
-      <button class="icon-button refresh-button" type="button" aria-label="refresh" data-tooltip="Создать новый QR">${icon("refresh")}</button>
-      <button class="icon-button scan-button" type="button" aria-label="scan" data-tooltip="Сканировать QR камерой">${icon("scan")}</button>
-      <button class="icon-button copy-button" type="button" aria-label="copy" data-tooltip="Скопировать ссылку подключения">${icon("copy")}</button>
+      <button class="icon-button refresh-button" type="button" aria-label="Создать новый QR" data-tooltip="Создать новый QR">${icon("refresh")}</button>
+      <button class="icon-button scan-button" type="button" aria-label="Сканировать QR камерой" data-tooltip="Сканировать QR камерой">${icon("scan")}</button>
+      <button class="icon-button copy-button" type="button" aria-label="Скопировать ссылку подключения" data-tooltip="Скопировать ссылку подключения">${icon("copy")}</button>
       <button class="icon-button close-button" type="button" aria-label="Закрыть" data-tooltip="Закрыть QR">${icon("close")}</button>
     </div>
   `;
-  document.body.append(overlay);
+  showWorkspaceDialog(overlay, '.close-button');
   qrOverlay = overlay;
   qrMode = autoOpened ? "auto" : "manual";
   const canvas = overlay.querySelector("canvas");
@@ -7179,7 +7054,7 @@ async function showQr(autoOpened = false): Promise<void> {
   overlay.querySelector<HTMLButtonElement>(".close-button")?.addEventListener("click", () => closeQrOverlay());
 }
 
-async function startQrScanner(overlay: HTMLDivElement): Promise<void> {
+async function startQrScanner(overlay: HTMLDialogElement): Promise<void> {
   const scanner = overlay.querySelector<HTMLElement>(".qr-scanner");
   const video = overlay.querySelector<HTMLVideoElement>(".qr-scanner video");
   const status = overlay.querySelector<HTMLElement>(".qr-scan-status");
@@ -7222,7 +7097,7 @@ async function startQrScanner(overlay: HTMLDivElement): Promise<void> {
       const raw = await detectQrFromVideo(video, detector, frame);
       if (raw && isConnectLink(raw)) {
         stopQrScanner();
-        overlay.remove();
+        closeQrOverlay();
         openSotyConnect(raw);
         return;
       }
@@ -7369,17 +7244,16 @@ function ensureInviteTunnel(preserveSelection: boolean): TunnelRecord | null {
 function closeQrOverlay(): void {
   resetQrResetGesture();
   stopQrScanner();
-  qrOverlay?.remove();
+  qrOverlay?.close();
   qrOverlay = null;
   qrMode = null;
 }
 
 async function openTrafficFabricModal(): Promise<void> {
-  trafficModal?.remove();
-  const overlay = document.createElement("div");
-  overlay.className = "traffic-modal";
+  trafficModal?.close();
+  const overlay = createWorkspaceDialog('traffic-modal', 'Интернет через Соты');
   overlay.innerHTML = `
-    <section class="traffic-sheet" role="dialog" aria-modal="true" aria-label="Интернет через Соты">
+    <section class="traffic-sheet">
       <header class="traffic-head">
         <span class="traffic-route-mark">${icon("traffic")}</span>
         <span><b>Интернет через Соты</b><small>Выход через ваш компьютер</small></span>
@@ -7387,27 +7261,21 @@ async function openTrafficFabricModal(): Promise<void> {
       </header>
       <div class="traffic-content"><p class="traffic-loading">Проверяем маршрут…</p></div>
     </section>`;
-  document.body.append(overlay);
+  showWorkspaceDialog(overlay, '.traffic-close');
   trafficModal = overlay;
   const close = () => {
-    overlay.remove();
+    overlay.close();
     if (trafficModal === overlay) trafficModal = null;
   };
   overlay.querySelector<HTMLButtonElement>(".traffic-close")?.addEventListener("click", close);
   overlay.addEventListener("pointerdown", (event) => {
     if (event.target === overlay) close();
   });
-  const onKey = (event: KeyboardEvent) => {
-    if (event.key === "Escape") {
-      document.removeEventListener("keydown", onKey);
-      close();
-    }
-  };
-  document.addEventListener("keydown", onKey);
+  overlay.addEventListener('close', () => { if (trafficModal === overlay) trafficModal = null; }, { once: true });
   await renderTrafficFabricModal(overlay);
 }
 
-async function renderTrafficFabricModal(overlay: HTMLDivElement, notice = ""): Promise<void> {
+async function renderTrafficFabricModal(overlay: HTMLDialogElement, notice = ""): Promise<void> {
   const content = overlay.querySelector<HTMLDivElement>(".traffic-content");
   if (!content) return;
   const localAgentStatus = await checkLocalCompanionAgent(1200).catch(() => ({ ok: false } as LocalAgentStatus));
@@ -7551,7 +7419,7 @@ async function renderTrafficProfileReady(content: HTMLDivElement, profile: strin
   const qr = content.querySelector<HTMLImageElement>(".traffic-profile-qr img");
   if (qr && invite) qr.src = await QRCode.toDataURL(invite, { width: 320, margin: 2, color: { dark: "#071009", light: "#e8f7ef" } });
   content.querySelector<HTMLButtonElement>(".traffic-copy-link")?.addEventListener("click", () => void copyText(invite));
-  content.querySelector<HTMLButtonElement>(".traffic-done")?.addEventListener("click", () => trafficModal?.remove());
+  content.querySelector<HTMLButtonElement>(".traffic-done")?.addEventListener("click", () => trafficModal?.close());
 }
 
 function trafficErrorText(error: unknown): string {

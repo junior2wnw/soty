@@ -1,4 +1,7 @@
 import * as Y from "yjs";
+import { createFileReceiveStore, type ReceiveSpool } from './transport/file-receive-store.mjs';
+import { createFileOutbox, estimatedChunkWireBytes, fileChunkBytes, FileTransferError, maxControlQueueBytes,
+  maxControlQueueCount, maxFileBytes, maxSocketBufferedBytes, validChunk, wireBytes, ciphertextMatchesBytes } from "./transport/file-transfer.mjs";
 import {
   DeviceRecord,
   JoinAcceptPayload,
@@ -25,6 +28,8 @@ export interface SyncCallbacks {
   readonly onLiveDraft: (draft: LiveDraft) => void;
   readonly onFile: (file: ReceivedFile) => void;
   readonly onFileDeleted: (fileId: string) => void;
+  readonly onFileError?: (error: { fileId: string; code: string }) => void;
+  readonly onFilePending?: (files: readonly PendingFileTransfer[]) => void;
   readonly onKnock: (knock: NoticeKnock) => void;
   readonly onRemoteRequest: (request: RemoteRequest) => void;
   readonly onRemoteGrant: (grant: RemoteGrant) => void;
@@ -36,6 +41,22 @@ export interface SyncCallbacks {
   readonly onJoinRequest: (request: JoinRequest) => void;
   readonly onClosed: () => void;
   readonly onState: (state: "open" | "closed" | "connecting") => void;
+}
+
+export interface PendingFileTransfer {
+  readonly id: string;
+  readonly name: string;
+  readonly size: number;
+  readonly receivedBytes: number;
+  readonly deviceId: string;
+  readonly nick: string;
+  readonly totalChunks: number;
+  readonly receivedChunks: number;
+}
+interface PendingFileWire {
+  readonly fileId: string; readonly totalBytes: number; readonly receivedBytes: number;
+  readonly totalChunks: number; readonly receivedChunks: number; readonly deviceId: string; readonly nick: string;
+  readonly metaNonce?: string; readonly metaCiphertext?: string;
 }
 
 export interface JoinRequest {
@@ -75,6 +96,8 @@ export interface ReceivedFile {
   readonly type: string;
   readonly size: number;
   readonly bytes: Uint8Array;
+  /** Blob is the canonical downloadable content; bytes is a legacy optional cache. */
+  readonly blob?: Blob;
   readonly url: string;
   readonly nick: string;
   readonly deviceId: string;
@@ -327,8 +350,12 @@ interface P2pPeer {
 }
 
 interface FileTransfer {
-  readonly chunks: Uint8Array[];
+  readonly spool: ReceiveSpool;
   readonly seen: Set<number>;
+  readonly processing: Map<number, Promise<void>>;
+  receivedBytes: number;
+  updatedAt: number;
+  finishing?: Promise<Blob>;
   total: number;
   totalBytes: number;
   meta?: {
@@ -345,11 +372,14 @@ interface FileTransfer {
 }
 
 type ServerMessage =
-  | { readonly type: "hello"; readonly snapshot: EncryptedUpdate | null; readonly updates: readonly EncryptedUpdate[]; readonly files?: readonly EncryptedFile[]; readonly peers: readonly PeerInfo[]; readonly joinRequests?: readonly JoinRequest[] }
+  | { readonly type: "hello"; readonly snapshot: EncryptedUpdate | null; readonly updates: readonly EncryptedUpdate[]; readonly files?: readonly EncryptedFile[]; readonly peers: readonly PeerInfo[]; readonly joinRequests?: readonly JoinRequest[]; readonly pendingFiles?: readonly PendingFileWire[] }
+  | { readonly type: 'files.pending'; readonly files: readonly PendingFileWire[] }
+  | { readonly type: 'file.progress'; readonly fileId: string; readonly receivedBytes: number; readonly receivedChunks: number }
   | { readonly type: "ack"; readonly id: string }
+  | { readonly type: "file.error"; readonly id: string; readonly code: string }
   | { readonly type: "pong" }
-  | { readonly type: "update"; readonly update: EncryptedUpdate }
-  | { readonly type: "file"; readonly file: EncryptedFile }
+  | { readonly type: "update"; readonly update: EncryptedUpdate; readonly sequence?: number; readonly replay?: boolean }
+  | { readonly type: "file"; readonly file: EncryptedFile; readonly sequence?: number; readonly replay?: boolean }
   | { readonly type: "presence"; readonly peers: readonly PeerInfo[] }
   | { readonly type: "join.request"; readonly request: JoinRequest }
   | { readonly type: "notice.knock"; readonly knock: NoticeKnock }
@@ -436,9 +466,20 @@ export class TunnelSync {
   private readonly auth: Promise<string>;
   private readonly offlineQueue: OutboundUpdate[] = [];
   private readonly pendingAcks = new Map<string, OutboundUpdate>();
-  private readonly pendingFileControls = new Map<string, FileControlMessage>();
   private readonly controlQueue: ControlMessage[] = [];
+  private controlQueueBytes = 0;
+  private controlFlushTimer = 0;
+  private readonly fileUrls = new Map<string, string>();
+  private readonly activeFileIds = new Set<string>();
+  private readonly cancelledFileIds = new Set<string>();
+  private readonly pendingFiles = new Map<string, PendingFileTransfer>();
+  private pendingFilesGeneration = 0;
+  private readonly fileOutbox = createFileOutbox({ socket: () => this.ready ? this.ws : null });
   private readonly fileTransfers = new Map<string, FileTransfer>();
+  private readonly fileReceiveStore = createFileReceiveStore();
+  private readonly unavailableFileIds = new Set<string>();
+  private incomingFileOperations = 0;
+  private incomingFileBytes = 0;
   private readonly p2pPeers = new Map<string, P2pPeer>();
   private readonly seenUpdateIds = new Set<string>();
   private readonly seenControlIds = new Set<string>();
@@ -603,53 +644,45 @@ export class TunnelSync {
     this.sendControl({ type: "join.deny", requestId: request.requestId });
   }
 
-  async sendFile(file: File): Promise<ReceivedFile> {
+  async sendFile(file: File, onProgress?: (progress: { sentBytes: number; totalBytes: number }) => void): Promise<ReceivedFile> {
+    if (this.destroyed) throw new FileTransferError("file_transfer_closed");
+    if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > maxFileBytes) throw new FileTransferError("file_transfer_invalid");
     const fileId = `file_${crypto.randomUUID()}`;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const meta = encode(JSON.stringify({
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size
-    }));
-    const encryptedMeta = await encryptForTunnel(this.tunnel, meta);
-    const chunkSize = 256_000;
-    const total = Math.max(1, Math.ceil(bytes.length / chunkSize));
+    this.activeFileIds.add(fileId);
+    const total = Math.max(1, Math.ceil(file.size / fileChunkBytes));
+    try {
     for (let index = 0; index < total; index += 1) {
-      const chunk = bytes.slice(index * chunkSize, Math.min(bytes.length, (index + 1) * chunkSize));
-      const encrypted = await encryptForTunnel(this.tunnel, chunk);
-      this.sendControl({
-        type: "file",
-        file: {
-          kind: "chunk",
-          id: `${fileId}_${index}`,
-          fileId,
-          index,
-          total,
-          totalBytes: file.size,
-          bytes: chunk.byteLength,
-          nonce: encrypted.nonce,
-          ciphertext: encrypted.ciphertext,
-          ...(index === 0 ? {
-            metaNonce: encryptedMeta.nonce,
-            metaCiphertext: encryptedMeta.ciphertext
-          } : {})
-        }
-      });
-      if (total > 1) {
-        await wait(60);
+      if (this.cancelledFileIds.has(fileId)) throw new FileTransferError('file_transfer_cancelled', fileId);
+      const start = index * fileChunkBytes, end = Math.min(file.size, start + fileChunkBytes);
+      const ticket = this.fileOutbox.reserve(`${fileId}_${index}`, estimatedChunkWireBytes(end - start));
+      try {
+        // No complete-file ArrayBuffer and no producer waiting with pre-read data.
+        const chunk = new Uint8Array(await file.slice(start, end).arrayBuffer());
+        if (chunk.byteLength !== end - start) throw new FileTransferError("file_transfer_invalid");
+        await this.sendReservedFileChunk(ticket, fileId, { name: file.name, type: file.type, size: file.size }, chunk, index, total);
+        onProgress?.({ sentBytes: end, totalBytes: file.size });
+      } catch (error) {
+        ticket.cancel(error instanceof Error ? error : new FileTransferError("file_transfer_invalid"));
+        throw error;
       }
     }
+    const url = URL.createObjectURL(file);
+    this.fileUrls.set(fileId, url);
     return {
       id: fileId,
       name: file.name || "file",
       type: file.type || "application/octet-stream",
       size: file.size,
       bytes: new Uint8Array(),
-      url: URL.createObjectURL(file),
+      blob: file,
+      url,
       nick: this.device.nick,
       deviceId: this.device.id,
       createdAt: new Date().toISOString()
     };
+    } catch (error) {
+      throw new FileTransferError(error instanceof FileTransferError ? error.code : 'file_transfer_failed', fileId);
+    } finally { this.activeFileIds.delete(fileId); }
   }
 
   async sendFileChunkFromBytes(
@@ -667,16 +700,26 @@ export class TunnelSync {
     total: number
   ): Promise<void> {
     const safeFileId = cleanFileId(fileId);
-    const safeIndex = Math.max(0, Math.trunc(index));
-    const safeTotal = Math.max(1, Math.trunc(total));
-    if (!safeFileId || safeIndex >= safeTotal) {
-      throw new Error("bad file chunk");
-    }
+    if (this.cancelledFileIds.has(fileId)) throw new FileTransferError('file_transfer_cancelled', fileId);
+    if (!safeFileId || safeFileId !== fileId || !Number.isSafeInteger(index) || !Number.isSafeInteger(total)
+      || index < 0 || index >= total || total > 8192 || !Number.isSafeInteger(meta.size) || meta.size < 0
+      || meta.size > maxFileBytes || chunk.byteLength > 512_000 || chunk.byteLength > meta.size) throw new FileTransferError("file_transfer_invalid");
+    const ticket = this.fileOutbox.reserve(`${safeFileId}_${index}`, estimatedChunkWireBytes(chunk.byteLength));
+    try { await this.sendReservedFileChunk(ticket, safeFileId, meta, chunk, index, total); }
+    catch (error) { ticket.cancel(error instanceof Error ? error : new FileTransferError("file_transfer_invalid")); throw error; }
+  }
+
+  private async sendReservedFileChunk(
+    ticket: ReturnType<ReturnType<typeof createFileOutbox>["reserve"]>, fileId: string,
+    meta: { readonly name: string; readonly type?: string; readonly size: number; readonly autoDownload?: boolean; readonly delivery?: string; readonly commandId?: string },
+    chunk: Uint8Array, index: number, total: number
+  ): Promise<void> {
+    if (this.destroyed) throw new FileTransferError("file_transfer_closed");
     const fileName = cleanFileName(meta.name || "file");
     const fileType = (meta.type || "application/octet-stream").slice(0, 160);
     const fileSize = Math.max(0, Math.trunc(meta.size || 0));
     const encrypted = await encryptForTunnel(this.tunnel, chunk);
-    const encryptedMeta = safeIndex === 0
+    const encryptedMeta = index === 0
       ? await encryptForTunnel(this.tunnel, encode(JSON.stringify({
         name: fileName,
         type: fileType,
@@ -686,14 +729,14 @@ export class TunnelSync {
         ...(meta.commandId ? { commandId: String(meta.commandId).slice(0, 120) } : {})
       })))
       : null;
-    this.sendControl({
+    const message: FileControlMessage = {
       type: "file",
       file: {
         kind: "chunk",
-        id: `${safeFileId}_${safeIndex}`,
-        fileId: safeFileId,
-        index: safeIndex,
-        total: safeTotal,
+        id: `${fileId}_${index}`,
+        fileId,
+        index,
+        total,
         totalBytes: fileSize,
         bytes: chunk.byteLength,
         nonce: encrypted.nonce,
@@ -703,19 +746,28 @@ export class TunnelSync {
           metaCiphertext: encryptedMeta.ciphertext
         } : {})
       }
-    });
+    };
+    if (this.destroyed) throw new FileTransferError("file_transfer_closed");
+    await ticket.send(JSON.stringify(message));
+    // Relay acceptance comes first; an expired reservation cannot start a late
+    // direct transfer after its caller has already received a timeout.
+    if (!this.destroyed) this.sendDirectControl(message);
   }
 
   deleteFile(fileId: string): void {
-    this.fileTransfers.delete(fileId);
-    this.sendControl({
-      type: "file",
-      file: {
-        kind: "delete",
-        id: `file_delete_${crypto.randomUUID()}`,
-        fileId
-      }
-    });
+    void this.discardFileTransfer(fileId).catch(error => this.callbacks.onFileError?.({ fileId,
+      code: error instanceof FileTransferError ? error.code : 'file_transfer_failed' }));
+  }
+
+  async discardFileTransfer(fileId: string): Promise<void> {
+    if (!fileId || cleanFileId(fileId) !== fileId) throw new FileTransferError('file_transfer_invalid');
+    rememberBounded(this.cancelledFileIds, fileId);
+    this.fileOutbox.cancelFile(fileId);
+    const file = { kind: 'delete' as const, id: `file_delete_${crypto.randomUUID()}`, fileId };
+    const wire = JSON.stringify({ type: 'file', file });
+    const ticket = this.fileOutbox.reserve(file.id, wireBytes(wire));
+    await ticket.send(wire);
+    await this.applyFileData(file);
   }
 
   sendKnock(targetDeviceId = "*"): void {
@@ -844,6 +896,13 @@ export class TunnelSync {
 
   destroy(): void {
     this.destroyed = true;
+    this.fileOutbox.close();
+    this.controlQueue.length = 0;
+    this.controlQueueBytes = 0;
+    window.clearTimeout(this.controlFlushTimer);
+    this.fileTransfers.clear();
+    void this.fileReceiveStore.close();
+    for (const id of this.fileUrls.keys()) this.releaseFileUrl(id);
     window.clearTimeout(this.reconnectTimer);
     window.clearTimeout(this.snapshotTimer);
     window.clearTimeout(this.pingWatchdogTimer);
@@ -889,15 +948,16 @@ export class TunnelSync {
             type: "hello",
             deviceId: this.device.id,
             nick: this.device.nick,
-            roomAuth: auth
+            roomAuth: auth,
+            replay: 'ack-v1'
           }));
         }
       }).catch(() => ws.close());
     };
 
     ws.onmessage = (event) => {
-      if (!this.destroyed) {
-        void this.handleRawMessage(event.data as string);
+      if (!this.destroyed && this.ws === ws) {
+        void this.handleRawMessage(event.data as string, ws);
       }
     };
 
@@ -922,15 +982,36 @@ export class TunnelSync {
     };
   }
 
-  private async handleRawMessage(raw: string): Promise<void> {
+  private async handleRawMessage(raw: string, source = this.ws): Promise<void> {
+    const current = () => !this.destroyed && this.ws === source && source?.readyState === WebSocket.OPEN;
     try {
-      await this.handleMessage(JSON.parse(raw) as ServerMessage);
-    } catch {
-      this.callbacks.onState("connecting");
+      const message = JSON.parse(raw) as ServerMessage;
+      if (!current()) return;
+      if (message.type === 'file' && message.file.kind === 'chunk' && this.unavailableFileIds.has(message.file.fileId)) {
+        if (Number.isSafeInteger(message.sequence)) source?.send(JSON.stringify({ type: 'replay.skip', sequence: message.sequence, fileId: message.file.fileId }));
+        return;
+      }
+      await this.handleMessage(message, current);
+      if (current() && (message.type === 'file' || message.type === 'update') && Number.isSafeInteger(message.sequence)) {
+        source?.send(JSON.stringify({ type: 'replay.ack', sequence: message.sequence }));
+      }
+    } catch (error) {
+      if (current() && error instanceof FileTransferError && error.code.startsWith('file_storage_')) {
+        const message = JSON.parse(raw) as ServerMessage;
+        if (message.type === 'file' && message.file.kind === 'chunk') {
+          const fileId = message.file.fileId;
+          rememberBounded(this.unavailableFileIds, fileId);
+          this.callbacks.onFileError?.({ fileId, code: error.code });
+          if (Number.isSafeInteger(message.sequence)) source?.send(JSON.stringify({ type: 'replay.skip', sequence: message.sequence, fileId }));
+          return;
+        }
+      }
+      if (current()) { this.callbacks.onState("connecting"); this.closeAndReconnect(source!); }
     }
   }
 
-  private async handleMessage(message: ServerMessage): Promise<void> {
+  private async handleMessage(message: ServerMessage, current = () => !this.destroyed): Promise<void> {
+    if (!current()) return;
     this.lastSeenAt = Date.now();
     window.clearTimeout(this.pingWatchdogTimer);
     if (message.type === "closed") {
@@ -952,7 +1033,25 @@ export class TunnelSync {
 
     if (message.type === "ack") {
       this.pendingAcks.delete(message.id);
-      this.pendingFileControls.delete(message.id);
+      this.fileOutbox.ack(message.id);
+      return;
+    }
+    if (message.type === 'file.error') {
+      this.fileOutbox.reject(message.id, message.code);
+      return;
+    }
+    if (message.type === 'files.pending') {
+      await this.applyPendingFiles(message.files, current);
+      return;
+    }
+    if (message.type === 'file.progress') {
+      const previous = this.pendingFiles.get(message.fileId);
+      if (previous && Number.isSafeInteger(message.receivedBytes) && message.receivedBytes >= previous.receivedBytes
+        && message.receivedBytes <= previous.size && Number.isSafeInteger(message.receivedChunks)
+        && message.receivedChunks >= previous.receivedChunks && message.receivedChunks <= previous.totalChunks) {
+        this.pendingFiles.set(message.fileId, { ...previous, receivedBytes: message.receivedBytes, receivedChunks: message.receivedChunks });
+        this.callbacks.onFilePending?.([...this.pendingFiles.values()]);
+      }
       return;
     }
 
@@ -964,14 +1063,19 @@ export class TunnelSync {
     }
 
     if (message.type === "hello") {
+      await this.applyPendingFiles(message.pendingFiles ?? [], current);
+      if (!current()) return;
       if (message.snapshot) {
-        await this.applyIncomingUpdate(message.snapshot);
+        await this.applyIncomingUpdate(message.snapshot, current);
+        if (!current()) return;
       }
       for (const update of message.updates) {
-        await this.applyIncomingUpdate(update);
+        await this.applyIncomingUpdate(update, current);
+        if (!current()) return;
       }
       for (const file of message.files ?? []) {
-        await this.applyFile(file);
+        await this.applyFile(file, current);
+        if (!current()) return;
       }
       const peers = message.peers.filter((peer) => peer.id !== this.device.id);
       this.callbacks.onPeers(peers);
@@ -988,18 +1092,19 @@ export class TunnelSync {
       this.callbacks.onTerminal(this.terminalSnapshot());
       this.flushOfflineQueue();
       this.flushControls();
+      this.fileOutbox.pump();
       this.scheduleSnapshot();
       return;
     }
 
     if (message.type === "update") {
       const before = this.text.toString();
-      const applied = await this.applyIncomingUpdate(message.update);
-      if (!applied) {
+      const applied = await this.applyIncomingUpdate(message.update, current);
+      if (!applied || !current()) {
         return;
       }
       const after = this.text.toString();
-      if (message.update.deviceId !== this.device.id) {
+      if (!message.replay && message.update.deviceId !== this.device.id) {
         const [index, deleteCount, insertText] = diffText(before, after);
         const activity = describeActivity(before, index, deleteCount, insertText);
         this.callbacks.onRemoteChange({
@@ -1019,7 +1124,7 @@ export class TunnelSync {
     }
 
     if (message.type === "file") {
-      await this.applyFile(message.file);
+      await this.applyFile(message.file, current);
       return;
     }
 
@@ -1091,12 +1196,39 @@ export class TunnelSync {
 
   }
 
-  private async applyIncomingUpdate(update: EncryptedUpdate): Promise<boolean> {
-    if (!this.rememberUpdate(update.id)) {
+  private async applyIncomingUpdate(update: EncryptedUpdate, current = () => !this.destroyed): Promise<boolean> {
+    if (this.seenUpdateIds.has(update.id)) {
       return false;
     }
-    await this.applyEncrypted(update);
+    const bytes = await decryptFromTunnel(this.tunnel, update.nonce, update.ciphertext);
+    if (!current() || !this.rememberUpdate(update.id)) return false;
+    Y.applyUpdate(this.doc, bytes, "remote");
     return true;
+  }
+
+  private async applyPendingFiles(files: readonly PendingFileWire[], current: () => boolean): Promise<void> {
+    const generation = ++this.pendingFilesGeneration;
+    if (!Array.isArray(files) || files.length > 64) throw new FileTransferError('file_transfer_invalid');
+    const previous = new Map(this.pendingFiles);
+    this.pendingFiles.clear();
+    for (const file of files) {
+      if (typeof file.fileId !== 'string' || cleanFileId(file.fileId) !== file.fileId || !Number.isSafeInteger(file.totalBytes)
+        || file.totalBytes < 0 || !Number.isSafeInteger(file.receivedBytes) || file.receivedBytes < 0 || file.receivedBytes > file.totalBytes) continue;
+      this.pendingFiles.set(file.fileId, { id: file.fileId, name: previous.get(file.fileId)?.name || 'Незавершённый файл',
+        size: file.totalBytes, receivedBytes: file.receivedBytes, totalChunks: file.totalChunks, receivedChunks: file.receivedChunks,
+        deviceId: file.deviceId, nick: file.nick });
+    }
+    this.callbacks.onFilePending?.([...this.pendingFiles.values()]);
+    for (const file of files) {
+      if (!file.metaNonce || !file.metaCiphertext || file.metaCiphertext.length > 20_000 || file.metaNonce.length > 64) continue;
+      try {
+        const meta = JSON.parse(decode(await decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext))) as { name?: unknown };
+        if (!current() || generation !== this.pendingFilesGeneration) return;
+        const item = this.pendingFiles.get(file.fileId);
+        if (item && typeof meta.name === 'string') this.pendingFiles.set(file.fileId, { ...item, name: cleanFileName(meta.name) });
+      } catch { /* Corrupt metadata must not hide the explicit discard action. */ }
+    }
+    if (current() && generation === this.pendingFilesGeneration) this.callbacks.onFilePending?.([...this.pendingFiles.values()]);
   }
 
   private rememberUpdate(id: string): boolean {
@@ -1107,29 +1239,53 @@ export class TunnelSync {
     return rememberBounded(this.seenControlIds, id);
   }
 
-  private async applyEncrypted(update: EncryptedUpdate): Promise<void> {
-    const bytes = await decryptFromTunnel(this.tunnel, update.nonce, update.ciphertext);
-    Y.applyUpdate(this.doc, bytes, "remote");
+  private async applyFile(file: EncryptedFile, current = () => !this.destroyed): Promise<void> {
+    if (!current()) return;
+    if (file.kind === "delete") { await this.applyFileData(file, current); return; }
+    if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) throw new FileTransferError('file_transfer_invalid');
+    const chunked = file.kind === "chunk";
+    if (file.bytes > (chunked ? 512_000 : 200_000_000) || !ciphertextMatchesBytes(file.ciphertext, file.bytes)
+      || !file.nonce || file.nonce.length > 64 || (file.metaNonce !== undefined && file.metaNonce.length > 64)
+      || (file.metaCiphertext !== undefined && file.metaCiphertext.length > 20_000)) throw new FileTransferError('file_transfer_invalid');
+    // Browser WebSocket has no pause-reading API. If live messages outrun crypto,
+    // reconnect and replay the relay's persisted history (processed serially).
+    // Never accumulate an unbounded chain of ciphertext-awaiting closures.
+    const capacity = chunked ? 2_048_000 : this.incomingFileOperations === 0 ? 200_000_000 : 0;
+    if (this.incomingFileOperations >= 4 || this.incomingFileBytes + file.bytes > capacity) {
+      if (this.ws?.readyState === WebSocket.OPEN) this.closeAndReconnect(this.ws);
+      throw new FileTransferError("file_transfer_busy");
+    }
+    this.incomingFileOperations++; this.incomingFileBytes += file.bytes;
+    try { await this.applyFileData(file, current); }
+    finally { this.incomingFileOperations--; this.incomingFileBytes -= file.bytes; }
   }
 
-  private async applyFile(file: EncryptedFile): Promise<void> {
+  private async applyFileData(file: EncryptedFile, current = () => !this.destroyed): Promise<void> {
     if (file.kind === "delete") {
       this.fileTransfers.delete(file.fileId);
+      await this.fileReceiveStore.remove(file.fileId);
+      if (!current()) return;
+      this.unavailableFileIds.delete(file.fileId);
+      this.pendingFiles.delete(file.fileId);
+      this.callbacks.onFilePending?.([...this.pendingFiles.values()]);
+      this.releaseFileUrl(file.fileId);
       this.completedFileIds.delete(file.fileId);
       rememberBounded(this.deletedFileIds, file.fileId);
       this.callbacks.onFileDeleted(file.fileId);
       return;
     }
-    if (file.deviceId === this.device.id) {
+    const identity = file.kind === 'chunk' ? file.fileId : file.id;
+    if (this.fileUrls.has(identity) || this.activeFileIds.has(identity)) {
       return;
     }
     if (file.kind === "chunk") {
-      await this.applyFileChunk(file);
+      await this.applyFileChunk(file, current);
       return;
     }
     if (this.completedFileIds.has(file.id) || this.deletedFileIds.has(file.id)) {
       return;
     }
+    if (!Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > 200_000_000 || file.ciphertext.length > 320_000_000) return;
     const [metaBytes, bodyBytes] = await Promise.all([
       decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext),
       decryptFromTunnel(this.tunnel, file.nonce, file.ciphertext)
@@ -1142,16 +1298,20 @@ export class TunnelSync {
       readonly delivery?: string;
       readonly commandId?: string;
     };
-    const type = meta.type || "application/octet-stream";
-    const body = bodyBytes.buffer.slice(bodyBytes.byteOffset, bodyBytes.byteOffset + bodyBytes.byteLength) as ArrayBuffer;
-    const blob = new Blob([body], { type });
+    if (!current() || this.deletedFileIds.has(file.id) || this.completedFileIds.has(file.id)
+      || bodyBytes.byteLength !== file.bytes || (meta.size !== undefined && meta.size !== bodyBytes.byteLength)) return;
+    const type = typeof meta.type === "string" ? meta.type.slice(0, 160) : "application/octet-stream";
+    const blob = new Blob([bodyBytes as BlobPart], { type });
+    const url = URL.createObjectURL(blob);
+    this.fileUrls.set(file.id, url);
     this.callbacks.onFile({
       id: file.id,
       name: cleanFileName(meta.name || "file"),
       type,
-      size: meta.size || file.bytes,
-      bytes: bodyBytes,
-      url: URL.createObjectURL(blob),
+      size: blob.size,
+      bytes: new Uint8Array(),
+      blob,
+      url,
       nick: file.deviceNick || "",
       deviceId: file.deviceId || "",
       createdAt: file.createdAt || new Date().toISOString(),
@@ -1162,19 +1322,31 @@ export class TunnelSync {
     rememberBounded(this.completedFileIds, file.id);
   }
 
-  private async applyFileChunk(file: EncryptedFileChunk): Promise<void> {
+  private async applyFileChunk(file: EncryptedFileChunk, current = () => !this.destroyed): Promise<void> {
     if (this.completedFileIds.has(file.fileId) || this.deletedFileIds.has(file.fileId)) {
       return;
     }
-    if (file.index < 0 || file.index >= file.total || file.total < 1 || file.total > 8192) {
-      return;
+    if (!validChunk(file)) throw new FileTransferError('file_transfer_invalid');
+    const now = Date.now();
+    let transfer = this.fileTransfers.get(file.fileId);
+    if (!transfer) {
+      if (this.fileTransfers.size >= 4) throw new FileTransferError('file_storage_capacity');
+      transfer = { spool: this.fileReceiveStore.create(file.fileId, file.totalBytes, file.total), seen: new Set<number>(), processing: new Map<number, Promise<void>>(),
+        total: file.total, totalBytes: file.totalBytes, receivedBytes: 0, updatedAt: now };
+      // Install before the first await: duplicate direct/relay messages must not
+      // create competing partial transfers or decrypt the same index twice.
+      this.fileTransfers.set(file.fileId, transfer);
     }
-    const transfer: FileTransfer = this.fileTransfers.get(file.fileId) ?? {
-      chunks: new Array<Uint8Array>(file.total),
-      seen: new Set<number>(),
-      total: file.total,
-      totalBytes: file.totalBytes
-    };
+    if (transfer.total !== file.total || transfer.totalBytes !== file.totalBytes
+      || (transfer.deviceId && transfer.deviceId !== file.deviceId)) throw new FileTransferError('file_transfer_invalid');
+    if (transfer.seen.has(file.index)) { await this.completeFileTransfer(file.fileId, transfer, current); return; }
+    const underway = transfer.processing.get(file.index);
+    if (underway) { await underway; await this.completeFileTransfer(file.fileId, transfer, current); return; }
+    let accept!: () => void, reject!: (error: unknown) => void;
+    const persisted = new Promise<void>((yes, no) => { accept = yes; reject = no; });
+    persisted.catch(() => undefined);
+    transfer.processing.set(file.index, persisted);
+    transfer.updatedAt = now;
     if (!transfer.createdAt && file.createdAt) {
       transfer.createdAt = file.createdAt;
     }
@@ -1184,38 +1356,61 @@ export class TunnelSync {
     if (!transfer.deviceNick && file.deviceNick) {
       transfer.deviceNick = file.deviceNick;
     }
-    if (file.metaNonce && file.metaCiphertext) {
-      const metaBytes = await decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext);
-      transfer.meta = JSON.parse(decode(metaBytes)) as {
-        readonly name?: string;
-        readonly type?: string;
-        readonly size?: number;
-        readonly autoDownload?: boolean;
-        readonly delivery?: string;
-        readonly commandId?: string;
-      };
-    }
-    if (!transfer.seen.has(file.index)) {
-      transfer.chunks[file.index] = await decryptFromTunnel(this.tunnel, file.nonce, file.ciphertext);
+    try {
+      if (file.metaNonce && file.metaCiphertext) {
+        const metaBytes = await decryptFromTunnel(this.tunnel, file.metaNonce, file.metaCiphertext);
+        if (!current()) return;
+        const meta = JSON.parse(decode(metaBytes)) as NonNullable<FileTransfer["meta"]>;
+        if (!meta || typeof meta !== "object" || typeof meta.name !== "string" || meta.size !== file.totalBytes
+          || (meta.type !== undefined && typeof meta.type !== "string")) throw new FileTransferError("file_transfer_invalid");
+        if (transfer.meta && JSON.stringify(transfer.meta) !== JSON.stringify(meta)) throw new FileTransferError("file_transfer_invalid");
+        transfer.meta = meta;
+      }
+      const bytes = await decryptFromTunnel(this.tunnel, file.nonce, file.ciphertext);
+      if (bytes.byteLength !== file.bytes || transfer.receivedBytes + bytes.byteLength > transfer.totalBytes) throw new FileTransferError("file_transfer_invalid");
+      if (!current() || this.fileTransfers.get(file.fileId) !== transfer || this.deletedFileIds.has(file.fileId)) return;
+      await transfer.spool.put(file.index, bytes);
+      if (this.fileTransfers.get(file.fileId) !== transfer || this.deletedFileIds.has(file.fileId)) return;
+      transfer.receivedBytes += bytes.byteLength;
       transfer.seen.add(file.index);
+    } catch (error) {
+      reject(error);
+      await this.fileReceiveStore.remove(file.fileId);
+      this.fileTransfers.delete(file.fileId);
+      throw error;
+    } finally {
+      transfer.processing.delete(file.index);
+      accept();
     }
-    transfer.total = file.total;
-    transfer.totalBytes = file.totalBytes;
-    this.fileTransfers.set(file.fileId, transfer);
+    if (current()) await this.completeFileTransfer(file.fileId, transfer, current);
+  }
+
+  private async completeFileTransfer(fileId: string, transfer: FileTransfer, current: () => boolean): Promise<void> {
     if (transfer.seen.size !== transfer.total || !transfer.meta) {
       return;
     }
-    const bodyBytes = concatChunks(transfer.chunks);
-    const type = transfer.meta.type || "application/octet-stream";
-    const body = bodyBytes.buffer.slice(bodyBytes.byteOffset, bodyBytes.byteOffset + bodyBytes.byteLength) as ArrayBuffer;
-    const blob = new Blob([body], { type });
+    if (transfer.receivedBytes !== transfer.totalBytes || this.completedFileIds.has(fileId)) {
+      return;
+    }
+    const type = (transfer.meta.type || "application/octet-stream").slice(0, 160);
+    let blob: Blob;
+    try { blob = await (transfer.finishing ??= transfer.spool.finish(type)); }
+    catch (error) { await this.fileReceiveStore.remove(fileId); this.fileTransfers.delete(fileId); throw error; }
+    if (!current() || this.deletedFileIds.has(fileId) || this.completedFileIds.has(fileId)) return;
+    const url = URL.createObjectURL(blob);
+    this.fileUrls.set(fileId, url);
+    this.fileTransfers.delete(fileId);
+    this.pendingFiles.delete(fileId);
+    this.callbacks.onFilePending?.([...this.pendingFiles.values()]);
+    rememberBounded(this.completedFileIds, fileId);
     this.callbacks.onFile({
-      id: file.fileId,
+      id: fileId,
       name: cleanFileName(transfer.meta.name || "file"),
       type,
-      size: transfer.meta.size || transfer.totalBytes,
-      bytes: bodyBytes,
-      url: URL.createObjectURL(blob),
+      size: blob.size,
+      bytes: new Uint8Array(),
+      blob,
+      url,
       nick: transfer.deviceNick || "",
       deviceId: transfer.deviceId || "",
       createdAt: transfer.createdAt || new Date().toISOString(),
@@ -1223,8 +1418,6 @@ export class TunnelSync {
       ...(transfer.meta.delivery ? { delivery: String(transfer.meta.delivery).slice(0, 80) } : {}),
       ...(transfer.meta.commandId ? { commandId: String(transfer.meta.commandId).slice(0, 120) } : {})
     });
-    this.fileTransfers.delete(file.fileId);
-    rememberBounded(this.completedFileIds, file.fileId);
   }
 
   private async applyLiveDraft(draft: EncryptedLiveDraft): Promise<void> {
@@ -1499,16 +1692,31 @@ export class TunnelSync {
   }
 
   private sendControl(message: ControlMessage): void {
-    this.sendDirectControl(message);
+    if (this.destroyed) throw new FileTransferError("file_transfer_closed");
+    const json = JSON.stringify(message), bytes = wireBytes(json);
     if (message.type === "file") {
-      this.pendingFileControls.set(message.file.id, message);
-    }
-    const ws = this.ws;
-    if (this.ready && ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+      const ticket = this.fileOutbox.reserve(message.file.id, bytes);
+      void ticket.send(json).then(() => { if (!this.destroyed) this.sendDirectControl(message); })
+        .catch(() => { if (!this.destroyed) this.callbacks.onState("connecting"); });
       return;
     }
+    const ws = this.ws;
+    if (this.ready && ws?.readyState === WebSocket.OPEN && ws.bufferedAmount + bytes <= maxSocketBufferedBytes) {
+      this.sendDirectControl(message);
+      ws.send(json);
+      return;
+    }
+    // A live draft supersedes earlier drafts; actions must fail visibly instead
+    // of silently disappearing or creating an unbounded offline command queue.
+    if (message.type === "live.draft") {
+      const old = this.controlQueue.findIndex(item => item.type === "live.draft");
+      if (old >= 0) this.controlQueueBytes -= wireBytes(JSON.stringify(this.controlQueue.splice(old, 1)[0]));
+    }
+    if (this.controlQueue.length >= maxControlQueueCount || this.controlQueueBytes + bytes > maxControlQueueBytes) throw new FileTransferError("file_transfer_busy");
+    this.sendDirectControl(message);
     this.controlQueue.push(message);
+    this.controlQueueBytes += bytes;
+    this.scheduleControlFlush();
   }
 
   private sendDirectControl(message: ControlMessage): void {
@@ -1629,22 +1837,28 @@ export class TunnelSync {
 
   private flushControls(): void {
     const ws = this.ws;
-    if (ws?.readyState !== WebSocket.OPEN) {
+    if (!this.ready || ws?.readyState !== WebSocket.OPEN) {
       return;
     }
-    const sent = new Set<string>();
-    const pendingFiles = [...this.pendingFileControls.values()];
-    const queued = this.controlQueue.splice(0);
-    for (const message of [...pendingFiles, ...queued]) {
-      const id = controlMessageId(message);
-      if (id && sent.has(id)) {
-        continue;
-      }
-      if (id) {
-        sent.add(id);
-      }
-      ws.send(JSON.stringify(message));
+    while (this.controlQueue.length > 0) {
+      const json = JSON.stringify(this.controlQueue[0]), bytes = wireBytes(json);
+      // A supported large script can exceed the normal watermark by itself.
+      if (ws.bufferedAmount > 0 && ws.bufferedAmount + bytes > maxSocketBufferedBytes) break;
+      try { ws.send(json); } catch { break; }
+      this.controlQueue.shift(); this.controlQueueBytes -= bytes;
     }
+    this.scheduleControlFlush();
+  }
+
+  private scheduleControlFlush(): void {
+    if (this.destroyed || this.controlQueue.length === 0 || this.controlFlushTimer) return;
+    this.controlFlushTimer = window.setTimeout(() => { this.controlFlushTimer = 0; this.flushControls(); }, 50);
+  }
+
+  private releaseFileUrl(fileId: string): void {
+    const url = this.fileUrls.get(fileId);
+    if (url) URL.revokeObjectURL(url);
+    this.fileUrls.delete(fileId);
   }
 
   private syncP2pPeers(peers: readonly PeerInfo[]): void {
@@ -1865,9 +2079,14 @@ export class TunnelSync {
 
   private broadcastDirect(message: DirectMessage): boolean {
     const json = JSON.stringify(message);
+    const bytes = wireBytes(json);
     let sent = false;
     for (const link of this.p2pPeers.values()) {
       if (link.channel?.readyState === "open") {
+        // The relay is the compatible fallback for oversized or congested SCTP.
+        const negotiated = link.pc.sctp?.maxMessageSize;
+        const maxMessage = negotiated === 0 ? Infinity : negotiated || 65_536;
+        if (bytes > maxMessage || link.channel.bufferedAmount + bytes > maxSocketBufferedBytes) continue;
         try {
           link.channel.send(json);
           sent = true;
@@ -2043,13 +2262,6 @@ export class TunnelSync {
   }
 }
 
-function controlMessageId(message: ControlMessage): string {
-  if (message.type === "file") {
-    return message.file.id;
-  }
-  return "";
-}
-
 function cleanFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]/gu, "_").slice(0, 120) || "file";
 }
@@ -2078,10 +2290,6 @@ function cleanFileId(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/gu, "_").slice(0, 120);
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 function cleanTerminalLine(value: string): string {
   return value
     .replace(/\r\n?/gu, "\n")
@@ -2093,20 +2301,6 @@ function cleanTerminalLine(value: string): string {
 
 function terminalStateFrom(value: unknown): TerminalSnapshot["state"] {
   return value === "run" || value === "ok" || value === "bad" || value === "off" ? value : "idle";
-}
-
-function concatChunks(chunks: readonly Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, chunk) => sum + (chunk?.byteLength ?? 0), 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    if (!chunk) {
-      continue;
-    }
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return result;
 }
 
 function rememberBounded(items: Set<string>, id: string, max = 4096): boolean {

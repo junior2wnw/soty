@@ -2,15 +2,17 @@ import type { ConnectClient } from '../../modules/connect/browser/index.mjs';
 import { button, el, emptyState, labeledField, textInput } from '../world/dom';
 import { icon } from '../world/icons';
 import { createDialog, errorText, type WorldDialog } from '../world/dialogs';
+import { createAppCreateState, type AppCreateDraft, type AppCreateReceipt } from './app-create-state.mjs';
+import { registerUpdateGuard } from './pwa';
 import './local-apps.css';
 
 interface HostDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean }
 interface Proposal { schema: 'soty.local-app.v1'; name: string; port: number; entryPath: string; sourceJobId: string }
 interface Pending { hostDeviceId: string; connectorId: string; jobId: string }
-interface JobResult { job: { id: string; status: string; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
+interface JobResult { job: { id: string; deviceId: string; connectorId: string; status: string; cancelRequested?: boolean; executionUncertain?: boolean; result: { text: string; textTruncated?: boolean; appProposal?: Proposal } | null }; done?: boolean; cursor?: number; events?: { seq: number; type: string; text: string }[] }
 
 function friendly(error: unknown): string {
-  const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+  const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
   const messages: Record<string, string> = {
     apps_device_already_owned: 'Этот компьютер уже связан с другим аккаунтом.',
     apps_connector_offline: 'Коннектор пока не подключён к Сотам.',
@@ -21,6 +23,13 @@ function friendly(error: unknown): string {
     invalid_workspace: 'Укажите папку проекта на выбранном компьютере.',
     job_request_conflict: 'Параметры задачи изменились. Откройте новую задачу.',
     authentication_required: 'Аккаунт изменился. Откройте задачу заново.',
+    app_create_storage_unavailable: 'Браузер не смог сохранить отправку. Освободите место и повторите. Текст остаётся в этом окне.',
+    app_create_lock_unavailable: 'Этот браузер не поддерживает безопасную отправку между вкладками. Откройте Соты в обновлённом браузере.',
+    app_create_pending_unconfirmed: 'Сначала проверьте предыдущую отправку. Её устройство и текст сохранены.',
+    app_create_result_pending: 'Предыдущая задача уже принята. Откройте её результат.',
+    invalid_app_create_receipt: 'Ответ не подтверждает эту отправку. Повторная проверка использует тот же запрос.',
+    invalid_app_create_target: 'Выберите доступное устройство.',
+    invalid_app_create_prompt: 'Проверьте текст задачи и полный путь к папке.',
   };
   return messages[code] ?? errorText(error);
 }
@@ -40,6 +49,15 @@ function forgetPending(key: string, expected: Pending): void {
 
 export function createAppActions(client: ConnectClient, refresh: () => Promise<void>, openAccount?: () => Promise<void>) {
   const dialogs = new Set<WorldDialog>();
+  const createStates = new Map<string, ReturnType<typeof createAppCreateState>>();
+  const beforeUnload = (event: BeforeUnloadEvent) => {
+    if ([...createStates.values()].some(state => state.hasVolatileDraft())) { event.preventDefault(); event.returnValue = ''; }
+  };
+  window.addEventListener('beforeunload', beforeUnload);
+  const unregisterUpdateGuard = registerUpdateGuard(async () => {
+    try { await Promise.all([...createStates.values()].map(state => state.flush())); return [...createStates.values()].every(state => !state.hasUnsavedChanges()); }
+    catch { return false; }
+  });
   const dialog = (title: string, close?: () => void) => {
     const value = createDialog(title, () => { dialogs.delete(value); close?.(); }); dialogs.add(value); return value;
   };
@@ -99,36 +117,78 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     if (/Android|iPhone|iPad/i.test(navigator.userAgent)) body.append(el('p', 'sw-muted', 'Чтобы подключить компьютер, откройте Соты на нём. На телефоне можно открыть свой профиль по QR.'));
   }
 
-  async function agentCreate(communityId?: string): Promise<void> {
-    let closed = false, timer: ReturnType<typeof setTimeout> | undefined;
-    const panel = dialog('Создать с ИИ', () => { closed = true; if (timer) clearTimeout(timer); });
-    const state = await client.getLocalState();
-    if (!state.accountId || closed) return;
-    const accountId = state.accountId, pendingKey = `soty.world.agent:${accountId}`;
+  async function agentCreate(communityId?: string, restore?: Pending): Promise<void> {
+    let closed = false, accountInvalid = false, timer: ReturnType<typeof setTimeout> | undefined, following = '';
+    const eventsAbort = new AbortController();
+    const panel = dialog('Создать с ИИ', () => { closed = true; eventsAbort.abort(); if (timer) clearTimeout(timer); });
+    const identity = await client.getLocalState();
+    if (!identity.accountId || closed) { if (!closed) panel.close(); return; }
+    const accountId = identity.accountId, pendingKey = `soty.world.agent:${accountId}`;
+    let storage: Pick<Storage, 'getItem' | 'setItem'>;
+    try { storage = localStorage; } catch { storage = { getItem() { throw new Error('storage_unavailable'); }, setItem() { throw new Error('storage_unavailable'); } }; }
+    let drafts = createStates.get(accountId);
+    if (!drafts) { drafts = createAppCreateState({ accountId, storage, locks: navigator.locks }); createStates.set(accountId, drafts); }
+    const creation = drafts;
     const note = el('p', 'sw-muted', 'Загружаем ваши устройства…'); note.setAttribute('role', 'status'); panel.body.append(note);
-    const request = <T>(op: string, args: Record<string, unknown>) => client.extension<T>(op, args);
-    async function current(): Promise<boolean> { return !closed && (await client.getLocalState()).accountId === accountId; }
+    async function sameAccount(): Promise<boolean> {
+      if (accountInvalid) return false;
+      const state = await client.getLocalState();
+      if (state.accountId !== accountId) {
+        accountInvalid = true; createStates.delete(accountId); panel.body.replaceChildren(); if (!closed) panel.close(); return false;
+      }
+      return !accountInvalid;
+    }
+    async function current(): Promise<boolean> { return !closed && await sameAccount() && !closed; }
+    const request = async <T>(op: string, args: Record<string, unknown>): Promise<T> => {
+      if (!await current()) throw Object.assign(new Error('authentication_required'), { code: 'authentication_required' });
+      let result: T;
+      try { result = await client.extension<T>(op, { ...args, expectedAccountId: accountId }); }
+      catch (cause) {
+        if (cause && typeof cause === 'object' && 'code' in cause && ['authentication_required', 'device_revoked', 'device_not_found'].includes(String(cause.code))) {
+          accountInvalid = true; createStates.delete(accountId); panel.body.replaceChildren(); if (!closed) panel.close();
+        }
+        throw cause;
+      }
+      if (!await current()) throw Object.assign(new Error('authentication_required'), { code: 'authentication_required' });
+      return result;
+    };
+    async function forget(pending: Pending): Promise<boolean> {
+      if (!await current()) return false;
+      const cleared = await creation.clearAccepted(pending);
+      if (cleared) forgetPending(pendingKey, pending);
+      return cleared;
+    }
+    function newTask(pending: Pending): void {
+      void forget(pending).then(async () => { if (await current()) { panel.close(); void agentCreate(communityId); } })
+        .catch(cause => { if (!closed) { note.textContent = friendly(cause); panel.body.append(note); } });
+    }
+    function label(result: JobResult): string {
+      const job = result.job;
+      if (job.executionUncertain) return 'Результат не подтверждён';
+      if (job.cancelRequested && !['succeeded', 'failed', 'cancelled'].includes(job.status)) return 'Остановка запрошена · ждём устройство';
+      return ({ queued: 'Ждём ваш компьютер', leased: 'Агент подключился', running: 'Создаём приложение',
+        cancelled: 'Задача отменена · изменения не откатываются', failed: 'Нужно проверить результат', succeeded: 'Выполнение завершено' } as Record<string, string>)[job.status] || 'Уточняем состояние';
+    }
 
     async function showResult(result: JobResult, pending: Pending): Promise<void> {
-      // Keep a completed result reachable until the user accepts it or starts a new task.
-      remember(pendingKey, pending);
+      if (!await current()) return;
       const proposal = result.job.result?.appProposal;
-      const success = result.job.status === 'succeeded' && proposal?.schema === 'soty.local-app.v1';
+      const success = result.job.status === 'succeeded' && !result.job.executionUncertain && proposal?.schema === 'soty.local-app.v1';
       const content = el('div', 'sw-stack');
-      content.append(el('h3', '', success ? proposal.name : result.job.status === 'cancelled' ? 'Задача остановлена' : 'Приложение пока не готово'));
+      content.append(el('h3', '', success ? proposal.name : label(result)));
       if (success) {
-        content.append(el('p', 'sw-muted', 'Работает на вашем компьютере. Пока доступно только вам.'));
+        content.append(el('p', 'sw-muted', 'Добавьте приложение, чтобы открыть его в Сотах. Доступ останется личным.'));
         const add = button('Добавить в мои соты', 'plus', 'sw-button-primary', () => {
           add.disabled = true;
           void (async () => {
             try {
               await request('apps.register', { hostDeviceId: pending.hostDeviceId, connectorId: pending.connectorId,
                 name: proposal.name, port: proposal.port, entryPath: proposal.entryPath, grants: { accountIds: [], communityIds: [] } });
-              forgetPending(pendingKey, pending);
+              await forget(pending);
               if (!await current()) return;
               note.textContent = 'Приложение добавлено'; content.replaceChildren(el('h3', '', proposal.name), note, button('Готово', 'check', 'sw-button-primary', () => panel.close()));
               await refresh();
-            } catch (error) { note.textContent = friendly(error); content.append(note); add.disabled = false; }
+            } catch (error) { if (await current()) { note.textContent = friendly(error); content.append(note); add.disabled = false; } }
           })();
         });
         content.append(add);
@@ -140,33 +200,36 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
           download.disabled = true;
           void (async () => {
             try {
-              const parts: string[] = []; let offset: number | null = 0;
+              const parts: string[] = []; let offset: number | null = 0, length = 0;
               while (offset !== null && await current()) {
                 const page: { text: string; nextOffset: number | null } = await request('apps.agent.result', { ...pending, offset });
+                if (typeof page.text !== 'string' || (length += page.text.length) > 4_000_000 || parts.length >= 500
+                  || (page.nextOffset !== null && (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset))) throw new Error('invalid_result_page');
                 parts.push(page.text); offset = page.nextOffset;
               }
               if (!await current()) return;
               const url = URL.createObjectURL(new Blob(parts, { type: 'text/plain;charset=utf-8' }));
               const link = el('a'); link.href = url; link.download = 'soty-agent-result.txt'; link.click();
               setTimeout(() => URL.revokeObjectURL(url), 1000);
-            } catch (cause) { note.textContent = friendly(cause); content.append(note); }
-            finally { download.disabled = false; }
+            } catch (cause) { if (await current()) { note.textContent = friendly(cause); content.append(note); } }
+            finally { if (!closed) download.disabled = false; }
           })();
         });
         detail.append(el('small', 'sw-muted', 'Показан фрагмент длинного ответа.'), download);
       }
-      content.append(detail, button('Новая задача', 'plus', 'sw-button-quiet', () => { forgetPending(pendingKey, pending); panel.close(); void agentCreate(communityId); })); panel.body.replaceChildren(content);
+      content.append(detail, button('Новая задача', 'plus', 'sw-button-quiet', () => newTask(pending))); panel.body.replaceChildren(content);
     }
 
     function follow(pending: Pending): void {
-      remember(pendingKey, pending);
+      if (closed || following === pending.jobId) return;
+      following = pending.jobId; if (timer) clearTimeout(timer);
       const activity = el('div', 'sw-stack');
       const progress = el('p', 'sw-agent-progress', 'Задача принята'); progress.setAttribute('role', 'status');
       const events = el('ol', 'sw-agent-events'); events.setAttribute('aria-label', 'Ход создания');
       const cancel = button('Остановить', 'close', 'sw-button-quiet', () => {
         cancel.disabled = true;
-        void request<JobResult>('apps.agent.cancel', { ...pending }).then(() => { progress.textContent = 'Останавливаем…'; })
-          .catch(error => { progress.textContent = friendly(error); cancel.disabled = false; });
+        void request<JobResult>('apps.agent.cancel', { ...pending }).then(result => { if (!closed) progress.textContent = label(result); })
+          .catch(async error => { if (await current()) { progress.textContent = friendly(error); cancel.disabled = false; } });
       });
       activity.append(progress, events, el('small', 'sw-muted', 'Можно закрыть окно — задача продолжится.'), cancel); panel.body.replaceChildren(activity);
       let cursor = 0;
@@ -181,14 +244,15 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
             events.append(el('li', '', text)); while (events.children.length > 5) events.firstElementChild?.remove();
           }
           cursor = result.cursor ?? cursor;
-          progress.textContent = ({ queued: 'Ждём ваш компьютер', leased: 'Агент подключился', running: 'Создаём приложение', cancelled: 'Остановлено', failed: 'Нужно проверить результат', succeeded: 'Приложение готово' } as Record<string, string>)[result.job.status] || 'Выполняется';
+          progress.textContent = label(result);
+          cancel.disabled = Boolean(result.job.cancelRequested);
           if (result.done) { await showResult(result, pending); return; }
         } catch (error) {
           if (!await current()) return;
           progress.textContent = friendly(error);
           const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
           if (code === 'job_not_found') {
-            panel.body.replaceChildren(emptyState('Эта задача больше недоступна', 'Можно начать новую. Уже добавленные приложения остаются в ваших сотах.', button('Новая задача', 'plus', 'sw-button-primary', () => { forgetPending(pendingKey, pending); panel.close(); void agentCreate(communityId); }), 'sparkle'));
+            panel.body.replaceChildren(emptyState('Эта задача больше недоступна', 'Уже добавленные приложения остаются в ваших сотах.', button('Новая задача', 'plus', 'sw-button-primary', () => newTask(pending)), 'sparkle'));
             return;
           }
         }
@@ -197,47 +261,148 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
       void poll();
     }
 
-    const pending = recalled(pendingKey);
-    if (pending) { follow(pending); return; }
+    const saved = creation.read();
+    const known = restore ?? saved.accepted ?? recalled(pendingKey);
+    if (!saved.pending && known) {
+      try { await creation.adoptAccepted(known); } catch { /* A known job remains readable even when browser storage is unavailable. */ }
+      if (await current()) follow(known);
+      return;
+    }
+    const form = el('form', 'sw-stack'), hosts = el('select', 'sw-input');
+    const prompt = el('textarea', 'sw-input'); prompt.rows = 4; prompt.maxLength = 16_000; prompt.required = true; prompt.placeholder = 'Например, общий список покупок';
+    const cwd = textInput('', 'Выбрать существующую папку', 2000);
+    const advanced = el('details', 'sw-agent-details');
+    advanced.append(el('summary', '', 'Папка проекта'), labeledField('Полный путь', cwd, 'Оставьте пустым — создадим отдельную папку.'));
+    const privilege = el('details', 'sw-agent-details'); privilege.append(el('summary', '', 'Работает с правами вашего пользователя'),
+      el('p', 'sw-muted', 'На выбранном устройстве агент может читать файлы, изменять проект и запускать команды. Это ваш доверенный исполнитель; отдельная изоляция внешних агентов пока не включена.'));
+    const error = el('p', 'sw-error'); error.setAttribute('role', 'alert');
+    const status = el('p', 'sw-muted'); status.setAttribute('role', 'status');
+    const create = button('Создать', 'sparkle', 'sw-button-primary'); create.type = 'submit';
+    const availability = el('div', 'sw-stack'), recovery = el('div', 'sw-stack'); recovery.hidden = true;
+    form.append(labeledField('Что создаём?', prompt), labeledField('На устройстве', hosts), advanced, availability, status, error, recovery, create, privilege);
+    panel.body.replaceChildren(form);
+    let devices: HostDevice[] = [], modelReady = false, busy = false, loading = true, editGeneration = 0, loadGeneration = 0;
+    const keyOf = (value: Pick<AppCreateDraft, 'hostDeviceId' | 'connectorId'>) => JSON.stringify([value.hostDeviceId, value.connectorId]);
+    function recoverBeforeClose(event?: Event): boolean {
+      if (!creation.hasVolatileDraft() || accountInvalid) return false;
+      event?.preventDefault(); event?.stopImmediatePropagation();
+      recovery.hidden = false;
+      recovery.replaceChildren(el('p', 'sw-error', 'Черновик не сохранён. Сохраните его или скачайте текст перед закрытием.'),
+        button('Сохранить снова', 'refresh', 'sw-button-quiet', () => {
+          void creation.flush().then(() => { if (!closed) { recovery.hidden = true; error.textContent = ''; updateControls(); } })
+            .catch(cause => { if (!closed) error.textContent = friendly(cause); });
+        }),
+        button('Скачать черновик', 'download', 'sw-button-quiet', () => {
+          const value = creation.read().draft, url = URL.createObjectURL(new Blob([value.text, '\n\nПапка: ', value.cwd], { type: 'text/plain;charset=utf-8' }));
+          const link = el('a'); link.href = url; link.download = 'soty-app-draft.txt'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }),
+        button('Закрыть без несохранённых изменений', 'close', 'sw-button-quiet', () => { creation.discardLocalDraft(); panel.close(); }));
+      return true;
+    }
+    panel.element.addEventListener('cancel', event => { recoverBeforeClose(event); }, { capture: true, signal: eventsAbort.signal });
+    panel.element.querySelector('.sw-dialog-header button')?.addEventListener('click', event => { recoverBeforeClose(event); }, { capture: true, signal: eventsAbort.signal });
+    function fill(preserveInput = false): void {
+      const snapshot = creation.read(), bound = snapshot.pending?.payload ?? snapshot.draft;
+      const keep = preserveInput && !snapshot.pending;
+      const selectedKey = keep ? hosts.value : bound.hostDeviceId && bound.connectorId ? keyOf(bound) : '';
+      if (!keep) { prompt.value = bound.text; cwd.value = bound.cwd; }
+      hosts.replaceChildren(el('option', '', 'Выберите устройство'));
+      hosts.options[0]!.value = '';
+      for (const device of devices) { const option = el('option', '', `${device.name}${device.online ? '' : ' · не в сети'}`); option.value = keyOf(device); hosts.append(option); }
+      if (selectedKey && !devices.some(device => keyOf(device) === selectedKey)) {
+        const missing = el('option', '', 'Выбранное устройство недоступно'); missing.value = selectedKey; hosts.append(missing);
+      }
+      hosts.value = selectedKey;
+      updateControls();
+    }
+    function updateControls(): void {
+      if (closed || following) return;
+      const snapshot = creation.read(), pending = snapshot.pending;
+      prompt.readOnly = Boolean(pending) || busy; hosts.disabled = Boolean(pending) || busy; cwd.readOnly = Boolean(pending) || busy;
+      create.replaceChildren(icon(pending ? 'refresh' : 'sparkle'), el('span', '', pending ? 'Проверить отправку' : 'Создать'));
+      create.disabled = busy || !creation.canDispatch() || (!pending && (loading || !modelReady || !prompt.value.trim() || !devices.some(device => keyOf(device) === hosts.value)));
+      status.textContent = creation.hasUnsavedChanges() ? 'Черновик только в этом окне. Перед отправкой нужно сохранить его в браузере.'
+        : pending ? 'Подтверждение не получено. Проверим ту же отправку, не создавая другую задачу.' : prompt.value ? 'Черновик сохранён на этом устройстве.' : '';
+      if (!creation.canDispatch()) error.textContent = friendly(new Error('app_create_lock_unavailable'));
+    }
+    async function saveDraft(): Promise<void> {
+      const revision = ++editGeneration, device = devices.find(value => keyOf(value) === hosts.value);
+      const previous = creation.read().draft;
+      const patch = { text: prompt.value, cwd: cwd.value, hostDeviceId: device?.hostDeviceId ?? previous.hostDeviceId,
+        connectorId: device?.connectorId ?? previous.connectorId };
+      try {
+        const staged = creation.stageDraft(patch);
+        updateControls();
+        if (!await sameAccount()) return;
+        if (revision !== editGeneration) return;
+        await creation.persistDraft(staged);
+      } catch (cause) { if (!closed && revision === editGeneration) error.textContent = friendly(cause); }
+      if (!closed && revision === editGeneration) updateControls();
+    }
+    prompt.addEventListener('input', () => { void saveDraft(); }); cwd.addEventListener('input', () => { void saveDraft(); });
+    hosts.addEventListener('change', () => { if (cwd.value) { cwd.value = ''; error.textContent = 'Выбрано другое устройство. Проверьте папку проекта.'; } void saveDraft(); });
+    async function loadDevices(): Promise<void> {
+      const version = ++loadGeneration; loading = true; updateControls();
+      const values = await Promise.allSettled([request<{ devices: HostDevice[] }>('apps.devices', {}),
+        fetch('/api/apps/capabilities', { cache: 'no-store', signal: AbortSignal.timeout(8000) }).then(async response => {
+          if (!response.ok) throw new TypeError('Network unavailable'); return await response.json() as { agentConfigured: boolean };
+        })]);
+      if (!await current() || version !== loadGeneration) return;
+      loading = false;
+      devices = values[0].status === 'fulfilled' ? values[0].value.devices : [];
+      modelReady = values[1].status === 'fulfilled' && values[1].value.agentConfigured === true;
+      availability.replaceChildren();
+      if (!devices.length) availability.append(el('p', 'sw-muted', 'Нет доступного компьютера для новой задачи.'),
+        button('Подключить компьютер', 'laptop', 'sw-button-quiet', () => { if (!recoverBeforeClose()) { panel.close(); void connectDevice(); } }));
+      if (!modelReady) availability.append(el('p', 'sw-muted', 'Подключение к ИИ пока недоступно. Сохранённую отправку можно проверить.'));
+      if (!devices.length || !modelReady) availability.append(button('Проверить доступность', 'refresh', 'sw-button-quiet', () => { void loadDevices(); }));
+      fill(true);
+    }
+    form.addEventListener('submit', event => {
+      event.preventDefault(); if (busy) return;
+      void (async () => {
+        if (!await current()) return;
+        busy = true; error.textContent = ''; updateControls();
+        try {
+          const snapshot = creation.read(), device = devices.find(value => keyOf(value) === hosts.value);
+          if (snapshot.accepted) { follow(snapshot.accepted); return; }
+          if (!snapshot.pending && (!device || !modelReady || !prompt.value.trim())) return;
+          // Re-read under the lock on every retry; even an already visible
+          // pending cannot dispatch through an unreadable storage record.
+          const pending = await creation.prepare(snapshot.pending?.payload ?? { expectedAccountId: accountId, hostDeviceId: device!.hostDeviceId,
+            connectorId: device!.connectorId, text: prompt.value, cwd: cwd.value });
+          if (!await current()) return;
+          fill();
+          // A late response may settle the durable intent after the modal closes,
+          // but only in the same account. It must never repaint a closed dialog.
+          const result = await client.extension<JobResult | { admission: AppCreateReceipt }>('apps.agent.create', { ...pending.payload });
+          if (!await sameAccount()) return;
+          if ('admission' in result) {
+            await creation.reject(pending.payload, result.admission);
+            if (!closed) { if (result.admission.reason === 'app_model_unavailable') modelReady = false; fill(); error.textContent = friendly({ code: result.admission.reason }); }
+            return;
+          }
+          if (result.job.deviceId !== pending.payload.hostDeviceId || result.job.connectorId !== pending.payload.connectorId) throw new Error('invalid_app_create_receipt');
+          const accepted = { hostDeviceId: pending.payload.hostDeviceId, connectorId: pending.payload.connectorId, jobId: result.job.id };
+          const acknowledged = await creation.acknowledge(pending.payload, accepted);
+          if (await current() && (acknowledged || creation.read().accepted?.jobId === accepted.jobId)) follow(accepted);
+        } catch (cause) {
+          if (cause && typeof cause === 'object' && 'code' in cause && ['authentication_required', 'device_revoked', 'device_not_found'].includes(String(cause.code))) {
+            accountInvalid = true; createStates.delete(accountId); panel.body.replaceChildren(); if (!closed) panel.close();
+          } else if (await current()) { const accepted = creation.read().accepted; if (accepted) follow(accepted); else { fill(); error.textContent = friendly(cause); } }
+        }
+        finally { busy = false; if (await current()) updateControls(); }
+      })();
+    });
+    window.addEventListener('storage', event => {
+      if (event.key !== creation.key) return;
+      void current().then(valid => { if (!valid || busy || following) return; const value = creation.read(); if (value.accepted) follow(value.accepted); else fill(); });
+    }, { signal: eventsAbort.signal });
+    fill(); prompt.focus();
     try {
-      const { devices } = await request<{ devices: HostDevice[] }>('apps.devices', {});
-      if (!await current()) return;
-      if (!devices.length) {
-        panel.body.replaceChildren(emptyState('Подключите компьютер', 'На нём агент создаст и запустит приложение.', button('Подключить', 'laptop', 'sw-button-primary', () => { panel.close(); void connectDevice(); }), 'laptop'));
-        return;
-      }
-      const capabilityResponse = await fetch('/api/apps/capabilities', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
-      if (!capabilityResponse.ok) throw new TypeError('Network unavailable');
-      const capabilities = await capabilityResponse.json() as { agentConfigured: boolean };
-      if (!await current()) return;
-      if (!capabilities.agentConfigured) {
-        panel.body.replaceChildren(emptyState('ИИ пока недоступен', 'Подключение к модели ещё не настроено.',
-          button('Проверить снова', 'refresh', 'sw-button-primary', () => { panel.close(); void agentCreate(communityId); }), 'sparkle'));
-        return;
-      }
-      const form = el('form', 'sw-stack');
-      const hosts = el('select', 'sw-input');
-      for (const [index, device] of devices.entries()) { const item = el('option', '', `${device.name}${device.online ? '' : ' · не в сети'}`); item.value = String(index); hosts.append(item); }
-      const prompt = el('textarea', 'sw-input'); prompt.rows = 4; prompt.maxLength = 16_000; prompt.required = true; prompt.placeholder = 'Например, общий список покупок';
-      const cwd = textInput('', 'Выбрать существующую папку', 2000);
-      const advanced = el('details', 'sw-agent-details');
-      advanced.append(el('summary', '', 'Папка проекта'), labeledField('Полный путь', cwd, 'Оставьте пустым — создадим отдельную папку.'));
-      const error = el('p', 'sw-error'); error.setAttribute('role', 'alert');
-      const create = button('Создать', 'sparkle', 'sw-button-primary'); create.type = 'submit';
-      form.append(labeledField('Что создаём?', prompt), labeledField('На устройстве', hosts), advanced, error, create);
-      let requestId = crypto.randomUUID(), fingerprint = '', busy = false;
-      form.addEventListener('submit', event => {
-        event.preventDefault(); if (busy) return;
-        const host = devices[Number(hosts.value)]; if (!host) return;
-        const value = { hostDeviceId: host.hostDeviceId, connectorId: host.connectorId, text: prompt.value.trim(), cwd: cwd.value.trim() };
-        const next = JSON.stringify(value); if (fingerprint && fingerprint !== next) requestId = crypto.randomUUID(); fingerprint = next;
-        busy = true; create.disabled = true; error.textContent = '';
-        void request<JobResult>('apps.agent.create', { ...value, requestId }).then(async result => {
-          if (await current()) follow({ hostDeviceId: host.hostDeviceId, connectorId: host.connectorId, jobId: result.job.id });
-        }).catch(cause => { if (!closed) error.textContent = friendly(cause); }).finally(() => { busy = false; create.disabled = false; });
-      });
-      panel.body.replaceChildren(form); prompt.focus();
-    } catch (error) { if (!closed) note.textContent = friendly(error); }
+      await loadDevices();
+    } catch (cause) { if (await current()) { error.textContent = friendly(cause); loading = false; updateControls(); } }
   }
-  return { connectDevice, agentCreate, destroy: () => { for (const panel of [...dialogs]) panel.close(); dialogs.clear(); } };
+  const resetAccount = () => { for (const panel of [...dialogs]) panel.close(); dialogs.clear(); createStates.clear(); };
+  return { connectDevice, agentCreate, resetAccount, destroy: () => { resetAccount(); unregisterUpdateGuard(); window.removeEventListener('beforeunload', beforeUnload); } };
 }

@@ -26,6 +26,20 @@ test('default middle is a valid palette, malformed or old preferences have safe 
   assert.equal(contrast(mix('#000000', '#ffffff', .5), mix('#ffffff', '#000000', .5)), 1);
 });
 
+test('the neutral shell has legible primary actions across the whole brightness range', () => {
+  for (const scheme of ['light', 'dark']) for (let brightness = 0; brightness <= 100; brightness++) {
+    const palette = createPalette(scheme, brightness);
+    for (const background of ['--sw-action', '--sw-action-hover']) {
+      assert.ok(contrast(palette['--sw-action-ink'], palette[background]) >= 4.5, `${scheme} ${brightness}: primary action text`);
+    }
+    for (const foreground of ['--sw-ink', '--sw-muted']) {
+      assert.ok(contrast(palette[foreground], palette['--sw-chrome']) >= 4.5, `${scheme} ${brightness}: navigation text`);
+    }
+  }
+  assert.equal(createPalette('dark', 50)['--sw-bg'], '#101112');
+  assert.equal(createPalette('light', 50)['--sw-bg'], '#f5f4f0');
+});
+
 test('world styling consumes semantic colors and has no legacy personal or hex shape rules', () => {
   const postcss = createRequire(import.meta.resolve('vite'))('postcss');
   const ast = postcss.parse(readFileSync(new URL('./world.css', import.meta.url), 'utf8'));

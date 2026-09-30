@@ -125,6 +125,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function execute({ op, args = {}, actor }) {
     assertApps(!closed, 'apps_closed', 503); assertActor(actor); assertApps(operations.has(op), 'unsupported_operation');
     assertApps(args && typeof args === 'object' && !Array.isArray(args), 'invalid_arguments');
+    // Bind a modern view to the account in which it was opened. Existing
+    // signed clients without this optional guard retain their own-actor scope.
+    if (Object.hasOwn(args, 'expectedAccountId')) {
+      assertApps(args.expectedAccountId === actor.accountId, 'authentication_required', 401);
+      const { expectedAccountId: _expectedAccountId, ...operationArgs } = args;
+      args = operationArgs;
+    }
     if (op === 'apps.devices') {
       exact(args, []);
       return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(item => {

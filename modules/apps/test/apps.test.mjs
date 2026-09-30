@@ -61,6 +61,25 @@ test('TLS edge permits only an enabled registered app on its exact isolated host
   assert.equal(env.service.allowsTlsDomain(domain), false);
 });
 
+test('expected account guards every app operation before reads or mutation while legacy clients remain compatible', async t => {
+  const env = await setup(); t.after(env.close);
+  const expectedAccountId = owner.accountId;
+  assert.equal(env.call(owner, 'apps.devices', { expectedAccountId }).devices.length, 1);
+  assert.equal(env.call(owner, 'apps.list', { expectedAccountId }).apps[0].id, env.app.id);
+  assert.equal(env.call(owner, 'apps.devices').devices.length, 1);
+  assert.throws(() => env.call(owner, 'apps.devices', { expectedAccountId, extra: true }), /unexpected_argument/u);
+  for (const op of ['apps.devices', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.claim']) {
+    assert.throws(() => env.call(outsider, op, { expectedAccountId, appId: env.app.id }), /authentication_required/u);
+  }
+  for (const invalid of ['', null, 42, {}, ['acct_owner']]) {
+    assert.throws(() => env.call(owner, 'apps.devices', { expectedAccountId: invalid }), /authentication_required/u);
+  }
+  assert.equal(env.call(owner, 'apps.register', { expectedAccountId, hostDeviceId: 'host_test', connectorId: 'connector_test',
+    name: 'Покупки', port: env.sample.port, grants: { communityIds: ['community_family'] } }).app.id, env.app.id);
+  assert.equal(env.call(owner, 'apps.update', { expectedAccountId, appId: env.app.id, name: 'Список покупок' }).app.name, 'Список покупок');
+  assert.equal(env.call(owner, 'apps.list', { expectedAccountId }).apps.length, 1);
+});
+
 test('real app HTTP/assets/POST and WebSocket work for two principals; third is denied; revoke closes current access', async t => {
   const env = await setup(); t.after(env.close);
   const ownerCookie = await env.launch(owner), memberCookie = await env.launch(member);

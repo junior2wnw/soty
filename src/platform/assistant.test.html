@@ -1,0 +1,40 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assistant isolated acceptance fixture</title>
+<style>body{margin:0;background:var(--sw-bg);color:var(--sw-ink);font-family:Manrope,system-ui,sans-serif}.qa-controls{padding:12px;display:flex;gap:8px;flex-wrap:wrap}.qa-controls button{padding:10px;font:inherit}#proof{padding:12px}.sw-app.qa-host{position:relative;inset:auto;display:block;overflow:visible}</style>
+<div class="qa-controls"><strong>Только тестовые данные · никакого исполнения или API</strong><button id="remount">Открыть заново</button><button id="deny">Закрыть доступ к задаче</button><button id="account">Сменить тестовый аккаунт</button><button id="history-error">Ошибка истории</button></div>
+<output id="proof" aria-label="Проверка отправки"></output><main id="host" class="sw-app qa-host"></main>
+<script type="module">
+import '../world/world.css';
+import '../world/shell.css';
+import { createPalette } from '../world/theme/palette.mjs';
+import { mountAssistant } from './assistant.ts';
+for(const [key,value] of Object.entries(createPalette('dark',50)))document.documentElement.style.setProperty(key,value);
+let accountId='qa_assistant_'+crypto.randomUUID(), handle, accepted=null, denied=false, calls=0, historyError=false;
+const first={hostDeviceId:'qa_host_a',connectorId:'qa_connector_a',name:'Тестовый компьютер A',online:true};
+const second={hostDeviceId:'qa_host_b',connectorId:'qa_connector_b',name:'Тестовый компьютер B',online:true};
+const proof=document.querySelector('#proof'), root=document.querySelector('#host');
+// This standalone dev fixture never imports production composition or issues network requests.
+window.fetch=async()=>new Response(JSON.stringify({agentConfigured:true}),{headers:{'content-type':'application/json'}});
+const client={async getLocalState(){return {accountId};},async extension(op,args){
+ if(op==='apps.devices')return {devices:calls?[second,first]:[first,second]};
+ if(op==='apps.assistant.history'){if(historyError)throw new TypeError('synthetic history unavailable');return {jobs:accepted?[{...first,id:'qa_job_a',threadId:'assistant_'+accepted.conversationId,text:accepted.text,cwd:accepted.cwd,appCreation:false,status:'succeeded',createdAt:new Date().toISOString()}]:[],nextCursor:null};}
+ if(op==='apps.assistant.send'){
+  calls++;
+  if(!accepted){accepted=structuredClone(args);proof.textContent='Потеря подтверждения: сервер принял одну тестовую задачу на A.';throw new TypeError('synthetic lost ACK');}
+  if(JSON.stringify(args)!==JSON.stringify(accepted))throw new Error('changed request');
+  proof.textContent='PASS: тот же запрос и компьютер A. Принята ровно одна тестовая задача.';
+  return {job:{id:'qa_job_a'}};
+ }
+ if(op==='apps.agent.read'){
+  if(denied)throw Object.assign(new Error('synthetic revoked'),{code:'job_not_found'});
+  return {job:{id:'qa_job_a',threadId:'assistant_'+accepted.conversationId,status:'succeeded',cancelRequested:false,executionUncertain:false,result:{text:'Тестовый результат без исполнения.'}},task:{text:accepted.text,cwd:accepted.cwd,appCreation:false,canContinue:true},done:true,events:[],cursor:0};
+ }
+ throw new Error('unexpected synthetic operation '+op);
+}};
+async function remount(){handle?.dispose();handle=await mountAssistant(root,{client,connectDevice(){},createApp(){},resumeApp(){}});}
+document.querySelector('#remount').onclick=()=>void remount();
+document.querySelector('#deny').onclick=()=>{denied=true;void remount();};
+document.querySelector('#account').onclick=()=>{accountId='qa_changed_'+crypto.randomUUID();void handle.refresh();};
+document.querySelector('#history-error').onclick=()=>{historyError=!historyError;void handle.refresh();};
+await remount();
+</script></html>

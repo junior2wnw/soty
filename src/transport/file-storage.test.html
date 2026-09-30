@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Isolated receive storage verification</title>
+<style>body{font:16px system-ui;padding:32px;background:#111821;color:#e5edf4}pre{white-space:pre-wrap}button{padding:12px 20px}</style>
+<h1>Browser file storage verification</h1><p id="status">Ready. This test uses temporary local browser storage only.</p>
+<button id="start">Run 512 MB test</button><pre id="result"></pre>
+<script type="module">
+import { createFileReceiveStore } from './file-receive-store.mjs';
+const button = document.querySelector('#start'), status = document.querySelector('#status'), result = document.querySelector('#result');
+let running = false;
+async function run() {
+  if (running) return; running = true; button.disabled = true;
+  const store = createFileReceiveStore(), size = 512_000_000, block = 256_000, total = size / block;
+  let peakHeap = 0, peakOperations = 0, verified = 0, phase = 'write';
+  const baselineHeap = performance.memory?.usedJSHeapSize ?? 0, phaseHeap = { write: 0, assembly: 0, verify: 0 };
+  const sample = () => { const heap = performance.memory?.usedJSHeapSize ?? 0; peakHeap = Math.max(peakHeap, heap); phaseHeap[phase] = Math.max(phaseHeap[phase], heap); peakOperations = Math.max(peakOperations, store.stats().operations); };
+  const monitor = setInterval(sample, 50), started = performance.now();
+  try {
+    if (!navigator.storage?.getDirectory || !navigator.locks?.request) throw new Error('OPFS/locks unavailable in this browser');
+    const spool = store.create('browser_large', size, total);
+    for (let index = 0; index < total; index++) {
+      const bytes = new Uint8Array(block);
+      for (let n = 0; n < bytes.length; n++) bytes[n] = (n * 31 + index * 17 + (n >>> 8)) & 255;
+      const writing = spool.put(index, bytes); sample(); await writing;
+      if (index % 100 === 0) status.textContent = 'Stored ' + ((index + 1) * block) + ' / ' + size;
+    }
+    phase = 'assembly'; status.textContent = 'Assembling disk-backed download';
+    const file = await spool.finish('application/octet-stream');
+    if (!(file instanceof File) || file.size !== size || store.stats().reservedMemory !== 0) throw new Error('Expected a disk-backed OPFS File');
+    phase = 'verify'; status.textContent = 'Verifying every byte through File.stream()';
+    const reader = file.stream().getReader();
+    while (true) {
+      const next = await reader.read(); if (next.done) break;
+      const bytes = next.value;
+      for (let n = 0; n < bytes.length; n++) {
+        const position = verified + n, index = Math.floor(position / block), local = position % block;
+        if (bytes[n] !== ((local * 31 + index * 17 + (local >>> 8)) & 255)) throw new Error('Byte mismatch at ' + position);
+      }
+      verified += bytes.length; sample();
+    }
+    if (verified !== size) throw new Error('Incomplete stream');
+    const summary = { pass: true, bytes: verified, chunks: total, fileClass: file.constructor.name, reservedMemory: store.stats().reservedMemory,
+      peakOperations, baselineHeap, phaseHeap, sampledJsHeap: peakHeap || null, seconds: Math.round((performance.now() - started) / 1000),
+      scope: 'Real desktop browser OPFS. JS heap is not total RSS or a mobile-device measurement.' };
+    await store.close();
+    status.textContent = 'PASS: all bytes match; temporary cache removed.';
+    result.textContent = JSON.stringify(summary, null, 2);
+    window.fileStorageTestResult = summary;
+  } catch (error) {
+    await store.close();
+    const summary = { pass: false, error: String(error), verified };
+    result.textContent = JSON.stringify(summary); status.textContent = 'FAILED';
+    window.fileStorageTestResult = summary;
+  } finally { clearInterval(monitor); running = false; button.disabled = false; }
+}
+button.addEventListener('click', run);
+if (new URLSearchParams(location.search).has('run')) void run();
+</script>

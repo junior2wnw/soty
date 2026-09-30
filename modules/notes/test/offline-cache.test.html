@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Notes cache — real IndexedDB acceptance</title>
+<body><h1>Notes cache — real IndexedDB acceptance</h1><pre id="result" role="status">Running…</pre>
+<script type="module">
+import { createIndexedNoteCacheStorage, createNoteCache, readNoteWithCache } from '../browser/cache.mjs';
+const result = document.querySelector('#result'); const name = `soty-notes-cache-test-${crypto.randomUUID()}`; const opened = []; const passed = [];
+const factory = { open(_name, version) { const request = indexedDB.open(name, version); request.addEventListener('success', () => opened.push(request.result)); return request; } };
+const storage = createIndexedNoteCacheStorage(factory); let now = 100;
+const create = (account = 'account_browser', project = 'project_browser', origin = location.origin) => createNoteCache(account, project, { origin, storage, clock: () => ++now, limits: { scopeCount: 2, scopeBytes: 2000, count: 3, bytes: 3000, entryBytes: 1500 } });
+const note = body => ({ noteId: crypto.randomUUID(), body, title: 'Browser fixture', items: [], preview: body, color: 'plain', state: 'active', pinned: false, revision: 1, createdAt: 1, updatedAt: 1 });
+const check = (value, label) => { if (!value) throw new Error(label); passed.push(label); };
+try {
+  const cache = create(); const a = note('A'), b = note('B'), c = note('C');
+  check(await cache.remember(a, await cache.capture()), 'first confirmed snapshot committed');
+  const reopened = create(); check((await reopened.get(a.noteId)).note.body === 'A', 'another cache instance reads committed snapshot');
+  const token = await cache.capture(); await cache.remember(b, token); await cache.get(a.noteId); await cache.remember(c, token);
+  check(await cache.get(b.noteId) === null && (await cache.list()).length === 2, 'atomic scope count LRU evicts the untouched snapshot');
+  const bob = create('account_other'); check(await bob.get(a.noteId) === null, 'account scope does not leak');
+  check(await create('account_browser', 'project_other').get(a.noteId) === null, 'project scope does not leak');
+  check(await create('account_browser', 'project_browser', 'https://other.example').get(a.noteId) === null, 'origin scope does not leak in a deliberately shared database');
+  const old = await cache.capture(); await cache.remove(a.noteId);
+  check(await cache.remember(a, old) === false && await reopened.get(a.noteId) === null, 'durable epoch rejects a delayed write after deletion');
+  const token2 = await cache.capture(); await cache.remember(a, token2); await cache.remember({ ...a, revision: 2, body: 'A2', preview: 'A2' }, token2);
+  check(await cache.remember(a, token2) === false && (await cache.get(a.noteId)).note.revision === 2, 'older version cannot regress persisted snapshot');
+  const offline = { request: async () => { throw Object.assign(new Error('network'), { code: 'NETWORK_ERROR' }); } };
+  const recovered = await readNoteWithCache({ api: offline, accountId: 'account_browser', noteId: a.noteId, cache });
+  check(recovered.source === 'cache' && recovered.note.body === 'A2', 'real IndexedDB supports network-only recovery');
+  const d = note('D'); await bob.remember(d, await bob.capture());
+  await cache.clear(); check((await reopened.list()).length === 0 && (await bob.get(d.noteId)).note.body === 'D', 'scope clear preserves another account and is visible to older instances');
+  check(await cache.isCurrent(await cache.capture()) === false, 'authoritative denial keeps this cache instance blocked');
+  document.body.dataset.testStatus = 'passed'; result.textContent = `${passed.length} checks passed\n${passed.join('\n')}`;
+} catch (error) {
+  document.body.dataset.testStatus = 'failed'; result.textContent = `${passed.length} checks passed before failure\n${String(error?.message || error)}`;
+} finally {
+  for (const db of opened) db.close();
+  const deletion = indexedDB.deleteDatabase(name); deletion.onerror = () => { result.textContent += '\nFixture database cleanup failed'; };
+}
+</script></body></html>

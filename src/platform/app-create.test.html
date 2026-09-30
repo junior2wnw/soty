@@ -1,0 +1,78 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>App creation isolated acceptance fixture</title>
+<style>body{margin:20px;background:var(--sw-bg);color:var(--sw-ink);font-family:system-ui,sans-serif}button{min-height:44px}pre{white-space:pre-wrap}</style>
+<h1>Только проверка интерфейса</h1><p>Синтетические аккаунты и ответы. Никакого исполнения, публикации или настоящего API.</p>
+<button id="run">Проверить восстановление отправки</button><pre id="proof" data-test-status="ready">Готово к проверке</pre>
+<script type="module">
+import '../world/world.css';
+import { createPalette } from '../world/theme/palette.mjs';
+import { createAppActions } from './local-apps.ts';
+for (const [key,value] of Object.entries(createPalette('dark',50))) document.documentElement.style.setProperty(key,value);
+const proof=document.querySelector('#proof'), run=document.querySelector('#run');
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const check=(value,message)=>{if(!value)throw new Error(message);};
+async function until(predicate){for(let n=0;n<300;n++){if(predicate())return;await wait(10);}throw new Error('fixture timeout');}
+let accountId='', actions, modelReady=true, mode='lost', release;
+const accounts=[], calls=[], ledger=new Map();
+const originalSetItem=Storage.prototype.setItem;let quotaKey='';
+const fixtureSetItem=function(key,value){if(quotaKey&&key===quotaKey)throw new DOMException('Synthetic fixture quota','QuotaExceededError');return originalSetItem.call(this,key,value);};
+const first={hostDeviceId:'host:a',connectorId:'connector:a',name:'Тестовый компьютер A',online:true};
+const second={hostDeviceId:'host:b',connectorId:'connector:b',name:'Тестовый компьютер B',online:true};
+let devices=[first,second];
+const jobFor=(args,id)=>({id,deviceId:args.hostDeviceId,connectorId:args.connectorId,status:'running',result:null});
+const client={async getLocalState(){return {accountId};},async extension(op,args){
+ check(args.expectedAccountId===accountId,'expected account missing or wrong');
+ if(op==='apps.devices')return {devices};
+ if(op==='apps.agent.create'){
+  calls.push(structuredClone(args));
+  let known=ledger.get(args.requestId);
+  if(!known){known={payload:structuredClone(args),job:jobFor(args,'job_'+crypto.randomUUID())};ledger.set(args.requestId,known);}
+  check(JSON.stringify(known.payload)===JSON.stringify(args),'retry payload changed');
+  if(mode==='lost')throw new TypeError('synthetic lost ACK');
+  if(mode==='defer')return new Promise(resolve=>{release=()=>resolve({job:known.job});});
+  return {job:known.job};
+ }
+ if(op==='apps.agent.read')return {job:[...ledger.values()].find(value=>value.job.id===args.jobId).job,events:[],done:false,cursor:0};
+ throw new Error('Unexpected synthetic operation '+op);
+}};
+const originalFetch=window.fetch;
+window.fetch=async input=>{if(String(input)==='/api/apps/capabilities')return new Response(JSON.stringify({agentConfigured:modelReady}),{headers:{'content-type':'application/json'}});throw new Error('Fixture forbids real network');};
+const activeForm=()=>document.querySelector('dialog[open] form');
+const state=()=>JSON.parse(localStorage.getItem('soty.app-create.v1:'+accountId));
+async function open(){actions?.destroy();actions=createAppActions(client,async()=>{});await actions.agentCreate();}
+async function fresh(){accountId='qa_app_create_'+crypto.randomUUID();accounts.push(accountId);devices=[first,second];modelReady=true;await open();}
+async function fill(){await until(()=>activeForm()?.querySelectorAll('select option').length===3);const form=activeForm();
+ const prompt=form.querySelector('textarea'),host=form.querySelector('select');host.value=JSON.stringify([first.hostDeviceId,first.connectorId]);host.dispatchEvent(new Event('change'));
+ prompt.value='Тестовая личная аппка';prompt.dispatchEvent(new Event('input'));await until(()=>state()?.draft.text===prompt.value&&!form.querySelector('[type=submit]').disabled);return form;}
+run.onclick=async()=>{
+ Storage.prototype.setItem=fixtureSetItem;run.disabled=true;proof.dataset.testStatus='running';proof.textContent='Проверяем…';
+ try{
+  await fresh();const form=await fill();form.requestSubmit();await until(()=>state()?.pending&&form.querySelector('.sw-error').textContent);
+  const original=structuredClone(state().pending.payload);actions.destroy();devices=[second,first];modelReady=false;mode='ok';await open();
+  const restored=activeForm();check(restored.querySelector('textarea').readOnly,'pending prompt should be read-only');
+  check(restored.querySelector('select').value===JSON.stringify([first.hostDeviceId,first.connectorId]),'device reorder retargeted A');
+  check(!restored.querySelector('[type=submit]').disabled,'model unavailability disabled pending recheck');
+  restored.requestSubmit();await until(()=>state()?.accepted);
+  check(calls.length===2&&calls[0].requestId===calls[1].requestId&&ledger.size===1,'lost ACK created another task');
+  check(calls[1].cwd===original.cwd&&calls[1].text===original.text,'retry lost original intent');
+  await fresh();mode='defer';const late=await fill();late.requestSubmit();await until(()=>Boolean(release));
+  const before=calls.length;actions.destroy();release();release=null;await until(()=>state()?.accepted);await open();
+  check(!activeForm()&&calls.length===before,'late same-account ACK after close did not restore known job');
+  await fresh();mode='defer';const wrong=await fill();wrong.requestSubmit();await until(()=>Boolean(release));
+  const oldAccount=accountId;accountId='qa_app_create_changed_'+crypto.randomUUID();accounts.push(accountId);release();release=null;
+  await wait(80);check(!document.querySelector('dialog[open]'),'old account dialog remained visible');
+  const old=JSON.parse(localStorage.getItem('soty.app-create.v1:'+oldAccount));check(Boolean(old.pending)&&!old.accepted,'late foreign-account callback altered prior intent');
+  accountId='qa_app_create_reset_'+crypto.randomUUID();accounts.push(accountId);actions.resetAccount();devices=[first,second];modelReady=true;
+  await actions.agentCreate();const afterReset=await fill(),newPrompt=afterReset.querySelector('textarea');quotaKey='soty.app-create.v1:'+accountId;
+  newPrompt.value='Unsaved after account reset';newPrompt.dispatchEvent(new Event('input'));
+  const immediate=new Event('beforeunload',{cancelable:true});window.dispatchEvent(immediate);check(immediate.defaultPrevented,'account reset removed the immediate unload guard');
+  await until(()=>afterReset.querySelector('.sw-error').textContent.includes('Браузер не смог'));
+  const escape=new Event('cancel',{cancelable:true});afterReset.closest('dialog').dispatchEvent(escape);check(escape.defaultPrevented&&Boolean(activeForm()),'quota draft was closable without recovery');
+  quotaKey='';newPrompt.dispatchEvent(new Event('input'));await until(()=>state()?.draft.text===newPrompt.value);
+  const durable=new Event('beforeunload',{cancelable:true});window.dispatchEvent(durable);check(!durable.defaultPrevented,'saved draft remained volatile after storage recovery');
+  proof.dataset.testStatus='passed';proof.textContent='PASS: lost ACK / remount / A-B reorder / model-off retry / late accepted ACK after close / account change / reused account reset guards / immediate quota draft recovery. Real side effects: 0.';
+ }catch(error){proof.dataset.testStatus='failed';proof.textContent=String(error.stack||error);}
+ finally{quotaKey='';Storage.prototype.setItem=originalSetItem;actions?.destroy();for(const account of accounts){localStorage.removeItem('soty.app-create.v1:'+account);localStorage.removeItem('soty.world.agent:'+account);}run.disabled=false;}
+};
+window.addEventListener('pagehide',()=>{actions?.destroy();window.fetch=originalFetch;Storage.prototype.setItem=originalSetItem;});
+</script></html>

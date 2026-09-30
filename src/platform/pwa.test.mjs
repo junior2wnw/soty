@@ -10,7 +10,7 @@ function worker({ clients = [], latest = clients, present = true } = {}) {
   const cache = { match: async url => present && records.cache.has(typeof url === 'string' ? url : new URL(url.url).pathname) ? new Response('cached shell') : undefined,
     addAll: async urls => urls.forEach(url => records.cache.add(url)), put: async () => {} };
   let reads = 0;
-  vm.runInNewContext(source.replace('const buildAssets = [];', 'const buildAssets = ["/assets/entry.js"];'), {
+  vm.runInNewContext(source.replace('const buildAssets = [];', 'const buildAssets = ["/assets/entry.js", "/assets/typeface.woff2"];'), {
     URL, Response, MessageChannel, setTimeout, clearTimeout, fetch: async () => { throw new Error('offline'); },
     caches: { open: async () => cache, match: cache.match, keys: async () => ['soty-online-v20'], delete: async () => true },
     self: { location: { origin: 'https://soty.test' }, addEventListener: (name, handler) => handlers.set(name, handler),
@@ -34,6 +34,9 @@ test('offline readiness reflects every installed shell and module asset', async 
   await runtime.emit('install');
   assert.equal((await runtime.emit('message', { type: 'SOTY_OFFLINE_STATUS' })).offlineReady, true);
   runtime.records.cache.delete('/assets/entry.js');
+  assert.equal((await runtime.emit('message', { type: 'SOTY_OFFLINE_STATUS' })).offlineReady, false);
+  runtime.records.cache.add('/assets/entry.js');
+  runtime.records.cache.delete('/assets/typeface.woff2');
   assert.equal((await runtime.emit('message', { type: 'SOTY_OFFLINE_STATUS' })).offlineReady, false);
 });
 
