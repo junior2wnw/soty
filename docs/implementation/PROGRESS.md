@@ -272,3 +272,9 @@ Parser теперь знает Capabilities3; реальный Dockerfile/curren
 [Owner/Grant source review](p4-oauth-owner-grant-independent.md) закрепляет принятую базу `e8edc24`; последующая узкая owner projection добавляет только `managedBy:'oauth'`. Root3 новых cases+access11 **14/14PASS,0skip**,1407.9743ms; независимый diff review без нового blocker. Marker не зависит от имени, ключей, срока или включённого AS. Совпадающее имя manual client не смешивает его с OAuth; AS-absent reader сохраняет действенный общий principal revoke. Это основа единственной карточки подключения в общей панели.
 
 Компактный [reader3 transport](p4-reader3-transport.md) принят локально после root source review и авторских8/8PASS. Exact Git source54,873B восстанавливается до evaluation; command18,246B и duplicated-inspect budget36,626B помещаются в прежние caps. Это только local helper/tests: новый Linux3 artifact, remote canary и полный image всё ещё отдельные gates.
+
+## P4-C1c — T1 token storage принят локально
+
+[Доменный receipt T1](p4-oauth-domain-ports.md) и [независимый source/SQL audit](p4-oauth-tokens-independent.md) закрывают encrypted code/refresh/access artifacts, атомарную AT/credential/link запись, committed family revoke при reuse и общую bounded cleanup. Root прочитал source и composition; авторский последний совместный gate T1/owner **24/24 PASS,0fail,0skip**,5985.6303ms, `p4-oauth-tokens-final.log`, включая две реальные OS writer гонки. Две конкретные EXPLAIN ошибки исправлены на существующих индексах; количество реально просмотренных чужих live links не объявляется постоянным.
+
+DDL неизменён. Readiness=false и внешний bearer пока закрыт; tests настоящих Provider models с синтетическим request context не заменяют полный HTTP flow. Следующий отдельный срез — T2 branded bearer, точная связь с native Notes и запрет cross-connection replay; после него actual host/две AS instances/CLI/PWA. Весь master P0–P8 и release gates остаются в работе.

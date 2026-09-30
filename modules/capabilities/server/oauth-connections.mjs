@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { AccessError, canonicalHash, newId } from './validation.mjs';
 import { createOAuthArtifactStore } from './oauth-artifacts.mjs';
 import { createOAuthArtifactCodec } from './oauth-crypto.mjs';
+import { createOAuthTokenStore } from './oauth-tokens.mjs';
+import { OAUTH_TOKEN_MODELS } from './oauth-token-profile.mjs';
 import { OAUTH_PROFILE, OAUTH_SCOPE, canonicalOAuthJson, oauthCheck, oauthData, oauthId,
   oauthProviderId, oauthString, oauthSynchronous, oauthTime, snapshotOAuthJson, snapshotOAuthGrant } from './oauth-profile.mjs';
 
@@ -14,8 +16,8 @@ const integer = (value, min, max, code = 'oauth_invalid_artifact') => {
   oauthCheck(Number.isSafeInteger(value) && value >= min && value <= max, code); return value;
 };
 
-/** Fixed owner/Grant coordinator. No public arbitrary issuer or authority
- * factory. Token issuance/bearer remain closed until their separate increment. */
+/** Fixed owner/Grant/token coordinator. No public arbitrary issuer or authority
+ * factory. External bearer admission remains closed until its own increment. */
 export function createOAuthConnections({ db, projectId, registryId, schemaVersion, clock, transaction, ensureOpen,
   configuration, access, authority, monotonic = () => performance.now() }) {
   const { issuer, withAuthorityFence } = configuration;
@@ -165,10 +167,17 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
     for (const state of activeContexts) if (state.connectionId === own.id) { state.live = false; activeContexts.delete(state); }
   }
   function sourceId(args) { oauthData(args, ['model', 'id']); oauthCheck(args.model === 'Grant', 'oauth_unavailable'); return oauthProviderId(args.id); }
+  const tokens = createOAuthTokenStore({ db, configuration, clock, codec, fenced, live, revoke,
+    boundGrant(own, time) {
+      const row = artifact('Grant', sha(own.provider_grant_id));
+      oauthCheck(row && row.expires_at > time, 'access_denied');
+      return grantPayload(row, own, time, own.provider_grant_id).payload;
+    } });
   const artifactStore = Object.freeze({
     upsert(args) {
       oauthData(args, ['model', 'id', 'payload', 'expiresIn', 'request', 'stagedGrant']);
       if (args.model === 'Grant') return saveGrant(args);
+      if (OAUTH_TOKEN_MODELS.includes(args.model)) return tokens.upsert(args);
       if (!auxiliary(args.model)) throw new AccessError('oauth_unavailable');
       // Every successful interaction completion is tied to the signed decision.
       const payload = snapshotOAuthJson(args.payload);
@@ -187,6 +196,7 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
     find(args) {
       oauthData(args, ['model', 'id']);
       if (auxiliary(args.model)) return support.find(args);
+      if (OAUTH_TOKEN_MODELS.includes(args.model)) return tokens.find(args);
       const id = sourceId(args);
       return fenced(time => {
         oauthCheck(codec?.available(), 'oauth_storage_key_unavailable');
@@ -198,6 +208,7 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
     findByUid: support.findByUid,
     destroy(args) {
       oauthData(args, ['model', 'id']); if (auxiliary(args.model)) return support.destroy(args);
+      if (OAUTH_TOKEN_MODELS.includes(args.model)) return tokens.destroy(args);
       const id = sourceId(args);
       return fenced(time => {
         const own = get('SELECT * FROM cap_oauth_connections WHERE provider_grant_id=? AND issuer=?', id, issuer);
@@ -205,7 +216,7 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
         revoke(own, time); db.prepare("DELETE FROM cap_oauth_artifacts WHERE model='Grant' AND id_hash=?").run(sha(id));
       });
     },
-    consume() { throw new AccessError('oauth_unavailable'); },
+    consume(args) { return tokens.consume(args); },
     revokeByGrantId(args) {
       oauthData(args, ['providerGrantId']); const id = oauthProviderId(args.providerGrantId);
       return fenced(time => {
@@ -283,7 +294,7 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
     });
   }
   const oauth = Object.freeze({
-    // Owner/Grant increment only. Never advertise a working token endpoint yet.
+    // Token storage alone is not the complete AS/RS composition.
     readiness() { ensureOpen(); return { schemaVersion, available: false }; },
     prepareInteraction(args) {
       oauthData(args, ['interactionId', 'browserNonce', 'durationMs', 'budgetLimit']);
@@ -338,17 +349,9 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
     authenticateBearer() { throw new AccessError('oauth_unavailable'); },
     cleanup(args = {}) {
       oauthData(args, ['limit']); const limit = integer(args.limit ?? 64, 1, 64);
-      const cleaned = support.cleanup({ limit });
-      if (cleaned.artifactsDeleted === limit) return cleaned;
       return atomic(time => {
-        const left = limit - cleaned.artifactsDeleted;
-        const proposals = db.prepare('SELECT uid_hash FROM cap_oauth_interactions WHERE expires_at<=? ORDER BY expires_at,uid_hash LIMIT ?').all(time, left);
-        for (const row of proposals) db.prepare('DELETE FROM cap_oauth_interactions WHERE uid_hash=?').run(row.uid_hash);
-        const grants = db.prepare(`SELECT model,id_hash FROM cap_oauth_artifacts INDEXED BY cap_oauth_artifacts_retention
-          WHERE retain_until<=? AND model='Grant' ORDER BY retain_until,model,id_hash LIMIT ?`).all(time, left - proposals.length);
-        for (const row of grants) db.prepare('DELETE FROM cap_oauth_artifacts WHERE model=? AND id_hash=?').run(row.model, row.id_hash);
         pruneContexts(time);
-        return { artifactsDeleted: cleaned.artifactsDeleted + grants.length, interactionsDeleted: proposals.length, credentialsDeleted: 0 };
+        return tokens.cleanup(time, limit);
       });
     }, artifactStore,
   });

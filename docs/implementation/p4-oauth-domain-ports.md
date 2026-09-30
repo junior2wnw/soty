@@ -1,6 +1,6 @@
 # P4-C1c — encrypted domain ports
 
-Актуальная граница — increment 2 ниже: signed owner decisions и atomic Grant binding, с `readiness.available=false`. Increment 1 сохранён как историческая квитанция; его итоговые SHA и утверждение о ещё не подключённом service относятся к прежнему срезу.
+Актуальная граница — increment T1 ниже: encrypted code/RT/AT lifecycle поверх принятого owner/Grant, с `readiness.available=false` и закрытым bearer. Прежние increments сохранены как исторические квитанции; их SHA и ограничения относятся к соответствующим срезам.
 
 Дата: 2026-09-30. База: принятой domain3 `dc1ae217424b33cca0e9a5b60a6e4e719ea0d991`.
 
@@ -238,3 +238,93 @@ node --test --test-concurrency=1 modules/capabilities/test/oauth-trusted.test.mj
 | test/oauth-profile.test.mjs | 64ecb0615494a5f568804f8fe07aaeeadaf95307fe3234c54fcaa60a4294a32c |
 | test/oauth-artifacts.test.mjs | f77e3b6b82658458e2e3edf9ddde02219f455b46d1aa754941cec597693afc3a |
 | test/oauth-trusted.test.mjs | 4c575e68c31f59c431cdaa377540800e2afdcc3a81ec3435a7d0a24d65854a39 |
+
+## Increment T1 — durable code/RT/AT lifecycle, 2026-10-01
+
+База — принятый owner/Grant checkpoint `e8edc24`. Это отдельный storage lifecycle gate, **не** готовность публичного AS/RS. `oauth.readiness().available` остаётся false, `authenticateBearer` — `oauth_unavailable`. OAuth actor, native crossconnection dedup и включение readiness относятся к следующему T2. DDL/schema, access/native/index, Notes/catalog, HTTP/provider/UI и reader fixtures в T1 не менялись.
+
+Изменены только новые `server/oauth-token-profile.mjs`, `server/oauth-tokens.mjs`, необходимая композиция `server/oauth-connections.mjs`, новые `test/oauth-tokens.test.mjs`, `test/support/oauth-tokens.mjs`, `test/support/oauth-token-worker.mjs` и эта квитанция. Отдельное предложение `Principal.managedBy:'oauth'` оценено положительно как owner-only projection из immutable connection, но здесь не реализовано.
+
+### Точный port и профиль
+
+Существующие публичные signatures не меняются:
+
+```text
+artifactStore.upsert({model,id,payload,expiresIn?,request?,stagedGrant?}) -> void
+artifactStore.find({model,id}) -> checked cloned payload | undefined
+artifactStore.consume({model,id,request})
+  -> {status:'consumed'|'invalid_grant'|'invalid_target'}
+artifactStore.destroy({model,id}) -> void
+artifactStore.revokeByGrantId({grantId}) -> void
+oauth.cleanup({limit=64}) -> {artifactsDeleted,interactionsDeleted,credentialsDeleted}
+```
+
+T1 добавляет модели AuthorizationCode/RefreshToken/AccessToken. Их `request` обязателен: captured own data `{clientId,resource?,scope?,grantType?}` из authenticated host Provider context; внешний body/actor этим объектом не становится. Code save допускает authorization request без grantType; RT/AT save — только authorization_code/refresh_token. Consume принимает соответствующий authorization_code/refresh_token. Отсутствующие resource/scope наследуют только bound connection, явные значения должны совпасть. Любой stagedGrant на этих трёх моделях запрещён.
+
+Новые внутренние exports не публикуются через service: `OAUTH_TOKEN_MODELS`, `oauthOpaqueId`, `snapshotOAuthTokenRequest`, `oauthTokenRequestOutcome`, `createOAuthTokenProfile(configuration).snapshot(...)`; `createOAuthTokenStore({db,configuration,clock,codec,fenced,live,revoke,boundGrant})` возвращает private upsert/find/consume/destroy/cleanup. Он разделяет уже существующие codec и Connect→Caps fence, не выдаёт arbitrary authority factory.
+
+Payload≤16KiB/1024 nodes/depth12 проходит прежний safe snapshot. ID ровно43 base64url chars. Account/static client/provider Grant/scope/resource pinned к live connection. Для code обязательны S256 challenge и зарегистрированный redirect; для RT допустимы проверенные iiat/rotations и code/refresh lineage; AT aud — одна exact string, extra лишь absent/undefined/empty object. OIDC/DPoP/attestation/unknown claims и expiresWithSession:true закрыты. Persisted consumed column никогда не принимается из upsert payload, а при find добавляется к checked clone.
+
+Для новых bound token rows:
+
+```text
+row.created_at = actual admission nowMs
+floor(connection.created_at / 1000) <= payload.iat <= floor(nowMs / 1000)
+payload.exp > payload.iat; оба safe whole seconds
+exp - iat <= code60s / RT86400s / AT300s
+nowMs < exp*1000 <= checked Grant.exp*1000 <= connection.expires_at
+row.expires_at = exp*1000
+retain_until = AT.expires_at либо connection.expires_at для code/RT
+```
+
+`expiresIn` может отсутствовать; если задан — положительное finite number в model bound. Срок всегда берётся из проверенного payload.exp, не из предположения о бесконечном TTL. Non-aligned timestamps сохраняются без clamp payload/consent.
+
+### Commit, revocation и ограниченная очистка
+
+Новый AT записывает encrypted artifact, существующий `cap_credentials` и immutable `cap_oauth_credentials` link **одной Caps transaction**. Digest — SHA256(raw opaque ID), expiry credential ровно exp*1000. Повтор identical upsert не создаёт credential и не продлевает срок; иной payload/expiry того же ID отказывает. До и после записи перепроверяются current creator/root/connection и срок. Ошибка внешнего fence после COMMIT не отменяет сохранённые три rows.
+
+Code/RT consume сначала проверяет fresh request/client/resource/scope/grantType и full stored payload. Wrong resource возвращает invalid_target без consume/revoke; остальные binding mismatch — invalid_grant. Один CAS ставит consumed_at. Повтор уже consumed source отзывает family/root/credentials в той же transaction и **возвращает** invalid_grant после COMMIT; exception внутри transaction не используется для protocol refusal. Library wrapper преобразует status в свой штатный OAuth error. Отдельные consume → save RT → save AT → HTTP response не объявляются общей transaction. Concurrent reuse вправе отозвать результат победителя; поздний save на revoked family запрещён.
+
+Destroy и revokeByGrantId используют прежний family revoke. Retained AT link позволяет keyless revoke даже после удаления raw expired artifact. Unknown IDs не создают rows и не затрагивают sibling. Expired code/RT отказываются без нового consume; сохранённый consumed факт не очищается раньше connection end.
+
+Новая выдача проверяет ≤1024 artifacts/connection, ≤65536/global и ≤64 живых неотозванных AT/account. Account cap охватывает разные connections. Retry/history/revoke не расходуют slot. Cleanup имеет общий budget≤64 **выбранных identities**, включая сохранённые original references; link+credential удаляются атомарной парой. Пока raw AT ещё существует, link остаётся до отдельного artifact прохода. Любой persisted Invocation reference сохраняет link/credential. Private keyset проходит мимо retained prefix, категории artifact/proposal/credential чередуются; после reopen прогресс начинается сначала. Нет автоматического эффекта или удаления connection pins.
+
+Два конкретных EXPLAIN finding исправлены с root approval без DDL:
+
+1. Прежний cleanup OR cursor дал `MULTI-INDEX OR` и `USE TEMP B-TREE FOR ORDER BY`. LIMIT сам по себе не ограничивал suffix scan/sort. Row-value `(expires_at,credential_id)>(?,?)` использует один covering range seek без временной сортировки.
+2. Критик указал риск quota count; actual exact-schema EXPLAIN подтвердил `SCAN k` по всем `cap_credentials`, включая чужие service/retained rows. Теперь predicate `l.expires_at>?` использует существующий link expiry index, PK lookup credential и bounded count subquery LIMIT64.
+
+Оба regression проверяют **фактически выполненный production SQL с его parameters**, не копию желаемой строки. Expiry range убирает expired/legacy prefix, но не обещает constant-time по другим ещё не истёкшим OAuth links. Revoked link может пережить raw artifact, поэтому один raw-artifact cap сам по себе не доказывает численный предел этого диапазона. Нагрузочная capacity/latency production здесь не измерялась.
+
+### Evidence и границы
+
+Isolated Node24.21.0/SQLite3.53.4, process-local PATH, serial run:
+
+```text
+node --test --test-concurrency=1 modules/capabilities/test/oauth-tokens.test.mjs modules/capabilities/test/oauth-connections.test.mjs
+```
+
+**24/24 PASS,0fail,0skip,5985.6303ms**, log `output/implementation-20260930/p4-oauth-tokens-final.log`: новые11 T1 и прежние13 owner/Grant. Syntax и targeted diff-check прошли. Serial slot освобождён.
+
+Первый T1 run дал10/11 PASS: test Provider client объявлял refresh_token, но fixture не включил штатный issueRefreshToken callback, поэтому библиотека отказала до port call (`InvalidClientMetadata`). Исправлена только fixture конфигурация. Causal repeat1/1 PASS575.7606ms, последующий joint24/24 PASS6271.1369ms; после двух EXPLAIN поправок выполнен финальный24/24 выше. Логи сохранены отдельно: `p4-oauth-tokens-first.log`, `p4-oauth-tokens-provider-focused.log`, `p4-oauth-tokens-owner-green.log`, `p4-oauth-token-cleanup-plan.log`, `p4-oauth-token-quota-plan.log`. Предыдущие runs не прибавляются к числу уникальных tests.
+
+Fixture использует реальные signed ECDSA Connect requests, Connect/Caps SQLite files и штатный withAuthorityFence. Проверены exact immutable non-aligned token/credential replay и reopen, отсутствие raw token в main/WAL plaintext, wrong resource→correct consume, strict payload/request negatives, AT triple rollback через SQL fault и сохранность после synthetic outer post-COMMIT failure. Actual Provider9.12.2 model save/find/consume проверяет его настоящую serialization; request snapshot в этом model test **синтетический**. HTTP authentication/Provider.ctx/PKCE wire flow здесь не заявляется.
+
+Две гонки запускают по два настоящих OS child processes с независимыми Connect/Caps handles, barrier после constructor и ожиданием реального exit. Consume/consume даёт один consumed и один invalid_grant с durable family revoke. Consume/destroy допускает consumed либо invalid_grant, но после обоих семья revoked и late AT невозможен. Это port contention, не два AS HTTP instances. Тест capacity создаёт64 реальных AT на двух connections, проверяет отказ65-го, exact retry, signed owner list и safety revoke. Retention case создаёт64 **явно синтетических persisted Invocation references** плюс4 transient AT; проверяет сохранение references, продвижение очистки, общий budget и reopen. Это SQL retention proof; настоящие native admission/terminal references после OAuth bearer — gate T2.
+
+Нет browser/CLI/remote/Linux, нового Note effect, OAuth bearer, включённого readiness, автоматического cleanup scheduler или полного encrypted HTTP code/refresh flow. Независимый reviewer отдельно читает T1; его результаты не подменяются этим авторским gate. `clock` остаётся trusted sync Date.now.
+
+### T1 final freeze inventory
+
+Paths от `modules/capabilities/`, SHA-256 локальных bytes:
+
+| File | SHA-256 |
+|---|---|
+| server/oauth-token-profile.mjs | b40b597f02f52ac4bfa272c542832a60442c3287a1fd48da0238d01034a67bc5 |
+| server/oauth-tokens.mjs | 24a4a9d662da44e7d70aebc1c0ed893dbb8c636ab9849b02c0a8da7b99e2d6de |
+| server/oauth-connections.mjs | c92ab8adcad852638a0022022a27ad6a992cc72efc6a09fea1d43dad1cc3dadd |
+| test/oauth-tokens.test.mjs | dd41b88d12fc4163711da27e2bf0c3efe70f9bd3eb7032bf7416ea3dac63db1f |
+| test/support/oauth-tokens.mjs | b0557febfbff81df8f7028f75d526d105735b768800f1390a50c8bdcf9113e70 |
+| test/support/oauth-token-worker.mjs | 69ff059fd7ac74e0625543284276cef5990d571df09038e2ae72f0f14cf9cfc8 |
+
+Неизменённые DDL hashes: `oauth-schema.mjs` ca2810310bab42a1d0232459163aa34eb5088de8d610aab411c17324e1002288; `schema-v3.mjs` ebed724aed700443eadb84fd96476b14fea971c31f44b6779aa3b4b0b098e557. T1 source заморожен; следующий T2 начинается только после принятия отдельного checkpoint.
