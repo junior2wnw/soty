@@ -23,9 +23,10 @@ function uri(value) {
 }
 function issuer(value) { const url = uri(value); check(value === `${url.origin}/oauth`); return url.origin; }
 function nativeRedirect(value) {
-  const url = uri(value);
-  check(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
-    && url.port !== '' && url.search === '' && value === url.href);
+  check(typeof value === 'string' && value.isWellFormed() && Buffer.byteLength(value) <= 2048);
+  const parts = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})(\/[^\s?#\\]*)$/u.exec(value);
+  check(parts && Number(parts[2]) <= 65535);
+  check(new URL(value).pathname === parts[3]);
 }
 function authorityUris(row) {
   const origin = issuer(row.issuer);
