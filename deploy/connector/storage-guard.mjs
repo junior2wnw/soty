@@ -4,14 +4,14 @@ import path from 'node:path';
 import { SafeError } from './docker-api.mjs';
 
 export const storageReaderLabel = 'io.soty.storage.readers';
-export const currentStorageReaders = '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2,3,4]}}';
+export const currentStorageReaders = '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5]}}';
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const keys = (value, expected) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === expected;
-const supported = { rooms: [1, 2], apps: [1, 2, 3, 4] };
+const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5] };
 const knownFormat = (store, value) => value === 'empty' || supported[store].includes(value);
 const knownReaders = (store, value) => Array.isArray(value) && value.length > 0 && value.length <= supported[store].length
   && value.every(version => supported[store].includes(version)) && new Set(value).size === value.length;

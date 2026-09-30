@@ -146,7 +146,7 @@ test('v2 data rejects legacy rollback before downgrade helper, original start an
  assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
 });
 
-for(const previous of [1,2,3])test(`Apps${previous+1} migration rejects a rooms-compatible but Apps${previous}-only rollback before any downgrade or original restart`,async()=>{
+for(const previous of [1,2,3,4])test(`Apps${previous+1} migration rejects a rooms-compatible but Apps${previous}-only rollback before any downgrade or original restart`,async()=>{
  const f=fixture({op:'readiness',when:'before'}),image=f.engine.image;
  f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:2,readers:{rooms:[1,2],apps:Array.from({length:previous},(_,i)=>i+1)}});return value;};
  f.map.get(args.originalId).Config.Labels[storageReaderLabel]=currentStorageReaders;

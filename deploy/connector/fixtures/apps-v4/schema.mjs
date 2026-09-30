@@ -1,13 +1,11 @@
 import { createHash } from 'node:crypto';
 import { AppsError, assertApps, appId, appPort, requestPath, cleanGrants, textId } from './protocol.mjs';
 import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-policy.mjs';
-import { createLaunchPath } from './launch-path.mjs';
 
-export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v5';
+export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v4';
 const v1Schema = 'soty.apps-registry.v1';
 const v2Schema = 'soty.apps-registry.v2';
 const v3Schema = 'soty.apps-registry.v3';
-const v4Schema = 'soty.apps-registry.v4';
 export const RUNTIME_PROFILE = 'soty.relay-restricted.v1';
 const core = {
   apps_meta: ['key', 'value'],
@@ -30,11 +28,6 @@ const publications = {
 const sources = {
   app_source_heads: ['app_id', 'required_binding_version'],
   app_source_receipts: ['account_id', 'request_key', 'intent_hash', 'app_id', 'committed_epoch', 'value_json', 'created_at'],
-};
-const saved = {
-  app_saved_heads: ['account_id', 'revision'],
-  app_saved_entries: ['account_id', 'app_id', 'domain_id', 'origin', 'path', 'label', 'saved_revision', 'updated_at'],
-  app_saved_receipts: ['account_id', 'request_key', 'intent_hash', 'app_id', 'saved', 'committed_revision', 'created_at'],
 };
 const digest = value => createHash('sha256').update(value).digest('hex');
 export const domainZoneId = zone => `zone_${digest(zone.origin_template ?? zone.template).slice(0, 32)}`;
@@ -63,29 +56,27 @@ export function inspectAppsSchema(db) {
   const schema = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
   const state = schema === v1Schema && [0, 1].includes(version) ? 'v1'
     : schema === v2Schema && version === 2 ? 'v2' : schema === v3Schema && version === 3 ? 'v3'
-      : schema === v4Schema && version === 4 ? 'v4' : schema === APPS_REGISTRY_SCHEMA && version === 5 ? 'v5' : '';
+      : schema === APPS_REGISTRY_SCHEMA && version === 4 ? 'v4' : '';
   assertApps(state, 'apps_schema_unsupported');
-  const modern = ['v3', 'v4', 'v5'].includes(state), sourceVersion = ['v4', 'v5'].includes(state);
-  const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}), ...(state === 'v5' ? saved : {}) };
+  const modern = state === 'v3' || state === 'v4';
+  const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(state === 'v4' ? sources : {}) };
   const sqlDefinitions = new Map([...definitions(coreDdl()), ...(state !== 'v1' ? definitions(domainDdl()) : []),
     ...(modern ? [...definitions(publicationDdl()), ...definitions(targetGuards())] : []),
-    ...(sourceVersion ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : []),
-    ...(state === 'v5' ? [...definitions(savedDdl()), ...definitions(savedGuards())] : [])]);
+    ...(state === 'v4' ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
     const actual = db.prepare(`PRAGMA table_info(${name})`).all();
     assertApps(JSON.stringify(actual.map(item => item.name)) === JSON.stringify(columns), 'apps_schema_unsupported');
     const primaryKeys = name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
-      : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts', 'app_saved_receipts'].includes(name) ? ['account_id', 'request_key']
-        : name === 'app_saved_entries' ? ['account_id', 'app_id'] : name === 'app_saved_heads' ? ['account_id']
+      : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts'].includes(name) ? ['account_id', 'request_key']
         : name === 'app_runtime_targets' ? ['app_id', 'revision']
           : name === 'app_publication_domains' ? ['app_id', 'domain_id']
             : [name === 'apps_meta' ? 'key' : name === 'app_devices' ? 'connector_key'
               : ['app_domain_heads', 'app_publications', 'app_source_heads'].includes(name) ? 'app_id' : 'id'];
     for (const column of actual) {
       const integer = ['revision', 'created_at', 'updated_at', 'retired_at', 'committed_revision', 'port', 'listed',
-        'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version', 'saved_revision', 'saved'].includes(column.name)
+        'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version'].includes(column.name)
         && !(name === 'app_domain_zones' && column.name === 'port');
       assertApps(column.type.toUpperCase() === (integer ? 'INTEGER' : 'TEXT')
         && column.pk === primaryKeys.indexOf(column.name) + 1, 'apps_schema_unsupported');
@@ -182,59 +173,6 @@ function sourceGuards() {
     "CREATE TRIGGER app_source_head_no_replace_downgrade BEFORE INSERT ON app_source_heads WHEN EXISTS (SELECT 1 FROM app_source_heads WHERE app_id=NEW.app_id AND required_binding_version>NEW.required_binding_version) BEGIN SELECT RAISE(ABORT,'app_source_binding_downgrade'); END",
     "CREATE TRIGGER app_runtime_target_no_replace BEFORE INSERT ON app_runtime_targets WHEN EXISTS (SELECT 1 FROM app_runtime_targets WHERE app_id=NEW.app_id AND revision=NEW.revision) BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END",
   ];
-}
-
-function savedDdl() {
-  return `CREATE TABLE app_saved_heads (
-      account_id TEXT PRIMARY KEY NOT NULL,revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991));
-    CREATE TABLE app_saved_entries (
-      account_id TEXT NOT NULL REFERENCES app_saved_heads(account_id),app_id TEXT NOT NULL REFERENCES local_apps(id),
-      domain_id TEXT NOT NULL REFERENCES app_domains(id),origin TEXT NOT NULL CHECK(length(origin) BETWEEN 1 AND 512),
-      path TEXT NOT NULL CHECK(length(path) BETWEEN 1 AND 8192),label TEXT NOT NULL CHECK(length(label) BETWEEN 1 AND 64),
-      saved_revision INTEGER NOT NULL CHECK(saved_revision BETWEEN 1 AND 9007199254740991),
-      updated_at INTEGER NOT NULL CHECK(updated_at BETWEEN 0 AND 9007199254740991),PRIMARY KEY(account_id,app_id));
-    CREATE UNIQUE INDEX app_saved_entry_revision ON app_saved_entries(account_id,saved_revision);
-    CREATE TABLE app_saved_receipts (
-      account_id TEXT NOT NULL REFERENCES app_saved_heads(account_id),request_key TEXT NOT NULL CHECK(length(request_key)=64),
-      intent_hash TEXT NOT NULL CHECK(length(intent_hash)=64),app_id TEXT NOT NULL,saved INTEGER NOT NULL CHECK(saved IN (0,1)),
-      committed_revision INTEGER NOT NULL CHECK(committed_revision BETWEEN 1 AND 9007199254740991),
-      created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),PRIMARY KEY(account_id,request_key));
-    CREATE UNIQUE INDEX app_saved_receipt_revision ON app_saved_receipts(account_id,committed_revision);`;
-}
-
-function savedGuards() {
-  return [
-    "CREATE TRIGGER app_saved_head_no_downgrade BEFORE UPDATE ON app_saved_heads WHEN NEW.account_id<>OLD.account_id OR NEW.revision<=OLD.revision BEGIN SELECT RAISE(ABORT,'app_saved_revision_not_increasing'); END",
-    "CREATE TRIGGER app_saved_head_no_delete BEFORE DELETE ON app_saved_heads BEGIN SELECT RAISE(ABORT,'app_saved_head_required'); END",
-    "CREATE TRIGGER app_saved_head_no_replace BEFORE INSERT ON app_saved_heads WHEN EXISTS (SELECT 1 FROM app_saved_heads WHERE account_id=NEW.account_id) BEGIN SELECT RAISE(ABORT,'app_saved_head_immutable'); END",
-  ];
-}
-
-function validateSavedRows(db) {
-  assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
-  assertApps(!db.prepare(`SELECT 1 FROM app_saved_entries e JOIN app_saved_heads h ON h.account_id=e.account_id
-    JOIN app_domains d ON d.id=e.domain_id WHERE e.saved_revision>h.revision OR d.app_id<>e.app_id OR d.origin<>e.origin LIMIT 1`).get(), 'apps_registry_corrupt', 500);
-  assertApps(!db.prepare(`SELECT 1 FROM app_saved_receipts r JOIN app_saved_heads h ON h.account_id=r.account_id
-    WHERE r.committed_revision>h.revision LIMIT 1`).get(), 'apps_registry_corrupt', 500);
-  assertApps(!db.prepare('SELECT 1 FROM app_saved_entries GROUP BY account_id HAVING count(*)>200 LIMIT 1').get()
-    && !db.prepare('SELECT 1 FROM app_saved_receipts GROUP BY account_id HAVING count(*)>128 LIMIT 1').get(), 'apps_registry_corrupt', 500);
-  for (const row of db.prepare('SELECT account_id,revision FROM app_saved_heads').iterate()) {
-    textId(row.account_id); assertApps(Number.isSafeInteger(row.revision) && row.revision >= 1, 'apps_registry_corrupt', 500);
-  }
-  for (const row of db.prepare('SELECT * FROM app_saved_entries').iterate()) {
-    appId(row.app_id); createLaunchPath(row.path);
-    assertApps(typeof row.domain_id === 'string' && /^dom_[a-f0-9]{32}$/u.test(row.domain_id)
-      && typeof row.label === 'string' && row.label.trim() === row.label && row.label.length > 0 && row.label.length <= 64
-      && !/[\u0000-\u001f\u007f]/u.test(row.label) && Number.isSafeInteger(row.saved_revision) && row.saved_revision >= 1
-      && Number.isSafeInteger(row.updated_at) && row.updated_at >= 0, 'apps_registry_corrupt', 500);
-  }
-  for (const row of db.prepare('SELECT * FROM app_saved_receipts').iterate()) {
-    appId(row.app_id);
-    assertApps(typeof row.request_key === 'string' && /^[a-f0-9]{64}$/u.test(row.request_key)
-      && typeof row.intent_hash === 'string' && /^[a-f0-9]{64}$/u.test(row.intent_hash)
-      && [0, 1].includes(row.saved) && Number.isSafeInteger(row.committed_revision) && row.committed_revision >= 1
-      && Number.isSafeInteger(row.created_at) && row.created_at >= 0, 'apps_registry_corrupt', 500);
-  }
 }
 
 export function runtimeTargetDigest(value) {
@@ -360,18 +298,16 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
   db.exec('BEGIN IMMEDIATE');
   try {
     const before = inspectAppsSchema(db); // another process may have migrated while this connection waited
-    if (['v2', 'v3', 'v4', 'v5'].includes(before)) {
+    if (before === 'v2' || before === 'v3' || before === 'v4') {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
       assertApps(pinned && pinned.value === normalizedTemplate, 'apps_origin_template_changed', 409);
-      if (before === 'v5') {
+      if (before === 'v4') {
         validateSourceRows(db);
-        validateSavedRows(db);
         db.exec('COMMIT');
         return { schema: APPS_REGISTRY_SCHEMA, migrated: false, legacyTemplate: pinned.value };
       }
     }
     if (before === 'v3') validateSourceRows(db, { historical: true });
-    if (before === 'v4') validateSourceRows(db);
     if (before === 'empty') db.exec(coreDdl());
     if (before === 'empty' || before === 'v1') {
       db.exec(domainDdl());
@@ -379,21 +315,17 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
       if (normalizedTemplate) insertDomainZone(db, legacyZone(normalizedTemplate), timestamp);
       validateAndRebuildGrants(db, app => ensureCanonicalDomain(db, app, normalizedTemplate));
     }
-    if (!['v3', 'v4'].includes(before)) {
+    if (before !== 'v3') {
       db.exec(publicationDdl());
       for (const statement of targetGuards()) db.exec(statement);
     }
-    if (before !== 'v4') {
-      db.exec(sourceDdl());
-      for (const statement of sourceGuards()) db.exec(statement);
-      if (before === 'v3') db.exec('INSERT INTO app_source_heads SELECT id,1 FROM local_apps');
-      else initializePublications(db);
-    }
-    db.exec(savedDdl());
-    for (const statement of savedGuards()) db.exec(statement);
+    db.exec(sourceDdl());
+    for (const statement of sourceGuards()) db.exec(statement);
+    if (before === 'v3') db.exec('INSERT INTO app_source_heads SELECT id,1 FROM local_apps');
+    else initializePublications(db);
     db.prepare("INSERT OR REPLACE INTO apps_meta(key,value) VALUES ('schema',?),('legacy_origin_template',?)")
       .run(APPS_REGISTRY_SCHEMA, normalizedTemplate);
-    db.exec('PRAGMA user_version=5; COMMIT');
+    db.exec('PRAGMA user_version=4; COMMIT');
     return { schema: APPS_REGISTRY_SCHEMA, migrated: true, legacyTemplate: normalizedTemplate };
   } catch (error) {
     if (db.isTransaction) db.exec('ROLLBACK');

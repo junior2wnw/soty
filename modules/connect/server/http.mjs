@@ -37,7 +37,12 @@ export function createConnectHandler(service, { path = '/api/connect/rpc', maxBy
       // req.ip is Express's explicitly configured trusted-proxy result; the neutral
       // adapter uses the socket peer. Never accept a peer identifier from RPC JSON.
       const result = await service.handle({ op: body.op, args: body.args || {}, proof: body.proof, origin, peer: req.ip || req.socket?.remoteAddress });
-      reply(result.ok ? 200 : 400, result);
+      // A bounded authority/storage fence may be busy without accepting the
+      // operation. Preserve the typed RPC error and expose temporary service
+      // unavailability, rather than classifying contention as malformed input.
+      // The adapter never retries a signed mutation on the caller's behalf.
+      const busy = !result.ok && ['apps_saved_busy', 'world_authority_busy'].includes(result.error?.code);
+      reply(result.ok ? 200 : busy ? 503 : 400, result);
     } catch { reply(400, error('request_failed')); }
     return true;
   };

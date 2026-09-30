@@ -92,14 +92,14 @@ async function fixture(t, { version = 2 } = {}) {
 
 function currentRows(db, table) { return db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(); }
 
-test('historical v2 migrates once to v4 with private publication, initial pinned targets and unchanged apps/domains/grants', async t => {
+test('historical v2 migrates once to latest with private publication, initial pinned targets and unchanged apps/domains/grants', async t => {
   const f = await fixture(t);
   assert.equal(inspectAppsSchema(f.db), 'v2');
   const preserved = ['app_devices', 'local_apps', 'local_app_grants', 'app_domain_zones', 'app_domain_heads', 'app_domains', 'app_domain_receipts'];
   const before = Object.fromEntries(preserved.map(table => [table, currentRows(f.db, table)]));
   const result = migrateAppsSchema(f.db, { legacyTemplate: legacy, now: () => 10 });
   assert.equal(result.schema, APPS_REGISTRY_SCHEMA); assert.equal(result.migrated, true);
-  assert.equal(inspectAppsSchema(f.db), 'v4'); assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 4);
+  assert.equal(inspectAppsSchema(f.db), 'v5'); assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 5);
   for (const table of preserved) assert.deepEqual(currentRows(f.db, table), before[table]);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publication_domains').get().n, 0);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publication_receipts').get().n, 0);
@@ -115,14 +115,14 @@ test('historical v2 migrates once to v4 with private publication, initial pinned
   assert.equal(migrateAppsSchema(f.db, { legacyTemplate: legacy, now: () => 20 }).migrated, false);
   assert.deepEqual(currentRows(f.db, 'app_publications'), all);
   const reopened = new DatabaseSync(f.databasePath);
-  try { assert.equal(inspectAppsSchema(reopened), 'v4'); assert.deepEqual(currentRows(reopened, 'app_publications'), all); } finally { reopened.close(); }
+  try { assert.equal(inspectAppsSchema(reopened), 'v5'); assert.deepEqual(currentRows(reopened, 'app_publications'), all); } finally { reopened.close(); }
 });
 
-test('empty and historical v1 versions 0/1 initialize v4 without named activation or reset of source/grants', async t => {
+test('empty and historical v1 versions 0/1 initialize latest without named activation or reset of source/grants', async t => {
   for (const version of ['empty', 0, 1]) {
     const f = await fixture(t, { version }), before = version === 'empty' ? [] : currentRows(f.db, 'local_apps');
     migrateAppsSchema(f.db, { legacyTemplate: legacy });
-    assert.equal(inspectAppsSchema(f.db), 'v4'); assert.deepEqual(currentRows(f.db, 'local_apps'), before);
+    assert.equal(inspectAppsSchema(f.db), 'v5'); assert.deepEqual(currentRows(f.db, 'local_apps'), before);
     assert.equal(currentRows(f.db, 'app_runtime_targets').length, before.length);
     assert.deepEqual(currentRows(f.db, 'app_publication_domains'), []);
   }
@@ -153,8 +153,8 @@ test('target rows are immutable and composite foreign keys never select a differ
   assert.throws(() => f.db.prepare("UPDATE app_publications SET launch_policy='anyone' WHERE app_id=?").run(appA), /CHECK/);
 });
 
-test('unrecognized future schema and altered v4 constraints fail before migration writes', async t => {
-  const unknown = await fixture(t); unknown.db.exec("UPDATE apps_meta SET value='soty.apps-registry.v5' WHERE key='schema'; PRAGMA user_version=5");
+test('unrecognized future schema and altered latest constraints fail before migration writes', async t => {
+  const unknown = await fixture(t); unknown.db.exec("UPDATE apps_meta SET value='soty.apps-registry.v6' WHERE key='schema'; PRAGMA user_version=6");
   const before = await readFile(unknown.databasePath);
   assert.throws(() => migrateAppsSchema(unknown.db, { legacyTemplate: legacy }), /apps_schema_unsupported/);
   assert.deepEqual(await readFile(unknown.databasePath), before);

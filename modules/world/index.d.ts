@@ -69,6 +69,8 @@ export interface WorldService {
   schemaVersion: number;
   operations: Set<string>;
   execute(input: { op: string; args?: Record<string, unknown>; actor: Readonly<WorldActor> }): Record<string, unknown>;
+  /** Host-only synchronous boundary; callback must not return a Promise or mutate World. */
+  withCommunityAuthorityFence<T>(callback: () => T extends PromiseLike<unknown> ? never : T): T;
   canAccessCommunity(accountId: string, communityId: string): boolean;
   activeCommunityIds(accountId: string): string[];
   isGroupAdmin(accountId: string, communityId: string): boolean;

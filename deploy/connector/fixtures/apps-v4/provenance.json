@@ -1,0 +1,18 @@
+{
+  "commit": "4fa5f722403dfbb1dc9fdf67965071a398c3537c",
+  "description": "Test-only unmodified Apps4 migration and its two local dependencies; never imported by the host storage probe.",
+  "files": {
+    "schema.mjs": {
+      "sourcePath": "modules/apps/server/schema.mjs",
+      "sha256": "aa7a07bdfd0b59a38c7dd53f2c8fd4eb135cad64f85de6d80bd47474a54be5c3"
+    },
+    "protocol.mjs": {
+      "sourcePath": "modules/apps/server/protocol.mjs",
+      "sha256": "29d36ce771c300f7dc3a00cbd16f98aed65c960cb5a5c6ee9673363e518ebd7e"
+    },
+    "domain-policy.mjs": {
+      "sourcePath": "modules/apps/server/domain-policy.mjs",
+      "sha256": "53ca3d124570fe06f197d4f2e630e0220cc91719138166a3f6f4d6a06fcc246a"
+    }
+  }
+}

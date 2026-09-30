@@ -36,7 +36,7 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
     assert(outsideModule(file), 'database_must_be_outside_module');
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   }
-  const db = new DatabaseSync(file); let closed = false;
+  const db = new DatabaseSync(file); let closed = false, authorityFenceActive = false;
   try { migrateWorld(db, projectId); } catch (error) { db.close(); throw error; }
   db.function('world_fold', { deterministic: true }, folded);
   const subscribers = new Set(); let events = [];
@@ -44,8 +44,39 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
   const operations = new Set(WORLD_OPERATIONS);
   return {
     projectId, schemaVersion: SCHEMA_VERSION, operations,
+    /** Host-only, synchronous authority boundary. Lock order is Connect -> World -> Apps.
+     * Read predicates may use this connection; World operations and async work may not.
+     * Only the downstream Apps transaction writes. This is not a cross-file commit. */
+    withCommunityAuthorityFence(callback) {
+      assert(!closed, 'service_closed');
+      assert(typeof callback === 'function' && callback.constructor?.name !== 'AsyncFunction'
+        && callback.constructor?.name !== 'AsyncGeneratorFunction', 'world_authority_callback_invalid');
+      assert(!authorityFenceActive && !db.isTransaction, 'world_authority_fence_nested');
+      const priorTimeout = Number(db.prepare('PRAGMA busy_timeout').get().timeout);
+      let began = false;
+      try {
+        // A short SQLite wait policy, not a hard wall-clock deadline. No network
+        // or await is allowed while blocking a membership writer.
+        db.exec('PRAGMA busy_timeout=100; BEGIN IMMEDIATE'); began = true; authorityFenceActive = true;
+        const result = callback();
+        if (result && typeof result.then === 'function') {
+          if (typeof result.catch === 'function') result.catch(() => {});
+          throw new WorldError('world_authority_callback_async');
+        }
+        db.exec('COMMIT'); began = false;
+        return result;
+      } catch (error) {
+        if (began && db.isTransaction) db.exec('ROLLBACK');
+        if ([5, 6].includes(Number(error?.errcode) & 255)) throw new WorldError('world_authority_busy');
+        throw error;
+      } finally {
+        authorityFenceActive = false;
+        db.exec(`PRAGMA busy_timeout=${priorTimeout}`);
+      }
+    },
     execute({ op, args = {}, actor } = {}) {
       assert(!closed, 'service_closed'); assert(operations.has(op), 'unsupported_operation');
+      assert(!authorityFenceActive, 'world_authority_mutation_forbidden');
       const now = clock(); assert(Number.isSafeInteger(now) && now >= 0, 'invalid_clock');
       events = [];
       // Existing profiles use a read snapshot for polling/discovery. They do not contend for
@@ -95,6 +126,6 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
       assert(!closed && typeof listener === 'function', 'invalid_listener'); subscribers.add(listener);
       return () => { subscribers.delete(listener); };
     },
-    close() { if (!closed) { closed = true; subscribers.clear(); db.close(); } },
+    close() { assert(!authorityFenceActive, 'world_authority_fence_active'); if (!closed) { closed = true; subscribers.clear(); db.close(); } },
   };
 }

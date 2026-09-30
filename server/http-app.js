@@ -88,6 +88,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     canAccessCommunity: (accountId, communityId) => world.canAccessCommunity(accountId, communityId),
     activeCommunityIds: accountId => world.activeCommunityIds(accountId),
     isGroupAdmin: (accountId, communityId) => world.isGroupAdmin(accountId, communityId),
+    withAuthorityFence: callback => world.withCommunityAuthorityFence(callback),
     subscribeMembership: listener => world.subscribeMembership(listener),
     authenticateConnector: async auth => { await connectors.store.writeQueue; await connectors.store.readable(); return Boolean(connectors.store.authenticate({ ...auth, deviceId: auth.hostDeviceId || auth.deviceId })); },
   }); } catch (error) {

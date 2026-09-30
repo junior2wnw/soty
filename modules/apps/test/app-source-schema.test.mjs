@@ -37,10 +37,10 @@ function extraTarget(db, revision = 2) {
   db.prepare('INSERT INTO app_runtime_targets VALUES (?,?,?,?,?,?,?,?,?)').run(id, revision, owner, key, 9000, '/new', first.profile, digest, 10);
 }
 
-test('genuine frozen v3 → v4 preserves targets, public consent, grants, origins, tombstones, receipts and revoked apps exactly', t => {
+test('genuine frozen v3 → latest preserves targets, public consent, grants, origins, tombstones, receipts and revoked apps exactly', t => {
   const db = historical(t), before = snapshot(db);
   assert.equal(inspectAppsSchema(db), 'v3');
-  assert.equal(migrateAppsSchema(db).schema, 'soty.apps-registry.v4'); assert.equal(inspectAppsSchema(db), 'v4');
+  assert.equal(migrateAppsSchema(db).schema, 'soty.apps-registry.v5'); assert.equal(inspectAppsSchema(db), 'v5');
   for (const [table, value] of Object.entries(before.tables)) if (table !== 'apps_meta') assert.deepEqual(rows(db, table), value, table);
   assert.deepEqual(rows(db, 'app_source_heads').map(row => ({ ...row })), [{ app_id: id, required_binding_version: 1 }, { app_id: revoked, required_binding_version: 1 }]);
   assert.deepEqual(rows(db, 'app_source_receipts'), []);
@@ -69,7 +69,7 @@ test('source floor cannot decrease by UPDATE or REPLACE, change app identity or 
   assert.throws(() => db.prepare('INSERT OR REPLACE INTO app_runtime_targets SELECT * FROM app_runtime_targets WHERE app_id=?').run(id), /app_runtime_target_immutable/);
 });
 
-test('v4 reopen and initial-registration helper never backfill a missing source head', t => {
+test('latest reopen and initial-registration helper never backfill a missing source head', t => {
   const db = historical(t); migrateAppsSchema(db);
   const trigger = db.prepare("SELECT sql FROM sqlite_schema WHERE name='app_source_head_no_delete'").get().sql;
   db.exec('DROP TRIGGER app_source_head_no_delete'); db.prepare('DELETE FROM app_source_heads WHERE app_id=?').run(id); db.exec(trigger);
@@ -99,7 +99,7 @@ test('existing valid initial state is validated without issuing replacement writ
 test('future marker and altered source guards fail before any migration write', t => {
   for (const mode of ['future', 'missing-guard']) {
     const db = historical(t); migrateAppsSchema(db);
-    if (mode === 'future') db.exec("UPDATE apps_meta SET value='soty.apps-registry.v5' WHERE key='schema'; PRAGMA user_version=5");
+    if (mode === 'future') db.exec("UPDATE apps_meta SET value='soty.apps-registry.v6' WHERE key='schema'; PRAGMA user_version=6");
     else db.exec('DROP TRIGGER app_source_head_no_replace_downgrade');
     const before = snapshot(db); assert.throws(() => migrateAppsSchema(db), { code: 'apps_schema_unsupported' }); assert.deepEqual(snapshot(db), before);
   }
