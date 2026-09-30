@@ -101,7 +101,7 @@ test('C1 client lost publication ACK survives remount with exact request and rec
   const pending = state.read().pending; assert.ok(pending); assert.equal(f.inspect().publication.launchPolicy, 'anyone');
   f.publish('restricted');
   const remounted = local.state(owner.accountId, f.app.id);
-  const response = await dispatchAppSettingsIntent({ state: remounted, api: { async request(op, input) { sent.push(clone(input)); return f.api.request(op, input); } }, isCurrent: () => true });
+  const response = await dispatchAppSettingsIntent({ state: remounted, expectedPending: pending, api: { async request(op, input) { sent.push(clone(input)); return f.api.request(op, input); } }, isCurrent: () => true });
   assert.equal(response.status, 'accepted'); assert.equal(response.response.replayed, true);
   assert.equal(response.response.receipt.launchPolicy, 'anyone'); assert.equal(response.response.current.launchPolicy, 'restricted');
   assert.deepEqual(sent[0], sent[1]); assert.equal(local.generated(), 1); assert.equal(remounted.read().pending, null);
@@ -141,7 +141,7 @@ test('C1 account switch during local persistence performs zero network calls, wh
   assert.equal((await first).status, 'stale'); assert.equal(network, 0); assert.ok(state.read().pending);
   const otherScope = local.state(secondAccount, f.app.id); assert.equal(otherScope.read().pending, null);
   const ack = deferred(), reached = deferred(); current = true;
-  const second = dispatchAppSettingsIntent({ state, api: { async request(op, args) { const result = await f.api.request(op, args); reached.resolve(result); return ack.promise; } }, isCurrent: () => current });
+  const second = dispatchAppSettingsIntent({ state, expectedPending: state.read().pending, api: { async request(op, args) { const result = await f.api.request(op, args); reached.resolve(result); return ack.promise; } }, isCurrent: () => current });
   const result = await reached.promise; current = false; ack.resolve(result);
   const outcome = await second; assert.equal(outcome.status, 'stale'); assert.equal(Object.hasOwn(outcome, 'response'), false);
   assert.equal(state.read().pending, null); assert.equal(otherScope.read().pending, null);
@@ -162,7 +162,7 @@ test('C1 storage denial, missing locks and failed ACK persistence never create a
   await assert.rejects(dispatchAppSettingsIntent({ state, op: 'apps.publication.update', args: f.publicArgs(), api: loseReceiptStorage, isCurrent: () => true }), codeIs('app_settings_storage_unavailable'));
   const pending = state.read().pending; assert.ok(pending); assert.equal(dispatches, 1);
   local.setFailWrites(false);
-  const replay = await dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), api, isCurrent: () => true });
+  const replay = await dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), expectedPending: pending, api, isCurrent: () => true });
   assert.equal(replay.pending.args.requestId, pending.args.requestId); assert.equal(replay.response.replayed, true); assert.equal(dispatches, 2);
 });
 
@@ -194,7 +194,7 @@ test('C1 claimed name survives a subsequent publication conflict and claim retry
   const claimArgs = { appId: f.app.id, expectedAccountId: owner.accountId, expectedDomainsRevision: initial.addresses.revision, slug: 'second-client-address' };
   await assert.rejects(dispatchAppSettingsIntent({ state, op: 'apps.domains.claim', args: claimArgs, api: { async request(op, args) { await f.api.request(op, args); throw new Error('lost claim acknowledgement'); } }, isCurrent: () => true }));
   const after = f.inspect(); assert.equal(after.addresses.aliases.length, initial.addresses.aliases.length + 1);
-  const replay = await dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), api: f.api, isCurrent: () => true });
+  const replay = await dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), expectedPending: state.read().pending, api: f.api, isCurrent: () => true });
   assert.equal(replay.response.replayed, true); assert.equal(f.inspect().addresses.aliases.length, after.addresses.aliases.length);
   const stale = f.publicArgs(); f.publish('restricted');
   await assert.rejects(dispatchAppSettingsIntent({ state, op: 'apps.publication.update', args: stale, api: f.api, isCurrent: () => true }), codeIs('app_publication_revision_conflict'));
@@ -211,7 +211,7 @@ test('C1 a lost retire ACK replays its exact request after remount without a sec
   } }, isCurrent: () => true }));
   const pending = state.read().pending, committed = f.inspect();
   assert.equal(committed.addresses.aliases[0].state, 'tombstone'); assert.equal(committed.addresses.revision, before.addresses.revision + 1);
-  const result = await dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), api: f.api, isCurrent: () => true });
+  const result = await dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), expectedPending: pending, api: f.api, isCurrent: () => true });
   assert.equal(result.status, 'accepted'); assert.equal(result.response.replayed, true);
   assert.equal(result.pending.args.requestId, pending.args.requestId); assert.equal(f.inspect().addresses.revision, committed.addresses.revision);
   assert.equal(state.read().pending, null);
@@ -225,7 +225,7 @@ test('C1 a pruned publication receipt leaves the old client intent unresolved wi
   const original = state.read();
   for (let i = 0; i < 64; i++) f.publish('restricted');
   const latest = f.inspect();
-  await assert.rejects(dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), api: f.api, isCurrent: () => true }), codeIs('app_publication_revision_conflict'));
+  await assert.rejects(dispatchAppSettingsIntent({ state: local.state(owner.accountId, f.app.id), expectedPending: original.pending, api: f.api, isCurrent: () => true }), codeIs('app_publication_revision_conflict'));
   assert.deepEqual(state.read(), original); assert.equal(local.generated(), 1);
   assert.deepEqual(f.inspect().publication, latest.publication); assert.equal(latest.publication.launchPolicy, 'restricted');
 });

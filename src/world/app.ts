@@ -22,7 +22,7 @@ import { entityId, entityName, worldColor, worldColors, type WorldApi, type Worl
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
-interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; port?: number; }
+interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId: string; deviceName?: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; port?: number; }
 interface DeviceProjection { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; }
 interface HomeNote { noteId: string; title: string; preview: string; pinned: boolean; updatedAt: number; }
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
@@ -1021,7 +1021,7 @@ class WorldApplication {
     if (!current()) throw Object.assign(new Error('No current account'), { code: 'authentication_required' });
     const apps = this.options.listApps ? await this.options.listApps(communityId)
       : (await this.api.request<{ apps: AppProjection[] }>('apps.list', { ...(communityId ? { communityId } : {}), expectedAccountId: accountId })).apps
-        .map(app => ({ appId: app.id, name: app.name, deviceId: app.hostDeviceId, status: app.state, ownerAccountId: app.ownerAccountId, ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants, audience: app.grants.communityIds.length ? 'Сообществу' : app.grants.accountIds.length ? 'Выбранным людям' : 'Только вам' } : {}) }));
+        .map(app => ({ appId: app.id, name: app.name, deviceId: app.hostDeviceId, ...(app.deviceName ? { deviceLabel: app.deviceName } : {}), status: app.state, ownerAccountId: app.ownerAccountId, ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants, audience: app.grants.communityIds.length ? 'Сообществу' : app.grants.accountIds.length ? 'Выбранным людям' : 'Только вам' } : {}) }));
     if (!current()) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
     return apps;
   }
@@ -1195,11 +1195,12 @@ class WorldApplication {
     const handle = mountAppSettings({ host: dialog.body, accountId, appId: app.appId, api: this.api, communities: [...this.communities], isCurrent,
       onChanged: snapshot => {
         if (!isCurrent()) return;
-        const before = JSON.stringify([app.name, app.grants, app.status, app.audience]);
+        const before = JSON.stringify([app.name, app.grants, app.status, app.audience, app.deviceId, app.deviceLabel]);
         app = { ...app, name: snapshot.app.name, grants: snapshot.app.grants,
-          status: snapshot.app.state === 'revoked' ? 'revoked' : app.status,
+          deviceId: snapshot.source.hostDeviceId, deviceLabel: snapshot.source.deviceName,
+          status: snapshot.app.state === 'revoked' ? 'revoked' : ({ offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' } as const)[snapshot.source.observation.state],
           audience: snapshot.publication.launchPolicy === 'anyone' ? 'Доступ по активным ссылкам' : snapshot.app.grants.communityIds.length ? 'Доступно выбранным сообществам' : snapshot.app.grants.accountIds.length ? 'Доступно выбранным людям' : 'Личное приложение' };
-        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.audience]);
+        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.audience, app.deviceId, app.deviceLabel]);
         this.apps = this.apps.map(value => value.appId === app.appId ? { ...value, ...app } : value);
         // Updating metadata must not recreate the running iframe or its chat.
         onUpdated?.(app);

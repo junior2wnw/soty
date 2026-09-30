@@ -33,6 +33,15 @@ function observationView(value) {
   return { state, observedAt, freshUntil, evidence };
 }
 
+function bindingView(value, floor) {
+  if (value === undefined || value === null) return { state: 'unavailable' };
+  assertApps(isObject(value) && !isAsync(value) && Object.keys(value).length === 1
+    && ['offline', 'legacy', 'update-required', 'pending', 'bound', 'rejected', 'unavailable'].includes(value.state)
+    && (value.state !== 'legacy' || floor === 1) && (value.state !== 'update-required' || floor === 2),
+  'apps_binding_observation_invalid', 500);
+  return { state: value.state };
+}
+
 function deviceView(row, target, ownerAccountId) {
   assertApps(row && row.owner_account_id === ownerAccountId && row.connector_key === target.connector_key, 'apps_registry_corrupt', 500);
   try {
@@ -47,7 +56,7 @@ function deviceView(row, target, ownerAccountId) {
 // Caller supplies registries on this SAME DatabaseSync and a synchronous,
 // content-free observation of the supplied immutable target. No transport call
 // or await is allowed while this read snapshot is open.
-export function createAppInspection({ db, assertActor, domains, publications, inspectSource, shellOrigin,
+export function createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, shellOrigin,
   nameClaimsEnabled = false, namedAppZone = '', now = Date.now } = {}) {
   assertApps(db && typeof db.prepare === 'function' && typeof db.exec === 'function'
     && typeof assertActor === 'function' && typeof domains?.execute === 'function'
@@ -56,6 +65,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
   assertApps(trustedOrigin, 'apps_inspection_shell_origin_invalid', 500);
   assertApps(typeof nameClaimsEnabled === 'boolean', 'apps_inspection_configuration_invalid', 500);
   assertApps(typeof now === 'function', 'apps_inspection_clock_invalid', 500);
+  assertApps(inspectBinding === undefined || typeof inspectBinding === 'function', 'apps_inspection_dependencies_required', 500);
   const namedOrigin = normalizeNamedAppZone(namedAppZone);
   const claimOrigin = nameClaimsEnabled ? namedOrigin || null : null;
   function authenticate(actor) {
@@ -94,6 +104,7 @@ export function createAppInspection({ db, assertActor, domains, publications, in
         assertApps(!isAsync(addresses) && !isAsync(policy), 'apps_inspection_dependencies_invalid', 500);
         assertApps(policy?.appId === id && policy.appState === app.state && positive(policy.policyEpoch)
           && positive(policy.activeTargetRevision) && ['restricted', 'anyone'].includes(policy.launchPolicy)
+          && [1, 2].includes(policy.requiredBindingVersion)
           && typeof policy.listed === 'boolean' && Array.isArray(policy.activeDomainIds)
           && nonnegative(addresses?.revision) && Array.isArray(addresses.domains), 'apps_registry_corrupt', 500);
         const limits = addresses.limits;
@@ -109,8 +120,15 @@ export function createAppInspection({ db, assertActor, domains, publications, in
           target: Object.freeze({ appId: id, revision: target.revision, digest: target.digest, profile: target.profile,
             connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path }),
           device,
+          requiredBindingVersion: policy.requiredBindingVersion,
         });
         const observation = app.state === 'revoked' ? unknownObservation() : observe(sourceContext);
+        let binding;
+        try { binding = app.state === 'revoked' ? { state: 'unavailable' } : bindingView(inspectBinding?.(sourceContext), policy.requiredBindingVersion); }
+        catch (error) {
+          if (error instanceof AppsError) throw error;
+          throw new AppsError('apps_binding_observation_unavailable', 503);
+        }
         let checkedAt;
         try { checkedAt = now(); } catch { throw new AppsError('apps_inspection_clock_invalid', 500); }
         assertApps(nonnegative(checkedAt), 'apps_inspection_clock_invalid', 500);
@@ -156,7 +174,8 @@ export function createAppInspection({ db, assertActor, domains, publications, in
           publication: { policyEpoch: policy.policyEpoch, launchPolicy: policy.launchPolicy, listed: policy.listed,
             activeDomainIds: [...policy.activeDomainIds], activeTargetRevision: policy.activeTargetRevision },
           source: { hostDeviceId: device.identity.hostDeviceId, connectorId: device.identity.connectorId, deviceName: device.name,
-            port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile, observation },
+            port: target.port, entryPath: target.entry_path, revision: target.revision, digest: target.digest, profile: target.profile,
+            requiredBindingVersion: policy.requiredBindingVersion, binding, observation },
           actions: { canReserveName: enabled && Boolean(claimOrigin) && limits.usedByApp < limits.perApp && limits.usedByAccount < limits.perAccount,
             canEdit: enabled, canPublish: enabled, canPreview: canLink && Boolean(canonical || aliases.some(item => item.active)) },
         };

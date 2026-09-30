@@ -225,10 +225,15 @@ export function createRuntimeBindings({ channels, send, now = Date.now, blockedP
     assertApps(value && bindingLive(value.state, value.entry), 'app_binding_changed', 503);
     return { channelId: reference.channelId, syncId: reference.syncId, ...pins(reference) };
   }
-  function getState(channel, id) {
+  function getState(channel, id, expectedTarget) {
     const state = states.get(channel), entry = state?.bindings.get(id);
     if (!state || !current(state)) return { state: 'unavailable', reason: channel?.bindingVersion === 2 ? 'app_offline' : 'app_source_protocol_required' };
     if (!entry) return { state: 'unavailable', reason: 'app_binding_pending' };
+    // An owner read can observe a newer database target before the next channel
+    // reconciliation. Never project the previous target's ACK or rejection onto it.
+    if (expectedTarget && (expectedTarget.appId !== id || expectedTarget.connectorKey !== state.key
+      || entry.target.revision !== expectedTarget.revision || entry.target.digest !== expectedTarget.digest
+      || entry.target.profile !== expectedTarget.profile)) return { state: 'pending', reason: 'app_binding_changed' };
     bindingLive(state, entry);
     return { state: entry.status, ...(entry.reason ? { reason: entry.reason } : {}) };
   }

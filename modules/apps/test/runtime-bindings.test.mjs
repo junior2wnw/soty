@@ -74,6 +74,22 @@ test('configuration ACK grants exact branded reference but never invents HTTP he
   assert.throws(() => f.manager.requireBinding(f.channel, { ...decision(value), targetDigest: 'f'.repeat(64) }), code('app_binding_pending'));
 });
 
+test('owner binding projection cannot borrow an earlier target ACK or rejection', t => {
+  const f = fixture(t), a = target(), b = target(1, { revision: 2, port: 9100 }); f.install([a]);
+  assert.deepEqual(f.manager.getState(f.channel, a.appId, a), { state: 'bound' });
+  for (const expected of [b, { ...a, appId: appId(2) }, { ...a, connectorKey: 'different' },
+    { ...a, digest: 'f'.repeat(64) }, { ...a, profile: 'unknown-profile' }]) {
+    assert.deepEqual(f.manager.getState(f.channel, a.appId, expected), { state: 'pending', reason: 'app_binding_changed' });
+  }
+  // Inspection is not an operation that replaces or invalidates the old binding.
+  assert.ok(f.manager.requireBinding(f.channel, decision(a)));
+  f.manager.sync(f.channel, [b]); const set = f.frames('binding-set').at(-1);
+  f.manager.handleFrame(f.channel, { type: 'binding-rejected', channelId: f.channel.channelId, syncId: set.syncId,
+    ...pins(b), error: 'invalid_app_path' });
+  assert.equal(f.manager.getState(f.channel, b.appId, b).state, 'rejected');
+  assert.equal(f.manager.getState(f.channel, a.appId, a).state, 'pending');
+});
+
 test('unrelated sync preserves reference; pending retransmission keeps its deadline and same syncId', t => {
   const f = fixture(t), a = target(), b = target(2); f.install([a]);
   const reference = f.manager.requireBinding(f.channel, decision(a)); f.manager.sync(f.channel, [a, b]);

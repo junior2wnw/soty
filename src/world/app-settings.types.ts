@@ -11,11 +11,32 @@ export interface AppInspection {
   };
   publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number };
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
+    requiredBindingVersion: 1 | 2;
+    binding: { state: 'offline' | 'legacy' | 'update-required' | 'pending' | 'bound' | 'rejected' | 'unavailable' };
     observation: { state: 'offline' | 'unknown' | 'responding' | 'unreachable'; observedAt: number | null; freshUntil: number | null; evidence: 'connector-offline' | 'not-observed' | 'connector-v1-observation' | 'connector-v2-observation' } };
   actions: { canReserveName: boolean; canEdit: boolean; canPublish: boolean; canPreview: boolean };
 }
 export interface SettingsDraft { name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }
-export interface SettingsPending { op: 'apps.publication.update' | 'apps.domains.claim' | 'apps.domains.retire'; args: Record<string, unknown> & { appId: string; expectedAccountId: string; requestId: string } }
+export interface AppSourceTarget {
+  revision: number; digest: string; profile: 'soty.relay-restricted.v1'; hostDeviceId: string; connectorId: string;
+  deviceName: string; port: number; entryPath: string;
+}
+export interface AppSourcePreparation {
+  schema: 'soty.app-source-preparation.v1'; appId: string; preparationId: string; expectedPolicyEpoch: number;
+  expectedTargetRevision: number; requiredBindingVersion: 2; target: AppSourceTarget; checkedAt: number; expiresAt: number;
+}
+export interface AppSourceDraft {
+  mode: 'new' | 'history'; hostDeviceId: string; connectorId: string; port: string; entryPath: string;
+  launchPolicy: 'restricted' | 'anyone'; exposureConfirmed: boolean; targetRevision: number | null;
+}
+export type SettingsPending = {
+  op: 'apps.publication.update' | 'apps.domains.claim' | 'apps.domains.retire';
+  args: Record<string, unknown> & { appId: string; expectedAccountId: string; requestId: string };
+  expectedSource?: never;
+} | {
+  op: 'apps.source.promote'; args: Record<string, unknown> & { appId: string; expectedAccountId: string; requestId: string };
+  expectedSource: AppSourceTarget;
+};
 export interface SettingsResponse { requestId: string; replayed: boolean; receipt: Record<string, unknown>; current?: { appId: string; policyEpoch: number; launchPolicy: string; activeDomainIds: string[]; appState: string } }
 export interface AppSettingsOptions {
   host: HTMLElement; accountId: string; appId: string; api: WorldApi; communities: WorldCommunity[];

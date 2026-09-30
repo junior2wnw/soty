@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateArgs, createAppSettingsDraftState } from './app-settings-state.mjs';
+import { createHash } from 'node:crypto';
+import { appPublicationArgs, appSettingsObservationRemaining, appSettingsUpdateArgs, createAppSettingsDraftState, createAppSettingsState } from './app-settings-state.mjs';
 
 const appId = `app-${'1'.repeat(32)}`, first = `dom_${'a'.repeat(32)}`, second = `dom_${'b'.repeat(32)}`;
 function inspection() {
@@ -102,10 +103,29 @@ test('claim observation exposes a new alias without replacing a dirty policy or 
   next.addresses.aliases.push({ ...next.addresses.aliases[1], id: added, slug: 'new-project' }); next.addresses.revision++;
   next.publication.policyEpoch++; next.source.revision++; next.source.digest = 'e'.repeat(64);
   model.observe(next); model.patch({ activeDomainIds: [added] });
+  assert.equal(model.read().draft.exposureConfirmed, false);
+  assert.throws(() => appPublicationArgs(model.base('publication'), model.read().draft, 'owner'), { code: 'app_exposure_ack_required' });
+  model.patch({ exposureConfirmed: true }); // The original CAS still fails closed; the view blocks this conflicted submit.
   const args = appPublicationArgs(model.base('publication'), model.read().draft, 'owner');
   assert.equal(args.expectedPolicyEpoch, 9); assert.equal(args.expectedTargetRevision, 2);
   assert.equal(args.exposureAck.targetDigest, 'c'.repeat(64)); assert.deepEqual(args.activeDomainIds, [added]);
   assert.equal(model.read().publicationConflict, true); assert.equal(model.read().draft.name, 'Не терять');
+});
+
+test('publication-only reset and source-change consent invalidation preserve unrelated drafts and their CAS bases', () => {
+  const value = inspection(), model = createAppSettingsDraftState(value);
+  model.patch({ name: 'Личное имя', communityIds: ['unsaved-group'], slug: 'next-address', launchPolicy: 'anyone', activeDomainIds: [second], exposureConfirmed: true });
+  const next = structuredClone(value); next.source.revision++; next.source.digest = 'e'.repeat(64); next.publication.policyEpoch++;
+  model.observe(next);
+  assert.equal(model.read().draft.exposureConfirmed, false);
+  assert.equal(model.read().publicationConflict, true);
+  assert.equal(model.base('publication').publication.policyEpoch, value.publication.policyEpoch);
+  model.resetPublication();
+  assert.equal(model.read().publicationDirty, false); assert.equal(model.read().publicationConflict, false);
+  assert.equal(model.base('publication').publication.policyEpoch, next.publication.policyEpoch);
+  assert.equal(model.read().draft.name, 'Личное имя'); assert.deepEqual(model.read().draft.communityIds, ['unsaved-group']);
+  assert.equal(model.read().draft.slug, 'next-address');
+  assert.equal(model.base('name').app.revision, value.app.revision); assert.equal(model.base('grants').app.revision, value.app.revision);
 });
 
 test('a late accepted name cannot erase a newer draft or silently rebase it', () => {
@@ -129,4 +149,43 @@ test('public consent applies to the exact source and requires a usable named ali
   for (const input of [{ ...draft(value), launchPolicy: 'anyone' }, { ...draft(value), launchPolicy: 'anyone', activeDomainIds: [], exposureConfirmed: true }]) assert.throws(() => appPublicationArgs(value, input, 'owner'), { code: 'app_exposure_ack_required' });
   const unsupported = structuredClone(value); unsupported.source.profile = 'future-profile';
   assert.throws(() => appPublicationArgs(unsupported, { ...draft(value), launchPolicy: 'anyone', exposureConfirmed: true }, 'owner'), { code: 'app_exposure_ack_required' });
+});
+
+function localState() {
+  const values = new Map(); let serial = 0;
+  return createAppSettingsState({ accountId: 'owner', appId, randomId: () => `shape-request-${++serial}`,
+    storage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) },
+    locks: { request: async (_name, fn) => fn() } });
+}
+
+test('intent scalar boundaries reject arrays whose string coercion looks like a valid ID or digest', async () => {
+  const publication = appPublicationArgs(inspection(), { ...draft(inspection()), launchPolicy: 'anyone', exposureConfirmed: true }, 'owner');
+  const cases = [
+    ['apps.domains.claim', { appId: [appId], expectedAccountId: 'owner', expectedDomainsRevision: 1, slug: 'new-project' }],
+    ['apps.domains.retire', { appId, expectedAccountId: 'owner', expectedDomainsRevision: 1, domainId: [first] }],
+    ['apps.publication.update', { ...publication, activeDomainIds: [[first]] }],
+    ['apps.publication.update', { ...publication, exposureAck: { ...publication.exposureAck, targetDigest: [publication.exposureAck.targetDigest] } }],
+  ];
+  for (const [op, args] of cases) {
+    const state = localState(); await assert.rejects(state.prepare({ op, args })); assert.equal(state.read().pending, null);
+  }
+});
+
+test('array-valued receipt IDs, private target digest and nested active IDs never acknowledge the saved command', async () => {
+  const cases = [
+    { op: 'apps.domains.claim', args: { appId, expectedAccountId: 'owner', expectedDomainsRevision: 1, slug: 'new-project' },
+      receipt: { schema: 'soty.app-domain-receipt.v1', action: 'claim', revision: 2, domainId: [first], state: 'bound', slug: 'new-project' } },
+    ...['digest', 'domains'].map(kind => ({ op: 'apps.publication.update', args: appPublicationArgs(inspection(), draft(inspection()), 'owner'),
+      receipt: { schema: 'soty.app-publication-receipt.v1', namespace: 'apps.publication.update.v1', policyEpoch: 10, targetRevision: 2,
+        launchPolicy: 'restricted', listed: false, activeDomainIds: kind === 'domains' ? [[first]] : [first], exposureAck: null,
+        targetDigest: kind === 'digest' ? ['c'.repeat(64)] : 'c'.repeat(64), profile: 'soty.relay-restricted.v1' } })),
+  ];
+  for (const value of cases) {
+    const state = localState(), pending = await state.prepare({ op: value.op, args: value.args });
+    const response = { requestId: pending.args.requestId, replayed: false,
+      receipt: { ...value.receipt, appId, requestKeyHash: createHash('sha256').update(pending.args.requestId).digest('hex') },
+      current: { appId, policyEpoch: 10 } };
+    await assert.rejects(state.acknowledge(pending, response), { code: 'app_settings_invalid_receipt' });
+    assert.deepEqual(state.read().pending, pending);
+  }
 });

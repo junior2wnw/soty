@@ -47,7 +47,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
   let inspection;
   try {
-    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, now,
+    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
   } catch (error) { db.close(); throw error; }
   const wss = new WebSocketServer({ noServer: true, maxPayload: FRAME_BYTES, perMessageDeflate: false });
@@ -138,7 +138,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const state = app.state === 'revoked' ? 'revoked' : legacyState[observed.state];
     return { id: app.id, name: app.name, ownerAccountId: app.owner_account_id, hostDeviceId: JSON.parse(device.identity_json).hostDeviceId,
       state, createdAt: app.created_at, updatedAt: app.updated_at,
-      ...(actor.accountId === app.owner_account_id ? { connectorId: JSON.parse(device.identity_json).connectorId, port: target.port, entryPath: target.entry_path, grants: JSON.parse(app.grants_json) } : {}) };
+      ...(actor.accountId === app.owner_account_id ? { connectorId: JSON.parse(device.identity_json).connectorId, deviceName: device.name,
+        port: target.port, entryPath: target.entry_path, grants: JSON.parse(app.grants_json) } : {}) };
   }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });
@@ -146,6 +147,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const candidate = channel && (channel.bindingVersion === 2 || bindingFloor(app.id) === 1) ? channel.observations.get(app.id) : undefined;
     const observed = candidate?.targetRevision === target.revision && candidate?.targetDigest === target.digest ? candidate : undefined;
     return describeSourceObservation({ connected: Boolean(channel), observed, now: now() });
+  }
+  function inspectBinding({ app, target, requiredBindingVersion: floor }) {
+    const channel = channels.get(target.connectorKey);
+    if (!channel || channel.ws.readyState !== 1) return { state: 'offline' };
+    if (channel.bindingVersion !== 2) return { state: floor === 2 ? 'update-required' : 'legacy' };
+    return { state: runtimeBindings.getState(channel, app.id, target).state };
+  }
+  function deviceProjection(item) {
+    const identity = JSON.parse(item.identity_json), channel = channels.get(item.connector_key);
+    const online = channel?.ws.readyState === 1;
+    return { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, name: item.name, online, claimed: true,
+      bindingVersion: online ? channel.bindingVersion : null };
   }
   function closeStream(stream, error = 'app_stream_closed', notify = true) {
     if (stream.closed) return;
@@ -257,9 +270,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (op === 'apps.inspect') return inspection.read(actor, args);
     if (op === 'apps.devices') {
       exact(args, []);
-      return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(item => {
-        const identity = JSON.parse(item.identity_json); return { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId, name: item.name, online: channels.has(item.connector_key), claimed: true };
-      }) };
+      return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(deviceProjection) };
     }
     if (op === 'apps.claim') {
       exact(args, ['hostDeviceId', 'connectorId', 'claimCode']);
@@ -269,7 +280,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(!existing || existing.owner_account_id === actor.accountId, 'apps_device_already_owned', 403);
       if (!existing) db.prepare('INSERT INTO app_devices VALUES (?,?,?,?,?)').run(channel.key, actor.accountId, JSON.stringify(channel.identity), channel.name, now());
       channel.claimDigest = ''; channel.claimExpiresAt = 0; send(channel, { type: 'claimed' }); sync(channel);
-      return { device: { hostDeviceId: channel.identity.hostDeviceId, connectorId: channel.identity.connectorId, name: channel.name, online: true, claimed: true } };
+      return { device: deviceProjection(binding(channel.key)) };
     }
     if (op === 'apps.list') {
       exact(args, ['communityId']); const community = args.communityId === undefined ? '' : textId(args.communityId);

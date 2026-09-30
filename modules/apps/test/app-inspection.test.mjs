@@ -118,6 +118,30 @@ test('inspection uses immutable target identity and source fields instead of dri
   assert.deepEqual(reader.read(owner, { appId: appA }).app.grants.accountIds, [other.accountId]);
 });
 
+test('owner inspection projects only synchronous binding state for its current target and floor', async t => {
+  const f = await fixture(t); let observed = 0;
+  const reader = f.reader({ inspectBinding(context) {
+    observed++; assert.equal(context.requiredBindingVersion, 1); assert.equal(context.target.appId, appA);
+    assert.equal(context.target.revision, 1); assert.equal(Object.isFrozen(context), true);
+    return { state: 'legacy' };
+  } });
+  assert.throws(() => reader.read(other, { appId: appA }), code('apps_owner_required')); assert.equal(observed, 0);
+  const result = reader.read(owner, { appId: appA });
+  assert.equal(result.source.requiredBindingVersion, 1); assert.deepEqual(result.source.binding, { state: 'legacy' });
+  assert.equal(result.source.observation.state, 'unknown'); assert.equal(observed, 1);
+  for (const value of [{ state: 'bound', token: 'not-disclosed' }, { state: 'wrong' }, Promise.resolve({ state: 'bound' }), { state: 'update-required' }]) {
+    assert.throws(() => f.reader({ inspectBinding: () => value }).read(owner, { appId: appA }), code('apps_binding_observation_invalid'));
+    assert.equal(f.db.isTransaction, false);
+  }
+  f.db.prepare('UPDATE app_source_heads SET required_binding_version=2 WHERE app_id=?').run(appA);
+  assert.deepEqual(f.reader({ inspectBinding: () => ({ state: 'update-required' }) }).read(owner, { appId: appA }).source.binding, { state: 'update-required' });
+  assert.throws(() => f.reader({ inspectBinding: () => ({ state: 'legacy' }) }).read(owner, { appId: appA }), code('apps_binding_observation_invalid'));
+  f.db.prepare("UPDATE local_apps SET state='revoked',revision=revision+1 WHERE id=?").run(appA);
+  const revoked = reader.read(owner, { appId: appA });
+  assert.equal(observed, 1); assert.deepEqual(revoked.source.binding, { state: 'unavailable' });
+  assert.equal(revoked.source.requiredBindingVersion, 2);
+});
+
 test('one WAL snapshot covers app, addresses, quotas, policy and target despite a concurrent writer between reads', async t => {
   const f = await fixture(t); const alpha = f.claim('alpha'), retired = f.claim('old-alpha');
   f.publish([alpha]); const writer = f.peer(); let updated = false;

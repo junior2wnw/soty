@@ -84,12 +84,13 @@ function wireGate() {
 
 async function fixture(t, { blockedB = [] } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-source-runtime-independent-'));
-  const databasePath = join(directory, 'registry.sqlite'), runtimes = [], applications = [], gatewaySockets = new Set(), clients = new Set();
+  const databasePath = join(directory, 'registry.sqlite'), runtimes = [], applications = [], gatewaySockets = new Set(), clients = new Set(), dependentCleanups = [];
   let service, clock = Date.now(), activeOwner = true;
   const gateway = http.createServer((req, res) => { if (!service?.handleRequest(req, res)) { res.writeHead(404); res.end(); } });
   gateway.on('connection', socket => { gatewaySockets.add(socket); socket.once('close', () => gatewaySockets.delete(socket)); });
   gateway.on('upgrade', (req, socket, head) => { if (!service?.handleUpgrade(req, socket, head)) socket.destroy(); });
   t.after(async () => {
+    for (const cleanup of dependentCleanups) await cleanup();
     for (const client of clients) client.terminate(); for (const value of runtimes) value.runtime.stop(); service?.close();
     for (const socket of gatewaySockets) socket.destroy(); await new Promise(done => gateway.close(done));
     for (const app of applications) await app.close();
@@ -98,13 +99,14 @@ async function fixture(t, { blockedB = [] } = {}) {
   });
   await new Promise(done => gateway.listen(0, '127.0.0.1', done));
   const port = gateway.address().port, token = secret(), identities = [identity('A'), identity('B')];
-  service = createAppsService({ databasePath, appOriginTemplate: `http://{appId}.legacy.localhost:${port}`,
+  const config = { databasePath, appOriginTemplate: `http://{appId}.legacy.localhost:${port}`,
     namedAppZone: `http://named.localhost:${port}`, shellOrigins: [`http://localhost:${port}`], now: () => clock,
     actorActive: actor => actor?.deviceId === (actor.accountId === owner.accountId ? owner.deviceId : guest.deviceId)
       && (actor.accountId === owner.accountId ? activeOwner : actor.accountId === guest.accountId),
     authenticateConnector: async value => value.token === token && identities.some(id => value.linkId === id.linkId
       && value.deviceId === id.hostDeviceId && value.connectorId === id.connectorId), accessAuditMs: 25,
-  });
+  };
+  service = createAppsService(config);
   assert.equal(typeof service.sourcePreparationExtension?.executeAsync, 'function', 'C2-B prepare adapter is not implemented yet');
   const call = (op, args = {}, actor = owner) => service.execute({ op, args: { ...args, expectedAccountId: actor.accountId }, actor });
   const A = await upstream('A'), B = await upstream('B'); applications.push(A, B);
@@ -165,6 +167,7 @@ async function fixture(t, { blockedB = [] } = {}) {
       .map(table => [table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()])); } finally { db.close(); }
   };
   return { service, app, neighbor, a, b, A, B, port, call, publication, prepare, intent, ready, session, socket, rows, http: httpCall,
+    config, connectorToken: token, registerCleanup: cleanup => dependentCleanups.push(cleanup),
     aliasId, aliasOrigin, canonicalOrigin, advance: ms => { clock += ms; }, deactivateOwner: () => { activeOwner = false; } };
 }
 const exposure = target => ({ scope: 'whole-port', targetRevision: target.revision, targetDigest: target.digest, profile: target.profile });
@@ -382,4 +385,102 @@ test('C2-B actual prepare HEAD uses navigation serialization while immutable tar
   const count = f.B.hits.length, before = f.rows();
   await assert.rejects(f.prepare({ source: { hostDeviceId: f.b.identity.hostDeviceId, connectorId: f.b.identity.connectorId, port: f.B.port, entryPath: '/' + 'я'.repeat(2000) } }), { code: 'invalid_app_path' });
   assert.equal(f.B.hits.length, count, 'unrelayable request-target never receives a HEAD'); assert.deepEqual(f.rows(), before);
+});
+
+test('C2-C owner device hints describe the actual negotiated channel, never another account or offline version', { timeout: 20_000 }, async t => {
+  const f = await fixture(t), inspect = () => f.call('apps.inspect', { appId: f.app.id });
+  const device = () => f.call('apps.devices').devices.find(item => item.hostDeviceId === f.a.identity.hostDeviceId);
+  assert.equal(device().bindingVersion, 2); assert.equal(device().online, true);
+  assert.deepEqual(inspect().source.binding, { state: 'bound' }); assert.equal(inspect().source.requiredBindingVersion, 1);
+  assert.deepEqual(f.call('apps.devices', {}, guest).devices, []);
+  assert.throws(() => f.call('apps.inspect', { appId: f.app.id }, guest), { code: 'apps_owner_required' });
+  assert.equal(f.call('apps.list').apps.find(item => item.id === f.app.id).deviceName, inspect().source.deviceName);
+  assert.equal(Object.hasOwn(f.call('apps.list', {}, guest).apps.find(item => item.id === f.app.id), 'deviceName'), false);
+  const claim = await f.a.runtime.claim();
+  const claimed = f.call('apps.claim', { hostDeviceId: f.a.identity.hostDeviceId, connectorId: f.a.identity.connectorId, claimCode: claim.claimCode });
+  assert.equal(claimed.device.bindingVersion, 2);
+  f.a.runtime.stop(); await until(() => device()?.online === false, 'device offline');
+  assert.equal(device().bindingVersion, null); assert.deepEqual(inspect().source.binding, { state: 'offline' });
+  f.a.wire.hooks.send = packet => {
+    if (packet.frame.type === 'auth') { const { capabilities: omitted, ...legacy } = packet.frame; packet.forward(legacy); return false; }
+  };
+  f.a.runtime.start(); await until(() => device()?.bindingVersion === 1, 'actual legacy negotiation');
+  assert.deepEqual(inspect().source.binding, { state: 'legacy' }); assert.equal(inspect().source.requiredBindingVersion, 1);
+  assert.equal((await f.http('/')).text, 'A:/');
+});
+
+test('C2-C pending exact ACK and bounded HTTP observation remain separate after source promotion', { timeout: 20_000 }, async t => {
+  const f = await fixture(t), inspect = () => f.call('apps.inspect', { appId: f.app.id });
+  await until(() => inspect().source.observation.state === 'responding', 'initial response observation');
+  const old = f.a.wire.outbound.findLast(packet => packet.frame.type === 'bound-observation' && packet.frame.appId === f.app.id);
+  let ack, observation;
+  f.b.wire.hooks.send = packet => {
+    if (packet.frame.appId !== f.app.id) return;
+    if (packet.frame.type === 'binding-ack') { ack = packet; return false; }
+    if (packet.frame.type === 'bound-observation') { observation = packet; return false; }
+  };
+  const prepared = await f.prepare(); f.call('apps.source.promote', f.intent(prepared, 'c2c-binding-pending'));
+  await until(() => ack && observation, 'ACK and observation captured separately');
+  old.forward(); observation.forward(); await delay(30);
+  let current = inspect();
+  assert.equal(current.source.revision, prepared.target.revision); assert.equal(current.source.digest, prepared.target.digest);
+  assert.equal(current.source.requiredBindingVersion, 2); assert.deepEqual(current.source.binding, { state: 'pending' });
+  const refreshedCard = f.call('apps.list').apps.find(item => item.id === f.app.id);
+  assert.equal(refreshedCard.hostDeviceId, f.b.identity.hostDeviceId); assert.equal(refreshedCard.deviceName, current.source.deviceName);
+  assert.equal(current.source.observation.state, 'unknown');
+  ack.forward(); await f.ready(); current = inspect();
+  assert.deepEqual(current.source.binding, { state: 'bound' });
+  assert.equal(current.source.observation.state, 'unknown', 'an ACK is not a fresh response observation');
+  observation.forward(); await until(() => inspect().source.observation.state === 'responding', 'new exact observation accepted');
+  assert.equal((await f.http('/')).text, 'B:/');
+  f.b.runtime.stop(); await until(() => inspect().source.binding.state === 'offline', 'promoted source offline');
+  f.b.wire.hooks.send = packet => {
+    if (packet.frame.type === 'auth') { const { capabilities: omitted, ...legacy } = packet.frame; packet.forward(legacy); return false; }
+  };
+  f.b.runtime.start(); await until(() => inspect().source.binding.state === 'update-required', 'promoted source legacy refusal');
+  current = inspect(); assert.equal(current.source.requiredBindingVersion, 2); assert.equal(current.source.observation.state, 'unknown');
+  assert.equal((await f.http('/')).status, 503);
+});
+
+test('C2-C a second legitimate SQLite writer cannot make an old channel ACK describe the new current target', { timeout: 20_000 }, async t => {
+  const f = await fixture(t), inspect = () => f.call('apps.inspect', { appId: f.app.id });
+  let second;
+  const sockets = new Set();
+  const gateway = http.createServer((req, res) => { if (!second?.handleRequest(req, res)) { res.writeHead(404); res.end(); } });
+  gateway.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+  gateway.on('upgrade', (req, socket, head) => { if (!second?.handleUpgrade(req, socket, head)) socket.destroy(); });
+  await new Promise(done => gateway.listen(0, '127.0.0.1', done));
+  second = createAppsService(f.config);
+  const runtime = createLocalAppsRuntime({ createWebSocket: url => new globalThis.WebSocket(url), httpRequest: http.request,
+    randomSecret: secret, digest, encodeBase64: bytes => Buffer.from(bytes).toString('base64'), decodeBase64: text => Buffer.from(text, 'base64') },
+  { serverUrl: `http://127.0.0.1:${gateway.address().port}`, identity: f.a.identity, token: f.connectorToken, blockedPorts: [] });
+  f.registerCleanup(async () => { runtime.stop(); second.close(); for (const socket of sockets) socket.destroy(); await new Promise(done => gateway.close(done)); });
+  runtime.start(); await until(() => runtime.status().connected, 'second actual gateway channel');
+  const base = f.publication();
+  const prepared = await second.sourcePreparationExtension.executeAsync({ op: 'apps.source.prepare', actor: owner,
+    args: { appId: f.app.id, expectedAccountId: owner.accountId, expectedPolicyEpoch: base.policyEpoch, expectedTargetRevision: base.activeTargetRevision,
+      source: { hostDeviceId: f.a.identity.hostDeviceId, connectorId: f.a.identity.connectorId, port: f.A.port, entryPath: '/second-writer#view' } } });
+  second.execute({ op: 'apps.source.promote', actor: owner, args: f.intent(prepared, 'c2c-other-writer') });
+  const current = inspect();
+  assert.equal(current.source.revision, prepared.target.revision); assert.equal(current.source.entryPath, '/second-writer#view');
+  assert.deepEqual(current.source.binding, { state: 'pending' }, 'the old manager ACK cannot be reported as the current source binding');
+  assert.equal(current.source.observation.state, 'unknown');
+  assert.throws(() => f.call('apps.launch', { appId: f.app.id }), { code: 'app_binding_pending' });
+  const before = f.A.getHits().length; assert.equal((await f.http('/')).status, 503); assert.equal(f.A.getHits().length, before);
+  f.a.runtime.stop(); await until(() => inspect().source.binding.state === 'offline', 'first gateway disconnect');
+  f.a.runtime.start(); await f.ready();
+  assert.deepEqual(inspect().source.binding, { state: 'bound' }); assert.equal((await f.http('/new-route')).text, 'A:/new-route');
+});
+
+test('C2-C revocation withdraws all binding/readiness and sharing claims while the neighbor stays usable', { timeout: 20_000 }, async t => {
+  const f = await fixture(t), prepared = await f.prepare(); f.call('apps.source.promote', f.intent(prepared, 'c2c-revoke'));
+  await f.ready(); f.call('apps.revoke', { appId: f.app.id });
+  const current = f.call('apps.inspect', { appId: f.app.id });
+  assert.equal(current.source.revision, prepared.target.revision); assert.equal(current.source.requiredBindingVersion, 2);
+  assert.deepEqual(current.source.binding, { state: 'unavailable' }); assert.equal(current.source.observation.state, 'unknown');
+  assert.ok(Object.values(current.actions).every(value => value === false)); assert.equal(current.addresses.canonical.shareUrl, null);
+  assert.ok(current.addresses.aliases.every(item => item.shareUrl === null));
+  assert.throws(() => f.call('apps.inspect', { appId: f.app.id }, guest), { code: 'apps_owner_required' });
+  assert.deepEqual(f.call('apps.inspect', { appId: f.neighbor.id }).source.binding, { state: 'bound' });
+  const neighbor = await f.session(f.neighbor.id); assert.equal((await f.http('/', neighbor)).text, 'B:/');
 });

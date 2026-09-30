@@ -66,6 +66,10 @@ test('expected account guards every app operation before reads or mutation while
   const expectedAccountId = owner.accountId;
   assert.equal(env.call(owner, 'apps.devices', { expectedAccountId }).devices.length, 1);
   assert.equal(env.call(owner, 'apps.list', { expectedAccountId }).apps[0].id, env.app.id);
+  assert.equal(env.call(owner, 'apps.list', { expectedAccountId }).apps[0].deviceName, 'Test laptop');
+  const sharedApp = env.call(member, 'apps.list').apps[0];
+  assert.equal(sharedApp.id, env.app.id);
+  for (const key of ['deviceName', 'connectorId', 'port', 'entryPath', 'grants']) assert.equal(Object.hasOwn(sharedApp, key), false, key);
   assert.equal(env.call(owner, 'apps.devices').devices.length, 1);
   assert.throws(() => env.call(owner, 'apps.devices', { expectedAccountId, extra: true }), /unexpected_argument/u);
   for (const op of ['apps.devices', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.claim']) {

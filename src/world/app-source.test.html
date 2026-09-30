@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Источник приложения · изолированная проверка</title>
+<style>
+  body{margin:0;padding:16px;background:var(--sw-bg);color:var(--sw-ink);font:14px/1.5 system-ui,sans-serif}
+  .qa-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+  .qa-controls button,.qa-controls select{font:inherit;min-height:44px;padding:8px;border:1px solid var(--sw-control-border);border-radius:8px;background:var(--sw-surface);color:var(--sw-ink)}
+  #qa-results{white-space:pre-wrap;overflow-wrap:anywhere} .qa-label{font-size:12px;color:var(--sw-muted)}
+</style>
+<strong>Изолированный стенд настроек источника</strong>
+<p class="qa-label">Настоящий компонент и диалог; вымышленные ответы. Сеть, рабочие приложения и аккаунты не используются. Проверка событий DOM не заменяет ручную проверку клавиатуры и экрана.</p>
+<div class="qa-controls">
+  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="missing">Пропавшее устройство</option><option value="lost">Потерянный ответ переключения</option><option value="short">Короткий остаток проверки</option><option value="slow">Поздний ответ проверки</option></select></label>
+  <button id="qa-open">Открыть</button><button id="qa-reset">Сбросить только стенд</button><button id="qa-tests">Проверить сценарии DOM</button><button id="qa-theme">Сменить тему</button>
+</div>
+<p id="qa-results" role="status" data-test-status="idle">Готов к запуску.</p>
+<script type="module">
+import './world.css';
+import { createPalette } from './theme/palette.mjs';
+import { createDialog } from './dialogs.ts';
+import { mountAppSettings } from './app-settings.ts';
+import { createAppSettingsState } from './app-settings-state.mjs';
+if (!import.meta.env.DEV) throw new Error('This fixture is available only on the development server');
+
+const appId = `app-${'c2'.repeat(16)}`, canonicalId = `dom_${'a1'.repeat(16)}`, aliasId = `dom_${'b2'.repeat(16)}`;
+const scopeKey = 'soty.source-independent-fixture.scope';
+let scope = sessionStorage.getItem(scopeKey);
+if (!scope) { scope = `fixture-${crypto.randomUUID()}`; sessionStorage.setItem(scopeKey, scope); }
+const accountId = `source-${scope}`, backendKey = `soty.source-independent-fixture.backend:${scope}`, pendingKey = `soty.app-settings.v1:${accountId}:${appId}`;
+const profile = 'soty.relay-restricted.v1', mode = document.querySelector('#qa-mode'), result = document.querySelector('#qa-results');
+const clone = value => structuredClone(value), delay = ms => new Promise(done => setTimeout(done, ms));
+const sha = async text => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))].map(value => value.toString(16).padStart(2,'0')).join('');
+const nonce = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const fail = code => { throw Object.assign(new Error(code), { code }); };
+const deviceA = { hostDeviceId:'fixture-host-A',connectorId:'fixture-connector-A',name:'Домашний компьютер',online:true,claimed:true,bindingVersion:2 };
+const deviceB = { hostDeviceId:'fixture-host-B',connectorId:'fixture-connector-B',name:'Другой компьютер',online:true,claimed:true,bindingVersion:2 };
+const targetA = { revision:1,digest:'1'.repeat(64),profile,hostDeviceId:deviceA.hostDeviceId,connectorId:deviceA.connectorId,deviceName:deviceA.name,port:4321,entryPath:'/original' };
+const initial = () => ({ app:{id:appId,name:'Пример приложения',state:'enabled',revision:1,grants:{accountIds:[],communityIds:['fixture-group']}},
+  epoch:2,source:targetA,targets:[{...targetA,createdAt:Date.now()-60000}],receipts:{},launchPolicy:'anyone' });
+let backend = JSON.parse(sessionStorage.getItem(backendKey) ?? 'null') ?? initial();
+let generation=0, mounted=null, dialog=null, calls=[], preparations=new Map(), lostOnce=false, deferredReply=null, failedInspections=0, automatic=false, theme='dark';
+function persist(){sessionStorage.setItem(backendKey,JSON.stringify(backend));}
+function applyTheme(){for(const [key,value] of Object.entries(createPalette(theme,50)))document.documentElement.style.setProperty(key,value);document.documentElement.style.colorScheme=theme;}
+applyTheme();
+function inspect(){const now=Date.now(),active=backend.app.state==='enabled';return {schema:'soty.app-inspection.v1',checkedAt:now,app:clone(backend.app),
+  addresses:{revision:1,claimOrigin:'https://apps.fixture.invalid',canonical:{id:canonicalId,origin:'https://canonical.fixture.invalid',shareUrl:active?`https://shell.fixture.invalid/#launch/${appId}/${canonicalId}`:null},
+    aliases:[{id:aliasId,slug:'demo',origin:'https://demo.apps.fixture.invalid',state:'bound',active:true,shareUrl:active?'https://demo.apps.fixture.invalid/':null,createdAt:now-1000,retiredAt:null}],
+    limits:{perApp:5,perAccount:30,usedByApp:1,usedByAccount:1}},
+  publication:{policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision},
+  source:{...clone(backend.source),requiredBindingVersion:backend.source.revision===1?1:2,binding:{state:active?'bound':'unavailable'},
+    observation:{state:active?'responding':'unknown',observedAt:active?now:null,freshUntil:active?now+45000:null,evidence:active?'connector-v2-observation':'not-observed'}},
+  actions:{canEdit:active,canPublish:active,canPreview:active,canReserveName:active}};}
+function summary(){return {appId,policyEpoch:backend.epoch,launchPolicy:backend.launchPolicy,listed:false,activeDomainIds:[aliasId],activeTargetRevision:backend.source.revision,requiredBindingVersion:backend.source.revision===1?1:2,appState:backend.app.state};}
+const api={async request(op,args){
+  if(args.expectedAccountId!==accountId||args.appId&&args.appId!==appId)fail('ACTIVE_PROFILE_CHANGED');calls.push({op,args:clone(args)});
+  if(op==='apps.inspect'){if(failedInspections>0){failedInspections--;throw new TypeError('synthetic inspection response unavailable');}return inspect();}
+  if(op==='apps.devices')return {devices:clone(mode.value==='missing'?[deviceB]:[deviceA,deviceB])};
+  if(op==='apps.source.history')return {schema:'soty.app-source-history.v1',...summary(),targets:clone([...backend.targets].reverse().slice(0,args.limit)),nextCursor:null};
+  if(op==='apps.source.prepare'){
+    if(args.expectedPolicyEpoch!==backend.epoch||args.expectedTargetRevision!==backend.source.revision)fail('app_publication_revision_conflict');
+    const chosen=args.source??backend.targets.find(value=>value.revision===args.targetRevision);if(!chosen)fail('apps_source_target_unavailable');
+    const device=[deviceA,deviceB].find(value=>value.hostDeviceId===chosen.hostDeviceId&&value.connectorId===chosen.connectorId);if(!device)fail('apps_device_not_owned');
+    const revision=args.source?Math.max(...backend.targets.map(value=>value.revision))+1:chosen.revision;
+    const target={revision,digest:args.source?await sha(JSON.stringify([revision,chosen])):chosen.digest,profile,hostDeviceId:device.hostDeviceId,connectorId:device.connectorId,deviceName:device.name,port:chosen.port,entryPath:chosen.entryPath};
+    const now=Date.now(),value={schema:'soty.app-source-preparation.v1',appId,preparationId:nonce(),expectedPolicyEpoch:backend.epoch,expectedTargetRevision:backend.source.revision,
+      requiredBindingVersion:2,target,checkedAt:now,expiresAt:now+(mode.value==='short'?1600:30000)};
+    preparations.set(value.preparationId,value);
+    if(mode.value==='slow')return new Promise(resolve=>{deferredReply=()=>resolve(clone(value));});
+    return clone(value);
+  }
+  if(op==='apps.source.promote'){
+    if(backend.receipts[args.requestId])return {...clone(backend.receipts[args.requestId]),replayed:true,current:summary()};
+    const prepared=preparations.get(args.preparationId);if(!prepared||Date.now()>=prepared.expiresAt)fail('apps_source_preparation_expired');
+    if(args.expectedPolicyEpoch!==backend.epoch||args.expectedTargetRevision!==backend.source.revision)fail('app_publication_revision_conflict');
+    if(args.launchPolicy==='anyone'&&(args.exposureAck?.targetDigest!==prepared.target.digest||args.exposureAck.targetRevision!==prepared.target.revision))fail('app_exposure_ack_required');
+    const previous=backend.source.revision;backend.source=clone(prepared.target);backend.epoch++;backend.launchPolicy=args.launchPolicy;
+    if(!backend.targets.some(value=>value.revision===backend.source.revision))backend.targets.push({...clone(backend.source),createdAt:Date.now()});
+    const reply={requestId:args.requestId,replayed:false,receipt:{schema:'soty.app-source-receipt.v1',namespace:'apps.source.promote.v1',requestKeyHash:await sha(args.requestId),
+      preparationKeyHash:await sha(args.preparationId),appId,previousTargetRevision:previous,targetRevision:backend.source.revision,targetDigest:backend.source.digest,profile,
+      requiredBindingVersion:2,policyEpoch:backend.epoch,launchPolicy:args.launchPolicy,listed:args.listed,exposureAck:args.exposureAck??null,committedAt:Date.now()},current:summary()};
+    backend.receipts[args.requestId]=clone(reply);persist();if(mode.value==='lost'&&!lostOnce){lostOnce=true;throw new TypeError('synthetic network response lost');}return reply;
+  }
+  fail('fixture_operation_not_supported');
+}};
+function close(){generation++;mounted?.dispose();mounted=null;dialog?.close();dialog=null;}
+async function open(){close();const run=++generation;dialog=createDialog('Настройки тестового приложения',()=>{if(generation===run){mounted?.dispose();mounted=null;}});dialog.element.classList.add('sw-app-settings-dialog');
+  mounted=mountAppSettings({host:dialog.body,accountId,appId,api,communities:[{communityId:'fixture-group',name:'Моя группа',membership:{state:'active'},permissions:{canModerate:true}}],
+    isCurrent:()=>generation===run&&dialog?.element.open,onChanged:()=>{},onPreview:()=>{result.textContent='Предпросмотр перехвачен стендом; внешняя навигация не выполнялась.';},onClose:close});
+  const x=dialog.element.querySelector('.sw-dialog-header button');x.addEventListener('click',event=>{event.preventDefault();event.stopImmediatePropagation();mounted?.requestClose(x);},true);
+  dialog.element.addEventListener('cancel',event=>{event.preventDefault();mounted?.requestClose(document.activeElement);});
+  await until(()=>key('source-editor'),'settings loaded');key('source-editor').open=true;await until(()=>calls.some(value=>value.op==='apps.devices'),'devices requested');await delay(20);
+}
+function key(value){return dialog?.element.querySelector(`[data-settings-key="${value}"]`);}
+function change(value,next){const control=key(value);if(!control)throw new Error(`missing control:${value}`);control.focus();if(control.type==='checkbox')control.checked=next;else control.value=next;control.dispatchEvent(new Event(control.tagName==='SELECT'||control.type==='checkbox'?'change':'input',{bubbles:true}));return control;}
+function click(value){const control=key(value);if(!control)throw new Error(`missing action:${value}`);control.click();}
+async function until(check,label){const deadline=performance.now()+4500;while(!check()){if(performance.now()>deadline)throw new Error(`fixture timeout:${label}`);await delay(10);}}
+function assert(value,label){if(!value)throw new Error(label);}
+function reset(){close();backend=initial();preparations=new Map();calls=[];lostOnce=false;deferredReply=null;failedInspections=0;localStorage.removeItem(pendingKey);persist();}
+async function run(){if(automatic)return;automatic=true;result.dataset.testStatus='running';result.textContent='Выполняются сценарии компонента…';const passed=[];
+  try{
+    mode.value='normal';reset();await open();
+    const field=change('source-path','/stable-черновик?x=1#part');field.setSelectionRange(4,10);const focus=field;click('source-devices-refresh');await delay(35);
+    assert(key('source-path')===field&&field.value==='/stable-черновик?x=1#part','refresh replaced draft DOM');assert(document.activeElement===focus,'refresh stole focus');passed.push('Стабильный DOM, ввод и фокус после обновления устройств');
+    mode.value='missing';reset();await open();const selection=key('source-device').value;change('source-path','/new');click('source-check');await delay(35);
+    assert(key('source-device').value===selection&&calls.filter(value=>value.op==='apps.source.prepare').length===0,'missing target silently substituted');passed.push('Пропавшее устройство не подменяется');
+    mode.value='short';reset();await open();change('source-path','/read-slowly');click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'checked result');
+    await delay(1900);assert(dialog.element.querySelector('.sw-app-settings-source-target').textContent.includes('/read-slowly'),'expiry removed reviewed target');
+    assert(calls.filter(value=>value.op==='apps.source.promote').length===0,'timer invoked promotion');passed.push('После истечения проверки карточка остаётся; таймер не переключает');
+    mode.value='lost';reset();await open();change('source-path','/lost-reply');click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'public consent');
+    change('source-public-ack',true);click('source-promote');await until(()=>localStorage.getItem(pendingKey)&&key('pending-retry')?.getAttribute('aria-disabled')==='false','unknown reply');
+    const first=calls.find(value=>value.op==='apps.source.promote');assert(first,'promote was not dispatched');await open();click('pending-retry');
+    await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null,'receipt settled');const sends=calls.filter(value=>value.op==='apps.source.promote');
+    assert(sends.length===2&&JSON.stringify(sends[0].args)===JSON.stringify(sends[1].args),'remount changed pending');passed.push('Потерянный ответ: remount повторяет точный запрос');
+    await open();key('source-history').open=true;await until(()=>calls.some(value=>value.op==='apps.source.history'),'history requested');await delay(40);
+    const autoRows=dialog.element.querySelectorAll('.sw-app-settings-history-row').length;
+    const beforeHistory=calls.filter(value=>value.op==='apps.source.history').length;click('source-history-first');
+    await until(()=>calls.filter(value=>value.op==='apps.source.history').length>beforeHistory,'manual latest requested');await delay(40);
+    const manualRows=dialog.element.querySelectorAll('.sw-app-settings-history-row').length;
+    assert(autoRows===backend.targets.length&&manualRows===backend.targets.length,`history rows auto=${autoRows}, manual=${manualRows}; expected ${backend.targets.length}`);
+    assert(dialog.element.querySelector('.sw-app-settings-history-list').textContent.includes('/original')&&dialog.element.querySelector('.sw-app-settings-history-list').textContent.includes('/lost-reply'),'history omitted immutable paths');
+    passed.push('История A+B: автооткрытие и «К последним» показывают обе конфигурации');
+    mode.value='normal';change('source-path','/history-visible-C');click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'checked next source with history open');
+    change('source-public-ack',true);click('source-promote');
+    await until(()=>JSON.parse(localStorage.getItem(pendingKey)).pending===null&&dialog.element.querySelectorAll('.sw-app-settings-history-row').length===3,'history refreshed after own promotion');
+    assert(dialog.element.querySelector('.sw-app-settings-history-list').textContent.includes('/history-visible-C'),'successful promotion left history without the new configuration');
+    assert(![...dialog.element.querySelectorAll('.sw-app-settings-source-block')].some(node=>!node.hidden&&/История и текущие настройки различаются/u.test(node.textContent)),'successful promotion left a stale history alert');
+    assert(![...dialog.element.querySelectorAll('.sw-app-settings-notice')].some(node=>!node.hidden&&/Читаем текущий источник/u.test(node.textContent)),'successful inspection remained in loading status');
+    passed.push('Открытая история обновляется после своего переключения без вечного статуса чтения');
+    mode.value='normal';reset();await open();change('source-path','/confirmed-before-inspection');click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'checked source before inspection failure');
+    change('source-public-ack',true);failedInspections=1;click('source-promote');
+    await until(()=>localStorage.getItem(pendingKey)&&JSON.parse(localStorage.getItem(pendingKey)).pending===null&&dialog.element.textContent.includes('Текущий источник не удалось проверить'),'accepted source and failed inspection');
+    assert(calls.filter(value=>value.op==='apps.source.promote').length===1,'inspection failure retried a committed promotion');
+    click('refresh');await until(()=>dialog.element.querySelector('.sw-app-settings-source').textContent.includes('/confirmed-before-inspection')&&key('refresh').getAttribute('aria-busy')==='false','inspection recovered');
+    assert(![...dialog.element.querySelectorAll('.sw-app-settings-notice')].some(node=>!node.hidden&&/не удалось проверить|Читаем текущий источник/u.test(node.textContent)),'recovered inspection retained a failure or loading status');
+    assert(JSON.parse(localStorage.getItem(pendingKey)).pending===null&&calls.filter(value=>value.op==='apps.source.promote').length===1,'refresh resurrected a completed mutation');
+    passed.push('Принятое переключение остаётся подтверждённым после отказа чтения и явного обновления');
+    for(const action of ['pending-retry','source-pending-retry']){
+      mode.value='lost';reset();await open();change('source-path',`/displayed-${action}`);click('source-check');await until(()=>key('source-public-ack')&&!key('source-public-ack').disabled,'checked displayed source');
+      change('source-public-ack',true);click('source-promote');await until(()=>localStorage.getItem(pendingKey)&&key('pending-retry')?.getAttribute('aria-disabled')==='false','displayed unknown source');
+      const other=createAppSettingsState({accountId,appId,storage:localStorage,locks:navigator.locks}),displayed=other.read().pending;
+      assert(displayed.op==='apps.source.promote','wrong displayed operation');await other.abandon(displayed);
+      const replacement=await other.prepare({op:'apps.domains.claim',args:{appId,expectedAccountId:accountId,expectedDomainsRevision:1,slug:'other-unseen-command'}});
+      // Same-window storage write deliberately emits no storage event. The
+      // actual displayed DOM still describes A while the shared slot holds B.
+      const before=calls.length;click(action);await delay(70);
+      assert(calls.length===before,`${action} dispatched an unseen replacement`);
+      assert(JSON.stringify(other.read().pending)===JSON.stringify(replacement),`${action} cleared replacement`);
+      passed.push(`${action}: устаревшая кнопка не отправляет запрос другой вкладки`);
+    }
+    mode.value='slow';reset();await open();change('source-path','/late-account');click('source-check');await until(()=>deferredReply,'held prepare');
+    const release=deferredReply;close();release();await delay(40);assert(!document.querySelector('dialog')&&calls.filter(value=>value.op==='apps.source.promote').length===0,'late callback returned after dispose');passed.push('Поздний ответ после закрытия не возвращает чужой экран');
+    result.dataset.testStatus='pass';result.textContent=`PASS ${passed.length}/${passed.length}\n${passed.join('\n')}\nРеальных сетевых действий: 0. Ручная клавиатура/геометрия проверяются отдельно.`;
+  }catch(error){result.dataset.testStatus='fail';result.textContent=`FAIL после ${passed.length} сценариев: ${error.message}\n${passed.join('\n')}`;}finally{automatic=false;}
+}
+document.querySelector('#qa-open').onclick=()=>{void open();};document.querySelector('#qa-reset').onclick=()=>{reset();result.textContent='Сброшены только синтетические данные этого стенда.';};
+document.querySelector('#qa-tests').onclick=()=>{void run();};document.querySelector('#qa-theme').onclick=()=>{theme=theme==='dark'?'light':'dark';applyTheme();};
+if(new URLSearchParams(location.search).get('run')==='1')void run();
+</script>
+</html>
