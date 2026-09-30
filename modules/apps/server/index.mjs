@@ -751,7 +751,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
                 if (initial.length) await relayClientBytes(stream, initial);
                 initial = null;
                 for await (const chunk of stream.socket) await relayClientBytes(stream, chunk);
-                sendStream(stream, { type: 'end', id: stream.id });
+                // An upgraded TCP socket may remain half-open after EOF. A
+                // WebSocket cannot resume its input, so release its quota and
+                // source immediately instead of waiting for a future write.
+                closeStream(stream, 'app_client_closed');
               } catch (error) { closeStream(stream, error.code || 'app_client_closed'); }
             })();
           } else {

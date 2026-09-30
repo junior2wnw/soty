@@ -204,7 +204,7 @@ async function fixture(t, { auditMs = 10_000, namedOnly = false, secure = false 
     clients.add(ws); ws.once('close', () => clients.delete(ws)); ws.on('error', () => {});
     await bounded(new Promise((resolve, reject) => {
       ws.once('open', resolve); ws.once('error', reject);
-      ws.once('unexpected-response', (_request, response) => { response.resume(); ws.terminate(); reject(Object.assign(new Error('upgrade denied'), { status: response.statusCode })); });
+      ws.once('unexpected-response', (_request, response) => { response.resume(); ws.terminate(); reject(Object.assign(new Error(`upgrade denied: ${localPath}`), { status: response.statusCode })); });
     }), 'visitor WS open');
     return ws;
   }
@@ -486,7 +486,11 @@ test('public capacity includes signed-public sessions, stays public after member
   const ownSockets = [];
   for (let i = 0; i < 8; i++) ownSockets.push(await f.websocket(f.primary, { cookie: ownCookie, localPath: `/owner-${i}` }));
   await assert.rejects(f.websocket(f.primary, { cookie: ownCookie, localPath: '/total-overflow' }), error => error.status === 429 || /429/u.test(error.message));
+  const victimStream = await f.log.wait(frame => frame.type === 'open' && frame.path === '/public-0');
   const victim = publicSockets.shift(); victim.terminate(); await closed(victim);
+  // Local close can precede the relay observing TCP termination. Its actual
+  // cancellation proves that the remote slot was released; no timer or retry.
+  await f.log.wait(frame => frame.type === 'cancel' && frame.id === victimStream.id && frame.error === 'app_client_closed');
   const replacement = await f.websocket(f.primary, { cookie: publicCookie, localPath: '/public-replacement' });
   assert.equal(replacement.readyState, WebSocket.OPEN);
   for (const socket of [...publicSockets, ...ownSockets, replacement]) socket.terminate();

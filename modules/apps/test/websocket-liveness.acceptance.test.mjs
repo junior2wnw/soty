@@ -454,6 +454,19 @@ test('R3 receiving Close stops probes and Pong-only traffic cannot postpone clos
   await until(() => f.runtime.status().streams === 0, 'closing slot released');
 });
 
+for (const initiator of ['client', 'source']) test(`TCP EOF preserves the ${initiator}-initiated WebSocket Close handshake and its neighbor`, { timeout: 12_000 }, async t => {
+  const f = await fixture(t), client = await f.open('/graceful-close'), neighbor = await f.open('/close-neighbor');
+  const peer = f.A.peers.get('/graceful-close');
+  const result = ws => bounded(new Promise(done => ws.once('close', (code, reason) => done({ code, reason: reason.toString() }))), 'graceful Close');
+  const clientClosed = result(client.ws), sourceClosed = result(peer.ws);
+  (initiator === 'client' ? client.ws : peer.ws).close(1000, 'finished');
+  assert.deepEqual(await clientClosed, { code: 1000, reason: 'finished' });
+  assert.deepEqual(await sourceClosed, { code: 1000, reason: 'finished' });
+  await until(() => f.runtime.status().streams === 1, 'only the closing stream was released');
+  await echoed(neighbor.ws, 'neighbor survives a clean close');
+  assert.equal(f.runtime.status().connected, true);
+});
+
 test('R3 heartbeat cannot renew an expired account deadline or revive an expired public lease', { timeout: 12_000 }, async t => {
   const f = await fixture(t), account = await f.open('/account-expiry'), anonymous = await f.open('/public-expiry', { entry: f.publicEntry });
   await until(() => account.pings.length && anonymous.pings.length, 'heartbeat before expiry');

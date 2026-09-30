@@ -15,7 +15,7 @@ to the user's computer.
 
 - `modules/connect/` — portable accounts, contacts, device enrollment, recovery,
   and signed module updates. See [integration and limits](modules/connect/README.md)
-  and [verification](modules/connect/VERIFICATION.md). Server requires Node.js 24.13.1+.
+  and [verification](modules/connect/VERIFICATION.md). Server requires Node.js 24.15.0+.
 Portable project-local accounts, contact QR codes, additional devices and recovery
 are implemented in [`modules/connect`](modules/connect/README.md). Production
 signed releases, encrypted backups and the `ssh dev` update controller are documented

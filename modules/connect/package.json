@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "files": ["browser", "server", "ui", "update", "test", "examples", "README.md", "UPDATES.md", "ACCOUNT-CONTINUITY.md", "VERIFICATION.md"],
-  "engines": { "node": ">=24.13.1" },
+  "engines": { "node": ">=24.15.0" },
   "exports": {
     "./browser": { "types": "./browser/index.d.mts", "default": "./browser/index.mjs" },
     "./server": "./server/index.mjs",

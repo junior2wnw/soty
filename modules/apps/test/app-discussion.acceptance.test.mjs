@@ -30,7 +30,9 @@ async function until(check, label, timeout = 5000) {
   assert.fail(`Timed out: ${label}`);
 }
 function safe(value) {
-  assert.doesNotMatch(JSON.stringify(value), /connectorId|connectorKey|hostDeviceId|linkId|claimCode|sessionCheck|grants_json|communityIds|bio|interests/u);
+  // Check projected field names. An opaque random cursor may contain "bio";
+  // separate assertions below check the actual private fixture values.
+  assert.doesNotMatch(JSON.stringify(value), /"(?:connectorId|connectorKey|hostDeviceId|linkId|claimCode|sessionCheck|grants_json|communityIds|bio|interests)"\s*:/u);
 }
 function messageShape(message) {
   assert.deepEqual(Object.keys(message).sort(), ['id', 'conversationId', 'author', 'body', 'replyTo', 'createdAt', 'removedAt', 'canRemove'].sort());
