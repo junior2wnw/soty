@@ -113,13 +113,13 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     res.setHeader('Cache-Control', 'no-store');
     res.json(app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null });
   });
-  app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, appJobs, notes, capabilities],
+  app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, apps.sourcePreparationExtension, appJobs, notes, capabilities],
     canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
   const unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
   app.locals.closeServices = async () => { unsubscribeRevocations(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close(); await connectors.store.close(); };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1 });
+    res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2] });
   });
   attachCanonicalIdentityApi(app, { dataDir });
   attachSotyIdentityAdapterApi(app, { dataDir });

@@ -163,6 +163,8 @@ HEAD идёт на `127.0.0.1`, точный разрешённый порт и 
 
 Периодические probes активных bindings отдельно ограничены: один coalesced sweep, не более четырёх параллельных HEAD и не более одного на binding. Interval20s не запускает бесконечно наложенные sweeps. При смене binding результаты старого sweep пропускаются. Наблюдение имеет exact pins и server receipt time; freshness read-model остаётся45s. Успешный ordinary response может обновлять только собственные pins и не превращает config ACK в функциональную проверку.
 
+Для дедупликации connector хранит завершённый nonce/result отдельно от четырёх in-flight HEAD: не более256 небольших записей на context, срок30s от получения, без продления от повтора. Хранятся digest/pins/result, большой исходный path завершённой проверки не нужен. Заполненный cache даёт `app_prepare_busy`, живые nonce не вытесняются. Этот cache не является серверным runtime proof и не продлевает его срок.
+
 Перед COMMIT модель проверяет current owner/device, исходные CAS, preparation TTL, точный pending target и current runtime proof/socket. Сетевых `await` внутри SQLite transaction нет. После COMMIT source receipt и pointer уже авторитетны: старая связь инвалидируется, новый binding-set/ACK ещё может быть в ожидании. Потеря этого уведомления не откатывает target; retry того же сохранённого intent восстанавливает historical receipt и безопасно повторяет согласование, не эффект. Rollback проходит свежий prepare и новый syncId; floor остаётся2.
 
 ## 7. Совместимость модели, регистрации и reader

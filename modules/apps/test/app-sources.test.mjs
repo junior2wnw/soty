@@ -218,16 +218,29 @@ test('two actual SQLite writers can commit only one source change at the same po
       try {const value=sources.execute({op:'apps.source.promote',actor,args:{appId:workerData.args.appId,requestId:workerData.requestId,preparationId:prepared.preparationId,expectedPolicyEpoch:1,expectedTargetRevision:1,launchPolicy:'restricted',listed:false}});parentPort.postMessage({ok:true,epoch:value.receipt.policyEpoch});}
       catch(error){parentPort.postMessage({ok:false,code:error.code});}
     }finally{sources.close();db.close();}})().catch(error=>parentPort.postMessage({fatal:error.code||error.message}));`;
-  const results = ['one', 'two'].map(requestId => new Promise((resolve, reject) => {
-    const worker = new Worker(script, { eval: true, workerData: { moduleUrl, publicationUrl, databasePath: f.databasePath, barrier, owner, args: f.prepareArgs(), requestId } });
-    t.after(() => worker.terminate());
-    worker.on('error', reject); worker.on('message', message => {
-      if (message.ready) { if (Atomics.load(gate, 0) === 2) { Atomics.store(gate, 1, 1); Atomics.notify(gate, 1, 2); } }
-      else { if (message.fatal) reject(new Error(message.fatal)); else resolve(message); }
-    });
-  }));
-  const values = await Promise.all(results);
-  assert.equal(values.filter(value => value.ok).length, 1); assert.equal(values.find(value => !value.ok).code, 'app_publication_revision_conflict');
-  assert.equal(f.get().policyEpoch, 2); assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_runtime_targets').get().n, 2);
-  assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_source_receipts').get().n, 1);
+  const workers = [];
+  try {
+    const results = ['one', 'two'].map(requestId => new Promise((resolve, reject) => {
+      const worker = new Worker(script, { eval: true, workerData: { moduleUrl, publicationUrl, databasePath: f.databasePath, barrier, owner, args: f.prepareArgs(), requestId } });
+      workers.push(worker); let result;
+      worker.on('error', reject); worker.on('message', message => {
+        if (message.ready) { if (Atomics.load(gate, 0) === 2) { Atomics.store(gate, 1, 1); Atomics.notify(gate, 1, 2); } }
+        else { if (message.fatal) reject(new Error(message.fatal)); else result = message; }
+      });
+      // A result message precedes the worker's finally/db.close. Success is
+      // complete only after exit, before the fixture can unlink SQLite WAL/SHM.
+      worker.once('exit', exitCode => {
+        if (exitCode !== 0 || !result) reject(new Error(`Source writer exited ${exitCode} without a completed result`));
+        else resolve(result);
+      });
+    }));
+    const values = await Promise.all(results);
+    assert.equal(values.filter(value => value.ok).length, 1); assert.equal(values.find(value => !value.ok).code, 'app_publication_revision_conflict');
+    assert.equal(f.get().policyEpoch, 2); assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_runtime_targets').get().n, 2);
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_source_receipts').get().n, 1);
+  } finally {
+    // On one worker's failure, await its sibling's termination here, not in a
+    // later t.after hook registered behind the fixture directory cleanup.
+    await Promise.all(workers.map(worker => worker.terminate()));
+  }
 });

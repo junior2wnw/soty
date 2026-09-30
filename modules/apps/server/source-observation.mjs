@@ -11,5 +11,5 @@ export function describeSourceObservation({ connected, observed, now = Date.now(
     || observed.at > now || observed.at > Number.MAX_SAFE_INTEGER - SOURCE_OBSERVATION_TTL_MS) return empty('unknown');
   const freshUntil = observed.at + SOURCE_OBSERVATION_TTL_MS;
   return { state: now < freshUntil ? (observed.state === 'ready' ? 'responding' : 'unreachable') : 'unknown',
-    observedAt: observed.at, freshUntil, evidence: 'connector-v1-observation' };
+    observedAt: observed.at, freshUntil, evidence: observed.evidence === 'connector-v2-observation' ? 'connector-v2-observation' : 'connector-v1-observation' };
 }

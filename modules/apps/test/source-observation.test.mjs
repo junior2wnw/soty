@@ -26,3 +26,11 @@ test('failure reports also expire; malformed or future clocks never advertise re
     assert.equal(result.state, 'unknown'); assert.equal(result.observedAt, null);
   }
 });
+
+test('a v2 HEAD keeps its precise evidence and expires without becoming a legacy or functional claim', () => {
+  const observed = { state: 'ready', at: 1000, evidence: 'connector-v2-observation' };
+  assert.deepEqual(describeSourceObservation({ connected: true, observed, now: 1001 }),
+    { state: 'responding', observedAt: 1000, freshUntil: 46000, evidence: 'connector-v2-observation' });
+  assert.deepEqual(describeSourceObservation({ connected: true, observed, now: 46000 }),
+    { state: 'unknown', observedAt: 1000, freshUntil: 46000, evidence: 'connector-v2-observation' });
+});

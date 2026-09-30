@@ -12,8 +12,10 @@ import { createHostClassifier } from './hosts.mjs';
 import { renderBootPage, renderStatusPage } from './runtime-pages.mjs';
 import { describeSourceObservation } from './source-observation.mjs';
 import { createAppInspection } from './inspection.mjs';
+import { createSourceRegistry } from './sources.mjs';
+import { createRuntimeBindings } from './runtime-bindings.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.inspect', ...domainOperations, ...publicationOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -55,14 +57,48 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   const activeTarget = id => db.prepare(`SELECT t.* FROM app_publications p
     JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
     WHERE p.app_id=?`).get(id);
+  const runtimeBindings = createRuntimeBindings({ channels, send, now, blockedPorts,
+    onBindingInvalidated(channel, id) {
+      for (const stream of channel.streams.values()) if (stream.appId === id) closeStream(stream, 'app_source_changed');
+    } });
+  const sources = createSourceRegistry({ db, now, assertActor, publications, blockedPorts,
+    prepareTarget: runtimeBindings.prepareTarget, verifyPreparedTarget: runtimeBindings.verifyPreparedTarget,
+    onChanged(event) {
+      invalidateAccess({ appId: event.appId });
+      // A replayed receipt can describe an older transition. Re-read the actual
+      // active route and remove any previously desired binding of this app.
+      const keys = new Set([event.oldConnectorKey, event.newConnectorKey, activeTarget(event.appId)?.connector_key]);
+      for (const channel of channels.values()) {
+        if (keys.has(channel.key) || (channel.bindingVersion === 2 && runtimeBindings.getState(channel, event.appId).state !== 'unavailable')) sync(channel);
+      }
+    } });
+  const sourcePreparationExtension = Object.freeze({ operations: new Set(['apps.source.prepare']),
+    async executeAsync({ op, args = {}, actor }) {
+      assertApps(op === 'apps.source.prepare', 'unsupported_operation');
+      args = authenticatedArgs(actor, args);
+      return sources.execute({ op, actor, args });
+    } });
   function bindingFloor(id) {
     return requiredBindingVersion(db, id);
   }
-  function assertRuntimeBinding(decision) {
-    // C2-A understands Apps4 storage but only serves the legacy binding. A
-    // reader-only binary must fail closed for a source that requires v2,
-    // including rollback to initial target1; parsing a schema is not routing it.
-    assertApps(bindingFloor(decision.appId) === 1, 'app_source_protocol_required', 503);
+  function assertRuntimeBinding(decision, { requireReady = false } = {}) {
+    const channel = channels.get(decision.route.connectorKey), floor = bindingFloor(decision.appId);
+    // Temporary disconnection does not revoke an otherwise current account
+    // session. A known legacy channel can never serve a source with floor2.
+    if (channel && floor === 2) assertApps(channel.bindingVersion === 2, 'app_source_protocol_required', 503);
+    if (!requireReady) return null;
+    assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
+    return channel.bindingVersion === 2 ? runtimeBindings.requireBinding(channel, decision) : null;
+  }
+  function authenticatedArgs(actor, args) {
+    assertApps(!closed, 'apps_closed', 503); assertActor(actor);
+    assertApps(args && typeof args === 'object' && !Array.isArray(args), 'invalid_arguments');
+    if (Object.hasOwn(args, 'expectedAccountId')) {
+      assertApps(args.expectedAccountId === actor.accountId, 'authentication_required', 401);
+      const { expectedAccountId: _expectedAccountId, ...operationArgs } = args;
+      return operationArgs;
+    }
+    return args;
   }
   function assertActor(actor) {
     assertApps(actor && textId(actor.accountId) && textId(actor.deviceId) && actorActive(actor) === true, 'apps_authentication_required', 401);
@@ -106,13 +142,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function inspectSource({ app, target }) {
     if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });
-    const channel = channels.get(target.connectorKey), candidate = bindingFloor(app.id) === 1 ? channel?.observations.get(app.id) : undefined;
+    const channel = channels.get(target.connectorKey);
+    const candidate = channel && (channel.bindingVersion === 2 || bindingFloor(app.id) === 1) ? channel.observations.get(app.id) : undefined;
     const observed = candidate?.targetRevision === target.revision && candidate?.targetDigest === target.digest ? candidate : undefined;
     return describeSourceObservation({ connected: Boolean(channel), observed, now: now() });
   }
   function closeStream(stream, error = 'app_stream_closed', notify = true) {
     if (stream.closed) return;
-    stream.closed = true; clearTimeout(stream.timer); live.delete(stream.id); stream.channel.streams.delete(stream.id);
+    stream.closed = true; clearTimeout(stream.timer);
+    if (live.get(stream.id) === stream) live.delete(stream.id);
+    if (stream.channel.streams.get(stream.id) === stream) stream.channel.streams.delete(stream.id);
     for (const pending of stream.pending.values()) { clearTimeout(pending.timer); pending.reject(new AppsError(error, 502)); }
     stream.pending.clear();
     if (notify) send(stream.channel, { type: 'cancel', id: stream.id, error });
@@ -132,11 +171,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function checkStream(stream) {
     assertApps(!stream.closed, 'app_stream_closed', 502);
-    try { return checkAccess(stream.session, { renewPublic: true }); }
+    try {
+      const decision = checkAccess(stream.session, { renewPublic: true });
+      assertApps(channels.get(stream.channel.key) === stream.channel && stream.channel.ws.readyState === 1, 'app_offline', 503);
+      if (stream.channel.bindingVersion === 2) {
+        runtimeBindings.assertBindingCurrent(stream.channel, stream.runtimeBinding);
+        assertApps(runtimeBindings.requireBinding(stream.channel, decision) === stream.runtimeBinding, 'app_binding_pending', 503);
+      }
+      return decision;
+    }
     catch (error) { closeStream(stream, 'app_access_revoked'); throw error; }
   }
   function retainAccess(holder) {
-    try { checkAccess(holder); return true; } catch { return false; }
+    // Expiry, rights, epoch and persistent binding floor are authority. A
+    // temporarily connected older runtime is only transport unavailability;
+    // it must not destroy this session before a compatible device returns.
+    try { holder.decision = publications.recheckAccess(holder.decision); return true; } catch { return false; }
   }
   function invalidateAccess(filter = {}) {
     for (const [key, item] of tickets) if (matches(item, filter) && !retainAccess(item)) tickets.delete(key);
@@ -145,7 +195,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function invalidateConnector({ hostDeviceId, connectorId } = {}) {
     for (const channel of channels.values()) if ((!hostDeviceId || channel.identity.hostDeviceId === hostDeviceId) && (!connectorId || channel.identity.connectorId === connectorId)) {
-      channels.delete(channel.key); for (const stream of channel.streams.values()) closeStream(stream, 'app_offline', false); channel.ws.terminate();
+      channels.delete(channel.key); runtimeBindings.drop(channel);
+      for (const stream of channel.streams.values()) closeStream(stream, 'app_offline', false); channel.ws.terminate();
     }
   }
   const unsubscribe = subscribeMembership?.(event => { invalidateAccess({ communityId: event.communityId }); });
@@ -157,6 +208,9 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     for (const channel of channels.values()) {
       if (now() - channel.lastSeenAt > 45_000) { channel.ws.terminate(); continue; }
       channel.ws.ping();
+      // Reconcile changes from another legitimate registry writer without
+      // resetting unchanged per-app ACKs or replaying user HTTP requests.
+      try { sync(channel); } catch { channel.ws.terminate(); }
     }
   }, 10_000);
   heartbeatTimer.unref();
@@ -174,7 +228,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return (!filter.appId || decision.appId === filter.appId) && (!filter.accountId || decision.actor?.accountId === filter.accountId) && (!filter.deviceId || decision.actor?.deviceId === filter.deviceId);
   }
   function sync(channel) {
-    if (!channel) return;
+    if (!channel || channels.get(channel.key) !== channel || channel.ws.readyState !== 1) return;
+    if (channel.bindingVersion === 2) {
+      const targets = db.prepare(`SELECT t.* FROM local_apps a
+        JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
+        JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
+        WHERE t.connector_key=? AND a.state='enabled'`).all(channel.key).map(target => ({
+          appId: target.app_id, revision: target.revision, digest: target.digest, ownerAccountId: target.owner_account_id,
+          connectorKey: target.connector_key, port: target.port, entryPath: target.entry_path, profile: target.profile,
+        }));
+      runtimeBindings.sync(channel, targets); return;
+    }
     // Legacy connector v1 receives the route selected by the single current
     // target. It does not attest a target revision or immutable source code.
     const apps = db.prepare(`SELECT a.id,t.port,t.entry_path FROM local_apps a
@@ -186,15 +250,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     send(channel, { type: 'sync', apps });
   }
   function execute({ op, args = {}, actor }) {
-    assertApps(!closed, 'apps_closed', 503); assertActor(actor); assertApps(operations.has(op), 'unsupported_operation');
-    assertApps(args && typeof args === 'object' && !Array.isArray(args), 'invalid_arguments');
-    // Bind a modern view to the account in which it was opened. Existing
-    // signed clients without this optional guard retain their own-actor scope.
-    if (Object.hasOwn(args, 'expectedAccountId')) {
-      assertApps(args.expectedAccountId === actor.accountId, 'authentication_required', 401);
-      const { expectedAccountId: _expectedAccountId, ...operationArgs } = args;
-      args = operationArgs;
-    }
+    args = authenticatedArgs(actor, args); assertApps(operations.has(op), 'unsupported_operation');
+    if (op === 'apps.source.promote' || op === 'apps.source.history') return sources.execute({ op, actor, args });
     if (domainOperations.has(op)) return domains.execute({ actor, op, args });
     if (publicationOperations.has(op)) return publications.execute({ actor, op, args });
     if (op === 'apps.inspect') return inspection.read(actor, args);
@@ -262,7 +319,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(args.domainId));
       assertApps(domain, args.domainId === undefined ? 'apps_origin_not_configured' : 'apps_access_denied', args.domainId === undefined ? 503 : 403);
       const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor });
-      assertRuntimeBinding(decision);
+      assertRuntimeBinding(decision, { requireReady: true });
       const entryPath = runtimePath(args.path ?? decision.route.entryPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
@@ -416,7 +473,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // The request body was asynchronous: only this fresh branded recheck may
       // mint a session. A stale app row or successful launch is not authority.
       const decision = publications.recheckAccess(ticket.decision, { ttlMs: accountSessionMs });
-      assertRuntimeBinding(decision);
+      assertRuntimeBinding(decision, { requireReady: true });
       assertApps(sessions.size < 4096, 'apps_sessions_busy', 429);
       const value = secret(), sessionKey = digest(value), sessionCheck = secret();
       sessions.set(sessionKey, { decision, sessionKey, entryPath: ticket.entryPath, checkDigest: digest(sessionCheck), checkExpiresAt: now() + 30_000 });
@@ -465,16 +522,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function openStream(app, session, values) {
     const decision = checkAccess(session, { renewPublic: true });
+    const runtimeBinding = assertRuntimeBinding(decision, { requireReady: true });
     const channel = channels.get(decision.route.connectorKey); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
     assertApps(channel.streams.size < LIMITS.streams, 'app_device_busy', 429);
     if (decision.accessBasis === 'public') assertApps([...channel.streams.values()].filter(item => item.session.decision.accessBasis === 'public').length < publicStreams, 'app_device_busy', 429);
-    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, session: { decision, sessionKey: session.sessionKey }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
+    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
       ...(values.kind === 'ws' ? { requestLimiter: createWebSocketLimiter({ masked: true }), responseLimiter: createWebSocketLimiter({ masked: false }) } : {}) };
     stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), LIMITS.headMs); stream.timer.unref();
     channel.streams.set(id, stream); live.set(id, stream); return stream;
   }
   function sendStream(stream, frame) {
     checkStream(stream);
+    if (frame.type === 'open' && stream.channel.bindingVersion === 2) frame = { ...frame, type: 'bound-open', ...runtimeBindings.openPins(stream.runtimeBinding) };
     assertApps(send(stream.channel, frame), 'app_offline', 503);
   }
   async function sendChunks(stream, bytes) {
@@ -492,8 +551,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }
   }
   function send(channel, frame) {
-    if (!channel || channel.ws.readyState !== 1 || channel.ws.bufferedAmount > 4 * 1024 * 1024) return false;
-    channel.ws.send(JSON.stringify(frame)); return true;
+    if (closed || !channel || channels.get(channel.key) !== channel || channel.ws.readyState !== 1) return false;
+    const payload = JSON.stringify(frame), bytes = Buffer.byteLength(payload, 'utf8');
+    if (bytes > FRAME_BYTES || channel.ws.bufferedAmount + bytes > 4 * 1024 * 1024) return false;
+    try { channel.ws.send(payload); return true; } catch { return false; }
   }
   function handleUpgrade(req, socket, head) {
     let url;
@@ -532,30 +593,54 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return true;
   }
   function acceptChannel(ws) {
-    let channel = null, authenticating = false;
-    const timer = setTimeout(() => ws.terminate(), 5000); timer.unref();
+    let channel = null, authenticating = false, admissionClosed = false;
+    const terminate = () => { admissionClosed = true; if (channel) runtimeBindings.drop(channel); ws.terminate(); };
+    const timer = setTimeout(terminate, 5000); timer.unref();
     ws.on('error', () => {});
     ws.on('pong', () => { if (channel) channel.lastSeenAt = now(); });
     ws.on('message', async (bytes, binary) => {
       let stream;
       try {
+        if (closed || admissionClosed || (channel && channels.get(channel.key) !== channel)) return;
         assertApps(!binary && bytes.length <= FRAME_BYTES, 'app_bad_frame'); const frame = JSON.parse(bytes.toString('utf8'));
+        assertApps(frame && typeof frame === 'object' && !Array.isArray(frame), 'app_bad_frame');
         if (!channel) {
           assertApps(!authenticating && frame.type === 'auth' && frame.schema === CHANNEL_SCHEMA, 'app_auth_required'); authenticating = true;
           const identity = { linkId: textId(frame.linkId), hostDeviceId: textId(frame.hostDeviceId), connectorId: textId(frame.connectorId) };
           assertApps(await authenticateConnector({ linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }), 'app_connector_auth_failed');
-          if (ws.readyState !== 1) return;
-          const key = connectorKey(identity); channels.get(key)?.ws.terminate();
-          channel = { ws, key, identity, auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
+          if (closed || admissionClosed || ws.readyState !== 1) return;
+          let bindingVersion = 1;
+          if (frame.capabilities !== undefined) {
+            const versions = frame.capabilities?.targetBindingVersions;
+            assertApps(frame.capabilities && typeof frame.capabilities === 'object' && !Array.isArray(frame.capabilities)
+              && Array.isArray(versions) && versions.length > 0 && versions.length <= 8
+              && versions.every(value => Number.isSafeInteger(value) && value >= 1) && new Set(versions).size === versions.length
+              && (versions.includes(1) || versions.includes(2)), 'app_source_protocol_required');
+            bindingVersion = versions.includes(2) ? 2 : 1;
+          }
+          const key = connectorKey(identity), previous = channels.get(key);
+          if (previous) {
+            runtimeBindings.drop(previous);
+            for (const oldStream of previous.streams.values()) closeStream(oldStream, 'app_offline', false);
+            previous.ws.terminate();
+          }
+          channel = { ws, key, identity: Object.freeze(identity), bindingVersion, ...(bindingVersion === 2 ? { channelId: secret() } : {}),
+            auth: { linkId: identity.linkId, deviceId: identity.hostDeviceId, connectorId: identity.connectorId, token: frame.token }, name: typeof frame.name === 'string' ? frame.name.slice(0, 80) : identity.hostDeviceId,
             claimDigest: '', claimExpiresAt: 0, streams: new Map(), observations: new Map(), lastSeenAt: now() };
-          channels.set(key, channel); clearTimeout(timer); send(channel, { type: 'ready', schema: CHANNEL_SCHEMA }); sync(channel); return;
+          channels.set(key, channel); clearTimeout(timer);
+          assertApps(send(channel, { type: 'ready', schema: CHANNEL_SCHEMA, ...(bindingVersion === 2 ? { bindingVersion, channelId: channel.channelId } : {}) }), 'app_offline', 503);
+          sync(channel); return;
         }
         channel.lastSeenAt = now();
+        assertApps(frame.type !== 'auth', 'app_auth_repeated');
+        if (runtimeBindings.handleFrame(channel, frame)) return;
+        assertApps(!['binding-ack', 'binding-rejected', 'bound-observation', 'target-prepared', 'target-rejected', 'sync', 'open', 'bound-open', 'binding-set', 'binding-remove', 'target-prepare', 'ready'].includes(frame.type), 'app_bad_frame');
         if (frame.type === 'claim') {
           assertApps(/^[a-f0-9]{64}$/u.test(frame.claimDigest || ''), 'app_claim_digest_invalid'); channel.claimDigest = frame.claimDigest; channel.claimExpiresAt = now() + 5 * 60_000;
           send(channel, { type: 'claim-ready', claimDigest: frame.claimDigest }); return;
         }
         if (frame.type === 'observation') {
+          assertApps(channel.bindingVersion === 1, 'app_bad_observation');
           const app = row(appId(frame.appId)), target = app && activeTarget(app.id);
           assertApps(target?.connector_key === channel.key && ['ready', 'stopped'].includes(frame.state), 'app_bad_observation');
           if (app.state !== 'enabled' || bindingFloor(app.id) !== 1) return;
@@ -607,11 +692,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         // An expired lease or a bad upstream response cannot evict neighbours.
         // Unattributed framing/authentication faults still terminate the channel.
         if (stream) closeStream(stream, error.code || 'app_upstream_failed');
-        else ws.terminate();
+        else terminate();
       }
     });
     ws.once('close', () => {
-      clearTimeout(timer); if (!channel) return;
+      admissionClosed = true; clearTimeout(timer); if (!channel) return;
+      runtimeBindings.drop(channel);
       if (channels.get(channel.key) === channel) channels.delete(channel.key);
       for (const stream of channel.streams.values()) closeStream(stream, 'app_offline', false);
     });
@@ -619,7 +705,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+  return { operations, execute, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
     policy: Object.freeze({
       decideAccess(value) { assertApps(!closed, 'apps_closed', 503); return publications.decideAccess(value); },
       recheckAccess(value, options) { assertApps(!closed, 'apps_closed', 503); return publications.recheckAccess(value, options); },
@@ -630,7 +716,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         .map(zone => `${zone.scheme}://*.${zone.suffix}${zone.port ? `:${zone.port}` : ''}`))];
     },
     configured: Boolean(template || readNamedOrigins(db).length), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
-    close() { if (closed) return; closed = true; clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
+    close() { if (closed) return; closed = true; sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
   };
 }
 function exact(value, allowed) { assertApps(Object.keys(value).every(key => allowed.includes(key)), 'unexpected_argument'); }

@@ -14,7 +14,7 @@ import { createSpreadExMlIntegration, normalizeSpreadExBaseUrl, spreadExMlSchema
 import { createLocalAppsRuntime, prepareLocalAppWorkspace, readLocalAppProposal } from "./agent-modules/local-apps.mjs";
 import { resolveJobExecutor } from "./agent-modules/executor-policy.mjs";
 
-const connectorVersion = "1.3.1";
+const connectorVersion = "1.4.0";
 const connectorSchema = "soty.agent-runtime.v1";
 const scriptPath = fileURLToPath(import.meta.url);
 const connectorDir = resolve(env("SOTY_CONNECTOR_DATA_DIR") || dirname(scriptPath));

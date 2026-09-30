@@ -11,7 +11,7 @@ export interface AppInspection {
   };
   publication: { policyEpoch: number; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; activeTargetRevision: number };
   source: { hostDeviceId: string; connectorId: string; deviceName: string; port: number; entryPath: string; revision: number; digest: string; profile: string;
-    observation: { state: 'offline' | 'unknown' | 'responding' | 'unreachable'; observedAt: number | null; freshUntil: number | null; evidence: 'connector-offline' | 'not-observed' | 'connector-v1-observation' } };
+    observation: { state: 'offline' | 'unknown' | 'responding' | 'unreachable'; observedAt: number | null; freshUntil: number | null; evidence: 'connector-offline' | 'not-observed' | 'connector-v1-observation' | 'connector-v2-observation' } };
   actions: { canReserveName: boolean; canEdit: boolean; canPublish: boolean; canPreview: boolean };
 }
 export interface SettingsDraft { name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }

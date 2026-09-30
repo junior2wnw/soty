@@ -230,7 +230,9 @@ test('source observations distinguish absent, offline, stale, responding and unr
     { state: 'offline', observedAt: null, freshUntil: null, evidence: 'connector-offline' },
     { state: 'unknown', observedAt: 100, freshUntil: 45100, evidence: 'connector-v1-observation' },
     { state: 'responding', observedAt: 200, freshUntil: 45200, evidence: 'connector-v1-observation' },
-    { state: 'unreachable', observedAt: 300, freshUntil: 45300, evidence: 'connector-v1-observation' }];
+    { state: 'unreachable', observedAt: 300, freshUntil: 45300, evidence: 'connector-v1-observation' },
+    { state: 'responding', observedAt: 400, freshUntil: 45400, evidence: 'connector-v2-observation' },
+    { state: 'unknown', observedAt: 400, freshUntil: 45400, evidence: 'connector-v2-observation' }];
   for (const value of values) {
     const result = f.reader({ inspectSource: () => value }).read(owner, { appId: appA });
     assert.deepEqual(result.source.observation, value ?? unknown);

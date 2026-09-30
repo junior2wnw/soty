@@ -24,7 +24,8 @@ function observationView(value) {
   const { state, observedAt, freshUntil, evidence } = value;
   const absent = state === 'unknown' && evidence === 'not-observed';
   const offline = state === 'offline' && evidence === 'connector-offline';
-  const observed = ['unknown', 'responding', 'unreachable'].includes(state) && evidence === 'connector-v1-observation';
+  const observed = ['unknown', 'responding', 'unreachable'].includes(state)
+    && ['connector-v1-observation', 'connector-v2-observation'].includes(evidence);
   assertApps(((absent || offline) && observedAt === null && freshUntil === null)
     || (observed && nonnegative(observedAt) && positive(freshUntil) && freshUntil > observedAt), 'apps_observation_invalid', 500);
   // Freshness and channel evidence are the synchronous observer's responsibility.

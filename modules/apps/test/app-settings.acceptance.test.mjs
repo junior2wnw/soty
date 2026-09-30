@@ -32,7 +32,7 @@ async function until(check, label, timeout = 3500) {
 function rejectsCode(code) { return error => { assert.equal(error?.code, code); return true; }; }
 const stableSettings = value => ({ app: value.app, publication: value.publication, addresses: value.addresses });
 
-async function environment(t, { namedOnly = false, entryPath = '/board?tag=a%2Bb#item', grants = { accountIds: [member.accountId], communityIds: [community] } } = {}) {
+async function environment(t, { namedOnly = false, entryPath = '/board?tag=a%2Bb#item', expectObservation = true, grants = { accountIds: [member.accountId], communityIds: [community] } } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'soty-settings-independent-'));
   const databasePath = join(directory, 'registry.sqlite');
   const connections = new Set(), clients = new Set(), peers = new Set(), services = [];
@@ -100,7 +100,7 @@ async function environment(t, { namedOnly = false, entryPath = '/board?tag=a%2Bb
   const app = call('apps.register', { hostDeviceId: identity.hostDeviceId, connectorId: identity.connectorId,
     name: 'Private settings specimen', port: upstreamPort, entryPath, grants }).app;
   const inspect = (actor = owner, instance = service) => call('apps.inspect', { appId: app.id }, actor, instance);
-  await until(() => inspect().source.observation.state === 'responding', 'real HTTP404 connector observation');
+  if (expectObservation) await until(() => inspect().source.observation.state === 'responding', 'real HTTP404 connector observation');
   function reserve(slug = 'first-address') {
     const before = inspect();
     const result = call('apps.domains.claim', { appId: app.id, slug, expectedDomainsRevision: before.addresses.revision, requestId: `claim-${++requestId}` });
@@ -164,7 +164,7 @@ test('C1 owner-only projection does not expose settings to a granted member, pub
 test('C1 real HTTP404 means responding, expires precisely at45s, and cannot survive a connector restart', async t => {
   const f = await environment(t), first = f.inspect(), initial = first.source.observation;
   assert.equal(first.checkedAt, f.time());
-  assert.deepEqual(initial, { state: 'responding', observedAt: f.time(), freshUntil: f.time() + 45000, evidence: 'connector-v1-observation' });
+  assert.deepEqual(initial, { state: 'responding', observedAt: f.time(), freshUntil: f.time() + 45000, evidence: 'connector-v2-observation' });
   f.advance(44999); const nearlyExpired = f.inspect();
   assert.equal(nearlyExpired.source.observation.state, 'responding');
   assert.equal(nearlyExpired.checkedAt, f.time()); assert.equal(nearlyExpired.source.observation.freshUntil - nearlyExpired.checkedAt, 1);
@@ -184,7 +184,7 @@ test('C1 an actual failed process probe is unreachable rather than offline, and 
   f.runtime.stop(); await until(() => f.inspect().source.observation.state === 'offline', 'old connection closed');
   f.failProbes(); f.runtime.start(); await until(() => f.inspect().source.observation.state === 'unreachable', 'fresh probe connection failed');
   const current = f.inspect();
-  assert.equal(current.source.observation.evidence, 'connector-v1-observation');
+  assert.equal(current.source.observation.evidence, 'connector-v2-observation');
   assert.equal(current.source.observation.observedAt, f.time());
   assert.equal(current.actions.canPreview, true); assert.equal(current.actions.canPublish, true);
   f.advance(45000); assert.equal(f.inspect().source.observation.state, 'unknown');
@@ -314,12 +314,17 @@ test('C1 revoked app remains inspectable by its owner but has no active action o
 });
 
 test('C1 unsafe historical entry path cannot become a share link but does not block emergency restrict', async t => {
-  const f = await environment(t, { entryPath: '/x/..//not-a-safe-launch' }), address = f.reserve();
+  const f = await environment(t, { entryPath: '/x/..//not-a-safe-launch', expectObservation: false }), address = f.reserve();
   f.publish({ domains: [address], listed: true });
   const current = f.inspect();
+  assert.equal(f.runtime.status().connected, true);
+  assert.equal(f.probeCount(), 0, 'an unsafe binding is refused before any upstream HEAD');
+  assert.deepEqual(current.source.observation, { state: 'unknown', observedAt: null, freshUntil: null, evidence: 'not-observed' });
   assert.equal(current.source.entryPath, '/x/..//not-a-safe-launch');
   assert.equal(current.addresses.canonical.shareUrl, null); assert.equal(current.addresses.aliases[0].shareUrl, null);
   assert.equal(current.actions.canPreview, false); assert.equal(current.actions.canEdit, true); assert.equal(current.actions.canPublish, true);
+  assert.equal((await f.http(address, '/')).status, 503);
+  assert.equal(f.probeCount(), 0);
   f.publish({ policy: 'restricted', domains: [], listed: false });
   assert.equal(f.inspect().publication.launchPolicy, 'restricted'); assert.equal(f.inspect().publication.listed, false);
 });
