@@ -3,7 +3,8 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
-import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, createWebSocketLimiter, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
+import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
+import { createWebSocketRelay, normalizeWebSocketLivenessTiming } from './websocket-relay.mjs';
 import { migrateAppsSchema, inspectAppsSchema, requiredBindingVersion } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
@@ -29,7 +30,10 @@ const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && 
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
-  readCommunityAuthority, discussionLimits, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
+  readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
+  // Trusted host/test settings may shorten deadlines, never disable or widen
+  // the bounded transport profile. Reject invalid settings before opening data.
+  const webSocketTiming = normalizeWebSocketLivenessTiming(webSocketLiveness);
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -189,6 +193,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function closeStream(stream, error = 'app_stream_closed', notify = true) {
     if (stream.closed) return;
     stream.closed = true; clearTimeout(stream.timer);
+    stream.relay?.close();
+    stream.upgradeHead = null;
     if (live.get(stream.id) === stream) live.delete(stream.id);
     if (stream.channel.streams.get(stream.id) === stream) stream.channel.streams.delete(stream.id);
     for (const pending of stream.pending.values()) { clearTimeout(pending.timer); pending.reject(new AppsError(error, 502)); }
@@ -565,8 +571,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const channel = channels.get(decision.route.connectorKey); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
     assertApps(channel.streams.size < LIMITS.streams, 'app_device_busy', 429);
     if (decision.accessBasis === 'public') assertApps([...channel.streams.values()].filter(item => item.session.decision.accessBasis === 'public').length < publicStreams, 'app_device_busy', 429);
-    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
-      ...(values.kind === 'ws' ? { requestLimiter: createWebSocketLimiter({ masked: true }), responseLimiter: createWebSocketLimiter({ masked: false }) } : {}) };
+    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, runtimeBinding, session: { decision, sessionKey: session.sessionKey }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false };
     stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), LIMITS.headMs); stream.timer.unref();
     channel.streams.set(id, stream); live.set(id, stream); return stream;
   }
@@ -577,7 +582,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   async function sendChunks(stream, bytes) {
     checkStream(stream);
-    if (stream.kind === 'ws') stream.requestLimiter.push(bytes);
+    // For WS this is the relay's only source writer. It receives already
+    // inspected ordered bytes, including its masked control frames.
     for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
       checkStream(stream); const seq = ++stream.sendSeq;
       await new Promise((resolve, reject) => {
@@ -586,6 +592,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         try { sendStream(stream, { type: 'data', id: stream.id, seq, data: bytes.subarray(offset, offset + CHUNK_BYTES).toString('base64') }); }
         catch (error) { clearTimeout(timer); stream.pending.delete(seq); reject(error); }
       });
+      checkStream(stream);
+    }
+  }
+  async function relayClientBytes(stream, bytes) {
+    // A TCP read/upgrade head may exceed one tunnel chunk. Do not let it create
+    // concurrent relay input or retain an unbounded queue of pending ACKs.
+    for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+      await stream.relay.clientBytes(bytes.subarray(offset, offset + CHUNK_BYTES));
       checkStream(stream);
     }
   }
@@ -696,14 +710,38 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (frame.type === 'head') {
           assertApps(!stream.head && Number.isInteger(frame.status) && frame.status >= 100 && frame.status <= 599, 'app_bad_head');
           assertApps(stream.kind === 'ws' || frame.status >= 200, 'app_bad_head');
-          stream.head = true; clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
+          stream.head = true;
           if (stream.kind === 'ws') {
             assertApps(frame.status === 101, 'app_upgrade_failed'); const headers = cleanHeaders(frame.headers, 'upgrade');
             assertApps(headers['sec-websocket-accept'] && !headers['sec-websocket-extensions'], 'app_upgrade_failed');
             checkStream(stream);
-            stream.socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n`);
-            void (async () => { try { if (stream.upgradeHead.length) await sendChunks(stream, stream.upgradeHead); for await (const chunk of stream.socket) await sendChunks(stream, chunk); sendStream(stream, { type: 'end', id: stream.id }); } catch (error) { closeStream(stream, error.code || 'app_client_closed'); } })();
+            stream.relay = createWebSocketRelay({
+              toClient: bytes => writeChunk(stream.socket, bytes),
+              toSource: bytes => sendChunks(stream, bytes),
+              assertActive: () => { checkStream(stream); },
+              onFailure: error => closeStream(stream, error.code || 'app_websocket_failed'),
+              timing: webSocketTiming,
+            });
+            // Keep the original head deadline until HTTP101 is actually written.
+            // A concurrent source data callback can hold one bounded chunk behind
+            // this gate, but cannot emit WS bytes or ACK ahead of the handshake.
+            stream.upgradeReady = writeChunk(stream.socket, Buffer.from(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n`)).then(() => {
+              checkStream(stream); clearTimeout(stream.timer); stream.timer = null;
+              stream.relay.start();
+            });
+            await stream.upgradeReady;
+            checkStream(stream);
+            void (async () => {
+              try {
+                let initial = stream.upgradeHead; stream.upgradeHead = null;
+                if (initial.length) await relayClientBytes(stream, initial);
+                initial = null;
+                for await (const chunk of stream.socket) await relayClientBytes(stream, chunk);
+                sendStream(stream, { type: 'end', id: stream.id });
+              } catch (error) { closeStream(stream, error.code || 'app_client_closed'); }
+            })();
           } else {
+            clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
             if (frame.location) stream.res.setHeader('Location', requestPath(frame.location));
             stream.res.writeHead(frame.status);
@@ -713,11 +751,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         if (frame.type === 'data') {
           assertApps(stream.head && !stream.receiving && frame.seq === stream.recvSeq + 1 && typeof frame.data === 'string' && frame.data.length <= CHUNK_BYTES * 4 / 3 + 4 && /^[A-Za-z0-9+/]*={0,2}$/u.test(frame.data), 'app_bad_data');
           const chunk = Buffer.from(frame.data, 'base64'); assertApps(chunk.length <= CHUNK_BYTES, 'app_bad_data');
-          if (stream.kind === 'ws') { try { stream.responseLimiter.push(chunk); } catch (error) { closeStream(stream, error.code || 'app_websocket_invalid_frame'); return; } }
           stream.received += chunk.length;
           if (stream.kind !== 'ws' && stream.received > LIMITS.responseBytes) { closeStream(stream, 'app_response_too_large'); return; }
-          stream.receiving = true; stream.recvSeq = frame.seq; stream.timer.refresh();
-          await writeChunk(stream.kind === 'ws' ? stream.socket : stream.res, chunk); stream.receiving = false;
+          stream.receiving = true; stream.recvSeq = frame.seq;
+          if (stream.kind === 'ws') {
+            await stream.upgradeReady;
+            checkStream(stream);
+            await stream.relay.sourceBytes(chunk);
+          } else {
+            stream.timer.refresh();
+            await writeChunk(stream.res, chunk);
+          }
+          stream.receiving = false;
           sendStream(stream, { type: 'ack', id: stream.id, seq: frame.seq }); return;
         }
         if (frame.type === 'end') {

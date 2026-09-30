@@ -520,10 +520,19 @@ test('held HTTP and WebSocket share public capacity; source failure and client d
 test('real head and ACK deadlines release exactly their public slots while neighboring streams remain connected', { timeout: 40_000 }, async t => {
   const f = await fixture(t); f.publish();
   const neighbors = [];
-  for (let i = 0; i < 22; i++) neighbors.push(await f.websocket(f.primary, { localPath: `/timeout-neighbor-${i}` }));
+  for (let i = 0; i < 21; i++) neighbors.push(await f.websocket(f.primary, { localPath: `/timeout-neighbor-${i}` }));
   f.behaviors.set('/head-timeout', { hold: true });
   const pending = f.begin(f.primary, '/head-timeout', { completionMs: 35_000 }); pending.req.end();
   const head = await f.log.wait(frame => frame.type === 'open' && frame.path === '/head-timeout');
+  f.behaviors.set('/http-ack-timeout', { holdAck: true });
+  const httpWaiting = f.begin(f.primary, '/http-ack-timeout', { method: 'POST', origin: f.primary.origin, completionMs: 35_000 });
+  httpWaiting.req.end('wait for the unchanged HTTP ACK deadline');
+  const httpAck = await f.log.wait(frame => frame.type === 'open' && frame.path === '/http-ack-timeout');
+  await f.log.wait(frame => frame.type === 'data' && frame.id === httpAck.id);
+  // An early streaming response removes the independent head deadline while
+  // the source deliberately leaves the upload chunk unacknowledged.
+  f.send({ type: 'head', id: httpAck.id, status: 200, headers: { 'content-type': 'text/plain' } });
+  await f.peerData(httpAck.id, Buffer.from('response started; upload ACK still pending')).acknowledged();
   f.behaviors.set('/ack-timeout', { holdAck: true });
   const waiting = await f.websocket(f.primary, { localPath: '/ack-timeout' });
   const ack = f.log.frames.find(frame => frame.type === 'open' && frame.path === '/ack-timeout');
@@ -531,15 +540,24 @@ test('real head and ACK deadlines release exactly their public slots while neigh
   assert.equal((await f.http(f.primary, '/before-timeouts-full')).status, 429);
   // Product timers run unmodified. The injected policy clock remains stable,
   // separating transport timeouts from lease expiration in this scenario.
-  const [response] = await Promise.all([
+  const [response, httpAckResponse] = await Promise.all([
     pending.done,
+    httpWaiting.done,
     bounded(new Promise(resolve => waiting.once('close', resolve)), 'real ACK timeout close', 35_000),
   ]);
   assert.equal(response.status, 502); assert.match(response.body.toString(), /app_response_timeout/u);
+  assert.equal(httpAckResponse.status, 200); assert.equal(httpAckResponse.complete, false);
+  assert.equal(httpAckResponse.body.toString(), 'response started; upload ACK still pending');
   assert.equal(f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === head.id).length, 1);
-  assert.equal(f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === ack.id && frame.error === 'app_ack_timeout').length, 1);
+  assert.equal(f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === httpAck.id && frame.error === 'app_ack_timeout').length, 1);
+  const wsCancellation = f.log.frames.filter(frame => frame.type === 'cancel' && frame.id === ack.id);
+  assert.equal(wsCancellation.length, 1);
+  // Both bounds are 30s. The relay offers a write before the inner ACK waiter
+  // starts, so either may be the first deadline; neither may release neighbors.
+  assert.ok(['app_ack_timeout', 'app_websocket_write_timeout'].includes(wsCancellation[0].error), wsCancellation[0].error);
   assert.equal(neighbors.every(ws => ws.readyState === WebSocket.OPEN), true);
   neighbors.push(await f.websocket(f.primary, { localPath: '/head-slot-reused' }));
+  neighbors.push(await f.websocket(f.primary, { localPath: '/http-ack-slot-reused' }));
   neighbors.push(await f.websocket(f.primary, { localPath: '/ack-slot-reused' }));
   assert.equal((await f.http(f.primary, '/after-timeouts-full')).status, 429);
   for (const ws of neighbors) ws.terminate();

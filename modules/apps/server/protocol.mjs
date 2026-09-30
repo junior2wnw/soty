@@ -55,34 +55,69 @@ export function cleanHeaders(headers, direction = 'request') {
   return result;
 }
 
-// Incremental RFC 6455 frame inspection without buffering the payload. The
-// gateway deliberately does not negotiate extensions, so the message bound
-// applies to the bytes the application receives, including fragmented frames.
-export function createWebSocketLimiter({ masked, maxMessageBytes = 1024 * 1024 } = {}) {
-  let header = Buffer.alloc(14), used = 0, wanted = 2, remaining = 0, fragmented = false, messageBytes = 0;
-  return { push(bytes) {
-    let offset = 0;
-    while (offset < bytes.length) {
-      if (remaining > 0) { const count = Math.min(remaining, bytes.length - offset); remaining -= count; offset += count; continue; }
-      const count = Math.min(wanted - used, bytes.length - offset); bytes.copy(header, used, offset, offset + count); used += count; offset += count;
-      if (used < wanted) continue;
-      if (wanted === 2) {
-        const encodedLength = header[1] & 127;
-        assertApps((header[0] & 0x70) === 0 && Boolean(header[1] & 0x80) === masked, 'app_websocket_invalid_frame');
-        wanted = 2 + (encodedLength === 126 ? 2 : encodedLength === 127 ? 8 : 0) + (masked ? 4 : 0);
-        if (used < wanted) continue;
+// One structural parser for both the compatibility limiter and the streaming
+// relay. No extensions are negotiated. Data payload is never retained/unmasked;
+// only a header and a complete control frame fit in the 139-byte workspace.
+export function createWebSocketFrameParser({ masked, maxMessageBytes = 1024 * 1024 } = {}) {
+  assertApps(typeof masked === 'boolean' && Number.isSafeInteger(maxMessageBytes) && maxMessageBytes > 0, 'invalid_websocket_parser');
+  const storage = Buffer.alloc(139);
+  let used = 0, wanted = 2, remaining = 0, phase = 'header', opcode = 0, headerBytes = 0, controlUsed = 0;
+  let fragmented = false, messageBytes = 0;
+  const reset = () => { used = 0; wanted = 2; remaining = 0; phase = 'header'; };
+  return {
+    get atBoundary() { return phase === 'header' && used === 0; },
+    // Returned byte views are borrowed until the next read. Consumers must
+    // finish inspecting/copying them before yielding or calling read again.
+    read(bytes, offset = 0, maxBytes = bytes.length) {
+      assertApps(Buffer.isBuffer(bytes) && Number.isSafeInteger(offset) && offset >= 0 && offset < bytes.length && Number.isSafeInteger(maxBytes) && maxBytes > 0, 'invalid_websocket_input');
+      const initial = offset, started = phase === 'header' && used === 0;
+      if (phase === 'header') {
+        while (offset < bytes.length && used < wanted) {
+          const count = Math.min(wanted - used, bytes.length - offset);
+          bytes.copy(storage, used, offset, offset + count); used += count; offset += count;
+          if (used !== wanted) break;
+          if (wanted === 2) {
+            const encoded = storage[1] & 127;
+            assertApps((storage[0] & 0x70) === 0 && Boolean(storage[1] & 0x80) === masked, 'app_websocket_invalid_frame');
+            wanted = 2 + (encoded === 126 ? 2 : encoded === 127 ? 8 : 0) + (masked ? 4 : 0);
+          }
+        }
+        if (used < wanted) return { consumed: offset - initial, started, complete: false, bytes: null };
+        const fin = Boolean(storage[0] & 0x80), encoded = storage[1] & 127;
+        opcode = storage[0] & 15;
+        let length = encoded;
+        if (encoded === 126) { length = storage.readUInt16BE(2); assertApps(length >= 126, 'app_websocket_invalid_frame'); }
+        if (encoded === 127) { const wide = storage.readBigUInt64BE(2); assertApps(wide >= 65536n && wide <= BigInt(maxMessageBytes), 'app_websocket_message_too_large'); length = Number(wide); }
+        if (opcode >= 8) assertApps([8, 9, 10].includes(opcode) && fin && length <= 125, 'app_websocket_invalid_control');
+        else {
+          assertApps([0, 1, 2].includes(opcode) && (opcode === 0 ? fragmented : !fragmented), 'app_websocket_invalid_fragment');
+          if (opcode !== 0) messageBytes = 0;
+          messageBytes += length;
+          assertApps(messageBytes <= maxMessageBytes, 'app_websocket_message_too_large');
+          fragmented = !fin;
+        }
+        headerBytes = used; remaining = length; controlUsed = 0;
+        phase = opcode >= 8 ? 'control' : 'data';
+        const complete = remaining === 0, control = opcode >= 8;
+        const output = !control || complete ? storage.subarray(0, headerBytes) : null;
+        if (complete) reset();
+        return { consumed: offset - initial, started, complete, opcode, control, headerBytes, bytes: output };
       }
-      const opcode = header[0] & 15, fin = Boolean(header[0] & 128), encodedLength = header[1] & 127;
-      let length = encodedLength;
-      if (encodedLength === 126) { length = header.readUInt16BE(2); assertApps(length >= 126, 'app_websocket_invalid_frame'); }
-      if (encodedLength === 127) { const wide = header.readBigUInt64BE(2); assertApps(wide >= 65536n && wide <= BigInt(maxMessageBytes), 'app_websocket_message_too_large'); length = Number(wide); }
-      if (opcode >= 8) assertApps([8, 9, 10].includes(opcode) && fin && length <= 125, 'app_websocket_invalid_control');
-      else {
-        assertApps([0, 1, 2].includes(opcode) && (opcode === 0 ? fragmented : !fragmented), 'app_websocket_invalid_fragment');
-        if (opcode !== 0) messageBytes = 0;
-        messageBytes += length; assertApps(messageBytes <= maxMessageBytes, 'app_websocket_message_too_large'); fragmented = !fin;
-      }
-      remaining = length; used = 0; wanted = 2;
-    }
-  } };
+      const count = Math.min(remaining, bytes.length - offset, phase === 'data' ? maxBytes : remaining);
+      remaining -= count;
+      const control = phase === 'control', complete = remaining === 0;
+      let output;
+      if (control) {
+        bytes.copy(storage, headerBytes + controlUsed, offset, offset + count); controlUsed += count;
+        output = complete ? storage.subarray(0, headerBytes + controlUsed) : null;
+      } else output = bytes.subarray(offset, offset + count);
+      if (complete) reset();
+      return { consumed: count, started: false, complete, opcode, control, headerBytes, bytes: output };
+    },
+  };
+}
+
+export function createWebSocketLimiter(options) {
+  const parser = createWebSocketFrameParser(options);
+  return { push(bytes) { let offset = 0; while (offset < bytes.length) offset += parser.read(bytes, offset).consumed; } };
 }
