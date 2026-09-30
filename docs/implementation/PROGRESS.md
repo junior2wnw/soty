@@ -298,3 +298,9 @@ DDL неизменён. Readiness=false и внешний bearer пока зак
 [Root integration receipt](p4-oauth-host-integration.md) связывает bounded operator configuration, настоящий Provider/Connect/Notes2/Caps3, current bearer, native create, refresh/replay и signed revoke. Реальный HTTP gate **5/5 PASS**: общий AS browser session A→B→A, wrong-resource/PKCE до consume, reuse-family revoke без повреждения sibling, keyless AS-off restart, deny/foreign account и безопасный error document. Root исправил пропущенный resume переход в новом test helper; ложная аутентификация/готовность для прохождения не вводились.
 
 Host/source независимый review и actual-flow source review приняты. Общий capabilities/HTTP/executor gate **338/338 PASS,0SKIP**, typecheck/prebuild/build PASS. Error page использует общую палитру/hex и проверена native на320/667 с видимым клавиатурным фокусом. Default-off и отсутствие автоматической миграции сохранены. Остаток C1: две AS OS instances/crash, signed browser/callback/PWA и реальные CLI; C2/D и последующие P5–P7 сохраняются, release/restore пока не закрыты.
+
+## P4-C1b — actual Linux reader3 принят
+
+[Source и bundle review](p4-reader3-linux-review.md), [независимая сверка](p4-reader3-linux-independent.md), [точный Linux result](p4-reader3-linux-result.md). Новый fixed run `be39dd82e9fbc77beab99126007f5684` прошёл за8824ms: exact reader3 принимает genuine Caps2-main/3-WAL, exact reader2 отказывает, future4/missing guard отказываются, RO main/WAL/SQL witness неизменны. Подтверждены UID10001/modes,24files/8DB и лимиты контейнеров. Writer единственный KILL после READY,0STOP;7containers и synthetic volume удалены с GET404. Serving identity/image/StartedAt неизменны.
+
+Это закрывает Linux3 fixture gate, не application-image/backup/restore/bootstrap/production. Labels действующего image и рабочие данные не менялись. Следующая работа сохраняет C1 two-AS/browser/CLI и C2/D последовательность; rollout gates общего выпуска остаются открытыми.
