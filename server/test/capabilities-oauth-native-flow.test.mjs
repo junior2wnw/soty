@@ -114,7 +114,7 @@ test('expired actual Provider resume returns a usable static error without refle
   const response = await f.wire.request('/oauth/authorize/expired_authorization_fixture');
   assert.equal(response.status, 400); assert.equal(response.location, null);
   assert.equal(response.headers.get('cache-control'), 'no-store');
-  assert.ok(response.text.includes('Не удалось подключиться') && response.text.includes('<a href="/">Открыть Соты</a>'));
+  assert.ok(response.text.includes('Запрос подключения недоступен') && response.text.includes('<a href="/">Открыть Соты</a>'));
   assert.equal(response.text.includes('expired_authorization_fixture'), false);
   assert.equal(/<script\b|<form\b|\son[a-z]+=/iu.test(response.text), false);
   const style = /<style>([\s\S]+?)<\/style>/u.exec(response.text)?.[1]; assert.ok(style);

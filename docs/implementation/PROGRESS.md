@@ -316,3 +316,11 @@ Host/source независимый review и actual-flow source review прин�
 [Root causal receipt](p4-oauth-discovery-follow.md) и [независимый review](p4-oauth-discovery-independent.md): RFC 8414 alias больше не теряет `/oauth`; metadata описывает только реальный create-only scope, query response и public client authentication. Явный `response_mode=query` согласован с ingress и persisted Interaction; остальные modes отвергаются.
 
 **26/26 PASS,0SKIP**,6098.4378ms, включая настоящий клиентский путь по рекламируемым адресам/параметрам до создания Notes и отзыва. Fresh persistent stand metadata smoke также GREEN. Это не завершает браузерный срез: он отдельно обнаружил зависание перехода после signed approve; решение сохранено, token/Notes ещё не созданы, root проверяет Promise/form navigation и реальный CSP. Старый validator нового optional поля не считается совместимым rollback. Все следующие пункты общего плана сохраняются.
+
+## P4-C1 — настоящий signed browser/PWA сценарий принят
+
+[Root receipt](p4-oauth-browser-flow.md), [causal HTTP gate](p4-oauth-browser-policy.md) и [независимый source review](p4-oauth-browser-policy-independent.md). Native form probe подтвердил `no-referrer→Origin:null`; только два отправляющих формы HTML документа используют `same-origin`, строгий guard сохранён. UI completion Promise имеет ограниченный срок и readback после неопределённого возврата. Consumed consent GET теперь показывает нейтральный fixed HTML. UI22/22, итоговый HTTP3/3 и affected expired resume1/1 PASS; typecheck/prebuild/build PASS.
+
+Fresh actual host5493/5494 без seeded identity/decision прошёл: approve→callback→native201→правка в PWA→refresh200→exact replay200→мобильный owner revoke→replay401→сохранённая Note владельца. Native Back показал исправленный HTML. Root RO evidence: accounts1, Invocation1, Note1/proof1/revision2, root spent1/reserved0, connection revoked. Native320/1280, светлая/графитовая темы; callback без Referer. Предыдущий процесс прервался, его отдельный эффект/data сохранены и не смешаны с полным final run.
+
+Следующий согласованный срез: P4-C2a официальный MCP transport и wire gates, затем C2b headless child и C2c два реальных CLI. Модельный D1, HTTPS release/restore и остальные P5–P8 сохраняются; P4/master целиком ещё не завершены.

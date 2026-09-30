@@ -60,7 +60,7 @@ function fixture(t, { skew = 0, decision = 'pending', decidedAccountId = null, a
     clientProfile: 'soty-codex-cli', clientLabel: 'Synthetic external client', resource: 'https://shell.test/mcp', scope: 'notes.createDraft',
     durationMs: 86400000, budgetLimit: 20, checkedAt: serverTime, expiresAt: serverTime + 60000, decision, decidedAccountId };
   const calls = { account: 0, context: 0, decisions: [], complete: 0, completionAccounts: [], openAccount: 0 };
-  let decidePort = async () => {}, contextPort = async () => ({ ...proposal }), accountPort = async () => ({ ...account });
+  let decidePort = async () => {}, contextPort = async () => ({ ...proposal }), accountPort = async () => ({ ...account }), completionPort = () => {};
   const timers = new Map(); let timerId = 0;
   const module = { exports: {} }, ports = {
     './dom': { el: make, button(label, _icon, className, onClick) { const node = make('button', `sw-button ${className || ''}`); node.append(make('span', '', label)); if (onClick) node.addEventListener('click', onClick); return node; } },
@@ -76,13 +76,14 @@ function fixture(t, { skew = 0, decision = 'pending', decidedAccountId = null, a
     observeAccount(value) { listener = value; return () => { listener = null; }; },
     context: async () => { calls.context++; return contextPort(); },
     decide: async (kind, args) => { calls.decisions.push({ kind, args: structuredClone(args) }); await decidePort(kind, args); },
-    complete: expectedAccountId => { calls.complete++; calls.completionAccounts.push(expectedAccountId); },
+    complete: expectedAccountId => { calls.complete++; calls.completionAccounts.push(expectedAccountId); return completionPort(); },
     openAccount: async () => { calls.openAccount++; },
   });
   t.after(() => handle.dispose());
   return { host, document, outside, handle, proposal, calls, timers,
     button(text) { return host.querySelectorAll('button').find(node => node.textContent.includes(text)); },
     setDecision(port) { decidePort = port; }, setContext(port) { contextPort = port; }, setAccountRead(port) { accountPort = port; },
+    setCompletion(port) { completionPort = port; },
     setAccount(id, notify = true) { account = { accountId: id, label: id === 'account_A' ? 'Synthetic A' : 'Synthetic B' }; if (notify) listener?.(); },
     setClocks(wall, mono) { wallTime = wall; monotonic = mono; },
   };
@@ -184,6 +185,32 @@ test('lost decision ACK exposes readback, then approved A can complete without a
   retry.click(); await turn(); assert.equal(f.calls.decisions.length, 1);
   f.button('Вернуться в клиент').click(); await turn();
   assert.equal(f.calls.complete, 1); assert.deepEqual(f.calls.completionAccounts, ['account_A']);
+});
+
+test('unknown navigation requires readback before a manual completion and never approves or posts automatically', async t => {
+  const f = fixture(t, { decision: 'approved', decidedAccountId: 'account_A' }), navigation = deferred();
+  f.setCompletion(() => navigation.promise); await turn();
+  f.button('Вернуться в клиент').click(); await turn();
+  assert.equal(f.calls.complete, 1); assert.equal(f.calls.decisions.length, 0);
+  f.button('Вернуться в клиент').click(); await turn(); assert.equal(f.calls.complete, 1);
+  navigation.reject(new Error('synthetic navigation timeout')); await turn();
+  assert.equal(f.button('Вернуться в клиент'), undefined);
+  assert.ok(f.host.textContent.includes('Возврат в клиент не подтверждён'));
+  f.button('Проверить запрос').click(); await turn();
+  assert.equal(f.calls.context, 2); assert.equal(f.calls.complete, 1); assert.equal(f.calls.decisions.length, 0);
+  assert.ok(f.button('Вернуться в клиент'));
+});
+
+for (const outcome of ['account-switch', 'dispose']) test(`late navigation rejection after ${outcome} cannot repaint or resubmit`, async t => {
+  const f = fixture(t, { decision: 'approved', decidedAccountId: 'account_A' }), navigation = deferred();
+  f.setCompletion(() => navigation.promise); await turn();
+  f.button('Вернуться в клиент').click(); await turn(); assert.equal(f.calls.complete, 1);
+  if (outcome === 'dispose') f.handle.dispose();
+  else { f.setAccount('account_B'); f.setAccount('account_A'); }
+  f.outside.focus(); const text = f.host.textContent;
+  navigation.reject(new Error('late completion timeout')); await turn();
+  assert.equal(f.host.textContent, text); assert.equal(f.document.activeElement, f.outside);
+  assert.equal(f.calls.complete, 1); assert.equal(f.calls.decisions.length, 0);
 });
 
 test('deny completes only the explicit deny decision for its captured account', async t => {

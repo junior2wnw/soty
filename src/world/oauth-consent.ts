@@ -14,7 +14,7 @@ export interface OAuthConsentPorts {
   observeAccount(listener: () => void): () => void;
   context(): Promise<OAuthConsentContext>;
   decide(kind: 'approve' | 'deny', args: { expectedAccountId: string; interactionId: string; contextDigest: string; browserNonce: string }): Promise<void>;
-  complete(expectedAccountId: string): void;
+  complete(expectedAccountId: string): void | Promise<void>;
   openAccount(): Promise<void>;
 }
 
@@ -44,9 +44,14 @@ export function mountOAuthConsent(host: HTMLElement, ports: OAuthConsentPorts): 
       if (!alive(ticket)) return;
       if (selected.accountId !== expected) { invalidate(); return; }
       if (performance.now() >= deadline) { expire(); return; }
-      ports.complete(expected);
-    } catch {
-      if (alive(ticket)) { busy = false; error = 'Не удалось вернуться в клиент. Попробуйте ещё раз.'; render(); }
+      await ports.complete(expected);
+    } catch (failure) {
+      if (alive(ticket)) {
+        busy = false; stale = true;
+        const blocked = failure && typeof failure === 'object' && 'code' in failure && failure.code === 'navigation_policy_blocked';
+        error = blocked ? 'Браузер заблокировал возврат. Проверьте запрос или откройте клиент.'
+          : 'Возврат в клиент не подтверждён. Проверьте состояние запроса.'; render();
+      }
     }
   }
   async function decide(kind: 'approve' | 'deny'): Promise<void> {

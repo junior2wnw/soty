@@ -149,6 +149,8 @@ export function createSotyOAuthProvider({ profile, oauth }) {
       // its own CSP, independent of the preceding Soty consent page.
       if (ctx.oidc?.route === 'resume' && ctx.status === 200 && ctx.type === 'text/html'
         && ctx.oidc.entities.Interaction) {
+        // The account-switch autoform must retain a same-origin Origin on POST.
+        ctx.set('Referrer-Policy', 'same-origin');
         ctx.set('Content-Security-Policy', oauthCallbackPolicy(profile,
           ctx.response.get('Content-Security-Policy'), ctx.oidc.entities.Interaction.params));
       }
@@ -159,6 +161,7 @@ export function createSotyOAuthProvider({ profile, oauth }) {
         unsupported_encoding: 415, rate_limit: 429, temporarily_unavailable: 503, invalid_request: 400 }[code] || 500;
       if (!ctx.req.complete || !ctx.req.readableEnded) { ctx.res.shouldKeepAlive = false; ctx.set('Connection', 'close'); }
       ctx.set('Cache-Control', 'no-store'); ctx.set('Pragma', 'no-cache');
+      ctx.set('Referrer-Policy', 'no-referrer');
       if (status === 429 || status === 503) ctx.set('Retry-After', '60');
       ctx.status = status; ctx.type = 'application/json';
       ctx.body = { error: status >= 500 || status === 429 ? 'temporarily_unavailable' : 'invalid_request' };

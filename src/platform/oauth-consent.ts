@@ -1,5 +1,6 @@
 import { accountClient, observeAccount } from '../core/connect-client';
 import { mountOAuthConsent, type OAuthConsentContext } from '../world/oauth-consent';
+import { submitOAuthCompletion } from './oauth-navigation';
 
 function contextValue(value: unknown, interactionId: string): OAuthConsentContext {
   if (!value || typeof value !== 'object') throw new TypeError('Consent unavailable');
@@ -54,11 +55,7 @@ export async function startOAuthConsent(root: HTMLElement, interactionId: string
     complete: expectedAccountId => {
       // A same-origin top-level POST lets the maintained provider perform its
       // registered callback redirect. Fetch never follows or exposes its code.
-      const form = document.createElement('form'); form.method = 'POST'; form.action = route + '/complete';
-      form.enctype = 'application/x-www-form-urlencoded'; form.hidden = true;
-      const expected = document.createElement('input'); expected.type = 'hidden'; expected.name = 'expectedAccountId'; expected.value = expectedAccountId;
-      form.append(expected); document.body.append(form);
-      try { form.submit(); } finally { form.remove(); }
+      return submitOAuthCompletion(interactionId, expectedAccountId);
     },
     openAccount: async () => {
       const [{ openConnectPanel }, { default: QRCode }] = await Promise.all([

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createSotyOAuthProvider, oauthCallbackPolicy } from './capabilities-oauth-provider.js';
 import { isOAuthNamespace } from './capabilities-oauth-profile.js';
 import { OAuthIngressError, oauthSingleHeader, parseOAuthForm } from './capabilities-oauth-ingress.js';
+import { OAUTH_FAILURE_DOCUMENT, OAUTH_FAILURE_POLICY } from './capabilities-oauth-document.js';
 
 const check = (value, code = 'invalid_request') => { if (!value) throw new OAuthIngressError(code); };
 const UID = '[A-Za-z0-9_-]{16,128}';
@@ -45,8 +46,9 @@ function browserBinding(profile) {
   });
 }
 
-function safeFailure(req, res, error) {
+function safeFailure(req, res, error, consentDocument = false) {
   if (res.destroyed || res.writableEnded || res.headersSent) return;
+  res.set('Referrer-Policy', 'no-referrer');
   const code = typeof error?.code === 'string' ? error.code : '';
   const unavailable = ['oauth_unavailable', 'temporarily_unavailable', 'oauth_quota_exceeded', 'service_closed',
     'oauth_storage_busy', 'oauth_storage_key_unavailable', 'capabilities_storage_corrupt',
@@ -56,6 +58,10 @@ function safeFailure(req, res, error) {
     : code === 'access_denied' ? 403 : code === 'method_not_allowed' ? 405 : 400;
   if (!req.complete || !req.readableEnded) { res.shouldKeepAlive = false; res.set('Connection', 'close'); }
   if (unavailable || status === 429) res.set('Retry-After', '60');
+  if (consentDocument) {
+    res.status(status).set('Content-Security-Policy', OAUTH_FAILURE_POLICY).type('html').send(OAUTH_FAILURE_DOCUMENT);
+    return;
+  }
   res.status(status).json({ error: unavailable ? 'temporarily_unavailable' : missing ? 'interaction_expired'
     : ['access_denied', 'method_not_allowed'].includes(code) ? code : 'invalid_request' });
 }
@@ -79,7 +85,7 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
   app.use(async (req, res, next) => {
     const target = req.originalUrl || req.url;
     if (!isOAuthNamespace(target)) { next(); return; }
-    let lease;
+    let lease, consentDocument = false;
     res.set({ 'Cache-Control': 'no-store', 'Pragma': 'no-cache', 'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff' });
     try {
@@ -117,12 +123,19 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
             && form.expectedAccountId.length > 0 && form.expectedAccountId.length <= 160);
           completionAccountId = form.expectedAccountId;
         } else noBody(req);
+        // Only the admitted consent document has a human-facing error page.
+        // Context and completion remain their existing JSON/protocol surfaces.
+        consentDocument = !action;
         const details = await provider.interactionDetails(req, res);
         check(details.uid === uid);
         const nonce = action ? browser.read(req) : browser.ensure(req, res);
         check(nonce, 'access_denied');
         if (!action) {
           oauth.prepareInteraction({ interactionId: uid, browserNonce: nonce });
+          // A native form navigation under no-referrer sends Origin: null.
+          // Preserve the same-origin Origin guard without leaking a referrer
+          // to the registered callback on another origin.
+          res.set('Referrer-Policy', 'same-origin');
           // Chromium applies form-action to redirects following the completion
           // POST. Permit this already validated exact native callback on this
           // consent document only; the rest of the shell retains 'self'.
@@ -190,7 +203,7 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
       req.baseUrl = '/oauth';
       req.url = discoveryAlias ? '/.well-known/openid-configuration' : target.slice('/oauth'.length);
       callback(req, res);
-    } catch (error) { safeFailure(req, res, error); }
+    } catch (error) { safeFailure(req, res, error, consentDocument); }
     finally { lease?.release(); }
   });
   return Object.freeze({ enabled: profile.enabled, issuer: profile.issuer });
