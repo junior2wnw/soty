@@ -10,7 +10,7 @@
 | P1. Права, контракты, история | Локальная приёмка пройдена | Ограниченные допуски, отзываемые цепочки, устойчивые Invocation/receipt, общий лимит вызовов; runtime enforcement отдельно в P5 |
 | P2. Цельный интерфейс | Локальная реализация и финальная приёмка | Apps-first оболочка, графит, новые панели, доступы, Notes offline; внешний UX/установленная PWA остаются отдельными gates |
 | P3. Именные приложения | A/B/C/D/R локально приняты; E открыт | Apps6, публикация, источники, сохранения/обсуждения, bounded WS liveness/recovery; D4 browser/signed цикл проверен, публичный пилот ещё впереди |
-| P4. Внешние ИИ | A, B1/B1a/B1b и B2 локально приняты; C1 следующий | Публичный поиск/схемы, native Notes create/status/replay, общий PWA-результат; source/deployment readers1/2; reader2 Linux/image/restore, OAuth/MCP и реальные внешние AI-клиенты ещё открыты |
+| P4. Внешние ИИ | A, B1/B1a/B1b и B2 приняты в описанных пределах; C1 в работе | Публичный поиск/схемы, native Notes create/status/replay, общий PWA-результат; reader2 source/Linux fixture проверены; full image/restore, OAuth/MCP и реальные внешние AI-клиенты ещё открыты |
 | P5. Устройства и исполнитель | Ожидает P1 | Реальные ограничения, остановка, отзыв, стоимость |
 | P6A. Авторский SDK | Ожидает P1/P4 | Независимая узкая функция без изменения ядра |
 | P6B. Длительные функции | Ожидает P6A | Start/status/cancel/reconnect/result без повторного эффекта |
@@ -219,3 +219,12 @@ Exact deployment probe/guard и Dockerfile manifest поддерживают Not
 - [x] Один общий regression:1141 tests /1136 PASS /0 FAIL /5 прежних opt-in SKIP,119.905s. Typecheck, штатный prebuild и production build PASS. Логи и точные ограничения — в HTTP receipt.
 
 Native execution по умолчанию выключен, host не мигрирует stores. B2 не объявляет OAuth/MCP, настоящие внешние AI-клиенты, reader2 Linux/full image/bootstrap/restore или production выполненными. Следующая последовательная работа — C1 подключение клиента через maintained OAuth provider и существующие Connect/Capabilities; scope, полномочия, подтверждение и реальные client versions проверяются до реализации.
+
+## P4-B1b — actual Linux reader2 принят
+
+- [x] Новый exact artifact, root полный source/static bundle review и независимое чтение; прежние send-once не повторялись.
+- [x] Однократный synthetic Linux run: actual foreign UID10001/0600, RO main/WAL/SHM, mixed1/2, future/altered guards/real symlink refusal, настоящий historical reader1.
+- [x] Main/WAL bytes и SQL witnesses неизменны; все7owned containers и новыйvolume удалены с GET404;0STOP; рабочий service/StartedAt неизменен.
+- [ ] Full compatible application image, reviewed cold bootstrap, coordinated encrypted restore и public release — следующие отдельные gates.
+
+[Exact результат](p4-reader2-linux-result.md): run389c0e7bf411eee8fc66d6d0c2b94a41,9260ms, new bundle44e2e7a9…943e. Это закрывает Linux fixture gate, оставшийся открытым в B2 checkpoint; не означает миграцию/публикацию production. C1 development продолжается в той же отдельной worktree.
