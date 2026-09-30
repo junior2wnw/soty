@@ -31,8 +31,11 @@ export async function nativeHttpFixture(t, { enabled = true, notesVersion = 2, c
   });
   const notesFile = join(directory, 'notes', 'notes.sqlite'), capsFile = join(directory, 'capabilities', 'capabilities.sqlite');
   if (notesVersion === 2) createNotesService({ databasePath: notesFile, projectId: 'soty', allowNativeMigration: true }).close();
-  if (capabilitiesVersion === 2) createCapabilitiesService({ databasePath: capsFile, projectId: 'soty',
+  assert.ok([1, 2, 3].includes(capabilitiesVersion), 'known capabilities fixture version');
+  if ([2, 3].includes(capabilitiesVersion)) createCapabilitiesService({ databasePath: capsFile, projectId: 'soty',
     allowNativeMigration: true, actorActive: () => false }).close();
+  if (capabilitiesVersion === 3) createCapabilitiesService({ databasePath: capsFile, projectId: 'soty',
+    allowOAuthMigration: true, actorActive: () => false }).close();
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const create = enabled => createHttpApp(resolve('dist'), { dataDir: directory, connectOrigins: [origin],

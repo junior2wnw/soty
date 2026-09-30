@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { assert, AccessError, canonicalHash, canonicalJson, exact, freezeDeep, identifier, integer, newId, now, record, stringSet, text } from './validation.mjs';
 import { createNativeBaselineGuard } from './native-baseline.mjs';
+import { createOAuthBaselineGuard } from './oauth-baseline.mjs';
 
 export const ACCESS_OPERATIONS = Object.freeze([
   'access.principals.create', 'access.principals.list', 'access.principals.revoke',
@@ -60,6 +61,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
   const actorRefs = new WeakMap();
   const authorizationRefs = new WeakSet();
   const native = createNativeBaselineGuard({ db, error: code => new AccessError(code) });
+  const oauth = createOAuthBaselineGuard({ db });
 
   function publicGrant(row) {
     const value = grantDto(row);
@@ -142,14 +144,19 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     const time = now(clock);
     assert(row && row.revoked_at === null && row.expires_at > time, 'authorization_required');
     assert(row.account_id === reference.accountId && row.client_id === reference.clientId && row.principal_id === reference.principalId && row.grant_id === reference.grantId && row.audience === reference.audience, 'authorization_required');
+    const oauthConnection = oauth.validateCredential(row, time);
     activePrincipal(row.account_id, row.principal_id, row.client_id);
     const ancestry = chain(row.grant_id, row.account_id, time);
     assert(ancestry[0].client_id === row.client_id && ancestry[0].principal_id === row.principal_id, 'access_denied');
-    return { credential: row, ancestry };
+    return { credential: row, ancestry, oauthConnection };
   }
   function resolveActor(actor) {
     assert(actor && typeof actor === 'object' && actorRefs.has(actor), 'authorization_required');
-    return currentCredential(actorRefs.get(actor));
+    const current = currentCredential(actorRefs.get(actor));
+    // This baseline only mints legacy actors. A later closed OAuth factory
+    // will carry an explicit private connection reference, never infer it.
+    assert(!current.oauthConnection, 'authorization_required');
+    return current;
   }
   function credentialReference(row) {
     return { credentialId: row.id, accountId: row.account_id, clientId: row.client_id, principalId: row.principal_id, grantId: row.grant_id, audience: row.audience };
@@ -160,7 +167,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     const row = db.prepare('SELECT * FROM cap_credentials WHERE digest=?').get(tokenDigest(token));
     assert(row && row.audience === target, 'authorization_required');
     const reference = credentialReference(row);
-    currentCredential(reference);
+    assert(!currentCredential(reference).oauthConnection, 'authorization_required');
     const actor = freezeDeep({ type: 'service', accountId: row.account_id, clientId: row.client_id, principalId: row.principal_id, grantId: row.grant_id });
     actorRefs.set(actor, reference);
     return actor;
@@ -246,6 +253,8 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     return { caps, resources, effects, recipients, allowDelegation, maxDepth };
   }
   function insertGrant(owner, principal, args, time, parent) {
+    oauth.assertUnmanaged({ clientId: principal.client_id, principalId: principal.id });
+    if (parent) oauth.assertUnmanaged({ clientId: parent.client_id, principalId: parent.principal_id, grantId: parent.root_id });
     activePrincipal(owner.accountId, principal.id, principal.client_id);
     const normalized = normalizeGrant(args, time, parent);
     assert(db.prepare('SELECT count(*) AS n FROM cap_grants WHERE account_id=?').get(owner.accountId).n < 10000, 'quota_exceeded');
@@ -318,6 +327,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
           exact(args, [...GRANT_KEYS, 'parentGrantId']);
           identifier(args.parentGrantId);
           const parent = chain(args.parentGrantId, owner.accountId, time)[0];
+          oauth.assertUnmanaged({ clientId: parent.client_id, principalId: parent.principal_id, grantId: parent.root_id });
           const principal = ownedPrincipal(owner.accountId, args.principalId ?? parent.principal_id);
           return { grant: insertGrant(owner, principal, args, time, parent) };
         }
@@ -338,10 +348,11 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
         case 'access.credentials.issue': {
           exact(args, ['expectedAccountId', 'grantId', 'audience', 'expiresAt']); identifier(args.grantId);
           const grant = chain(args.grantId, owner.accountId, time)[0];
+          oauth.assertUnmanaged({ clientId: grant.client_id, principalId: grant.principal_id, grantId: grant.root_id });
           const expiresAt = args.expiresAt ?? grant.expires_at;
           integer(expiresAt, time + 1, grant.expires_at, 'expiry_invalid');
           const target = audience(args.audience);
-          assert(db.prepare('SELECT count(*) AS n FROM cap_credentials WHERE account_id=?').get(owner.accountId).n < 10000, 'quota_exceeded');
+          assert(oauth.legacyCredentialCount(owner.accountId) < 10000, 'quota_exceeded');
           const id = newId('credential'); const token = TOKEN_PREFIX + randomBytes(32).toString('base64url');
           db.prepare('INSERT INTO cap_credentials(id,digest,account_id,client_id,principal_id,grant_id,audience,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
             .run(id, tokenDigest(token), owner.accountId, grant.client_id, grant.principal_id, grant.id, target, expiresAt, time);
@@ -351,8 +362,10 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
           exact(args, ['expectedAccountId', 'credentialId']); identifier(args.credentialId);
           const row = db.prepare('SELECT * FROM cap_credentials WHERE id=? AND account_id=?').get(args.credentialId, owner.accountId);
           assert(row, 'not_found');
-          db.prepare('UPDATE cap_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE id=?').run(time, row.id);
-          db.prepare('UPDATE cap_grants SET policy_epoch=policy_epoch+1 WHERE id=(SELECT root_id FROM cap_grants WHERE id=?)').run(row.grant_id);
+          if (!oauth.revokeForCredential(row, time)) {
+            db.prepare('UPDATE cap_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE id=?').run(time, row.id);
+            db.prepare('UPDATE cap_grants SET policy_epoch=policy_epoch+1 WHERE id=(SELECT root_id FROM cap_grants WHERE id=?)').run(row.grant_id);
+          }
           return { credential: { id: row.id, revokedAt: row.revoked_at ?? time } };
         }
         case 'access.events.list': {

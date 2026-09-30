@@ -52,14 +52,17 @@ test('malformed or asynchronous recovery responses back off without an unhandled
   }
 });
 
-test('actual host recovery settles an authorized cancellation while disabled, and never executes another pending intention', async t => {
-  const f = await nativeHttpFixture(t), owner = nativeIdentity('Автор'), account = await f.bootstrap(owner);
+for (const capabilitiesVersion of [2, 3]) test(`actual Caps${capabilitiesVersion} host recovery settles an authorized cancellation while disabled, and never executes another pending intention`, async t => {
+  const f = await nativeHttpFixture(t, { capabilitiesVersion }), owner = nativeIdentity('Автор'), account = await f.bootstrap(owner);
   const identity = await f.issue(owner, account.accountId), service = f.app.locals.capabilitiesService;
   const actor = service.authenticateCredential({ token: identity.token, audience: f.origin });
   const cancelled = service.nativeNotes.admit({ actor, idempotencyKey: 'recovery-cancel-01', input: { title: 'Отменить', body: 'Текст' } });
   const pending = service.nativeNotes.admit({ actor, idempotencyKey: 'recovery-pending-01', input: { title: 'Дождаться', body: 'Другой текст' } });
   service.invocations.requestCancel({ actor, invocationId: cancelled.invocation.invocationId });
-  await f.restart({ enabled: false }); f.app.locals.nativeRecovery.close();
+  await f.restart({ enabled: false });
+  assert.equal(f.app.locals.capabilitiesService.schemaVersion, capabilitiesVersion);
+  assert.ok(f.app.locals.nativeRecovery, 'every admitted native schema keeps recovery when new execution is disabled');
+  f.app.locals.nativeRecovery.close();
   const timers = timerFixture(), recovery = startNativeRecovery({ timers: timers.timers, coordinator: f.app.locals.capabilitiesService.nativeNotes });
   t.after(() => recovery.close()); timers.fire();
   assert.equal(recovery.status().checked, 2); assert.equal(recovery.status().pending, 1); assert.equal(recovery.status().unavailable, false);

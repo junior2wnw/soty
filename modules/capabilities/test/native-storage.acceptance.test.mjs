@@ -124,7 +124,7 @@ test('Caps historical populated v1 stays v1 by default; explicit migration prese
   const f = await fixture(t, { migrate: false });
   const id = f.admit('ordinary-historical-admission'), before = f.db.prepare('SELECT * FROM cap_invocations WHERE id=?').get(id);
   assert.equal(f.service.schemaVersion, 1); assert.equal(f.service.registryId, null);
-  assert.deepEqual(f.service.supportedSchemaVersions, [1, 2]);
+  assert.deepEqual(f.service.supportedSchemaVersions, [1, 2, 3]);
   f.close(f.service);
   f.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE');
   const upgraded = f.open({ allowNativeMigration: true });
@@ -244,19 +244,20 @@ test('native account orphan cannot disappear through an inner JOIN in row valida
   assert.deepEqual(fileProof(f.databasePath), before);
 });
 
-test('missing registry, removed guard and future marker are refused before persistent pragmas or repair', async t => {
-  for (const kind of ['registry', 'guard', 'future']) {
+test('missing registry, removed guard, marker-only3 and future4 are refused before persistent pragmas or repair', async t => {
+  for (const kind of ['registry', 'guard', 'partial3', 'future4']) {
     const f = await fixture(t); f.close(f.service);
     if (kind === 'registry') {
       const guard = f.db.prepare("SELECT sql FROM sqlite_schema WHERE name='cap_identity_no_delete'").get().sql;
       f.db.exec('DROP TRIGGER cap_identity_no_delete');
       f.db.exec("DELETE FROM cap_metadata WHERE key='registry_id'"); f.db.exec(guard);
     } else if (kind === 'guard') f.db.exec('DROP TRIGGER cap_native_note_input_guard');
-    else f.db.exec("UPDATE cap_metadata SET value='soty.capabilities.sqlite.v3' WHERE key='lineage'; PRAGMA user_version=3");
+    else if (kind === 'partial3') f.db.exec("UPDATE cap_metadata SET value='soty.capabilities.sqlite.v3' WHERE key='lineage'; PRAGMA user_version=3");
+    else f.db.exec("UPDATE cap_metadata SET value='soty.capabilities.sqlite.v4' WHERE key='lineage'; PRAGMA user_version=4");
     f.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE');
     const before = fileProof(f.databasePath);
     assert.throws(() => f.open({ allowNativeMigration: true }), fault(kind === 'registry' ? 'schema_lineage_mismatch'
-      : kind === 'guard' ? 'schema_layout_invalid' : 'schema_version_unsupported'));
+      : kind === 'future4' ? 'schema_version_unsupported' : 'schema_layout_invalid'));
     assert.deepEqual(fileProof(f.databasePath), before);
     assert.equal(f.db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
   }

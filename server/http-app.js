@@ -145,7 +145,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   const unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
   // Disabling new execution must still allow recovery of an already committed
   // effect. Ordinary v1/mixed stores never start the native recovery scanner.
-  const nativeRecovery = notes.schemaVersion === 2 && capabilities.schemaVersion === 2
+  const nativeRecovery = notes.schemaVersion === 2 && [2, 3].includes(capabilities.schemaVersion)
     ? startNativeRecovery({ coordinator: capabilities.nativeNotes }) : null;
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.closeServices = async () => { nativeRecovery?.close(); unsubscribeRevocations(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close(); await connectors.store.close(); };

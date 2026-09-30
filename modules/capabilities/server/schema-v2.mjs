@@ -237,7 +237,9 @@ export function inspectCapabilitiesSchema(db, { projectId } = {}) {
   return Object.freeze({ schemaVersion: version, registryId: metadata.registry_id ?? null });
 }
 
-function validateNativeRows(db, registryId) {
+// Shared by the additive v3 reader; the historical format and its checks stay
+// literal here, rather than maintaining a second copy of native invariants.
+export function validateNativeRows(db, registryId) {
   const credential = db.prepare(`SELECT 1 FROM cap_credentials WHERE id=? AND account_id=?
     AND client_id=? AND principal_id=? AND grant_id=? AND audience=?`);
   const linkage = db.prepare(`SELECT 1 FROM cap_principals p

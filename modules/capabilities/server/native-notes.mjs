@@ -50,7 +50,7 @@ export function validateNativeNoteComposition(value) {
       .map(name => [name, value.notes[name].bind(value.notes)]))) });
 }
 
-export function createNativeNotesCoordinator({ db, projectId, registryId, clock, registry, access, core,
+export function createNativeNotesCoordinator({ db, projectId, registryId, schemaVersion, clock, registry, access, core,
   settleNativeBudget, transaction, ensureOpen, composition, limits, invocationLimits = {} }) {
   const { notes, withAuthorityFence } = composition;
   const contexts = new WeakMap();
@@ -70,10 +70,10 @@ export function createNativeNotesCoordinator({ db, projectId, registryId, clock,
   }
   function capsIdentity() {
     ensureOpen();
-    assert(get('PRAGMA user_version').user_version === 2, 'native_unavailable');
+    assert([2, 3].includes(schemaVersion) && get('PRAGMA user_version').user_version === schemaVersion, 'native_unavailable');
     const rows = db.prepare('SELECT key,value FROM cap_metadata ORDER BY key').all();
     const values = Object.fromEntries(rows.map(row => [row.key, row.value]));
-    assert(rows.length === 3 && values.lineage === 'soty.capabilities.sqlite.v2'
+    assert(rows.length === 3 && values.lineage === `soty.capabilities.sqlite.v${schemaVersion}`
       && typeof values.registry_id === 'string' && /^[a-f0-9]{32}$/u.test(values.registry_id), 'capabilities_storage_corrupt');
     assert(values.project_id === projectId && (!knownRegistryId || knownRegistryId === values.registry_id), 'native_store_mismatch');
     knownRegistryId ??= values.registry_id;

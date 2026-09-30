@@ -15,10 +15,10 @@ export { BUILTIN_CAPABILITIES } from './catalog.mjs';
 export { AccessError } from './validation.mjs';
 
 export function createCapabilitiesService({ databasePath, projectId, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES,
-  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, nativeNotes } = {}) {
+  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, allowOAuthMigration = false, nativeNotes } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
-  assert(typeof allowNativeMigration === 'boolean', 'schema_configuration_invalid');
+  assert(typeof allowNativeMigration === 'boolean' && typeof allowOAuthMigration === 'boolean', 'schema_configuration_invalid');
   assert(typeof actorActive === 'function', 'host_auth_required');
   assert(typeof clock === 'function', 'clock_invalid');
   const nativeComposition = validateNativeNoteComposition(nativeNotes);
@@ -37,7 +37,7 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
   if (databasePath !== ':memory:') mkdirSync(path.dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   let storage;
-  try { storage = initializeCapabilitiesSchema(db, { projectId, allowNativeMigration }); }
+  try { storage = initializeCapabilitiesSchema(db, { projectId, allowNativeMigration, allowOAuthMigration }); }
   catch (error) { db.close(); throw error; }
   let closed = false;
   let inTransaction = false;
@@ -81,7 +81,7 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
     reserveBudget: access.reserveBudget, settleBudget: access.settleBudget, canonicalHash, newId, limits: invocationLimits,
     captureInternalCore: nativeComposition ? value => { invocationCore = value; } : undefined,
   });
-  const native = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, clock,
+  const native = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, schemaVersion: storage.schemaVersion, clock,
     registry, access, core: invocationCore, settleNativeBudget: nativeSettlement, transaction, ensureOpen,
     composition: nativeComposition, limits: nativeLimits, invocationLimits }) : null;
   const operations = new Set([...access.operations, 'access.invocations.list']);
