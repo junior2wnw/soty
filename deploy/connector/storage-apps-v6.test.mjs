@@ -17,9 +17,9 @@ const normalizedSql = sql => sql.split(/('(?:[^']|'')*')/gu).map((part, index) =
   : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('');
 const objects = db => db.prepare("SELECT type,name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()
   .map(row => ({ ...row, sql: normalizedSql(row.sql) }));
-const format = apps => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 'empty', apps });
+const format = apps => ({ ok: true, schema: 'soty.storage-format.v3', rooms: 'empty', apps, notes: 'empty', capabilities: 'empty' });
 const image = readers => ({ Id: 'sha256:' + '6'.repeat(64), Config: { Labels: { [storageReaderLabel]: readers } } });
-const oldReaders = '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5]}}';
+const oldReaders = '{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5],"notes":[1],"capabilities":[1]}}';
 const appId = letter => `app-${letter.repeat(32)}`;
 const liveDomain = 'dom_' + 'c'.repeat(32), retiredDomain = 'dom_' + 'd'.repeat(32);
 const discussionTables = ['app_discussion_heads', 'app_discussion_conversations', 'app_discussion_messages',

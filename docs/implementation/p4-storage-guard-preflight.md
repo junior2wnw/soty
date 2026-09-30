@@ -2,6 +2,8 @@
 
 30.09.2026. Read-only preflight после принятого P4-A `6cd724a167f3bbca6bdd3120c3d72dfa0f89b60e`. Основание: [P4 preflight, §7](p4-external-agent-preflight.md#7-форматы-backup-и-rollback--до-миграции-данных). Root принял **strict manifest/probe/start v3** и отдельный первый checkpoint с `notes:[1]`, `capabilities:[1]`. DDL2, reader2, production migration и новый fallback этим документом не объявляются готовыми.
 
+После отдельной выдачи ownership реализован локальный bridge; его авторские результаты и source freeze записаны отдельно в [implementation receipt](p4-storage-guard-bridge.md). Ниже сохранён preflight и его ограничения, а не повторная декларация production готовности.
+
 В этой работе прочитаны текущие schemas, trusted guard/probe, rollout/host-controller/rebase/backup пути и прежние reader receipts; проверены первичные SQLite/Node/Docker источники. Исторические v1 schemas из точных Git blobs исполнены только в двух новых `:memory:` SQLite для инвентаризации объектов. Файлы данных, source, конфигурация, Docker/SSH не изменялись; единственный новый файл — этот документ. Полные suites не запускались.
 
 ## 1. Реальные stores и предел общего guard

@@ -69,6 +69,10 @@ export class Rollout {
     requireThat(old.State.Running,'original_not_running');
     const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
     storageReaders(image);
+    // The automatic fallback is this exact old image, not a separately built
+    // artifact. Reject a reader-manifest transition before any serving change.
+    const oldImage=await this.engine.image(old.Image);requireThat(oldImage.Id===old.Image,'storage_image_identity_invalid');
+    storageReaders(oldImage);
     requireThat(/^sha256:[a-f0-9]{64}$/.test(args.storageProbeImage||''),'storage_probe_image_required');
     requireThat((await this.engine.image(args.storageProbeImage)).Id===args.storageProbeImage,'storage_probe_image_identity');
     if(args.applicationPolicy)await readApprovedPolicy(args.applicationPolicy.source,args.applicationPolicy.sha256);
@@ -100,6 +104,7 @@ export class Rollout {
       requireThat(originalNow.Name==='/'+this.originalName&&originalNow.Image===this.args.originalImage&&originalNow.State.Running&&preservationHash(createConfig(originalNow,this.args.candidateImage,this.args.transaction,this.args.revision,this.args.applicationPolicy))===this.fingerprint,'original_configuration_changed');
       if(this.args.applicationPolicy)await readApprovedPolicy(this.args.applicationPolicy.source,this.args.applicationPolicy.sha256);
       let s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&!s.maintenance,'precheck_not_quiescent');
+      await this.guardStart(this.original.Id,{running:true});
       await this.note('stopping_original');
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
       await this.note('original_stopped');

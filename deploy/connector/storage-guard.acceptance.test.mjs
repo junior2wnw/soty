@@ -10,7 +10,7 @@ import { guardStorageStart, reconcileStorageProbe, storageReaderLabel, currentSt
 const id = n => n.toString(16).padStart(64, '0');
 const imageId = n => `sha256:${id(n)}`;
 const clone = value => structuredClone(value);
-const format = (rooms, apps = 'empty') => ({ ok: true, schema: 'soty.storage-format.v2', rooms, apps });
+const format = (rooms, apps = 'empty') => ({ ok: true, schema: 'soty.storage-format.v3', notes: 'empty', capabilities: 'empty', rooms, apps });
 
 function gateFixture({ running = false, production = false } = {}) {
   const runtime = { Id: id(1), Image: imageId(2), Name: '/soty-online-chat',

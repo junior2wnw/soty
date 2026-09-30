@@ -319,6 +319,11 @@ export class HostController {
     const id = randomBytes(16).toString('hex'), config = candidateConfig(original, entry.image, id, this.config, module.tree);
     const oldEntry = await this.imageEntry(this.state.active.tree);
     storageReaders(await this.engine.image(entry.image));
+    // restore() returns this original image. A legacy manifest needs an
+    // explicit bootstrap route; it must fail before the serving writer stops.
+    const originalImage = await this.engine.image(original.Image);
+    requireThat(originalImage.Id === original.Image, 'storage_image_identity_invalid');
+    storageReaders(originalImage);
     requireThat(IMAGE.test(this.config.storageProbeImage || ''), 'storage_probe_image_required');
     requireThat((await this.engine.image(this.config.storageProbeImage)).Id === this.config.storageProbeImage, 'storage_probe_image_identity');
     const health = await this.ready({ entry: oldEntry, maintenance: false, idle: true });
@@ -336,6 +341,7 @@ export class HostController {
       const before = await this.probe('status', old);
       requireThat(before.count === 0 && !before.maintenance, 'precheck_not_quiescent');
       this.compareHealth(await this.ready({ entry: oldEntry, maintenance: false, idle: true }));
+      await this.guardStart(old.Id, { running: true });
       await this.note('stopping_original'); await this.ensureStopped(old);
       await this.note('original_stopped');
       let offline = await this.probe('status', await this.original());

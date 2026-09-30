@@ -13,7 +13,7 @@ import { createHistoricalAppsV3, seedHistoricalPublicationV3 } from './apps-v3.f
 import { createHistoricalAppsV4, seedHistoricalRollbackV4 } from './apps-v4.fixture.mjs';
 import { migrateAppsSchema as migrateHistoricalAppsV5 } from './fixtures/apps-v5/schema.mjs';
 
-const format = (apps, rooms = 'empty') => ({ ok: true, schema: 'soty.storage-format.v2', rooms, apps });
+const format = (apps, rooms = 'empty') => ({ ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes: 'empty', capabilities: 'empty' });
 const image = readers => ({ Id: 'sha256:' + '1'.repeat(64), Config: { Labels: { [storageReaderLabel]: readers ?? currentStorageReaders } } });
 const filename = root => path.join(root, 'apps', 'registry.sqlite');
 const privateAppId = 'app-' + 'a'.repeat(32);
@@ -155,7 +155,7 @@ for (const previous of [1, 2, 3, 4, 5]) test(`committed real Apps v${previous} t
     assert.deepEqual(await readFile(filename(root)), before, 'the migration is still in the WAL');
     const observed = await readStorageFormat(root);
     assert.deepEqual(observed, format(6));
-    const oldReader = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5] } });
+    const oldReader = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5], notes: [1], capabilities: [1] } });
     assert.throws(() => assertStorageCompatible(image(oldReader), observed), /storage_reader_incompatible/);
     assertStorageCompatible(image(), observed);
     assert.deepEqual(await readFile(filename(root)), before, 'the format probe did not checkpoint or rewrite data');

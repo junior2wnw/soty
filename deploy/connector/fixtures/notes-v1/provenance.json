@@ -1,0 +1,10 @@
+{
+  "commit": "6cd724a167f3bbca6bdd3120c3d72dfa0f89b60e",
+  "description": "Test-only unmodified historical v1 schema. No local dependencies; never imported by the trusted storage probe.",
+  "files": {
+    "schema.mjs": {
+      "sourcePath": "modules/notes/server/schema.mjs",
+      "sha256": "da75ffc702fb0ee4db9878780d374f53bca0d68b46e91eafb56038b45d1e0dfa"
+    }
+  }
+}

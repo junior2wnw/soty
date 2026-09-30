@@ -13,9 +13,9 @@ import { assertStorageCompatible, checkedStorageFormat, currentStorageReaders, g
 const id = n => n.toString(16).padStart(64, '0');
 const imageId = n => 'sha256:' + id(n);
 const clone = x => structuredClone(x);
-const format = (rooms, apps = 'empty') => ({ ok: true, schema: 'soty.storage-format.v2', rooms, apps });
+const format = (rooms, apps = 'empty', notes = 'empty', capabilities = 'empty') => ({ ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes, capabilities });
 const image = (n, readers = currentStorageReaders) => ({ Id: imageId(n), Config: { Labels: readers ? { [storageReaderLabel]: readers } : {} } });
-const jsonOnly = JSON.stringify({ version: 2, readers: { rooms: [1], apps: [1, 2] } });
+const jsonOnly = JSON.stringify({ version: 3, readers: { rooms: [1], apps: [1, 2], notes: [1], capabilities: [1] } });
 
 async function directory(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'soty-format-'));
@@ -78,16 +78,29 @@ test('strict image reader manifest rejects missing, extended and malformed claim
   }
   assert.throws(() => checkedStorageFormat({ ok: true, rooms: 2 }), /storage_probe_invalid/);
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
+  const baseline = JSON.parse(currentStorageReaders);
+  for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
+    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'rooms' ? [3] : store === 'apps' ? [7] : [2]]) {
+      const value = clone(baseline); value.readers[store] = readers;
+      assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
+    }
+    const value = clone(baseline); delete value.readers[store];
+    assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
+  }
+  for (const value of [{ ...baseline, allow: true }, { ...baseline, version: '3' },
+    { ...baseline, readers: { ...baseline.readers, world: [3] } }]) {
+    assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
+  }
 });
 
-function fixture({ readers = currentStorageReaders, rooms = 2, apps = 'empty', pending = false } = {}) {
+function fixture({ readers = currentStorageReaders, rooms = 2, apps = 'empty', notes = 'empty', capabilities = 'empty', pending = false } = {}) {
   const runtime = { Id: id(1), Image: imageId(2), Name: '/soty-online-chat', State: { Running: false, Status: 'created' },
     Config: { Env: ['DATA_DIR=/data', 'TOKEN=synthetic-never-in-probe'], Labels: { [storageReaderLabel]: currentStorageReaders } },
     Mounts: [{ Type: 'volume', Name: 'live-data', Source: '/docker/volumes/live-data/_data', Destination: '/data', RW: true }] };
   const images = new Map([[imageId(2), image(2, readers)], [imageId(3), image(3, null)]]);
   const containers = new Map([[runtime.Id, runtime]]), events = [], state = {}, receipts = [];
   const volume = { Name: 'live-data', Driver: 'local', Scope: 'local', Options: null, Mountpoint: runtime.Mounts[0].Source };
-  let helperCount = 0, result = format(rooms, apps), dropStart = false;
+  let helperCount = 0, result = format(rooms, apps, notes, capabilities), dropStart = false;
   const engine = {
     async inspect(key) { const c = containers.get(key) || [...containers.values()].find(c => c.Name === '/' + key); if (!c) throw new Error('404'); return clone(c); },
     async image(key) { if (!images.has(key)) throw new Error('404'); return clone(images.get(key)); },
@@ -113,7 +126,8 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   const f = fixture(); f.dropStart();
   const receipt = await guardStorageStart(f.context, f.runtime);
   requireStorageStartReceipt(receipt, f.runtime.Id);
-  assert.equal(receipt.schema, 'soty.storage-start.v2'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
+  assert.equal(receipt.schema, 'soty.storage-start.v3'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
+  assert.equal(receipt.notes, 'empty'); assert.equal(receipt.capabilities, 'empty');
   const created = f.events.find(e => e.verb === 'create').body;
   assert.equal(created.Image, imageId(3)); assert.notEqual(created.Image, f.runtime.Image);
   assert.deepEqual(created.Env, ['SOTY_STORAGE_PROBE=1']);
@@ -136,7 +150,7 @@ test('container label cannot make a legacy, rooms-only or unlabelled image compa
 });
 
 test('Apps version is an independent reader requirement and is retained in the start receipt', async () => {
-  const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1] } });
+  const readers = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1], notes: [1], capabilities: [1] } });
   const old = fixture({ readers, apps: 2 });
   await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
   assert.ok(!old.events.some(event => event.verb === 'start' && event.id === old.runtime.Id));
@@ -147,7 +161,7 @@ test('Apps version is an independent reader requirement and is retained in the s
 });
 
 for (const version of [3, 4, 5, 6]) test(`Apps${version} is accepted independently of the Rooms ceiling and blocks an Apps${version - 1}-only actual image`, async () => {
-  const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: version - 1 }, (_, i) => i + 1) } });
+  const readers = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: Array.from({ length: version - 1 }, (_, i) => i + 1), notes: [1], capabilities: [1] } });
   const old = fixture({ readers, apps: version });
   await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
   assert.ok(!old.events.some(event => event.verb === 'start' && event.id === old.runtime.Id));
@@ -161,22 +175,80 @@ for (const version of [3, 4, 5, 6]) test(`Apps${version} is accepted independent
 });
 
 test('old or extended probe and start receipts never authorize a restart', () => {
-  const good = { schema: 'soty.storage-start.v2', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 2 };
+  const good = { schema: 'soty.storage-start.v3', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 2, notes: 1, capabilities: 1 };
   requireStorageStartReceipt(good, id(1));
   for (const value of [{ ok: true, schema: 'soty.storage-format.v1', rooms: 2 },
-    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), apps: 7 }, { ...format(2, 6), rooms: 3 },
+    { ok: true, schema: 'soty.storage-format.v2', rooms: 2, apps: 6 },
+    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), schema: 'soty.storage-format.v2' }, { ...format(2), apps: 7 }, { ...format(2, 6), rooms: 3 },
     { ...format(2), apps: undefined }, { ...format(2), complete: true }]) {
     assert.throws(() => checkedStorageFormat(value), /storage_probe_invalid/);
   }
   for (const value of [{ schema: 'soty.storage-start.v1', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2 },
-    { ...good, schema: 'soty.storage-start.v1' }, { ...good, apps: 7 }, { ...good, rooms: 3 },
+    { schema: 'soty.storage-start.v2', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 6 },
+    { ...good, schema: 'soty.storage-start.v1' }, { ...good, schema: 'soty.storage-start.v2' }, { ...good, apps: 7 }, { ...good, rooms: 3 },
     { ...good, apps: undefined }, { ...good, allowed: true }]) {
     assert.throws(() => requireStorageStartReceipt(value, id(1)), /storage_start_guard_missing/);
   }
 });
 
+test('bridge requires actual v3 even on empty stores and preserves every independent format in start evidence', async () => {
+  for (const notes of ['empty', 1]) for (const capabilities of ['empty', 1]) {
+    const f = fixture({ rooms: 2, apps: 6, notes, capabilities });
+    const receipt = await guardStorageStart(f.context, f.runtime);
+    requireStorageStartReceipt(receipt, f.runtime.Id);
+    assert.deepEqual([receipt.rooms, receipt.apps, receipt.notes, receipt.capabilities], [2, 6, notes, capabilities]);
+    const old = fixture({ readers: '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6]}}', notes, capabilities });
+    await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_unknown/);
+    assert.equal(old.events.length, 0, 'a copied v3 container label cannot authorize even a helper for an actual v2 image');
+  }
+});
+
+test('new store output and evidence require scalar v1 or empty, never coerced or omitted fields', () => {
+  const goodFormat = format(2, 6, 1, 1);
+  const goodReceipt = { schema: 'soty.storage-start.v3', containerId: id(1), image: imageId(2), mountSha256: id(3),
+    rooms: 2, apps: 6, notes: 1, capabilities: 1 };
+  for (const store of ['notes', 'capabilities']) {
+    for (const value of [undefined, null, 0, 2, '1', [1], ['empty'], true, {}, 'unknown']) {
+      assert.throws(() => checkedStorageFormat({ ...goodFormat, [store]: value }), /storage_probe_invalid/);
+      assert.throws(() => requireStorageStartReceipt({ ...goodReceipt, [store]: value }, id(1)), /storage_start_guard_missing/);
+    }
+    const output = { ...goodFormat }, receipt = { ...goodReceipt };
+    delete output[store]; delete receipt[store];
+    assert.throws(() => checkedStorageFormat(output), /storage_probe_invalid/);
+    assert.throws(() => requireStorageStartReceipt(receipt, id(1)), /storage_start_guard_missing/);
+  }
+  for (const field of ['containerId', 'image', 'mountSha256']) {
+    const receipt = { ...goodReceipt, [field]: [goodReceipt[field]] };
+    assert.throws(() => requireStorageStartReceipt(receipt, receipt.containerId), /storage_start_guard_missing/);
+  }
+  assert.throws(() => assertStorageCompatible({ ...image(1), Id: [imageId(1)] }, goodFormat), /storage_image_identity_invalid/);
+  assert.throws(() => assertStorageCompatible(image(1, [currentStorageReaders]), goodFormat), /storage_reader_unknown/);
+});
+
+test('a retained v2 helper is refused without repeating CREATE or START or rewriting its journal', async () => {
+  const f = fixture();
+  await guardStorageStart(f.context, f.runtime);
+  const helper = [...f.containers.values()].find(c => c.Id !== f.runtime.Id);
+  f.state.storageGuardHelper = { id: helper.Id, name: helper.Name.slice(1), image: helper.Image, state: 'starting' };
+  f.setResult({ ok: true, schema: 'soty.storage-format.v2', rooms: 2, apps: 6 });
+  const before = clone(f.state.storageGuardHelper), eventCount = f.events.length;
+  await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_probe_invalid/);
+  assert.equal(f.events.length, eventCount);
+  assert.deepEqual(f.state.storageGuardHelper, before);
+});
+
+test('future Notes or Capabilities cannot become successful helper or start receipts', async () => {
+  for (const store of ['notes', 'capabilities']) {
+    const f = fixture({ notes: 1, capabilities: 1 });
+    f.setResult({ ...format(2, 6, 1, 1), [store]: 2 });
+    await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_probe_invalid/);
+    assert.ok(f.state.storageGuardHelper);
+    assert.ok(!f.events.some(event => event.verb === 'start' && event.id === f.runtime.Id));
+  }
+});
+
 for (const previous of [3, 4, 5]) test(`a completed Apps${previous} helper receipt is reconciled once but cannot replace a fresh Apps${previous + 1} probe`, async () => {
-  const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: previous }, (_, index) => index + 1) } });
+  const readers = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: Array.from({ length: previous }, (_, index) => index + 1), notes: [1], capabilities: [1] } });
   const f = fixture({ readers, apps: previous });
   const receipt = await guardStorageStart(f.context, f.runtime);
   assert.equal(receipt.apps, previous);

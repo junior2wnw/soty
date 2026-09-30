@@ -84,6 +84,50 @@ const appDiscussionGuards = {
 const normalizedSql = sql => typeof sql === 'string' ? sql.split(/('(?:[^']|'')*')/gu)
   .map((part, index) => index % 2 ? part : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('') : null;
 
+// Historical v1 layouts, frozen independently of Notes/Capabilities code. The
+// bridge deliberately does not recognize future native-effect schemas/readers.
+const notesTables = {
+  notes_meta: 'key,value',
+  note_accounts: 'account_id,bytes,identities,active,archived,trashed',
+  notes: 'rowid,account_id,id,title,body,items,preview,color,pinned,state,revision,bytes,created_at,updated_at',
+  note_receipts: 'account_id,note_id,mutation_id,digest,result,revision',
+  notes_fts: 'scope,title,body,items,notes_fts,rank',
+  notes_fts_data: 'id,block',
+  notes_fts_idx: 'segid,term,pgno',
+  notes_fts_content: 'id,c0,c1,c2,c3',
+  notes_fts_docsize: 'id,sz',
+  notes_fts_config: 'k,v',
+};
+const notesIndexes = {
+  notes_owner_order: { table: 'notes', sql: 'CREATE INDEX notes_owner_order ON notes(account_id,state,pinned DESC,updated_at DESC,id ASC)' },
+  note_receipts_trim: { table: 'note_receipts', sql: 'CREATE INDEX note_receipts_trim ON note_receipts(account_id,note_id,revision DESC)' },
+};
+const notesFts = "CREATE VIRTUAL TABLE notes_fts USING fts5(scope,title,body,items,tokenize='unicode61 remove_diacritics 2',prefix='2 3')";
+const capabilitiesTables = {
+  cap_metadata: 'key,value',
+  cap_contracts: 'capability_id,version,digest',
+  cap_clients: 'id,account_id,label,state,policy_epoch,created_at,revoked_at',
+  cap_principals: 'id,account_id,client_id,kind,label,state,creator_device_id,created_at,revoked_at',
+  cap_grants: 'id,account_id,client_id,principal_id,parent_id,root_id,creator_device_id,capabilities_json,resources_json,effects_json,recipients_json,allow_delegation,max_depth,depth,not_before,expires_at,policy_epoch,created_at,revoked_at',
+  cap_credentials: 'id,digest,account_id,client_id,principal_id,grant_id,audience,expires_at,created_at,revoked_at',
+  cap_audit: 'id,account_id,kind,object_type,object_id,actor_type,actor_id,created_at',
+  cap_budgets: 'root_grant_id,unit,limit_amount,reserved_amount,spent_amount',
+  cap_budget_reservations: 'id,invocation_id,attempt_id,root_grant_id,unit,amount,actual_amount,disposition,request_digest,created_at,updated_at',
+  cap_invocations: 'id,account_id,client_id,principal_id,grant_id,root_grant_id,policy_epoch,capability_id,capability_version,capability_digest,request_key,request_digest,internal_request_id,input_json,target_json,authorization_json,status,effect_state,cancel_requested,effects_json,reservation_id,job_id,created_at,updated_at,completed_at',
+  cap_dispatch_intents: 'invocation_id,internal_request_id,state,created_at,updated_at',
+  cap_receipts: 'invocation_id,value_json,digest,created_at',
+};
+const capabilitiesIndexes = {
+  cap_clients_account: { table: 'cap_clients', sql: 'CREATE INDEX cap_clients_account ON cap_clients(account_id,created_at,id)' },
+  cap_principals_account: { table: 'cap_principals', sql: 'CREATE INDEX cap_principals_account ON cap_principals(account_id,created_at,id)' },
+  cap_grants_account: { table: 'cap_grants', sql: 'CREATE INDEX cap_grants_account ON cap_grants(account_id,created_at,id)' },
+  cap_grants_root: { table: 'cap_grants', sql: 'CREATE INDEX cap_grants_root ON cap_grants(root_id,id)' },
+  cap_credentials_grant: { table: 'cap_credentials', sql: 'CREATE INDEX cap_credentials_grant ON cap_credentials(grant_id,id)' },
+  cap_audit_account: { table: 'cap_audit', sql: 'CREATE INDEX cap_audit_account ON cap_audit(account_id,created_at,id)' },
+  cap_invocations_history: { table: 'cap_invocations', sql: 'CREATE INDEX cap_invocations_history ON cap_invocations(account_id,client_id,created_at,id)' },
+  cap_dispatch_pending: { table: 'cap_dispatch_intents', sql: 'CREATE INDEX cap_dispatch_pending ON cap_dispatch_intents(state,created_at,invocation_id)' },
+};
+
 async function checkedDatabaseFile(filename, info) {
   if (!info.isFile() || info.isSymbolicLink() || info.size < 100) fail('storage_format_unreadable');
   for (const suffix of ['-wal', '-shm', '-journal']) {
@@ -175,11 +219,75 @@ async function readAppsFormat(dataDir) {
   });
 }
 
+async function checkedStoreFile(dataDir, store, basename) {
+  const directory = path.join(dataDir, store), root = await missing(directory);
+  if (!root) return null;
+  if (!root.isDirectory() || root.isSymbolicLink()) fail('storage_format_unreadable');
+  const filename = path.join(directory, basename), info = await missing(filename);
+  const allowed = new Set([basename, basename + '-wal', basename + '-shm', basename + '-journal']);
+  for await (const entry of await opendir(directory)) {
+    if (!info || !allowed.has(entry.name) || !entry.isFile() || entry.isSymbolicLink()) fail('storage_format_unreadable');
+  }
+  if (!info) return null;
+  await checkedDatabaseFile(filename, info);
+  return filename;
+}
+
+function recognizeV1Layout(db, tables, indexes, { fts = false, strict = false } = {}) {
+  const objects = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all();
+  if (objects.length !== Object.keys(tables).length + Object.keys(indexes).length || objects.some(row =>
+    row.type === 'table' ? !Object.hasOwn(tables, row.name)
+      : row.type !== 'index' || !Object.hasOwn(indexes, row.name) || row.tbl_name !== indexes[row.name].table
+        || normalizedSql(row.sql) !== normalizedSql(indexes[row.name].sql))) fail('storage_format_unreadable');
+  if (fts && normalizedSql(objects.find(row => row.name === 'notes_fts')?.sql) !== normalizedSql(notesFts)) fail('storage_format_unreadable');
+  const kinds = new Map(db.prepare('PRAGMA table_list').all().filter(row => row.schema === 'main').map(row => [row.name, row]));
+  for (const [table, columns] of Object.entries(tables)) {
+    // Only fixed host identifiers enter SQL. FTS hidden columns are checked but
+    // never selected (rank/MATCH would execute an unnecessary text search).
+    const info = db.prepare(`PRAGMA table_xinfo(${table})`).all();
+    const kind = fts && table === 'notes_fts' ? 'virtual' : fts && table.startsWith('notes_fts_') ? 'shadow' : 'table';
+    if (info.map(row => row.name).join(',') !== columns || kinds.get(table)?.type !== kind
+      || kinds.get(table)?.strict !== Number(strict)
+      || info.some(row => row.hidden !== (fts && table === 'notes_fts' && ['notes_fts', 'rank'].includes(row.name) ? 1 : 0))) fail('storage_format_unreadable');
+    const projection = fts && table === 'notes_fts' ? 'scope,title,body,items' : columns;
+    db.prepare(`SELECT ${projection} FROM ${table} LIMIT 0`).all();
+  }
+}
+
+function metadataEquals(db, table, key, expected) {
+  const rows = db.prepare(`SELECT value FROM ${table} WHERE key=? LIMIT 2`).all(key);
+  if (rows.length !== 1 || rows[0].value !== expected) fail('storage_format_unknown');
+}
+
+async function readNotesFormat(dataDir) {
+  const filename = await checkedStoreFile(dataDir, 'notes', 'notes.sqlite');
+  if (!filename) return 'empty';
+  return inspectDatabase(filename, db => {
+    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('storage_format_unknown');
+    recognizeV1Layout(db, notesTables, notesIndexes, { fts: true });
+    metadataEquals(db, 'notes_meta', 'lineage', 'soty.notes.sqlite.v1');
+    metadataEquals(db, 'notes_meta', 'project_id', 'soty');
+    return 1;
+  });
+}
+
+async function readCapabilitiesFormat(dataDir) {
+  const filename = await checkedStoreFile(dataDir, 'capabilities', 'capabilities.sqlite');
+  if (!filename) return 'empty';
+  return inspectDatabase(filename, db => {
+    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('storage_format_unknown');
+    recognizeV1Layout(db, capabilitiesTables, capabilitiesIndexes, { strict: true });
+    metadataEquals(db, 'cap_metadata', 'lineage', 'soty.capabilities.sqlite.v1');
+    return 1;
+  });
+}
+
 export async function readStorageFormat(dataDir = '/data') {
   const root = await lstat(dataDir);
   if (!root.isDirectory() || root.isSymbolicLink()) fail('storage_directory_invalid');
   const rooms = await readRoomsFormat(dataDir), apps = await readAppsFormat(dataDir);
-  return { ok: true, schema: 'soty.storage-format.v2', rooms, apps };
+  const notes = await readNotesFormat(dataDir), capabilities = await readCapabilitiesFormat(dataDir);
+  return { ok: true, schema: 'soty.storage-format.v3', rooms, apps, notes, capabilities };
 }
 
 if (process.env.SOTY_STORAGE_PROBE === '1') {
