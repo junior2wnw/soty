@@ -95,8 +95,8 @@ export interface RecoveryKit {
 }
 
 export interface ConnectClient {
-  /** Signed host-registered product operation using the active account and normal proof flow. */
-  extension<T = Record<string, unknown>>(operation: string, args?: unknown): Promise<T>;
+  /** Optional context pins queue admission to the displayed account; it is not sent in the RPC payload. */
+  extension<T = Record<string, unknown>>(operation: string, args?: unknown, context?: { expectedAccountId: string }): Promise<T>;
   bootstrap(label: string): Promise<AccountResult>;
   status(): Promise<AccountStatus>;
   rename(label: string): Promise<{ label: string }>;

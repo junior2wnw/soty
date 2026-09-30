@@ -9,6 +9,7 @@ import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, s
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { appTone, createApplicationCard } from './application-card';
 import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent } from './app-launch.mjs';
+import { mountAppSettings } from './app-settings';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
 import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
 import { AvatarHydrator, prepareAvatar } from './avatars';
@@ -48,6 +49,8 @@ class WorldApplication {
   private readonly controller = new AbortController();
   private readonly avatars: AvatarHydrator;
   private readonly dialogs = new Set<WorldDialog>();
+  private appSettingsDialog: WorldDialog | null = null;
+  private appSettingsRouteClose: ((resume: () => void) => void) | null = null;
   private readonly theme: ThemeController;
   private readonly pwa = getPwaController();
   private readonly formEdits = watchFormEdits();
@@ -58,6 +61,7 @@ class WorldApplication {
   private readonly unregisterUpdateGuard: () => void;
   private desk: DeskPreferences = { favorites: [], recent: [] };
   private deskAccount = '';
+  private accountGeneration = 0;
   private homeHandle: ReturnType<typeof createAppsHome> | null = null;
   private readonly homeState: AppHomeState = { lens: 'all', communityId: null, presentation: 'cards', scroll: 0, fieldX: 0, fieldY: 0, slots: new Map(), focusId: null, pinned: new Set() };
   private assistantHandle: WorldAssistantHandle | null = null;
@@ -152,27 +156,30 @@ class WorldApplication {
 
   async refresh(preserveNote = false): Promise<void> {
     this.avatars.setContext(this.group?.membership?.state === 'active' ? this.group.communityId : undefined);
-    const sequence = ++this.requestSequence;
+    const sequence = ++this.requestSequence, accountAtStart = this.deskAccount, screenAtStart = this.screenSequence;
     try {
+      if (this.options.localAccount) {
+        const local = await this.options.localAccount();
+        if (this.destroyed || sequence !== this.requestSequence) return;
+        if (!local.accountId) throw Object.assign(new Error('No local identity'), { code: 'authentication_required' });
+        this.transitionAccount(local.accountId);
+      }
       const [profile, mine] = await Promise.all([
         this.api.request<{ profile: WorldProfile }>('world.profile.get', {}),
         this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}),
       ]);
       if (this.destroyed || sequence !== this.requestSequence) return;
-      const sameAccount = this.deskAccount === profile.profile.profileId;
-      this.profile = profile.profile; this.communities = mine.communities;
-      if (!sameAccount) {
-        this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close();
-        this.group = null; this.selected = null; this.selectedChat = undefined; this.groupReturn = 'mine';
-        this.homeState.slots.clear(); this.homeState.scroll = 0; this.homeState.fieldX = 0; this.homeState.fieldY = 0;
-        this.homeState.communityId = null; this.homeState.focusId = null; this.homeState.focusControl = null; this.homeState.lens = 'all';
-        this.fieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.query = ''; this.kind = 'all';
-        this.results = { people: [], communities: [], nextCursor: null, totals: { people: 0, communities: 0 } };
-        this.deskAccount = this.profile.profileId; this.desk = loadDeskPreferences(this.deskAccount); this.homeNotes = null; this.devices = []; this.apps = [];
-        this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'ready', notes: 'loading' };
+      if (this.options.localAccount) {
+        const local = await this.options.localAccount();
+        if (this.destroyed || sequence !== this.requestSequence) return;
+        if (!local.accountId || local.accountId !== profile.profile.profileId) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
       }
+      const sameAccount = !this.transitionAccount(profile.profile.profileId);
+      this.profile = profile.profile; this.communities = mine.communities; this.homeStatus.communities = 'ready';
       this.renderNavigation();
-      if (!sameAccount) this.homeState.pinned = new Set(this.desk.pinnedApps ?? []);
+      // A same-account shell refresh is not navigation. The owner window and
+      // its running app keep their draft, selection and existing connection.
+      if (sameAccount && this.appSettingsDialog?.element.open) { this.routeLoaded = true; return; }
       // Recover the authenticated shell after an offline launch without replacing the live editor.
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; return; }
       if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) return; }
@@ -182,14 +189,17 @@ class WorldApplication {
       if (this.view === 'mine') await this.loadPersonal();
     } catch (error) {
       if (this.destroyed || sequence !== this.requestSequence) return;
-      if (preserveNote && this.notesHandle) { this.toast(errorText(error), true); return; }
-      this.cleanScreen();
       const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
       if (['NETWORK_ERROR', 'NETWORK_TIMEOUT'].includes(code) && this.options.localAccount) {
-        const local = await this.options.localAccount();
+        const local = await this.options.localAccount().catch(() => null);
         if (this.destroyed || sequence !== this.requestSequence) return;
-        if (local.accountId) {
-          this.deskAccount = local.accountId; this.desk = loadDeskPreferences(local.accountId); this.renderNavigation();
+        if (local?.accountId) {
+          const changed = this.transitionAccount(local.accountId);
+          const sameScreen = !changed && this.deskAccount === accountAtStart && this.screenSequence === screenAtStart;
+          if (sameScreen && this.appSettingsDialog?.element.open) return;
+          if (sameScreen && preserveNote && this.notesHandle) { this.toast(errorText(error), true); return; }
+          if (!changed) this.cleanScreen();
+          this.renderNavigation();
           if (location.hash.startsWith('#notes')) { const id = location.hash.split('/')[1]; this.openNotes(id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined, false); return; }
           if (/^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) {
             const accountId = this.deskAccount, screen = this.screenSequence, route = location.hash;
@@ -209,14 +219,44 @@ class WorldApplication {
           this.main.replaceChildren(emptyState('Можно продолжать записывать', 'Сервер пока недоступен. Черновики этого аккаунта сохранены на устройстве.', button('Открыть записки', 'list', 'sw-button-primary', () => this.openNotes())), button('Повторить подключение', 'refresh', 'sw-button-quiet', () => { void this.refresh(); })); return;
         }
       }
+      // Missing, revoked or unverifiable identity cannot retain a private UI.
+      // Local durable notes/commands are not deleted; a later valid login may reopen them.
+      if (!this.transitionAccount(null)) this.cleanScreen();
+      this.renderNavigation();
       const box = emptyState('Соты ждут вас', errorText(error), button('Повторить', 'refresh', 'sw-button-primary', () => { this.main.replaceChildren(this.loading('Подключаемся')); void this.refresh(); }));
       box.append(button('Мой аккаунт', 'person', 'sw-button-quiet', () => this.runHook(this.options.openAccount)));
       this.main.replaceChildren(box);
     }
   }
 
+  /** One identity boundary for authenticated, offline and invalid-account paths. */
+  private transitionAccount(accountId: string | null): boolean {
+    const next = typeof accountId === 'string' && accountId.trim() ? accountId : '';
+    if (next === this.deskAccount) return false;
+    this.deskAccount = next; this.accountGeneration++; this.homeRequest++;
+    this.cleanScreen(); for (const dialog of [...this.dialogs]) dialog.close();
+    this.profile = null; this.communities = []; this.apps = []; this.devices = []; this.homeNotes = null;
+    this.group = null; this.selected = null; this.selectedChat = undefined; this.groupReturn = 'mine'; this.groupTab = 'about';
+    this.homeState.slots.clear(); this.homeState.scroll = 0; this.homeState.fieldX = 0; this.homeState.fieldY = 0;
+    this.homeState.communityId = null; this.homeState.focusId = null; this.homeState.focusControl = null; this.homeState.lens = 'all';
+    this.desk = next ? loadDeskPreferences(next) : { favorites: [], recent: [] };
+    this.homeState.pinned = new Set(this.desk.pinnedApps ?? []);
+    this.homeStatus = { devices: 'loading', apps: 'loading', communities: 'loading', notes: 'loading' };
+    this.fieldState = createHexFieldState(); this.discoveryScope = ''; this.discoveryPages = [null]; this.discoveryStatus = 'loading'; this.query = ''; this.kind = 'all';
+    this.results = { people: [], communities: [], nextCursor: null, totals: { people: 0, communities: 0 } };
+    this.routeLoaded = false; this.noteActionPending = false; this.visibilityOpen = false;
+    if (this.searchTimer) clearTimeout(this.searchTimer); this.searchTimer = null;
+    if (this.toastTimer) clearTimeout(this.toastTimer); this.toastTimer = null; this.root.querySelector('.sw-toast')?.remove();
+    this.main.replaceChildren(); this.avatars.setContext(); this.renderNavigation(); return true;
+  }
+
+  private accountTask(): () => boolean {
+    const accountId = this.deskAccount, generation = this.accountGeneration;
+    return () => !this.destroyed && Boolean(accountId) && accountId === this.deskAccount && generation === this.accountGeneration;
+  }
+
   private loading(label: string): HTMLElement { const node = el('div', 'sw-loading'); node.append(el('span', '', label)); return node; }
-  private cleanScreen(): void { this.screenSequence++; this.appLauncher?.dispose(); this.appLauncher = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; }
+  private cleanScreen(): void { this.screenSequence++; this.appSettingsDialog?.close(); this.appSettingsDialog = null; this.appSettingsRouteClose = null; this.appLauncher?.dispose(); this.appLauncher = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; }
   private screenHasUnsavedChanges(): boolean { return !!(this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.()]); }
   private persist(): void { savePreferences(this.preferences); }
@@ -320,6 +360,16 @@ class WorldApplication {
 
   private async openRoute(): Promise<boolean> {
     if (this.destroyed || (!this.profile && !this.deskAccount)) return false;
+    if (this.appSettingsDialog?.element.open && this.appSettingsRouteClose) {
+      if (location.hash !== this.activeRoute) {
+        const accountId = this.deskAccount, sequence = this.screenSequence;
+        // Keep both the requested history entry and the current form. A
+        // confirmed close goes back to that entry; cancelling keeps the form.
+        history.pushState({ soty: true }, '', this.activeRoute);
+        this.appSettingsRouteClose(() => { if (!this.destroyed && this.deskAccount === accountId && this.screenSequence === sequence) history.back(); });
+      }
+      return true;
+    }
     if (this.screenHasUnsavedChanges()) {
       const accountId = this.deskAccount, sequence = this.screenSequence;
       await this.flushScreen().catch(() => {});
@@ -340,9 +390,9 @@ class WorldApplication {
       }
       // Canonicalize only the shell route, never a server-issued ticket URL.
       history.replaceState({ soty: true }, '', `#${intent.route}`);
-      const known = intent.kind === 'app' ? this.apps.find(value => value.appId === intent.target.appId) : undefined;
+      const known = this.apps.find(value => value.appId === intent.target.appId);
       const app = known ?? { appId: intent.target.appId, name: 'Приложение', status: 'unknown' };
-      await this.openApplication(app, intent, intent.kind === 'app' && !known); return true;
+      await this.openApplication(app, intent, !known); return true;
     }
     if (route === 'notes') { this.openNotes(id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined, false); return true; }
     if (route === 'messages') { this.navigate('messages', id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined); return true; }
@@ -779,7 +829,7 @@ class WorldApplication {
   }
 
   private async loadPersonal(only?: HomeSection): Promise<void> {
-    const sequence = this.screenSequence, request = ++this.homeRequest;
+    const sequence = this.screenSequence, request = ++this.homeRequest, accountCurrent = this.accountTask();
     const sections: HomeSection[] = ['devices', 'apps', 'communities', 'notes'];
     const includes = (section: HomeSection): boolean => !only || only === section;
     for (const section of sections) if (includes(section)) this.homeStatus[section] = 'loading';
@@ -788,9 +838,9 @@ class WorldApplication {
       includes('devices') ? this.options.listDevices ? this.options.listDevices() : this.api.request<{ devices: DeviceProjection[] }>('apps.devices', {}).then(result => result.devices.map(item => ({ deviceId: item.hostDeviceId, label: item.name, state: item.online ? 'online' : 'offline' }))) : Promise.resolve(this.devices),
       includes('apps') ? this.loadApps() : Promise.resolve(this.apps),
       includes('communities') ? this.api.request<{ communities: WorldCommunity[] }>('world.community.list', {}) : Promise.resolve({ communities: this.communities }),
-      includes('notes') ? this.api.request<{ notes: HomeNote[] }>('notes.list', { expectedAccountId: this.profile?.profileId, bucket: 'active', limit: 3 }) : Promise.resolve({ notes: this.homeNotes }),
+      includes('notes') ? this.api.request<{ notes: HomeNote[] }>('notes.list', { expectedAccountId: this.deskAccount, bucket: 'active', limit: 3 }) : Promise.resolve({ notes: this.homeNotes }),
     ]);
-    if (this.destroyed || request !== this.homeRequest || this.view !== 'mine' || sequence !== this.screenSequence || this.group) return;
+    if (!accountCurrent() || request !== this.homeRequest || this.view !== 'mine' || sequence !== this.screenSequence || this.group) return;
     sections.forEach((section, index) => { if (includes(section)) this.homeStatus[section] = results[index]?.status === 'fulfilled' ? 'ready' : 'error'; });
     const devices = results[0]; const apps = results[1];
     if (devices.status === 'fulfilled') this.devices = devices.value;
@@ -848,17 +898,19 @@ class WorldApplication {
 
   private openResources(kind: 'all' | 'apps' | 'devices' = 'all'): void {
     const dialog = this.dialog(kind === 'apps' ? 'Приложения' : kind === 'devices' ? 'Устройства' : 'Мои подключения'); const list = el('div', 'sw-stack'); dialog.body.append(list, this.loading('Проверяем доступ'));
+    const accountCurrent = this.accountTask(), sequence = this.screenSequence;
+    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && dialog.element.open && dialog.element.isConnected;
     void Promise.all([
       kind === 'devices' ? Promise.resolve(this.apps) : this.loadApps(),
       kind === 'apps' ? Promise.resolve(this.devices) : this.options.listDevices ? this.options.listDevices() : this.api.request<{ devices: DeviceProjection[] }>('apps.devices').then(result => result.devices.map(item => ({ deviceId: item.hostDeviceId, label: item.name, state: item.online ? 'online' : 'offline' }))),
     ]).then(([apps, devices]) => {
-      if (!dialog.element.isConnected || this.destroyed) return;
+      if (!current()) return;
       if (kind !== 'devices') this.apps = apps;
       if (kind !== 'apps') this.devices = devices;
       dialog.body.replaceChildren(list);
       if (kind !== 'devices') { list.append(el('h3', '', 'Приложения')); for (const app of apps) list.append(button(app.name, 'grid', 'sw-button-large', () => { dialog.close(); void this.openApplication(app); })); list.append(button('Добавить приложение', 'plus', 'sw-button-quiet', () => { dialog.close(); this.openAddApp(); })); }
       if (kind !== 'apps') { list.append(el('h3', '', 'Устройства')); for (const device of devices) list.append(button(`${device.label} · ${device.state === 'online' ? 'В сети' : 'Не в сети'}`, 'laptop', 'sw-button-large', () => { dialog.close(); this.openDevice(device); })); list.append(button('Подключить устройство', 'plus', 'sw-button-quiet', () => { dialog.close(); this.runHook(this.options.connectDevice); })); }
-    }).catch(error => { if (dialog.element.isConnected) dialog.body.replaceChildren(el('p', 'sw-muted', errorText(error))); });
+    }).catch(error => { if (current()) dialog.body.replaceChildren(el('p', 'sw-muted', errorText(error))); });
   }
 
   private openCapability(id: CapabilityId): void {
@@ -965,15 +1017,21 @@ class WorldApplication {
   private appStateLabel(status: string): string { return appStatusLabel(status); }
 
   private async loadApps(communityId?: string): Promise<WorldAppRecord[]> {
-    if (this.options.listApps) return this.options.listApps(communityId);
-    const response = await this.api.request<{ apps: AppProjection[] }>('apps.list', communityId ? { communityId } : {});
-    return response.apps.map(app => ({ appId: app.id, name: app.name, deviceId: app.hostDeviceId, status: app.state, ownerAccountId: app.ownerAccountId, ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants, audience: app.grants.communityIds.length ? 'Сообществу' : app.grants.accountIds.length ? 'Выбранным людям' : 'Только вам' } : {}) }));
+    const current = this.accountTask(), accountId = this.deskAccount;
+    if (!current()) throw Object.assign(new Error('No current account'), { code: 'authentication_required' });
+    const apps = this.options.listApps ? await this.options.listApps(communityId)
+      : (await this.api.request<{ apps: AppProjection[] }>('apps.list', { ...(communityId ? { communityId } : {}), expectedAccountId: accountId })).apps
+        .map(app => ({ appId: app.id, name: app.name, deviceId: app.hostDeviceId, status: app.state, ownerAccountId: app.ownerAccountId, ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants, audience: app.grants.communityIds.length ? 'Сообществу' : app.grants.accountIds.length ? 'Выбранным людям' : 'Только вам' } : {}) }));
+    if (!current()) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
+    return apps;
   }
 
   private async renderApps(parent: HTMLElement, group: WorldCommunity): Promise<void> {
     parent.replaceChildren(this.loading('Загружаем приложения'));
+    const accountCurrent = this.accountTask(), sequence = this.screenSequence;
+    const current = (): boolean => accountCurrent() && sequence === this.screenSequence && parent.isConnected;
     try {
-      const apps = await this.loadApps(group.communityId); if (!parent.isConnected || this.destroyed) return;
+      const apps = await this.loadApps(group.communityId); if (!current()) return;
       const stack = el('div', 'sw-stack');
       if (!apps.length) stack.append(emptyState('Что будем делать вместе?', group.permissions.canModerate ? 'Добавьте приложение со своего компьютера или создайте новое с ИИ.' : 'Здесь появятся приложения, которыми поделятся организаторы.', undefined, 'grid'));
       else {
@@ -988,7 +1046,7 @@ class WorldApplication {
       }
       if (group.membership?.state === 'active' && group.permissions.canModerate) { const actions = el('div', 'sw-row'); actions.append(button('Добавить приложение', 'plus', 'sw-button-primary', () => this.openAddApp(group.communityId)), button('Создать с ИИ', 'sparkle', '', () => this.runHook(() => this.options.agentCreate(group.communityId)))); stack.append(actions); }
       parent.replaceChildren(stack);
-    } catch (error) { if (parent.isConnected) parent.replaceChildren(emptyState('Приложения пока недоступны', errorText(error), button('Повторить', 'refresh', 'sw-button-quiet', () => { void this.renderApps(parent, group); }), 'grid')); }
+    } catch (error) { if (current()) parent.replaceChildren(emptyState('Приложения пока недоступны', errorText(error), button('Повторить', 'refresh', 'sw-button-quiet', () => { void this.renderApps(parent, group); }), 'grid')); }
   }
 
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
@@ -1056,7 +1114,7 @@ class WorldApplication {
       app = value; metadataReady = true; name.textContent = app.name;
       subtitle.textContent = app.deviceLabel ? `На устройстве «${app.deviceLabel}»` : 'Приложение в Сотах';
       const frame = content.querySelector('iframe'); if (frame) frame.title = app.name;
-      if (app.ownerAccountId === accountId && !settings) { settings = iconButton('Название и доступ к приложению', 'settings', () => this.openAppSettings(app, reopen)); header.insertBefore(settings, actions); }
+      if (app.ownerAccountId === accountId && !settings) { settings = iconButton('Название и доступ к приложению', 'settings', () => this.openAppSettings(app, applyMetadata)); header.insertBefore(settings, actions); }
       if (launchIntent.kind === 'app' && !launchIntent.target.path) this.remember(launchIntent.route, app.name, 'grid');
     };
     const mountContext = (group: WorldCommunity): void => {
@@ -1071,7 +1129,10 @@ class WorldApplication {
       appTab.addEventListener('click', () => select(false)); chatTab.addEventListener('click', () => select(true)); appTab.setAttribute('aria-pressed', 'true'); chatTab.setAttribute('aria-pressed', 'false'); mobile.append(appTab, chatTab);
       context.append(mobile); together.prepend(context); together.append(conversation); together.classList.remove('is-pending-context'); this.mountChat(conversation, group, true);
     };
-    if (metadataReady && launchIntent.kind === 'app') applyMetadata(app);
+    if (metadataReady) applyMetadata(app);
+    // Connect serializes requests: enqueue admission before optional chat and
+    // catalogue reads, so a slow metadata response cannot hold the app closed.
+    const launchPromise = launcher.launch();
     if (knownGroup) mountContext(knownGroup);
     else if (communityId) void this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId })
       .then(result => { if (launcher.isCurrent()) mountContext(result.community); }).catch(() => { /* The launch does not grant or depend on chat access. */ });
@@ -1079,7 +1140,7 @@ class WorldApplication {
       if (!launcher.isCurrent()) return; const found = apps.find(value => value.appId === launchIntent.target.appId); if (found) applyMetadata(found);
     }).catch(() => { /* Optional catalog metadata is never a prerequisite for launching. */ });
     try {
-      const url = await launcher.launch();
+      const url = await launchPromise;
       if (!url || !launcher.isCurrent()) return;
       const frame = el('iframe', 'sw-app-frame'); frame.src = url; frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin'); frame.referrerPolicy = 'no-referrer';
       // The boot page reports its own session check. Inserting a frame is not "ready".
@@ -1093,6 +1154,7 @@ class WorldApplication {
 
   private appLaunchFailure(error: unknown): { title: string; detail: string } {
     const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
+    if (code === 'ACTIVE_PROFILE_CHANGED') return { title: 'Аккаунт изменился', detail: 'Ссылка сохранена. Выберите нужный аккаунт и откройте приложение ещё раз.' };
     if (code === 'app_offline') return { title: 'Устройство не в сети', detail: 'Ссылка сохранена. Попробуйте снова, когда устройство подключится.' };
     if (['apps_access_denied', 'app_access_revoked', 'authentication_required'].includes(code)) return { title: 'Доступ пока закрыт', detail: 'Выберите другой аккаунт или попросите владельца открыть доступ.' };
     if (['apps_launch_busy', 'apps_sessions_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже. Ссылка сохранена.' };
@@ -1122,30 +1184,51 @@ class WorldApplication {
     }).catch(error => { if (dialog.element.open) dialog.body.replaceChildren(el('div', 'sw-error', errorText(error))); });
   }
 
-  private openAppSettings(app: WorldAppRecord, reopen?: () => void): void {
-    const dialog = this.dialog('Настроить приложение'); const form = el('form');
-    const name = textInput(app.name, 'Название', 64); name.required = true;
-    const audience = el('div', 'sw-app-grants'); audience.setAttribute('role', 'group'); audience.setAttribute('aria-label', 'Сообщества с доступом');
-    const selectedGroups = new Set(app.grants?.communityIds ?? []);
-    const available = this.communities.filter(group => group.permissions.canModerate && group.membership?.state === 'active');
-    const groupNames = new Map(available.map(group => [group.communityId, group.name]));
-    for (const id of selectedGroups) if (!groupNames.has(id)) groupNames.set(id, this.communities.find(group => group.communityId === id)?.name ?? 'Ранее выбранное сообщество');
-    for (const [id, title] of groupNames) {
-      const label = el('label', 'sw-grant-choice'); const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = selectedGroups.has(id);
-      checkbox.addEventListener('change', () => { if (checkbox.checked) selectedGroups.add(id); else selectedGroups.delete(id); }); label.append(checkbox, el('span', '', title)); audience.append(label);
-    }
-    audience.append(el('small', 'sw-muted', groupNames.size ? 'Без отметок — только вам. Можно выбрать несколько групп.' : 'Пока доступно только вам.'));
-    if (app.grants?.accountIds.length) audience.append(el('small', 'sw-muted', 'Доступ выбранных контактов сохранится.'));
-    const accessField = el('fieldset', 'sw-field sw-app-access'); accessField.append(el('legend', 'sw-field-label', 'Кому открыть'), audience, el('small', 'sw-muted', 'Доступ к приложению не даёт доступ ко всему компьютеру.'));
-    const error = el('div', 'sw-error'); error.setAttribute('role', 'alert');
-    const save = button('Сохранить доступ', 'check', 'sw-button-primary'); save.type = 'submit';
-    form.append(labeledField('Название', name), accessField, error, save);
-    form.addEventListener('submit', event => {
-      event.preventDefault(); if (!form.reportValidity()) return; save.disabled = true;
-      const submittedName = name.value.trim(), grants = { accountIds: app.grants?.accountIds ?? [], communityIds: [...selectedGroups] }, sequence = this.screenSequence;
-      void this.api.request('apps.update', { appId: app.appId, name: submittedName, grants }).then(() => { app.name = submittedName; app.grants = grants; const sameScreen = !this.destroyed && sequence === this.screenSequence && dialog.element.open; dialog.close(); if (this.destroyed) return; this.toast('Название и доступ сохранены'); if (sameScreen) { if (reopen) reopen(); else void this.openApplication(app); } }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
+  private openAppSettings(app: WorldAppRecord, onUpdated?: (app: WorldAppRecord) => void): void {
+    const accountId = this.deskAccount, sequence = this.screenSequence;
+    if (this.destroyed || !accountId) return;
+    this.appSettingsDialog?.close();
+    const dialog = this.dialog('Настройки приложения'); this.appSettingsDialog = dialog;
+    dialog.element.classList.add('sw-app-settings-dialog');
+    let changed = false, previewing = false;
+    const isCurrent = (): boolean => !this.destroyed && this.deskAccount === accountId && this.screenSequence === sequence && dialog.element.open;
+    const handle = mountAppSettings({ host: dialog.body, accountId, appId: app.appId, api: this.api, communities: [...this.communities], isCurrent,
+      onChanged: snapshot => {
+        if (!isCurrent()) return;
+        const before = JSON.stringify([app.name, app.grants, app.status, app.audience]);
+        app = { ...app, name: snapshot.app.name, grants: snapshot.app.grants,
+          status: snapshot.app.state === 'revoked' ? 'revoked' : app.status,
+          audience: snapshot.publication.launchPolicy === 'anyone' ? 'Доступ по активным ссылкам' : snapshot.app.grants.communityIds.length ? 'Доступно выбранным сообществам' : snapshot.app.grants.accountIds.length ? 'Доступно выбранным людям' : 'Личное приложение' };
+        changed ||= before !== JSON.stringify([app.name, app.grants, app.status, app.audience]);
+        this.apps = this.apps.map(value => value.appId === app.appId ? { ...value, ...app } : value);
+        // Updating metadata must not recreate the running iframe or its chat.
+        onUpdated?.(app);
+      },
+      onPreview: target => {
+        if (!isCurrent()) return;
+        const route = formatAppLaunchRoute({ appId: app.appId, ...target });
+        const parsed = parseAppLaunchRoute(route); if (!parsed) return;
+        // The permanent exact-domain route carries no chat authority. Keep the
+        // already-open community as local context for this deliberate preview.
+        const intent = this.group?.membership?.state === 'active' ? { ...parsed, communityId: this.group.communityId } : parsed;
+        previewing = true; dialog.close(); void this.openApplication(app, intent);
+      },
+      onClose: () => dialog.close(),
     });
-    dialog.body.append(form, el('hr', 'sw-rule'), button('Закрыть приложение в Сотах', 'lock', 'sw-button-quiet sw-button-danger sw-button-wide', () => this.confirmAction('Закрыть доступ к приложению?', 'Сота станет недоступна всем участникам. Сам проект останется на компьютере.', 'Закрыть доступ', async () => { await this.api.request('apps.revoke', { appId: app.appId }); dialog.close(); this.toast('Доступ к приложению закрыт'); this.navigate('mine'); })));
+    this.appSettingsRouteClose = resume => handle.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : undefined, resume);
+    const close = dialog.element.querySelector<HTMLButtonElement>('.sw-dialog-header button');
+    close?.addEventListener('click', event => { event.preventDefault(); event.stopImmediatePropagation(); handle.requestClose(close); }, { capture: true });
+    dialog.element.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault(); event.stopPropagation();
+      handle.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : close ?? undefined);
+    });
+    dialog.element.addEventListener('cancel', event => { event.preventDefault(); handle.requestClose(document.activeElement instanceof HTMLElement ? document.activeElement : close ?? undefined); });
+    dialog.element.addEventListener('close', () => {
+      handle.dispose(); if (this.appSettingsDialog === dialog) { this.appSettingsDialog = null; this.appSettingsRouteClose = null; }
+      if (!changed || previewing || this.destroyed || this.deskAccount !== accountId || this.screenSequence !== sequence || onUpdated) return;
+      if (this.group && this.groupTab === 'apps') this.renderGroup(); else if (this.view === 'mine' && !this.group && !this.appLauncher) this.renderPersonal();
+    }, { once: true });
   }
 
   private openVisibility(): void {

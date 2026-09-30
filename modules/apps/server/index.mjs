@@ -3,15 +3,17 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
-import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, cleanGrants, connectorKey, cleanHeaders, createWebSocketLimiter, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
+import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, runtimePath, cleanGrants, connectorKey, cleanHeaders, createWebSocketLimiter, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
 import { migrateAppsSchema, inspectAppsSchema } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
 import { createHostClassifier } from './hosts.mjs';
 import { renderBootPage, renderStatusPage } from './runtime-pages.mjs';
+import { describeSourceObservation } from './source-observation.mjs';
+import { createAppInspection } from './inspection.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', ...domainOperations, ...publicationOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.inspect', ...domainOperations, ...publicationOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -41,10 +43,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins] });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
+  let inspection;
+  try {
+    inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, now,
+      shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
+  } catch (error) { db.close(); throw error; }
   const wss = new WebSocketServer({ noServer: true, maxPayload: FRAME_BYTES, perMessageDeflate: false });
   let closed = false;
   const row = id => db.prepare('SELECT * FROM local_apps WHERE id=?').get(id);
   const binding = key => db.prepare('SELECT * FROM app_devices WHERE connector_key=?').get(key);
+  const activeTarget = id => db.prepare(`SELECT t.* FROM app_publications p
+    JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
+    WHERE p.app_id=?`).get(id);
   function assertActor(actor) {
     assertApps(actor && textId(actor.accountId) && textId(actor.deviceId) && actorActive(actor) === true, 'apps_authentication_required', 401);
   }
@@ -74,12 +84,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return matches.find(item => !item.connectorId.endsWith(':machine')) || matches[0];
   }
   function publicApp(app, actor) {
-    const device = binding(app.connector_key), channel = channels.get(app.connector_key);
-    const observed = channel?.observations.get(app.id);
-    const state = app.state === 'revoked' ? 'revoked' : !channel ? 'offline' : observed?.state || 'starting';
+    const target = activeTarget(app.id);
+    assertApps(target?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
+    const device = binding(target.connector_key);
+    assertApps(device?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
+    const observed = inspectSource({ app, target: { connectorKey: target.connector_key, revision: target.revision, digest: target.digest } });
+    const legacyState = { offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' };
+    const state = app.state === 'revoked' ? 'revoked' : legacyState[observed.state];
     return { id: app.id, name: app.name, ownerAccountId: app.owner_account_id, hostDeviceId: JSON.parse(device.identity_json).hostDeviceId,
       state, createdAt: app.created_at, updatedAt: app.updated_at,
-      ...(actor.accountId === app.owner_account_id ? { connectorId: JSON.parse(device.identity_json).connectorId, port: app.port, entryPath: app.entry_path, grants: JSON.parse(app.grants_json) } : {}) };
+      ...(actor.accountId === app.owner_account_id ? { connectorId: JSON.parse(device.identity_json).connectorId, port: target.port, entryPath: target.entry_path, grants: JSON.parse(app.grants_json) } : {}) };
+  }
+  function inspectSource({ app, target }) {
+    if (app.state !== 'enabled') return describeSourceObservation({ connected: true, now: now() });
+    const channel = channels.get(target.connectorKey), candidate = channel?.observations.get(app.id);
+    const observed = candidate?.targetRevision === target.revision && candidate?.targetDigest === target.digest ? candidate : undefined;
+    return describeSourceObservation({ connected: Boolean(channel), observed, now: now() });
   }
   function closeStream(stream, error = 'app_stream_closed', notify = true) {
     if (stream.closed) return;
@@ -166,6 +186,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }
     if (domainOperations.has(op)) return domains.execute({ actor, op, args });
     if (publicationOperations.has(op)) return publications.execute({ actor, op, args });
+    if (op === 'apps.inspect') return inspection.read(actor, args);
     if (op === 'apps.devices') {
       exact(args, []);
       return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(item => {
@@ -248,14 +269,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       });
       invalidateAccess({ appId: id }); sync(channels.get(revoked.connector_key)); return { app: publicApp(row(id), actor) };
     }
-    exact(args, ['appId', 'name', 'grants']);
+    exact(args, ['appId', 'name', 'grants', 'expectedRevision']);
+    if (args.expectedRevision !== undefined) assertApps(Number.isSafeInteger(args.expectedRevision) && args.expectedRevision >= 1, 'invalid_app_revision');
     const requestedName = args.name === undefined ? undefined : appName(args.name), requestedGrants = args.grants === undefined ? undefined : cleanGrants(args.grants);
     transaction(() => {
       assertActor(actor); const current = row(id);
       assertApps(current && current.owner_account_id === actor.accountId, 'apps_owner_required', 403);
       assertApps(current.state === 'enabled', 'app_revoked', 409);
+      assertApps(args.expectedRevision === undefined || current.revision === args.expectedRevision, 'app_revision_conflict', 409);
       const grants = requestedGrants ?? JSON.parse(current.grants_json);
-      assertGrants(actor, grants);
+      // A name-only change preserves existing grants, including grants that
+      // have become ineffective after a community role change.
+      if (requestedGrants !== undefined) assertGrants(actor, grants);
       const grantsChanged = requestedGrants !== undefined && JSON.stringify(cleanGrants(JSON.parse(current.grants_json))) !== JSON.stringify(requestedGrants);
       db.prepare('UPDATE local_apps SET name=?,grants_json=?,revision=revision+1,updated_at=? WHERE id=?')
         .run(requestedName ?? current.name, requestedGrants === undefined ? current.grants_json : JSON.stringify(grants), now(), id);
@@ -512,8 +537,12 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           send(channel, { type: 'claim-ready', claimDigest: frame.claimDigest }); return;
         }
         if (frame.type === 'observation') {
-          const app = row(appId(frame.appId)); assertApps(app?.connector_key === channel.key && ['ready', 'stopped'].includes(frame.state), 'app_bad_observation');
-          channel.observations.set(app.id, { state: frame.state, at: now() }); return;
+          const app = row(appId(frame.appId)), target = app && activeTarget(app.id);
+          assertApps(target?.connector_key === channel.key && ['ready', 'stopped'].includes(frame.state), 'app_bad_observation');
+          if (app.state !== 'enabled') return;
+          // These pins associate a legacy report with current configuration;
+          // they are not an acknowledgement or attestation from connector v1.
+          channel.observations.set(app.id, { state: frame.state, at: now(), targetRevision: target.revision, targetDigest: target.digest }); return;
         }
         stream = channel.streams.get(frame.id); if (!stream) return;
         checkStream(stream);
@@ -586,14 +615,6 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   };
 }
 function exact(value, allowed) { assertApps(Object.keys(value).every(key => allowed.includes(key)), 'unexpected_argument'); }
-function runtimePath(value) {
-  const path = requestPath(value);
-  const decoded = decodeURIComponent(new URL(path, 'https://runtime.invalid').pathname);
-  const normalized = new URL(decodeURIComponent(path.split('?', 1)[0]), 'https://runtime.invalid').pathname;
-  assertApps(!decoded.startsWith('//') && !normalized.startsWith('//'), 'invalid_app_path');
-  assertApps(![decoded, normalized].some(value => value.startsWith('/_soty/') || value === '/_soty'), 'app_reserved_path', 404);
-  return path;
-}
 function assertOrigin(req, origin, required) {
   assertApps(headerCount(req, 'origin') <= 1 && (req.headers.origin === origin || (!required && req.headers.origin === undefined)), 'app_origin_denied', 403);
 }

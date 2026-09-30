@@ -19,7 +19,15 @@ export function createDialog(title: string, onClose?: () => void): WorldDialog {
   }, { once: true });
   dialog.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
-    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button, input, textarea, select, a[href], [tabindex]')).filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && !node.closest('[hidden]') && node.getClientRects().length > 0);
+    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button, input, textarea, select, summary, a[href], [tabindex]')).filter(node => {
+      if (node.tabIndex < 0 || node.matches(':disabled') || node.closest('[hidden]') || !node.getClientRects().length) return false;
+      // Collapsed details can retain layout boxes for their hidden content.
+      // Only the first direct summary remains in the native tab sequence.
+      for (let parent = node.parentElement; parent && parent !== dialog; parent = parent.parentElement) {
+        if (parent.tagName === 'DETAILS' && !parent.hasAttribute('open') && !parent.querySelector(':scope > summary')?.contains(node)) return false;
+      }
+      return true;
+    });
     const first = controls[0], last = controls.at(-1);
     if (!first || !last) { event.preventDefault(); return; }
     if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
@@ -43,6 +51,7 @@ export function switchControl(label: string, checked: boolean, change: (next: bo
 export function errorText(error: unknown): string {
   const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
   const messages: Record<string, string> = {
+    ACTIVE_PROFILE_CHANGED: 'Аккаунт изменился. Проверьте выбранный аккаунт и повторите действие.',
     world_revision_conflict: 'Данные изменились. Обновите и повторите действие.',
     revision_conflict: 'Данные изменились. Обновите и повторите действие.',
     community_membership_required: 'Доступ к этому сообществу закрыт. Вернитесь в общий мир.',

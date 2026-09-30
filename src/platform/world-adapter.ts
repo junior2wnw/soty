@@ -1,6 +1,6 @@
 import { accountClient, observeAccount } from '../core/connect-client';
 import { mountWorldApp, type WorldAppHandle } from '../world/app';
-import type { WorldProfile } from '../world/types';
+import type { WorldAppOptions, WorldProfile } from '../world/types';
 import { createAppActions } from './local-apps';
 import { mountAssistant } from './assistant';
 
@@ -36,7 +36,7 @@ export async function startWorld(root: HTMLElement): Promise<void> {
     else panel.close();
     await refresh();
   };
-  const options = { api: { request: <T>(method: string, args?: Record<string, unknown>) => accountClient.extension<T>(method, args ?? {}) },
+  const options: Omit<WorldAppOptions, 'api' | 'requestContact'> = {
     localAccount: async () => { const state = await accountClient.getLocalState(); return { accountId: state.accountId ?? null, label: state.label || 'Я' }; },
     openLegacy, openAccount, connectDevice: actions.connectDevice, agentCreate: actions.agentCreate,
     openAssistant: (host: HTMLElement) => mountAssistant(host, { client: accountClient, connectDevice: actions.connectDevice,
@@ -47,12 +47,22 @@ export async function startWorld(root: HTMLElement): Promise<void> {
       const value = await response.json() as { notesCreateEnabled?: boolean; audience?: string | null };
       return { notesCreateEnabled: value.notesCreateEnabled === true, audience: typeof value.audience === 'string' ? value.audience : null };
     },
-    requestContact: async (profile: WorldProfile) => { await accountClient.extension('contacts.requestAccount', { accountId: profile.profileId }); },
   };
-  world = mountWorldApp(root, options);
+  const mount = (accountId: string | null): WorldAppHandle => {
+    // Each controller keeps its original admission context. An old callback
+    // cannot adopt a new account merely because the shared selection changed.
+    const api = { request: <T>(method: string, args?: Record<string, unknown>): Promise<T> => {
+      if (!accountId) return Promise.reject(Object.assign(new Error('No local account is selected.'), { code: 'NO_LOCAL_PROFILE' }));
+      return accountClient.extension<T>(method, args ?? {}, { expectedAccountId: accountId });
+    } };
+    return mountWorldApp(root, { ...options, api,
+      requestContact: async (profile: WorldProfile) => { await api.request('contacts.requestAccount', { accountId: profile.profileId }); },
+    });
+  };
+  world = mount(activeAccount);
   const unobserve = observeAccount(state => {
     if (state.accountId !== activeAccount) {
-      activeAccount = state.accountId; actions.resetAccount(); world.destroy(); world = mountWorldApp(root, options);
+      activeAccount = state.accountId; actions.resetAccount(); world.destroy(); world = mount(activeAccount);
     }
   });
   // A back/forward-cache entry is frozen by the browser and resumes with its DOM.

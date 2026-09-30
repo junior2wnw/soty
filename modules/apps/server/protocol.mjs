@@ -17,6 +17,16 @@ export function requestPath(value) {
   assertApps(!decoded.startsWith('//') && !/[\\\u0000-\u001f\u007f]/u.test(decoded), 'invalid_app_path');
   return value;
 }
+// Shared by admission and owner inspection. An unsafe legacy entry may still
+// be inspected/disabled, but must never become a launch or share target.
+export function runtimePath(value) {
+  const path = requestPath(value);
+  const decoded = decodeURIComponent(new URL(path, 'https://runtime.invalid').pathname);
+  const normalized = new URL(decodeURIComponent(path.split('?', 1)[0]), 'https://runtime.invalid').pathname;
+  assertApps(!decoded.startsWith('//') && !normalized.startsWith('//'), 'invalid_app_path');
+  assertApps(![decoded, normalized].some(value => value.startsWith('/_soty/') || value === '/_soty'), 'app_reserved_path', 404);
+  return path;
+}
 export function normalizeManifest(value, blocked = []) {
   assertApps(value && typeof value === 'object' && !Array.isArray(value), 'invalid_app_manifest');
   assertApps(Object.keys(value).every(key => ['schema', 'name', 'port', 'entryPath'].includes(key)) && value.schema === APPS_SCHEMA, 'invalid_app_manifest');

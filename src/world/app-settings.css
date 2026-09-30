@@ -1,0 +1,53 @@
+.sw-dialog.sw-app-settings-dialog { width: min(720px,calc(100vw - 24px)); }
+.sw-app-settings { display: flex; flex-direction: column; gap: 12px; }
+.sw-app-settings [hidden] { display: none !important; }
+.sw-app-settings-content,.sw-app-settings-aliases,.sw-app-settings-public { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.sw-app-settings .sw-button[aria-disabled=true] { opacity: .55; cursor: not-allowed; }
+.sw-app-settings .sw-input[readonly] { color: var(--sw-muted); }
+.sw-app-settings-summary { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.sw-app-settings-summary strong { display: block; overflow-wrap: anywhere; font-size: 18px; }
+.sw-app-settings-summary p { margin-top: 4px; font-size: 12px; }
+.sw-app-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sw-app-settings-actions>.sw-button { min-height: 44px; }
+.sw-app-settings-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; border-top: 1px solid var(--sw-line); padding-top: 12px; }
+.sw-app-settings-section h3 { font-size: 15px; line-height: 1.4; }
+.sw-app-settings-hint { font-size: 12px; line-height: 1.5; }
+.sw-app-settings-messages { display: flex; flex-direction: column; gap: 10px; }
+.sw-app-settings-messages:empty { display: none; }
+.sw-app-settings-notice { font-size: 13px; line-height: 1.5; }
+.sw-app-settings .sw-app-settings-inline { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+.sw-app-settings-inline>.sw-input { flex: 1 1 210px; min-width: 0; }
+.sw-app-settings-inline>.sw-button { flex: none; }
+.sw-app-settings-address { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; border: 1px solid var(--sw-line); border-radius: 12px; min-width: 0; }
+.sw-app-settings-address-main { display: flex; align-items: center; flex: 1 1 240px; gap: 10px; min-width: 0; min-height: 44px; }
+.sw-app-settings-address-main>span { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.sw-app-settings-address-main strong { font-size: 13px; overflow-wrap: anywhere; }
+.sw-app-settings-address-main strong,.sw-app-settings-url,.sw-app-settings-path { font-family: ui-monospace,SFMono-Regular,Consolas,monospace; }
+.sw-app-settings-address-actions { display: flex; gap: 4px; margin-left: auto; }
+.sw-app-settings .sw-icon-button { min-height: 44px; min-width: 44px; }
+.sw-app-settings input[type=checkbox] { width: 20px; height: 20px; flex: none; accent-color: var(--sw-focus); }
+.sw-app-settings .sw-app-settings-claim { gap: 8px; }
+.sw-app-settings-url { color: var(--sw-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.sw-app-settings-ack,.sw-app-settings-choice { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 10px 0; font-size: 13px; line-height: 1.5; }
+.sw-app-settings-ack { padding: 12px; border-radius: 12px; background: var(--sw-selected); }
+.sw-app-settings-details { border-top: 1px solid var(--sw-line); padding-top: 12px; }
+.sw-app-settings-details>summary { cursor: pointer; min-height: 44px; padding: 10px 0; font-size: 13px; font-weight: 550; }
+.sw-app-settings-details>p { font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+.sw-app-settings-add-address { border-top: 0; padding-top: 0; }
+.sw-app-settings-add-address>.sw-app-settings-hint { margin-top: 8px; }
+.sw-app-settings-source { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 8px 16px; margin: 0; font-size: 13px; }
+.sw-app-settings-source dt { color: var(--sw-muted); }
+.sw-app-settings-source dd { margin: 0; overflow-wrap: anywhere; }
+.sw-app-settings-observation { font-size: 13px; }
+.sw-app-settings-pending,.sw-app-settings-confirm { border: 1px solid var(--sw-control-border); border-radius: 12px; background: var(--sw-surface-subtle); padding: 14px; }
+.sw-app-settings-pending p,.sw-app-settings-confirm p { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .sw-dialog.sw-app-settings-dialog { width: 100%; }
+}
+@media (max-width: 480px) {
+  .sw-app-settings-actions>.sw-button { flex: 1 1 120px; }
+  .sw-app-settings-inline>.sw-button { width: 100%; }
+  .sw-app-settings-address-main { flex-basis: 100%; }
+  .sw-app-settings-source { grid-template-columns: minmax(0,1fr); gap: 3px; }
+  .sw-app-settings-source dd { margin-bottom: 8px; }
+}
