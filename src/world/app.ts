@@ -8,6 +8,7 @@ import { createChatDraftStore, readChatForward } from './chat-state.mjs';
 import { capabilities, createLibrary, loadDeskPreferences, openCommandPalette, saveDeskPreferences, type CapabilityId, type DeskPreferences } from './product';
 import { createAppsHome, appStatusLabel, type AppHomeState } from './apps-home';
 import { appTone, createApplicationCard } from './application-card';
+import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, type AppLaunchIntent } from './app-launch.mjs';
 import { createThemeController, createThemeControls, type ThemeController } from './theme/theme';
 import { getPwaController, registerUpdateGuard, watchFormEdits, type PwaState } from '../platform/pwa';
 import { AvatarHydrator, prepareAvatar } from './avatars';
@@ -61,6 +62,7 @@ class WorldApplication {
   private readonly homeState: AppHomeState = { lens: 'all', communityId: null, presentation: 'cards', scroll: 0, fieldX: 0, fieldY: 0, slots: new Map(), focusId: null, pinned: new Set() };
   private assistantHandle: WorldAssistantHandle | null = null;
   private accessHandle: WorldAssistantHandle | null = null;
+  private appLauncher: ReturnType<typeof createAppLauncher> | null = null;
   private activeRoute = location.hash || '#mine';
   private homeNotes: HomeNote[] | null = null;
   private homeRequest = 0;
@@ -173,7 +175,7 @@ class WorldApplication {
       if (!sameAccount) this.homeState.pinned = new Set(this.desk.pinnedApps ?? []);
       // Recover the authenticated shell after an offline launch without replacing the live editor.
       if (preserveNote && sameAccount && this.notesHandle) { this.routeLoaded = true; return; }
-      if (!this.routeLoaded) { this.routeLoaded = true; if (await this.openRoute()) return; }
+      if (!this.routeLoaded || /^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) { this.routeLoaded = true; if (await this.openRoute()) return; }
       if (this.group) { await this.openGroup(this.group.communityId, this.groupTab); return; }
       this.renderCurrent();
       if (this.view === 'world') await this.search();
@@ -189,6 +191,21 @@ class WorldApplication {
         if (local.accountId) {
           this.deskAccount = local.accountId; this.desk = loadDeskPreferences(local.accountId); this.renderNavigation();
           if (location.hash.startsWith('#notes')) { const id = location.hash.split('/')[1]; this.openNotes(id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined, false); return; }
+          if (/^#(?:app|launch)(?:\/|\?|$)/u.test(location.hash)) {
+            const accountId = this.deskAccount, screen = this.screenSequence, route = location.hash;
+            const current = (): boolean => !this.destroyed && this.deskAccount === accountId && this.screenSequence === screen && location.hash === route;
+            const detail = el('p', 'sw-muted'); detail.setAttribute('role', 'status');
+            const otherAccount = button('Другой аккаунт', 'person', 'sw-button-quiet', () => {
+              if (!current()) return; otherAccount.disabled = true;
+              void (async () => {
+                try { await this.options.openAccount('recovery'); if (current()) await this.refresh(); }
+                catch { if (current()) detail.textContent = 'Не удалось открыть аккаунт. Попробуйте ещё раз.'; }
+                finally { if (current()) otherAccount.disabled = false; }
+              })();
+            });
+            const box = emptyState('Приложение ждёт подключения', 'Ссылка сохранена. Подключитесь к сети и попробуйте снова.', button('Повторить', 'refresh', 'sw-button-primary', () => { if (current()) void this.refresh(); }), 'app');
+            box.append(otherAccount, detail); this.main.replaceChildren(box); return;
+          }
           this.main.replaceChildren(emptyState('Можно продолжать записывать', 'Сервер пока недоступен. Черновики этого аккаунта сохранены на устройстве.', button('Открыть записки', 'list', 'sw-button-primary', () => this.openNotes())), button('Повторить подключение', 'refresh', 'sw-button-quiet', () => { void this.refresh(); })); return;
         }
       }
@@ -199,7 +216,7 @@ class WorldApplication {
   }
 
   private loading(label: string): HTMLElement { const node = el('div', 'sw-loading'); node.append(el('span', '', label)); return node; }
-  private cleanScreen(): void { this.screenSequence++; this.live.textContent = ''; this.field?.destroy(); this.field = null; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; }
+  private cleanScreen(): void { this.screenSequence++; this.appLauncher?.dispose(); this.appLauncher = null; this.live.textContent = ''; this.field?.destroy(); this.field = null; this.homeHandle?.destroy(); this.homeHandle = null; this.notesHandle?.dispose(); this.notesHandle = null; this.assistantHandle?.dispose(); this.assistantHandle = null; this.accessHandle?.dispose(); this.accessHandle = null; this.chatCleanup?.(); this.chatCleanup = null; if (this.chatTimer) clearInterval(this.chatTimer); this.chatTimer = null; }
   private screenHasUnsavedChanges(): boolean { return !!(this.notesHandle?.hasUnsavedChanges() || this.assistantHandle?.hasUnsavedChanges?.() || this.accessHandle?.hasUnsavedChanges?.()); }
   private async flushScreen(): Promise<void> { await Promise.all([this.notesHandle?.flush(), this.assistantHandle?.flush?.(), this.accessHandle?.flush?.()]); }
   private persist(): void { savePreferences(this.preferences); }
@@ -303,23 +320,29 @@ class WorldApplication {
 
   private async openRoute(): Promise<boolean> {
     if (this.destroyed || (!this.profile && !this.deskAccount)) return false;
-    if (this.screenHasUnsavedChanges()) { await this.flushScreen().catch(() => {}); if (this.screenHasUnsavedChanges()) { history.replaceState({ soty: true }, '', this.activeRoute); this.toast('Сохраните или закройте незавершённое действие', true); return true; } }
+    if (this.screenHasUnsavedChanges()) {
+      const accountId = this.deskAccount, sequence = this.screenSequence;
+      await this.flushScreen().catch(() => {});
+      if (this.destroyed || sequence !== this.screenSequence || accountId !== this.deskAccount) return true;
+      if (this.screenHasUnsavedChanges()) { history.replaceState({ soty: true }, '', this.activeRoute); this.toast('Сохраните или закройте незавершённое действие', true); return true; }
+    }
     const fragment = location.hash.slice(1), queryAt = fragment.indexOf('?');
     const [route, id, tab] = (queryAt < 0 ? fragment : fragment.slice(0, queryAt)).split('/');
     const parameters = new URLSearchParams(queryAt < 0 ? '' : fragment.slice(queryAt + 1));
     if (route === 'community' && id && /^[A-Za-z0-9_-]{3,160}$/.test(id)) { await this.openGroup(id, ['about', 'chat', 'apps'].includes(tab ?? '') ? tab as GroupTab : 'about'); return true; }
-    if (route === 'app' && id && /^[A-Za-z0-9_-]{3,160}$/.test(id)) {
-      this.cleanScreen(); const sequence = this.screenSequence;
-      this.main.replaceChildren(this.loading('Открываем приложение'));
-      try {
-        const communityId = tab && /^[A-Za-z0-9_-]{3,160}$/.test(tab) ? tab : undefined;
-        const [apps, context] = await Promise.all([this.loadApps(communityId), communityId ? this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId }) : Promise.resolve(null)]);
-        if (this.destroyed || sequence !== this.screenSequence) return true;
-        const app = apps.find(value => value.appId === id);
-        if (app && (!communityId || context?.community.membership?.state === 'active')) { this.group = context?.community ?? null; await this.openApplication(app); return true; }
-      } catch { /* Route falls back to the private catalog when access is unavailable. */ }
-      if (this.destroyed || sequence !== this.screenSequence) return true;
-      this.toast('Приложение недоступно', true); this.navigate('mine'); return true;
+    if (route === 'app' || route === 'launch') {
+      let intent: AppLaunchIntent;
+      try { const parsed = parseAppLaunchRoute(location.hash); if (!parsed) throw new Error('Invalid application link'); intent = parsed; }
+      catch {
+        this.cleanScreen(); this.activeRoute = location.hash;
+        this.main.replaceChildren(emptyState('Ссылка на приложение повреждена', 'Попросите отправить ссылку ещё раз.', button('На главную', 'back', 'sw-button-quiet', () => this.navigate('mine')), 'link'));
+        return true;
+      }
+      // Canonicalize only the shell route, never a server-issued ticket URL.
+      history.replaceState({ soty: true }, '', `#${intent.route}`);
+      const known = intent.kind === 'app' ? this.apps.find(value => value.appId === intent.target.appId) : undefined;
+      const app = known ?? { appId: intent.target.appId, name: 'Приложение', status: 'unknown' };
+      await this.openApplication(app, intent, intent.kind === 'app' && !known); return true;
     }
     if (route === 'notes') { this.openNotes(id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined, false); return true; }
     if (route === 'messages') { this.navigate('messages', id && /^[A-Za-z0-9_-]{3,160}$/.test(id) ? id : undefined); return true; }
@@ -968,42 +991,113 @@ class WorldApplication {
     } catch (error) { if (parent.isConnected) parent.replaceChildren(emptyState('Приложения пока недоступны', errorText(error), button('Повторить', 'refresh', 'sw-button-quiet', () => { void this.renderApps(parent, group); }), 'grid')); }
   }
 
-  private async openApplication(app: WorldAppRecord): Promise<void> {
-    const group = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
-    this.group = group;
-    this.view = 'mine'; this.renderNavigation();
-    this.writeRoute(`app/${app.appId}${group ? `/${group.communityId}` : ''}`);
-    this.remember(`app/${app.appId}${group ? `/${group.communityId}` : ''}`, app.name, 'grid');
-    this.avatars.setContext(group?.communityId);
-    this.cleanScreen(); const sequence = this.screenSequence; const screen = el('section', 'sw-app-stage'); const header = el('header', 'sw-app-toolbar');
-    const back = iconButton('Назад', 'back', () => { if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else this.navigate('mine'); }); const title = el('div', 'sw-grow'); title.append(el('h2', '', app.name), el('p', '', app.deviceLabel ? `На устройстве «${app.deviceLabel}»` : 'Приложение в Сотах'));
-    header.append(back, this.syntheticEmblem(app.name, appTone(app), app.symbol || 'app'), title, iconButton('Обновить приложение', 'refresh', () => { void this.openApplication(app); })); screen.append(header, this.loading('Соединяем с приложением')); this.main.replaceChildren(screen);
-    if (app.ownerAccountId === this.profile?.profileId) header.append(iconButton('Название и доступ к приложению', 'settings', () => this.openAppSettings(app)));
-    if (group) {
-      const together = el('div', 'sw-together'); const context = el('div', 'sw-together-context');
+  private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
+    if (this.destroyed || !this.deskAccount) return;
+    const restoreFocus = !!document.activeElement && this.main.querySelector('.sw-app-stage')?.contains(document.activeElement) === true;
+    const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
+    const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId }, previousGroup?.communityId))!;
+    const communityId = launchIntent.communityId;
+    const knownGroup = communityId ? [previousGroup, ...this.communities].find(value => value?.communityId === communityId && value.membership?.state === 'active') ?? null : null;
+    this.group = knownGroup; this.view = 'mine'; this.renderNavigation(); this.writeRoute(launchIntent.route);
+    this.avatars.setContext(knownGroup?.communityId);
+    this.cleanScreen(); const sequence = this.screenSequence, accountId = this.deskAccount;
+    const launcher = createAppLauncher({ target: launchIntent.target, accountId, shellUrl: location.href,
+      isCurrent: expected => !this.destroyed && this.screenSequence === sequence && this.deskAccount === expected && location.hash === `#${launchIntent.route}`,
+      request: async parameters => this.options.openApp ? this.options.openApp(app, parameters)
+        : this.api.request<{ launchUrl: string }>('apps.launch', { ...parameters }).then(result => ({ url: result.launchUrl })),
+    });
+    this.appLauncher = launcher;
+    let metadataReady = !resolveMetadata, accountPending = false, contextMounted = false;
+    const screen = el('section', 'sw-app-stage'); screen.setAttribute('aria-label', 'Приложение');
+    const header = el('header', 'sw-app-toolbar'), content = el('div', 'sw-app-content');
+    const message = el('p', 'sw-app-launch-message'); message.hidden = true; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite');
+    const showMessage = (text: string): void => { if (launcher.isCurrent()) { message.textContent = text; message.hidden = !text; } };
+    const reopen = (): void => { if (launcher.isCurrent()) void this.openApplication(app, launchIntent, !metadataReady); };
+    const back = iconButton('Назад', 'back', () => { if (this.group) { this.groupTab = 'apps'; this.renderGroup(); } else this.navigate('mine'); });
+    const title = el('div', 'sw-grow sw-app-title'), name = el('h2', '', app.name), subtitle = el('p', '', app.deviceLabel ? `На устройстве «${app.deviceLabel}»` : 'Приложение в Сотах'); name.tabIndex = -1; title.append(name, subtitle);
+    const refresh = iconButton('Обновить приложение', 'refresh', reopen); refresh.disabled = true;
+    const actions = el('div', 'sw-app-launch-actions');
+    const otherAccount = button('Другой аккаунт', 'person', 'sw-button-quiet sw-app-account', () => {
+      if (!launcher.isCurrent() || accountPending) return;
+      accountPending = true; otherAccount.disabled = true; showMessage('');
+      void (async () => {
+        try {
+          await this.options.openAccount('recovery');
+          if (!launcher.isCurrent()) return;
+          await this.refresh();
+        } catch { if (launcher.isCurrent()) showMessage('Не удалось открыть аккаунт. Попробуйте ещё раз.'); }
+        finally { if (launcher.isCurrent()) { accountPending = false; otherAccount.disabled = false; } }
+      })();
+    });
+    otherAccount.setAttribute('aria-label', 'Другой аккаунт'); otherAccount.title = 'Другой аккаунт';
+    const external = button('Открыть отдельно', 'external', 'sw-button-quiet sw-app-external', () => {
+      if (!launcher.isCurrent() || external.disabled) return;
+      external.disabled = true; external.setAttribute('aria-busy', 'true'); showMessage('');
+      const label = external.querySelector('span'); if (label) label.textContent = 'Открываем…';
+      // The popup must be created synchronously in this user gesture, before the request.
+      void launcher.openExternal(() => window.open('about:blank', '_blank')).then(result => {
+        if (launcher.isCurrent() && result === 'blocked') showMessage('Разрешите новую вкладку для Сот и нажмите «Открыть отдельно» ещё раз.');
+      }).catch(error => { if (launcher.isCurrent()) { const failure = this.appLaunchFailure(error); showMessage(`${failure.title}. ${failure.detail}`); } })
+        .finally(() => { if (launcher.isCurrent()) { external.disabled = false; external.removeAttribute('aria-busy'); if (label) label.textContent = 'Открыть отдельно'; } });
+    });
+    external.title = 'Открыть приложение в отдельной вкладке';
+    actions.append(otherAccount, external);
+    header.append(back, this.syntheticEmblem(app.name, appTone(app), app.symbol || 'app'), title, refresh, actions);
+    content.append(this.loading('Соединяем с приложением')); screen.append(header, message, content);
+    // Keep the iframe in the same connected parent when optional chat metadata arrives.
+    const together = communityId ? el('div', 'sw-together is-pending-context') : null;
+    if (together) { together.append(screen); this.main.replaceChildren(together); } else this.main.replaceChildren(screen);
+    // Replacing a focused Retry/Refresh must not strand keyboard focus in the page chrome.
+    // Only this synchronous remount restores it; a late network response never moves focus.
+    if (restoreFocus && launcher.isCurrent()) name.focus({ preventScroll: true });
+    let settings: HTMLButtonElement | null = null;
+    const applyMetadata = (value: WorldAppRecord): void => {
+      if (!launcher.isCurrent()) return;
+      app = value; metadataReady = true; name.textContent = app.name;
+      subtitle.textContent = app.deviceLabel ? `На устройстве «${app.deviceLabel}»` : 'Приложение в Сотах';
+      const frame = content.querySelector('iframe'); if (frame) frame.title = app.name;
+      if (app.ownerAccountId === accountId && !settings) { settings = iconButton('Название и доступ к приложению', 'settings', () => this.openAppSettings(app, reopen)); header.insertBefore(settings, actions); }
+      if (launchIntent.kind === 'app' && !launchIntent.target.path) this.remember(launchIntent.route, app.name, 'grid');
+    };
+    const mountContext = (group: WorldCommunity): void => {
+      if (!launcher.isCurrent() || !together || contextMounted || group.communityId !== communityId || group.membership?.state !== 'active') return;
+      contextMounted = true; this.group = group; this.renderNavigation(); this.avatars.setContext(group.communityId);
+      const context = el('div', 'sw-together-context');
       const community = button(group.name, 'people', 'sw-button-quiet', () => { this.groupTab = 'apps'; this.renderGroup(); }); community.setAttribute('aria-label', `Приложения сообщества ${group.name}`); context.append(community);
-      const conversation = el('aside', 'sw-together-chat'); this.mountChat(conversation, group, true);
-      const mobile = el('div', 'sw-together-tabs'); mobile.setAttribute('role', 'group'); mobile.setAttribute('aria-label', 'Приложение и разговор'); const appTab = button('Приложение', 'app', 'is-selected'); const chatTab = button('Чат сообщества', 'chat');
+      const conversation = el('aside', 'sw-together-chat');
+      const mobile = el('div', 'sw-together-tabs'); mobile.setAttribute('role', 'group'); mobile.setAttribute('aria-label', 'Приложение и разговор');
+      const appTab = button('Приложение', 'app', 'is-selected'), chatTab = button('Чат сообщества', 'chat');
       const select = (chat: boolean): void => { together.classList.toggle('is-chat', chat); appTab.classList.toggle('is-selected', !chat); chatTab.classList.toggle('is-selected', chat); appTab.setAttribute('aria-pressed', String(!chat)); chatTab.setAttribute('aria-pressed', String(chat)); };
       appTab.addEventListener('click', () => select(false)); chatTab.addEventListener('click', () => select(true)); appTab.setAttribute('aria-pressed', 'true'); chatTab.setAttribute('aria-pressed', 'false'); mobile.append(appTab, chatTab);
-      context.append(mobile); together.append(context, screen, conversation); this.main.replaceChildren(together);
-    }
+      context.append(mobile); together.prepend(context); together.append(conversation); together.classList.remove('is-pending-context'); this.mountChat(conversation, group, true);
+    };
+    if (metadataReady && launchIntent.kind === 'app') applyMetadata(app);
+    if (knownGroup) mountContext(knownGroup);
+    else if (communityId) void this.api.request<{ community: WorldCommunity }>('world.community.get', { communityId })
+      .then(result => { if (launcher.isCurrent()) mountContext(result.community); }).catch(() => { /* The launch does not grant or depend on chat access. */ });
+    if (resolveMetadata) void this.loadApps(communityId).then(apps => {
+      if (!launcher.isCurrent()) return; const found = apps.find(value => value.appId === launchIntent.target.appId); if (found) applyMetadata(found);
+    }).catch(() => { /* Optional catalog metadata is never a prerequisite for launching. */ });
     try {
-      const launch = this.options.openApp ? await this.options.openApp(app) : await this.api.request<{ launchUrl: string }>('apps.launch', { appId: app.appId }).then(result => ({ url: result.launchUrl }));
-      if (this.destroyed || sequence !== this.screenSequence) return;
-      const url = new URL(launch.url, location.href);
-      if (!['https:', 'http:'].includes(url.protocol) || url.origin === location.origin || (location.protocol === 'https:' && url.protocol !== 'https:')) throw new Error('Invalid application origin');
-      const frame = el('iframe', 'sw-app-frame'); frame.src = url.href; frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin'); frame.referrerPolicy = 'no-referrer';
-      screen.querySelector('.sw-loading')?.remove(); screen.append(frame);
-      const external = iconButton('Открыть в отдельной вкладке', 'external', () => {
-        const destination = window.open('about:blank', '_blank'); if (!destination) { this.toast('Разрешите открытие новой вкладки для Сот', true); return; }
-        destination.opener = null;
-        const request = this.options.openApp ? this.options.openApp(app) : this.api.request<{ launchUrl: string }>('apps.launch', { appId: app.appId }).then(result => ({ url: result.launchUrl }));
-        void request.then(result => { const next = new URL(result.url, location.href); if (!['https:', 'http:'].includes(next.protocol) || next.origin === location.origin || (location.protocol === 'https:' && next.protocol !== 'https:')) throw new Error('Invalid application origin'); destination.location.replace(next.href); }).catch(error => { destination.close(); this.toast(errorText(error), true); });
-      }); header.append(external);
+      const url = await launcher.launch();
+      if (!url || !launcher.isCurrent()) return;
+      const frame = el('iframe', 'sw-app-frame'); frame.src = url; frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin'); frame.referrerPolicy = 'no-referrer';
+      // The boot page reports its own session check. Inserting a frame is not "ready".
+      content.replaceChildren(frame);
     } catch (error) {
-      if (this.destroyed || sequence !== this.screenSequence) return; screen.querySelector('.sw-loading')?.remove(); screen.append(emptyState(app.status === 'offline' ? 'Устройство не в сети' : 'Приложение пока недоступно', app.status === 'offline' ? 'Оно появится здесь, когда компьютер снова подключится.' : errorText(error), button('Попробовать снова', 'refresh', 'sw-button-primary', () => { void this.openApplication(app); }), 'laptop'));
-    }
+      if (!launcher.isCurrent()) return;
+      const failure = this.appLaunchFailure(error);
+      content.replaceChildren(emptyState(failure.title, failure.detail, button('Попробовать снова', 'refresh', 'sw-button-primary', reopen), 'app'));
+    } finally { if (launcher.isCurrent()) refresh.disabled = false; }
+  }
+
+  private appLaunchFailure(error: unknown): { title: string; detail: string } {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : error instanceof Error ? error.message : '';
+    if (code === 'app_offline') return { title: 'Устройство не в сети', detail: 'Ссылка сохранена. Попробуйте снова, когда устройство подключится.' };
+    if (['apps_access_denied', 'app_access_revoked', 'authentication_required'].includes(code)) return { title: 'Доступ пока закрыт', detail: 'Выберите другой аккаунт или попросите владельца открыть доступ.' };
+    if (['apps_launch_busy', 'apps_sessions_busy', 'app_public_capacity', 'app_capacity'].includes(code)) return { title: 'Приложение сейчас занято', detail: 'Попробуйте ещё раз немного позже. Ссылка сохранена.' };
+    if (['invalid_app_launch_url', 'invalid_app_path'].includes(code)) return { title: 'Не удалось безопасно открыть приложение', detail: 'Попробуйте получить новую ссылку.' };
+    return { title: 'Не удалось открыть приложение', detail: 'Попробуйте ещё раз. Ссылка и выбранный аккаунт сохранены.' };
   }
 
   private openAddApp(communityId?: string, selectedDevice?: string): void {
@@ -1028,7 +1122,7 @@ class WorldApplication {
     }).catch(error => { if (dialog.element.open) dialog.body.replaceChildren(el('div', 'sw-error', errorText(error))); });
   }
 
-  private openAppSettings(app: WorldAppRecord): void {
+  private openAppSettings(app: WorldAppRecord, reopen?: () => void): void {
     const dialog = this.dialog('Настроить приложение'); const form = el('form');
     const name = textInput(app.name, 'Название', 64); name.required = true;
     const audience = el('div', 'sw-app-grants'); audience.setAttribute('role', 'group'); audience.setAttribute('aria-label', 'Сообщества с доступом');
@@ -1049,7 +1143,7 @@ class WorldApplication {
     form.addEventListener('submit', event => {
       event.preventDefault(); if (!form.reportValidity()) return; save.disabled = true;
       const submittedName = name.value.trim(), grants = { accountIds: app.grants?.accountIds ?? [], communityIds: [...selectedGroups] }, sequence = this.screenSequence;
-      void this.api.request('apps.update', { appId: app.appId, name: submittedName, grants }).then(() => { app.name = submittedName; app.grants = grants; const sameScreen = !this.destroyed && sequence === this.screenSequence && dialog.element.open; dialog.close(); if (this.destroyed) return; this.toast('Название и доступ сохранены'); if (sameScreen) void this.openApplication(app); }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
+      void this.api.request('apps.update', { appId: app.appId, name: submittedName, grants }).then(() => { app.name = submittedName; app.grants = grants; const sameScreen = !this.destroyed && sequence === this.screenSequence && dialog.element.open; dialog.close(); if (this.destroyed) return; this.toast('Название и доступ сохранены'); if (sameScreen) { if (reopen) reopen(); else void this.openApplication(app); } }).catch(reason => { error.textContent = errorText(reason); }).finally(() => { save.disabled = false; });
     });
     dialog.body.append(form, el('hr', 'sw-rule'), button('Закрыть приложение в Сотах', 'lock', 'sw-button-quiet sw-button-danger sw-button-wide', () => this.confirmAction('Закрыть доступ к приложению?', 'Сота станет недоступна всем участникам. Сам проект останется на компьютере.', 'Закрыть доступ', async () => { await this.api.request('apps.revoke', { appId: app.appId }); dialog.close(); this.toast('Доступ к приложению закрыт'); this.navigate('mine'); })));
   }

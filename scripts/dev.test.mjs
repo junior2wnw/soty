@@ -67,6 +67,31 @@ test('an occupied API port fails startup and leaves the UI port free', { timeout
   const unused = await listen(ports[0]); await new Promise(resolveClose => unused.close(resolveClose));
 });
 
+test('named-apps development isolates canonical and named zones from the shell', { timeout: 35_000 }, async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'soty-dev-named-'));
+  const ports = await freePorts(3);
+  let dev;
+  t.after(async () => {
+    await dev?.close();
+    assert.equal(dirname(resolve(dataDir)), resolve(tmpdir()));
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  dev = await startDevelopment({ port: ports[0], apiPort: ports[1], connectorPort: ports[2], dataDir, namedApps: true, quiet: true });
+  const capabilities = await (await fetch(`${dev.origin}/api/apps/capabilities`)).json();
+  assert.equal(capabilities.configured, true);
+  for (const host of [`app-${'0'.repeat(32)}.legacy.localhost:${ports[1]}`, `new-app.named.localhost:${ports[1]}`]) {
+    const result = await localRequest(ports[1], host);
+    assert.equal(result.status, 404); assert.match(result.body, /app_not_found/u);
+    assert.equal(result.headers['x-frame-options'], undefined);
+  }
+  const shell = await localRequest(ports[1], `127.0.0.1:${ports[0]}`, '/health');
+  assert.equal(shell.status, 200);
+  const csp = shell.headers['content-security-policy'];
+  assert.ok(csp.includes(`http://*.legacy.localhost:${ports[1]}`), csp);
+  assert.ok(csp.includes(`http://*.named.localhost:${ports[1]}`));
+  assert.ok(!csp.includes(`http://*.localhost:${ports[1]}`));
+});
+
 function listen(port = 0) { return new Promise((resolveListen, reject) => { const server = createServer(); server.once('error', reject); server.listen(port, '127.0.0.1', () => resolveListen(server)); }); }
 async function freePorts(count) { const servers = await Promise.all(Array.from({ length: count }, () => listen())); const ports = servers.map(server => server.address().port); await Promise.all(servers.map(server => new Promise(resolveClose => server.close(resolveClose)))); return ports; }
 async function signedRpc(origin, principal, op, args) {
@@ -75,4 +100,4 @@ async function signedRpc(origin, principal, op, args) {
   const signature = sign('sha256', Buffer.from(challenge.message), { key: principal.privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url');
   return call({ protocol: 1, op, args, proof: { challengeId: challenge.challengeId, publicJwk: principal.publicKey.export({ format: 'jwk' }), signature } });
 }
-function localRequest(port, host) { return new Promise((resolveRequest, reject) => { const req = request({ hostname: '127.0.0.1', port, path: '/', headers: { Host: host } }, res => { const bytes = []; res.on('data', chunk => bytes.push(chunk)); res.on('end', () => resolveRequest({ status: res.statusCode, headers: res.headers, body: Buffer.concat(bytes).toString('utf8') })); }); req.once('error', reject); req.end(); }); }
+function localRequest(port, host, path = '/') { return new Promise((resolveRequest, reject) => { const req = request({ hostname: '127.0.0.1', port, path, headers: { Host: host } }, res => { const bytes = []; res.on('data', chunk => bytes.push(chunk)); res.on('end', () => resolveRequest({ status: res.statusCode, headers: res.headers, body: Buffer.concat(bytes).toString('utf8') })); }); req.once('error', reject); req.end(); }); }

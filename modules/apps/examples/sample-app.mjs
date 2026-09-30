@@ -29,7 +29,8 @@ export async function createSampleApp({ port = 0 } = {}) {
     if (req.url === '/redirect') { res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data/' }); res.end(); return; }
     if (req.url === '/app.js') { res.writeHead(200, { 'Content-Type': 'text/javascript' }); res.end(sampleScript); return; }
     if (req.url === '/styles.css') { res.writeHead(200, { 'Content-Type': 'text/css' }); res.end(sampleStyles); return; }
-    if (req.url !== '/') { res.writeHead(404); res.end(); return; }
+    // Keep the real query intact in requests while serving the same app shell.
+    if (new URL(req.url, 'http://localhost').pathname !== '/') { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(sampleHtml);
   });
   app.on('upgrade', (req, socket, head) => {

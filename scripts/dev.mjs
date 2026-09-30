@@ -19,7 +19,8 @@ function developmentEnvironment(options) {
   Object.assign(env, {
     NODE_ENV: 'development', HOST: '127.0.0.1', PORT: String(options.apiPort), DATA_DIR: options.dataDir,
     SOTY_DIST_DIR: join(rootDir, 'public'), SOTY_CONNECT_ORIGINS: options.origin,
-    SOTY_APP_ORIGIN_TEMPLATE: `http://{appId}.localhost:${options.apiPort}`,
+    SOTY_APP_ORIGIN_TEMPLATE: `http://{appId}.${options.namedApps ? 'legacy.' : ''}localhost:${options.apiPort}`,
+    ...(options.namedApps ? { SOTY_NAMED_APP_ZONE: `http://named.localhost:${options.apiPort}` } : {}),
     SOTY_LOCAL_CONNECTOR_PORT: String(options.connectorPort),
   });
   // Development never inherits production server credentials or database paths.
@@ -37,6 +38,7 @@ export async function startDevelopment(input = {}) {
     port: portNumber(input.port ?? 5173, 'UI port'),
     apiPort: portNumber(input.apiPort ?? 5174, 'API port'),
     connectorPort: portNumber(input.connectorPort ?? 49425, 'Connector port'),
+    namedApps: input.namedApps === true,
     dataDir: resolve(input.dataDir || join(rootDir, 'var', 'dev', 'data')),
   };
   if (!['127.0.0.1', 'localhost'].includes(options.host)) throw new Error('Development host must be 127.0.0.1 or localhost');
@@ -137,10 +139,11 @@ async function main() {
     'api-port': { type: 'string', default: process.env.SOTY_DEV_API_PORT || '5174' },
     'connector-port': { type: 'string', default: process.env.SOTY_DEV_CONNECTOR_PORT || '49425' },
     'data-dir': { type: 'string', default: process.env.SOTY_DEV_DATA_DIR || join(rootDir, 'var', 'dev', 'data') },
+    'named-apps': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) {
-    console.log('npm run dev -- [--host 127.0.0.1|localhost] [--port 5173] [--api-port 5174] [--connector-port 49425] [--data-dir path]');
+    console.log('npm run dev -- [--host 127.0.0.1|localhost] [--port 5173] [--api-port 5174] [--connector-port 49425] [--data-dir path] [--named-apps]');
     return;
   }
   let running;
@@ -148,7 +151,7 @@ async function main() {
   const stop = () => controller.abort();
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
-    running = await startDevelopment({ host: values.host, port: values.port, apiPort: values['api-port'], connectorPort: values['connector-port'], dataDir: values['data-dir'], signal: controller.signal });
+    running = await startDevelopment({ host: values.host, port: values.port, apiPort: values['api-port'], connectorPort: values['connector-port'], dataDir: values['data-dir'], namedApps: values['named-apps'], signal: controller.signal });
     const error = await running.done;
     if (error) throw error;
   } catch (error) { if (!controller.signal.aborted) throw error; }

@@ -9,6 +9,7 @@ import { createDomainRegistry, domainOperations, readNamedOrigins } from './doma
 import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
 import { createHostClassifier } from './hosts.mjs';
+import { renderBootPage, renderStatusPage } from './runtime-pages.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', ...domainOperations, ...publicationOperations]);
 const cookieName = 'soty_app_session';
@@ -88,7 +89,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (notify) send(stream.channel, { type: 'cancel', id: stream.id, error });
     if (stream.kind === 'ws') { if (error === 'app_stream_complete') stream.socket.end(); else stream.socket.destroy(); }
     else if (!stream.res.writableEnded) {
-      if (!stream.res.headersSent) respondFailure(stream.req, stream.res, error === 'app_access_revoked' ? 403 : error === 'app_offline' ? 503 : 502, error);
+      if (!stream.res.headersSent) respondAppFailure(stream.req, stream.res, error === 'app_access_revoked' ? 403 : error === 'app_offline' ? 503 : 502, error, false);
       else stream.res.destroy();
     }
   }
@@ -228,9 +229,11 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const entryPath = runtimePath(args.path ?? decision.route.entryPath);
       assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
+      const bootPath = `/_soty/boot?${new URLSearchParams({ path: entryPath })}`;
+      assertApps(bootPath.length <= 8192, 'invalid_app_path');
       const ticket = secret();
       tickets.set(digest(ticket), { decision, entryPath });
-      return { launchUrl: `${domain.origin}/_soty/boot#${ticket}`, expiresAt: decision.expiresAt };
+      return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt };
     }
     if (op === 'apps.revoke') {
       exact(args, ['appId']);
@@ -281,6 +284,43 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox");
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
   }
+  function shellUrlFor(app, path) {
+    const url = new URL('/', [...origins][0]);
+    url.hash = `launch/${app.appHost.appId}/${app.appHost.domainId}?${new URLSearchParams({ path: runtimePath(path) })}`;
+    return url.href;
+  }
+  function publicResetFor(app, path) {
+    try {
+      publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin });
+      return runtimePath(path);
+    } catch { return undefined; }
+  }
+  function respondAppFailure(req, res, status, error, canRedirect = true) {
+    let page;
+    try {
+    const app = appForRequest(req);
+    const failure = app && hostFailure(app);
+    if (failure) { setStatusPolicy(res); respondFailure(req, res, failure.status, failure.error); return; }
+    if (app?.appHost && !app.missing) {
+      let path;
+      try { path = runtimePath(req.url || '/'); } catch { /* Internal endpoints never redirect into the shell. */ }
+      if (path) {
+        const publicResetPath = publicResetFor(app, path), shellUrl = shellUrlFor(app, path);
+        page = { shellUrl, publicResetPath, frameOrigins: [...origins] };
+        const accessFailure = ['app_session_required', 'apps_access_denied', 'app_access_revoked', 'app_access_expired', 'app_access_changed', 'apps_authentication_required'].includes(error);
+        if (canRedirect && !publicResetPath && accessFailure && req.method === 'GET'
+          && req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document') {
+          res.statusCode = 302; res.setHeader('Location', shellUrl); res.setHeader('Cache-Control', 'no-store'); res.setHeader('Referrer-Policy', 'no-referrer'); res.end(); return;
+        }
+      }
+    }
+    } catch {
+      // A recovery view cannot outlive or bypass unavailable authority/storage.
+      // Fall back to a content-free status without exposing an unchecked action.
+      status = 503; error = 'app_unavailable';
+    }
+    respondFailure(req, res, status, error, page);
+  }
   function sessionFor(req, app, { requireCookie = false } = {}) {
     const name = `__Host-${cookieName}`;
     const values = String(req.headers.cookie || '').split(';').map(part => part.trim()).filter(part => part.split('=', 1)[0].trim() === name);
@@ -307,12 +347,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     assertApps(!app.missing, 'app_not_found', 404); setPolicy(res, app.appHost.origin);
     const path = requestPath(req.url || '/');
     assertOrigin(req, app.appHost.origin, !['GET', 'HEAD'].includes(req.method));
-    if (path === '/_soty/boot' && req.method === 'GET') {
+    const internalUrl = new URL(path, app.appHost.origin);
+    if (internalUrl.pathname === '/_soty/boot' && req.method === 'GET') {
+      assertApps([...internalUrl.searchParams.keys()].every(key => key === 'path') && internalUrl.searchParams.getAll('path').length <= 1, 'invalid_app_path');
+      const recoveryPath = runtimePath(internalUrl.searchParams.get('path') || '/'), nonce = pageNonce();
+      const html = renderBootPage({ nonce, shellUrl: shellUrlFor(app, recoveryPath), publicResetPath: publicResetFor(app, recoveryPath) });
+      setManagedPagePolicy(res, nonce, [...origins]);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Соты · Открываем приложение</title><body><p role="status">Открываем приложение…</p><script>const t=location.hash.slice(1);history.replaceState(null,"",location.pathname);fetch("/_soty/session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket:t})}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);location.replace(v.entryPath)}).catch(()=>{document.querySelector("p").textContent="Доступ закончился. Откройте приложение заново в Сотах."})</script></body></html>'); return;
+      res.end(html); return;
     }
     if (path === '/_soty/session' && req.method === 'GET') {
-      sessionFor(req, app, { requireCookie: true }); json(res, 200, { ok: true }); return;
+      const session = sessionFor(req, app, { requireCookie: true }), check = req.headers['x-soty-boot-check'];
+      if (check !== undefined) {
+        assertApps(headerCount(req, 'x-soty-boot-check') === 1 && typeof check === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(check)
+          && session.checkExpiresAt > now() && equalDigest(session.checkDigest, digest(check)), 'app_session_check_failed', 403);
+      }
+      json(res, 200, { ok: true, ...(check === undefined ? {} : { sessionCheck: check }) }); return;
     }
     if (path === '/_soty/session' && req.method === 'POST') {
       const body = JSON.parse((await readBounded(req, 2048)).toString('utf8'));
@@ -324,12 +374,32 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       // mint a session. A stale app row or successful launch is not authority.
       const decision = publications.recheckAccess(ticket.decision, { ttlMs: accountSessionMs });
       assertApps(sessions.size < 4096, 'apps_sessions_busy', 429);
-      const value = secret(); sessions.set(digest(value), { decision, entryPath: ticket.entryPath });
+      const value = secret(), sessionKey = digest(value), sessionCheck = secret();
+      sessions.set(sessionKey, { decision, sessionKey, entryPath: ticket.entryPath, checkDigest: digest(sessionCheck), checkExpiresAt: now() + 30_000 });
       // CHIPS keys this session by both application host and embedding site.
       // A preview embedded in Soty does not depend on unrestricted third-party
       // cookies, and cannot reuse the session from an unrelated top-level site.
       res.setHeader('Set-Cookie', `__Host-${cookieName}=${value}; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=3600`);
-      json(res, 200, { ok: true, entryPath: ticket.entryPath }); return;
+      json(res, 200, { ok: true, entryPath: ticket.entryPath, sessionCheck }); return;
+    }
+    if (path === '/_soty/session' && req.method === 'DELETE') {
+      // Reset is an explicit new anonymous entry. It never bypasses the current
+      // public policy, and cannot remove a session belonging to another address.
+      publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin });
+      const name = `__Host-${cookieName}`;
+      for (const part of String(req.headers.cookie || '').split(';')) {
+        const value = part.trim(); if (!value.startsWith(`${name}=`)) continue;
+        const token = value.slice(name.length + 1); if (!/^[A-Za-z0-9_-]{43}$/u.test(token)) continue;
+        const key = digest(token), session = sessions.get(key);
+        if (session && session.decision.appId === app.id && session.decision.domainId === app.appHost.domainId && session.decision.origin === app.appHost.origin) {
+          sessions.delete(key);
+          for (const stream of live.values()) if (stream.session.sessionKey === key) closeStream(stream, 'app_access_revoked');
+        }
+      }
+      const cleared = `${name}=; HttpOnly; Path=/; SameSite=None; Secure; Max-Age=0`;
+      res.setHeader('Set-Cookie', [`${cleared}; Partitioned`, cleared]);
+      if (!req.readableEnded) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
+      json(res, 200, { ok: true }); return;
     }
     runtimePath(path);
     const session = sessionFor(req, app);
@@ -347,14 +417,14 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     const app = appForRequest(req); if (!app) return false;
     const failure = hostFailure(app);
     if (failure) { setStatusPolicy(res); respondFailure(req, res, failure.status, failure.error); return true; }
-    void routeApp(req, res, app).catch(error => { if (!res.headersSent) respondFailure(req, res, error.status || 400, error.code || 'app_invalid_request'); else res.destroy(); }); return true;
+    void routeApp(req, res, app).catch(error => { if (!res.headersSent) respondAppFailure(req, res, error.status || 400, error.code || 'app_invalid_request'); else res.destroy(); }); return true;
   }
   function openStream(app, session, values) {
     const decision = checkAccess(session, { renewPublic: true });
     const channel = channels.get(decision.route.connectorKey); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
     assertApps(channel.streams.size < LIMITS.streams, 'app_device_busy', 429);
     if (decision.accessBasis === 'public') assertApps([...channel.streams.values()].filter(item => item.session.decision.accessBasis === 'public').length < publicStreams, 'app_device_busy', 429);
-    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, session: { decision }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
+    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, session: { decision, sessionKey: session.sessionKey }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
       ...(values.kind === 'ws' ? { requestLimiter: createWebSocketLimiter({ masked: true }), responseLimiter: createWebSocketLimiter({ masked: false }) } : {}) };
     stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), LIMITS.headMs); stream.timer.unref();
     channel.streams.set(id, stream); live.set(id, stream); return stream;
@@ -517,14 +587,21 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
 }
 function exact(value, allowed) { assertApps(Object.keys(value).every(key => allowed.includes(key)), 'unexpected_argument'); }
 function runtimePath(value) {
-  const path = requestPath(value), decoded = decodeURIComponent(new URL(path, 'https://runtime.invalid').pathname);
-  assertApps(!decoded.startsWith('/_soty/') && decoded !== '/_soty', 'app_reserved_path', 404);
+  const path = requestPath(value);
+  const decoded = decodeURIComponent(new URL(path, 'https://runtime.invalid').pathname);
+  const normalized = new URL(decodeURIComponent(path.split('?', 1)[0]), 'https://runtime.invalid').pathname;
+  assertApps(!decoded.startsWith('//') && !normalized.startsWith('//'), 'invalid_app_path');
+  assertApps(![decoded, normalized].some(value => value.startsWith('/_soty/') || value === '/_soty'), 'app_reserved_path', 404);
   return path;
 }
 function assertOrigin(req, origin, required) {
-  let count = 0;
-  for (let i = 0; i < (req.rawHeaders?.length || 0); i += 2) if (req.rawHeaders[i].toLowerCase() === 'origin') count++;
-  assertApps(count <= 1 && (req.headers.origin === origin || (!required && req.headers.origin === undefined)), 'app_origin_denied', 403);
+  assertApps(headerCount(req, 'origin') <= 1 && (req.headers.origin === origin || (!required && req.headers.origin === undefined)), 'app_origin_denied', 403);
+}
+function headerCount(req, name) { let count = 0; for (let i = 0; i < (req.rawHeaders?.length || 0); i += 2) if (req.rawHeaders[i].toLowerCase() === name) count++; return count; }
+const pageNonce = () => randomBytes(16).toString('base64');
+function setManagedPagePolicy(res, nonce, frameOrigins = []) {
+  res.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors ${frameOrigins.length ? frameOrigins.join(' ') : "'none'"}; sandbox allow-scripts allow-same-origin`);
+  res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
 }
 function validateTemplate(value, origins) {
   const template = normalizeLegacyTemplate(value);
@@ -533,19 +610,15 @@ function validateTemplate(value, origins) {
   assertApps(!origins.has(probe.origin), 'apps_origin_not_isolated'); return template;
 }
 function json(res, status, body) { if (res.destroyed || res.writableEnded) return; res.statusCode = status; res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(body)); }
-function respondFailure(req, res, status, error) {
+function respondFailure(req, res, status, error, page = {}) {
   // A rejected upload may still have unread bytes. Mark this HTTP connection
   // non-reusable before ending the response: exiting its async body iterator
   // destroys the request, so advertising keep-alive would strand the next GET.
   if (!req.readableEnded && !res.headersSent) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
   if (!String(req.headers.accept || '').includes('text/html')) { json(res, status, { ok: false, error }); return; }
-  const message = ['apps_access_denied', 'app_access_revoked'].includes(error) ? ['Доступ закрыт', 'Владелец может пригласить вас снова.']
-    : error === 'app_offline' ? ['Устройство не в сети', 'Приложение появится, когда устройство подключится.']
-      : ['app_session_required', 'app_ticket_invalid'].includes(error) ? ['Откройте приложение снова', 'Вернитесь к его соте.']
-        : error === 'app_stopped' ? ['Приложение остановлено', 'Владелец может запустить его на своём устройстве.']
-          : ['Приложение недоступно', 'Попробуйте открыть его немного позже.'];
+  const nonce = pageNonce(); setManagedPagePolicy(res, nonce, page.frameOrigins);
   res.statusCode = status; res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Cache-Control', 'no-store');
-  res.end(`<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${message[0]}</title><style>body{min-height:90vh;display:grid;place-content:center;text-align:center;margin:0;padding:24px;font:16px system-ui;background:#f8f6ef;color:#30372f}span{font-size:52px;color:#b59353}h1{font-size:22px;font-weight:550;margin:18px 0 10px}p{font-size:13px;color:#787d73;max-width:290px;line-height:1.6}</style><span aria-hidden="true">⬡</span><h1>${message[0]}</h1><p>${message[1]}</p></html>`);
+  res.end(renderStatusPage({ error, nonce, shellUrl: page.shellUrl, publicResetPath: page.publicResetPath }));
 }
 async function readBounded(stream, limit) { const parts = []; let count = 0; for await (const chunk of stream) { count += chunk.length; assertApps(count <= limit, 'app_body_too_large', 413); parts.push(chunk); } return Buffer.concat(parts); }
 function writeChunk(stream, chunk) { return new Promise((resolve, reject) => { if (stream.destroyed) return reject(new AppsError('app_client_closed')); stream.write(chunk, error => error ? reject(error) : resolve()); }); }

@@ -310,7 +310,12 @@ test('delayed ticket body rechecks grants, actor, policy and retired address aft
     if (change === 'policy') f.publish({ policy: 'restricted', aliases: [] });
     if (change === 'retire') f.retire(f.primary);
     pending.req.end(ticket + '"}'); const response = await pending.done;
-    denied(response); assert.equal(response.headers['set-cookie'], undefined);
+    // B3 re-reads the address when producing the failure page. Its existing
+    // status contract is more specific than a generic expired-ticket refusal.
+    if (change === 'policy') assert.equal(response.status, 503);
+    else if (change === 'retire') assert.equal(response.status, 410);
+    else denied(response);
+    assert.equal(response.headers['set-cookie'], undefined); assert.equal(response.headers.location, undefined);
     assert.equal(f.log.frames.filter(frame => frame.type === 'open').length, 0);
   });
 });
@@ -580,5 +585,238 @@ test('external redirects and informational-only HTTP heads fail locally; same-or
     assert.ok(response.status >= 400 || response.status === 0); assert.equal(response.headers?.location, undefined);
     assert.equal(neighbor.readyState, WebSocket.OPEN);
     assert.equal((await f.http(f.primary, '/')).status, 200);
+  }
+});
+
+// B3 entry tests use the same network boundary but a separate prefix, allowing
+// the new contract to run red while B2 remains a frozen regression baseline.
+async function bootSession(f, actor = owner, target = f.primary, localPath = '/start') {
+  const launch = f.launch(actor, target, localPath), response = await f.exchange(launch, target);
+  assert.equal(response.status, 200, response.body.toString());
+  const payload = JSON.parse(response.body);
+  assert.equal(typeof payload.sessionCheck, 'string'); assert.ok(payload.sessionCheck.length >= 32);
+  return { launch, cookie: response.headers['set-cookie'][0].split(';')[0], check: payload.sessionCheck, payload };
+}
+const documentNavigation = { accept: 'text/html', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' };
+function shellDestination(f, target, localPath, response) {
+  assert.equal(response.status, 302);
+  const url = new URL(response.headers.location);
+  assert.equal(url.origin, f.config.shellOrigins[0]); assert.equal(url.pathname, '/'); assert.equal(url.search, '');
+  const [route, query] = url.hash.slice(1).split('?');
+  assert.equal(route, `launch/${f.app.id}/${target.id}`);
+  assert.equal(new URLSearchParams(query).get('path'), localPath);
+  assert.equal([...new URLSearchParams(query).keys()].join(','), 'path');
+  return url;
+}
+
+test('B3: launch query preserves the exact local recovery path while its fragment remains the single-use ticket', async t => {
+  const f = await fixture(t); f.publish({ policy: 'restricted' });
+  const localPath = '/deep/route?filter=one%26two&next=%2Flocal&tag=%23item';
+  const launch = f.launch(member, f.primary, localPath), url = new URL(launch.launchUrl);
+  assert.equal(url.pathname, '/_soty/boot'); assert.equal(url.searchParams.get('path'), localPath);
+  assert.deepEqual([...url.searchParams.keys()], ['path']); assert.match(url.hash, /^#[A-Za-z0-9_-]{43}$/u);
+  // Only query is sent in HTTP. A reload has no ticket after boot replaces the
+  // fragment, so its recovery hint must remain the original local path.
+  const boot = await f.http(f.primary, url.pathname + url.search, { headers: documentNavigation });
+  assert.equal(boot.status, 200); assert.equal(boot.headers['set-cookie'], undefined);
+  assert.doesNotMatch(boot.body.toString(), new RegExp(url.hash.slice(1), 'u'));
+  f.advance(30_000); const expired = await f.exchange(launch, f.primary);
+  denied(expired); assert.equal(expired.headers['set-cookie'], undefined);
+  const refreshed = await bootSession(f, member, f.primary, localPath);
+  assert.equal(refreshed.payload.entryPath, localPath);
+  assert.equal((await f.http(f.primary, '/_soty/session', { cookie: refreshed.cookie,
+    headers: { 'X-Soty-Boot-Check': refreshed.check } })).status, 200);
+});
+
+test('B3: cookie acceptance proof binds newly issued B and cannot be satisfied by an older valid A or nonce alone', async t => {
+  const f = await fixture(t); f.publish();
+  const a = await bootSession(f, member), b = await bootSession(f, member);
+  assert.notEqual(a.cookie, b.cookie); assert.notEqual(a.check, b.check);
+  for (const cookie of [undefined, a.cookie]) {
+    const rejected = await f.http(f.primary, '/_soty/session', { cookie, headers: { 'X-Soty-Boot-Check': b.check } });
+    denied(rejected); assert.equal(rejected.headers['set-cookie'], undefined);
+  }
+  for (let i = 0; i < 2; i++) {
+    const checked = await f.http(f.primary, '/_soty/session', { cookie: b.cookie, headers: { 'X-Soty-Boot-Check': b.check } });
+    assert.equal(checked.status, 200); assert.equal(JSON.parse(checked.body).sessionCheck, b.check);
+    assert.equal(checked.headers['set-cookie'], undefined);
+  }
+  // A remains a valid independent session. Its validity is precisely why a
+  // bare GET could not have proved browser acceptance of B.
+  const older = await f.http(f.primary, '/_soty/session', { cookie: a.cookie });
+  assert.equal(older.status, 200); assert.deepEqual(JSON.parse(older.body), { ok: true });
+  denied(await f.http(f.alternate, '/_soty/session', { cookie: b.cookie, headers: { 'X-Soty-Boot-Check': b.check } }));
+  denied(await f.http(f.canonical, '/', { headers: { 'X-Soty-Boot-Check': b.check } }));
+});
+
+test('B3: boot check expires at thirty seconds, rejects duplicate headers, and rechecks current rights', async t => {
+  const f = await fixture(t); f.publish(); const current = await bootSession(f, member);
+  for (const value of ['', 'not-the-new-session', `${current.check}, ${current.check}`, [current.check, current.check]]) {
+    denied(await f.http(f.primary, '/_soty/session', { cookie: current.cookie, headers: { 'X-Soty-Boot-Check': value } }));
+  }
+  f.advance(29_999);
+  assert.equal((await f.http(f.primary, '/_soty/session', { cookie: current.cookie, headers: { 'X-Soty-Boot-Check': current.check } })).status, 200);
+  f.advance(1);
+  denied(await f.http(f.primary, '/_soty/session', { cookie: current.cookie, headers: { 'X-Soty-Boot-Check': current.check } }));
+  assert.equal((await f.http(f.primary, '/_soty/session', { cookie: current.cookie })).status, 200);
+  const later = await bootSession(f, member); f.members.delete(member.accountId); f.notify();
+  denied(await f.http(f.primary, '/_soty/session', { cookie: later.cookie, headers: { 'X-Soty-Boot-Check': later.check } }));
+});
+
+test('B3: explicit public reset clears both cookie variants and only its presented exact-origin sessions and streams', async t => {
+  const f = await fixture(t); f.publish();
+  const a = await bootSession(f, member), b = await bootSession(f, member);
+  const otherAlias = await bootSession(f, member, f.alternate), otherAccount = await bootSession(f, owner);
+  const closedA = await f.websocket(f.primary, { cookie: a.cookie, localPath: '/reset-a' });
+  const remainB = await f.websocket(f.primary, { cookie: b.cookie, localPath: '/reset-b' });
+  const remainAlias = await f.websocket(f.alternate, { cookie: otherAlias.cookie, localPath: '/reset-alias' });
+  const remainOwner = await f.websocket(f.primary, { cookie: otherAccount.cookie, localPath: '/reset-owner' });
+  const remainAnonymous = await f.websocket(f.primary, { localPath: '/reset-anonymous' });
+  const reset = await f.http(f.primary, '/_soty/session', { method: 'DELETE', origin: f.primary.origin,
+    cookie: `${a.cookie}; __Host-soty_app_session=unknown; ${otherAlias.cookie}` });
+  assert.equal(reset.status, 200); assert.deepEqual(JSON.parse(reset.body), { ok: true });
+  const clears = reset.headers['set-cookie']; assert.equal(clears.length, 2);
+  assert.equal(clears.filter(value => /;\s*Partitioned(?:;|$)/iu.test(value)).length, 1);
+  for (const value of clears) {
+    assert.match(value, /^__Host-soty_app_session=/u); assert.match(value, /;\s*Max-Age=0(?:;|$)/iu);
+    assert.match(value, /;\s*Path=\/(?:;|$)/iu); assert.match(value, /;\s*Secure(?:;|$)/iu); assert.doesNotMatch(value, /;\s*Domain=/iu);
+  }
+  await closed(closedA);
+  for (const ws of [remainB, remainAlias, remainOwner, remainAnonymous]) assert.equal(ws.readyState, WebSocket.OPEN);
+  denied(await f.http(f.primary, '/_soty/session', { cookie: a.cookie }));
+  for (const [target, session] of [[f.primary, b], [f.alternate, otherAlias], [f.primary, otherAccount]]) {
+    assert.equal((await f.http(target, '/_soty/session', { cookie: session.cookie })).status, 200);
+  }
+  assert.equal((await f.http(f.primary, '/')).status, 200);
+});
+
+test('B3: reset recovers absent, unknown and duplicate cookies, but requires exact Origin and fresh anonymous policy', async t => {
+  const f = await fixture(t); f.publish();
+  for (const cookie of [undefined, '__Host-soty_app_session=unknown']) {
+    const reset = await f.http(f.primary, '/_soty/session', { method: 'DELETE', origin: f.primary.origin, cookie });
+    assert.equal(reset.status, 200); assert.equal(reset.headers['set-cookie'].length, 2);
+  }
+  const a = await bootSession(f, member), b = await bootSession(f, member);
+  for (const origin of [undefined, 'null', 'https://other.example', [f.primary.origin, f.primary.origin]]) {
+    const refused = await f.http(f.primary, '/_soty/session', { method: 'DELETE', origin, cookie: a.cookie });
+    denied(refused); assert.equal(refused.headers['set-cookie'], undefined);
+  }
+  assert.equal((await f.http(f.primary, '/_soty/session', { cookie: a.cookie })).status, 200);
+  const duplicate = await f.http(f.primary, '/_soty/session', { method: 'DELETE', origin: f.primary.origin,
+    cookie: `${a.cookie}; ${b.cookie}; ${a.cookie}` });
+  assert.equal(duplicate.status, 200);
+  for (const session of [a, b]) denied(await f.http(f.primary, '/_soty/session', { cookie: session.cookie }));
+
+  f.publish({ policy: 'restricted' });
+  const privateSession = await bootSession(f, member);
+  const privateReset = await f.http(f.primary, '/_soty/session', { method: 'DELETE', origin: f.primary.origin, cookie: privateSession.cookie });
+  denied(privateReset); assert.equal(privateReset.headers['set-cookie'], undefined);
+  assert.equal((await f.http(f.primary, '/_soty/session', { cookie: privateSession.cookie })).status, 200);
+  const canonicalReset = await f.http(f.canonical, '/_soty/session', { method: 'DELETE', origin: f.canonical.origin,
+    cookie: await f.cookie(owner) });
+  denied(canonicalReset); assert.equal(canonicalReset.headers['set-cookie'], undefined);
+  const inactive = f.alias('inactive-reset');
+  assert.equal((await f.http(inactive, '/_soty/session', { method: 'DELETE', origin: inactive.origin })).status, 503);
+  f.retire(f.alternate);
+  assert.equal((await f.http(f.alternate, '/_soty/session', { method: 'DELETE', origin: f.alternate.origin })).status, 410);
+});
+
+test('B3: private document navigation returns only the trusted shell route with the exact local path', async t => {
+  const f = await fixture(t); f.publish({ policy: 'restricted' });
+  const localPath = '/workspace/view?name=a%26b&returnUrl=https%3A%2F%2Foutside.example%2F';
+  for (const target of [f.primary, f.canonical]) for (const cookie of [undefined, '__Host-soty_app_session=invalid']) {
+    const response = await f.http(target, localPath, { cookie, headers: { ...documentNavigation, 'x-forwarded-host': 'outside.example' } });
+    shellDestination(f, target, localPath, response);
+    assert.equal(response.headers['set-cookie'], undefined);
+    assert.doesNotMatch(response.body.toString(), /Independent private app|runtime_owner|runtime_host|32123/u);
+  }
+  const allowed = await f.http(f.primary, localPath, { cookie: await f.cookie(member, f.primary), headers: documentNavigation });
+  assert.equal(allowed.status, 200); assert.equal(allowed.headers.location, undefined);
+});
+
+test('B3: iframe, fetch, HEAD, unsafe, malformed and reserved paths cannot trigger private shell redirects', async t => {
+  const f = await fixture(t); f.publish({ policy: 'restricted' });
+  const cases = [
+    { headers: { accept: 'text/html' } },
+    { headers: { ...documentNavigation, 'sec-fetch-dest': 'iframe' } },
+    { headers: { ...documentNavigation, 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty' } },
+    { headers: { ...documentNavigation, 'sec-fetch-mode': ['navigate', 'navigate'] } },
+    { headers: { ...documentNavigation, 'sec-fetch-dest': ['document', 'document'] } },
+    { method: 'HEAD', headers: documentNavigation },
+    { method: 'POST', origin: f.primary.origin, body: 'unsafe', headers: documentNavigation },
+    { origin: 'https://outside.example', headers: documentNavigation },
+  ];
+  for (const options of cases) {
+    const response = await f.http(f.primary, '/private/path', options);
+    assert.ok(response.status >= 400); assert.equal(response.headers.location, undefined);
+    assert.equal(response.headers['set-cookie'], undefined);
+    assert.doesNotMatch(response.body.toString(), /Independent private app|runtime_owner|runtime_host|32123/u);
+  }
+  for (const localPath of ['//outside.example/', '/%2foutside.example/', '/%5cpath', '/_soty/session', '/_soty/unknown', '/%5Fsoty/session']) {
+    const response = await f.http(f.primary, localPath, { headers: documentNavigation });
+    assert.ok(response.status >= 400); assert.equal(response.headers.location, undefined);
+  }
+  assert.equal(f.log.frames.filter(frame => frame.type === 'open').length, 0);
+});
+
+test('B3: an invalid signed-public session shows a status without automatic guest fallback, cookie reset or shell redirect', async t => {
+  const f = await fixture(t); f.publish(); const current = await bootSession(f, visitor);
+  f.revoked.add(visitor.deviceId);
+  const before = f.log.frames.length;
+  const blocked = await f.http(f.primary, '/private-result', { cookie: current.cookie, headers: documentNavigation });
+  denied(blocked); assert.equal(blocked.headers.location, undefined); assert.equal(blocked.headers['set-cookie'], undefined);
+  assert.equal(f.log.frames.slice(before).some(frame => frame.type === 'open'), false);
+  assert.doesNotMatch(blocked.body.toString(), /Independent private app|runtime_owner|runtime_host|32123/u);
+  const reset = await f.http(f.primary, '/_soty/session', { method: 'DELETE', origin: f.primary.origin, cookie: current.cookie });
+  assert.equal(reset.status, 200);
+  assert.equal((await f.http(f.primary, '/private-result', { headers: documentNavigation })).status, 200);
+});
+
+test('B3: managed pages keep query content inert, pin their script nonce, and reject ambiguous recovery input', async t => {
+  const f = await fixture(t); f.publish();
+  const localPath = '/?q=</script><script>globalThis.entryInjected=true</script>&quote="';
+  const launched = new URL(f.launch(owner, f.primary, localPath).launchUrl);
+  const page = await f.http(f.primary, launched.pathname + launched.search, { headers: documentNavigation });
+  assert.equal(page.status, 200);
+  const markup = page.body.toString(), scripts = [...markup.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gu)];
+  assert.equal(scripts.length, 1); assert.doesNotMatch(markup, /<script>globalThis\.entryInjected/u);
+  const nonce = /\bnonce="([^"]+)"/u.exec(scripts[0][1])?.[1]; assert.ok(nonce);
+  assert.ok(page.headers['content-security-policy'].includes(`script-src 'nonce-${nonce}'`));
+  assert.ok(page.headers['content-security-policy'].includes(`frame-ancestors ${f.config.shellOrigins[0]}`));
+  assert.doesNotMatch(page.headers['content-security-policy'], /allow-popups|allow-top-navigation|script-src[^;]*'unsafe-inline'/u);
+  assert.equal(page.headers['referrer-policy'], 'no-referrer'); assert.equal(page.headers['cache-control'], 'no-store');
+
+  const noHint = await f.http(f.primary, '/_soty/boot', { headers: documentNavigation });
+  assert.equal(noHint.status, 200); assert.doesNotMatch(noHint.body.toString(), /%2Fstart|\/start|Independent private app|runtime_owner|runtime_host|32123/u);
+  const secondNonce = /<script\b[^>]*\bnonce="([^"]+)"/u.exec(noHint.body.toString())?.[1];
+  assert.ok(secondNonce && secondNonce !== nonce);
+  for (const query of ['path=%2F%2Foutside.example', 'path=%2F_soty%2Fsession', 'path=%2Fone&path=%2Ftwo', 'returnUrl=https%3A%2F%2Foutside.example']) {
+    const response = await f.http(f.primary, '/_soty/boot?' + query, { headers: documentNavigation });
+    assert.ok(response.status >= 400); assert.equal(response.headers.location, undefined);
+  }
+  const inactive = f.alias('entry-inactive'); f.retire(f.alternate);
+  for (const [target, status] of [[inactive, 503], [f.alternate, 410], [{ origin: f.primary.origin.replace('primary.', 'missing.') }, 404]]) {
+    const response = await f.http(target, '/', { headers: documentNavigation });
+    assert.equal(response.status, status); assert.equal(response.headers.location, undefined);
+    assert.doesNotMatch(response.body.toString(), /Independent private app|runtime_owner|runtime_host|32123/u);
+  }
+  assert.equal(f.log.frames.some(frame => frame.type === 'open'), false);
+});
+
+test('B3: normalized ambiguous targets are rejected while local hash-SPA navigation remains compatible', async t => {
+  const f = await fixture(t); f.publish();
+  for (const localPath of ['/x/..//double', '/x/%2e%2e//double']) {
+    assert.throws(() => f.launch(owner, f.primary, localPath), `must not issue an unusable recovery target: ${localPath}`);
+    const response = await f.http(f.primary, '/_soty/boot?' + new URLSearchParams({ path: localPath }), { headers: documentNavigation });
+    assert.ok(response.status >= 400); assert.equal(response.headers.location, undefined);
+  }
+  for (const localPath of ['/#/dashboard', '/board?tag=a%2Bb#item', '/ordinary?q=value%23fragment']) {
+    const accepted = await bootSession(f, owner, f.primary, localPath);
+    assert.equal(accepted.payload.entryPath, localPath, 'local query and client fragment must remain exact');
+    assert.equal(new URL(accepted.launch.launchUrl).searchParams.get('path'), localPath);
+    const navigated = new URL(accepted.payload.entryPath, f.primary.origin);
+    assert.equal(navigated.origin, f.primary.origin);
+    const response = await f.http(f.primary, navigated.pathname + navigated.search, { cookie: accepted.cookie });
+    assert.equal(response.status, 200);
   }
 });
