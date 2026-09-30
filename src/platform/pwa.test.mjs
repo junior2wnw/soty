@@ -87,15 +87,19 @@ test('navigation uses a real cached shell when the server is unreachable; API is
   await assert.rejects(response, /offline/);
 });
 
-test('offline discovery and machine-document navigation cannot turn into a cached SPA200', async () => {
+test('offline discovery, OAuth consent and machine navigation cannot turn into a cached SPA200', async () => {
   const runtime = worker(); await runtime.emit('install');
   for (const pathname of ['/agents', '/agents?query=notes', '/agents/missing', '/api/capabilities',
-    '/api/capabilities/v1/catalog/notes.createDraft/versions/1/contract.json', '/api/capabilities/v1/missing']) {
+    '/api/capabilities/v1/catalog/notes.createDraft/versions/1/contract.json', '/api/capabilities/v1/missing',
+    '/oauth', '/oauth/authorize?client_id=example', '/oauth/interaction/example', '/oauth/interaction/example/context',
+    '/oauth/.well-known/openid-configuration', '/mcp', '/mcp/missing',
+    '/.well-known/oauth-authorization-server/oauth', '/.well-known/oauth-protected-resource',
+    '/.well-known/oauth-protected-resource/mcp']) {
     let response;
     runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'navigate', url: `https://soty.test${pathname}` }, respondWith: promise => { response = promise; } });
     await assert.rejects(response, /offline/, pathname);
   }
-  for (const pathname of ['/?x=/agents', '/agents-old', '/#notes']) {
+  for (const pathname of ['/?x=/agents', '/agents-old', '/#notes', '/oauth-old', '/?x=/oauth', '/mcp-old']) {
     let response;
     runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'navigate', url: `https://soty.test${pathname}` }, respondWith: promise => { response = promise; } });
     assert.equal(await (await response).text(), 'cached shell', pathname);

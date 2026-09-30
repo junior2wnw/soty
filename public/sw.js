@@ -74,8 +74,10 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   // These URLs describe server representations. A cached application shell is
-  // never an offline substitute for a contract, API error, or documentation.
-  if (['/agents', '/api/capabilities'].some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
+  // never an offline substitute for a contract, authorization or API error.
+  if (['/agents', '/api/capabilities', '/oauth', '/mcp',
+    '/.well-known/oauth-authorization-server', '/.well-known/oauth-protected-resource']
+    .some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
     event.respondWith(fetch(request));
     return;
   }

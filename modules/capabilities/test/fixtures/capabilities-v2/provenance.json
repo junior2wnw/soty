@@ -1,0 +1,40 @@
+{
+  "format": "soty.historical-source.v1",
+  "commit": "cc7f65b84e0a8f8b4fd41cf44e498ee3f21015e7",
+  "schemaVersion": 2,
+  "lineage": "soty.capabilities.sqlite.v2",
+  "entryPoint": "schema.mjs",
+  "exportName": "initializeCapabilitiesSchema",
+  "copyMode": "exact git blob bytes; no rewrites or EOL conversion",
+  "closure": "Only these relative modules and Node built-ins; no current application imports",
+  "files": [
+    {
+      "file": "schema.mjs",
+      "source": "modules/capabilities/server/schema.mjs",
+      "gitBlob": "06fb3f4f632969265e2f240fd5158389410081d2",
+      "sha256": "9853c33995755cd025ab8e6e02c0ea6e72b77d62b70d775d9c7db2303ff696b6",
+      "bytes": 184
+    },
+    {
+      "file": "schema-v2.mjs",
+      "source": "modules/capabilities/server/schema-v2.mjs",
+      "gitBlob": "6d2f0798962a761a8dd53b87c04992554aa224b8",
+      "sha256": "5ca8b4025535566c90a1b1d610e37837b4b41e6074117a96fe720504050af25f",
+      "bytes": 23705
+    },
+    {
+      "file": "validation.mjs",
+      "source": "modules/capabilities/server/validation.mjs",
+      "gitBlob": "a221e1dd84d0557ce76699db85a25e2e430ec5eb",
+      "sha256": "b5cd743caa6183af7b82021eeab0381d6bea9dace806bae12b194df18c15fa9d",
+      "bytes": 3306
+    },
+    {
+      "file": "native-note-contract.mjs",
+      "source": "modules/capabilities/server/native-note-contract.mjs",
+      "gitBlob": "95be957162ec3e52b53d86c2aeced6629f1c7d0e",
+      "sha256": "1f3ab19fa9e6641e9928ce363ab6fdcbcf1421d4785256466a430ce0bcfa9c83",
+      "bytes": 1098
+    }
+  ]
+}

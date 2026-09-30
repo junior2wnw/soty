@@ -228,3 +228,14 @@ Native execution по умолчанию выключен, host не мигри�
 - [ ] Full compatible application image, reviewed cold bootstrap, coordinated encrypted restore и public release — следующие отдельные gates.
 
 [Exact результат](p4-reader2-linux-result.md): run389c0e7bf411eee8fc66d6d0c2b94a41,9260ms, new bundle44e2e7a9…943e. Это закрывает Linux fixture gate, оставшийся открытым в B2 checkpoint; не означает миграцию/публикацию production. C1 development продолжается в той же отдельной worktree.
+
+## P4-C1a — provider и контракт подключения приняты
+
+- [x] Повторно прочитан master P0–P8; [C1 подплан](p4-oauth-connection-plan.md) и [точный storage/API contract](p4-oauth-storage-contract.md) рассмотрены root/независимым critic. OAuth использует прежние Connect/Capabilities/Invocation/Notes, нового effect ledger нет.
+- [x] Exact oidc-provider9.12.2 и изолированные pinned tools; actual Provider/HTTP/SQLite seam: PKCE/resource-before-consume, CAS/reuse, family revoke, authorize fields, независимость двух подключений от AS Session.
+- [x] Bounded form ingress и независимый disconnect/late-adapter RED→GREEN;15/15combinedPASS. Fixed16KiB buffer/10sbody deadline/awaited downstream limit. Все production endpoints пока не смонтированы.
+- [x] OAuth/MCP/metadata network-only SW namespaces; полныйPWA11/11, typecheck и VitebuildPASS. Historical2 fixture exact Git bytes и LF сохранены.
+- [ ] C1b: отдельный baseline3/default-off/real migration/common OAuth-link policy, native known2/3 и reader-before-writer после literal DDL freeze.
+- [ ] C1c: durable encrypted ports, реальные signed согласие/отзыв, host composition, две AS OS instances/CLI/PWA.
+
+[Root C1a receipt](p4-oauth-provider-seam.md) и [независимый ingress audit](p4-oauth-ingress-review.md) сохраняют найденные ошибки, результаты и ограничения. Далее C2MCP/headless и D1/D2eval/HTTPSrelease; дальнейшие P5–P7 не сняты с общего плана, P8 остаётся условным расширением.

@@ -3,3 +3,4 @@
 /public/agent/manifest.json text eol=lf
 /contracts/identity/v1/** text eol=lf
 /deploy/connector/fixtures/** text eol=lf
+/modules/capabilities/test/fixtures/** text eol=lf
