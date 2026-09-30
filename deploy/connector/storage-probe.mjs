@@ -20,6 +20,20 @@ const appDomains = {
   app_domains: 'id,zone_id,hostname,origin,slug,app_id,owner_account_id,role,state,created_at,retired_at',
   app_domain_receipts: 'account_id,request_key,intent_hash,action,domain_id,committed_revision,created_at',
 };
+const appPublications = {
+  app_runtime_targets: 'app_id,revision,owner_account_id,connector_key,port,entry_path,profile,digest,created_at',
+  app_publications: 'app_id,owner_account_id,launch_policy,listed,policy_epoch,active_target_revision,exposure_ack_revision,exposure_ack_json,updated_at',
+  app_publication_domains: 'app_id,domain_id,owner_account_id',
+  app_publication_receipts: 'account_id,request_key,intent_hash,app_id,committed_epoch,value_json,created_at',
+};
+// Frozen host-side recognition of the two v3 immutable-target guards. Matching
+// names alone would also admit a replaced trigger with different behavior.
+const appTargetGuards = {
+  app_runtime_target_no_update: "CREATE TRIGGER app_runtime_target_no_update BEFORE UPDATE ON app_runtime_targets BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END",
+  app_runtime_target_no_delete: "CREATE TRIGGER app_runtime_target_no_delete BEFORE DELETE ON app_runtime_targets BEGIN SELECT RAISE(ABORT,'app_runtime_target_immutable'); END",
+};
+const normalizedSql = sql => typeof sql === 'string' ? sql.split(/('(?:[^']|'')*')/gu)
+  .map((part, index) => index % 2 ? part : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('') : null;
 
 async function checkedDatabaseFile(filename, info) {
   if (!info.isFile() || info.isSymbolicLink() || info.size < 100) fail('storage_format_unreadable');
@@ -81,20 +95,25 @@ async function readAppsFormat(dataDir) {
   }
   await checkedDatabaseFile(filename, info);
   return inspectDatabase(filename, db => {
-    const objects = db.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND type IN ('table','view','trigger')").all();
-    if (objects.some(row => row.type !== 'table') || !objects.some(row => row.name === 'apps_meta')) fail('storage_format_unreadable');
+    const objects = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' AND type IN ('table','view','trigger')").all();
+    if (!objects.some(row => row.type === 'table' && row.name === 'apps_meta')) fail('storage_format_unreadable');
     const markers = db.prepare("SELECT value FROM apps_meta WHERE key='schema' LIMIT 2").all();
     const version = db.prepare('PRAGMA user_version').get().user_version;
     if (markers.length !== 1) fail('storage_format_unreadable');
     const format = markers[0].value === 'soty.apps-registry.v1' && [0, 1].includes(version) ? 1
-      : markers[0].value === 'soty.apps-registry.v2' && version === 2 ? 2 : null;
+      : markers[0].value === 'soty.apps-registry.v2' && version === 2 ? 2
+        : markers[0].value === 'soty.apps-registry.v3' && version === 3 ? 3 : null;
     if (!format) fail('storage_format_unknown');
-    const projections = format === 1 ? appCore : { ...appCore, ...appDomains };
-    if (objects.length !== Object.keys(projections).length || objects.some(row => !Object.hasOwn(projections, row.name))) fail('storage_format_unreadable');
+    const projections = { ...appCore, ...(format >= 2 ? appDomains : {}), ...(format === 3 ? appPublications : {}) };
+    const guards = format === 3 ? appTargetGuards : {};
+    if (objects.length !== Object.keys(projections).length + Object.keys(guards).length || objects.some(row =>
+      row.type === 'table' ? !Object.hasOwn(projections, row.name)
+        : row.type !== 'trigger' || !Object.hasOwn(guards, row.name) || row.tbl_name !== 'app_runtime_targets'
+          || normalizedSql(row.sql) !== normalizedSql(guards[row.name]))) fail('storage_format_unreadable');
     // Independent format recognition, not row/constraint integrity attestation.
     // Every identifier below is a trusted constant, never database contents.
     for (const [table, columns] of Object.entries(projections)) db.prepare(`SELECT ${columns} FROM ${table} LIMIT 0`).all();
-    if (format === 2) {
+    if (format >= 2) {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template' LIMIT 2").all();
       if (pinned.length !== 1 || typeof pinned[0].value !== 'string') fail('storage_format_unreadable');
     }

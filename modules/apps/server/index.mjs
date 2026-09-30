@@ -6,10 +6,11 @@ import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, cleanGrants, connectorKey, cleanHeaders, createWebSocketLimiter, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
 import { migrateAppsSchema, inspectAppsSchema } from './schema.mjs';
 import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
+import { createPublicationRegistry, publicationOperations } from './publications.mjs';
 import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
 import { createHostClassifier } from './hosts.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', ...domainOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', ...domainOperations, ...publicationOperations]);
 const cookieName = 'soty_app_session';
 const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -24,14 +25,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   validateNamedOrigins([namedZone], { shellOrigins: [...origins], validateNamedZone });
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
-  let domains;
+  let domains, publications;
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (schema === 'v2') validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
+    if (schema === 'v2' || schema === 'v3') validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
     migrateAppsSchema(db, { legacyTemplate: template, now });
+    publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, domainLimits: limits,
-      shellOrigins: [...origins], validateNamedZone });
+      shellOrigins: [...origins], validateNamedZone, onRetireInTransaction: publications.retireInTransaction,
+      onPolicyChanged: publications.notifyChanged });
     db.exec('PRAGMA journal_mode=WAL;');
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins] });
@@ -138,6 +141,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       args = operationArgs;
     }
     if (domainOperations.has(op)) return domains.execute({ actor, op, args });
+    if (publicationOperations.has(op)) return publications.execute({ actor, op, args });
     if (op === 'apps.devices') {
       exact(args, []);
       return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(item => {
@@ -173,15 +177,20 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(device, 'apps_device_not_owned', 403);
       const name = appName(args.name), port = appPort(args.port, blockedPorts), entryPath = requestPath(args.entryPath ?? '/'), grants = cleanGrants(args.grants);
       assertApps(!entryPath.startsWith('/_soty/'), 'reserved_app_path'); assertGrants(actor, grants);
-      const existing = db.prepare("SELECT * FROM local_apps WHERE connector_key=? AND port=? AND state='enabled'").get(device.connector_key, port);
-      if (existing) {
-        assertApps(existing.name === name && existing.entry_path === entryPath && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
-        return { app: publicApp(existing, actor) };
-      }
-      assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
-      const id = `app-${randomBytes(16).toString('hex')}`, timestamp = now();
-      transaction(() => { db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
-        persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); });
+      const id = transaction(() => {
+        assertActor(actor); assertApps(binding(device.connector_key)?.owner_account_id === actor.accountId, 'apps_device_not_owned', 403); assertGrants(actor, grants);
+        const existing = db.prepare("SELECT * FROM local_apps WHERE connector_key=? AND port=? AND state='enabled'").get(device.connector_key, port);
+        if (existing) {
+          assertApps(existing.name === name && existing.entry_path === entryPath && existing.grants_json === JSON.stringify(grants), 'app_port_already_registered', 409);
+          publications.execute({ actor, op: 'apps.publication.get', args: { appId: existing.id } });
+          return existing.id;
+        }
+        assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
+        const id = `app-${randomBytes(16).toString('hex')}`, timestamp = now();
+        db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
+        persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); publications.initForApp(row(id));
+        return id;
+      });
       sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
     }
     const id = appId(args.appId), app = row(id);
@@ -193,15 +202,33 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       tickets.set(digest(ticket), { appId: id, actor: { accountId: actor.accountId, deviceId: actor.deviceId }, revision: app.revision, expiresAt });
       return { launchUrl: `${originFor(id)}/_soty/boot#${ticket}`, expiresAt };
     }
-    assertApps(app && app.owner_account_id === actor.accountId, 'apps_owner_required', 403);
     if (op === 'apps.revoke') {
-      exact(args, ['appId']); db.prepare("UPDATE local_apps SET state='revoked',revision=revision+1,updated_at=? WHERE id=?").run(now(), id);
-      invalidateAccess({ appId: id }); sync(channels.get(app.connector_key)); return { app: publicApp(row(id), actor) };
+      exact(args, ['appId']);
+      const revoked = transaction(() => {
+        assertActor(actor); const current = row(id);
+        assertApps(current && current.owner_account_id === actor.accountId, 'apps_owner_required', 403);
+        if (current.state === 'enabled') {
+          db.prepare("UPDATE local_apps SET state='revoked',revision=revision+1,updated_at=? WHERE id=?").run(now(), id);
+          publications.revokeInTransaction(id);
+        }
+        return current;
+      });
+      invalidateAccess({ appId: id }); sync(channels.get(revoked.connector_key)); return { app: publicApp(row(id), actor) };
     }
-    exact(args, ['appId', 'name', 'grants']); assertApps(app.state === 'enabled', 'app_revoked', 409);
-    const name = args.name === undefined ? app.name : appName(args.name), grants = args.grants === undefined ? JSON.parse(app.grants_json) : cleanGrants(args.grants);
-    assertGrants(actor, grants);
-    transaction(() => { db.prepare('UPDATE local_apps SET name=?,grants_json=?,revision=revision+1,updated_at=? WHERE id=?').run(name, JSON.stringify(grants), now(), id); persistGrants(id, grants); });
+    exact(args, ['appId', 'name', 'grants']);
+    const requestedName = args.name === undefined ? undefined : appName(args.name), requestedGrants = args.grants === undefined ? undefined : cleanGrants(args.grants);
+    transaction(() => {
+      assertActor(actor); const current = row(id);
+      assertApps(current && current.owner_account_id === actor.accountId, 'apps_owner_required', 403);
+      assertApps(current.state === 'enabled', 'app_revoked', 409);
+      const grants = requestedGrants ?? JSON.parse(current.grants_json);
+      assertGrants(actor, grants);
+      const grantsChanged = requestedGrants !== undefined && JSON.stringify(cleanGrants(JSON.parse(current.grants_json))) !== JSON.stringify(requestedGrants);
+      db.prepare('UPDATE local_apps SET name=?,grants_json=?,revision=revision+1,updated_at=? WHERE id=?')
+        .run(requestedName ?? current.name, requestedGrants === undefined ? current.grants_json : JSON.stringify(grants), now(), id);
+      persistGrants(id, grants);
+      if (grantsChanged) publications.grantsChangedInTransaction(id);
+    });
     invalidateAccess({ appId: id }); return { app: publicApp(row(id), actor) };
   }
   function originFor(id) { return domains.originFor(id); }
@@ -409,6 +436,10 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     return hostClassifier.allowsTlsDomain(domain);
   }
   return { operations, execute, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+    policy: Object.freeze({
+      decideAccess(value) { assertApps(!closed, 'apps_closed', 503); return publications.decideAccess(value); },
+      recheckAccess(value, options) { assertApps(!closed, 'apps_closed', 503); return publications.recheckAccess(value, options); },
+    }),
     classifyHost: hostClassifier.classifyHost,
     configured: Boolean(template), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
     close() { if (closed) return; closed = true; clearInterval(auditTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); wss.close(); db.close(); },

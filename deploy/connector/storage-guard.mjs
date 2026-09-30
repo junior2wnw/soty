@@ -4,29 +4,30 @@ import path from 'node:path';
 import { SafeError } from './docker-api.mjs';
 
 export const storageReaderLabel = 'io.soty.storage.readers';
-export const currentStorageReaders = '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2]}}';
+export const currentStorageReaders = '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2,3]}}';
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const keys = (value, expected) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === expected;
-const knownFormat = value => ['empty', 1, 2].includes(value);
-const knownReaders = value => Array.isArray(value) && value.length > 0 && value.length <= 2
-  && value.every(version => version === 1 || version === 2) && new Set(value).size === value.length;
+const supported = { rooms: [1, 2], apps: [1, 2, 3] };
+const knownFormat = (store, value) => value === 'empty' || supported[store].includes(value);
+const knownReaders = (store, value) => Array.isArray(value) && value.length > 0 && value.length <= supported[store].length
+  && value.every(version => supported[store].includes(version)) && new Set(value).size === value.length;
 
 export function storageReaders(image) {
   requireThat(IMAGE.test(image?.Id || ''), 'storage_image_identity_invalid');
   let value;
   try { value = JSON.parse(image.Config?.Labels?.[storageReaderLabel]); } catch { throw new SafeError('storage_reader_unknown'); }
   requireThat(keys(value, 'readers,version') && value.version === 2 && keys(value.readers, 'apps,rooms')
-    && knownReaders(value.readers.rooms) && knownReaders(value.readers.apps), 'storage_reader_unknown');
+    && knownReaders('rooms', value.readers.rooms) && knownReaders('apps', value.readers.apps), 'storage_reader_unknown');
   return value.readers;
 }
 
 export function checkedStorageFormat(value) {
   requireThat(keys(value, 'apps,ok,rooms,schema') && value.ok === true && value.schema === 'soty.storage-format.v2'
-    && knownFormat(value.rooms) && knownFormat(value.apps), 'storage_probe_invalid');
+    && knownFormat('rooms', value.rooms) && knownFormat('apps', value.apps), 'storage_probe_invalid');
   return { ok: true, schema: value.schema, rooms: value.rooms, apps: value.apps };
 }
 
@@ -159,5 +160,5 @@ export async function guardStorageStart(context, runtime, { running = false } = 
 export function requireStorageStartReceipt(value, id) {
   requireThat(keys(value, 'apps,containerId,image,mountSha256,rooms,schema') && value.schema === 'soty.storage-start.v2'
     && value.containerId === id && ID.test(value.containerId || '') && IMAGE.test(value.image || '')
-    && ID.test(value.mountSha256 || '') && knownFormat(value.rooms) && knownFormat(value.apps), 'storage_start_guard_missing');
+    && ID.test(value.mountSha256 || '') && knownFormat('rooms', value.rooms) && knownFormat('apps', value.apps), 'storage_start_guard_missing');
 }

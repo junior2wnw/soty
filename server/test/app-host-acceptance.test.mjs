@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createAppsService } from '../../modules/apps/server/index.mjs';
-import { ensureCanonicalDomain } from '../../modules/apps/server/schema.mjs';
+import { ensureCanonicalDomain, ensureInitialPublication } from '../../modules/apps/server/schema.mjs';
 import { parseAppAuthority } from '../../modules/apps/server/hosts.mjs';
 
 const actor = { accountId: 'host_acceptance_owner', deviceId: 'host_acceptance_device' };
@@ -32,6 +32,7 @@ async function seed(directory) {
       db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, 'host_acceptance_connector',
         'PRIVATE_APP_SENTINEL', 9400 + index, '/', JSON.stringify({ accountIds: [], communityIds: [] }), 'enabled', 1, 1, 1);
       ensureCanonicalDomain(db, { id, owner_account_id: actor.accountId, created_at: 1 }, legacy);
+      ensureInitialPublication(db, db.prepare('SELECT * FROM local_apps WHERE id=?').get(id));
     }
     db.exec('COMMIT');
   } finally { db.close(); }

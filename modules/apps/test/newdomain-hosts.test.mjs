@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createAppsService } from '../server/index.mjs';
-import { ensureCanonicalDomain } from '../server/schema.mjs';
+import { ensureCanonicalDomain, ensureInitialPublication } from '../server/schema.mjs';
 import { createHostClassifier, parseAppAuthority } from '../server/hosts.mjs';
 
 const id = `app-${'a'.repeat(32)}`;
@@ -28,6 +28,7 @@ async function fixture(t, overrides = {}) {
   seed.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, 'connector', 'Private title never public',
     9000, '/', JSON.stringify({ accountIds: [], communityIds: [] }), 'enabled', 1, 1, 1);
   ensureCanonicalDomain(seed, seed.prepare('SELECT * FROM local_apps WHERE id=?').get(id), options.appOriginTemplate);
+  ensureInitialPublication(seed, seed.prepare('SELECT * FROM local_apps WHERE id=?').get(id));
   seed.exec('COMMIT'); seed.close();
   const services = [], inspections = [], cleanups = [];
   const open = config => { const service = createAppsService({ ...options, ...config }); services.push(service); return service; };

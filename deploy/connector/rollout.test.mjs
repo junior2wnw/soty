@@ -146,18 +146,18 @@ test('v2 data rejects legacy rollback before downgrade helper, original start an
  assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
 });
 
-test('Apps migration rejects a rooms-compatible but Apps v1-only rollback before any downgrade or original restart',async()=>{
+for(const previous of [1,2])test(`Apps${previous+1} migration rejects a rooms-compatible but Apps${previous}-only rollback before any downgrade or original restart`,async()=>{
  const f=fixture({op:'readiness',when:'before'}),image=f.engine.image;
- f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:2,readers:{rooms:[1,2],apps:[1]}});return value;};
+ f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:2,readers:{rooms:[1,2],apps:previous===1?[1]:[1,2]}});return value;};
  f.map.get(args.originalId).Config.Labels[storageReaderLabel]=currentStorageReaders;
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v2',rooms:1,apps:f.migrated?2:1});
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v2',rooms:1,apps:f.migrated?previous+1:previous});
  await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
  assert.equal(f.run.state.failureCode,'storage_reader_incompatible');assert.equal(f.migrated,true);
  assert.equal(f.map.get(args.originalId).State.Running,false);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'no');
  assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
  assert.equal(f.run.state.applicationStart.storageGuard.schema,'soty.storage-start.v2');
- assert.equal(f.run.state.applicationStart.storageGuard.apps,1);
+ assert.equal(f.run.state.applicationStart.storageGuard.apps,previous);
 });
 
 test('rooms-only image metadata and probe results are not accepted by the shared rollout start gate',async()=>{

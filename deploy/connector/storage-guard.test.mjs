@@ -69,7 +69,8 @@ test('probe observes committed WAL user_version and never ignores it with immuta
 
 test('strict image reader manifest rejects missing, extended and malformed claims', () => {
   for (const text of [undefined, '', '{}', '{"version":1,"readers":{"rooms":[1,2]}}', '{"version":2,"readers":{"rooms":[1,2]}}',
-    '{"version":2,"readers":{"rooms":[1,2],"apps":[3]}}', '{"version":2,"readers":{"rooms":[1,1],"apps":[1]}}',
+    '{"version":2,"readers":{"rooms":[1,2],"apps":[4]}}', '{"version":2,"readers":{"rooms":[1,2,3],"apps":[1,2,3]}}',
+    '{"version":2,"readers":{"rooms":[1,1],"apps":[1]}}',
     '{"version":2,"readers":{"rooms":[1],"apps":[1,1]}}', '{"version":2,"readers":{"rooms":[],"apps":[1]}}',
     '{"version":2,"readers":{"rooms":[1],"apps":[]}}', '{"version":2,"readers":{"rooms":[1],"apps":[1]},"allow":true}',
     '{"version":2,"readers":{"rooms":[1],"apps":[1],"notes":[1]}}']) {
@@ -145,16 +146,31 @@ test('Apps version is an independent reader requirement and is retained in the s
   requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, 2);
 });
 
+test('Apps3 is accepted independently of the Rooms ceiling and blocks an Apps2-only actual image', async () => {
+  const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1, 2] } });
+  const old = fixture({ readers, apps: 3 });
+  await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
+  assert.ok(!old.events.some(event => event.verb === 'start' && event.id === old.runtime.Id));
+  assertStorageCompatible(image(4, readers), format(2, 2));
+  const current = fixture({ apps: 3 });
+  const receipt = await guardStorageStart(current.context, current.runtime);
+  requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, 3); assert.equal(receipt.rooms, 2);
+  for (const apps of ['empty', 1, 2, 3]) assertStorageCompatible(image(2), format(2, apps));
+  assert.throws(() => checkedStorageFormat(format(3, 3)), /storage_probe_invalid/);
+  assert.throws(() => assertStorageCompatible(image(2), format(2, 4)), /storage_probe_invalid/);
+});
+
 test('old or extended probe and start receipts never authorize a restart', () => {
   const good = { schema: 'soty.storage-start.v2', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 2 };
   requireStorageStartReceipt(good, id(1));
   for (const value of [{ ok: true, schema: 'soty.storage-format.v1', rooms: 2 },
-    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), apps: 3 },
+    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), apps: 4 }, { ...format(2, 3), rooms: 3 },
     { ...format(2), apps: undefined }, { ...format(2), complete: true }]) {
     assert.throws(() => checkedStorageFormat(value), /storage_probe_invalid/);
   }
   for (const value of [{ schema: 'soty.storage-start.v1', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2 },
-    { ...good, schema: 'soty.storage-start.v1' }, { ...good, apps: 3 }, { ...good, apps: undefined }, { ...good, allowed: true }]) {
+    { ...good, schema: 'soty.storage-start.v1' }, { ...good, apps: 4 }, { ...good, rooms: 3 },
+    { ...good, apps: undefined }, { ...good, allowed: true }]) {
     assert.throws(() => requireStorageStartReceipt(value, id(1)), /storage_start_guard_missing/);
   }
 });

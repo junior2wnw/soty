@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 import { createAppsService } from '../server/index.mjs';
-import { ensureCanonicalDomain, migrateAppsSchema } from '../server/schema.mjs';
+import { ensureCanonicalDomain, ensureInitialPublication, migrateAppsSchema } from '../server/schema.mjs';
 
 const alice = { accountId: 'acceptance_alice', deviceId: 'acceptance_alice_device' };
 const bob = { accountId: 'acceptance_bob', deviceId: 'acceptance_bob_device' };
@@ -37,6 +37,7 @@ async function fixture(t, options = {}) {
         .run(id, owner.accountId, owner.accountId, `App ${index}`, 9200 + index, '/',
           JSON.stringify({ accountIds: [], communityIds: [] }), 'enabled', 1, 1, 1);
       ensureCanonicalDomain(db, { id, owner_account_id: owner.accountId, created_at: 1 }, legacy);
+      ensureInitialPublication(db, db.prepare('SELECT * FROM local_apps WHERE id=?').get(id));
     }
     db.exec('COMMIT');
   } finally { db.close(); }
@@ -60,7 +61,7 @@ async function fixture(t, options = {}) {
   return { databasePath, open, inspect };
 }
 
-test('a partial v2 schema cannot be accepted or receive a new named zone', async t => {
+test('a partial known schema cannot be accepted or receive a new named zone', async t => {
   const changes = [
     ['missing canonical uniqueness', 'DROP INDEX app_domain_canonical'],
     ['nonunique canonical index with the right name', `DROP INDEX app_domain_canonical;

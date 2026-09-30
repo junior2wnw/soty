@@ -18,8 +18,10 @@ export function readNamedOrigins(db) {
   });
 }
 
-export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', domainLimits = {}, shellOrigins = [], validateNamedZone }) {
+export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', domainLimits = {}, shellOrigins = [], validateNamedZone,
+  onRetireInTransaction, onPolicyChanged }) {
   assertApps(typeof assertActor === 'function', 'apps_actor_validator_required', 500);
+  assertApps(typeof onRetireInTransaction === 'function' && typeof onPolicyChanged === 'function', 'apps_policy_validator_required', 500);
   const limits = normalizeDomainLimits(domainLimits);
   const zoneOrigin = normalizeNamedAppZone(namedAppZone);
   function transaction(callback) {
@@ -107,6 +109,7 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
     exact(args, ['appId', 'domainId', 'requestId', 'expectedDomainsRevision']);
     const id = appId(args.appId), retiringId = domainId(args.domainId), expected = revision(args.expectedDomainsRevision);
     const requestKey = digest(textId(args.requestId)), intentHash = digest(JSON.stringify(['retire', id, retiringId, expected]));
+    let policyChanged = null;
     const result = transaction(() => {
       own(actor, id);
       const previous = replay(actor, requestKey, intentHash);
@@ -117,9 +120,13 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
       assertApps(head(id) === expected, 'app_domains_revision_conflict', 409);
       assertApps(domain.state === 'bound', 'app_domain_retired', 409);
       const timestamp = now();
+      // The active set and policy epoch change in this same transaction. A
+      // receipt fault rolls back both the tombstone and its loss of authority.
+      policyChanged = onRetireInTransaction({ appId: id, domainId: retiringId });
       db.prepare("UPDATE app_domains SET state='tombstone',retired_at=? WHERE id=?").run(timestamp, retiringId);
       return commitReceipt(actor, requestKey, intentHash, 'retire', retiringId, id, timestamp);
     });
+    if (policyChanged) onPolicyChanged(policyChanged);
     return { requestId: args.requestId, ...result };
   }
   return {
