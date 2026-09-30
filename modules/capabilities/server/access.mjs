@@ -63,6 +63,16 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
   const native = createNativeBaselineGuard({ db, error: code => new AccessError(code) });
   const oauth = createOAuthBaselineGuard({ db });
 
+  function publicPrincipal(row) {
+    const connection = oauth.managed({ clientId: row.client_id, principalId: row.id });
+    if (!connection) return principalDto(row);
+    oauth.validateConnection(connection);
+    assert(connection.account_id === row.account_id && connection.client_id === row.client_id
+      && connection.principal_id === row.id, 'capabilities_storage_corrupt');
+    // Owner presentation only: a stable type marker prevents duplicated cards.
+    // It is independent of AS availability, labels, live state, and secret keys.
+    return { ...principalDto(row), managedBy: 'oauth' };
+  }
   function publicGrant(row) {
     const value = grantDto(row);
     const budget = db.prepare('SELECT * FROM cap_budgets WHERE root_grant_id=?').get(row.root_id);
@@ -302,7 +312,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
           const label = text(args.label, { max: 100 });
           const clientLabel = args.clientLabel === undefined ? label : text(args.clientLabel, { max: 100 });
           const principal = insertPrincipal(owner, label, clientLabel, time);
-          return { principal: principalDto(principal), client: { id: principal.client_id, label: clientLabel, state: 'active' } };
+          return { principal: publicPrincipal(principal), client: { id: principal.client_id, label: clientLabel, state: 'active' } };
         }
         case 'access.principals.list': {
           exact(args, ['expectedAccountId', 'limit', 'cursor']);
@@ -311,7 +321,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
           const rows = position
             ? db.prepare('SELECT * FROM cap_principals WHERE account_id=? AND (created_at<? OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?').all(owner.accountId, position.createdAt, position.createdAt, position.id, limit + 1)
             : db.prepare('SELECT * FROM cap_principals WHERE account_id=? ORDER BY created_at DESC,id DESC LIMIT ?').all(owner.accountId, limit + 1);
-          return { principals: rows.slice(0, limit).map(principalDto), cursor: pageCursor(rows, limit, fingerprint) };
+          return { principals: rows.slice(0, limit).map(publicPrincipal), cursor: pageCursor(rows, limit, fingerprint) };
         }
         case 'access.principals.revoke': {
           exact(args, ['expectedAccountId', 'principalId']);
@@ -321,7 +331,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
             db.prepare("UPDATE cap_clients SET state='revoked',revoked_at=?,policy_epoch=policy_epoch+1 WHERE id=?").run(time, principal.client_id);
             db.prepare('UPDATE cap_grants SET policy_epoch=policy_epoch+1 WHERE id IN (SELECT DISTINCT root_id FROM cap_grants WHERE principal_id=?)').run(principal.id);
           }
-          return { principal: principalDto(ownedPrincipal(owner.accountId, principal.id)) };
+          return { principal: publicPrincipal(ownedPrincipal(owner.accountId, principal.id)) };
         }
         case 'access.grants.issue': {
           exact(args, [...GRANT_KEYS, 'budget']);

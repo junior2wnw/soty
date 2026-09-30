@@ -17,6 +17,7 @@ import { attachCapabilitiesDiscovery, validateDiscoveryOrigin } from './capabili
 import { attachCapabilitiesActions, validateCapabilityAudience } from './capabilities-actions.js';
 import { buildCapabilitiesOpenApi } from './capabilities-openapi.js';
 import { startNativeRecovery } from './capabilities-recovery.js';
+import { reserveOAuthNamespaces } from './capabilities-oauth-profile.js';
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
   const shellOrigins = connectAllowedOrigins(connectOrigins);
@@ -172,6 +173,9 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     });
   });
   attachTrafficControl(app, { dataDir, isRelayConnected: (linkId) => connectors.store.isConnected(linkId) });
+  // Protocol URLs never become a cached-looking application shell when the
+  // optional authorization server or MCP transport is unavailable.
+  reserveOAuthNamespaces(app);
   app.use(express.static(distDir, {
     etag: true,
     index: false,
