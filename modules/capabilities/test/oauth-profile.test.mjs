@@ -60,11 +60,13 @@ test('initial Interaction needs no result and rejects disabled protocol fields, 
     prompt: { ...value.prompt, details: { missingOIDCScope: undefined } } };
   assert.deepEqual(snap(optional).payload, value);
   assert.deepEqual(snap({ ...value, trusted: [] }).payload.trusted, []);
+  assert.equal(snap({ ...value, params: { ...value.params, response_mode: 'query' } }).payload.params.response_mode, 'query');
   const variants = [
     { ...value, deviceCode: undefined }, { ...value, returnTo: ORIGIN + '/oauth/authorize/' + id('other') },
     { ...value, returnTo: ORIGIN + '/oauth/auth/' + value.jti },
     { ...value, params: { ...value.params, resource: [ORIGIN + '/mcp'] } },
     { ...value, params: { ...value.params, scope: 'openid notes.createDraft' } },
+    ...['form_post', 'fragment', '', ['query']].map(response_mode => ({ ...value, params: { ...value.params, response_mode } })),
     { ...value, result: { login: { accountId: 'account_1' }, error: 'access_denied' } },
     { ...value, result: { login: { accountId: 'account_1', unknown: undefined } } },
     { ...value, params: { ...value.params, state: '\ud800' } },

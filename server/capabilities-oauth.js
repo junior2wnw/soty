@@ -8,7 +8,7 @@ const check = (value, code = 'invalid_request') => { if (!value) throw new OAuth
 const UID = '[A-Za-z0-9_-]{16,128}';
 const interactionPath = new RegExp(`^/oauth/interaction/(${UID})(?:/(context|complete))?$`, 'u');
 const resumePath = new RegExp(`^/oauth/authorize/${UID}$`, 'u');
-const AUTHORIZE_FIELDS = new Set(['client_id', 'redirect_uri', 'response_type', 'scope', 'resource',
+const AUTHORIZE_FIELDS = new Set(['client_id', 'redirect_uri', 'response_type', 'response_mode', 'scope', 'resource',
   'code_challenge', 'code_challenge_method', 'state', 'prompt']);
 const epoch = () => Math.floor(Date.now() / 1000);
 
@@ -181,9 +181,13 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
           && profile.isRegisteredRedirect({ clientId: parameters.client_id, redirectUri: parameters.redirect_uri }));
         if (parameters.state !== undefined) check(Buffer.byteLength(parameters.state) <= 512);
         if (parameters.prompt !== undefined) check(parameters.prompt === 'none');
+        if (parameters.response_mode !== undefined) check(parameters.response_mode === 'query');
       } else check(split < 0);
       // Match Express's standard provider mount while retaining originalUrl for
-      // the outer bounded ingress. The provider does all protocol processing.
+      // the outer bounded ingress. The RFC 8414 alias has no /oauth prefix from
+      // which the provider could infer its mount, so supply the trusted baseUrl
+      // for both discovery paths as an ordinary Express mount would.
+      req.baseUrl = '/oauth';
       req.url = discoveryAlias ? '/.well-known/openid-configuration' : target.slice('/oauth'.length);
       callback(req, res);
     } catch (error) { safeFailure(req, res, error); }

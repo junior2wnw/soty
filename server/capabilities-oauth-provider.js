@@ -99,7 +99,7 @@ export function createSotyOAuthProvider({ profile, oauth }) {
       names: { session: cookiePrefix + 'session', interaction: cookiePrefix + 'interaction', resume: cookiePrefix + 'resume' },
       long: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: '/oauth', maxAge: 600000 },
       short: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: '/oauth', maxAge: 600000 } },
-    responseTypes: ['code'], scopes: [], claims: {}, pkce: { required: () => true },
+    responseTypes: ['code'], scopes: [], claims: {}, clientAuthMethods: ['none'], pkce: { required: () => true },
     clockTolerance: 0, acceptQueryParamAccessTokens: false, clientBasedCORS: () => false,
     findAccount: async (_ctx, accountId) => ({ accountId, claims: async () => ({ sub: accountId }) }),
     // A previous browser session is not consent to a new connection. Only the
@@ -137,6 +137,13 @@ export function createSotyOAuthProvider({ profile, oauth }) {
       lease = ingress.enter(ctx.req, ctx.res);
       if (ctx.method === 'POST') ctx.req.body = await lease.readForm();
       await next();
+      // The maintained OIDC engine also knows scopes/response modes which this
+      // deliberately narrower OAuth facade does not admit. Describe the actual
+      // public profile; keep endpoint generation and protocol work in Provider.
+      if (ctx.oidc?.route === 'discovery' && ctx.status === 200) {
+        ctx.body.scopes_supported = [OAUTH_SCOPE];
+        ctx.body.response_modes_supported = ['query'];
+      }
       // The maintained provider uses an internal autoform when the selected
       // account differs from its short AS session. That new HTML document has
       // its own CSP, independent of the preceding Soty consent page.

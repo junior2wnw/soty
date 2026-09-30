@@ -184,13 +184,14 @@ export function createOAuthUnboundProfile(configuration) {
         }
       } else {
         oauthProviderId(value.cid);
-        oauthData(value.params, ['client_id', 'redirect_uri', 'response_type', 'scope', 'resource', 'code_challenge', 'code_challenge_method', 'state', 'prompt']);
+        oauthData(value.params, ['client_id', 'redirect_uri', 'response_type', 'response_mode', 'scope', 'resource', 'code_challenge', 'code_challenge_method', 'state', 'prompt']);
         const params = value.params;
         oauthCheck(OAUTH_CLIENTS.includes(params.client_id) && params.response_type === 'code' && params.scope === OAUTH_SCOPE
           && [resources.http, resources.mcp].includes(params.resource) && params.code_challenge_method === 'S256');
         oauthCheck(typeof params.code_challenge === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(params.code_challenge));
         redirect(params.client_id, params.redirect_uri);
         optional(params, 'state', item => oauthString(item, 512));
+        optional(params, 'response_mode', item => oauthCheck(item === 'query'));
         optional(params, 'prompt', item => oauthCheck(['login', 'consent', 'login consent', 'consent login'].includes(item)));
         oauthData(value.prompt, ['name', 'reasons', 'details']); oauthId(value.prompt.name);
         strings(value.prompt.reasons, 32); oauthData(value.prompt.details);
