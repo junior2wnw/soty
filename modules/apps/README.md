@@ -37,9 +37,13 @@ Register `apps.operations` and its synchronous `execute({op,args,actor})` as a C
 | `apps.register` | `{hostDeviceId,connectorId,name,port,entryPath?,grants?}` | `{app}` |
 | `apps.update` | `{appId,name?,grants?}` | `{app}` |
 | `apps.revoke` | `{appId}` | `{app}` |
-| `apps.launch` | `{appId}` | `{launchUrl,expiresAt}` |
+| `apps.launch` | `{appId,domainId?,path?}` | `{launchUrl,expiresAt}` |
 
 Grants are `{accountIds:[],communityIds:[]}`. Private is the default. Registration is idempotent for the same owner/connector/port and exact normalized configuration; a different configuration on an existing port is rejected instead of silently overwriting another cell.
+
+Apps schema3 adds [named addresses](../../docs/implementation/p3-domains.md) and an [explicit publication policy](../../docs/implementation/p3-publication-contract.md). Claiming an alias does not activate it. The owner selects active aliases and `restricted` or `anyone`; public exposure requires acknowledgement of the entire fixed loopback port and runtime profile. `listed` is independent of launch permission. Canonical origins retain private grants even when a named alias is public. Named production zones must use a registrable site separate from every trusted Soty shell; use the host's `validateNamedAppZone` integration before opening storage. A domain configuration is not proof of DNS ownership or TLS availability.
+
+Launch defaults to the canonical address or uses the exact supplied domainId. Tickets are30s, one-use and bound to app, origin, target and policy epoch. Session exchange rechecks current authority after reading its body. Account sessions have an absolute1h deadline; anonymous public requests get renewable30s leases that cannot revive after expiry. Invalid presented session cookies never silently become anonymous. Continuous checks cover HTTP and WebSocket asynchronous boundaries; audit rechecks idle access every10s by default, subject to event-loop delay. Already delivered bytes and upstream side effects cannot be undone by revocation. See [transport acceptance](../../docs/implementation/p3-runtime-transport.md) for current evidence and outstanding browser/release gates.
 
 Public app data: `{id,name,ownerAccountId,hostDeviceId,state,createdAt,updatedAt}`. Only the owner receives `{connectorId,port,entryPath,grants}`. States are `starting`, `ready`, `stopped`, `offline`, `revoked`. The registry and normalized grants are SQLite-backed and survive restarts. No HTML/HTTP bodies are persisted in the registry.
 
@@ -74,7 +78,7 @@ A one-use launch ticket in a URL fragment is exchanged on the app origin for `__
 
 Supported: HTML/CSS/JS, same-origin forms/fetch, binary assets, HTTP streaming and WebSocket. Browser requests use relative URLs or `location.origin`. Loopback host/port cannot change during a request. External redirects are rejected. Credentials, cookies and arbitrary browser headers are not forwarded upstream; app `Set-Cookie` is intentionally unsupported in v1. Apps requiring their own cookie login, hardcoded localhost URLs, service workers, cross-origin resources or OAuth need a separate explicit compatibility contract.
 
-Limits: 32 streams/connector; 48 KiB chunks with one acknowledged chunk in flight per stream; 8 MiB request body; 64 MiB HTTP response; 1 MiB WebSocket message, including fragmented messages; 30-second head/ack wait; two-minute stream idle timeout. WebSocket compression is not negotiated. Incremental framing checks enforce mask direction, control-frame validity and message size without storing a whole message.
+Limits: 32 streams/connector, with public-basis traffic limited to24 so eight slots remain available to granted users; 48 KiB chunks with one acknowledged chunk in flight per stream; 8 MiB request body; 64 MiB HTTP response; 1 MiB WebSocket message, including fragmented messages; 30-second head/ack wait; two-minute stream idle timeout. Signing in without a grant still uses public capacity. WebSocket compression is not negotiated. Incremental framing checks enforce mask direction, control-frame validity and message size without storing a whole message. Unsafe HTTP methods and all WebSocket upgrades require the exact application Origin; browser cookies and Authorization are never forwarded as application credentials.
 
 ## OpenCode proposal
 

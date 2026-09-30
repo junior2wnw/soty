@@ -48,7 +48,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ${localConnectorOrigin}${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
       "manifest-src 'self'",
       "worker-src 'self'",
-      `frame-src 'self'${legacyFrameSource ? ` ${legacyFrameSource}` : ''}`,
+      `frame-src 'self'${[...new Set([legacyFrameSource, ...(app.locals.appsService?.frameSources() || [])].filter(Boolean))].map(origin => ` ${origin}`).join('')}`,
       "frame-ancestors 'none'",
       "form-action 'self'"
     ].join("; "));

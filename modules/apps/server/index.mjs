@@ -12,12 +12,13 @@ import { createHostClassifier } from './hosts.mjs';
 
 export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', ...domainOperations, ...publicationOperations]);
 const cookieName = 'soty_app_session';
+const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], actorActive = () => false,
-  canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000 } = {}) {
+  canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -91,10 +92,25 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       else stream.res.destroy();
     }
   }
+  function checkAccess(holder, { renewPublic = false } = {}) {
+    // Refresh only an unexpired anonymous lease. Account sessions, including
+    // signed public visitors, keep their original absolute deadline.
+    holder.decision = publications.recheckAccess(holder.decision,
+      renewPublic && holder.decision.subject === 'public' ? { ttlMs: publicLeaseMs } : {});
+    return holder.decision;
+  }
+  function checkStream(stream) {
+    assertApps(!stream.closed, 'app_stream_closed', 502);
+    try { return checkAccess(stream.session, { renewPublic: true }); }
+    catch (error) { closeStream(stream, 'app_access_revoked'); throw error; }
+  }
+  function retainAccess(holder) {
+    try { checkAccess(holder); return true; } catch { return false; }
+  }
   function invalidateAccess(filter = {}) {
-    for (const [key, item] of tickets) if (matches(item, filter) && !canUse(item.actor, row(item.appId))) tickets.delete(key);
-    for (const [key, item] of sessions) if (matches(item, filter) && !canUse(item.actor, row(item.appId))) sessions.delete(key);
-    for (const stream of live.values()) if (matches(stream.session, filter) && !canUse(stream.session.actor, row(stream.appId))) closeStream(stream, 'app_access_revoked');
+    for (const [key, item] of tickets) if (matches(item, filter) && !retainAccess(item)) tickets.delete(key);
+    for (const [key, item] of sessions) if (matches(item, filter) && !retainAccess(item)) sessions.delete(key);
+    for (const stream of live.values()) if (matches(stream.session, filter)) { try { checkStream(stream); } catch {} }
   }
   function invalidateConnector({ hostDeviceId, connectorId } = {}) {
     for (const channel of channels.values()) if ((!hostDeviceId || channel.identity.hostDeviceId === hostDeviceId) && (!connectorId || channel.identity.connectorId === connectorId)) {
@@ -103,15 +119,16 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   const unsubscribe = subscribeMembership?.(event => { invalidateAccess({ communityId: event.communityId }); });
   const auditTimer = setInterval(() => {
-    for (const [key, item] of tickets) if (item.expiresAt <= now()) tickets.delete(key);
-    for (const [key, item] of sessions) if (item.expiresAt <= now()) sessions.delete(key);
-    for (const stream of live.values()) if (stream.session.expiresAt <= now() || !canUse(stream.session.actor, row(stream.appId))) closeStream(stream, 'app_access_revoked');
+    invalidateAccess();
+  }, Math.max(25, Math.min(10_000, Number.isFinite(accessAuditMs) ? accessAuditMs : 10_000)));
+  auditTimer.unref();
+  const heartbeatTimer = setInterval(() => {
     for (const channel of channels.values()) {
       if (now() - channel.lastSeenAt > 45_000) { channel.ws.terminate(); continue; }
       channel.ws.ping();
     }
   }, 10_000);
-  auditTimer.unref();
+  heartbeatTimer.unref();
   const connectorAuditTimer = setInterval(() => {
     for (const channel of channels.values()) {
       if (channel.checking) continue; channel.checking = true;
@@ -122,11 +139,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }, Math.max(250, Math.min(30_000, connectorAuthCheckMs)));
   connectorAuditTimer.unref();
   function matches(item, filter) {
-    return (!filter.appId || item.appId === filter.appId) && (!filter.accountId || item.actor.accountId === filter.accountId) && (!filter.deviceId || item.actor.deviceId === filter.deviceId);
+    const decision = item.decision;
+    return (!filter.appId || decision.appId === filter.appId) && (!filter.accountId || decision.actor?.accountId === filter.accountId) && (!filter.deviceId || decision.actor?.deviceId === filter.deviceId);
   }
   function sync(channel) {
     if (!channel) return;
-    const apps = db.prepare("SELECT id,port,entry_path FROM local_apps WHERE connector_key=? AND state='enabled'").all(channel.key)
+    // Legacy connector v1 receives the route selected by the single current
+    // target. It does not attest a target revision or immutable source code.
+    const apps = db.prepare(`SELECT a.id,t.port,t.entry_path FROM local_apps a
+      JOIN app_publications p ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
+      JOIN app_runtime_targets t ON t.app_id=p.app_id AND t.revision=p.active_target_revision AND t.owner_account_id=p.owner_account_id
+      WHERE t.connector_key=? AND a.state='enabled'`).all(channel.key)
       .map(app => ({ id: app.id, port: app.port, entryPath: app.entry_path }));
     send(channel, { type: 'sync', apps });
   }
@@ -166,7 +189,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         SELECT app_id FROM local_app_grants WHERE kind='account' AND principal_id=? UNION
         SELECT app_id FROM local_app_grants WHERE kind='community' AND principal_id IN (SELECT value FROM json_each(?))) ORDER BY created_at`)
         .all(actor.accountId, actor.accountId, JSON.stringify(activeCommunityIds(actor.accountId))) : db.prepare('SELECT * FROM local_apps ORDER BY created_at').all();
-      return { configured: Boolean(template), apps: candidates.filter(app =>
+      return { configured: Boolean(template || readNamedOrigins(db).length), apps: candidates.filter(app =>
         (canUse(actor, app) || app.owner_account_id === actor.accountId) && (!community || JSON.parse(app.grants_json).communityIds.includes(community))).map(app => publicApp(app, actor)) };
     }
     if (op === 'apps.register') {
@@ -195,12 +218,19 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     }
     const id = appId(args.appId), app = row(id);
     if (op === 'apps.launch') {
-      exact(args, ['appId']); assertApps(canUse(actor, app), 'apps_access_denied', 403); assertApps(template, 'apps_origin_not_configured', 503);
-      assertApps(channels.has(app.connector_key), 'app_offline', 503);
+      exact(args, ['appId', 'domainId', 'path']);
+      assertApps(app?.state === 'enabled', 'apps_access_denied', 403);
+      const domain = args.domainId === undefined
+        ? db.prepare("SELECT * FROM app_domains WHERE app_id=? AND role='canonical'").get(id)
+        : db.prepare('SELECT * FROM app_domains WHERE app_id=? AND id=?').get(id, textId(args.domainId));
+      assertApps(domain, args.domainId === undefined ? 'apps_origin_not_configured' : 'apps_access_denied', args.domainId === undefined ? 503 : 403);
+      const decision = publications.decideAccess({ domainId: domain.id, origin: domain.origin, actor });
+      const entryPath = runtimePath(args.path ?? decision.route.entryPath);
+      assertApps(channels.has(decision.route.connectorKey), 'app_offline', 503);
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
-      const ticket = secret(), expiresAt = now() + 30_000;
-      tickets.set(digest(ticket), { appId: id, actor: { accountId: actor.accountId, deviceId: actor.deviceId }, revision: app.revision, expiresAt });
-      return { launchUrl: `${originFor(id)}/_soty/boot#${ticket}`, expiresAt };
+      const ticket = secret();
+      tickets.set(digest(ticket), { decision, entryPath });
+      return { launchUrl: `${domain.origin}/_soty/boot#${ticket}`, expiresAt: decision.expiresAt };
     }
     if (op === 'apps.revoke') {
       exact(args, ['appId']);
@@ -231,73 +261,86 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     });
     invalidateAccess({ appId: id }); return { app: publicApp(row(id), actor) };
   }
-  function originFor(id) { return domains.originFor(id); }
   function appForRequest(req) {
     const host = hostClassifier.classifyHost(req.headers.host);
     if (host.kind === 'outside') return null;
-    if (host.kind !== 'canonical') return { hostStatus: host.kind, domainState: host.state };
-    return row(host.appId) || { missing: true };
+    if (!['canonical', 'alias'].includes(host.kind)) return { hostStatus: host.kind };
+    return { ...(row(host.appId) || { missing: true }), appHost: host };
   }
   function hostFailure(app) {
+    if (app.appHost?.kind === 'alias') {
+      if (app.appHost.state === 'tombstone') return { status: 410, error: 'app_address_retired' };
+      if (!db.prepare('SELECT 1 FROM app_publication_domains WHERE app_id=? AND domain_id=?').get(app.appHost.appId, app.appHost.domainId))
+        return { status: 503, error: 'app_named_runtime_unavailable' };
+    }
     if (!app.hostStatus) return null;
     if (app.hostStatus === 'invalid') return { status: 400, error: 'invalid_app_host' };
-    if (app.hostStatus === 'alias') return app.domainState === 'tombstone'
-      ? { status: 410, error: 'app_address_retired' } : { status: 503, error: 'app_named_runtime_unavailable' };
     return { status: 404, error: 'app_not_found' };
   }
   function setStatusPolicy(res) {
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox");
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
   }
-  function sessionFor(req, app) {
+  function sessionFor(req, app, { requireCookie = false } = {}) {
     const name = `__Host-${cookieName}`;
-    const values = String(req.headers.cookie || '').split(';').map(part => part.trim()).filter(part => part.startsWith(`${name}=`));
+    const values = String(req.headers.cookie || '').split(';').map(part => part.trim()).filter(part => part.split('=', 1)[0].trim() === name);
+    if (values.length === 0) {
+      assertApps(!requireCookie && app.appHost.kind === 'alias', 'app_session_required', 401);
+      return { decision: publications.decideAccess({ domainId: app.appHost.domainId, origin: app.appHost.origin }) };
+    }
     assertApps(values.length === 1, 'app_session_required', 401);
     const token = values[0].slice(name.length + 1); assertApps(/^[A-Za-z0-9_-]{43}$/u.test(token), 'app_session_required', 401);
     const session = sessions.get(digest(token));
-    assertApps(session && session.appId === app.id && session.expiresAt > now() && canUse(session.actor, app), 'apps_access_denied', 403);
+    assertApps(session && session.decision.appId === app.id && session.decision.domainId === app.appHost.domainId && session.decision.origin === app.appHost.origin, 'apps_access_denied', 403);
+    checkAccess(session);
     return session;
   }
-  function setPolicy(res, id) {
+  function setPolicy(res, origin) {
     const frameOrigins = [...origins].join(' ');
     res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Origin-Agent-Cluster', '?1');
-    if (new URL(originFor(id)).protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    if (new URL(origin).protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   }
   async function routeApp(req, res, app) {
-    assertApps(!app.missing, 'app_not_found', 404); setPolicy(res, app.id);
+    assertApps(!app.missing, 'app_not_found', 404); setPolicy(res, app.appHost.origin);
     const path = requestPath(req.url || '/');
+    assertOrigin(req, app.appHost.origin, !['GET', 'HEAD'].includes(req.method));
     if (path === '/_soty/boot' && req.method === 'GET') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.end('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Соты · Открываем приложение</title><body><p role="status">Открываем приложение…</p><script>const t=location.hash.slice(1);history.replaceState(null,"",location.pathname);fetch("/_soty/session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticket:t})}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);location.replace(v.entryPath)}).catch(()=>{document.querySelector("p").textContent="Доступ закончился. Откройте приложение заново в Сотах."})</script></body></html>'); return;
     }
+    if (path === '/_soty/session' && req.method === 'GET') {
+      sessionFor(req, app, { requireCookie: true }); json(res, 200, { ok: true }); return;
+    }
     if (path === '/_soty/session' && req.method === 'POST') {
-      assertApps(req.headers.origin === originFor(app.id), 'app_origin_denied', 403);
       const body = JSON.parse((await readBounded(req, 2048)).toString('utf8'));
-      assertApps(typeof body.ticket === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(body.ticket), 'app_ticket_invalid', 403);
+      assertApps(body && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).length === 1
+        && typeof body.ticket === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(body.ticket), 'app_ticket_invalid', 403);
       const key = digest(body.ticket), ticket = tickets.get(key); tickets.delete(key);
-      assertApps(ticket && ticket.appId === app.id && ticket.expiresAt > now() && ticket.revision === app.revision && canUse(ticket.actor, app), 'app_ticket_invalid', 403);
+      assertApps(ticket && ticket.decision.appId === app.id && ticket.decision.domainId === app.appHost.domainId && ticket.decision.origin === app.appHost.origin, 'app_ticket_invalid', 403);
+      // The request body was asynchronous: only this fresh branded recheck may
+      // mint a session. A stale app row or successful launch is not authority.
+      const decision = publications.recheckAccess(ticket.decision, { ttlMs: accountSessionMs });
       assertApps(sessions.size < 4096, 'apps_sessions_busy', 429);
-      const value = secret(), session = { ...ticket, expiresAt: now() + 60 * 60_000 }; sessions.set(digest(value), session);
+      const value = secret(); sessions.set(digest(value), { decision, entryPath: ticket.entryPath });
       // CHIPS keys this session by both application host and embedding site.
       // A preview embedded in Soty does not depend on unrestricted third-party
       // cookies, and cannot reuse the session from an unrelated top-level site.
       res.setHeader('Set-Cookie', `__Host-${cookieName}=${value}; HttpOnly; Path=/; SameSite=None; Secure; Partitioned; Max-Age=3600`);
-      json(res, 200, { ok: true, entryPath: app.entry_path }); return;
+      json(res, 200, { ok: true, entryPath: ticket.entryPath }); return;
     }
-    assertApps(!path.startsWith('/_soty/'), 'app_reserved_path', 404);
+    runtimePath(path);
     const session = sessionFor(req, app);
-    assertApps(!req.headers.origin || req.headers.origin === originFor(app.id), 'app_origin_denied', 403);
     assertApps(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method), 'app_method_denied', 405);
     const stream = openStream(app, session, { kind: 'http', req, res });
-    send(stream.channel, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers: cleanHeaders(req.headers) });
     res.once('close', () => closeStream(stream, 'app_client_closed'));
     try {
+      sendStream(stream, { type: 'open', id: stream.id, kind: 'http', appId: app.id, path, method: req.method, headers: cleanHeaders(req.headers) });
       let count = 0;
       for await (const chunk of req) { count += chunk.length; assertApps(count <= LIMITS.requestBytes, 'app_request_too_large', 413); await sendChunks(stream, chunk); }
-      send(stream.channel, { type: 'end', id: stream.id });
+      sendStream(stream, { type: 'end', id: stream.id });
     } catch (error) { closeStream(stream, error.code || 'app_request_failed'); }
   }
   function handleRequest(req, res) {
@@ -307,22 +350,31 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     void routeApp(req, res, app).catch(error => { if (!res.headersSent) respondFailure(req, res, error.status || 400, error.code || 'app_invalid_request'); else res.destroy(); }); return true;
   }
   function openStream(app, session, values) {
-    const channel = channels.get(app.connector_key); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
+    const decision = checkAccess(session, { renewPublic: true });
+    const channel = channels.get(decision.route.connectorKey); assertApps(channel && channel.ws.readyState === 1, 'app_offline', 503);
     assertApps(channel.streams.size < LIMITS.streams, 'app_device_busy', 429);
-    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, session, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
+    if (decision.accessBasis === 'public') assertApps([...channel.streams.values()].filter(item => item.session.decision.accessBasis === 'public').length < publicStreams, 'app_device_busy', 429);
+    const id = randomBytes(16).toString('hex'), stream = { ...values, id, appId: app.id, channel, session: { decision }, pending: new Map(), sendSeq: 0, recvSeq: 0, received: 0, closed: false, head: false, receiving: false,
       ...(values.kind === 'ws' ? { requestLimiter: createWebSocketLimiter({ masked: true }), responseLimiter: createWebSocketLimiter({ masked: false }) } : {}) };
     stream.timer = setTimeout(() => closeStream(stream, 'app_response_timeout'), LIMITS.headMs); stream.timer.unref();
     channel.streams.set(id, stream); live.set(id, stream); return stream;
   }
+  function sendStream(stream, frame) {
+    checkStream(stream);
+    assertApps(send(stream.channel, frame), 'app_offline', 503);
+  }
   async function sendChunks(stream, bytes) {
+    checkStream(stream);
     if (stream.kind === 'ws') stream.requestLimiter.push(bytes);
     for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
-      assertApps(!stream.closed, 'app_stream_closed'); const seq = ++stream.sendSeq;
+      checkStream(stream); const seq = ++stream.sendSeq;
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => { stream.pending.delete(seq); reject(new AppsError('app_ack_timeout')); }, LIMITS.ackMs); timer.unref();
         stream.pending.set(seq, { resolve, reject, timer });
-        if (!send(stream.channel, { type: 'data', id: stream.id, seq, data: bytes.subarray(offset, offset + CHUNK_BYTES).toString('base64') })) { clearTimeout(timer); stream.pending.delete(seq); reject(new AppsError('app_offline')); }
+        try { sendStream(stream, { type: 'data', id: stream.id, seq, data: bytes.subarray(offset, offset + CHUNK_BYTES).toString('base64') }); }
+        catch (error) { clearTimeout(timer); stream.pending.delete(seq); reject(error); }
       });
+      checkStream(stream);
     }
   }
   function send(channel, frame) {
@@ -344,17 +396,25 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       wss.handleUpgrade(req, socket, head, ws => acceptChannel(ws)); return true;
     }
     if (!app) return false;
+    let stream;
     try {
       assertApps(!app.missing && req.method === 'GET' && req.headers.upgrade?.toLowerCase() === 'websocket', 'app_upgrade_denied', 403);
-      assertApps(req.headers.origin === originFor(app.id), 'app_origin_denied', 403);
-      const path = requestPath(req.url || '/'); assertApps(!path.startsWith('/_soty/'), 'app_reserved_path', 404);
-      const session = sessionFor(req, app), stream = openStream(app, session, { kind: 'ws', socket, req, upgradeHead: head });
+      assertOrigin(req, app.appHost.origin, true);
+      const path = runtimePath(req.url || '/');
+      const session = sessionFor(req, app); stream = openStream(app, session, { kind: 'ws', socket, req, upgradeHead: head });
       socket.pause(); socket.on('error', () => closeStream(stream, 'app_client_closed')); socket.once('close', () => closeStream(stream, 'app_client_closed'));
       const headers = {};
       for (const name of ['sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol']) if (typeof req.headers[name] === 'string' && req.headers[name].length < 2048) headers[name] = req.headers[name];
-      headers.origin = originFor(app.id);
-      send(stream.channel, { type: 'open', id: stream.id, kind: 'ws', appId: app.id, path, method: 'GET', headers });
-    } catch { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); }
+      headers.origin = app.appHost.origin;
+      sendStream(stream, { type: 'open', id: stream.id, kind: 'ws', appId: app.id, path, method: 'GET', headers });
+    } catch (error) {
+      if (stream) closeStream(stream, error.code || 'app_upgrade_denied');
+      else {
+        const status = [400, 401, 403, 404, 429, 503].includes(error.status) ? error.status : 403;
+        const phrase = { 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found', 429: 'Too Many Requests', 503: 'Service Unavailable' }[status];
+        socket.end(`HTTP/1.1 ${status} ${phrase}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n`);
+      }
+    }
     return true;
   }
   function acceptChannel(ws) {
@@ -363,6 +423,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     ws.on('error', () => {});
     ws.on('pong', () => { if (channel) channel.lastSeenAt = now(); });
     ws.on('message', async (bytes, binary) => {
+      let stream;
       try {
         assertApps(!binary && bytes.length <= FRAME_BYTES, 'app_bad_frame'); const frame = JSON.parse(bytes.toString('utf8'));
         if (!channel) {
@@ -384,20 +445,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           const app = row(appId(frame.appId)); assertApps(app?.connector_key === channel.key && ['ready', 'stopped'].includes(frame.state), 'app_bad_observation');
           channel.observations.set(app.id, { state: frame.state, at: now() }); return;
         }
-        const stream = channel.streams.get(frame.id); if (!stream) return;
+        stream = channel.streams.get(frame.id); if (!stream) return;
+        checkStream(stream);
         if (frame.type === 'ack') {
           const item = stream.pending.get(frame.seq); assertApps(item, 'app_bad_ack'); stream.pending.delete(frame.seq); clearTimeout(item.timer); item.resolve(); return;
         }
         if (frame.type === 'cancel') { closeStream(stream, ['app_stopped', 'app_response_timeout'].includes(frame.error) ? frame.error : 'app_upstream_failed', false); return; }
-        assertApps(canUse(stream.session.actor, row(stream.appId)), 'app_access_revoked', 403);
         if (frame.type === 'head') {
           assertApps(!stream.head && Number.isInteger(frame.status) && frame.status >= 100 && frame.status <= 599, 'app_bad_head');
+          assertApps(stream.kind === 'ws' || frame.status >= 200, 'app_bad_head');
           stream.head = true; clearTimeout(stream.timer); stream.timer = setTimeout(() => closeStream(stream, 'app_idle_timeout'), LIMITS.idleMs); stream.timer.unref();
           if (stream.kind === 'ws') {
             assertApps(frame.status === 101, 'app_upgrade_failed'); const headers = cleanHeaders(frame.headers, 'upgrade');
             assertApps(headers['sec-websocket-accept'] && !headers['sec-websocket-extensions'], 'app_upgrade_failed');
+            checkStream(stream);
             stream.socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join('')}\r\n`);
-            void (async () => { try { if (stream.upgradeHead.length) await sendChunks(stream, stream.upgradeHead); for await (const chunk of stream.socket) await sendChunks(stream, chunk); send(channel, { type: 'end', id: stream.id }); } catch { closeStream(stream, 'app_client_closed'); } })();
+            void (async () => { try { if (stream.upgradeHead.length) await sendChunks(stream, stream.upgradeHead); for await (const chunk of stream.socket) await sendChunks(stream, chunk); sendStream(stream, { type: 'end', id: stream.id }); } catch (error) { closeStream(stream, error.code || 'app_client_closed'); } })();
           } else {
             for (const [key, value] of Object.entries(cleanHeaders(frame.headers, 'response'))) stream.res.setHeader(key, value);
             if (frame.location) stream.res.setHeader('Location', requestPath(frame.location));
@@ -413,17 +476,20 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
           if (stream.kind !== 'ws' && stream.received > LIMITS.responseBytes) { closeStream(stream, 'app_response_too_large'); return; }
           stream.receiving = true; stream.recvSeq = frame.seq; stream.timer.refresh();
           await writeChunk(stream.kind === 'ws' ? stream.socket : stream.res, chunk); stream.receiving = false;
-          send(channel, { type: 'ack', id: stream.id, seq: frame.seq }); return;
+          sendStream(stream, { type: 'ack', id: stream.id, seq: frame.seq }); return;
         }
         if (frame.type === 'end') {
+          assertApps(stream.head && !stream.receiving, 'app_bad_end');
           if (stream.kind === 'ws') stream.socket.end(); else stream.res.end();
           closeStream(stream, 'app_stream_complete', false); return;
         }
         throw new AppsError('app_bad_frame');
       } catch (error) {
-        if (channel && typeof error?.code === 'string' && ['app_access_revoked', 'app_response_too_large'].includes(error.code)) {
-          for (const stream of channel.streams.values()) if (!canUse(stream.session.actor, row(stream.appId))) closeStream(stream, 'app_access_revoked');
-        } else ws.terminate();
+        // Once a frame belongs to an admitted stream, failures are local to it.
+        // An expired lease or a bad upstream response cannot evict neighbours.
+        // Unattributed framing/authentication faults still terminate the channel.
+        if (stream) closeStream(stream, error.code || 'app_upstream_failed');
+        else ws.terminate();
       }
     });
     ws.once('close', () => {
@@ -441,11 +507,25 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       recheckAccess(value, options) { assertApps(!closed, 'apps_closed', 503); return publications.recheckAccess(value, options); },
     }),
     classifyHost: hostClassifier.classifyHost,
-    configured: Boolean(template), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
-    close() { if (closed) return; closed = true; clearInterval(auditTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); wss.close(); db.close(); },
+    frameSources() {
+      return [...new Set(db.prepare('SELECT scheme,suffix,port FROM app_domain_zones').all()
+        .map(zone => `${zone.scheme}://*.${zone.suffix}${zone.port ? `:${zone.port}` : ''}`))];
+    },
+    configured: Boolean(template || readNamedOrigins(db).length), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
+    close() { if (closed) return; closed = true; clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
   };
 }
 function exact(value, allowed) { assertApps(Object.keys(value).every(key => allowed.includes(key)), 'unexpected_argument'); }
+function runtimePath(value) {
+  const path = requestPath(value), decoded = decodeURIComponent(new URL(path, 'https://runtime.invalid').pathname);
+  assertApps(!decoded.startsWith('/_soty/') && decoded !== '/_soty', 'app_reserved_path', 404);
+  return path;
+}
+function assertOrigin(req, origin, required) {
+  let count = 0;
+  for (let i = 0; i < (req.rawHeaders?.length || 0); i += 2) if (req.rawHeaders[i].toLowerCase() === 'origin') count++;
+  assertApps(count <= 1 && (req.headers.origin === origin || (!required && req.headers.origin === undefined)), 'app_origin_denied', 403);
+}
 function validateTemplate(value, origins) {
   const template = normalizeLegacyTemplate(value);
   if (!template) return '';
@@ -454,6 +534,10 @@ function validateTemplate(value, origins) {
 }
 function json(res, status, body) { if (res.destroyed || res.writableEnded) return; res.statusCode = status; res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(body)); }
 function respondFailure(req, res, status, error) {
+  // A rejected upload may still have unread bytes. Mark this HTTP connection
+  // non-reusable before ending the response: exiting its async body iterator
+  // destroys the request, so advertising keep-alive would strand the next GET.
+  if (!req.readableEnded && !res.headersSent) { res.shouldKeepAlive = false; res.setHeader('Connection', 'close'); }
   if (!String(req.headers.accept || '').includes('text/html')) { json(res, status, { ok: false, error }); return; }
   const message = ['apps_access_denied', 'app_access_revoked'].includes(error) ? ['Доступ закрыт', 'Владелец может пригласить вас снова.']
     : error === 'app_offline' ? ['Устройство не в сети', 'Приложение появится, когда устройство подключится.']
