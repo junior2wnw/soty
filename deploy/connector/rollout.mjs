@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SafeError } from './docker-api.mjs';
 import {addApprovedPolicy,readApprovedPolicy} from './application-policy.mjs';
+import {guardStorageStart, storageReaderLabel, storageReaders} from './storage-guard.mjs';
 const clone=x=>structuredClone(x);
 const sorted=x=>Array.isArray(x)?x.map(sorted):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,sorted(x[k])])):x;
 export const hash=x=>createHash('sha256').update(JSON.stringify(sorted(x))).digest('hex');
@@ -19,6 +20,9 @@ export function createConfig(original,image,tx,revision=original.Config.Labels?.
   requireThat(!host.AutoRemove,'original_auto_remove_unsupported');
   requireThat(!String(host.NetworkMode||'').startsWith('container:'),'shared_container_network_unsupported');
   config.Image=image;config.Labels={...config.Labels,[label]:tx,[label+'.original']:original.Id,...(revision?{'org.opencontainers.image.revision':revision}:{})};
+  // Reader metadata must come from the immutable image, never an inherited
+  // container label from the previous application.
+  delete config.Labels[storageReaderLabel];
   const result={...config,HostConfig:host,NetworkingConfig:{EndpointsConfig:endpoints}};
   addApprovedPolicy(result,applicationPolicy);return result;
 }
@@ -36,8 +40,23 @@ export function preservationHash(config) {
 export function safeStatus(s) {requireThat(s?.ok===true&&Number.isSafeInteger(s.count)&&s.count>=0&&Array.isArray(s.activeJobs)&&s.activeJobs.length===s.count&&typeof s.maintenance==='boolean','maintenance_status_invalid');requireThat(s.activeJobs.every(j=>typeof j.id==='string'&&typeof j.status==='string'),'maintenance_jobs_invalid');requireThat(s.queuedSha256==null||(/^[a-f0-9]{64}$/.test(s.queuedSha256)&&s.count>0&&s.activeJobs.every(j=>j.status==='queued')),'maintenance_queued_fingerprint_invalid');return {ok:true,activeJobs:s.activeJobs.map(j=>({id:j.id,status:j.status})),count:s.count,maintenance:s.maintenance,schema:s.schema,queuedSha256:s.queuedSha256||null};}
 export function pendingMatches(status, expected) {return expected ? status.count>0&&status.queuedSha256===expected : status.count===0;}
 export class Rollout {
-  constructor({engine,maintenance,ready,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,record,attempts,sleep});this.state={phase:'new'};}
+  constructor({engine,maintenance,ready,storageProbe,record=async()=>{},attempts=4,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){Object.assign(this,{engine,maintenance,ready,storageProbe,record,attempts,sleep});this.state={phase:'new'};}
   async note(phase,fields={}){this.state={...this.state,...fields,phase};await this.record({...this.state});}
+  storageContext(){return {engine:this.engine,probeImage:this.args.storageProbeImage,transactionId:this.args.transaction,getState:()=>this.state,record:fields=>this.note(this.state.phase,fields),probe:this.storageProbe,wait:this.sleep};}
+  async guardStart(id,{running=false}={}){return guardStorageStart(this.storageContext(),await this.engine.inspect(id),{running});}
+  async restartPolicy(id,policy){
+    const runtime=await this.engine.inspect(id);
+    const storageGuard=policy.Name!=='no'?await this.guardStart(id,{running:runtime.State.Running}):undefined;
+    await this.note(this.state.phase,{restartPolicyIntent:{id,policy,...(storageGuard?{storageGuard}:{})}});
+    await this.reconcile(()=>this.engine.request('POST',`/containers/${id}/update`,{RestartPolicy:policy}),id,c=>hash(c.HostConfig.RestartPolicy)===hash(policy));
+    await this.note(this.state.phase,{restartPolicyIntent:null});
+  }
+  async startApplication(id){
+    const storageGuard=await this.guardStart(id);
+    await this.note(this.state.phase,{applicationStart:{id,storageGuard,state:'starting'}});
+    await this.reconcile(()=>this.engine.start(id),id,c=>c.State.Running&&c.Image===storageGuard.image);
+    await this.note(this.state.phase,{applicationStart:{id,storageGuard,state:'confirmed'}});
+  }
   async reconcile(action,id,predicate) {
     let error;try{await action();}catch(e){error=e;}
     for(let i=0;i<this.attempts;i++){try{const c=await this.engine.inspect(id);if(predicate(c))return c;}catch{}await this.sleep(250);}
@@ -49,12 +68,15 @@ export class Rollout {
     const old=await this.engine.inspect(args.originalId);requireThat(old.Id===args.originalId&&old.Image===args.originalImage&&old.Name==='/soty-online-chat','original_identity_mismatch');
     requireThat(old.State.Running,'original_not_running');
     const image=await this.engine.image(args.candidateImage);requireThat(image.Id===args.candidateImage&&image.Config?.Labels?.['org.opencontainers.image.revision']===args.revision,'candidate_revision_mismatch');
+    storageReaders(image);
+    requireThat(/^sha256:[a-f0-9]{64}$/.test(args.storageProbeImage||''),'storage_probe_image_required');
+    requireThat((await this.engine.image(args.storageProbeImage)).Id===args.storageProbeImage,'storage_probe_image_identity');
     if(args.applicationPolicy)await readApprovedPolicy(args.applicationPolicy.source,args.applicationPolicy.sha256);
     this.args=args;this.original=old;this.originalName=old.Name.slice(1);this.config=createConfig(old,args.candidateImage,args.transaction,args.revision,args.applicationPolicy);this.fingerprint=preservationHash(this.config);
     const baseline=await this.ready('original',this);requireThat(baseline?.ok===true&&baseline.modelProxies,'original_model_readiness_missing');
     this.healthSha256=hash(baseline.modelProxies);
     this.originalPolicySha256=baseline.applicationPolicySha256||null;
-    this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,revision:args.revision,transaction:args.transaction,configurationSha256:this.fingerprint,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null,preserveQueuedSha256:args.preserveQueuedSha256||null};
+    this.state={phase:'guarded',originalId:old.Id,originalImage:old.Image,candidateImage:image.Id,storageProbeImage:args.storageProbeImage,revision:args.revision,transaction:args.transaction,configurationSha256:this.fingerprint,modelReadinessSha256:this.healthSha256,applicationPolicySha256:args.applicationPolicy?.sha256||null,preserveQueuedSha256:args.preserveQueuedSha256||null};
     if(args.legacyRecovery)this.state.legacyRecovery=true;
   }
   validateCandidate(c,{stopped=false}={}) {
@@ -81,13 +103,14 @@ export class Rollout {
       await this.note('stopping_original');
       await this.reconcile(()=>this.engine.stop(this.original.Id),this.original.Id,c=>!c.State.Running);stopped=true;
       await this.note('original_stopped');
+      await this.restartPolicy(this.original.Id,{Name:'no',MaximumRetryCount:0});
       s=await this.status();requireThat(pendingMatches(s,this.args.preserveQueuedSha256),'offline_admission_race');
       try{s=safeStatus(await this.maintenance('enter',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;s=await this.status();}
       requireThat(pendingMatches(s,this.args.preserveQueuedSha256)&&s.maintenance,'maintenance_enter_failed');entered=true;
       await this.note('maintenance_entered');
       await this.reconcile(()=>this.engine.rename(this.original.Id,'soty-connector-previous-'+this.args.transaction),this.original.Id,c=>c.Name==='/soty-connector-previous-'+this.args.transaction);
       await this.reconcile(()=>this.engine.rename(this.candidate.Id,this.originalName),this.candidate.Id,c=>c.Name==='/'+this.originalName);
-      await this.reconcile(()=>this.engine.start(this.candidate.Id),this.candidate.Id,c=>c.State.Running);
+      await this.startApplication(this.candidate.Id);
       await this.note('candidate_started');
       const running=await this.engine.inspect(this.candidate.Id);this.validateCandidate(running);
       const ready=await this.ready('candidate',this);requireThat(ready?.ok===true&&ready.storageReady===true&&ready.schema==='soty.connector-storage-ready.v1'&&ready.maintenance===true,'candidate_storage_not_ready');
@@ -100,7 +123,8 @@ export class Rollout {
       requireThat(!s.maintenance,'maintenance_leave_unresolved');
       await this.note('committed');return this.state;
     }catch(error){
-      if(error.code==='maintenance_helper_unresolved'){await this.note('recovery_required',{failureCode:error.code});throw error;}
+      if(error.code==='maintenance_helper_unresolved'||error.code==='storage_helper_unresolved'
+        ||(error.code==='operation_unresolved'&&(this.state.applicationStart?.state==='starting'||this.state.restartPolicyIntent))){await this.note('recovery_required',{failureCode:error.code});throw error;}
       if(leaveAttempted){await this.note('recovery_required',{failureCode:'leave_boundary_ambiguous'});throw new SafeError('leave_boundary_ambiguous');}
       try{
         // No mutation before stop is needed when preflight failed. An ambiguous
@@ -108,7 +132,10 @@ export class Rollout {
         const old=await this.engine.inspect(this.original.Id);
         if(!stopped&&old.State.Running){if(error.code==='operation_unresolved')throw new SafeError('stop_outcome_unresolved');await this.note('aborted',{failureCode:error.code||'activation_failed'});throw error;}
         const candidate=await this.engine.inspect(this.candidate.Id);
+        await this.restartPolicy(candidate.Id,{Name:'no',MaximumRetryCount:0});
         if(candidate.State.Running)await this.reconcile(()=>this.engine.stop(candidate.Id),candidate.Id,c=>!c.State.Running);
+        // Refuse before the legacy connector rollback helper can mutate storage.
+        await this.guardStart(this.original.Id);
         if(entered){const back=safeStatus(await this.maintenance('rollback',this));requireThat(pendingMatches(back,this.args.preserveQueuedSha256)&&back.maintenance,'rollback_not_quiescent');}
         const latest=await this.engine.inspect(this.candidate.Id);
         if(latest.Name==='/'+this.originalName)await this.reconcile(()=>this.engine.rename(latest.Id,'soty-connector-next-'+this.args.transaction),latest.Id,c=>c.Name==='/soty-connector-next-'+this.args.transaction);
@@ -116,7 +143,8 @@ export class Rollout {
         if(prev.Name!=='/'+this.originalName)await this.reconcile(()=>this.engine.rename(prev.Id,this.originalName),prev.Id,c=>c.Name==='/'+this.originalName);
         // Rollback helper leaves the marker in place while restoring compatible
         // JSON. Legacy original does not admit through the new marker contract.
-        await this.reconcile(()=>this.engine.start(this.original.Id),this.original.Id,c=>c.State.Running&&c.Image===this.args.originalImage);
+        await this.restartPolicy(this.original.Id,this.original.HostConfig.RestartPolicy);
+        await this.startApplication(this.original.Id);
         const restoredHealth=await this.ready('original',this);requireThat(restoredHealth?.ok===true&&restoredHealth.modelProxies&&hash(restoredHealth.modelProxies)===this.healthSha256,'original_health_failed');
         if(entered){let cleared;try{cleared=safeStatus(await this.maintenance('leave',this));}catch(error){if(error.code==='maintenance_helper_unresolved')throw error;cleared=await this.status();}requireThat(!cleared.maintenance,'restoration_marker_uncleared');}
         await this.note('restored',{failureCode:error.code||'activation_failed'});

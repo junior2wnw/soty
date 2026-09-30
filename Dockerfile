@@ -36,6 +36,7 @@ COPY --from=build /app/modules ./modules
 COPY --from=traffic-core /out/xray /usr/local/bin/xray
 ARG REVISION
 LABEL org.opencontainers.image.revision=${REVISION}
+LABEL io.soty.storage.readers="{\"version\":1,\"readers\":{\"rooms\":[1,2]}}"
 VOLUME ["/data"]
 EXPOSE 8080
 CMD ["node", "server/index.js"]

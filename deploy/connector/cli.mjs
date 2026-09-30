@@ -10,7 +10,7 @@ const opts={};for(let i=3;i<process.argv.length;i+=2){if(!process.argv[i]?.start
 const action=process.argv[2];let lock,lockPath;
 try {
  if(!['prepare','promote'].includes(action)||!opts.journal)throw new SafeError('invalid_cli');
- const args={originalId:opts['original-id'],originalImage:opts['original-image'],candidateImage:opts['candidate-image'],revision:opts.revision,transaction:opts.transaction};
+ const args={originalId:opts['original-id'],originalImage:opts['original-image'],candidateImage:opts['candidate-image'],storageProbeImage:opts['storage-probe-image'],revision:opts.revision,transaction:opts.transaction};
  if(opts['preserve-queued-sha256'])args.preserveQueuedSha256=opts['preserve-queued-sha256'];
  if(opts['legacy-recovery']){
    if(opts['legacy-recovery']!=='committed-state')throw new SafeError('invalid_recovery_mode');
@@ -25,6 +25,7 @@ try {
    const prior=JSON.parse(await readFile(opts.journal,'utf8'));
    const approval=JSON.parse(await readFile(opts['reviewed-receipt'],'utf8'));
    if(approval.approved!==true||approval.originalId!==args.originalId||approval.candidateId!==prior.candidateId||approval.configurationSha256!==prior.configurationSha256||approval.revision!==args.revision)throw new SafeError('supervised_receipt_mismatch');
+   if(approval.storageProbeImage!==args.storageProbeImage||prior.storageProbeImage!==args.storageProbeImage)throw new SafeError('supervised_storage_probe_mismatch');
    if(args.legacyRecovery ? approval.legacyRecovery!==true||prior.legacyRecovery!==true||approval.legacyNoAssignedJobsObserved!==true : approval.legacyNoPendingWritesObserved!==true)throw new SafeError('supervised_drain_or_recovery_receipt_missing');
    if((approval.preserveQueuedSha256||null)!==(args.preserveQueuedSha256||null)||(prior.preserveQueuedSha256||null)!==(args.preserveQueuedSha256||null))throw new SafeError('supervised_queued_receipt_mismatch');
    if((approval.applicationPolicySha256||null)!==(args.applicationPolicy?.sha256||null)||(prior.applicationPolicySha256||null)!==(args.applicationPolicy?.sha256||null))throw new SafeError('supervised_policy_receipt_mismatch');

@@ -179,6 +179,10 @@ export async function rebaseHost({ oldConfigFile, newConfigFile, sourceRoot, sta
     await verifySnapshot();
     await ready({ entry, maintenance: false, idle: true });
     await verifySnapshot();
+    // The already verified serving image supplies only Node for trusted host
+    // probe source. The future signed candidate cannot choose this helper.
+    if (config.storageProbeImage === undefined) config.storageProbeImage = active.image;
+    requireThat((await engine.image(config.storageProbeImage)).Id === config.storageProbeImage, 'rebase_probe_image_missing');
     requireThat(!await exists(newConfigFile), 'rebase_config_exists');
     // Recheck ancestors before reserving a new, exclusive generation. A failure
     // after reservation intentionally leaves evidence for operator inspection;

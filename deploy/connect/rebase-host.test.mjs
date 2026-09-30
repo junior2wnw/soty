@@ -103,7 +103,7 @@ test('rebase publishes complete journals, preserves sequence and old bytes, and 
   assert.deepEqual(f.runtime, runtimeBefore); assert.ok(f.readiness() > 0);
   assert.ok(f.calls.every(([verb]) => ['inspect', 'image'].includes(verb)));
   const config = await json(f.options.newConfigFile);
-  assert.deepEqual(config, { ...f.config, sourceRoot: f.options.sourceRoot, stateDir: f.options.stateDir, revision: f.options.revision, initialRuntimeHasConnect: true, appOriginTemplate: 'https://{appId}.soty.example.org' });
+  assert.deepEqual(config, { ...f.config, sourceRoot: f.options.sourceRoot, stateDir: f.options.stateDir, revision: f.options.revision, initialRuntimeHasConnect: true, storageProbeImage: imageId, appOriginTemplate: 'https://{appId}.soty.example.org' });
   const host = await json(path.join(config.stateDir, 'host-state.json'));
   assert.deepEqual(host.images, { [f.module.tree]: { ...f.host.images[f.module.tree], baseline: true } });
   assert.deepEqual(host.active, f.host.active); assert.equal(host.transaction, null); assert.equal(host.lastTransaction, undefined);

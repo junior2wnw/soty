@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { HostController, candidateConfig, moduleTree, validateConfig, productionReady, atomicState, originalPreservationHash } from './host-controller.mjs';
 import { createRelease, recoverRelease } from '../../modules/connect/update/index.mjs';
+import { storageReaderLabel, currentStorageReaders } from '../connector/storage-guard.mjs';
 
 const id = n => n.toString(16).padStart(64, '0');
 const image = n => 'sha256:' + id(n);
@@ -23,7 +24,7 @@ function original() {
 }
 
 class Engine {
-  constructor() { this.items = new Map([[id(1), original()]]); this.images = new Map([[image(1), { Id: image(1), Config: { Labels: {} } }]]); this.events = []; this.next = 2; this.drop = null; this.ignore = null; }
+  constructor() { this.items = new Map([[id(1), original()]]); this.images = new Map([[image(1), { Id: image(1), Config: { Labels: { [storageReaderLabel]: currentStorageReaders } } }]]); this.events = []; this.next = 2; this.drop = null; this.ignore = null; }
   async inspect(key) { const value = this.items.get(key) || [...this.items.values()].find(c => c.Name === '/' + key); if (!value) throw Object.assign(new Error('missing'), { code: 'engine_http_404' }); return clones(value); }
   async image(key) { if (!this.images.has(key)) throw new Error('image missing'); return clones(this.images.get(key)); }
   async create(name, config) {
@@ -31,7 +32,7 @@ class Engine {
     const { HostConfig, NetworkingConfig, ...Config } = clones(config), key = id(this.next++);
     // Docker merges image labels into the container even when create supplies labels.
     Config.Labels = { ...(this.images.get(Config.Image)?.Config?.Labels || {}), ...(Config.Labels || {}) };
-    const mounts = (HostConfig.Mounts || []).map(m => ({ Type: m.Type, ...(m.Type === 'volume' ? { Name: m.Source } : {}), Source: m.Source, Destination: m.Target, RW: !m.ReadOnly }));
+    const mounts = (HostConfig.Mounts || []).map(m => ({ Type: m.Type, ...(m.Type === 'volume' ? { Name: m.Source } : {}), Source: m.Type === 'volume' ? '/docker/volumes/' + m.Source : m.Source, Destination: m.Target, RW: !m.ReadOnly }));
     for (const bind of HostConfig.Binds || []) { const [Source, Destination, flags] = bind.split(':'); mounts.push({ Type: 'bind', Source, Destination, RW: flags !== 'ro' }); }
     this.items.set(key, { Id: key, Image: Config.Image, Name: '/' + name, Config, HostConfig, Mounts: mounts, NetworkSettings: { Networks: NetworkingConfig.EndpointsConfig }, State: { Running: false, Status: 'created' } });
     this.events.push('create'); return { Id: key };
@@ -39,7 +40,7 @@ class Engine {
   async stop(key) { this.events.push('stop:' + key); if (this.ignore === 'stop') return; const c = this.items.get(key); c.State = { Running: false, Status: 'exited', ExitCode: 0 }; for (const endpoint of Object.values(c.NetworkSettings.Networks)) delete endpoint.MacAddress; if (this.drop === 'stop') throw new Error('lost'); }
   async start(key) { this.events.push('start:' + key); if (this.ignore === 'start') return; assert.ok(![...this.items.values()].some(c => c.Id !== key && c.State.Running), 'two application writers'); const c = this.items.get(key); c.State = { Running: true, Status: 'running' }; if (this.drop === 'start') throw new Error('lost'); }
   async rename(key, name) { this.events.push('rename'); assert.ok(![...this.items.values()].some(c => c.Id !== key && c.Name === '/' + name)); this.items.get(key).Name = '/' + name; }
-  async request(method, route, body) { assert.equal(method, 'POST'); const match = route.match(/^\/containers\/([a-f0-9]{64})\/update$/); assert.ok(match); this.items.get(match[1]).HostConfig.RestartPolicy = clones(body.RestartPolicy); this.events.push('policy:' + match[1]); return {}; }
+  async request(method, route, body) { if (method === 'GET' && route.startsWith('/volumes/')) { const Name = decodeURIComponent(route.slice('/volumes/'.length)); const mount = [...this.items.values()].flatMap(c => c.Mounts || []).find(m => m.Name === Name); return { Name, Driver: 'local', Scope: 'local', Options: null, Mountpoint: mount?.Source }; } if (method === 'GET' && route === '/containers/json') return clones([...this.items.values()].filter(c => c.State.Running)); assert.equal(method, 'POST'); const match = route.match(/^\/containers\/([a-f0-9]{64})\/update$/); assert.ok(match); this.items.get(match[1]).HostConfig.RestartPolicy = clones(body.RestartPolicy); this.events.push('policy:' + match[1]); return {}; }
 }
 
 async function fixture(options = {}) {
@@ -54,10 +55,11 @@ async function fixture(options = {}) {
   const trustFile = path.join(root, 'trust.json'); await writeFile(trustFile, JSON.stringify({ keys: { test: pair.publicKey.export({ type: 'spki', format: 'pem' }) }, threshold: 1 }));
   const release = await createRelease({ directory: candidate, privateKey: pair.privateKey, keyId: 'test', sequence: 1, expiresAt: '2099-01-01' });
   const bootstrapRelease = path.join(releaseDirectory, 'initial.json'); await writeFile(bootstrapRelease, JSON.stringify(release));
-  const config = { source: 'https://soty.example/releases/stable.json', trustFile, sourceRoot, stateDir, releaseDirectory, revision, runtimeName: 'soty-online-chat', healthOrigin: 'http://127.0.0.1:18182', initialRuntimeHasConnect: false, dockerSocket: path.join(root, 'docker.sock'), backupCommand: [process.execPath, path.join(sourceRoot, 'backup.mjs'), '{containerId}'] };
+  const config = { source: 'https://soty.example/releases/stable.json', trustFile, sourceRoot, stateDir, releaseDirectory, revision, storageProbeImage: image(1), runtimeName: 'soty-online-chat', healthOrigin: 'http://127.0.0.1:18182', initialRuntimeHasConnect: false, dockerSocket: path.join(root, 'docker.sock'), backupCommand: [process.execPath, path.join(sourceRoot, 'backup.mjs'), '{containerId}'] };
   const engine = new Engine(); let marker = false, owner = false, fetches = 0, backups = 0;
   const deps = {
     engine, pause: async () => {}, checkSource: async () => {}, fetch: async () => { fetches++; return release; },
+    storageProbe: async () => ({ ok: true, schema: 'soty.storage-format.v1', rooms: 1 }),
     ready: async ({ entry, maintenance }) => { if (options.healthFailure && entry.hasConnect) throw Object.assign(new Error('unsafe raw details'), { code: 'readiness_deadline' }); assert.equal(marker, maintenance); return { modelsHash: 'c'.repeat(64), policyHash: null }; },
     probe: async (verb, runtime) => {
       engine.events.push('probe:' + verb); if (verb === 'enter') { assert.equal(runtime.State.Running, false); marker = true; owner = true; }
@@ -69,7 +71,7 @@ async function fixture(options = {}) {
       if (argv[0] === 'docker') {
         assert.equal(details.timeoutMs, 1200000); const file = argv[argv.indexOf('--iidfile') + 1];
         const tree = argv[argv.indexOf('--label') + 1].split('=')[1];
-        engine.images.set(image(2), { Id: image(2), Config: { Labels: { 'org.opencontainers.image.revision': revision, 'io.soty.connect.tree': tree } } }); await writeFile(file, image(2)); return;
+        engine.images.set(image(2), { Id: image(2), Config: { Labels: { 'org.opencontainers.image.revision': revision, 'io.soty.connect.tree': tree, [storageReaderLabel]: currentStorageReaders } } }); await writeFile(file, image(2)); return;
       }
       backups++; engine.events.push('backup'); assert.equal((await engine.inspect(argv[2])).State.Running, false);
       if (options.backupFailure) throw Object.assign(new Error('secret backup detail'), { code: 'command_failed' });
@@ -291,4 +293,76 @@ test('configuration rejects embedded state, unpinned backup executable and non-H
 
 test('host recovery engine is pinned with the whole host release and equal to reviewed portable updater', async () => {
   assert.equal(await readFile(new URL('./update-engine.mjs', import.meta.url), 'utf8'), await readFile(new URL('../../modules/connect/update/index.mjs', import.meta.url), 'utf8'));
+});
+
+test('v2 candidate failure never restarts JSON-only original or restores its automatic restart policy', async () => {
+  const f = await fixture({ healthFailure: true });
+  f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 1, readers: { rooms: [1] } });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v1', rooms: f.engine.events.includes('start:' + id(2)) ? 2 : 1 });
+  const probes = [], probe = f.deps.probe;
+  f.deps.probe = async (verb, runtime, ...rest) => { probes.push({ verb, id: runtime.Id, afterCandidate: f.engine.events.includes('start:' + id(2)) }); return probe(verb, runtime, ...rest); };
+  await assert.rejects(f.create().run());
+  const old = await f.engine.inspect(id(1));
+  assert.equal(old.State.Running, false); assert.equal(old.HostConfig.RestartPolicy.Name, 'no');
+  assert.ok(!f.engine.events.includes('start:' + id(1)));
+  assert.ok(!probes.some(p => p.id === id(1) && p.afterCandidate), 'refuse before old offline status/enter/leave helper');
+  assert.ok((await f.readState()).transaction);
+});
+
+test('unlabelled candidate fails before stopping original even if its container could inherit a label', async () => {
+  const f = await fixture(); const command = f.deps.command;
+  f.engine.items.get(id(1)).Config.Labels[storageReaderLabel] = currentStorageReaders;
+  f.deps.command = async (...a) => { const result = await command(...a); if (a[0][0] === 'docker') delete f.engine.images.get(image(2)).Config.Labels[storageReaderLabel]; return result; };
+  await assert.rejects(f.create().run());
+  assert.equal((await f.engine.inspect(id(1))).State.Running, true);
+  assert.ok(!f.engine.events.some(e => e.startsWith('stop:')));
+});
+
+test('old pending start without durable format receipt cannot be approved by recovery', async () => {
+  const f = await fixture(); f.engine.ignore = 'start';
+  await assert.rejects(f.create().run());
+  const state = await f.readState();
+  assert.equal(state.transaction.operation.kind, 'start');
+  delete state.transaction.operation.storageGuard;
+  await atomicState(path.join(f.config.stateDir, 'host-state.json'), state);
+  const starts = f.engine.events.filter(e => e.startsWith('start:')).length;
+  await assert.rejects(f.create().run());
+  assert.equal(f.engine.events.filter(e => e.startsWith('start:')).length, starts);
+  assert.equal((await f.readState()).transaction.operation.storageGuard, undefined);
+  assert.equal((await f.engine.inspect(id(1))).State.Running, false);
+});
+
+test('restored journal from an older controller needs a fresh compatible reader proof before settlement', async () => {
+  const f = await fixture({ healthFailure: true }); let restored;
+  f.deps.write = async (file, value) => { if (value.transaction?.phase === 'restored') restored = clones(value); return atomicState(file, value); };
+  await assert.rejects(f.create().run());
+  assert.equal(restored.transaction.phase, 'restored');
+  const c = f.create(); c.state = restored;
+  delete f.engine.images.get(image(1)).Config.Labels[storageReaderLabel];
+  await assert.rejects(c.settle(), /storage_reader_unknown/);
+  assert.equal(c.state.transaction.phase, 'restored');
+});
+
+test('changed pinned host source refuses before baseline load, recovery or restored catch settlement effects', async () => {
+  const f = await fixture(); const calls = [];
+  f.deps.checkSource = async () => { calls.push('source'); throw Object.assign(new Error('changed'), { code: 'source_host_changed' }); };
+  f.deps.recover = async () => { calls.push('recover'); };
+  const c = f.create();
+  c.state = { transaction: { phase: 'restored' } };
+  c.load = async () => { calls.push('load'); };
+  await assert.rejects(c.run(), /source_host_changed/);
+  assert.ok(!calls.includes('load')); assert.ok(!calls.includes('recover'));
+  assert.deepEqual(f.engine.events, []);
+  assert.equal(f.counters().fetches, 0);
+  assert.equal(c.state.transaction.phase, 'restored');
+});
+
+test('recovery activation and settlement recheck the host pin before helper or Docker inspection', async () => {
+  const f = await fixture();
+  f.deps.checkSource = async () => { throw Object.assign(new Error('changed'), { code: 'source_revision_changed' }); };
+  const c = f.create(); c.state = { transaction: { phase: 'restored' } };
+  f.engine.inspect = async () => { throw new Error('must not inspect'); };
+  await assert.rejects(c.activate(f.target), { code: 'source_revision_changed' });
+  await assert.rejects(c.settle(), { code: 'source_revision_changed' });
+  assert.deepEqual(f.engine.events, []);
 });

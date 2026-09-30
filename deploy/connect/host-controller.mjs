@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { DockerApi, SafeError, httpJson } from '../connector/docker-api.mjs';
 import { createConfig, preservationHash, hash } from '../connector/rollout.mjs';
 import { modelReadiness } from '../connector/runtime.mjs';
+import { guardStorageStart, reconcileStorageProbe, requireStorageStartReceipt, storageReaders } from '../connector/storage-guard.mjs';
 // Pinned host code must stay available when the replaceable module is rolled back.
 import { applyRelease, recoverRelease, fetchRelease, canonical, sha256 } from './update-engine.mjs';
 
@@ -31,6 +32,7 @@ export function validateConfig(input) {
   const canary = c.canary === true;
   requireThat((canary ? /^soty-connect-canary-[a-z0-9-]+$/.test(c.runtimeName || '') && health.port !== '18182' : c.runtimeName === 'soty-online-chat' && health.port === '18182') && /^[a-f0-9]{40}$/.test(c.revision) && ['stable', 'preview'].includes(c.channel), 'config_runtime_invalid');
   requireThat(typeof c.initialRuntimeHasConnect === 'boolean', 'config_initial_runtime_required');
+  if (c.storageProbeImage !== undefined) requireThat(IMAGE.test(c.storageProbeImage), 'config_storage_probe_image_invalid');
   if (c.appOriginTemplate !== undefined) {
     requireThat(typeof c.appOriginTemplate === 'string' && /^https:\/\/\{appId\}\.(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/.test(c.appOriginTemplate), 'config_app_origin_invalid');
   }
@@ -173,6 +175,7 @@ export class HostController {
     this.apply = dependencies.apply || applyRelease;
     this.recover = dependencies.recover || recoverRelease;
     this.probeOverride = dependencies.probe;
+    this.storageProbeOverride = dependencies.storageProbe;
     this.checkSourceOverride = dependencies.checkSource;
     this.target = path.join(this.config.sourceRoot, 'modules', 'connect');
     this.file = path.join(this.config.stateDir, 'host-state.json');
@@ -191,8 +194,18 @@ export class HostController {
     for (let i = 0; i < 20; i++) { try { const c = await this.engine.inspect(id); if (predicate(c)) return c; } catch {} if (i < 19) await this.pause(250); }
     throw new SafeError('docker_operation_unresolved');
   }
+  storageContext() {
+    return { engine: this.engine, probeImage: this.config.storageProbeImage, transactionId: this.state.transaction?.id,
+      getState: () => this.state.transaction, record: fields => this.note(this.state.transaction.phase, fields),
+      probe: this.storageProbeOverride, wait: this.pause };
+  }
+  async guardStart(id, { running = false } = {}) {
+    return guardStorageStart(this.storageContext(), await this.engine.inspect(id), { running });
+  }
   async action(kind, id, value, predicate) {
-    await this.note(this.state.transaction.phase, { operation: { kind, id, ...(value === undefined ? {} : { value }) } });
+    const needsGuard = kind === 'start' || (kind === 'restartPolicy' && value.Name !== 'no');
+    const storageGuard = needsGuard ? await this.guardStart(id, { running: kind !== 'start' && (await this.engine.inspect(id)).State.Running }) : undefined;
+    await this.note(this.state.transaction.phase, { operation: { kind, id, ...(value === undefined ? {} : { value }), ...(storageGuard ? { storageGuard } : {}) } });
     try {
       if (kind === 'restartPolicy') await this.engine.request('POST', `/containers/${id}/update`, { RestartPolicy: value });
       else await this.engine[kind](id, value);
@@ -204,8 +217,15 @@ export class HostController {
     const o = this.state.transaction?.operation; if (!o) return;
     const predicates = { stop: c => !c.State.Running, start: c => c.State.Running, rename: c => c.Name === '/' + o.value, restartPolicy: c => hash(c.HostConfig.RestartPolicy) === hash(o.value) };
     requireThat(predicates[o.kind] && ID.test(o.id), 'host_operation_invalid');
+    const needsGuard = o.kind === 'start' || (o.kind === 'restartPolicy' && o.value?.Name !== 'no');
+    if (needsGuard) requireStorageStartReceipt(o.storageGuard, o.id);
     // Never resubmit a delayed mutation. An unobserved result requires an operator.
-    await this.poll(o.id, predicates[o.kind]); await this.note(this.state.transaction.phase, { operation: null });
+    const observed = await this.poll(o.id, predicates[o.kind]);
+    if (needsGuard) {
+      const fresh = await this.guardStart(o.id, { running: observed.State.Running });
+      requireThat(fresh.image === o.storageGuard.image && fresh.mountSha256 === o.storageGuard.mountSha256, 'storage_runtime_changed');
+    }
+    await this.note(this.state.transaction.phase, { operation: null });
   }
   async probe(verb, runtime) {
     if (this.probeOverride) return statusValue(await this.probeOverride(verb, runtime, this));
@@ -280,8 +300,11 @@ export class HostController {
     await this.note('backed_up', { backup: { receiptPath: receipt.receiptPath, sha256: receipt.sha256, encrypted: true } });
   }
   async activate(directory) {
+    // Recovery executes pinned host helpers just as a forward activation does.
+    await this.checkSource();
     const module = await moduleTree(directory), entry = await this.imageEntry(module.tree);
     if (this.state.transaction) {
+      await reconcileStorageProbe(this.storageContext());
       await this.reconcileOperation();
       if (this.state.transaction.helper) await this.reconcileHelper();
       requireThat(module.tree === this.state.transaction.oldTree, 'activation_recovery_target_invalid');
@@ -295,6 +318,9 @@ export class HostController {
     requireThat(original.Id === this.state.active.containerId && original.Image === this.state.active.image && original.State.Running, 'active_runtime_changed');
     const id = randomBytes(16).toString('hex'), config = candidateConfig(original, entry.image, id, this.config, module.tree);
     const oldEntry = await this.imageEntry(this.state.active.tree);
+    storageReaders(await this.engine.image(entry.image));
+    requireThat(IMAGE.test(this.config.storageProbeImage || ''), 'storage_probe_image_required');
+    requireThat((await this.engine.image(this.config.storageProbeImage)).Id === this.config.storageProbeImage, 'storage_probe_image_identity');
     const health = await this.ready({ entry: oldEntry, maintenance: false, idle: true });
     const preflight = await this.probe('status', original);
     requireThat(preflight.count === 0 && !preflight.maintenance, 'precheck_not_quiescent');
@@ -341,7 +367,7 @@ export class HostController {
   }
   compareHealth(value) { const t = this.state.transaction; requireThat(value.modelsHash === t.modelsHash && value.policyHash === t.policyHash, 'runtime_model_readiness_changed'); }
   async restore() {
-    const t = this.state.transaction; await this.reconcileOperation();
+    const t = this.state.transaction; await reconcileStorageProbe(this.storageContext()); await this.reconcileOperation();
     if (t.helper) await this.reconcileHelper();
     let next;
     if (t.nextId) { next = await this.engine.inspect(t.nextId); this.validateCandidate(next); }
@@ -366,6 +392,8 @@ export class HostController {
     }
     old = await this.original();
     if (!old.State.Running) {
+      // Reject an incompatible old reader before any helper gets its RW mount.
+      await this.guardStart(old.Id);
       const current = await this.probe('status', old);
       requireThat((!t.candidateStartAttempted || current.count === 0) && (!current.maintenance || current.owned), 'rollback_not_quiescent');
       // The same latest SQLite files stay mounted; no backup or JSON is restored.
@@ -383,6 +411,7 @@ export class HostController {
       if (marked) { const cleared = await this.probe('leave', await this.original()); requireThat(!cleared.maintenance, 'restored_marker_uncleared'); }
     } else {
       requireThat(!next?.State.Running, 'two_writers_detected');
+      await this.guardStart(old.Id, { running: true });
       const status = await this.probe('status', old);
       requireThat(!status.maintenance || status.owned, 'external_maintenance');
       if (status.owned) { this.compareHealth(await this.ready({ entry: await this.imageEntry(t.oldTree), maintenance: true })); const cleared = await this.probe('leave', old); requireThat(!cleared.maintenance, 'restored_marker_uncleared'); }
@@ -392,15 +421,19 @@ export class HostController {
   }
   async settle() {
     const t = this.state.transaction; if (!t) return;
-    requireThat(!t.operation && !t.helper, 'host_recovery_required');
+    await this.checkSource();
+    requireThat(!t.operation && !t.helper && !t.storageGuardHelper, 'host_recovery_required');
     const current = await moduleTree(this.target);
     if (t.phase === 'admitted' && current.tree === t.nextTree) {
       const c = await this.engine.inspect(t.nextId); this.validateCandidate(c);
       requireThat(c.State.Running && c.Name === '/' + this.config.runtimeName && !(await this.original()).State.Running, 'admitted_runtime_invalid');
+      await this.guardStart(c.Id, { running: true });
       this.compareHealth(await this.ready({ entry: await this.imageEntry(t.nextTree), maintenance: false }));
       this.state.active = { tree: t.nextTree, image: t.nextImage, containerId: t.nextId };
     } else if (t.phase === 'restored' && current.tree === t.oldTree) {
       const c = await this.original(); requireThat(c.State.Running && c.Name === '/' + this.config.runtimeName, 'restored_runtime_invalid');
+      // A restored journal from an older controller is not a format proof.
+      await this.guardStart(c.Id, { running: true });
       this.state.active = { tree: t.oldTree, image: t.oldImage, containerId: t.oldId };
     } else throw new SafeError('host_recovery_required');
     this.state.lastTransaction = { id: t.id, outcome: t.phase, ...(t.backup ? { backup: t.backup } : {}) };
@@ -438,6 +471,9 @@ export class HostController {
     let failed;
     try {
       await lock.writeFile(JSON.stringify({ pid: process.pid, revision: this.config.revision })); await lock.sync();
+      // A pending journal does not authorize code from a changed host checkout.
+      // This is before load(), whose baseline path can execute a status probe.
+      await this.checkSource();
       await this.load();
       await this.recover({ target: this.target, stateDir: this.moduleStateDir, activate: target => this.activate(target) });
       await this.settle();
