@@ -80,7 +80,7 @@ test('strict image reader manifest rejects missing, extended and malformed claim
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
   const baseline = JSON.parse(currentStorageReaders);
   for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
-    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [7] : [3]]) {
+    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [7] : store === 'capabilities' ? [4] : [3]]) {
       const value = clone(baseline); value.readers[store] = readers;
       assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
     }
@@ -203,12 +203,12 @@ test('reader2 requires actual v3 even on empty stores and preserves every indepe
   }
 });
 
-test('new store output and evidence require scalar v1/v2 or empty, never coerced or omitted fields', () => {
+test('new store output and evidence require known scalar versions or empty, never coerced or omitted fields', () => {
   const goodFormat = format(2, 6, 1, 1);
   const goodReceipt = { schema: 'soty.storage-start.v3', containerId: id(1), image: imageId(2), mountSha256: id(3),
     rooms: 2, apps: 6, notes: 1, capabilities: 1 };
   for (const store of ['notes', 'capabilities']) {
-    for (const value of [undefined, null, 0, 3, '1', '2', [1], [2], ['empty'], true, {}, 'unknown']) {
+    for (const value of [undefined, null, 0, store === 'capabilities' ? 4 : 3, '1', '2', '3', [1], [2], [3], ['empty'], true, {}, 'unknown']) {
       assert.throws(() => checkedStorageFormat({ ...goodFormat, [store]: value }), /storage_probe_invalid/);
       assert.throws(() => requireStorageStartReceipt({ ...goodReceipt, [store]: value }, id(1)), /storage_start_guard_missing/);
     }
@@ -240,7 +240,7 @@ test('a retained v2 helper is refused without repeating CREATE or START or rewri
 test('future Notes or Capabilities cannot become successful helper or start receipts', async () => {
   for (const store of ['notes', 'capabilities']) {
     const f = fixture({ notes: 1, capabilities: 1 });
-    f.setResult({ ...format(2, 6, 1, 1), [store]: 3 });
+    f.setResult({ ...format(2, 6, 1, 1), [store]: store === 'capabilities' ? 4 : 3 });
     await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_probe_invalid/);
     assert.ok(f.state.storageGuardHelper);
     assert.ok(!f.events.some(event => event.verb === 'start' && event.id === f.runtime.Id));

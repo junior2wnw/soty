@@ -1,0 +1,211 @@
+{
+  "format": "soty.historical-source.v1",
+  "commit": "dc1ae217424b33cca0e9a5b60a6e4e719ea0d991",
+  "schemaVersion": 3,
+  "lineage": "soty.capabilities.sqlite.v3",
+  "sourcePath": "modules/capabilities/server/schema.mjs",
+  "exportName": "initializeCapabilitiesSchema",
+  "copyMode": "exact Git blob bytes; no rewriting or EOL conversion",
+  "files": {
+    "modules/capabilities/server/schema.mjs": {
+      "gitBlob": "c93898002d96d50c8a3bce6c430f6e58653091f0",
+      "bytes": 184,
+      "sha256": "e84001c4956e5a7836ab303f4eca63630febd12f3bd0ef0ca71b27c3c4969f80"
+    },
+    "modules/capabilities/server/schema-v3.mjs": {
+      "gitBlob": "8a88fe7b9d8d1034618e769eb654de73d908f69d",
+      "bytes": 4850,
+      "sha256": "ebed724aed700443eadb84fd96476b14fea971c31f44b6779aa3b4b0b098e557"
+    },
+    "modules/capabilities/server/oauth-baseline.mjs": {
+      "gitBlob": "0c36cdc636f75d7e7b70b8a8e43007a7bfcc4e1f",
+      "bytes": 15194,
+      "sha256": "2b7d90dd4764e6c34df9c3c724b0e576ebd483a42910eaf3baffb33b15f0a9c2"
+    },
+    "modules/capabilities/server/validation.mjs": {
+      "gitBlob": "a221e1dd84d0557ce76699db85a25e2e430ec5eb",
+      "bytes": 3306,
+      "sha256": "b5cd743caa6183af7b82021eeab0381d6bea9dace806bae12b194df18c15fa9d"
+    },
+    "modules/capabilities/server/oauth-schema.mjs": {
+      "gitBlob": "4878c68c3d30e0f4818091a670bf6f231196eacc",
+      "bytes": 15301,
+      "sha256": "ca2810310bab42a1d0232459163aa34eb5088de8d610aab411c17324e1002288"
+    },
+    "modules/capabilities/server/schema-v2.mjs": {
+      "gitBlob": "c79d468b2622835b74c9c98e29e87831bb11f35d",
+      "bytes": 23868,
+      "sha256": "2622db5d571920ca070f45a0839bf0e3269f24f7f26744860c297b77be823fc8"
+    },
+    "modules/capabilities/server/native-note-contract.mjs": {
+      "gitBlob": "95be957162ec3e52b53d86c2aeced6629f1c7d0e",
+      "bytes": 1098,
+      "sha256": "1f3ab19fa9e6641e9928ce363ab6fdcbcf1421d4785256466a430ce0bcfa9c83"
+    }
+  },
+  "ddl": {
+    "bytes": 15157,
+    "sha256": "05a3a9b2025bbe351e0ec75e28c67d4b497ba35b6de4932a1a5e439232d0978f"
+  },
+  "objects": {
+    "cap_invocations_oauth_request": {
+      "type": "index",
+      "table": "cap_invocations",
+      "normalizedSha256": "066d768976d940a298809d9f03bc69c2c110b0a2dc4913c025de7c3d14721dcb"
+    },
+    "cap_invocations_original_credential": {
+      "type": "index",
+      "table": "cap_invocations",
+      "normalizedSha256": "eeb76ee3d5ad32e02f5a2e46f369f80a09beaed8312c7af881c22a1a903ab95f"
+    },
+    "cap_oauth_artifact_no_replace": {
+      "type": "trigger",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "0a8376bf5d7fa86d5d6cf5760d021818b768d69c711b6705ab2ef7f8f1507325"
+    },
+    "cap_oauth_artifact_update_guard": {
+      "type": "trigger",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "ccb3fe743f33cd4cde74a990ceb5205e76ba8ddb5a4b01d243e33f0d8a75f7f9"
+    },
+    "cap_oauth_artifacts": {
+      "type": "table",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "2eee1d8697fe5fad859267f149a0db306ee002bfc87169f04e14368d0300b424"
+    },
+    "cap_oauth_artifacts_connection": {
+      "type": "index",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "22ac59cc30322acb6c81d5a8c4ac8a1ea4981bb03f1cb31476b1a12f83337e85"
+    },
+    "cap_oauth_artifacts_grant": {
+      "type": "index",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "1198cb609e94599c39fc6c498951b1176a1f0054ead3163db1a97a5f5a9a8a71"
+    },
+    "cap_oauth_artifacts_retention": {
+      "type": "index",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "612774adeb3903b069601734b5ecfd29ff6dc340fb6555d65bbde06d20289d60"
+    },
+    "cap_oauth_artifacts_session": {
+      "type": "index",
+      "table": "cap_oauth_artifacts",
+      "normalizedSha256": "1f933e64ef47992f048604b9829284a4ede8cfdb888fb8dc0116c689c8c9f5f8"
+    },
+    "cap_oauth_connection_admission": {
+      "type": "trigger",
+      "table": "cap_oauth_connections",
+      "normalizedSha256": "249c34d529b2a454ad47879115daf72c415bf00cc3eb765881af829e240eccd0"
+    },
+    "cap_oauth_connection_no_delete": {
+      "type": "trigger",
+      "table": "cap_oauth_connections",
+      "normalizedSha256": "f913e946e1c694a762f13b22be120ffc9ddc6939b8a550daf8542400ca703683"
+    },
+    "cap_oauth_connection_no_replace": {
+      "type": "trigger",
+      "table": "cap_oauth_connections",
+      "normalizedSha256": "2e215b183fcbcfbeb16d3c72ffb5ed12bb3f49b2ca6eb13045dcdd069df56a0c"
+    },
+    "cap_oauth_connection_update_guard": {
+      "type": "trigger",
+      "table": "cap_oauth_connections",
+      "normalizedSha256": "e8ae8151e0fd277bd88e9ec96395e96feaed3162be97c4fd3d3b79431cad8595"
+    },
+    "cap_oauth_connections": {
+      "type": "table",
+      "table": "cap_oauth_connections",
+      "normalizedSha256": "af5c316d36015403e14a46d2e6ff2d30690df6eeb7eaa3608a83f30ff7434dd6"
+    },
+    "cap_oauth_connections_account": {
+      "type": "index",
+      "table": "cap_oauth_connections",
+      "normalizedSha256": "8e11e24db9532b5c0d6cb8111fface535ee8fe6b8ad827578d906e8df051f864"
+    },
+    "cap_oauth_credential_admission": {
+      "type": "trigger",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "69a3f95b579b2ead3df9995841d5a37412188c19805407c230029b3118ba5694"
+    },
+    "cap_oauth_credential_delete_guard": {
+      "type": "trigger",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "7da01d33c3f6e3821c2b3d82bc33f39b62402cbf1c2018bd7aa5c983b9ccf082"
+    },
+    "cap_oauth_credential_no_replace": {
+      "type": "trigger",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "099a2a36e572836b731e9670b39a0e91e9b21349271458bd63256c16e7f138d8"
+    },
+    "cap_oauth_credential_no_update": {
+      "type": "trigger",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "8a931aa60569f58c004aa07beefc642e66576652fc0142cbdfff58053414ae4c"
+    },
+    "cap_oauth_credential_row_guard": {
+      "type": "trigger",
+      "table": "cap_credentials",
+      "normalizedSha256": "9c8551cd448f8ea8726eb63d2b80fac76e0714c51b8bf8d3a9622e55a2c1dadc"
+    },
+    "cap_oauth_credential_row_no_replace": {
+      "type": "trigger",
+      "table": "cap_credentials",
+      "normalizedSha256": "956136aaa0981052c7de341ca33edd5f4fd359e1e6183ddf31fc73c4a3b1b79d"
+    },
+    "cap_oauth_credentials": {
+      "type": "table",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "0b845c33f9978cae3e19d5ca1793d106701d1a6afc71ce4b22865ce646f202fa"
+    },
+    "cap_oauth_credentials_connection": {
+      "type": "index",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "dea2786b7a4a84d1ab30415e68b37dd297872f850f09f30a8af3035111915f92"
+    },
+    "cap_oauth_credentials_expiry": {
+      "type": "index",
+      "table": "cap_oauth_credentials",
+      "normalizedSha256": "3cf4844ae32c6ec10391ee9c82bf94fc7d61c8051958fdc6a9550724c9103246"
+    },
+    "cap_oauth_interaction_no_replace": {
+      "type": "trigger",
+      "table": "cap_oauth_interactions",
+      "normalizedSha256": "9d1682cb1da9372de9788b24b5f65ce2301053795d290cc4de94a23f554f9fdf"
+    },
+    "cap_oauth_interaction_update_guard": {
+      "type": "trigger",
+      "table": "cap_oauth_interactions",
+      "normalizedSha256": "1cde48ca203a2a9ec067f19f83781b41fca74425e519b822b13a28794a680a21"
+    },
+    "cap_oauth_interactions": {
+      "type": "table",
+      "table": "cap_oauth_interactions",
+      "normalizedSha256": "96c8ea8c7a020d2252aac140ad177087f6e43bc9beaf44729d3bfcf8e30387f9"
+    },
+    "cap_oauth_interactions_expiry": {
+      "type": "index",
+      "table": "cap_oauth_interactions",
+      "normalizedSha256": "22b577be18b0bf268229f51513e45c71424eff60c81e65761dde5ab989641995"
+    }
+  },
+  "inventory": {
+    "tables": 17,
+    "indexes": 22,
+    "triggers": 25,
+    "total": 64
+  },
+  "oldHost": {
+    "commit": "0c8db3dbdc4a428c68ff98be9597223abc4da699",
+    "sourcePath": "deploy/connector/storage-probe.mjs",
+    "gitBlob": "86e1d34c92c20c19d973dab15fa7e4868ba4f217",
+    "bytes": 35947,
+    "sha256": "6dea52e8076bce0ecdb3a1652b14920d256ec539c4a2d26f95129460ec39d6ef",
+    "closure": "Node built-ins only; exact committed bytes materialized by tests"
+  },
+  "oldDomain": {
+    "commit": "cc7f65b84e0a8f8b4fd41cf44e498ee3f21015e7",
+    "provenance": "modules/capabilities/test/fixtures/capabilities-v2/provenance.json",
+    "immutable": true
+  }
+}

@@ -170,6 +170,120 @@ const capabilitiesNativeProjections = {
   cap_native_note_intents: "invocation_id,account_id,notes_store_id,note_id,mutation_id,input_digest,input_bytes,started_at,input_purged_at",
 };
 
+// Independently frozen OAuth3 literals: dc1ae217424b33cca0e9a5b60a6e4e719ea0d991.
+const capabilitiesOAuthTables = {
+  "cap_oauth_artifacts": "CREATE TABLE cap_oauth_artifacts(\n  model TEXT NOT NULL CHECK(model IN\n    ('Session','Interaction','Grant','AuthorizationCode','RefreshToken','AccessToken')),\n  id_hash TEXT NOT NULL\n    CHECK(length(id_hash)=64 AND id_hash NOT GLOB '*[^0-9a-f]*'),\n  issuer TEXT NOT NULL,\n  profile TEXT NOT NULL CHECK(profile='oidc-provider-9.12.2-c1'),\n  key_id TEXT NOT NULL,\n  payload_cipher BLOB NOT NULL CHECK(length(payload_cipher) BETWEEN 30 AND 16412),\n  payload_digest TEXT NOT NULL\n    CHECK(length(payload_digest)=64 AND payload_digest NOT GLOB '*[^0-9a-f]*'),\n  connection_id TEXT REFERENCES cap_oauth_connections(id),\n  provider_grant_id TEXT,\n  session_uid_hash TEXT CHECK(session_uid_hash IS NULL OR\n    (length(session_uid_hash)=64 AND session_uid_hash NOT GLOB '*[^0-9a-f]*')),\n  created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),\n  expires_at INTEGER NOT NULL CHECK(expires_at BETWEEN 1 AND 9007199254740991),\n  retain_until INTEGER NOT NULL CHECK(retain_until BETWEEN 1 AND 9007199254740991),\n  consumed_at INTEGER CHECK(consumed_at BETWEEN 0 AND 9007199254740991),\n  PRIMARY KEY(model,id_hash),\n  CHECK(expires_at>created_at AND retain_until>=expires_at),\n  CHECK((model IN ('Session','Interaction') AND connection_id IS NULL AND provider_grant_id IS NULL)\n     OR (model IN ('Grant','AuthorizationCode','RefreshToken','AccessToken')\n          AND connection_id IS NOT NULL AND provider_grant_id IS NOT NULL)),\n  CHECK(consumed_at IS NULL OR\n    (model IN ('AuthorizationCode','RefreshToken')\n      AND consumed_at>=created_at AND consumed_at<expires_at)),\n  CHECK(model!='Session' OR session_uid_hash IS NOT NULL)\n) STRICT",
+  "cap_oauth_connections": "CREATE TABLE cap_oauth_connections(\n  id TEXT PRIMARY KEY,\n  account_id TEXT NOT NULL,\n  client_id TEXT NOT NULL UNIQUE REFERENCES cap_clients(id),\n  principal_id TEXT NOT NULL UNIQUE REFERENCES cap_principals(id),\n  root_grant_id TEXT NOT NULL UNIQUE REFERENCES cap_grants(id),\n  creator_device_id TEXT NOT NULL,\n  issuer TEXT NOT NULL,\n  static_client_id TEXT NOT NULL\n    CHECK(static_client_id IN ('soty-codex-cli','soty-opencode-cli')),\n  resource TEXT NOT NULL,\n  scope TEXT NOT NULL CHECK(scope='notes.createDraft'),\n  consent_digest TEXT NOT NULL\n    CHECK(length(consent_digest)=64 AND consent_digest NOT GLOB '*[^0-9a-f]*'),\n  provider_grant_id TEXT UNIQUE,\n  state TEXT NOT NULL CHECK(state IN ('active','revoked')),\n  created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),\n  expires_at INTEGER NOT NULL CHECK(expires_at BETWEEN 1 AND 9007199254740991),\n  revoked_at INTEGER CHECK(revoked_at BETWEEN 0 AND 9007199254740991),\n  CHECK(expires_at>created_at AND expires_at-created_at<=86400000),\n  CHECK((state='active' AND revoked_at IS NULL)\n     OR (state='revoked' AND revoked_at IS NOT NULL AND revoked_at>=created_at))\n) STRICT",
+  "cap_oauth_credentials": "CREATE TABLE cap_oauth_credentials(\n  credential_id TEXT PRIMARY KEY REFERENCES cap_credentials(id),\n  connection_id TEXT NOT NULL REFERENCES cap_oauth_connections(id),\n  token_digest TEXT NOT NULL UNIQUE\n    CHECK(length(token_digest)=64 AND token_digest NOT GLOB '*[^0-9a-f]*'),\n  created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),\n  expires_at INTEGER NOT NULL CHECK(expires_at BETWEEN 1 AND 9007199254740991),\n  CHECK(expires_at>created_at AND expires_at-created_at<=300000)\n) STRICT",
+  "cap_oauth_interactions": "CREATE TABLE cap_oauth_interactions(\n  uid_hash TEXT PRIMARY KEY\n    CHECK(length(uid_hash)=64 AND uid_hash NOT GLOB '*[^0-9a-f]*'),\n  issuer TEXT NOT NULL,\n  static_client_id TEXT NOT NULL\n    CHECK(static_client_id IN ('soty-codex-cli','soty-opencode-cli')),\n  resource TEXT NOT NULL,\n  redirect_uri TEXT NOT NULL,\n  request_digest TEXT NOT NULL\n    CHECK(length(request_digest)=64 AND request_digest NOT GLOB '*[^0-9a-f]*'),\n  browser_nonce_hash TEXT NOT NULL\n    CHECK(length(browser_nonce_hash)=64 AND browser_nonce_hash NOT GLOB '*[^0-9a-f]*'),\n  duration_ms INTEGER NOT NULL CHECK(duration_ms BETWEEN 1000 AND 86400000),\n  budget_limit INTEGER NOT NULL CHECK(budget_limit BETWEEN 1 AND 20),\n  created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),\n  expires_at INTEGER NOT NULL CHECK(expires_at BETWEEN 1 AND 9007199254740991),\n  decision TEXT NOT NULL CHECK(decision IN ('pending','approved','denied')),\n  decided_at INTEGER CHECK(decided_at BETWEEN 0 AND 9007199254740991),\n  decided_account_id TEXT,\n  decided_device_id TEXT,\n  connection_id TEXT UNIQUE REFERENCES cap_oauth_connections(id),\n  CHECK(expires_at>created_at AND expires_at-created_at<=600000),\n  CHECK((decision='pending' AND decided_at IS NULL AND decided_account_id IS NULL\n          AND decided_device_id IS NULL AND connection_id IS NULL)\n     OR (decision='approved' AND decided_at IS NOT NULL AND decided_account_id IS NOT NULL\n          AND decided_device_id IS NOT NULL AND connection_id IS NOT NULL)\n     OR (decision='denied' AND decided_at IS NOT NULL AND decided_account_id IS NOT NULL\n          AND decided_device_id IS NOT NULL AND connection_id IS NULL)),\n  CHECK(decided_at IS NULL OR (decided_at>=created_at AND decided_at<expires_at))\n) STRICT"
+};
+const capabilitiesOAuthIndexes = {
+  "cap_invocations_oauth_request": {
+    "table": "cap_invocations",
+    "sql": "CREATE INDEX cap_invocations_oauth_request\n  ON cap_invocations(account_id,request_key,client_id)"
+  },
+  "cap_invocations_original_credential": {
+    "table": "cap_invocations",
+    "sql": "CREATE INDEX cap_invocations_original_credential\n  ON cap_invocations(json_extract(authorization_json,'$.credentialId'))"
+  },
+  "cap_oauth_artifacts_connection": {
+    "table": "cap_oauth_artifacts",
+    "sql": "CREATE INDEX cap_oauth_artifacts_connection\n  ON cap_oauth_artifacts(connection_id,model,expires_at,id_hash)"
+  },
+  "cap_oauth_artifacts_grant": {
+    "table": "cap_oauth_artifacts",
+    "sql": "CREATE INDEX cap_oauth_artifacts_grant\n  ON cap_oauth_artifacts(provider_grant_id,model,id_hash)"
+  },
+  "cap_oauth_artifacts_retention": {
+    "table": "cap_oauth_artifacts",
+    "sql": "CREATE INDEX cap_oauth_artifacts_retention\n  ON cap_oauth_artifacts(retain_until,model,id_hash)"
+  },
+  "cap_oauth_artifacts_session": {
+    "table": "cap_oauth_artifacts",
+    "sql": "CREATE UNIQUE INDEX cap_oauth_artifacts_session\n  ON cap_oauth_artifacts(session_uid_hash) WHERE model='Session'"
+  },
+  "cap_oauth_connections_account": {
+    "table": "cap_oauth_connections",
+    "sql": "CREATE INDEX cap_oauth_connections_account\n  ON cap_oauth_connections(account_id,created_at,id)"
+  },
+  "cap_oauth_credentials_connection": {
+    "table": "cap_oauth_credentials",
+    "sql": "CREATE INDEX cap_oauth_credentials_connection\n  ON cap_oauth_credentials(connection_id,credential_id)"
+  },
+  "cap_oauth_credentials_expiry": {
+    "table": "cap_oauth_credentials",
+    "sql": "CREATE INDEX cap_oauth_credentials_expiry\n  ON cap_oauth_credentials(expires_at,credential_id)"
+  },
+  "cap_oauth_interactions_expiry": {
+    "table": "cap_oauth_interactions",
+    "sql": "CREATE INDEX cap_oauth_interactions_expiry\n  ON cap_oauth_interactions(expires_at,uid_hash)"
+  }
+};
+const capabilitiesOAuthGuards = {
+  "cap_oauth_artifact_no_replace": {
+    "table": "cap_oauth_artifacts",
+    "sql": "CREATE TRIGGER cap_oauth_artifact_no_replace\nBEFORE INSERT ON cap_oauth_artifacts\nWHEN EXISTS(SELECT 1 FROM cap_oauth_artifacts WHERE model=NEW.model AND id_hash=NEW.id_hash)\nBEGIN SELECT RAISE(ABORT,'oauth_artifact_immutable'); END"
+  },
+  "cap_oauth_artifact_update_guard": {
+    "table": "cap_oauth_artifacts",
+    "sql": "CREATE TRIGGER cap_oauth_artifact_update_guard\nBEFORE UPDATE ON cap_oauth_artifacts\nWHEN NEW.model IS NOT OLD.model OR NEW.id_hash IS NOT OLD.id_hash OR NEW.issuer IS NOT OLD.issuer\n  OR NEW.profile IS NOT OLD.profile OR NEW.key_id IS NOT OLD.key_id OR NEW.connection_id IS NOT OLD.connection_id\n  OR NEW.provider_grant_id IS NOT OLD.provider_grant_id OR NEW.session_uid_hash IS NOT OLD.session_uid_hash\n  OR NEW.created_at IS NOT OLD.created_at OR NEW.retain_until IS NOT OLD.retain_until\n  OR (OLD.consumed_at IS NOT NULL AND NEW.consumed_at IS NOT OLD.consumed_at)\n  OR (OLD.model NOT IN ('Session','Interaction') AND\n    (NEW.expires_at IS NOT OLD.expires_at OR NEW.payload_digest IS NOT OLD.payload_digest))\n  OR (OLD.model IN ('Session','Interaction') AND\n    (NEW.expires_at>OLD.created_at+600000 OR NEW.expires_at>OLD.retain_until))\nBEGIN SELECT RAISE(ABORT,'oauth_artifact_immutable'); END"
+  },
+  "cap_oauth_connection_admission": {
+    "table": "cap_oauth_connections",
+    "sql": "CREATE TRIGGER cap_oauth_connection_admission\nBEFORE INSERT ON cap_oauth_connections\nWHEN NEW.state!='active' OR NEW.revoked_at IS NOT NULL OR NEW.provider_grant_id IS NOT NULL\n  OR NOT EXISTS(SELECT 1 FROM cap_clients c\n    JOIN cap_principals p ON p.client_id=c.id\n    JOIN cap_grants g ON g.client_id=c.id AND g.principal_id=p.id\n    JOIN cap_budgets b ON b.root_grant_id=g.id\n    WHERE c.id=NEW.client_id AND c.account_id=NEW.account_id AND c.state='active' AND c.revoked_at IS NULL\n      AND p.id=NEW.principal_id AND p.account_id=NEW.account_id AND p.kind='service'\n      AND p.state='active' AND p.revoked_at IS NULL AND p.creator_device_id=NEW.creator_device_id\n      AND g.id=NEW.root_grant_id AND g.account_id=NEW.account_id AND g.creator_device_id=NEW.creator_device_id\n      AND g.root_id=g.id AND g.parent_id IS NULL AND g.depth=0 AND g.allow_delegation=0 AND g.max_depth=0\n      AND g.revoked_at IS NULL AND g.expires_at=NEW.expires_at AND g.not_before<=NEW.created_at\n      AND g.capabilities_json='[{\"capabilityId\":\"notes.createDraft\",\"version\":1}]'\n      AND g.resources_json='[\"notes:new\"]' AND g.effects_json='[\"create\"]' AND g.recipients_json='[\"soty:notes\"]'\n      AND b.unit='invocations' AND b.limit_amount BETWEEN 1 AND 20\n      AND b.reserved_amount=0 AND b.spent_amount=0)\n  OR EXISTS(SELECT 1 FROM cap_invocations WHERE client_id=NEW.client_id)\n  OR EXISTS(SELECT 1 FROM cap_credentials WHERE client_id=NEW.client_id)\n  OR EXISTS(SELECT 1 FROM cap_principals WHERE client_id=NEW.client_id AND id!=NEW.principal_id)\n  OR EXISTS(SELECT 1 FROM cap_grants WHERE client_id=NEW.client_id AND id!=NEW.root_grant_id)\nBEGIN SELECT RAISE(ABORT,'oauth_connection_binding_invalid'); END"
+  },
+  "cap_oauth_connection_no_delete": {
+    "table": "cap_oauth_connections",
+    "sql": "CREATE TRIGGER cap_oauth_connection_no_delete\nBEFORE DELETE ON cap_oauth_connections\nBEGIN SELECT RAISE(ABORT,'oauth_connection_immutable'); END"
+  },
+  "cap_oauth_connection_no_replace": {
+    "table": "cap_oauth_connections",
+    "sql": "CREATE TRIGGER cap_oauth_connection_no_replace\nBEFORE INSERT ON cap_oauth_connections\nWHEN EXISTS(SELECT 1 FROM cap_oauth_connections WHERE id=NEW.id OR client_id=NEW.client_id\n  OR principal_id=NEW.principal_id OR root_grant_id=NEW.root_grant_id\n  OR (NEW.provider_grant_id IS NOT NULL AND provider_grant_id=NEW.provider_grant_id))\nBEGIN SELECT RAISE(ABORT,'oauth_connection_immutable'); END"
+  },
+  "cap_oauth_connection_update_guard": {
+    "table": "cap_oauth_connections",
+    "sql": "CREATE TRIGGER cap_oauth_connection_update_guard\nBEFORE UPDATE ON cap_oauth_connections\nWHEN NEW.id IS NOT OLD.id OR NEW.account_id IS NOT OLD.account_id OR NEW.client_id IS NOT OLD.client_id\n  OR NEW.principal_id IS NOT OLD.principal_id OR NEW.root_grant_id IS NOT OLD.root_grant_id\n  OR NEW.creator_device_id IS NOT OLD.creator_device_id OR NEW.issuer IS NOT OLD.issuer\n  OR NEW.static_client_id IS NOT OLD.static_client_id OR NEW.resource IS NOT OLD.resource OR NEW.scope IS NOT OLD.scope\n  OR NEW.consent_digest IS NOT OLD.consent_digest OR NEW.created_at IS NOT OLD.created_at OR NEW.expires_at IS NOT OLD.expires_at\n  OR (NEW.provider_grant_id IS NOT OLD.provider_grant_id AND\n    (OLD.provider_grant_id IS NOT NULL OR NEW.provider_grant_id IS NULL OR OLD.state!='active'\n      OR NOT EXISTS(SELECT 1 FROM cap_oauth_artifacts a WHERE a.model='Grant'\n        AND a.connection_id=OLD.id AND a.issuer=OLD.issuer AND a.provider_grant_id=NEW.provider_grant_id)))\n  OR (OLD.state='revoked' AND (NEW.state IS NOT OLD.state OR NEW.revoked_at IS NOT OLD.revoked_at))\n  OR (OLD.state='active' AND NOT ((NEW.state='active' AND NEW.revoked_at IS NULL)\n    OR (NEW.state='revoked' AND NEW.revoked_at IS NOT NULL AND NEW.revoked_at>=OLD.created_at)))\nBEGIN SELECT RAISE(ABORT,'oauth_connection_immutable'); END"
+  },
+  "cap_oauth_credential_admission": {
+    "table": "cap_oauth_credentials",
+    "sql": "CREATE TRIGGER cap_oauth_credential_admission\nBEFORE INSERT ON cap_oauth_credentials\nWHEN NOT EXISTS(SELECT 1 FROM cap_oauth_connections c\n  JOIN cap_credentials k ON k.id=NEW.credential_id\n  JOIN cap_oauth_artifacts a ON a.model='AccessToken' AND a.id_hash=NEW.token_digest\n  WHERE c.id=NEW.connection_id AND c.state='active' AND c.provider_grant_id IS NOT NULL\n    AND k.digest=NEW.token_digest AND k.account_id=c.account_id AND k.client_id=c.client_id\n    AND k.principal_id=c.principal_id AND k.grant_id=c.root_grant_id AND k.audience=c.resource\n    AND k.created_at=NEW.created_at AND k.expires_at=NEW.expires_at AND k.revoked_at IS NULL\n    AND NEW.created_at>=c.created_at AND NEW.expires_at<=c.expires_at\n    AND a.connection_id=c.id AND a.issuer=c.issuer AND a.provider_grant_id=c.provider_grant_id\n    AND a.created_at=NEW.created_at AND a.expires_at=NEW.expires_at)\nBEGIN SELECT RAISE(ABORT,'oauth_credential_binding_invalid'); END"
+  },
+  "cap_oauth_credential_delete_guard": {
+    "table": "cap_oauth_credentials",
+    "sql": "CREATE TRIGGER cap_oauth_credential_delete_guard\nBEFORE DELETE ON cap_oauth_credentials\nWHEN EXISTS(SELECT 1 FROM cap_invocations WHERE json_extract(authorization_json,'$.credentialId')=OLD.credential_id)\nBEGIN SELECT RAISE(ABORT,'oauth_credential_referenced'); END"
+  },
+  "cap_oauth_credential_no_replace": {
+    "table": "cap_oauth_credentials",
+    "sql": "CREATE TRIGGER cap_oauth_credential_no_replace\nBEFORE INSERT ON cap_oauth_credentials\nWHEN EXISTS(SELECT 1 FROM cap_oauth_credentials WHERE credential_id=NEW.credential_id OR token_digest=NEW.token_digest)\nBEGIN SELECT RAISE(ABORT,'oauth_credential_immutable'); END"
+  },
+  "cap_oauth_credential_no_update": {
+    "table": "cap_oauth_credentials",
+    "sql": "CREATE TRIGGER cap_oauth_credential_no_update\nBEFORE UPDATE ON cap_oauth_credentials\nBEGIN SELECT RAISE(ABORT,'oauth_credential_immutable'); END"
+  },
+  "cap_oauth_credential_row_guard": {
+    "table": "cap_credentials",
+    "sql": "CREATE TRIGGER cap_oauth_credential_row_guard\nBEFORE UPDATE ON cap_credentials\nWHEN EXISTS(SELECT 1 FROM cap_oauth_credentials WHERE credential_id=OLD.id)\n  AND (NEW.id IS NOT OLD.id OR NEW.digest IS NOT OLD.digest OR NEW.account_id IS NOT OLD.account_id\n    OR NEW.client_id IS NOT OLD.client_id OR NEW.principal_id IS NOT OLD.principal_id OR NEW.grant_id IS NOT OLD.grant_id\n    OR NEW.audience IS NOT OLD.audience OR NEW.created_at IS NOT OLD.created_at OR NEW.expires_at IS NOT OLD.expires_at\n    OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at)\n    OR (NEW.revoked_at IS NOT NULL AND (NEW.revoked_at<OLD.created_at OR NEW.revoked_at>9007199254740991)))\nBEGIN SELECT RAISE(ABORT,'oauth_credential_immutable'); END"
+  },
+  "cap_oauth_credential_row_no_replace": {
+    "table": "cap_credentials",
+    "sql": "CREATE TRIGGER cap_oauth_credential_row_no_replace\nBEFORE INSERT ON cap_credentials\nWHEN EXISTS(SELECT 1 FROM cap_credentials k JOIN cap_oauth_credentials l ON l.credential_id=k.id\n  WHERE k.id=NEW.id OR k.digest=NEW.digest)\nBEGIN SELECT RAISE(ABORT,'oauth_credential_immutable'); END"
+  },
+  "cap_oauth_interaction_no_replace": {
+    "table": "cap_oauth_interactions",
+    "sql": "CREATE TRIGGER cap_oauth_interaction_no_replace\nBEFORE INSERT ON cap_oauth_interactions\nWHEN EXISTS(SELECT 1 FROM cap_oauth_interactions WHERE uid_hash=NEW.uid_hash)\nBEGIN SELECT RAISE(ABORT,'oauth_interaction_immutable'); END"
+  },
+  "cap_oauth_interaction_update_guard": {
+    "table": "cap_oauth_interactions",
+    "sql": "CREATE TRIGGER cap_oauth_interaction_update_guard\nBEFORE UPDATE ON cap_oauth_interactions\nWHEN NEW.uid_hash IS NOT OLD.uid_hash OR NEW.issuer IS NOT OLD.issuer OR NEW.static_client_id IS NOT OLD.static_client_id\n  OR NEW.resource IS NOT OLD.resource OR NEW.redirect_uri IS NOT OLD.redirect_uri\n  OR NEW.request_digest IS NOT OLD.request_digest OR NEW.browser_nonce_hash IS NOT OLD.browser_nonce_hash\n  OR NEW.duration_ms IS NOT OLD.duration_ms OR NEW.budget_limit IS NOT OLD.budget_limit\n  OR NEW.created_at IS NOT OLD.created_at OR NEW.expires_at IS NOT OLD.expires_at\n  OR (OLD.decision!='pending' AND (NEW.decision IS NOT OLD.decision OR NEW.decided_at IS NOT OLD.decided_at\n    OR NEW.decided_account_id IS NOT OLD.decided_account_id OR NEW.decided_device_id IS NOT OLD.decided_device_id\n    OR NEW.connection_id IS NOT OLD.connection_id))\n  OR (NEW.decision='approved' AND NOT EXISTS(SELECT 1 FROM cap_oauth_connections c\n    JOIN cap_budgets b ON b.root_grant_id=c.root_grant_id AND b.unit='invocations'\n    WHERE c.id=NEW.connection_id AND c.issuer=NEW.issuer AND c.static_client_id=NEW.static_client_id\n      AND c.resource=NEW.resource AND c.consent_digest=NEW.request_digest\n      AND c.account_id=NEW.decided_account_id AND c.creator_device_id=NEW.decided_device_id\n      AND c.created_at=NEW.decided_at AND c.expires_at=NEW.decided_at+NEW.duration_ms AND b.limit_amount=NEW.budget_limit))\nBEGIN SELECT RAISE(ABORT,'oauth_interaction_immutable'); END"
+  }
+};
+const capabilitiesOAuthProjections = {
+  "cap_oauth_artifacts": "model,id_hash,issuer,profile,key_id,payload_cipher,payload_digest,connection_id,provider_grant_id,session_uid_hash,created_at,expires_at,retain_until,consumed_at",
+  "cap_oauth_connections": "id,account_id,client_id,principal_id,root_grant_id,creator_device_id,issuer,static_client_id,resource,scope,consent_digest,provider_grant_id,state,created_at,expires_at,revoked_at",
+  "cap_oauth_credentials": "credential_id,connection_id,token_digest,created_at,expires_at",
+  "cap_oauth_interactions": "uid_hash,issuer,static_client_id,resource,redirect_uri,request_digest,browser_nonce_hash,duration_ms,budget_limit,created_at,expires_at,decision,decided_at,decided_account_id,decided_device_id,connection_id"
+};
+
 async function checkedDatabaseFile(filename, info) {
   if (!info.isFile() || info.isSymbolicLink() || info.size < 100) fail('storage_format_unreadable');
   for (const suffix of ['-wal', '-shm', '-journal']) {
@@ -336,12 +450,15 @@ async function readCapabilitiesFormat(dataDir) {
   if (!filename) return 'empty';
   return inspectDatabase(filename, db => {
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version !== 1 && version !== 2) fail('storage_format_unknown');
+    if (version !== 1 && version !== 2 && version !== 3) fail('storage_format_unknown');
+    const native = version === 2 || version === 3, oauth = version === 3;
     recognizeNativeMetadata(db, 'cap_metadata', { lineage: `soty.capabilities.sqlite.v${version}`,
-      ...(version === 2 ? { project_id: 'soty' } : {}) }, version === 2);
-    recognizeNativeLayout(db, { ...capabilitiesTables, ...(version === 2 ? capabilitiesNativeProjections : {}) },
-      { ...capabilitiesIndexes, ...(version === 2 ? capabilitiesNativeIndexes : {}) },
-      { strict: true, ...(version === 2 ? { tableSql: capabilitiesNativeTables, guards: capabilitiesNativeGuards } : {}) });
+      ...(native ? { project_id: 'soty' } : {}) }, native);
+    recognizeNativeLayout(db, { ...capabilitiesTables, ...(native ? capabilitiesNativeProjections : {}),
+      ...(oauth ? capabilitiesOAuthProjections : {}) },
+    { ...capabilitiesIndexes, ...(native ? capabilitiesNativeIndexes : {}), ...(oauth ? capabilitiesOAuthIndexes : {}) },
+    { strict: true, tableSql: { ...(native ? capabilitiesNativeTables : {}), ...(oauth ? capabilitiesOAuthTables : {}) },
+      guards: { ...(native ? capabilitiesNativeGuards : {}), ...(oauth ? capabilitiesOAuthGuards : {}) } });
     return version;
   });
 }

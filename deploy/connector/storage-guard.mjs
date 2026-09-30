@@ -12,7 +12,9 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const keys = (value, expected) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === expected.split(',').length && Object.keys(value).sort().join(',') === expected;
 const matches = (pattern, value) => typeof value === 'string' && pattern.test(value);
-const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2] };
+// Parser knowledge is separate from the current image declaration above. Only
+// an actual image's explicit reader3 label may admit Capabilities3 before START.
+const supported = { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3] };
 const stores = Object.keys(supported);
 const knownFormat = (store, value) => value === 'empty' || supported[store].includes(value);
 const knownReaders = (store, value) => Array.isArray(value) && value.length > 0 && value.length <= supported[store].length

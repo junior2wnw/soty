@@ -299,7 +299,7 @@ for (const [store, spec] of Object.entries(stores)) test(`${store}: exact metada
   }
 });
 
-for (const store of Object.keys(stores)) test(`${store}: later unknown3 in WAL invalidates a prior reader2 START receipt without changing main/WAL`, async t => {
+for (const store of Object.keys(stores)) test(`${store}: later marker-only3 in WAL invalidates a prior reader2 START receipt without changing main/WAL`, async t => {
   const root = await directory(t), db = await database(root, store);
   const runtime = { Id: '1'.repeat(64), Image: 'sha256:' + '2'.repeat(64), State: { Running: false }, Config: { Env: ['DATA_DIR=/data'] },
     Mounts: [{ Type: 'volume', RW: true, Name: 'synthetic-reader2', Source: '/volumes/synthetic-reader2/_data', Destination: '/data' }] };
