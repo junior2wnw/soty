@@ -20,6 +20,7 @@ import { startNativeRecovery } from './capabilities-recovery.js';
 import { createOAuthHostProfile, reserveOAuthNamespaces } from './capabilities-oauth-profile.js';
 import { attachCapabilitiesOAuth } from './capabilities-oauth.js';
 import { startOAuthCleanup } from './capabilities-oauth-cleanup.js';
+import { attachCapabilitiesMcp } from './capabilities-mcp.js';
 
 export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
   const shellOrigins = connectAllowedOrigins(connectOrigins);
@@ -83,9 +84,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   attachConnectReleaseSource(app, { directory: process.env.SOTY_CONNECT_RELEASE_DIR || path.join(dataDir || path.resolve('data'), 'connect-releases') });
   attachAccountTransfer(app, { dataDir });
-  let world, notes, connectors, capabilities, connect, apps, nativeRecovery, oauthCleanup, unsubscribeRevocations;
+  let world, notes, connectors, capabilities, connect, apps, nativeRecovery, oauthCleanup, mcp, unsubscribeRevocations;
   const failedStart = () => {
     nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations?.();
+    try { void mcp?.close().catch(() => {}); } catch { /* Preserve the startup failure. */ }
     for (const service of [apps, capabilities, notes, world, connect]) {
       try { service?.close(); } catch { /* Preserve the startup failure. */ }
     }
@@ -146,13 +148,17 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   app.locals.capabilitiesApiStatus = attachCapabilitiesActions(app, { service: capabilities, audience: admittedCapabilityAudience,
     resourceMetadata: oauthProfile ? `${oauthProfile.origin}/.well-known/oauth-protected-resource` : null }).status;
   attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
-    openApi: buildCapabilitiesOpenApi(),
+    openApi: buildCapabilitiesOpenApi({ oauthConfigured: Boolean(oauthProfile), mcpConfigured: Boolean(admittedCapabilityAudience) }),
     status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   try {
     app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, apps.sourcePreparationExtension, appJobs, notes, capabilities],
       canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
     if (oauthProfile?.enabled && (capabilities.nativeNotes?.readiness().ready !== true
       || capabilities.oauth?.readiness().available !== true)) throw new AccessError('oauth_unavailable');
+    // MCP reads/replays use the existing keyless authority resolver even when
+    // authorization-server issuance is off. Its adapter precedes the OAuth
+    // fallback namespace guard and does not enable native execution.
+    app.locals.capabilitiesMcp = mcp = attachCapabilitiesMcp(app, { service: capabilities, origin: admittedCapabilityAudience });
     app.locals.oauthStatus = attachCapabilitiesOAuth(app, { profile: oauthProfile, service: capabilities, distDir });
     unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));
     // Timers start only after actual Connect and provider admission. Disabled
@@ -164,7 +170,12 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   } catch (error) { failedStart(); throw error; }
   app.locals.nativeRecovery = nativeRecovery;
   app.locals.oauthCleanup = oauthCleanup;
-  app.locals.closeServices = async () => { nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations(); apps.close(); world.close(); notes.close(); capabilities.close(); connect.close(); await connectors.store.close(); };
+  app.locals.closeServices = async () => {
+    nativeRecovery?.close(); oauthCleanup?.close(); unsubscribeRevocations();
+    await mcp?.close();
+    apps.close(); world.close(); notes.close(); capabilities.close(); connect.close();
+    await connectors.store.close();
+  };
   app.get('/api/apps/capabilities', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({ configured: apps.configured, agentConfigured: connectors.modelProxy.ready === true, localConnectorOrigin, protocol: 1, targetBindingVersions: [1, 2] });

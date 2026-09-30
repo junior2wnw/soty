@@ -41,6 +41,10 @@ test('real HTTP responses validate with an independent JSON Schema 2020-12 imple
   const documentResponse = await f.http(`${BASE}/openapi.json`), doc = documentResponse.body;
   assert.equal(documentResponse.status, 200); assert.ok(documentResponse.headers.etag);
   assert.equal(documentResponse.headers['cache-control'], 'public,no-cache');
+  assert.equal(doc['x-soty-mcp'].endpoint, '/mcp', 'composed host documents its mounted MCP transport independently of native readiness');
+  assert.deepEqual(doc['x-soty-mcp'].protocolVersions, ['2026-07-28', '2025-11-25']);
+  assert.equal(doc['x-soty-oauth-discovery'], undefined, 'no configured AS is invented for an ordinary service host');
+  assert.doesNotMatch(doc.info.description, /No OAuth, MCP/u);
   const input = { title: 'Проверка схемы', body: 'Точный ответ', idempotencyKey: 'openapi-contract-test-01' };
   const created = await f.http(CREATE, { method: 'POST', token: identity.token, body: JSON.stringify(input) });
   assert.equal(created.status, 201);

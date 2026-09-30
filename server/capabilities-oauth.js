@@ -164,8 +164,8 @@ export function attachCapabilitiesOAuth(app, { profile, service, distDir } = {})
       }
       if (pathname === '/mcp') {
         check(split < 0);
-        // Transport belongs to C2. Discovery must not invent an initialized MCP
-        // server or claim that an OAuth grant is a successful client connection.
+        // A host that installs the separate MCP adapter handles this namespace
+        // before OAuth. Standalone OAuth composition retains a finite fallback.
         res.set('WWW-Authenticate', `Bearer resource_metadata="${profile.origin}/.well-known/oauth-protected-resource/mcp"`);
         if (!req.complete || !req.readableEnded) { res.shouldKeepAlive = false; res.set('Connection', 'close'); }
         res.status(503).json({ error: 'transport_unavailable' }); return;

@@ -93,6 +93,64 @@ function projectInvocation(value) {
   return output;
 }
 
+/** Fixed Notes operations shared by HTTP and MCP. The origin is a trusted host
+ * configuration, distinct from the audience bound to the presented credential.
+ * No actorless result or current Note content crosses this port. */
+export function createCapabilityOperations({ service, origin = '' } = {}) {
+  requireValue(service && typeof service.authenticateCredential === 'function'
+    && typeof origin === 'string', 'capability_configuration_invalid');
+  const coordinator = () => {
+    requireValue(service.nativeNotes, 'native_unavailable');
+    return service.nativeNotes;
+  };
+  const read = ({ actor, invocationId, reused } = {}) => {
+    const invocation = projectInvocation(coordinator().get({ actor, invocationId }).invocation);
+    const body = { invocation, ...(reused === undefined ? {} : { reused }) };
+    if (invocation.status === 'succeeded' && invocation.effectState === 'committed'
+      && invocation.receipt?.verificationMethod === 'domain_read') {
+      const artifacts = invocation.receipt.artifacts;
+      if (artifacts.length === 1 && artifacts[0].type === 'note' && NOTE_ID.test(artifacts[0].id)
+        && artifacts[0].revision === 1 && invocation.effects.length === 1
+        && invocation.effects[0].kind === 'created' && invocation.effects[0].resourceType === 'note'
+        && invocation.effects[0].resourceId === artifacts[0].id && invocation.effects[0].revision === 1) {
+        requireValue(origin, 'native_unavailable');
+        body.result = { noteId: artifacts[0].id, revision: 1, url: `${origin}/#notes/${artifacts[0].id}` };
+      }
+    }
+    return { status: 200, body };
+  };
+  const authenticate = ({ authorization, audience = origin } = {}) => {
+    requireValue(origin && (audience === origin || audience === `${origin}/mcp`), 'authorization_required');
+    requireValue(typeof authorization === 'string' && authorization.length <= 128, 'authorization_required');
+    const bearer = /^Bearer ([^\s,]+)$/iu.exec(authorization);
+    requireValue(bearer, 'authorization_required');
+    const token = bearer[1];
+    if (token.startsWith('soty_cap_')) return service.authenticateCredential({ token, audience });
+    requireValue(typeof service.oauth?.authenticateBearer === 'function', 'authorization_required');
+    return service.oauth.authenticateBearer({ token, audience });
+  };
+  const create = ({ actor, title, body, idempotencyKey } = {}) => {
+    const native = coordinator();
+    const admitted = native.admit({ actor, idempotencyKey, input: { title, body } });
+    const invocationId = admitted.invocation.invocationId, reused = admitted.reused;
+    if (!TERMINAL.has(admitted.invocation.status)) {
+      try {
+        const recovered = native.reconcile({ invocationId });
+        if (recovered.outcome === 'retryable') {
+          const attempt = native.beginAttempt({ invocationId });
+          if (attempt.started) native.execute({ invocationId });
+        }
+      } catch { /* A durable state and a fresh authorized read decide the result. */ }
+    }
+    const result = read({ actor, invocationId, reused });
+    const invocation = result.body.invocation;
+    result.status = !TERMINAL.has(invocation.status) ? 202
+      : invocation.status === 'succeeded' && reused === false ? 201 : 200;
+    return result;
+  };
+  return Object.freeze({ authenticate, create, read, failure: errorResponse });
+}
+
 function send(res, status, value) {
   if (res.destroyed || res.writableEnded) return;
   const body = Buffer.from(JSON.stringify(value)); requireValue(body.length <= 65536);
@@ -105,6 +163,7 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
   requireValue(resourceMetadata === null || (audience !== ''
     && resourceMetadata === `${audience}/.well-known/oauth-protected-resource`), 'capability_configuration_invalid');
   const ingress = createNativeIngress(ingressOptions);
+  const operations = createCapabilityOperations({ service, origin: audience });
   const host = audience ? new URL(audience).host : null;
   const secureResource = resourceMetadata !== null && new URL(audience).protocol === 'https:';
   const status = () => {
@@ -130,54 +189,17 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
       if (route.kind === 'create') lease = ingress.enter(req);
       else requireValue(singleHeader(req, 'transfer-encoding') === undefined
         && [undefined, '0'].includes(singleHeader(req, 'content-length')), 'invalid_input');
-      const authorization = singleHeader(req, 'authorization');
-      requireValue(typeof authorization === 'string' && authorization.length <= 128, 'authorization_required');
-      const bearer = /^Bearer ([^\s,]+)$/iu.exec(authorization);
-      requireValue(bearer, 'authorization_required');
       // No lock spans the network read. Admission and the final read repeat the
       // live authority check under Connect -> Capabilities.
-      const token = bearer[1];
-      let actor;
-      if (token.startsWith('soty_cap_')) actor = service.authenticateCredential({ token, audience });
-      else {
-        requireValue(typeof service.oauth?.authenticateBearer === 'function', 'authorization_required');
-        actor = service.oauth.authenticateBearer({ token, audience });
-      }
-      const coordinator = service.nativeNotes;
-      requireValue(coordinator, 'native_unavailable');
-      let id = route.invocationId, reused;
+      const actor = operations.authenticate({ authorization: singleHeader(req, 'authorization'), audience });
+      requireValue(service.nativeNotes, 'native_unavailable');
+      let result;
       if (route.kind === 'create') {
         const { title, body, idempotencyKey } = await lease.read(req);
-        const admitted = coordinator.admit({ actor, idempotencyKey, input: { title, body } });
-        id = admitted.invocation.invocationId; reused = admitted.reused;
-        if (!TERMINAL.has(admitted.invocation.status)) {
-          try {
-            const recovered = coordinator.reconcile({ invocationId: id });
-            if (recovered.outcome === 'retryable') {
-              const attempt = coordinator.beginAttempt({ invocationId: id });
-              if (attempt.started) coordinator.execute({ invocationId: id });
-            }
-          } catch { /* Persisted state and a fresh read decide the response, never this exception. */ }
-        }
-      }
-      // Actorless execution/reconciliation can complete after a revoke. Its
-      // result is never a substitute for current external read authorization.
-      const invocation = projectInvocation(coordinator.get({ actor, invocationId: id }).invocation);
-      const response = { invocation, ...(reused === undefined ? {} : { reused }) };
-      if (invocation.status === 'succeeded' && invocation.effectState === 'committed'
-        && invocation.receipt?.verificationMethod === 'domain_read') {
-        const artifacts = invocation.receipt.artifacts;
-        if (artifacts.length === 1 && artifacts[0].type === 'note' && NOTE_ID.test(artifacts[0].id)
-          && artifacts[0].revision === 1 && invocation.effects.length === 1
-          && invocation.effects[0].kind === 'created' && invocation.effects[0].resourceType === 'note'
-          && invocation.effects[0].resourceId === artifacts[0].id && invocation.effects[0].revision === 1) {
-          response.result = { noteId: artifacts[0].id, revision: 1, url: `${audience}/#notes/${artifacts[0].id}` };
-        }
-      }
-      if (route.kind === 'create') res.set('Location', `${audience}${HISTORY}/${invocation.invocationId}`);
-      const code = route.kind === 'get' ? 200 : !TERMINAL.has(invocation.status) ? 202
-        : invocation.status === 'succeeded' && reused === false ? 201 : 200;
-      send(res, code, response);
+        result = operations.create({ actor, title, body, idempotencyKey });
+      } else result = operations.read({ actor, invocationId: route.invocationId });
+      if (route.kind === 'create') res.set('Location', `${audience}${HISTORY}/${result.body.invocation.invocationId}`);
+      send(res, result.status, result.body);
     } catch (error) {
       res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       const safe = errorResponse(error);

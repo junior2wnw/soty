@@ -229,8 +229,9 @@ test('real Notes keeps its historical digest and UTF-16/byte profile while publi
   assert.throws(() => catalog.validateInput(entry, { ...boundary, body: boundary.body + '界' }), code('payload_too_large'));
   const profile = view.get(notesRef).documentation.validation;
   assert.equal(profile.stringLength.runtime, 'utf16-code-units');
-  assert.equal(profile.text.loneSurrogates, 'accepted-by-legacy-validator');
-  assert.equal(profile.text.externalWriteAdmission, 'unresolved-before-write-enable');
+  assert.equal(profile.text.loneSurrogates, 'rejected-by-external-native-admission');
+  assert.equal(profile.text.externalWriteAdmission, 'well-formed-unicode-and-full-document-byte-budget');
+  assert.equal(profile.text.maxNativeNoteDocumentBytes, 262144);
   assert.equal(entry.executionEnabled, false);
   const custom = declaration('unicode.public'), f = fixture([custom]);
   f.docs[0].locales.en.examples[0].input.text = '\ud800';

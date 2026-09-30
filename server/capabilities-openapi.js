@@ -14,13 +14,19 @@ const copy = value => structuredClone(value);
 
 /** Composed HTTP surface. The domain's standalone discovery-only contract stays
  * reusable; the host adds only the private operations it actually attaches. */
-export function buildCapabilitiesOpenApi() {
+export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigured = false } = {}) {
   const document = copy(buildDiscoveryOpenApi());
   const note = BUILTIN_CAPABILITIES.find(entry => entry.capabilityId === 'notes.createDraft' && entry.version === 1);
-  document.info = { title: 'Soty capabilities HTTP API', version: '1.1.0', description:
+  document.info = { title: 'Soty capabilities HTTP API', version: '1.2.0', description:
     'Public discovery and two private, typed Notes operations. Availability is deployment-specific: read /status before a new invocation. '
-    + 'Public discovery requires no credentials and never grants execution rights. Private routes require an owner-issued, audience-bound service credential and live grant; cookies are not authentication. '
-    + 'No OAuth, MCP, generic execution or reading of Notes content is described by this document. Public routes support GET/HEAD and public,no-cache with ETag; private routes and status use no-store. '
+    + 'Public discovery requires no credentials and never grants execution rights. Private routes require an audience-bound bearer credential and live grant; cookies are not authentication. '
+    + (oauthConfigured ? 'This host supports owner-approved OAuth connections and manually issued service credentials. OAuth issuer and resource metadata are separate endpoints; configuration does not imply issuance is currently enabled. '
+      : 'Private access uses owner-issued service credentials. ')
+    + (mcpConfigured ? 'The separate POST /mcp endpoint uses stateless Streamable HTTP. Obtain its tool definitions through MCP; this document describes the typed HTTP operations. '
+      : 'MCP transport is not configured on this host. ')
+    + (!oauthConfigured && !mcpConfigured ? 'No OAuth, MCP, generic execution or reading of Notes content is described by this document. '
+      : 'No generic execution or reading of current Notes content is exposed. ')
+    + 'Public routes support GET/HEAD and public,no-cache with ETag; private routes and status use no-store. '
     + 'Never retry an uncertain write with a new idempotency key: get its Invocation or repeat the original request.' };
   document.tags.push({ name: 'Private Notes', description: 'Create-only scope; own historical receipts contain no current Note content or existence check.' });
   const schemas = document.components.schemas;
@@ -76,7 +82,21 @@ export function buildCapabilitiesOpenApi() {
         : code === 405 ? { headers: { Allow: header('Only the declared route method is accepted, including on HEAD and OPTIONS.') } } : {}) }]));
   const privateOperation = { tags: ['Private Notes'], security: [{ CapabilityBearer: [] }] };
   document.components.securitySchemes = { CapabilityBearer: { type: 'http', scheme: 'bearer',
-    description: 'Opaque credential issued by the verified owner for this exact canonical audience and a create-only delegation grant. The existing signed Connect owner flow manages credentials. No cookie, public catalog entry or forwarded host grants this authority.' } };
+    description: 'Opaque credential for this exact canonical HTTP audience and a live create-only grant. '
+      + (oauthConfigured ? 'A verified owner can approve an OAuth connection or issue a service credential. The MCP audience is separate and its tokens are not valid on these HTTP routes. '
+        : 'The existing signed Connect owner flow issues and manages service credentials. ')
+      + 'No cookie, public catalog entry or forwarded host grants this authority.' } };
+  if (oauthConfigured) document['x-soty-oauth-discovery'] = {
+    authorizationServer: '/.well-known/oauth-authorization-server/oauth',
+    httpResource: '/.well-known/oauth-protected-resource',
+    ...(mcpConfigured ? { mcpResource: '/.well-known/oauth-protected-resource/mcp' } : {}),
+  };
+  if (mcpConfigured) document['x-soty-mcp'] = {
+    endpoint: '/mcp', transport: 'streamable-http', stateless: true, methods: ['POST'],
+    protocolVersions: ['2026-07-28', '2025-11-25'],
+    tools: ['catalog_search', 'catalog_get', 'notes_create_draft', 'invocations_get'],
+    description: 'A current bearer bound to the separate canonical /mcp resource is required even for initialization and tool listing. Supported revisions have distinct framing; no session, GET event channel or resumable stream is exposed.',
+  };
   document.paths[NOTES_DRAFT_PATH] = { post: { ...privateOperation, operationId: 'createNoteDraft', summary: 'Create one private Note',
     description: 'Only notes.createDraft@1. No query parameters, redirects, compressed body or wildcard browser CORS. Host must match the configured audience; Origin, when present, must equal it. '
       + 'Each auth/header must be unambiguous. Body deadline is 15 seconds, with at most 8 body readers per process, 2 per socket peer and 60 attempts per peer per minute. '

@@ -9,7 +9,9 @@ export const CAPABILITY_VALIDATION_PROFILE = freezeDeep({
   canonicalJson: { maxBytes: 262144, maxDepth: 20, maxNodes: 10000, algorithm: 'sorted-own-keys-ecmascript-json' },
   integers: 'finite-safe-integer', numbers: 'finite',
   text: { normalization: 'none', forbiddenCodePoints: ['U+0000..U+0008', 'U+000B..U+000C', 'U+000E..U+001F', 'U+007F'],
-    loneSurrogates: 'accepted-by-legacy-validator', externalWriteAdmission: 'unresolved-before-write-enable' },
+    loneSurrogates: 'rejected-by-external-native-admission',
+    externalWriteAdmission: 'well-formed-unicode-and-full-document-byte-budget',
+    maxNativeNoteDocumentBytes: 262144 },
 });
 
 export const BUILTIN_DOCUMENTATION = freezeDeep([{
@@ -20,14 +22,14 @@ export const BUILTIN_DOCUMENTATION = freezeDeep([{
       title: 'Создать записку', summary: 'Новая личная записка, которую владелец сможет продолжить в Сотах.',
       useWhen: ['Сохранить новую идею, список или черновик для себя.', 'Передать результат работы в новую личную записку.'],
       notFor: ['Чтение, поиск, исправление или удаление существующих записок.', 'Публикация записки, отправка другим людям или передача данных внешнему получателю.',
-        'Описание не выдаёт право вызова. Допуск и проверка результата появятся отдельным этапом.'],
+        'Описание не выдаёт право вызова. Требуется действующее разрешение; результат проверяется по сохранённой новой записке.'],
       examples: [{ input: { title: 'Идеи на завтра', body: 'Набросать план проекта.\nПроверить прототип.' }, output: { noteId: 'illustrative-note-id', revision: 1 } }],
     },
     en: {
       title: 'Create a note', summary: 'Create a new private note for its owner to continue in Soty.',
       useWhen: ['Save a new idea, list or personal draft.', 'Keep a work result in a new private note.'],
       notFor: ['Reading, searching, editing or deleting existing notes.', 'Publishing a note, sending it to another person or transferring data to an external recipient.',
-        'This description does not grant execution access. Authorization and verified results belong to a later stage.'],
+        'This description does not grant execution access. Current authorization is required; a creation result is verified against the persisted new note.'],
       examples: [{ input: { title: 'Ideas for tomorrow', body: 'Outline the project.\nCheck the prototype.' }, output: { noteId: 'illustrative-note-id', revision: 1 } }],
     },
   },

@@ -10,7 +10,7 @@
 | P1. Права, контракты, история | Локальная приёмка пройдена | Ограниченные допуски, отзываемые цепочки, устойчивые Invocation/receipt, общий лимит вызовов; runtime enforcement отдельно в P5 |
 | P2. Цельный интерфейс | Локальная реализация и финальная приёмка | Apps-first оболочка, графит, новые панели, доступы, Notes offline; внешний UX/установленная PWA остаются отдельными gates |
 | P3. Именные приложения | A/B/C/D/R локально приняты; E открыт | Apps6, публикация, источники, сохранения/обсуждения, bounded WS liveness/recovery; D4 browser/signed цикл проверен, публичный пилот ещё впереди |
-| P4. Внешние ИИ | A, B1/B1a/B1b и B2 приняты в описанных пределах; C1 в работе | Публичный поиск/схемы, native Notes create/status/replay, общий PWA-результат; reader2 source/Linux fixture проверены; full image/restore, OAuth/MCP и реальные внешние AI-клиенты ещё открыты |
+| P4. Внешние ИИ | A/B и C1 local browser приняты в описанных пределах; C2a в работе | Публичный поиск/схемы, native Notes/HTTP, OAuth/signed PWA; reader2/3 Linux fixtures приняты. MCP/headless/CLI, модельный D1, HTTPS/full image/restore ещё открыты |
 | P5. Устройства и исполнитель | Ожидает P1 | Реальные ограничения, остановка, отзыв, стоимость |
 | P6A. Авторский SDK | Ожидает P1/P4 | Независимая узкая функция без изменения ядра |
 | P6B. Длительные функции | Ожидает P6A | Start/status/cancel/reconnect/result без повторного эффекта |
@@ -324,3 +324,9 @@ Host/source независимый review и actual-flow source review прин�
 Fresh actual host5493/5494 без seeded identity/decision прошёл: approve→callback→native201→правка в PWA→refresh200→exact replay200→мобильный owner revoke→replay401→сохранённая Note владельца. Native Back показал исправленный HTML. Root RO evidence: accounts1, Invocation1, Note1/proof1/revision2, root spent1/reserved0, connection revoked. Native320/1280, светлая/графитовая темы; callback без Referer. Предыдущий процесс прервался, его отдельный эффект/data сохранены и не смешаны с полным final run.
 
 Следующий согласованный срез: P4-C2a официальный MCP transport и wire gates, затем C2b headless child и C2c два реальных CLI. Модельный D1, HTTPS release/restore и остальные P5–P8 сохраняются; P4/master целиком ещё не завершены.
+
+## P4-C2a — официальный MCP transport принят локально
+
+C1 checkpoint8367feb отправлен в `origin/codex/human-agent-platform-release`. [Root интеграция](p4-mcp-integration.md), [авторская квитанция](p4-mcp-transport.md) и [независимый аудит](p4-mcp-independent.md) закрывают C2a source/wire. Exact maintained SDK server/core2.2.0 и devclient2.2.0 с lock; исследованный Node adapter удалён как неиспользуемая dependency. HTTP/MCP используют один fixed Notes port, actor и root budget; mount работает перед AS-off guard, shutdown ждёт SDK cleanup перед закрытием stores.
+
+Авторский final17/17 PASS; independent6/6 PASS плюс неизменённый affected raw route1/1 после narrow repair, без заявления об общем7/7. Root sidecar15/15 и affected HTTP18/18 PASS; typecheck/prebuild/build PASS. Закрыты causal no-echo и incomplete early-error connection defects; actual SDK modern/legacy, fresh authority до private bytes и публичные byte/noninterference gates проверены. CLI/model/production acceptance этим не объявлены. Следующий C2b — ограниченный service child и owner parity, затем C2c и D1/D2; P5–P8 остаются в master-плане.

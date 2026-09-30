@@ -22,11 +22,15 @@ test('configured keyless AS-off serves exact public resource metadata without a 
     assert.equal(response.headers['set-cookie'], undefined);
     assert.equal(response.headers['cache-control'], 'no-store');
   }
-  for (const pathname of ['/oauth/authorize', '/oauth/token', '/.well-known/oauth-authorization-server/oauth', '/mcp']) {
+  for (const pathname of ['/oauth/authorize', '/oauth/token', '/.well-known/oauth-authorization-server/oauth']) {
     const response = await f.http(pathname);
     assert.equal(response.status, 503); assert.equal(response.body.error, 'temporarily_unavailable');
     assert.equal(response.headers['set-cookie'], undefined);
   }
+  const mcp = await f.http('/mcp');
+  assert.equal(mcp.status, 405, 'separate MCP transport is mounted before the disabled AS fallback');
+  assert.equal(mcp.headers.allow, 'POST');
+  assert.equal(mcp.headers['set-cookie'], undefined);
   assert.equal((await f.http('/.well-known/oauth-protected-resource?')).status, 400);
   assert.equal((await f.http('/.well-known/oauth-protected-resource', { method: 'POST' })).status, 405);
   const unauthenticated = await post(f, undefined, { title: 'x', body: '', idempotencyKey: 'unauthenticated' });
