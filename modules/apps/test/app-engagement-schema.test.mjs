@@ -37,15 +37,17 @@ function savedRows(db) {
   db.prepare('INSERT INTO app_saved_receipts VALUES (?,?,?,?,?,?,?)').run('reader_A', 'a'.repeat(64), 'b'.repeat(64), app, 1, 1, 5);
 }
 
-test('literal Apps4 migrates to saved-only Apps5 preserving all prior rows, immutable targets, floor2 and tombstones', t => {
+test('literal Apps4 migrates to current schema preserving all prior rows, immutable targets, floor2 and tombstones', t => {
   const db = historical(t), before = snapshot(db); assert.equal(inspectAppsSchema(db), 'v4');
-  assert.equal(migrateAppsSchema(db).schema, 'soty.apps-registry.v5'); assert.equal(inspectAppsSchema(db), 'v5');
+  assert.equal(migrateAppsSchema(db).schema, 'soty.apps-registry.v6'); assert.equal(inspectAppsSchema(db), 'v6');
   for (const [table, value] of Object.entries(before.tables)) if (table !== 'apps_meta') assert.deepEqual(rows(db, table), value, table);
   assert.equal(requiredBindingVersion(db, app), 2);
   assert.equal(db.prepare('SELECT active_target_revision FROM app_publications WHERE app_id=?').get(app).active_target_revision, 1);
   const newTables = Object.keys(snapshot(db).tables).filter(name => !(name in before.tables)).sort();
-  assert.deepEqual(newTables, ['app_saved_entries', 'app_saved_heads', 'app_saved_receipts']);
-  for (const table of newTables) assert.deepEqual(rows(db, table), []);
+  assert.deepEqual(newTables, ['app_discussion_changes', 'app_discussion_conversations', 'app_discussion_heads', 'app_discussion_messages',
+    'app_discussion_rates', 'app_discussion_usage', 'app_saved_entries', 'app_saved_heads', 'app_saved_receipts']);
+  for (const table of newTables) if (table !== 'app_discussion_usage') assert.deepEqual(rows(db, table), []);
+  assert.deepEqual({ ...rows(db, 'app_discussion_usage')[0] }, { id: 1, head_count: 0, conversation_count: 0, message_count: 0, body_bytes: 0 });
   const after = snapshot(db); assert.equal(migrateAppsSchema(db).migrated, false); assert.deepEqual(snapshot(db), after);
 });
 
@@ -78,15 +80,15 @@ test('missing saved head, cross-app address, noninteger data and out-of-head rec
   }
 });
 
-test('Apps6 and altered Apps5 guards are refused before persistent changes', t => {
-  for (const sql of ["UPDATE apps_meta SET value='soty.apps-registry.v6' WHERE key='schema'; PRAGMA user_version=6",
+test('future Apps7 and altered saved guards are refused before persistent changes', t => {
+  for (const sql of ["UPDATE apps_meta SET value='soty.apps-registry.v7' WHERE key='schema'; PRAGMA user_version=7",
     'DROP TRIGGER app_saved_head_no_replace', 'DROP INDEX app_saved_entry_revision']) {
     const db = historical(t); migrateAppsSchema(db); db.exec(sql); const before = snapshot(db);
     assert.throws(() => migrateAppsSchema(db), { code: 'apps_schema_unsupported' }); assert.deepEqual(snapshot(db), before);
   }
 });
 
-test('a failed Apps5 DDL step rolls back every new object and preserves exact Apps4 marker/rows', t => {
+test('a failed saved DDL step rolls back every new object and preserves exact Apps4 marker/rows', t => {
   const db = historical(t), before = snapshot(db), originalExec = db.exec;
   db.exec = function (sql) {
     if (sql.includes('CREATE TRIGGER app_saved_head_no_delete')) throw new Error('synthetic_ddl_failure');
@@ -94,5 +96,5 @@ test('a failed Apps5 DDL step rolls back every new object and preserves exact Ap
   };
   assert.throws(() => migrateAppsSchema(db), /synthetic_ddl_failure/u); db.exec = originalExec;
   assert.deepEqual(snapshot(db), before); assert.equal(inspectAppsSchema(db), 'v4');
-  assert.equal(migrateAppsSchema(db).migrated, true); assert.equal(inspectAppsSchema(db), 'v5');
+  assert.equal(migrateAppsSchema(db).migrated, true); assert.equal(inspectAppsSchema(db), 'v6');
 });

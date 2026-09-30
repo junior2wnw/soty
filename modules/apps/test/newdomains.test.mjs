@@ -58,7 +58,7 @@ test('v1 migration preserves app identity, exact ACL JSON and revisions; stale g
   const service = f.open();
   const db = f.inspect();
   assert.equal(db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get().value, APPS_REGISTRY_SCHEMA);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
   assert.deepEqual(db.prepare('SELECT * FROM local_apps ORDER BY id').all(), before);
   assert.deepEqual(db.prepare('SELECT principal_id FROM local_app_grants WHERE app_id=?').all(appA), []);
   assert.equal(db.prepare('SELECT count(*) AS n FROM local_app_grants WHERE app_id=?').get(appB).n, 2);

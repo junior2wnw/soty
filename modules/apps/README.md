@@ -9,11 +9,13 @@ const apps = createAppsService({
   dataDir,
   appOriginTemplate: 'https://{appId}.apps.example.org',
   shellOrigins: ['https://example.org'],
-  actorActive: actor => connect.isActiveActor(actor),
+  actorActive: actor => connect.isActorActive(actor),
   canAccessCommunity: world.canAccessCommunity,
   isGroupAdmin: world.isGroupAdmin,
   activeCommunityIds: world.activeCommunityIds,
   subscribeMembership: world.subscribeMembership,
+  withAuthorityFence: callback => world.withCommunityAuthorityFence(callback),
+  readCommunityAuthority: (actor, ownerAccountId, ids) => world.appCommunityAuthority(actor.accountId, ownerAccountId, ids),
   authenticateConnector: async auth => {
     await connectorStore.writeQueue;
     return Boolean(connectorStore.authenticate(auth));
@@ -38,10 +40,27 @@ Register `apps.operations` and its synchronous `execute({op,args,actor})` as a C
 | `apps.update` | `{appId,name?,grants?}` | `{app}` |
 | `apps.revoke` | `{appId}` | `{app}` |
 | `apps.launch` | `{appId,domainId?,path?}` | `{launchUrl,expiresAt}` |
+| `apps.saved.get` | `{appId}` | `{revision,entry}` for the authenticated account |
+| `apps.saved.list` | `{limit?,cursor?}` | `{revision,entries,nextCursor}` |
+| `apps.saved.set` | `{appId,saved,expectedRevision,requestId,domainId?,path?}` | `{requestId,replayed,receipt,current}` |
+| `apps.discussion.context` | app and optional exact entry/conversation | initial permitted context, messages and cursors |
+| `apps.discussion.history` | app/conversation/exact entry and optional cursor | bounded older messages |
+| `apps.discussion.changes` | app/conversation/exact entry and cursor | current message projections including removals |
+| `apps.discussion.archives` | app/exact entry and optional cursor | only permitted past conversations |
+| `apps.discussion.send` | app/conversation/exact entry, requestId, body, optional replyTo | immutable receipt and separately authorized current message |
+| `apps.discussion.remove` | `{appId,conversationId,messageId}` | repeatable own-message or app-owner redaction |
 
 Grants are `{accountIds:[],communityIds:[]}`. Private is the default. Registration is idempotent for the same owner/connector/port and exact normalized configuration; a different configuration on an existing port is rejected instead of silently overwriting another cell.
 
 Apps schema3 adds [named addresses](../../docs/implementation/p3-domains.md) and an [explicit publication policy](../../docs/implementation/p3-publication-contract.md). Claiming an alias does not activate it. The owner selects active aliases and `restricted` or `anyone`; public exposure requires acknowledgement of the entire fixed loopback port and runtime profile. `listed` is independent of launch permission. Canonical origins retain private grants even when a named alias is public. Named production zones must use a registrable site separate from every trusted Soty shell; use the host's `validateNamedAppZone` integration before opening storage. A domain configuration is not proof of DNS ownership or TLS availability.
+
+Schema4 adds [immutable source targets and revision-bound preparation](../../docs/implementation/p3-source-runtime-integration.md); schema5 adds [account-owned saved entries](../../docs/implementation/p3-saved-model.md). A save is a chosen exact address/path, not a grant, community membership, notification subscription or local pin. The global account revision advances for every accepted new desired state; an exact retry returns its historical receipt separately from current state. Removing a personal saved entry needs no current app access. On access loss only the personal title/address snapshot remains, without fresh private metadata. Limits are200 active entries,128 receipts,50 rows and256KiB per page. Missing host authority fence disables saved operations while leaving older Apps operations compatible.
+
+The synchronous fence spans World authority reads and the bounded Apps transaction in Connect→World→Apps order. It must not await, perform network I/O or call mutating World operations. Temporary contention is reported as typed `apps_saved_busy` or `world_authority_busy`; the HTTP adapter returns503 and never retries a signed mutation itself. Repeat the original intent with fresh transport proof and the same requestId. [Integration evidence](../../docs/implementation/p3-saved-integration.md) distinguishes local acceptance from production and real-browser gates.
+
+Schema6 adds [independent app discussions](../../docs/implementation/p3-discussion-contract.md). Policy changes rotate the current audience atomically; private historical conversations never become public with the app. An unopened app allocates no discussion head, and an empty audience generation creates no archive row. Archives require both current entry access and the original audience predicate. World authority is read under the host fence with one bounded relevant-community query; no World chat history or profile is copied. Explicit owner-administrative reads work after closure but cannot launch or post. Own-message redaction needs no current reading permission.
+
+Message request IDs are account-global, with durable fingerprints retained by tombstones. Retry preserves the original conversation, exact address, body and reply; it never moves a message to a newly opened audience. Encrypted fixed-size cursors bind actor/device/entry/conversation and explicitly reset after a service restart. The single-writer pilot admits bounded conversations/messages/live bytes, without silently evicting history. `apps_discussion_busy` maps to503 and `apps_discussion_rate_limited` to429; other semantic errors retain the native signed RPC400 envelope. See the contract for complete shapes, logical quotas and the distinction between backend, browser and production acceptance.
 
 Launch defaults to the canonical address or uses the exact supplied domainId. Tickets are30s, one-use and bound to app, origin, target and policy epoch. Session exchange rechecks current authority after reading its body. Account sessions have an absolute1h deadline; anonymous public requests get renewable30s leases that cannot revive after expiry. Invalid presented session cookies never silently become anonymous. Continuous checks cover HTTP and WebSocket asynchronous boundaries; audit rechecks idle access every10s by default, subject to event-loop delay. Already delivered bytes and upstream side effects cannot be undone by revocation. See [transport acceptance](../../docs/implementation/p3-runtime-transport.md) and [browser entry acceptance](../../docs/implementation/p3-entry-browser.md) for evidence and outstanding release gates.
 

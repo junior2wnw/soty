@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { AppsError, assertApps, appId, appName, runtimePath, textId } from './protocol.mjs';
 import { createLaunchPath } from './launch-path.mjs';
+import { createEngagementTransaction, synchronous } from './engagement-transaction.mjs';
 
 export const savedOperations = new Set(['apps.saved.get', 'apps.saved.list', 'apps.saved.set']);
 export const SAVED_LIMITS = Object.freeze({ active: 200, receipts: 128, page: 20, maxPage: 50, responseBytes: 256 * 1024 });
@@ -9,11 +10,6 @@ const exact = (value, keys) => assertApps(value && typeof value === 'object' && 
   && Object.keys(value).every(key => keys.includes(key)), 'unexpected_argument');
 const revision = value => { assertApps(Number.isSafeInteger(value) && value >= 0, 'invalid_saved_revision'); return value; };
 const domainId = value => { assertApps(typeof value === 'string' && /^dom_[a-f0-9]{32}$/u.test(value), 'invalid_app_domain_id'); return value; };
-const isAsync = value => value && typeof value.then === 'function';
-function synchronous(value, code) {
-  if (isAsync(value)) { Promise.resolve(value).catch(() => {}); throw new AppsError(code, 500); }
-  return value;
-}
 const bytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8');
 
 /** Saved entries are the account's own last-chosen route, never an authorization
@@ -23,40 +19,7 @@ export function createSavedRegistry({ db, now = Date.now, assertActor, withAutho
   assertApps(db && typeof now === 'function' && typeof assertActor === 'function' && typeof resolveEntry === 'function',
     'apps_saved_dependencies_required', 500);
 
-  function authenticate(actor) {
-    assertApps(synchronous(assertActor(actor), 'apps_async_authority') !== false, 'apps_authentication_required', 401);
-    textId(actor?.accountId); textId(actor?.deviceId);
-  }
-  function run(actor, callback) {
-    authenticate(actor);
-    const captured = Object.freeze({ accountId: actor.accountId, deviceId: actor.deviceId });
-    assertApps(typeof withAuthorityFence === 'function' && withAuthorityFence.constructor?.name !== 'AsyncFunction',
-      'apps_authority_fence_required', 503);
-    let active = true, entered = false, outcome;
-    try {
-      const value = withAuthorityFence(() => {
-        assertApps(active && !entered, 'apps_authority_fence_invalid', 500); entered = true;
-        assertApps(!db.isTransaction, 'apps_nested_transaction', 500);
-        const priorTimeout = db.prepare('PRAGMA busy_timeout').get().timeout;
-        assertApps(Number.isSafeInteger(priorTimeout) && priorTimeout >= 0, 'apps_saved_timeout_invalid', 500);
-        db.exec('PRAGMA busy_timeout=100');
-        try {
-          db.exec('BEGIN IMMEDIATE');
-          authenticate(captured);
-          outcome = synchronous(callback(captured), 'apps_async_transaction');
-          assertApps(bytes(outcome) <= SAVED_LIMITS.responseBytes, 'apps_saved_response_too_large', 500);
-          db.exec('COMMIT'); return outcome;
-        } catch (error) {
-          if (db.isTransaction) db.exec('ROLLBACK');
-          if (Number.isInteger(error?.errcode) && [5, 6].includes(error.errcode & 255)) throw new AppsError('apps_saved_busy', 503);
-          throw error;
-        } finally { db.exec(`PRAGMA busy_timeout=${priorTimeout}`); }
-      });
-      synchronous(value, 'apps_authority_fence_invalid');
-      assertApps(entered, 'apps_authority_fence_invalid', 500);
-      return outcome;
-    } finally { active = false; }
-  }
+  const run = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: SAVED_LIMITS.responseBytes });
   function head(accountId) {
     const value = db.prepare('SELECT revision FROM app_saved_heads WHERE account_id=?').get(accountId)?.revision;
     assertApps(value === undefined || (Number.isSafeInteger(value) && value >= 1), 'apps_registry_corrupt', 500);

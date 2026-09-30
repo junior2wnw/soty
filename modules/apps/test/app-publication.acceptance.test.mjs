@@ -114,8 +114,8 @@ async function fixture(t, { version = 2, autoStart = true } = {}) {
 
 for (const version of [0, 1, 2]) test(`independent historical Apps${version === 0 ? '1/user_version0' : version} preserves data and remains private across migration and reopen`, async t => {
   const f = await fixture(t, { version });
-  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 5);
-  assert.equal(f.db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get().value, 'soty.apps-registry.v5');
+  assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(f.db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get().value, 'soty.apps-registry.v6');
   assert.deepEqual(snapshot(f.db, Object.keys(f.preserved)), f.preserved);
   for (const appId of [appA, appB, appC, appR]) {
     const value = f.get(appId, appId === appC ? bob : alice);

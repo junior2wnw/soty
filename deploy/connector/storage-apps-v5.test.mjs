@@ -8,7 +8,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHistoricalAppsV4, seedHistoricalRollbackV4 } from './apps-v4.fixture.mjs';
 import { seedHistoricalPublicationV3 } from './apps-v3.fixture.mjs';
 import { migrateAppsSchema as oldAppsV4Migrator } from './fixtures/apps-v4/schema.mjs';
-import { migrateAppsSchema } from '../../modules/apps/server/schema.mjs';
+// Keep this historical transition at 4 -> 5 when the live service advances.
+import { migrateAppsSchema } from './fixtures/apps-v5/schema.mjs';
 import { readStorageFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, currentStorageReaders, storageReaderLabel } from './storage-guard.mjs';
 

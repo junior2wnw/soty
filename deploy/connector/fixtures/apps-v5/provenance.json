@@ -1,0 +1,22 @@
+{
+  "commit": "3794f01febe3c01e2d3d107be1f03dbf4b023b3c",
+  "description": "Test-only unmodified Apps5 migration and all three local dependencies; never imported by the host storage probe.",
+  "files": {
+    "schema.mjs": {
+      "sourcePath": "modules/apps/server/schema.mjs",
+      "sha256": "894f20556d1d29596bc6b56a8450ab76dcc1a36c5232e1cdc182bebb93b5a272"
+    },
+    "protocol.mjs": {
+      "sourcePath": "modules/apps/server/protocol.mjs",
+      "sha256": "29d36ce771c300f7dc3a00cbd16f98aed65c960cb5a5c6ee9673363e518ebd7e"
+    },
+    "domain-policy.mjs": {
+      "sourcePath": "modules/apps/server/domain-policy.mjs",
+      "sha256": "53ca3d124570fe06f197d4f2e630e0220cc91719138166a3f6f4d6a06fcc246a"
+    },
+    "launch-path.mjs": {
+      "sourcePath": "modules/apps/server/launch-path.mjs",
+      "sha256": "84c184b2943d4c5ff1e92fe2cdaac2c95fceec131b3dad3e2efb72db29e6ae36"
+    }
+  }
+}

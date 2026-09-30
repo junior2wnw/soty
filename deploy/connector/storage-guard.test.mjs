@@ -69,7 +69,7 @@ test('probe observes committed WAL user_version and never ignores it with immuta
 
 test('strict image reader manifest rejects missing, extended and malformed claims', () => {
   for (const text of [undefined, '', '{}', '{"version":1,"readers":{"rooms":[1,2]}}', '{"version":2,"readers":{"rooms":[1,2]}}',
-    '{"version":2,"readers":{"rooms":[1,2],"apps":[6]}}', '{"version":2,"readers":{"rooms":[1,2,3],"apps":[1,2,3]}}',
+    '{"version":2,"readers":{"rooms":[1,2],"apps":[7]}}', '{"version":2,"readers":{"rooms":[1,2,3],"apps":[1,2,3]}}',
     '{"version":2,"readers":{"rooms":[1,1],"apps":[1]}}',
     '{"version":2,"readers":{"rooms":[1],"apps":[1,1]}}', '{"version":2,"readers":{"rooms":[],"apps":[1]}}',
     '{"version":2,"readers":{"rooms":[1],"apps":[]}}', '{"version":2,"readers":{"rooms":[1],"apps":[1]},"allow":true}',
@@ -146,7 +146,7 @@ test('Apps version is an independent reader requirement and is retained in the s
   requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, 2);
 });
 
-for (const version of [3, 4, 5]) test(`Apps${version} is accepted independently of the Rooms ceiling and blocks an Apps${version - 1}-only actual image`, async () => {
+for (const version of [3, 4, 5, 6]) test(`Apps${version} is accepted independently of the Rooms ceiling and blocks an Apps${version - 1}-only actual image`, async () => {
   const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: version - 1 }, (_, i) => i + 1) } });
   const old = fixture({ readers, apps: version });
   await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
@@ -155,27 +155,27 @@ for (const version of [3, 4, 5]) test(`Apps${version} is accepted independently 
   const current = fixture({ apps: version });
   const receipt = await guardStorageStart(current.context, current.runtime);
   requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, version); assert.equal(receipt.rooms, 2);
-  for (const apps of ['empty', 1, 2, 3, 4, 5]) assertStorageCompatible(image(2), format(2, apps));
+  for (const apps of ['empty', 1, 2, 3, 4, 5, 6]) assertStorageCompatible(image(2), format(2, apps));
   assert.throws(() => checkedStorageFormat(format(3, version)), /storage_probe_invalid/);
-  assert.throws(() => assertStorageCompatible(image(2), format(2, 6)), /storage_probe_invalid/);
+  assert.throws(() => assertStorageCompatible(image(2), format(2, 7)), /storage_probe_invalid/);
 });
 
 test('old or extended probe and start receipts never authorize a restart', () => {
   const good = { schema: 'soty.storage-start.v2', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 2 };
   requireStorageStartReceipt(good, id(1));
   for (const value of [{ ok: true, schema: 'soty.storage-format.v1', rooms: 2 },
-    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), apps: 6 }, { ...format(2, 5), rooms: 3 },
+    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), apps: 7 }, { ...format(2, 6), rooms: 3 },
     { ...format(2), apps: undefined }, { ...format(2), complete: true }]) {
     assert.throws(() => checkedStorageFormat(value), /storage_probe_invalid/);
   }
   for (const value of [{ schema: 'soty.storage-start.v1', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2 },
-    { ...good, schema: 'soty.storage-start.v1' }, { ...good, apps: 6 }, { ...good, rooms: 3 },
+    { ...good, schema: 'soty.storage-start.v1' }, { ...good, apps: 7 }, { ...good, rooms: 3 },
     { ...good, apps: undefined }, { ...good, allowed: true }]) {
     assert.throws(() => requireStorageStartReceipt(value, id(1)), /storage_start_guard_missing/);
   }
 });
 
-for (const previous of [3, 4]) test(`a completed Apps${previous} helper receipt is reconciled once but cannot replace a fresh Apps${previous + 1} probe`, async () => {
+for (const previous of [3, 4, 5]) test(`a completed Apps${previous} helper receipt is reconciled once but cannot replace a fresh Apps${previous + 1} probe`, async () => {
   const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: previous }, (_, index) => index + 1) } });
   const f = fixture({ readers, apps: previous });
   const receipt = await guardStorageStart(f.context, f.runtime);

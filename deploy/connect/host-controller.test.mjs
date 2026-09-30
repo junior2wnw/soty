@@ -13,6 +13,7 @@ import { readStorageFormat } from '../connector/storage-probe.mjs';
 import { createHistoricalAppsV2 } from '../connector/apps-v2.fixture.mjs';
 import { createHistoricalAppsV3 } from '../connector/apps-v3.fixture.mjs';
 import { createHistoricalAppsV4 } from '../connector/apps-v4.fixture.mjs';
+import { createHistoricalAppsV5 } from '../connector/apps-v5.fixture.mjs';
 
 const id = n => n.toString(16).padStart(64, '0');
 const image = n => 'sha256:' + id(n);
@@ -315,11 +316,11 @@ test('v2 candidate failure never restarts JSON-only original or restores its aut
   assert.ok((await f.readState()).transaction);
 });
 
-for (const previous of [2, 3, 4]) test(`real Apps v${previous} to v5 migration after candidate failure blocks an Apps${previous}-only original before any rollback helper or automatic restart`, async () => {
+for (const previous of [2, 3, 4, 5]) test(`real Apps v${previous} to v6 migration after candidate failure blocks an Apps${previous}-only original before any rollback helper or automatic restart`, async () => {
   const f = await fixture(), dataDir = path.join(f.root, 'data'); await mkdir(dataDir);
   await mkdir(path.join(dataDir, 'apps'));
   const file = path.join(dataDir, 'apps', 'registry.sqlite'), originalDb = new DatabaseSync(file);
-  try { if (previous === 4) createHistoricalAppsV4(originalDb); else if (previous === 3) createHistoricalAppsV3(originalDb); else createHistoricalAppsV2(originalDb); } finally { originalDb.close(); }
+  try { if (previous === 5) createHistoricalAppsV5(originalDb); else if (previous === 4) createHistoricalAppsV4(originalDb); else if (previous === 3) createHistoricalAppsV3(originalDb); else createHistoricalAppsV2(originalDb); } finally { originalDb.close(); }
   assert.equal((await readStorageFormat(dataDir)).apps, previous);
   f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: Array.from({ length: previous }, (_, i) => i + 1) } });
   f.engine.items.get(id(1)).Config.Labels[storageReaderLabel] = currentStorageReaders;
@@ -339,7 +340,7 @@ for (const previous of [2, 3, 4]) test(`real Apps v${previous} to v5 migration a
     probes.push({ verb, id: runtime.Id, migrated: Boolean(migratedBytes) }); return probe(verb, runtime, ...rest);
   };
   await assert.rejects(f.create().run());
-  assert.deepEqual(await readStorageFormat(dataDir), { ok: true, schema: 'soty.storage-format.v2', rooms: 'empty', apps: 5 });
+  assert.deepEqual(await readStorageFormat(dataDir), { ok: true, schema: 'soty.storage-format.v2', rooms: 'empty', apps: 6 });
   const old = await f.engine.inspect(id(1));
   assert.equal(old.State.Running, false); assert.equal(old.HostConfig.RestartPolicy.Name, 'no');
   assert.ok(!f.engine.events.includes('start:' + id(1)));
@@ -403,19 +404,19 @@ test('recovered v2 START receipt rechecks current Apps format and never repeats 
   const state = await f.readState(), operation = state.transaction.operation;
   assert.equal(operation.storageGuard.schema, 'soty.storage-start.v2'); assert.equal(operation.storageGuard.apps, 'empty');
   f.engine.items.get(operation.id).State = { Running: true, Status: 'running' };
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 6 });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 7 });
   const controller = f.create(); controller.state = state;
   const starts = f.engine.events.filter(event => event.startsWith('start:')).length;
   await assert.rejects(controller.reconcileOperation(), /storage_probe_invalid/);
   assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
   assert.ok(controller.state.transaction.operation);
-  controller.storageProbeOverride = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 5 });
+  controller.storageProbeOverride = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 6 });
   await controller.reconcileOperation();
   assert.equal(controller.state.transaction.operation, null);
   assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
 });
 
-for (const previous of [2, 3, 4]) test(`pending Apps${previous} START receipt cannot settle against Apps${previous + 1} data or repeat an already submitted start`, async () => {
+for (const previous of [2, 3, 4, 5]) test(`pending Apps${previous} START receipt cannot settle against Apps${previous + 1} data or repeat an already submitted start`, async () => {
   const f = await fixture(); f.engine.ignore = 'start';
   const command = f.deps.command;
   f.deps.command = async (...args) => {

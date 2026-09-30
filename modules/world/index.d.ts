@@ -73,6 +73,8 @@ export interface WorldService {
   withCommunityAuthorityFence<T>(callback: () => T extends PromiseLike<unknown> ? never : T): T;
   canAccessCommunity(accountId: string, communityId: string): boolean;
   activeCommunityIds(accountId: string): string[];
+  /** Only inside the host authority fence; returns a subset of the bounded candidates. */
+  appCommunityAuthority(accountId: string, ownerAccountId: string, relevantCommunityIds: readonly string[]): readonly string[];
   isGroupAdmin(accountId: string, communityId: string): boolean;
   canRequestContact(accountId: string, targetId: string): boolean;
   subscribeMembership(listener: (event: MembershipEvent) => unknown): () => void;

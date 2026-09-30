@@ -113,6 +113,23 @@ export function createWorldService({ databasePath, projectId, clock = Date.now }
       return m.all(`SELECT member.community_id FROM memberships member JOIN communities c ON c.id=member.community_id
         WHERE member.account_id=? AND member.state='active' AND c.state='active' ORDER BY member.community_id`, accountId).map(row => row.community_id);
     },
+    appCommunityAuthority(accountId, ownerAccountId, relevantCommunityIds) {
+      assert(!closed, 'service_closed');
+      assert(authorityFenceActive, 'world_authority_fence_required');
+      identifier(accountId); identifier(ownerAccountId);
+      // At most1000 materialized audiences of64 groups plus the current head.
+      // Restrict the JOIN to this bounded candidate set, not every World group.
+      assert(Array.isArray(relevantCommunityIds) && relevantCommunityIds.length <= 65536, 'world_authority_candidates_invalid');
+      const candidates = [...new Set(relevantCommunityIds.map(identifier))];
+      if (candidates.length === 0) return Object.freeze([]);
+      return Object.freeze(m.all(`SELECT member.community_id FROM memberships member
+        JOIN memberships publisher ON publisher.community_id=member.community_id
+        JOIN communities c ON c.id=member.community_id
+        WHERE member.account_id=? AND member.state='active'
+          AND publisher.account_id=? AND publisher.state='active' AND publisher.role IN('owner','moderator')
+          AND c.state='active' AND member.community_id IN(SELECT value FROM json_each(?))
+        ORDER BY member.community_id`, accountId, ownerAccountId, JSON.stringify(candidates)).map(row => row.community_id));
+    },
     isGroupAdmin(accountId, communityId) {
       assert(!closed, 'service_closed'); identifier(accountId); identifier(communityId);
       return Boolean(m.get(`SELECT 1 FROM memberships member JOIN communities c ON c.id=member.community_id

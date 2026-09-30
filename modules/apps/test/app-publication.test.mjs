@@ -99,7 +99,7 @@ test('historical v2 migrates once to latest with private publication, initial pi
   const before = Object.fromEntries(preserved.map(table => [table, currentRows(f.db, table)]));
   const result = migrateAppsSchema(f.db, { legacyTemplate: legacy, now: () => 10 });
   assert.equal(result.schema, APPS_REGISTRY_SCHEMA); assert.equal(result.migrated, true);
-  assert.equal(inspectAppsSchema(f.db), 'v5'); assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 5);
+  assert.equal(inspectAppsSchema(f.db), 'v6'); assert.equal(f.db.prepare('PRAGMA user_version').get().user_version, 6);
   for (const table of preserved) assert.deepEqual(currentRows(f.db, table), before[table]);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publication_domains').get().n, 0);
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM app_publication_receipts').get().n, 0);
@@ -115,14 +115,14 @@ test('historical v2 migrates once to latest with private publication, initial pi
   assert.equal(migrateAppsSchema(f.db, { legacyTemplate: legacy, now: () => 20 }).migrated, false);
   assert.deepEqual(currentRows(f.db, 'app_publications'), all);
   const reopened = new DatabaseSync(f.databasePath);
-  try { assert.equal(inspectAppsSchema(reopened), 'v5'); assert.deepEqual(currentRows(reopened, 'app_publications'), all); } finally { reopened.close(); }
+  try { assert.equal(inspectAppsSchema(reopened), 'v6'); assert.deepEqual(currentRows(reopened, 'app_publications'), all); } finally { reopened.close(); }
 });
 
 test('empty and historical v1 versions 0/1 initialize latest without named activation or reset of source/grants', async t => {
   for (const version of ['empty', 0, 1]) {
     const f = await fixture(t, { version }), before = version === 'empty' ? [] : currentRows(f.db, 'local_apps');
     migrateAppsSchema(f.db, { legacyTemplate: legacy });
-    assert.equal(inspectAppsSchema(f.db), 'v5'); assert.deepEqual(currentRows(f.db, 'local_apps'), before);
+    assert.equal(inspectAppsSchema(f.db), 'v6'); assert.deepEqual(currentRows(f.db, 'local_apps'), before);
     assert.equal(currentRows(f.db, 'app_runtime_targets').length, before.length);
     assert.deepEqual(currentRows(f.db, 'app_publication_domains'), []);
   }
@@ -154,7 +154,7 @@ test('target rows are immutable and composite foreign keys never select a differ
 });
 
 test('unrecognized future schema and altered latest constraints fail before migration writes', async t => {
-  const unknown = await fixture(t); unknown.db.exec("UPDATE apps_meta SET value='soty.apps-registry.v6' WHERE key='schema'; PRAGMA user_version=6");
+  const unknown = await fixture(t); unknown.db.exec("UPDATE apps_meta SET value='soty.apps-registry.v7' WHERE key='schema'; PRAGMA user_version=7");
   const before = await readFile(unknown.databasePath);
   assert.throws(() => migrateAppsSchema(unknown.db, { legacyTemplate: legacy }), /apps_schema_unsupported/);
   assert.deepEqual(await readFile(unknown.databasePath), before);

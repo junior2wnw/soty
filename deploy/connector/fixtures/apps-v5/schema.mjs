@@ -3,12 +3,11 @@ import { AppsError, assertApps, appId, appPort, requestPath, cleanGrants, textId
 import { canonicalOrigin, legacyZone, normalizeLegacyTemplate } from './domain-policy.mjs';
 import { createLaunchPath } from './launch-path.mjs';
 
-export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v6';
+export const APPS_REGISTRY_SCHEMA = 'soty.apps-registry.v5';
 const v1Schema = 'soty.apps-registry.v1';
 const v2Schema = 'soty.apps-registry.v2';
 const v3Schema = 'soty.apps-registry.v3';
 const v4Schema = 'soty.apps-registry.v4';
-const v5Schema = 'soty.apps-registry.v5';
 export const RUNTIME_PROFILE = 'soty.relay-restricted.v1';
 const core = {
   apps_meta: ['key', 'value'],
@@ -37,14 +36,6 @@ const saved = {
   app_saved_entries: ['account_id', 'app_id', 'domain_id', 'origin', 'path', 'label', 'saved_revision', 'updated_at'],
   app_saved_receipts: ['account_id', 'request_key', 'intent_hash', 'app_id', 'saved', 'committed_revision', 'created_at'],
 };
-const discussions = {
-  app_discussion_heads: ['app_id', 'current_id', 'generation', 'owner_account_id', 'mode', 'grants_json', 'audience_hash', 'message_count', 'body_bytes', 'conversation_count', 'rate_at', 'rate_credit', 'updated_at'],
-  app_discussion_conversations: ['id', 'app_id', 'generation', 'owner_account_id', 'mode', 'grants_json', 'audience_hash', 'created_at', 'message_seq', 'change_seq'],
-  app_discussion_messages: ['id', 'app_id', 'conversation_id', 'seq', 'author_account_id', 'author_label', 'request_key', 'intent_hash', 'body', 'body_bytes', 'reply_to_id', 'created_at', 'removed_at', 'removed_by'],
-  app_discussion_changes: ['conversation_id', 'seq', 'message_id', 'kind', 'created_at'],
-  app_discussion_usage: ['id', 'head_count', 'conversation_count', 'message_count', 'body_bytes'],
-  app_discussion_rates: ['account_id', 'at', 'credit'],
-};
 const digest = value => createHash('sha256').update(value).digest('hex');
 export const domainZoneId = zone => `zone_${digest(zone.origin_template ?? zone.template).slice(0, 32)}`;
 
@@ -72,17 +63,14 @@ export function inspectAppsSchema(db) {
   const schema = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get()?.value;
   const state = schema === v1Schema && [0, 1].includes(version) ? 'v1'
     : schema === v2Schema && version === 2 ? 'v2' : schema === v3Schema && version === 3 ? 'v3'
-      : schema === v4Schema && version === 4 ? 'v4' : schema === v5Schema && version === 5 ? 'v5'
-        : schema === APPS_REGISTRY_SCHEMA && version === 6 ? 'v6' : '';
+      : schema === v4Schema && version === 4 ? 'v4' : schema === APPS_REGISTRY_SCHEMA && version === 5 ? 'v5' : '';
   assertApps(state, 'apps_schema_unsupported');
-  const modern = ['v3', 'v4', 'v5', 'v6'].includes(state), sourceVersion = ['v4', 'v5', 'v6'].includes(state), savedVersion = ['v5', 'v6'].includes(state);
-  const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}),
-    ...(savedVersion ? saved : {}), ...(state === 'v6' ? discussions : {}) };
+  const modern = ['v3', 'v4', 'v5'].includes(state), sourceVersion = ['v4', 'v5'].includes(state);
+  const expected = state === 'v1' ? core : { ...core, ...domains, ...(modern ? publications : {}), ...(sourceVersion ? sources : {}), ...(state === 'v5' ? saved : {}) };
   const sqlDefinitions = new Map([...definitions(coreDdl()), ...(state !== 'v1' ? definitions(domainDdl()) : []),
     ...(modern ? [...definitions(publicationDdl()), ...definitions(targetGuards())] : []),
     ...(sourceVersion ? [...definitions(sourceDdl()), ...definitions(sourceGuards())] : []),
-    ...(savedVersion ? [...definitions(savedDdl()), ...definitions(savedGuards())] : []),
-    ...(state === 'v6' ? [...definitions(discussionDdl()), ...definitions(discussionGuards())] : [])]);
+    ...(state === 'v5' ? [...definitions(savedDdl()), ...definitions(savedGuards())] : [])]);
   assertApps(objects.length === sqlDefinitions.size && objects.every(item => typeof item.sql === 'string'
     && sqlDefinitions.get(item.name) === normalizedSql(item.sql)), 'apps_schema_unsupported');
   for (const [name, columns] of Object.entries(expected)) {
@@ -90,18 +78,16 @@ export function inspectAppsSchema(db) {
     assertApps(JSON.stringify(actual.map(item => item.name)) === JSON.stringify(columns), 'apps_schema_unsupported');
     const primaryKeys = name === 'local_app_grants' ? ['app_id', 'kind', 'principal_id']
       : ['app_domain_receipts', 'app_publication_receipts', 'app_source_receipts', 'app_saved_receipts'].includes(name) ? ['account_id', 'request_key']
-        : name === 'app_saved_entries' ? ['account_id', 'app_id'] : ['app_saved_heads', 'app_discussion_rates'].includes(name) ? ['account_id']
-          : name === 'app_discussion_changes' ? ['conversation_id', 'seq']
+        : name === 'app_saved_entries' ? ['account_id', 'app_id'] : name === 'app_saved_heads' ? ['account_id']
         : name === 'app_runtime_targets' ? ['app_id', 'revision']
           : name === 'app_publication_domains' ? ['app_id', 'domain_id']
             : [name === 'apps_meta' ? 'key' : name === 'app_devices' ? 'connector_key'
-              : ['app_domain_heads', 'app_publications', 'app_source_heads', 'app_discussion_heads'].includes(name) ? 'app_id' : 'id'];
+              : ['app_domain_heads', 'app_publications', 'app_source_heads'].includes(name) ? 'app_id' : 'id'];
     for (const column of actual) {
       const integer = ['revision', 'created_at', 'updated_at', 'retired_at', 'committed_revision', 'port', 'listed',
-        'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version', 'saved_revision', 'saved',
-        'generation', 'message_count', 'body_bytes', 'conversation_count', 'rate_at', 'rate_credit', 'message_seq', 'change_seq', 'seq', 'removed_at', 'head_count', 'at', 'credit'].includes(column.name)
+        'policy_epoch', 'active_target_revision', 'exposure_ack_revision', 'committed_epoch', 'required_binding_version', 'saved_revision', 'saved'].includes(column.name)
         && !(name === 'app_domain_zones' && column.name === 'port');
-      assertApps(column.type.toUpperCase() === (integer || (name === 'app_discussion_usage' && column.name === 'id') ? 'INTEGER' : 'TEXT')
+      assertApps(column.type.toUpperCase() === (integer ? 'INTEGER' : 'TEXT')
         && column.pk === primaryKeys.indexOf(column.name) + 1, 'apps_schema_unsupported');
     }
   }
@@ -222,140 +208,6 @@ function savedGuards() {
     "CREATE TRIGGER app_saved_head_no_delete BEFORE DELETE ON app_saved_heads BEGIN SELECT RAISE(ABORT,'app_saved_head_required'); END",
     "CREATE TRIGGER app_saved_head_no_replace BEFORE INSERT ON app_saved_heads WHEN EXISTS (SELECT 1 FROM app_saved_heads WHERE account_id=NEW.account_id) BEGIN SELECT RAISE(ABORT,'app_saved_head_immutable'); END",
   ];
-}
-
-function discussionDdl() {
-  return `CREATE TABLE app_discussion_heads (
-      app_id TEXT PRIMARY KEY NOT NULL,current_id TEXT NOT NULL UNIQUE,generation INTEGER NOT NULL CHECK(generation BETWEEN 1 AND 9007199254740991),
-      owner_account_id TEXT NOT NULL,mode TEXT NOT NULL CHECK(mode IN ('restricted','anyone')),grants_json TEXT NOT NULL,audience_hash TEXT NOT NULL,
-      message_count INTEGER NOT NULL CHECK(message_count BETWEEN 0 AND 9007199254740991),body_bytes INTEGER NOT NULL CHECK(body_bytes BETWEEN 0 AND 9007199254740991),
-      conversation_count INTEGER NOT NULL CHECK(conversation_count BETWEEN 0 AND 9007199254740991),
-      rate_at INTEGER NOT NULL CHECK(rate_at BETWEEN 0 AND 9007199254740991),rate_credit INTEGER NOT NULL CHECK(rate_credit BETWEEN 0 AND 15000),
-      updated_at INTEGER NOT NULL CHECK(updated_at BETWEEN 0 AND 9007199254740991),
-      FOREIGN KEY(app_id,owner_account_id) REFERENCES local_apps(id,owner_account_id));
-    CREATE TABLE app_discussion_conversations (
-      id TEXT PRIMARY KEY NOT NULL,app_id TEXT NOT NULL REFERENCES app_discussion_heads(app_id),
-      generation INTEGER NOT NULL CHECK(generation BETWEEN 1 AND 9007199254740991),owner_account_id TEXT NOT NULL,
-      mode TEXT NOT NULL CHECK(mode IN ('restricted','anyone')),grants_json TEXT NOT NULL,audience_hash TEXT NOT NULL,
-      created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),
-      message_seq INTEGER NOT NULL CHECK(message_seq BETWEEN 1 AND 9007199254740991),change_seq INTEGER NOT NULL CHECK(change_seq BETWEEN 1 AND 9007199254740991),
-      FOREIGN KEY(app_id,owner_account_id) REFERENCES local_apps(id,owner_account_id));
-    CREATE UNIQUE INDEX app_discussion_conversation_generation ON app_discussion_conversations(app_id,generation);
-    CREATE UNIQUE INDEX app_discussion_conversation_app ON app_discussion_conversations(app_id,id);
-    CREATE TABLE app_discussion_messages (
-      id TEXT PRIMARY KEY NOT NULL,app_id TEXT NOT NULL,conversation_id TEXT NOT NULL,seq INTEGER NOT NULL CHECK(seq BETWEEN 1 AND 9007199254740991),
-      author_account_id TEXT NOT NULL,author_label TEXT NOT NULL CHECK(length(author_label) BETWEEN 1 AND 80),
-      request_key TEXT NOT NULL CHECK(length(request_key)=64),intent_hash TEXT NOT NULL CHECK(length(intent_hash)=64),
-      body TEXT,body_bytes INTEGER NOT NULL CHECK(body_bytes BETWEEN 0 AND 16384),reply_to_id TEXT,
-      created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),removed_at INTEGER CHECK(removed_at BETWEEN 0 AND 9007199254740991),removed_by TEXT,
-      FOREIGN KEY(app_id,conversation_id) REFERENCES app_discussion_conversations(app_id,id),
-      FOREIGN KEY(conversation_id,reply_to_id) REFERENCES app_discussion_messages(conversation_id,id),
-      CHECK((body IS NOT NULL AND body_bytes>0 AND removed_at IS NULL AND removed_by IS NULL) OR
-        (body IS NULL AND body_bytes=0 AND removed_at IS NOT NULL AND removed_by IS NOT NULL)));
-    CREATE UNIQUE INDEX app_discussion_message_request ON app_discussion_messages(author_account_id,request_key);
-    CREATE UNIQUE INDEX app_discussion_message_sequence ON app_discussion_messages(conversation_id,seq);
-    CREATE UNIQUE INDEX app_discussion_message_conversation ON app_discussion_messages(conversation_id,id);
-    CREATE INDEX app_discussion_message_app ON app_discussion_messages(app_id);
-    CREATE TABLE app_discussion_changes (
-      conversation_id TEXT NOT NULL,seq INTEGER NOT NULL CHECK(seq BETWEEN 1 AND 9007199254740991),message_id TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK(kind IN ('message','removed')),created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),
-      PRIMARY KEY(conversation_id,seq),FOREIGN KEY(conversation_id,message_id) REFERENCES app_discussion_messages(conversation_id,id));
-    CREATE TABLE app_discussion_usage (
-      id INTEGER PRIMARY KEY CHECK(id=1),head_count INTEGER NOT NULL CHECK(head_count BETWEEN 0 AND 9007199254740991),
-      conversation_count INTEGER NOT NULL CHECK(conversation_count BETWEEN 0 AND 9007199254740991),
-      message_count INTEGER NOT NULL CHECK(message_count BETWEEN 0 AND 9007199254740991),body_bytes INTEGER NOT NULL CHECK(body_bytes BETWEEN 0 AND 9007199254740991));
-    CREATE TABLE app_discussion_rates (
-      account_id TEXT PRIMARY KEY NOT NULL,at INTEGER NOT NULL CHECK(at BETWEEN 0 AND 9007199254740991),credit INTEGER NOT NULL CHECK(credit BETWEEN 0 AND 20000));`;
-}
-
-function discussionGuards() {
-  return [
-    "CREATE TRIGGER app_discussion_head_no_delete BEFORE DELETE ON app_discussion_heads BEGIN SELECT RAISE(ABORT,'app_discussion_head_required'); END",
-    "CREATE TRIGGER app_discussion_head_no_replace BEFORE INSERT ON app_discussion_heads WHEN EXISTS (SELECT 1 FROM app_discussion_heads WHERE app_id=NEW.app_id) BEGIN SELECT RAISE(ABORT,'app_discussion_head_required'); END",
-    "CREATE TRIGGER app_discussion_head_lineage BEFORE UPDATE ON app_discussion_heads WHEN NEW.app_id<>OLD.app_id OR NEW.owner_account_id<>OLD.owner_account_id OR NEW.generation<OLD.generation OR (NEW.generation=OLD.generation AND (NEW.current_id<>OLD.current_id OR NEW.mode<>OLD.mode OR NEW.grants_json<>OLD.grants_json OR NEW.audience_hash<>OLD.audience_hash)) OR (NEW.generation>OLD.generation AND (NEW.generation<>OLD.generation+1 OR NEW.current_id=OLD.current_id OR EXISTS (SELECT 1 FROM app_discussion_conversations WHERE id=NEW.current_id))) BEGIN SELECT RAISE(ABORT,'app_discussion_lineage_immutable'); END",
-    "CREATE TRIGGER app_discussion_conversation_immutable BEFORE UPDATE OF id,app_id,generation,owner_account_id,mode,grants_json,audience_hash,created_at ON app_discussion_conversations BEGIN SELECT RAISE(ABORT,'app_discussion_audience_immutable'); END",
-    "CREATE TRIGGER app_discussion_conversation_no_delete BEFORE DELETE ON app_discussion_conversations BEGIN SELECT RAISE(ABORT,'app_discussion_audience_immutable'); END",
-    "CREATE TRIGGER app_discussion_conversation_no_replace BEFORE INSERT ON app_discussion_conversations WHEN EXISTS (SELECT 1 FROM app_discussion_conversations WHERE id=NEW.id OR (app_id=NEW.app_id AND generation=NEW.generation)) BEGIN SELECT RAISE(ABORT,'app_discussion_audience_immutable'); END",
-    "CREATE TRIGGER app_discussion_message_immutable BEFORE UPDATE OF id,app_id,conversation_id,seq,author_account_id,author_label,request_key,intent_hash,reply_to_id,created_at ON app_discussion_messages BEGIN SELECT RAISE(ABORT,'app_discussion_message_immutable'); END",
-    "CREATE TRIGGER app_discussion_message_no_delete BEFORE DELETE ON app_discussion_messages BEGIN SELECT RAISE(ABORT,'app_discussion_message_immutable'); END",
-    "CREATE TRIGGER app_discussion_message_no_replace BEFORE INSERT ON app_discussion_messages WHEN EXISTS (SELECT 1 FROM app_discussion_messages WHERE id=NEW.id OR (author_account_id=NEW.author_account_id AND request_key=NEW.request_key) OR (conversation_id=NEW.conversation_id AND seq=NEW.seq)) BEGIN SELECT RAISE(ABORT,'app_discussion_message_immutable'); END",
-    "CREATE TRIGGER app_discussion_message_redaction BEFORE UPDATE OF body,body_bytes,removed_at,removed_by ON app_discussion_messages WHEN OLD.removed_at IS NOT NULL OR NEW.body IS NOT NULL OR NEW.body_bytes<>0 OR NEW.removed_at IS NULL OR NEW.removed_by IS NULL BEGIN SELECT RAISE(ABORT,'app_discussion_redaction_required'); END",
-    "CREATE TRIGGER app_discussion_change_immutable BEFORE UPDATE ON app_discussion_changes BEGIN SELECT RAISE(ABORT,'app_discussion_change_immutable'); END",
-    "CREATE TRIGGER app_discussion_usage_no_delete BEFORE DELETE ON app_discussion_usage BEGIN SELECT RAISE(ABORT,'app_discussion_usage_required'); END",
-    "CREATE TRIGGER app_discussion_usage_no_replace BEFORE INSERT ON app_discussion_usage WHEN EXISTS (SELECT 1 FROM app_discussion_usage WHERE id=NEW.id) BEGIN SELECT RAISE(ABORT,'app_discussion_usage_required'); END",
-  ];
-}
-
-export function discussionAudienceDigest(ownerAccountId, mode, grants) {
-  textId(ownerAccountId); assertApps(['restricted', 'anyone'].includes(mode), 'apps_registry_corrupt', 500);
-  const normalized = cleanGrants(grants);
-  return digest(JSON.stringify(['soty.app-discussion.audience.v1', ownerAccountId, mode, normalized.accountIds, normalized.communityIds]));
-}
-
-export function readDiscussionAudience(db, id) {
-  const app = db.prepare('SELECT * FROM local_apps WHERE id=?').get(appId(id));
-  const policy = db.prepare('SELECT owner_account_id,launch_policy FROM app_publications WHERE app_id=?').get(id);
-  assertApps(app && policy?.owner_account_id === app.owner_account_id, 'apps_registry_corrupt', 500);
-  let grants; try { grants = cleanGrants(JSON.parse(app.grants_json)); } catch { throw new AppsError('apps_registry_corrupt', 500); }
-  return { app, ownerAccountId: app.owner_account_id, mode: policy.launch_policy, grants,
-    hash: discussionAudienceDigest(app.owner_account_id, policy.launch_policy, grants) };
-}
-
-function validateDiscussionRows(db) {
-  assertApps(!db.prepare('PRAGMA foreign_key_check').get(), 'apps_registry_corrupt', 500);
-  const safe = (value, minimum = 0) => assertApps(Number.isSafeInteger(value) && value >= minimum, 'apps_registry_corrupt', 500);
-  const identifier = (value, prefix) => assertApps(typeof value === 'string' && new RegExp(`^${prefix}_[a-f0-9]{32}$`, 'u').test(value), 'apps_registry_corrupt', 500);
-  const hashValue = value => assertApps(typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value), 'apps_registry_corrupt', 500);
-  function audience(row) {
-    textId(row.owner_account_id); let grants;
-    try { grants = cleanGrants(JSON.parse(row.grants_json)); } catch { throw new AppsError('apps_registry_corrupt', 500); }
-    assertApps(JSON.stringify(grants) === row.grants_json && Buffer.byteLength(row.grants_json, 'utf8') <= 32768
-      && discussionAudienceDigest(row.owner_account_id, row.mode, grants) === row.audience_hash, 'apps_registry_corrupt', 500);
-  }
-  const usage = db.prepare('SELECT * FROM app_discussion_usage').all();
-  assertApps(usage.length === 1 && usage[0].id === 1, 'apps_registry_corrupt', 500);
-  for (const column of ['head_count', 'conversation_count', 'message_count', 'body_bytes']) safe(usage[0][column]);
-  const totals = { head_count: 0, conversation_count: 0, message_count: 0, body_bytes: 0 };
-  for (const head of db.prepare('SELECT * FROM app_discussion_heads').iterate()) {
-    totals.head_count++; appId(head.app_id); identifier(head.current_id, 'conv'); audience(head);
-    safe(head.generation, 1); safe(head.rate_at); safe(head.rate_credit); safe(head.updated_at);
-    const current = readDiscussionAudience(db, head.app_id);
-    assertApps(head.owner_account_id === current.ownerAccountId && head.audience_hash === current.hash, 'apps_registry_corrupt', 500);
-    const messages = db.prepare('SELECT count(*) AS n,coalesce(sum(body_bytes),0) AS bytes FROM app_discussion_messages WHERE app_id=?').get(head.app_id);
-    const conversations = db.prepare('SELECT count(*) AS n FROM app_discussion_conversations WHERE app_id=?').get(head.app_id);
-    assertApps(head.message_count === messages.n && head.body_bytes === messages.bytes && head.conversation_count === conversations.n, 'apps_registry_corrupt', 500);
-    totals.message_count += messages.n; totals.body_bytes += messages.bytes; totals.conversation_count += conversations.n;
-    const materialized = db.prepare('SELECT * FROM app_discussion_conversations WHERE id=?').get(head.current_id);
-    assertApps(!materialized || (materialized.app_id === head.app_id && materialized.generation === head.generation
-      && materialized.audience_hash === head.audience_hash), 'apps_registry_corrupt', 500);
-  }
-  for (const key of Object.keys(totals)) assertApps(totals[key] === usage[0][key], 'apps_registry_corrupt', 500);
-  for (const conversation of db.prepare('SELECT * FROM app_discussion_conversations').iterate()) {
-    identifier(conversation.id, 'conv'); audience(conversation); safe(conversation.generation, 1); safe(conversation.created_at);
-    const head = db.prepare('SELECT * FROM app_discussion_heads WHERE app_id=?').get(conversation.app_id);
-    assertApps(head && conversation.generation <= head.generation
-      && (conversation.generation < head.generation || conversation.id === head.current_id), 'apps_registry_corrupt', 500);
-    const messages = db.prepare('SELECT count(*) AS n,max(seq) AS maximum,sum(removed_at IS NOT NULL) AS removed FROM app_discussion_messages WHERE conversation_id=?').get(conversation.id);
-    assertApps(messages.n > 0 && conversation.message_seq === messages.n && messages.maximum === messages.n
-      && conversation.change_seq === messages.n + messages.removed, 'apps_registry_corrupt', 500);
-    const changes = db.prepare('SELECT count(*) AS n,min(seq) AS minimum,max(seq) AS maximum FROM app_discussion_changes WHERE conversation_id=?').get(conversation.id);
-    assertApps(changes.n > 0 && changes.maximum === conversation.change_seq && changes.maximum - changes.minimum + 1 === changes.n, 'apps_registry_corrupt', 500);
-  }
-  for (const message of db.prepare('SELECT * FROM app_discussion_messages').iterate()) {
-    identifier(message.id, 'msg'); textId(message.author_account_id); hashValue(message.request_key); hashValue(message.intent_hash);
-    safe(message.seq, 1); safe(message.created_at); safe(message.body_bytes);
-    assertApps(typeof message.author_label === 'string' && message.author_label.trim() === message.author_label
-      && message.author_label.length >= 1 && message.author_label.length <= 80 && message.author_label.isWellFormed()
-      && !/[\u0000-\u001f\u007f]/u.test(message.author_label), 'apps_registry_corrupt', 500);
-    if (message.removed_at === null) assertApps(typeof message.body === 'string' && message.body.trim().length > 0
-      && message.body.length <= 4000 && message.body.isWellFormed() && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(message.body)
-      && Buffer.byteLength(message.body, 'utf8') === message.body_bytes, 'apps_registry_corrupt', 500);
-    else { safe(message.removed_at); textId(message.removed_by); assertApps(message.body === null && message.body_bytes === 0, 'apps_registry_corrupt', 500); }
-    if (message.reply_to_id !== null) identifier(message.reply_to_id, 'msg');
-  }
-  assertApps(!db.prepare(`SELECT 1 FROM app_discussion_changes c JOIN app_discussion_messages m ON m.id=c.message_id
-    WHERE (c.kind='removed' AND (m.removed_at IS NULL OR c.created_at<>m.removed_at)) OR (c.kind='message' AND c.created_at<>m.created_at) LIMIT 1`).get(), 'apps_registry_corrupt', 500);
-  for (const rate of db.prepare('SELECT * FROM app_discussion_rates').iterate()) { textId(rate.account_id); safe(rate.at); safe(rate.credit); }
 }
 
 function validateSavedRows(db) {
@@ -508,20 +360,18 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
   db.exec('BEGIN IMMEDIATE');
   try {
     const before = inspectAppsSchema(db); // another process may have migrated while this connection waited
-    if (['v2', 'v3', 'v4', 'v5', 'v6'].includes(before)) {
+    if (['v2', 'v3', 'v4', 'v5'].includes(before)) {
       const pinned = db.prepare("SELECT value FROM apps_meta WHERE key='legacy_origin_template'").get();
       assertApps(pinned && pinned.value === normalizedTemplate, 'apps_origin_template_changed', 409);
-      if (before === 'v6') {
+      if (before === 'v5') {
         validateSourceRows(db);
         validateSavedRows(db);
-        validateDiscussionRows(db);
         db.exec('COMMIT');
         return { schema: APPS_REGISTRY_SCHEMA, migrated: false, legacyTemplate: pinned.value };
       }
     }
     if (before === 'v3') validateSourceRows(db, { historical: true });
-    if (['v4', 'v5'].includes(before)) validateSourceRows(db);
-    if (before === 'v5') validateSavedRows(db);
+    if (before === 'v4') validateSourceRows(db);
     if (before === 'empty') db.exec(coreDdl());
     if (before === 'empty' || before === 'v1') {
       db.exec(domainDdl());
@@ -529,26 +379,21 @@ export function migrateAppsSchema(db, { legacyTemplate = '', now = Date.now } = 
       if (normalizedTemplate) insertDomainZone(db, legacyZone(normalizedTemplate), timestamp);
       validateAndRebuildGrants(db, app => ensureCanonicalDomain(db, app, normalizedTemplate));
     }
-    if (!['v3', 'v4', 'v5'].includes(before)) {
+    if (!['v3', 'v4'].includes(before)) {
       db.exec(publicationDdl());
       for (const statement of targetGuards()) db.exec(statement);
     }
-    if (!['v4', 'v5'].includes(before)) {
+    if (before !== 'v4') {
       db.exec(sourceDdl());
       for (const statement of sourceGuards()) db.exec(statement);
       if (before === 'v3') db.exec('INSERT INTO app_source_heads SELECT id,1 FROM local_apps');
       else initializePublications(db);
     }
-    if (before !== 'v5') {
-      db.exec(savedDdl());
-      for (const statement of savedGuards()) db.exec(statement);
-    }
-    db.exec(discussionDdl());
-    db.exec('INSERT INTO app_discussion_usage VALUES (1,0,0,0,0)');
-    for (const statement of discussionGuards()) db.exec(statement);
+    db.exec(savedDdl());
+    for (const statement of savedGuards()) db.exec(statement);
     db.prepare("INSERT OR REPLACE INTO apps_meta(key,value) VALUES ('schema',?),('legacy_origin_template',?)")
       .run(APPS_REGISTRY_SCHEMA, normalizedTemplate);
-    db.exec('PRAGMA user_version=6; COMMIT');
+    db.exec('PRAGMA user_version=5; COMMIT');
     return { schema: APPS_REGISTRY_SCHEMA, migrated: true, legacyTemplate: normalizedTemplate };
   } catch (error) {
     if (db.isTransaction) db.exec('ROLLBACK');

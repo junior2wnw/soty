@@ -17,8 +17,9 @@ import { createRuntimeBindings } from './runtime-bindings.mjs';
 import { createLaunchPath } from './launch-path.mjs';
 import { createEngagementEntryResolver } from './engagement-access.mjs';
 import { createSavedRegistry, savedOperations } from './saved.mjs';
+import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -26,7 +27,8 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
 export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], actorActive = () => false,
-  canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
+  canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
+  readCommunityAuthority, discussionLimits, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
@@ -38,7 +40,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (['v2', 'v3', 'v4', 'v5'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
+    if (['v2', 'v3', 'v4', 'v5', 'v6'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
     migrateAppsSchema(db, { legacyTemplate: template, now });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, domainLimits: limits,
@@ -48,12 +50,18 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins] });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
-  let inspection, saved;
+  let inspection, saved, discussions;
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
-    saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence,
-      resolveEntry: createEngagementEntryResolver({ db, assertActor, publications, inspectSource }) });
+    const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
+    saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
+    discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse,
+      readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds) {
+        assertApps(typeof readCommunityAuthority === 'function', 'apps_authority_fence_required', 503);
+        return readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds);
+      },
+      authorLabel: discussionAuthorLabel, limits: discussionLimits });
   } catch (error) { db.close(); throw error; }
   const wss = new WebSocketServer({ noServer: true, maxPayload: FRAME_BYTES, perMessageDeflate: false });
   let closed = false;
@@ -270,6 +278,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function execute({ op, args = {}, actor }) {
     args = authenticatedArgs(actor, args); assertApps(operations.has(op), 'unsupported_operation');
     if (savedOperations.has(op)) return saved.execute({ op, actor, args });
+    if (discussionOperations.has(op)) return discussions.execute({ op, actor, args });
     if (op === 'apps.source.promote' || op === 'apps.source.history') return sources.execute({ op, actor, args });
     if (domainOperations.has(op)) return domains.execute({ actor, op, args });
     if (publicationOperations.has(op)) return publications.execute({ actor, op, args });
@@ -731,8 +740,13 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
         .map(zone => `${zone.scheme}://*.${zone.suffix}${zone.port ? `:${zone.port}` : ''}`))];
     },
     configured: Boolean(template || readNamedOrigins(db).length), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
-    close() { if (closed) return; closed = true; sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
+    close() { if (closed) return; closed = true; discussions.close(); sources.close(); runtimeBindings.close(); clearInterval(auditTimer); clearInterval(heartbeatTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); tickets.clear(); sessions.clear(); wss.close(); db.close(); },
   };
+}
+function discussionAuthorLabel(actor) {
+  const value = actor?.label;
+  return typeof value === 'string' && value.length > 0 && value.length <= 80 && value.isWellFormed()
+    && value === value.normalize('NFC').trim() && !/[\u0000-\u001f\u007f]/u.test(value) ? value : 'Участник';
 }
 function exact(value, allowed) { assertApps(Object.keys(value).every(key => allowed.includes(key)), 'unexpected_argument'); }
 function assertOrigin(req, origin, required) {

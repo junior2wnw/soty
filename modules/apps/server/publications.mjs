@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { assertApps, appId, textId } from './protocol.mjs';
 import { ensureInitialPublication, runtimeTargetDigest, requiredBindingVersion, RUNTIME_PROFILE } from './schema.mjs';
+import { syncDiscussionAudienceInTransaction } from './discussions.mjs';
 
 export const publicationOperations = new Set(['apps.publication.get', 'apps.publication.update']);
 export const PUBLICATION_RECEIPTS_PER_APP = 64;
@@ -114,6 +115,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       db.prepare('DELETE FROM app_publication_domains WHERE app_id=?').run(app.id);
       const insert = db.prepare('INSERT INTO app_publication_domains VALUES (?,?,?)');
       for (const id of intent.activeDomainIds) insert.run(app.id, id, actor.accountId);
+      syncDiscussionAudienceInTransaction(db, app.id, timestamp);
       const current = view(app);
       const receipt = { schema: 'soty.app-publication-receipt.v1', namespace: 'apps.publication.update.v1', requestKeyHash: intent.requestKey,
         appId: app.id, policyEpoch: changed.policyEpoch, launchPolicy: current.launchPolicy, listed: current.listed,
@@ -185,7 +187,7 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       if (op === 'apps.publication.get') { exact(args, ['appId']); return read(actor, appId(args.appId)); }
       return update(actor, args);
     },
-    initForApp(app) { ensureInitialPublication(db, app); },
+    initForApp(app) { ensureInitialPublication(db, app); syncDiscussionAudienceInTransaction(db, app.id, now()); },
     sourceStateInTransaction(id) {
       assertApps(db.isTransaction, 'apps_transaction_required', 500);
       const app = appRow(appId(id)); assertApps(app, 'apps_registry_corrupt', 500);
@@ -207,14 +209,20 @@ export function createPublicationRegistry({ db, now = Date.now, assertActor, can
       const changed = bumpEpoch(id);
       db.prepare(`UPDATE app_publications SET active_target_revision=?,launch_policy=?,listed=?,exposure_ack_revision=?,exposure_ack_json=? WHERE app_id=?`)
         .run(targetRevision, launchPolicy, Number(listed), exposureAck ? targetRevision : null, exposureAck ? JSON.stringify(exposureAck) : null, id);
+      syncDiscussionAudienceInTransaction(db, id, now());
       return { ...changed, current: view(appRow(id)) };
     },
-    grantsChangedInTransaction(id) { return bumpEpoch(appId(id)); },
+    grantsChangedInTransaction(id) {
+      const changed = bumpEpoch(appId(id));
+      syncDiscussionAudienceInTransaction(db, id, now());
+      return changed;
+    },
     revokeInTransaction(id) {
       assertApps(db.isTransaction, 'apps_transaction_required', 500); appId(id);
       const changed = bumpEpoch(id);
       db.prepare("UPDATE app_publications SET launch_policy='restricted',listed=0,exposure_ack_revision=NULL,exposure_ack_json=NULL WHERE app_id=?").run(id);
       db.prepare('DELETE FROM app_publication_domains WHERE app_id=?').run(id);
+      syncDiscussionAudienceInTransaction(db, id, now());
       return changed;
     },
     retireInTransaction({ appId: id, domainId: retiringId }) {
