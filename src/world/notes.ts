@@ -24,7 +24,7 @@ export function notesErrorText(error: unknown): string {
     bootstrap_required: 'Подключите аккаунт, чтобы открыть записки.',
     device_revoked: 'Устройство отключено от аккаунта. Черновик остался здесь.',
     authentication_required: 'Подключите аккаунт, чтобы сохранить записку на сервере.',
-    notes_revision_conflict: 'Эту записку изменили на другом устройстве.',
+    notes_revision_conflict: 'Есть более свежая версия записки.',
     notes_note_deleted: 'Записка удалена на другом устройстве. Ваш текст остался в черновике.',
     notes_note_not_found: 'Записка недоступна. Локальный черновик можно сохранить как новую.',
     notes_note_too_large: 'Записка слишком большая. Разделите её на несколько.',
@@ -236,6 +236,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     if (alert) {
       alert.dataset.kind = stale || cacheUnavailable ? 'info' : 'error';
       alert.textContent = state.localError ? notesErrorText({ code: state.localError }) : state.error ? notesErrorText({ code: state.error })
+        : state.conflict ? 'Сохранённая версия изменилась или недоступна. Ваш текст остался здесь.'
         : stale ? `Последняя проверка: ${new Date(openedSnapshot!.verifiedAt).toLocaleString('ru-RU')}. Актуальность проверим после подключения.`
           : cacheUnavailable ? notesErrorText({ code: 'notes_cache_unavailable' }) : '';
       alert.hidden = !alert.textContent;
@@ -341,7 +342,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     try {
       await previous.flush(); const result = await readNoteWithCache({ api: options.api, accountId: options.accountId, noteId, cache,
         allowStale: false, active: () => !disposed && session === previous });
-      if (disposed) return; previous.dispose(); session = null; installSession(result.note, undefined, result); void loadDrafts();
+      if (disposed) return; previous.dispose(); session = null; installSession(result.note, undefined, result); void loadDrafts(); void loadList();
     } catch (error) { if (alert) { alert.textContent = notesErrorText(error); alert.hidden = false; } }
     finally { editor.inert = false; }
   }
@@ -351,7 +352,7 @@ export function mountNotes(host: HTMLElement, options: NotesOptions): NotesHandl
     const active = () => !disposed && session === previous && !previous.state().dirty;
     try {
       const result = await readNoteWithCache({ api: options.api, accountId: options.accountId, noteId, cache, allowStale: false, active });
-      if (!active()) return; previous.dispose(); session = null; installSession(result.note, undefined, result);
+      if (!active()) return; previous.dispose(); session = null; installSession(result.note, undefined, result); void loadList();
     } catch (error) {
       if (!active()) return;
       if (['authorization', 'missing'].includes(noteCacheErrorPolicy(error))) {
