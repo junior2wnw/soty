@@ -10,7 +10,7 @@ import { guardStorageStart, reconcileStorageProbe, storageReaderLabel, currentSt
 const id = n => n.toString(16).padStart(64, '0');
 const imageId = n => `sha256:${id(n)}`;
 const clone = value => structuredClone(value);
-const format = rooms => ({ ok: true, schema: 'soty.storage-format.v1', rooms });
+const format = (rooms, apps = 'empty') => ({ ok: true, schema: 'soty.storage-format.v2', rooms, apps });
 
 function gateFixture({ running = false, production = false } = {}) {
   const runtime = { Id: id(1), Image: imageId(2), Name: '/soty-online-chat',
@@ -68,7 +68,7 @@ test('a permitted running runtime does not exempt an overlapping ancestor writer
   f.objects.get(id(4)).Mounts[0].RW = false;
   f.objects.set(id(5), { Id: id(5), State: { Running: true }, Mounts: [{ Type: 'bind', Source: '/var/lib/docker/volumes/soty-data-acceptance/_data-archive', Destination: '/archive', RW: true }] });
   const receipt = await guardStorageStart(f.context, f.runtime, { running: true });
-  assert.equal(receipt.containerId, f.runtime.Id); assert.equal(receipt.rooms, 2);
+  assert.equal(receipt.containerId, f.runtime.Id); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
   assert.doesNotMatch(JSON.stringify(receipt), /fixture-only|SYNTHETIC_PASSWORD|\/var\/lib\/docker/);
 });
 
@@ -110,6 +110,9 @@ test('a retained running probe is never restarted; invalid terminal output keeps
   await assert.rejects(reconcileStorageProbe(f.context), /storage_helper_unresolved/);
   assert.equal(f.calls.length, 0); assert.ok(f.journal.storageGuardHelper);
   helper.State = { Running: false, Status: 'exited', ExitCode: 0 }; f.setObserved({ ok: true, rooms: 2 });
+  await assert.rejects(reconcileStorageProbe(f.context), /storage_probe_invalid/);
+  assert.equal(f.calls.length, 0); assert.ok(f.journal.storageGuardHelper);
+  f.setObserved({ ok: true, schema: 'soty.storage-format.v1', rooms: 2 });
   await assert.rejects(reconcileStorageProbe(f.context), /storage_probe_invalid/);
   assert.equal(f.calls.length, 0); assert.ok(f.journal.storageGuardHelper);
   f.setObserved(format(2)); await reconcileStorageProbe(f.context);

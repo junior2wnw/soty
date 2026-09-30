@@ -103,7 +103,8 @@
 
 - [x] P3-A1: явная v1→v2 migration и неизменяемый origin baseline; atomic claims/receipts, CAS, квоты, reserved names/tombstones; реальные конкурентные writers/reopen/lost ACK. Независимый общий срез — **48/48 PASS**, после последнего уточнения schema recognizer — ещё **22/22 PASS**.
 - [x] P3-A2: единый classifier точного Host, закрытие unknown/nested/malformed app-host до shell/API/channel; TLS eligibility отдельно от runtime ACL. Независимый срез — **59/59 PASS**; настоящий HTTP/WS процесс проверен с traffic upstream и сохранёнными, но отключёнными для новых claims зонами.
-- [ ] P3-A3: независимый аудит и общий regression; Apps-reader gate до production migration, старый writer остановлен. Публичная зона по умолчанию отсутствует.
+- [x] P3-A3, локальная реализация: независимый аудит и deploy regression; Apps-reader gate и отказ несовместимого rollback/recovery. Историческая частичная сборка закрыта после найденного независимым reviewer дефекта.
+- [ ] P3-A3, выпуск: проверенный новый host guard, точные совместимые candidate/fallback, Apps Linux proof, свежая защищённая копия и isolated restore; до production migration остановлен прежний единственный writer. Публичная зона по умолчанию отсутствует.
 - [ ] P3-B: явная аудитория, exact-host/epoch-bound запуск и сессии, отзыв HTTP/WS, origin/CSRF guards; private/granted/unlisted/public matrix.
 - [ ] P3-C: привязанный RuntimeTarget и свежая проверка реального проекта, bounded projections, UI имени/аудитории/статуса; browser walkthrough и аудит прежнего UI.
 - [ ] P3-D: сохранение приложений и самостоятельное обсуждение, права на историю, возврат с другого устройства.
@@ -120,6 +121,14 @@ Named zone проверяется до открытия данных по PSL (`
 Контрольная точка A1/A2: общий `world:test` — **252 pass / 0 fail / 3 opt-in skip** (255 tests до добавления двух независимых host tests), typecheck и production build PASS. Новый независимый host gate покрывает 19 authority-вариантов, forwarded Host, absolute-form WS target, private canonical и отдельный TLS admission; вместе с A1/config/signed API — 59/59. Именованные aliases пока возвращают безопасный статус; гостевой runtime ещё не включён. Новая зона по умолчанию выключена. Истинный TLS/DNS и совместимый Apps rollback reader ещё не приняты.
 
 При следующем ручном обходе P2 найден и исправлен локальный UI-долг: standalone шахматы 1024×768 сохраняли окружающие room tools и обрезали доску; независимый reviewer также обнаружил сжатие доски до20.84px при входе из комнаты на телефоне. Единый игровой workspace принят после настоящих desktop/mobile переходов, сохранения позиции/черновика/ответа, keyboard проверки, typecheck и build. Подробности и границы — [шахматы](p2-chess-workspace.md). Запрошенное увеличение200% в IAB не изменило фактический viewport/DPR; этот сценарий остаётся непроверенным, а не PASS.
+
+Контрольная точка UI — `89ada71`. A3 добавляет независимое распознавание Apps v1/v2 рядом с Rooms, строгие manifest/probe/START receipt v2 и отказ старым incomplete receipts. Авторский полный deploy suite — **150 pass / 0 fail / 2 explicit skip** (152 tests); reviewer независимо проверил прежний полный151test slice и исправленный focused34test slice (33pass/1skip). [Квитанция A3](p3-apps-reader.md) фиксирует границу внешних проверок. Найденный blocker: backend overlay наследовал прежние modules/deps, но объявлял нового Apps reader. Этот неподдерживаемый build path теперь отказывает до COPY/LABEL и указывает на единый полный Dockerfile.
+
+Root повторил окончательный полный deploy suite: **152tests / 150pass / 0fail / 2skip**, exit0. A3 local gate принят; следующее изменение Apps schema не может полагаться на этот v2-only reader без отдельного обновления.
+
+Отдельный [Linux rooms canary](storage-linux-canary-result-20260930.md) прошёл на synthetic volume: RO WAL/SHM, mainheader0/SQLite2, unknown/corrupt отказы, copied container label не разрешает старый image. Cleanup всех8containers/1volume и неизменность serving baseline подтверждены отдельно. Это проверка закреплённого старого rooms probe, не нового Apps probe, backup restore или rollout.
+
+Следующий [контракт B](p3-publication-contract.md) проверен с позиции доменной модели, посетителя, непрерывных прав и доступности личных приложений. Приняты separate active aliases, explicit whole-port acknowledgement, immutable initial target, monotonic epoch и bounded64 receipts/app без автоматического повторного согласия. До принятой B1 модели aliases остаются status-only; каталог и запуск не смешиваются.
 
 ## Правила качества для каждого следующего этапа
 

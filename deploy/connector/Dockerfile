@@ -1,11 +1,5 @@
-# A backend release preserves the exact running client, dependencies and traffic
-# gateway. BASE_IMAGE must be an immutable, locally verified image ID.
+# Historical backend overlays cannot safely combine this server with inherited
+# modules, contracts and dependencies. Build the root full application Dockerfile.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
-ARG REVISION
-LABEL org.opencontainers.image.revision=${REVISION}
-LABEL io.soty.storage.readers="{\"version\":1,\"readers\":{\"rooms\":[1,2]}}"
-WORKDIR /app
-COPY server/ ./server/
-COPY deploy/connector/ ./deploy/connector/
-COPY scripts/ ./scripts/
+RUN ["node", "--input-type=module", "-e", "process.stderr.write('Soty backend overlay is unsupported. Build the full application with the root Dockerfile so server, modules, contracts and dependencies use the same reviewed revision.\\n'); process.exit(1);"]

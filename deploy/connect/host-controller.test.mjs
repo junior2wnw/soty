@@ -4,9 +4,12 @@ import { mkdtemp, mkdir, readFile, writeFile, unlink, rename } from 'node:fs/pro
 import { generateKeyPairSync } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { migrateAppsSchema } from '../../modules/apps/server/schema.mjs';
 import { HostController, candidateConfig, moduleTree, validateConfig, productionReady, atomicState, originalPreservationHash } from './host-controller.mjs';
 import { createRelease, recoverRelease } from '../../modules/connect/update/index.mjs';
 import { storageReaderLabel, currentStorageReaders } from '../connector/storage-guard.mjs';
+import { readStorageFormat } from '../connector/storage-probe.mjs';
 
 const id = n => n.toString(16).padStart(64, '0');
 const image = n => 'sha256:' + id(n);
@@ -59,7 +62,7 @@ async function fixture(options = {}) {
   const engine = new Engine(); let marker = false, owner = false, fetches = 0, backups = 0;
   const deps = {
     engine, pause: async () => {}, checkSource: async () => {}, fetch: async () => { fetches++; return release; },
-    storageProbe: async () => ({ ok: true, schema: 'soty.storage-format.v1', rooms: 1 }),
+    storageProbe: async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 'empty' }),
     ready: async ({ entry, maintenance }) => { if (options.healthFailure && entry.hasConnect) throw Object.assign(new Error('unsafe raw details'), { code: 'readiness_deadline' }); assert.equal(marker, maintenance); return { modelsHash: 'c'.repeat(64), policyHash: null }; },
     probe: async (verb, runtime) => {
       engine.events.push('probe:' + verb); if (verb === 'enter') { assert.equal(runtime.State.Running, false); marker = true; owner = true; }
@@ -297,8 +300,8 @@ test('host recovery engine is pinned with the whole host release and equal to re
 
 test('v2 candidate failure never restarts JSON-only original or restores its automatic restart policy', async () => {
   const f = await fixture({ healthFailure: true });
-  f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 1, readers: { rooms: [1] } });
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v1', rooms: f.engine.events.includes('start:' + id(2)) ? 2 : 1 });
+  f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 2, readers: { rooms: [1], apps: [1, 2] } });
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: f.engine.events.includes('start:' + id(2)) ? 2 : 1, apps: 'empty' });
   const probes = [], probe = f.deps.probe;
   f.deps.probe = async (verb, runtime, ...rest) => { probes.push({ verb, id: runtime.Id, afterCandidate: f.engine.events.includes('start:' + id(2)) }); return probe(verb, runtime, ...rest); };
   await assert.rejects(f.create().run());
@@ -307,6 +310,40 @@ test('v2 candidate failure never restarts JSON-only original or restores its aut
   assert.ok(!f.engine.events.includes('start:' + id(1)));
   assert.ok(!probes.some(p => p.id === id(1) && p.afterCandidate), 'refuse before old offline status/enter/leave helper');
   assert.ok((await f.readState()).transaction);
+});
+
+test('real Apps v2 storage after candidate failure blocks an Apps v1-only original before any rollback helper or automatic restart', async () => {
+  const f = await fixture(), dataDir = path.join(f.root, 'data'); await mkdir(dataDir);
+  f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1] } });
+  f.engine.items.get(id(1)).Config.Labels[storageReaderLabel] = currentStorageReaders;
+  f.deps.storageProbe = async () => readStorageFormat(dataDir);
+  const ready = f.deps.ready, probes = [], probe = f.deps.probe;
+  let migratedBytes;
+  f.deps.ready = async details => {
+    if (details.entry.hasConnect) {
+      await mkdir(path.join(dataDir, 'apps'));
+      const file = path.join(dataDir, 'apps', 'registry.sqlite'), db = new DatabaseSync(file);
+      try { migrateAppsSchema(db); } finally { db.close(); }
+      migratedBytes = await readFile(file);
+      throw Object.assign(new Error('candidate not ready'), { code: 'readiness_deadline' });
+    }
+    return ready(details);
+  };
+  f.deps.probe = async (verb, runtime, ...rest) => {
+    probes.push({ verb, id: runtime.Id, migrated: Boolean(migratedBytes) }); return probe(verb, runtime, ...rest);
+  };
+  await assert.rejects(f.create().run());
+  assert.deepEqual(await readStorageFormat(dataDir), { ok: true, schema: 'soty.storage-format.v2', rooms: 'empty', apps: 2 });
+  const old = await f.engine.inspect(id(1));
+  assert.equal(old.State.Running, false); assert.equal(old.HostConfig.RestartPolicy.Name, 'no');
+  assert.ok(!f.engine.events.includes('start:' + id(1)));
+  assert.ok(!probes.some(item => item.id === id(1) && item.migrated));
+  assert.ok((await f.readState()).transaction);
+  const oldStarts = f.engine.events.filter(event => event === 'start:' + id(1)).length;
+  await assert.rejects(f.create().run());
+  assert.equal(f.engine.events.filter(event => event === 'start:' + id(1)).length, oldStarts);
+  assert.equal((await f.engine.inspect(id(1))).HostConfig.RestartPolicy.Name, 'no');
+  assert.deepEqual(await readFile(path.join(dataDir, 'apps', 'registry.sqlite')), migratedBytes, 'recovery keeps current data');
 });
 
 test('unlabelled candidate fails before stopping original even if its container could inherit a label', async () => {
@@ -330,6 +367,46 @@ test('old pending start without durable format receipt cannot be approved by rec
   assert.equal(f.engine.events.filter(e => e.startsWith('start:')).length, starts);
   assert.equal((await f.readState()).transaction.operation.storageGuard, undefined);
   assert.equal((await f.engine.inspect(id(1))).State.Running, false);
+});
+
+test('rooms-only v1 receipts cannot settle delayed START or automatic-restart results even with a copied current label', async () => {
+  for (const kind of ['start', 'restartPolicy']) {
+    const f = await fixture(); f.engine.ignore = 'start';
+    await assert.rejects(f.create().run());
+    const state = await f.readState(), operation = state.transaction.operation;
+    assert.equal(operation.kind, 'start'); assert.equal(operation.storageGuard.schema, 'soty.storage-start.v2');
+    operation.storageGuard.schema = 'soty.storage-start.v1'; delete operation.storageGuard.apps;
+    operation.kind = kind;
+    const candidate = f.engine.items.get(operation.id);
+    candidate.Config.Labels[storageReaderLabel] = currentStorageReaders;
+    if (kind === 'start') candidate.State = { Running: true, Status: 'running' };
+    else { operation.value = { Name: 'always', MaximumRetryCount: 0 }; candidate.HostConfig.RestartPolicy = clones(operation.value); }
+    await atomicState(path.join(f.config.stateDir, 'host-state.json'), state);
+    const controller = f.create(); controller.state = state;
+    const events = [...f.engine.events];
+    await assert.rejects(controller.reconcileOperation(), /storage_start_guard_missing/);
+    assert.deepEqual(f.engine.events, events);
+    assert.equal((await f.readState()).transaction.operation.storageGuard.schema, 'soty.storage-start.v1');
+    assert.equal((await f.engine.inspect(id(1))).State.Running, false);
+  }
+});
+
+test('recovered v2 START receipt rechecks current Apps format and never repeats a previously submitted start', async () => {
+  const f = await fixture(); f.engine.ignore = 'start';
+  await assert.rejects(f.create().run());
+  const state = await f.readState(), operation = state.transaction.operation;
+  assert.equal(operation.storageGuard.schema, 'soty.storage-start.v2'); assert.equal(operation.storageGuard.apps, 'empty');
+  f.engine.items.get(operation.id).State = { Running: true, Status: 'running' };
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 3 });
+  const controller = f.create(); controller.state = state;
+  const starts = f.engine.events.filter(event => event.startsWith('start:')).length;
+  await assert.rejects(controller.reconcileOperation(), /storage_probe_invalid/);
+  assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
+  assert.ok(controller.state.transaction.operation);
+  controller.storageProbeOverride = async () => ({ ok: true, schema: 'soty.storage-format.v2', rooms: 1, apps: 2 });
+  await controller.reconcileOperation();
+  assert.equal(controller.state.transaction.operation, null);
+  assert.equal(f.engine.events.filter(event => event.startsWith('start:')).length, starts);
 });
 
 test('restored journal from an older controller needs a fresh compatible reader proof before settlement', async () => {

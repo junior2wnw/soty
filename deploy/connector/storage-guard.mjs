@@ -4,31 +4,35 @@ import path from 'node:path';
 import { SafeError } from './docker-api.mjs';
 
 export const storageReaderLabel = 'io.soty.storage.readers';
-export const currentStorageReaders = '{"version":1,"readers":{"rooms":[1,2]}}';
+export const currentStorageReaders = '{"version":2,"readers":{"rooms":[1,2],"apps":[1,2]}}';
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const keys = (value, expected) => value !== null && typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).sort().join(',') === expected;
+const knownFormat = value => ['empty', 1, 2].includes(value);
+const knownReaders = value => Array.isArray(value) && value.length > 0 && value.length <= 2
+  && value.every(version => version === 1 || version === 2) && new Set(value).size === value.length;
 
 export function storageReaders(image) {
   requireThat(IMAGE.test(image?.Id || ''), 'storage_image_identity_invalid');
   let value;
   try { value = JSON.parse(image.Config?.Labels?.[storageReaderLabel]); } catch { throw new SafeError('storage_reader_unknown'); }
-  requireThat(value && Object.keys(value).sort().join(',') === 'readers,version' && value.version === 1
-    && value.readers && Object.keys(value.readers).join(',') === 'rooms'
-    && Array.isArray(value.readers.rooms) && value.readers.rooms.length > 0 && value.readers.rooms.length <= 2
-    && value.readers.rooms.every(v => v === 1 || v === 2) && new Set(value.readers.rooms).size === value.readers.rooms.length, 'storage_reader_unknown');
+  requireThat(keys(value, 'readers,version') && value.version === 2 && keys(value.readers, 'apps,rooms')
+    && knownReaders(value.readers.rooms) && knownReaders(value.readers.apps), 'storage_reader_unknown');
   return value.readers;
 }
 
 export function checkedStorageFormat(value) {
-  requireThat(value?.ok === true && value.schema === 'soty.storage-format.v1' && ['empty', 1, 2].includes(value.rooms), 'storage_probe_invalid');
-  return { ok: true, schema: value.schema, rooms: value.rooms };
+  requireThat(keys(value, 'apps,ok,rooms,schema') && value.ok === true && value.schema === 'soty.storage-format.v2'
+    && knownFormat(value.rooms) && knownFormat(value.apps), 'storage_probe_invalid');
+  return { ok: true, schema: value.schema, rooms: value.rooms, apps: value.apps };
 }
 
 export function assertStorageCompatible(image, value) {
   const readers = storageReaders(image), format = checkedStorageFormat(value);
-  requireThat(format.rooms === 'empty' || readers.rooms.includes(format.rooms), 'storage_reader_incompatible');
+  requireThat(['rooms', 'apps'].every(store => format[store] === 'empty' || readers[store].includes(format[store])), 'storage_reader_incompatible');
   return format;
 }
 
@@ -148,10 +152,12 @@ export async function guardStorageStart(context, runtime, { running = false } = 
   requireThat(after.Image === runtime.Image && after.State.Running === running && hash(dataMount(after)) === mountHash, 'storage_runtime_changed');
   await assertLocalVolume(engine, mount);
   await assertWriters(engine, mount, running ? current.Id : undefined);
-  return { schema: 'soty.storage-start.v1', containerId: current.Id, image: current.Image, mountSha256: mountHash, rooms: format.rooms };
+  return { schema: 'soty.storage-start.v2', containerId: current.Id, image: current.Image, mountSha256: mountHash,
+    rooms: format.rooms, apps: format.apps };
 }
 
 export function requireStorageStartReceipt(value, id) {
-  requireThat(value?.schema === 'soty.storage-start.v1' && value.containerId === id && IMAGE.test(value.image || '')
-    && ID.test(value.mountSha256 || '') && ['empty', 1, 2].includes(value.rooms), 'storage_start_guard_missing');
+  requireThat(keys(value, 'apps,containerId,image,mountSha256,rooms,schema') && value.schema === 'soty.storage-start.v2'
+    && value.containerId === id && ID.test(value.containerId || '') && IMAGE.test(value.image || '')
+    && ID.test(value.mountSha256 || '') && knownFormat(value.rooms) && knownFormat(value.apps), 'storage_start_guard_missing');
 }

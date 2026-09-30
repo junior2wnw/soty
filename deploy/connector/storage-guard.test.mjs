@@ -4,6 +4,7 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
 import { createRoomStore } from '../../server/room-store.js';
 import { readStorageFormat } from './storage-probe.mjs';
 import { assertStorageCompatible, checkedStorageFormat, currentStorageReaders, guardStorageStart,
@@ -12,9 +13,9 @@ import { assertStorageCompatible, checkedStorageFormat, currentStorageReaders, g
 const id = n => n.toString(16).padStart(64, '0');
 const imageId = n => 'sha256:' + id(n);
 const clone = x => structuredClone(x);
-const format = rooms => ({ ok: true, schema: 'soty.storage-format.v1', rooms });
+const format = (rooms, apps = 'empty') => ({ ok: true, schema: 'soty.storage-format.v2', rooms, apps });
 const image = (n, readers = currentStorageReaders) => ({ Id: imageId(n), Config: { Labels: readers ? { [storageReaderLabel]: readers } : {} } });
-const jsonOnly = JSON.stringify({ version: 1, readers: { rooms: [1] } });
+const jsonOnly = JSON.stringify({ version: 2, readers: { rooms: [1], apps: [1, 2] } });
 
 async function directory(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'soty-format-'));
@@ -67,21 +68,25 @@ test('probe observes committed WAL user_version and never ignores it with immuta
 });
 
 test('strict image reader manifest rejects missing, extended and malformed claims', () => {
-  for (const text of [undefined, '', '{}', '{"version":2,"readers":{"rooms":[1,2]}}', '{"version":1,"readers":{"rooms":[3]}}', '{"version":1,"readers":{"rooms":[1,1]}}', '{"version":1,"readers":{"rooms":[1]},"allow":true}']) {
+  for (const text of [undefined, '', '{}', '{"version":1,"readers":{"rooms":[1,2]}}', '{"version":2,"readers":{"rooms":[1,2]}}',
+    '{"version":2,"readers":{"rooms":[1,2],"apps":[3]}}', '{"version":2,"readers":{"rooms":[1,1],"apps":[1]}}',
+    '{"version":2,"readers":{"rooms":[1],"apps":[1,1]}}', '{"version":2,"readers":{"rooms":[],"apps":[1]}}',
+    '{"version":2,"readers":{"rooms":[1],"apps":[]}}', '{"version":2,"readers":{"rooms":[1],"apps":[1]},"allow":true}',
+    '{"version":2,"readers":{"rooms":[1],"apps":[1],"notes":[1]}}']) {
     assert.throws(() => assertStorageCompatible(image(1, text || null), format(1)), /storage_reader_unknown/);
   }
   assert.throws(() => checkedStorageFormat({ ok: true, rooms: 2 }), /storage_probe_invalid/);
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
 });
 
-function fixture({ readers = currentStorageReaders, rooms = 2, pending = false } = {}) {
+function fixture({ readers = currentStorageReaders, rooms = 2, apps = 'empty', pending = false } = {}) {
   const runtime = { Id: id(1), Image: imageId(2), Name: '/soty-online-chat', State: { Running: false, Status: 'created' },
     Config: { Env: ['DATA_DIR=/data', 'TOKEN=synthetic-never-in-probe'], Labels: { [storageReaderLabel]: currentStorageReaders } },
     Mounts: [{ Type: 'volume', Name: 'live-data', Source: '/docker/volumes/live-data/_data', Destination: '/data', RW: true }] };
   const images = new Map([[imageId(2), image(2, readers)], [imageId(3), image(3, null)]]);
   const containers = new Map([[runtime.Id, runtime]]), events = [], state = {}, receipts = [];
   const volume = { Name: 'live-data', Driver: 'local', Scope: 'local', Options: null, Mountpoint: runtime.Mounts[0].Source };
-  let helperCount = 0, result = format(rooms), dropStart = false;
+  let helperCount = 0, result = format(rooms, apps), dropStart = false;
   const engine = {
     async inspect(key) { const c = containers.get(key) || [...containers.values()].find(c => c.Name === '/' + key); if (!c) throw new Error('404'); return clone(c); },
     async image(key) { if (!images.has(key)) throw new Error('404'); return clone(images.get(key)); },
@@ -107,6 +112,7 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   const f = fixture(); f.dropStart();
   const receipt = await guardStorageStart(f.context, f.runtime);
   requireStorageStartReceipt(receipt, f.runtime.Id);
+  assert.equal(receipt.schema, 'soty.storage-start.v2'); assert.equal(receipt.rooms, 2); assert.equal(receipt.apps, 'empty');
   const created = f.events.find(e => e.verb === 'create').body;
   assert.equal(created.Image, imageId(3)); assert.notEqual(created.Image, f.runtime.Image);
   assert.deepEqual(created.Env, ['SOTY_STORAGE_PROBE=1']);
@@ -120,11 +126,36 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   assert.doesNotMatch(JSON.stringify(f.receipts), /TOKEN|synthetic-never-in-probe|live-data/);
 });
 
-test('container label cannot make a legacy or unlabelled image compatible with v2', async () => {
-  for (const readers of [jsonOnly, null]) {
+test('container label cannot make a legacy, rooms-only or unlabelled image compatible with v2', async () => {
+  for (const readers of [jsonOnly, '{"version":1,"readers":{"rooms":[1,2]}}', null]) {
     const f = fixture({ readers });
-    await assert.rejects(guardStorageStart(f.context, f.runtime), readers ? /storage_reader_incompatible/ : /storage_reader_unknown/);
+    await assert.rejects(guardStorageStart(f.context, f.runtime), readers === jsonOnly ? /storage_reader_incompatible/ : /storage_reader_unknown/);
     assert.ok(!f.events.some(e => e.verb === 'start' && e.id === f.runtime.Id));
+  }
+});
+
+test('Apps version is an independent reader requirement and is retained in the start receipt', async () => {
+  const readers = JSON.stringify({ version: 2, readers: { rooms: [1, 2], apps: [1] } });
+  const old = fixture({ readers, apps: 2 });
+  await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
+  assert.ok(!old.events.some(event => event.verb === 'start' && event.id === old.runtime.Id));
+  assertStorageCompatible(image(4, readers), format(2, 1));
+  const current = fixture({ apps: 2 });
+  const receipt = await guardStorageStart(current.context, current.runtime);
+  requireStorageStartReceipt(receipt, current.runtime.Id); assert.equal(receipt.apps, 2);
+});
+
+test('old or extended probe and start receipts never authorize a restart', () => {
+  const good = { schema: 'soty.storage-start.v2', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2, apps: 2 };
+  requireStorageStartReceipt(good, id(1));
+  for (const value of [{ ok: true, schema: 'soty.storage-format.v1', rooms: 2 },
+    { ...format(2), schema: 'soty.storage-format.v1' }, { ...format(2), apps: 3 },
+    { ...format(2), apps: undefined }, { ...format(2), complete: true }]) {
+    assert.throws(() => checkedStorageFormat(value), /storage_probe_invalid/);
+  }
+  for (const value of [{ schema: 'soty.storage-start.v1', containerId: id(1), image: imageId(2), mountSha256: id(3), rooms: 2 },
+    { ...good, schema: 'soty.storage-start.v1' }, { ...good, apps: 3 }, { ...good, apps: undefined }, { ...good, allowed: true }]) {
+    assert.throws(() => requireStorageStartReceipt(value, id(1)), /storage_start_guard_missing/);
   }
 });
 
@@ -195,9 +226,22 @@ test('failed probe remains explicit and never becomes a successful start receipt
   assert.equal(f.events.filter(e => e.verb === 'start').length, 1);
 });
 
-test('runtime image and reader labels in both Dockerfiles match the current accepted reader contract', async () => {
-  for (const file of [new URL('../../Dockerfile', import.meta.url), new URL('./Dockerfile', import.meta.url)]) {
-    const source = await readFile(file, 'utf8');
-    assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
-  }
+test('the full application image declares the accepted readers beside its real module and dependency copies', async () => {
+  const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
+  assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
+  assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
+  assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);
+  assert.match(source, /^COPY --from=build \/app\/contracts \.\/contracts$/mu);
+});
+
+test('the historical backend overlay fails before any source copy or label and instructs a full application build', async () => {
+  const source = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /^\s*(?:COPY|ADD|LABEL)\s/mu);
+  const instruction = source.match(/^RUN (\[[^\r\n]+\])$/mu);
+  assert.ok(instruction); assert.ok(source.indexOf('FROM ${BASE_IMAGE}') < instruction.index);
+  assert.equal(source.trim().slice(instruction.index), instruction[0]);
+  const argv = JSON.parse(instruction[1]); assert.deepEqual(argv.slice(0, 3), ['node', '--input-type=module', '-e']);
+  const result = spawnSync(process.execPath, argv.slice(1), { encoding: 'utf8', timeout: 5000 });
+  assert.equal(result.error, undefined); assert.equal(result.status, 1); assert.equal(result.stdout, '');
+  assert.match(result.stderr, /backend overlay is unsupported.*full application.*root Dockerfile/u);
 });

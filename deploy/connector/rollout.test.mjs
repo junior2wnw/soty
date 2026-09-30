@@ -30,7 +30,7 @@ function fixture(fault={}) {
  const helper=async verb=>{events.push('helper:'+verb);fail('helper-'+verb,'before');if(verb==='enter')maintenance=true;if(verb==='leave')maintenance=false;if(verb==='rollback'){if(fault.rollbackFailure)throw new SafeError('rollback_failed');migrated=false;}
  const raced=verb==='status'&&((++statusCalls===2&&fault.race)||fault.active);fail('helper-'+verb,'after');return {ok:true,count:raced?1:0,activeJobs:raced?[{id:'raced-job',status:'queued'}]:[],maintenance,schema:'synthetic'};};
  const ready=async kind=>{events.push('ready:'+kind);if(kind==='candidate'){migrated=true;fail('readiness','before');return {ok:true,storageReady:true,maintenance:true,schema:'soty.connector-storage-ready.v1',modelProxies,applicationPolicySha256:run.args.applicationPolicy?.sha256||null};}return {ok:true,modelProxies};};
- const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>({ok:true,schema:'soty.storage-format.v1',rooms:1}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
+ const run=new Rollout({engine,maintenance:helper,ready,storageProbe:async()=>({ok:true,schema:'soty.storage-format.v2',rooms:1,apps:'empty'}),record:async s=>records.push(s),attempts:2,sleep:async()=>{}});
  return {run,engine,map,events,records,get migrated(){return migrated;}};
 }
 
@@ -137,13 +137,39 @@ test('unresolved leave helper never starts a concurrent status helper or downgra
 
 test('v2 data rejects legacy rollback before downgrade helper, original start and automatic restart',async()=>{
  const f=fixture({op:'readiness',when:'before'}),image=f.engine.image;
- f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:1,readers:{rooms:[1]}});return value;};
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v1',rooms:f.migrated?2:1});
+ f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:2,readers:{rooms:[1],apps:[1,2]}});return value;};
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v2',rooms:f.migrated?2:1,apps:'empty'});
  await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
  assert.equal(f.run.state.failureCode,'storage_reader_incompatible');
  assert.equal(f.map.get(args.originalId).State.Running,false);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'no');
  assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
+});
+
+test('Apps migration rejects a rooms-compatible but Apps v1-only rollback before any downgrade or original restart',async()=>{
+ const f=fixture({op:'readiness',when:'before'}),image=f.engine.image;
+ f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:2,readers:{rooms:[1,2],apps:[1]}});return value;};
+ f.map.get(args.originalId).Config.Labels[storageReaderLabel]=currentStorageReaders;
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v2',rooms:1,apps:f.migrated?2:1});
+ await f.run.prepare(args);await assert.rejects(f.run.promote(),/recovery_required/);
+ assert.equal(f.run.state.failureCode,'storage_reader_incompatible');assert.equal(f.migrated,true);
+ assert.equal(f.map.get(args.originalId).State.Running,false);
+ assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'no');
+ assert.ok(!f.events.includes('start-old'));assert.ok(!f.events.includes('helper:rollback'));
+ assert.equal(f.run.state.applicationStart.storageGuard.schema,'soty.storage-start.v2');
+ assert.equal(f.run.state.applicationStart.storageGuard.apps,1);
+});
+
+test('rooms-only image metadata and probe results are not accepted by the shared rollout start gate',async()=>{
+ const unlabelled=fixture(),readImage=unlabelled.engine.image;
+ unlabelled.engine.image=async key=>{const value=await readImage(key);if(key===args.candidateImage)value.Config.Labels[storageReaderLabel]=JSON.stringify({version:1,readers:{rooms:[1,2]}});return value;};
+ await assert.rejects(unlabelled.run.prepare(args),/storage_reader_unknown/);
+ assert.ok(!unlabelled.events.some(event=>event.startsWith('stop:')||event.startsWith('start')));
+ const oldProbe=fixture();oldProbe.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v1',rooms:1});
+ await oldProbe.run.prepare(args);await assert.rejects(oldProbe.run.promote(),/recovery_required/);
+ assert.equal(oldProbe.run.state.failureCode,'storage_probe_invalid');
+ assert.ok(!oldProbe.events.includes('start-candidate'));assert.ok(!oldProbe.events.includes('start-old'));
+ assert.ok(!oldProbe.events.includes('helper:rollback'));
 });
 
 test('unlabelled original is not restarted even if a candidate container carried a reader label',async()=>{
