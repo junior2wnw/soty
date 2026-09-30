@@ -206,7 +206,7 @@ test('B1 independent: JSON manifests and format DTOs deny coercion, unknown stor
   const badManifests = [
     { ...base, version: 2 }, { ...base, version: '3' }, { ...base, ignored: true },
     { ...base, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6] } },
-    ...['notes', 'capabilities'].flatMap(store => [[2], ['1'], [true], [1, 1], { 0: 1, length: 1 }, null]
+    ...['notes', 'capabilities'].flatMap(store => [[3], ['1'], [true], [1, 1], { 0: 1, length: 1 }, null]
       .map(value => ({ ...base, readers: { ...base.readers, [store]: value } }))),
     JSON.parse('{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1],"capabilities":[1]},"__proto__":{}}'),
   ];
@@ -215,12 +215,21 @@ test('B1 independent: JSON manifests and format DTOs deny coercion, unknown stor
   const badFormats = [
     { ...format(), schema: 'soty.storage-format.v2' }, { ...format(), ok: 1 },
     { ...format(), futureStore: 'empty' },
-    ...['notes', 'capabilities'].flatMap(store => ['1', true, [1], { value: 1 }, 0, 2, null]
+    ...['notes', 'capabilities'].flatMap(store => ['1', true, [1], { value: 1 }, 0, 3, null]
       .map(value => ({ ...format(1, 1), [store]: value }))),
     JSON.parse('{"ok":true,"schema":"soty.storage-format.v3","rooms":"empty","apps":"empty","notes":1,"capabilities":1,"__proto__":{}}'),
   ];
   for (const candidate of badFormats) assert.throws(() => checkedStorageFormat(json(candidate)), fault('storage_probe_invalid'));
   assert.deepEqual(assertStorageCompatible(image(), format(1, 1)), format(1, 1));
+  // B1b knows real version2; the frozen reader1 declaration still cannot read it.
+  const nativeReaders = { ...base.readers, notes: [1, 2], capabilities: [1, 2] };
+  const nativeImage = image({ ...base, readers: nativeReaders });
+  assert.deepEqual(storageReaders(nativeImage), nativeReaders);
+  assert.deepEqual(checkedStorageFormat(json(format(2, 2))), format(2, 2));
+  assert.deepEqual(assertStorageCompatible(nativeImage, format(2, 2)), format(2, 2));
+  for (const store of ['notes', 'capabilities']) {
+    assert.throws(() => assertStorageCompatible(image(), { ...format(1, 1), [store]: 2 }), fault('storage_reader_incompatible'));
+  }
   const oldAppsReader = image({ ...base, readers: { ...base.readers, apps: [1] } });
   assert.throws(() => assertStorageCompatible(oldAppsReader, { ...format(1, 1), apps: 6 }), fault('storage_reader_incompatible'));
 });
@@ -229,9 +238,10 @@ test('B1 independent: persisted START receipts require every exact store, image 
   const good = { schema: 'soty.storage-start.v3', containerId: hashId, image: imageId,
     mountSha256: '3'.repeat(64), rooms: 'empty', apps: 6, notes: 1, capabilities: 1 };
   requireStorageStartReceipt(good, hashId);
+  requireStorageStartReceipt({ ...good, notes: 2, capabilities: 2 }, hashId);
   const { notes, ...withoutNotes } = good;
   const bad = [withoutNotes, { ...good, schema: 'soty.storage-start.v2' }, { ...good, notes: '1' },
-    { ...good, capabilities: 2 }, { ...good, containerId: '4'.repeat(64) },
+    { ...good, capabilities: 3 }, { ...good, containerId: '4'.repeat(64) },
     { ...good, image: [imageId] }, { ...good, mountSha256: ['3'.repeat(64)] },
     JSON.parse(JSON.stringify(good).replace(/}$/, ',"constructor":{}}'))];
   for (const receipt of bad) assert.throws(() => requireStorageStartReceipt(receipt, hashId), fault('storage_start_guard_missing'));

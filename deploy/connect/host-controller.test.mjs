@@ -373,9 +373,10 @@ test('first v3 activation refuses the actual old v2 image before creating a cand
   assert.equal((await f.readState()).transaction, null);
 });
 
-for (const store of ['notes', 'capabilities']) test(`controller checks fresh ${store} compatibility before stopping the writer`, async () => {
+for (const store of ['notes', 'capabilities']) for (const version of [3, 2]) test(`controller checks fresh ${store}${version} compatibility before stopping ${version === 2 ? 'reader1' : 'the writer'}`, async () => {
   const f = await fixture();
-  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v3', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty', [store]: 2 });
+  if (version === 2) f.engine.images.get(image(1)).Config.Labels[storageReaderLabel] = '{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1],"capabilities":[1]}}';
+  f.deps.storageProbe = async () => ({ ok: true, schema: 'soty.storage-format.v3', rooms: 1, apps: 'empty', notes: 'empty', capabilities: 'empty', [store]: version });
   await assert.rejects(f.create().run());
   assert.equal((await f.engine.inspect(id(1))).State.Running, true);
   assert.equal((await f.engine.inspect(id(1))).HostConfig.RestartPolicy.Name, 'always');

@@ -159,7 +159,9 @@ for (const [store, spec] of Object.entries(stores)) test(`${store}: committed in
   } finally { db.close(); }
 });
 
-for (const [store, spec] of Object.entries(stores)) test(`${store}: future marker committed only in WAL refuses before a START receipt and remains unchanged`, async t => {
+// Original bridge case: an unknown lineage in a version2 WAL. Reader2 also
+// tests a genuine v2 layout against the unmodified historical bridge parser.
+for (const [store, spec] of Object.entries(stores)) test(`${store}: unknown marker committed only in WAL refuses before a START receipt and remains unchanged`, async t => {
   const root = await directory(t), db = await database(root, store, { seed: true });
   try {
     db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');

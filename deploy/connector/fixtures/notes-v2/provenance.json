@@ -1,0 +1,28 @@
+{
+  "commit": "5e459abc6afa376861c2032226bd29f78bf0468d",
+  "description": "Test-only additive literal v2 schema from accepted B1a; v1 base remains pinned separately to 6cd724a. Dependency bytes are read from this exact Git pin only for comparison/reopen tests, never by storage-probe.",
+  "sourcePath": "modules/notes/server/schema-v2.mjs",
+  "files": {
+    "modules/notes/server/schema-v2.mjs": {
+      "sha256": "2a9f8b51f408179a6bb5333da63b2fd9b2452313b15597f01165aeba66be6fda",
+      "bytes": 11992
+    },
+    "modules/notes/server/validation.mjs": {
+      "sha256": "48181ad5a4a5b516d21ff40d41f76bedd3b9d8e189977ed4b84267b4e4a9ca0e",
+      "bytes": 2972
+    }
+  },
+  "ddl": {
+    "bytes": 2458,
+    "sha256": "e15a1dc6d57dfe6c3de56e6d5052f42080955612f56b39a70f21fc8c93ff0add"
+  },
+  "objects": {
+    "note_native_creates": "5337bf4c76bcf60ddd8a3c49762eb6751f3481f8fbd8add362e0d79b57227549",
+    "note_native_create_no_update": "ddedd21f945b8cc6f54bcaed6088b630118e6553b181d9b5b99cfa7cd0da3d3b",
+    "note_native_create_no_delete": "e95990e35d9e51f559c31c10df3616d47be739512c997149f6b29bc7d3f42d65",
+    "note_native_create_no_replace": "a0a34b61d8671dbd0019790a447e1d7e25eb45e3f72d80f0894c204c26179502",
+    "notes_identity_no_update": "fed6868bfbc0089c92de7d1b3e6addddbfeef4c9505e980bd093b987dc35fdd2",
+    "notes_identity_no_delete": "7b349ee5606a2d72aa00f0377a9aa2c2a5dc77b90a35a8b55f5a95c6e823e505",
+    "notes_identity_no_replace": "3323f02105e2a4b1d0e42a249d9a9f851e9a268f5754a5d7fd3ba0d7bc89fa23"
+  }
+}

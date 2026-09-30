@@ -64,3 +64,32 @@ Bounded recognizer не является полным row/FK/CHECK/FTS integrity
 Root-owned ранняя проверка фактического old image и fresh running-original guard перед STOP ранее прочитаны в [B1 preflight](p4-b1-independent-preflight.md). Их общий executable deploy gate запускает root после этой передачи. Этот отчёт не выдаёт синтаксически valid receipt за бессрочное разрешение START и не утверждает готовый automatic rollback первого v2→v3 bridge.
 
 Итог ограничен локальным bridge Notes1/Capabilities1. Остаются отдельные проверки: полный composition regression, first production bootstrap/recovery, exact Linux application/helper image и RO-WAL topology, согласованный cold backup/restore. Будущие Notes2/Capabilities2 readers, default-off migration и native effects имеют собственные следующие gates. SSH, Linux canary и production deployment reviewer не выполнял.
+
+## B1b: отдельное обновление независимых assertions для reader2
+
+30.09.2026. Предыдущий раздел и его hashes фиксируют исторический reader1 bridge. После реализации настоящего reader2 root разрешил узкую адаптацию принадлежащего reviewer acceptance файла; production и авторские fixtures не менялись.
+
+- Manifest/format/START negative для неизвестной версии теперь использует **3**; старые envelope v1/v2, coercion, unknown keys и несовпадающие identities остаются запрещены.
+- Добавлены positive reader declaration `[1,2]`, numeric format2 и START receipt2. Отдельные assertions сохраняют отказ реального reader1 declaration на Notes2 и Capabilities2 независимо.
+- Marker-only WAL2 случаи остались неизменны: marker без v2 DDL/registry — **malformed2**, его отказ нельзя считать доказательством, что reader2 запрещает подлинную схему2. Исторический вывод о неизвестном marker2 выше относится к старому reader1.
+
+Собственная команда из первого раздела: **7/7 PASS,0 FAIL,0 SKIP,811.0009ms**, Node24.21.0/SQLite3.53.4. Те же проверки RO/main/WAL/inventory и отсутствие private projection сохранены.
+
+Затем отдельно повторены только два подходящих авторских случая; авторский файл и его helpers не импортировались в собственный test:
+
+```powershell
+& (Join-Path $bridgeNode 'node.exe') --test --test-concurrency=1 --test-name-pattern='genuine main1/WAL2' deploy/connector/storage-native-v2.test.mjs
+```
+
+Результат: **2/2 PASS,0 FAIL,0 SKIP,444.2188ms**. Для каждого store настоящий literal v1 получает полный additive v2 DDL при открытом WAL writer: raw main header1, SQLite committed view2. Новый probe узнаёт2; точный старый probe из `ae914f55e6d8d64628a7279189d2d55dfd05de45` отказывает `storage_format_unknown`, а старый v3 reader declaration `[1]` — `storage_reader_incompatible`. Main/WAL hashes неизменны. Это независимый повтор **авторских fixtures**, не ещё два собственных сценария и не cold-writer/process-kill повтор.
+
+Provenance correction прочитана до прогона: Git LF blob старого probe имеет SHA `d0aed27ce790502f36df20689663a43aee0ed28266e6b424a002cde7eb2f4e17`, исторический Windows CRLF вариант — `d51b36c12e316e660fd2b3ab6d8fe2350833aff242f2ae95d296fb63409afd59`. Авторский test проверяет оба точных представления и исполняет Git LF bytes. Reviewer не сравнивает новый author test со старым SHA до этой поправки.
+
+| Проверенный B1b файл | SHA256 рабочих bytes |
+| --- | --- |
+| `deploy/connector/storage-probe.mjs` | `5d7bdb6cee8c38671ff9a188e26b4bc33e983fbef04ec3e3ac9cabd9338f650a` |
+| `deploy/connector/storage-guard.mjs` | `95e0a74b818a6bec44b0994109bc0f26019df6240e929be1da5a617ca3454cca` |
+| `deploy/connector/storage-notes-capabilities.acceptance.test.mjs` | `17f06f859259296e786d115b69aae8740f859d4922c9810f9c9e6eb2768c57d4` |
+| `deploy/connector/storage-native-v2.test.mjs` | `767337e09a7c6e0d02e1937a6504890d4969a0f99c9f3645f3a40ae934d08539` |
+
+Новый local PASS не доказывает Linux reader2 image, production bootstrap, DDL2 migration admission или coherent backup/restore. Ранее исполненный root Linux canary проверял bridge1 и не переносится на reader2. После этих трёх коротких последовательных прогонов (own B2, own B1b, selected author WAL) слот передан root; полного deploy/world повторения reviewer не запускал.

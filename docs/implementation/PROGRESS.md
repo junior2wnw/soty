@@ -10,7 +10,7 @@
 | P1. Права, контракты, история | Локальная приёмка пройдена | Ограниченные допуски, отзываемые цепочки, устойчивые Invocation/receipt, общий лимит вызовов; runtime enforcement отдельно в P5 |
 | P2. Цельный интерфейс | Локальная реализация и финальная приёмка | Apps-first оболочка, графит, новые панели, доступы, Notes offline; внешний UX/установленная PWA остаются отдельными gates |
 | P3. Именные приложения | A/B/C/D/R локально приняты; E открыт | Apps6, публикация, источники, сохранения/обсуждения, bounded WS liveness/recovery; D4 browser/signed цикл проверен, публичный пилот ещё впереди |
-| P4. Внешние ИИ | A, B1 bridge и B1a reader baseline локально приняты | Публичные HTML/HTTP схемы и поиск; точные readers Notes1/2 и Capabilities1/2 с default-off migration; deployment manifest пока только1, Linux/restore и Notes effect/OAuth/MCP ещё открыты |
+| P4. Внешние ИИ | A, B1/B1a/B1b локально приняты; B2 интегрируется | Публичные HTML/HTTP схемы и поиск; точные source/deployment readers Notes1/2 и Capabilities1/2 с default-off migration; прежний Linux bridge принят, reader2 image/restore и OAuth/MCP ещё открыты |
 | P5. Устройства и исполнитель | Ожидает P1 | Реальные ограничения, остановка, отзыв, стоимость |
 | P6A. Авторский SDK | Ожидает P1/P4 | Независимая узкая функция без изменения ядра |
 | P6B. Длительные функции | Ожидает P6A | Start/status/cancel/reconnect/result без повторного эффекта |
@@ -205,3 +205,7 @@ Host-only `withAuthorityFence` сериализует короткий синх�
 ## P4 storage bridge — Linux canary принят
 
 [Фактическая root-квитанция](p4-storage-linux-canary-result.md) сохраняет отказ первого review2 и отдельную успешную очистку. Исправленный immutable review3 независимо проверен и один раз исполнен: Linux Node24.15.0/SQLite3.51.3, точный CLI Rooms2/Apps6/Notes1/Caps1, четыре unknown/corrupt отказа, main/WAL unchanged, retained witnesses и refusal actual unlabelled image — PASS. Шесть временных контейнеров и один том удалены с проверкой отсутствия; serving identity/StartedAt прежние. Это приёмка прежних форматов на изолированных synthetic данных; source reader2/full image/bootstrap/restore и публикация остаются отдельными gates по [подплану reader2](p4-reader2-rollout-plan.md).
+
+## P4-B1b — локальный deployment reader2 принят
+
+Exact deployment probe/guard и Dockerfile manifest поддерживают Notes1/2 и Capabilities1/2. Unknown3 и частично подменённый layout отвергаются; настоящий original reader1 не получает разрешения стартовать на format2. [Root приёмка](p4-reader2-root-gate.md) сохраняет исходные два FAIL старых fixtures и их отдельное закрытие: обновлённое покрытие deploy suites242 PASS/3 platform SKIP, без заявления об одном общем зелёном запуске. [Авторский receipt](p4-reader2-implementation.md) и [независимый аудит](p4-storage-bridge-independent.md) дополняют реальные mixed/WAL и retained-witness проверки. Следующий [Linux reader2 canary](p4-reader2-linux-plan.md) имеет новый namespace и не переисполняет прежние bundles. Полный image/bootstrap/restore и production остаются открыты.

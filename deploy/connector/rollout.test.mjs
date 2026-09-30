@@ -191,8 +191,19 @@ test('the first v3 bridge cannot silently replace a serving v2-manifest image',a
 
 for(const store of ['notes','capabilities'])test(`fresh ${store} format is checked before stopping the original`,async()=>{
  const f=fixture();await f.run.prepare(args);
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:2});
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:3});
  await assert.rejects(f.run.promote(),/storage_probe_invalid/);
+ assert.equal(f.map.get(args.originalId).State.Running,true);
+ assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');
+ assert.ok(!f.events.some(event=>event.startsWith('stop:')||event.startsWith('policy:')||event==='helper:enter'));
+});
+
+for(const store of ['notes','capabilities'])test(`a serving reader1 rejects fresh ${store}2 before STOP even with a reader2 candidate`,async()=>{
+ const f=fixture(),image=f.engine.image;
+ f.engine.image=async key=>{const value=await image(key);if(key===args.originalImage)value.Config.Labels[storageReaderLabel]='{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1],"capabilities":[1]}}';return value;};
+ await f.run.prepare(args);
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:2});
+ await assert.rejects(f.run.promote(),/storage_reader_incompatible/);
  assert.equal(f.map.get(args.originalId).State.Running,true);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');
  assert.ok(!f.events.some(event=>event.startsWith('stop:')||event.startsWith('policy:')||event==='helper:enter'));

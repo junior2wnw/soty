@@ -1,0 +1,41 @@
+{
+  "commit": "5e459abc6afa376861c2032226bd29f78bf0468d",
+  "description": "Test-only additive literal v2 schema from accepted B1a; v1 base remains pinned separately to 6cd724a. Dependency bytes are read from this exact Git pin only for comparison/reopen tests, never by storage-probe.",
+  "sourcePath": "modules/capabilities/server/schema-v2.mjs",
+  "files": {
+    "modules/capabilities/server/schema-v2.mjs": {
+      "sha256": "5ca8b4025535566c90a1b1d610e37837b4b41e6074117a96fe720504050af25f",
+      "bytes": 23705
+    },
+    "modules/capabilities/server/validation.mjs": {
+      "sha256": "b5cd743caa6183af7b82021eeab0381d6bea9dace806bae12b194df18c15fa9d",
+      "bytes": 3306
+    },
+    "modules/capabilities/server/native-note-contract.mjs": {
+      "sha256": "1f3ab19fa9e6641e9928ce363ab6fdcbcf1421d4785256466a430ce0bcfa9c83",
+      "bytes": 1098
+    }
+  },
+  "ddl": {
+    "bytes": 5122,
+    "sha256": "64c394ad739eba70bea95e2ffb18c29d2f0753b55c1b4373060620fde650a8c8"
+  },
+  "objects": {
+    "cap_invocations_native_identity": "42e75af0059d8c346aa5fc3fc95fe24c301c06a7b6379562739de12b661d7583",
+    "cap_invocations_account_admission": "a7e5c731afbe213091ab584c360ebf1b27f82a30e15168af9033efe1b50c5416",
+    "cap_invocations_principal_admission": "25c7b4b2737cd99ad5be4922370e40dee4bc793011de36253fbfa7be2b852bd8",
+    "cap_invocations_nonterminal": "605527305ca252385229f2c2b251a7d6d9ef5845f34419ee45ef8cf9c8903e30",
+    "cap_native_note_intents": "7d74b3ee40162a56c5b4662fefe77c8b29f5ea972f7a971179ec9c1764c4b9ad",
+    "cap_native_note_admission": "2d5e631085e679e870d67759a9cbc91446e3d69f71c5d1d2c55eff2c5b827016",
+    "cap_native_note_no_replace": "537a968071f56a57b0695032dfcd976a996b9ee11f408a5013a9608c92d3f788",
+    "cap_native_note_no_delete": "9c55468d9dfd8d5fdb567364f637ef62e1c0714e07272394ae3282449eb466a7",
+    "cap_native_note_update_guard": "00eec0daf2abcfc46cc4070417eea5934faa81667504eae819e678c25929154d",
+    "cap_native_note_input_guard": "e652594686e93e9699a7e88208b9318c5631a4c64b907434c702add0fd257803",
+    "cap_native_receipt_no_update": "6f12032081910c31f96cf22fcd201d03f5d4c1b21591be75274acc4b8983ab93",
+    "cap_native_receipt_no_delete": "320b57e4ddb7b3732c3019703797518b803e6ae9506580d878eb94b1c4ebf0e8",
+    "cap_native_receipt_no_replace": "0af80ac806fda16a6860276568e44d8a51cb6d29edd01f70de9cb7ee12c7730b",
+    "cap_identity_no_update": "6b9f89ddd2046dffcd801485c50d9065ee7ca1d2dcbed477c54d87962bb9f5ab",
+    "cap_identity_no_delete": "e4251aba76f16ee991edffef829c073bc106d0d968809adf1dc25daf18bba92a",
+    "cap_identity_no_replace": "4cd4c11ca71d1711159db59f7870c0c218ae7e13af3a9a5765190e499871236f"
+  }
+}

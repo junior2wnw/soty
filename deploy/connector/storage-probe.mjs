@@ -84,8 +84,8 @@ const appDiscussionGuards = {
 const normalizedSql = sql => typeof sql === 'string' ? sql.split(/('(?:[^']|'')*')/gu)
   .map((part, index) => index % 2 ? part : part.replace(/\s+/gu, '').replace(/;$/u, '').toLowerCase()).join('') : null;
 
-// Historical v1 layouts, frozen independently of Notes/Capabilities code. The
-// bridge deliberately does not recognize future native-effect schemas/readers.
+// Historical v1 layouts, frozen independently of Notes/Capabilities code.
+// Native v2 additions below do not redefine or migrate these historical tables.
 const notesTables = {
   notes_meta: 'key,value',
   note_accounts: 'account_id,bytes,identities,active,archived,trashed',
@@ -126,6 +126,48 @@ const capabilitiesIndexes = {
   cap_audit_account: { table: 'cap_audit', sql: 'CREATE INDEX cap_audit_account ON cap_audit(account_id,created_at,id)' },
   cap_invocations_history: { table: 'cap_invocations', sql: 'CREATE INDEX cap_invocations_history ON cap_invocations(account_id,client_id,created_at,id)' },
   cap_dispatch_pending: { table: 'cap_dispatch_intents', sql: 'CREATE INDEX cap_dispatch_pending ON cap_dispatch_intents(state,created_at,invocation_id)' },
+};
+
+// Literal additive v2 definitions pinned to B1a 5e459abc6afa376861c2032226bd29f78bf0468d.
+// No candidate application code runs in this independent host recognizer.
+const notesNativeTables = {
+  note_native_creates: "CREATE TABLE note_native_creates(\n  source_store_id TEXT NOT NULL\n    CHECK(length(source_store_id)=32 AND source_store_id NOT GLOB '*[^0-9a-f]*'),\n  invocation_id TEXT NOT NULL\n    CHECK(length(invocation_id) BETWEEN 1 AND 160\n      AND invocation_id NOT GLOB '*[^A-Za-z0-9_.:-]*'),\n  account_id TEXT NOT NULL,\n  note_id TEXT NOT NULL\n    CHECK(length(note_id)=66 AND substr(note_id,1,2)='n_'\n      AND substr(note_id,3) NOT GLOB '*[^0-9a-f]*'),\n  mutation_id TEXT NOT NULL\n    CHECK(length(mutation_id)=66 AND substr(mutation_id,1,2)='m_'\n      AND substr(mutation_id,3) NOT GLOB '*[^0-9a-f]*'),\n  input_digest TEXT NOT NULL\n    CHECK(length(input_digest)=64 AND input_digest NOT GLOB '*[^0-9a-f]*'),\n  capability_digest TEXT NOT NULL\n    CHECK(capability_digest='95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c162204'),\n  revision INTEGER NOT NULL CHECK(revision=1),\n  created_at INTEGER NOT NULL CHECK(created_at BETWEEN 0 AND 9007199254740991),\n  PRIMARY KEY(source_store_id,invocation_id),\n  UNIQUE(account_id,note_id),\n  UNIQUE(account_id,mutation_id),\n  FOREIGN KEY(account_id,note_id) REFERENCES notes(account_id,id)\n) STRICT",
+};
+const notesNativeGuards = {
+  note_native_create_no_update: {"table":"note_native_creates","sql":"CREATE TRIGGER note_native_create_no_update\nBEFORE UPDATE ON note_native_creates BEGIN\n  SELECT RAISE(ABORT,'notes_native_proof_immutable');\nEND"},
+  note_native_create_no_delete: {"table":"note_native_creates","sql":"CREATE TRIGGER note_native_create_no_delete\nBEFORE DELETE ON note_native_creates BEGIN\n  SELECT RAISE(ABORT,'notes_native_proof_immutable');\nEND"},
+  note_native_create_no_replace: {"table":"note_native_creates","sql":"CREATE TRIGGER note_native_create_no_replace\nBEFORE INSERT ON note_native_creates\nWHEN EXISTS(SELECT 1 FROM note_native_creates\n  WHERE (source_store_id=NEW.source_store_id AND invocation_id=NEW.invocation_id)\n     OR (account_id=NEW.account_id AND note_id=NEW.note_id)\n     OR (account_id=NEW.account_id AND mutation_id=NEW.mutation_id))\nBEGIN SELECT RAISE(ABORT,'notes_native_proof_immutable'); END"},
+  notes_identity_no_update: {"table":"notes_meta","sql":"CREATE TRIGGER notes_identity_no_update\nBEFORE UPDATE ON notes_meta\nWHEN OLD.key IN ('project_id','registry_id') OR NEW.key IN ('project_id','registry_id')\nBEGIN SELECT RAISE(ABORT,'notes_identity_immutable'); END"},
+  notes_identity_no_delete: {"table":"notes_meta","sql":"CREATE TRIGGER notes_identity_no_delete\nBEFORE DELETE ON notes_meta WHEN OLD.key IN ('project_id','registry_id')\nBEGIN SELECT RAISE(ABORT,'notes_identity_immutable'); END"},
+  notes_identity_no_replace: {"table":"notes_meta","sql":"CREATE TRIGGER notes_identity_no_replace\nBEFORE INSERT ON notes_meta\nWHEN NEW.key IN ('project_id','registry_id')\n AND EXISTS(SELECT 1 FROM notes_meta WHERE key=NEW.key)\nBEGIN SELECT RAISE(ABORT,'notes_identity_immutable'); END"},
+};
+const notesNativeProjections = {
+  note_native_creates: "source_store_id,invocation_id,account_id,note_id,mutation_id,input_digest,capability_digest,revision,created_at",
+};
+const capabilitiesNativeTables = {
+  cap_native_note_intents: "CREATE TABLE cap_native_note_intents(\n  invocation_id TEXT PRIMARY KEY,\n  account_id TEXT NOT NULL,\n  notes_store_id TEXT NOT NULL\n    CHECK(length(notes_store_id)=32 AND notes_store_id NOT GLOB '*[^0-9a-f]*'),\n  note_id TEXT NOT NULL\n    CHECK(length(note_id)=66 AND substr(note_id,1,2)='n_'\n      AND substr(note_id,3) NOT GLOB '*[^0-9a-f]*'),\n  mutation_id TEXT NOT NULL\n    CHECK(length(mutation_id)=66 AND substr(mutation_id,1,2)='m_'\n      AND substr(mutation_id,3) NOT GLOB '*[^0-9a-f]*'),\n  input_digest TEXT NOT NULL\n    CHECK(length(input_digest)=64 AND input_digest NOT GLOB '*[^0-9a-f]*'),\n  input_bytes INTEGER NOT NULL CHECK(input_bytes BETWEEN 1 AND 262144),\n  started_at INTEGER CHECK(started_at BETWEEN 0 AND 9007199254740991),\n  input_purged_at INTEGER CHECK(input_purged_at BETWEEN 0 AND 9007199254740991),\n  UNIQUE(account_id,note_id),\n  UNIQUE(account_id,mutation_id),\n  FOREIGN KEY(invocation_id,account_id) REFERENCES cap_invocations(id,account_id)\n) STRICT",
+};
+const capabilitiesNativeIndexes = {
+  cap_invocations_native_identity: {"table":"cap_invocations","sql":"CREATE UNIQUE INDEX cap_invocations_native_identity\n  ON cap_invocations(id,account_id)"},
+  cap_invocations_account_admission: {"table":"cap_invocations","sql":"CREATE INDEX cap_invocations_account_admission\n  ON cap_invocations(account_id,created_at,id)"},
+  cap_invocations_principal_admission: {"table":"cap_invocations","sql":"CREATE INDEX cap_invocations_principal_admission\n  ON cap_invocations(account_id,principal_id,created_at,id)"},
+  cap_invocations_nonterminal: {"table":"cap_invocations","sql":"CREATE INDEX cap_invocations_nonterminal\n  ON cap_invocations(account_id,principal_id,created_at,id)\n  WHERE status NOT IN ('succeeded','failed','cancelled')"},
+};
+const capabilitiesNativeGuards = {
+  cap_native_note_admission: {"table":"cap_native_note_intents","sql":"CREATE TRIGGER cap_native_note_admission\nBEFORE INSERT ON cap_native_note_intents\nWHEN NOT EXISTS(SELECT 1 FROM cap_invocations i\n  WHERE i.id=NEW.invocation_id AND i.account_id=NEW.account_id\n    AND i.capability_id='notes.createDraft' AND i.capability_version=1\n    AND i.capability_digest='95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c162204'\n    AND i.job_id IS NULL AND i.input_json!='null')\nBEGIN SELECT RAISE(ABORT,'native_note_binding_invalid'); END"},
+  cap_native_note_no_replace: {"table":"cap_native_note_intents","sql":"CREATE TRIGGER cap_native_note_no_replace\nBEFORE INSERT ON cap_native_note_intents\nWHEN EXISTS(SELECT 1 FROM cap_native_note_intents\n  WHERE invocation_id=NEW.invocation_id\n     OR (account_id=NEW.account_id AND note_id=NEW.note_id)\n     OR (account_id=NEW.account_id AND mutation_id=NEW.mutation_id))\nBEGIN SELECT RAISE(ABORT,'native_note_identity_immutable'); END"},
+  cap_native_note_no_delete: {"table":"cap_native_note_intents","sql":"CREATE TRIGGER cap_native_note_no_delete\nBEFORE DELETE ON cap_native_note_intents\nBEGIN SELECT RAISE(ABORT,'native_note_identity_immutable'); END"},
+  cap_native_note_update_guard: {"table":"cap_native_note_intents","sql":"CREATE TRIGGER cap_native_note_update_guard\nBEFORE UPDATE ON cap_native_note_intents\nWHEN NEW.invocation_id IS NOT OLD.invocation_id OR NEW.account_id IS NOT OLD.account_id\n  OR NEW.notes_store_id IS NOT OLD.notes_store_id OR NEW.note_id IS NOT OLD.note_id\n  OR NEW.mutation_id IS NOT OLD.mutation_id OR NEW.input_digest IS NOT OLD.input_digest\n  OR NEW.input_bytes IS NOT OLD.input_bytes\n  OR (OLD.started_at IS NOT NULL AND NEW.started_at IS NOT OLD.started_at)\n  OR (OLD.input_purged_at IS NOT NULL AND NEW.input_purged_at IS NOT OLD.input_purged_at)\n  OR (NEW.input_purged_at IS NOT NULL AND NOT EXISTS(\n    SELECT 1 FROM cap_invocations i JOIN cap_receipts r ON r.invocation_id=i.id\n    WHERE i.id=NEW.invocation_id AND i.input_json='null'\n      AND i.status IN ('succeeded','failed','cancelled')))\nBEGIN SELECT RAISE(ABORT,'native_note_identity_immutable'); END"},
+  cap_native_note_input_guard: {"table":"cap_invocations","sql":"CREATE TRIGGER cap_native_note_input_guard\nBEFORE UPDATE OF input_json ON cap_invocations\nWHEN EXISTS(SELECT 1 FROM cap_native_note_intents n WHERE n.invocation_id=OLD.id)\n AND NEW.input_json IS NOT OLD.input_json\n AND (NEW.input_json!='null' OR NEW.status NOT IN ('succeeded','failed','cancelled')\n      OR NOT EXISTS(SELECT 1 FROM cap_receipts r WHERE r.invocation_id=OLD.id))\nBEGIN SELECT RAISE(ABORT,'native_note_input_immutable'); END"},
+  cap_native_receipt_no_update: {"table":"cap_receipts","sql":"CREATE TRIGGER cap_native_receipt_no_update\nBEFORE UPDATE ON cap_receipts\nWHEN EXISTS(SELECT 1 FROM cap_native_note_intents n WHERE n.invocation_id=OLD.invocation_id)\nBEGIN SELECT RAISE(ABORT,'native_note_receipt_immutable'); END"},
+  cap_native_receipt_no_delete: {"table":"cap_receipts","sql":"CREATE TRIGGER cap_native_receipt_no_delete\nBEFORE DELETE ON cap_receipts\nWHEN EXISTS(SELECT 1 FROM cap_native_note_intents n WHERE n.invocation_id=OLD.invocation_id)\nBEGIN SELECT RAISE(ABORT,'native_note_receipt_immutable'); END"},
+  cap_native_receipt_no_replace: {"table":"cap_receipts","sql":"CREATE TRIGGER cap_native_receipt_no_replace\nBEFORE INSERT ON cap_receipts\nWHEN EXISTS(SELECT 1 FROM cap_native_note_intents n WHERE n.invocation_id=NEW.invocation_id)\n AND EXISTS(SELECT 1 FROM cap_receipts r WHERE r.invocation_id=NEW.invocation_id)\nBEGIN SELECT RAISE(ABORT,'native_note_receipt_immutable'); END"},
+  cap_identity_no_update: {"table":"cap_metadata","sql":"CREATE TRIGGER cap_identity_no_update\nBEFORE UPDATE ON cap_metadata\nWHEN OLD.key IN ('project_id','registry_id') OR NEW.key IN ('project_id','registry_id')\nBEGIN SELECT RAISE(ABORT,'cap_identity_immutable'); END"},
+  cap_identity_no_delete: {"table":"cap_metadata","sql":"CREATE TRIGGER cap_identity_no_delete\nBEFORE DELETE ON cap_metadata WHEN OLD.key IN ('project_id','registry_id')\nBEGIN SELECT RAISE(ABORT,'cap_identity_immutable'); END"},
+  cap_identity_no_replace: {"table":"cap_metadata","sql":"CREATE TRIGGER cap_identity_no_replace\nBEFORE INSERT ON cap_metadata\nWHEN NEW.key IN ('project_id','registry_id')\n AND EXISTS(SELECT 1 FROM cap_metadata WHERE key=NEW.key)\nBEGIN SELECT RAISE(ABORT,'cap_identity_immutable'); END"},
+};
+const capabilitiesNativeProjections = {
+  cap_native_note_intents: "invocation_id,account_id,notes_store_id,note_id,mutation_id,input_digest,input_bytes,started_at,input_purged_at",
 };
 
 async function checkedDatabaseFile(filename, info) {
@@ -233,12 +275,15 @@ async function checkedStoreFile(dataDir, store, basename) {
   return filename;
 }
 
-function recognizeV1Layout(db, tables, indexes, { fts = false, strict = false } = {}) {
+function recognizeNativeLayout(db, tables, indexes, { fts = false, strict = false, tableSql = {}, guards = {} } = {}) {
   const objects = db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all();
-  if (objects.length !== Object.keys(tables).length + Object.keys(indexes).length || objects.some(row =>
-    row.type === 'table' ? !Object.hasOwn(tables, row.name)
-      : row.type !== 'index' || !Object.hasOwn(indexes, row.name) || row.tbl_name !== indexes[row.name].table
-        || normalizedSql(row.sql) !== normalizedSql(indexes[row.name].sql))) fail('storage_format_unreadable');
+  if (objects.length !== Object.keys(tables).length + Object.keys(indexes).length + Object.keys(guards).length || objects.some(row => {
+    if (row.type === 'table') return !Object.hasOwn(tables, row.name) || (Object.hasOwn(tableSql, row.name)
+      && normalizedSql(row.sql) !== normalizedSql(tableSql[row.name]));
+    const expected = row.type === 'index' ? indexes : row.type === 'trigger' ? guards : null;
+    return !expected || !Object.hasOwn(expected, row.name) || row.tbl_name !== expected[row.name].table
+      || normalizedSql(row.sql) !== normalizedSql(expected[row.name].sql);
+  })) fail('storage_format_unreadable');
   if (fts && normalizedSql(objects.find(row => row.name === 'notes_fts')?.sql) !== normalizedSql(notesFts)) fail('storage_format_unreadable');
   const kinds = new Map(db.prepare('PRAGMA table_list').all().filter(row => row.schema === 'main').map(row => [row.name, row]));
   for (const [table, columns] of Object.entries(tables)) {
@@ -247,27 +292,42 @@ function recognizeV1Layout(db, tables, indexes, { fts = false, strict = false } 
     const info = db.prepare(`PRAGMA table_xinfo(${table})`).all();
     const kind = fts && table === 'notes_fts' ? 'virtual' : fts && table.startsWith('notes_fts_') ? 'shadow' : 'table';
     if (info.map(row => row.name).join(',') !== columns || kinds.get(table)?.type !== kind
-      || kinds.get(table)?.strict !== Number(strict)
+      || kinds.get(table)?.strict !== Number(strict || Object.hasOwn(tableSql, table))
       || info.some(row => row.hidden !== (fts && table === 'notes_fts' && ['notes_fts', 'rank'].includes(row.name) ? 1 : 0))) fail('storage_format_unreadable');
     const projection = fts && table === 'notes_fts' ? 'scope,title,body,items' : columns;
     db.prepare(`SELECT ${projection} FROM ${table} LIMIT 0`).all();
   }
 }
 
-function metadataEquals(db, table, key, expected) {
-  const rows = db.prepare(`SELECT value FROM ${table} WHERE key=? LIMIT 2`).all(key);
-  if (rows.length !== 1 || rows[0].value !== expected) fail('storage_format_unknown');
+function recognizeNativeMetadata(db, table, expected, registry) {
+  // A tiny bounded read is sufficient for these exact two/three-key maps. It
+  // neither emits store identities nor treats a missing v2 identity as empty.
+  const rows = db.prepare(`SELECT
+    CASE WHEN typeof(key)='text' AND length(key)<=32 THEN key ELSE NULL END AS key,
+    CASE WHEN typeof(value)='text' AND length(value)<=128 THEN value ELSE NULL END AS value
+    FROM ${table} LIMIT 4`).all();
+  if (rows.length !== Object.keys(expected).length + Number(registry)) fail('storage_format_unknown');
+  const seen = new Set();
+  for (const row of rows) {
+    if (typeof row.key !== 'string' || typeof row.value !== 'string' || seen.has(row.key)) fail('storage_format_unknown');
+    seen.add(row.key);
+    if (registry && row.key === 'registry_id') {
+      if (!/^[a-f0-9]{32}$/u.test(row.value)) fail('storage_format_unknown');
+    } else if (!Object.hasOwn(expected, row.key) || row.value !== expected[row.key]) fail('storage_format_unknown');
+  }
+  if (registry && !seen.has('registry_id')) fail('storage_format_unknown');
 }
 
 async function readNotesFormat(dataDir) {
   const filename = await checkedStoreFile(dataDir, 'notes', 'notes.sqlite');
   if (!filename) return 'empty';
   return inspectDatabase(filename, db => {
-    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('storage_format_unknown');
-    recognizeV1Layout(db, notesTables, notesIndexes, { fts: true });
-    metadataEquals(db, 'notes_meta', 'lineage', 'soty.notes.sqlite.v1');
-    metadataEquals(db, 'notes_meta', 'project_id', 'soty');
-    return 1;
+    const version = db.prepare('PRAGMA user_version').get().user_version;
+    if (version !== 1 && version !== 2) fail('storage_format_unknown');
+    recognizeNativeMetadata(db, 'notes_meta', { lineage: `soty.notes.sqlite.v${version}`, project_id: 'soty' }, version === 2);
+    recognizeNativeLayout(db, { ...notesTables, ...(version === 2 ? notesNativeProjections : {}) }, notesIndexes,
+      { fts: true, ...(version === 2 ? { tableSql: notesNativeTables, guards: notesNativeGuards } : {}) });
+    return version;
   });
 }
 
@@ -275,10 +335,14 @@ async function readCapabilitiesFormat(dataDir) {
   const filename = await checkedStoreFile(dataDir, 'capabilities', 'capabilities.sqlite');
   if (!filename) return 'empty';
   return inspectDatabase(filename, db => {
-    if (db.prepare('PRAGMA user_version').get().user_version !== 1) fail('storage_format_unknown');
-    recognizeV1Layout(db, capabilitiesTables, capabilitiesIndexes, { strict: true });
-    metadataEquals(db, 'cap_metadata', 'lineage', 'soty.capabilities.sqlite.v1');
-    return 1;
+    const version = db.prepare('PRAGMA user_version').get().user_version;
+    if (version !== 1 && version !== 2) fail('storage_format_unknown');
+    recognizeNativeMetadata(db, 'cap_metadata', { lineage: `soty.capabilities.sqlite.v${version}`,
+      ...(version === 2 ? { project_id: 'soty' } : {}) }, version === 2);
+    recognizeNativeLayout(db, { ...capabilitiesTables, ...(version === 2 ? capabilitiesNativeProjections : {}) },
+      { ...capabilitiesIndexes, ...(version === 2 ? capabilitiesNativeIndexes : {}) },
+      { strict: true, ...(version === 2 ? { tableSql: capabilitiesNativeTables, guards: capabilitiesNativeGuards } : {}) });
+    return version;
   });
 }
 

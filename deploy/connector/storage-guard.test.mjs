@@ -80,7 +80,7 @@ test('strict image reader manifest rejects missing, extended and malformed claim
   assert.throws(() => requireStorageStartReceipt(null, id(1)), /storage_start_guard_missing/);
   const baseline = JSON.parse(currentStorageReaders);
   for (const store of ['rooms', 'apps', 'notes', 'capabilities']) {
-    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'rooms' ? [3] : store === 'apps' ? [7] : [2]]) {
+    for (const readers of [[], [1, 1], ['1'], [null], '1', [[1]], store === 'apps' ? [7] : [3]]) {
       const value = clone(baseline); value.readers[store] = readers;
       assert.throws(() => assertStorageCompatible(image(1, JSON.stringify(value)), format('empty')), /storage_reader_unknown/);
     }
@@ -191,8 +191,8 @@ test('old or extended probe and start receipts never authorize a restart', () =>
   }
 });
 
-test('bridge requires actual v3 even on empty stores and preserves every independent format in start evidence', async () => {
-  for (const notes of ['empty', 1]) for (const capabilities of ['empty', 1]) {
+test('reader2 requires actual v3 even on empty stores and preserves every independent format in start evidence', async () => {
+  for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2]) {
     const f = fixture({ rooms: 2, apps: 6, notes, capabilities });
     const receipt = await guardStorageStart(f.context, f.runtime);
     requireStorageStartReceipt(receipt, f.runtime.Id);
@@ -203,12 +203,12 @@ test('bridge requires actual v3 even on empty stores and preserves every indepen
   }
 });
 
-test('new store output and evidence require scalar v1 or empty, never coerced or omitted fields', () => {
+test('new store output and evidence require scalar v1/v2 or empty, never coerced or omitted fields', () => {
   const goodFormat = format(2, 6, 1, 1);
   const goodReceipt = { schema: 'soty.storage-start.v3', containerId: id(1), image: imageId(2), mountSha256: id(3),
     rooms: 2, apps: 6, notes: 1, capabilities: 1 };
   for (const store of ['notes', 'capabilities']) {
-    for (const value of [undefined, null, 0, 2, '1', [1], ['empty'], true, {}, 'unknown']) {
+    for (const value of [undefined, null, 0, 3, '1', '2', [1], [2], ['empty'], true, {}, 'unknown']) {
       assert.throws(() => checkedStorageFormat({ ...goodFormat, [store]: value }), /storage_probe_invalid/);
       assert.throws(() => requireStorageStartReceipt({ ...goodReceipt, [store]: value }, id(1)), /storage_start_guard_missing/);
     }
@@ -240,10 +240,25 @@ test('a retained v2 helper is refused without repeating CREATE or START or rewri
 test('future Notes or Capabilities cannot become successful helper or start receipts', async () => {
   for (const store of ['notes', 'capabilities']) {
     const f = fixture({ notes: 1, capabilities: 1 });
-    f.setResult({ ...format(2, 6, 1, 1), [store]: 2 });
+    f.setResult({ ...format(2, 6, 1, 1), [store]: 3 });
     await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_probe_invalid/);
     assert.ok(f.state.storageGuardHelper);
     assert.ok(!f.events.some(event => event.verb === 'start' && event.id === f.runtime.Id));
+  }
+});
+
+test('honest v3 reader1 cannot reuse successful v1 evidence after either store becomes v2', async () => {
+  const readers = '{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1],"capabilities":[1]}}';
+  for (const store of ['notes', 'capabilities']) {
+    const old = fixture({ readers, rooms: 2, apps: 6, notes: 1, capabilities: 1 });
+    const receipt = await guardStorageStart(old.context, old.runtime);
+    assert.equal(receipt[store], 1);
+    old.setResult({ ...format(2, 6, 1, 1), [store]: 2 });
+    await assert.rejects(guardStorageStart(old.context, old.runtime), /storage_reader_incompatible/);
+    assert.ok(!old.events.some(event => event.verb === 'start' && event.id === old.runtime.Id));
+    const current = fixture({ rooms: 2, apps: 6, notes: store === 'notes' ? 2 : 1, capabilities: store === 'capabilities' ? 2 : 1 });
+    const fresh = await guardStorageStart(current.context, current.runtime);
+    assert.equal(fresh[store], 2); requireStorageStartReceipt(fresh, current.runtime.Id);
   }
 });
 
