@@ -12,7 +12,7 @@
 </style>
 <div class="qa-bar">
   <strong>Изолированный тест · данные вымышлены · API не вызывается</strong>
-  <label>Сценарий <select id="qa-mode"><option value="normal">Обычный</option><option value="disabled">Подключение выключено</option><option value="revoke-fails">Нет подтверждения отзыва</option><option value="key-switch">Смена аккаунта перед выдачей ключа</option><option value="late-list">Поздний ответ списка</option><option value="key-fails">Ключ не подтверждён</option></select></label>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Приложения и ключи</option><option value="oauth-unavailable">Подробности приложений недоступны</option><option value="oauth-lost-ack">Отзыв принят, ответ потерян</option><option value="oauth-wrong-ack">Ответ от другого подключения</option><option value="oauth-delayed">Отзыв с задержкой 1 с</option><option value="oauth-pages">Независимые страницы</option><option value="disabled">Выдача ключей выключена</option><option value="revoke-fails">Нет подтверждения отзыва</option><option value="key-switch">Смена аккаунта перед выдачей ключа</option><option value="late-list">Поздний ответ списка</option><option value="key-fails">Ключ не подтверждён</option></select></label>
   <button id="qa-reset">Открыть сценарий</button><button id="qa-dark">Тёмная тема</button><button id="qa-light">Светлая тема</button><button id="qa-dispose">Закрыть экран</button>
 </div>
 <div id="qa-result" role="status"></div><main id="qa-host"></main>
@@ -43,6 +43,15 @@ function reset() {
     {invocationId:'qa_inv_good',clientId:principals[0].clientId,principalId:principals[0].id,grantId:grants[0].id,capabilityId:'notes.createDraft',version:1,status:'succeeded',cancelRequested:false,effectState:'committed',effects:[{kind:'created',resourceType:'note',resourceId:'qa_note_one',revision:1}],createdAt:time-120000,updatedAt:time-119000,receipt:{verificationMethod:'domain_read',artifacts:[{type:'note',id:'qa_note_one',revision:1}]}},
     {invocationId:'qa_inv_unknown',clientId:principals[0].clientId,principalId:principals[0].id,grantId:grants[0].id,capabilityId:'notes.createDraft',version:1,status:'execution_uncertain',cancelRequested:true,effectState:'unknown',effects:[],createdAt:time-60000,updatedAt:time-50000}
   ];
+  const connection=(id,profile='soty-codex-cli')=>({id,clientProfile:profile,resource:'https://qa.invalid/api/capabilities/v1',createdAt:time-1800000,expiresAt:time+86400000,revokedAt:null,active:true,budget:{limit:20,spent:3,reserved:1,remaining:16}});
+  const connections=[connection('qa_connection_one'),connection('qa_connection_two')];
+  const managed=(id,label='Codex CLI')=>({id,accountId,clientId:`client_${id}`,label,state:'active',createdAt:time-1800000,revokedAt:null,managedBy:'oauth'});
+  principals.push(managed('qa_principal_oauth_one'),managed('qa_principal_oauth_two'));
+  if(mode.value==='oauth-pages') {
+    connections.splice(0,connections.length,...Array.from({length:22},(_,i)=>connection(`qa_connection_${i}`,i%2?'soty-opencode-cli':'soty-codex-cli')));
+    principals.unshift(...Array.from({length:20},(_,i)=>managed(`qa_managed_${i}`)));
+  }
+  const page=(rows,cursor,prefix)=>{const offset=cursor?Number(cursor.slice(prefix.length)):0;return{rows:structuredClone(rows.slice(offset,offset+20)),next:offset+20<rows.length?`${prefix}${offset+20}`:null};};
   const api={async request(method,args){
     if(args.expectedAccountId!==accountId) throw Object.assign(new Error('account mismatch'),{code:'account_mismatch'});
     called++; result.textContent=`Синтетических запросов: ${called}. Реальных записей в базе: 0.`;
@@ -51,7 +60,19 @@ function reset() {
         const response={principals:structuredClone(principals),cursor:null};
         return new Promise(resolve=>setTimeout(()=>{handle.dispose();root.textContent='Другой аккаунт';resolve(response);setTimeout(()=>{if(run===generation)result.textContent=root.textContent==='Другой аккаунт'?'PASS: поздний список не вернулся после dispose':'FAIL: поздний список';},30);},50));
       }
-      return {principals:structuredClone(principals),cursor:null};
+      const result=page(principals,args.cursor,'p:'); return {principals:result.rows,cursor:result.next};
+    }
+    if(method==='oauth.connections.list') {
+      if(mode.value==='oauth-unavailable') throw Object.assign(new Error('synthetic unavailable'),{code:'oauth_unavailable'});
+      const result=page(connections,args.cursor,'c:');return{connections:result.rows,nextCursor:result.next};
+    }
+    if(method==='oauth.connections.revoke') {
+      if(mode.value==='revoke-fails') throw new TypeError('synthetic connection lost');
+      if(mode.value==='oauth-wrong-ack') return{connectionId:'qa_different_connection',revoked:true};
+      const item=connections.find(row=>row.id===args.connectionId);item.revokedAt=Date.now();item.active=false;
+      if(mode.value==='oauth-lost-ack') throw new TypeError('synthetic lost ACK after commit');
+      if(mode.value==='oauth-delayed') await new Promise(resolve=>setTimeout(resolve,1000));
+      return{connectionId:item.id,revoked:true};
     }
     if(method==='access.grants.list') return {grants:structuredClone(grants.filter(item=>item.principalId===args.principalId)),cursor:null};
     if(method==='access.invocations.list') return {invocations:structuredClone(history),nextCursor:null};

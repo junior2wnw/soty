@@ -12,7 +12,12 @@ export interface AccessPanelOptions {
   availability?: () => Promise<AccessAvailability>;
 }
 export interface AccessPanelHandle { dispose(): void; flush(): Promise<void>; hasUnsavedChanges(): boolean }
-interface Principal { id: string; accountId: string; clientId: string; label: string; state: string; createdAt: number; revokedAt: number | null }
+interface Principal { id: string; accountId: string; clientId: string; label: string; state: string; createdAt: number; revokedAt: number | null; managedBy?: 'oauth' }
+interface Connection {
+  id: string; clientProfile: string; resource: string; createdAt: number; expiresAt: number; revokedAt: number | null; active: boolean;
+  budget: { limit: number; reserved: number; spent: number; remaining: number };
+}
+interface ConnectionTarget { kind: 'connection' | 'principal'; id: string; label: string; cursor: string | null }
 interface Budget { unit: string; limit: number; reserved: number; spent: number; remaining: number; uncertain: number }
 interface Grant {
   id: string; principalId: string; clientId: string; parentGrantId: string | null; rootGrantId: string;
@@ -29,7 +34,7 @@ interface Invocation {
 }
 type View = 'clients' | 'actions' | 'events';
 interface Page<T> { items: T[]; cursor: string | null; next: string | null; previous: (string | null)[]; loaded: boolean; loading: boolean; error: string; request: number }
-interface DialogState { dialog: WorldDialog; busy: boolean; dirty: boolean; clearSecret(): void }
+interface DialogState { dialog: WorldDialog; busy: boolean; dirty: boolean; keepBusyFocus: boolean; clearSecret(): void }
 const page = <T>(): Page<T> => ({ items: [], cursor: null, next: null, previous: [], loaded: false, loading: false, error: '', request: 0 });
 const PAGE_SIZE = 20;
 const notesCapability = { capabilityId: 'notes.createDraft', version: 1 } as const;
@@ -78,6 +83,52 @@ function validAvailability(value: AccessAvailability | undefined): AccessAvailab
   } catch { return { notesCreateEnabled: false, audience: null }; }
 }
 
+const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const string = (value: unknown, max: number): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
+const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+function unconfirmed(): never { throw new Error('access_response_unconfirmed'); }
+function principalPage(value: unknown, accountId: string): { principals: Principal[]; cursor: string | null } {
+  if (!record(value) || !Array.isArray(value.principals) || value.principals.length > PAGE_SIZE
+    || value.cursor !== null && !string(value.cursor, 2048)) return unconfirmed();
+  const principals = value.principals.map(item => {
+    if (!record(item) || !string(item.id, 180) || item.accountId !== accountId || !string(item.clientId, 180)
+      || !string(item.label, 100) || typeof item.state !== 'string' || !['active', 'revoked'].includes(item.state)
+      || !integer(item.createdAt) || item.revokedAt !== null && !integer(item.revokedAt)
+      || item.managedBy !== undefined && item.managedBy !== 'oauth') return unconfirmed();
+    return { id: item.id, accountId, clientId: item.clientId, label: item.label, state: item.state,
+      createdAt: item.createdAt, revokedAt: item.revokedAt as number | null, ...(item.managedBy === 'oauth' ? { managedBy: 'oauth' as const } : {}) };
+  });
+  if (new Set(principals.map(item => item.id)).size !== principals.length) return unconfirmed();
+  return { principals, cursor: value.cursor as string | null };
+}
+function connectionPage(value: unknown): { connections: Connection[]; nextCursor: string | null } {
+  if (!record(value) || !Array.isArray(value.connections) || value.connections.length > PAGE_SIZE
+    || value.nextCursor !== null && !string(value.nextCursor, 2048)) return unconfirmed();
+  const connections = value.connections.map(item => {
+    if (!record(item) || !string(item.id, 180) || !string(item.clientProfile, 180) || !string(item.resource, 4096)
+      || !integer(item.createdAt) || !integer(item.expiresAt) || item.revokedAt !== null && !integer(item.revokedAt)
+      || typeof item.active !== 'boolean' || !record(item.budget)) return unconfirmed();
+    const budget = item.budget;
+    if (![budget.limit, budget.reserved, budget.spent, budget.remaining].every(integer)
+      || (budget.reserved as number) + (budget.spent as number) + (budget.remaining as number) !== budget.limit) return unconfirmed();
+    return { id: item.id, clientProfile: item.clientProfile, resource: item.resource, createdAt: item.createdAt,
+      expiresAt: item.expiresAt, revokedAt: item.revokedAt as number | null, active: item.active,
+      budget: { limit: budget.limit as number, reserved: budget.reserved as number, spent: budget.spent as number, remaining: budget.remaining as number } };
+  });
+  if (new Set(connections.map(item => item.id)).size !== connections.length) return unconfirmed();
+  return { connections, nextCursor: value.nextCursor as string | null };
+}
+function connectionLabel(item: Connection): string {
+  if (item.clientProfile === 'soty-codex-cli') return 'Codex CLI';
+  if (item.clientProfile === 'soty-opencode-cli') return 'OpenCode CLI';
+  return 'Внешнее приложение';
+}
+function connectionIdentity(label: string, id: string, compact = false): HTMLElement {
+  const row = el('p', 'sa-connection-id');
+  row.append(el('span', '', label), el('code', '', compact && id.length > 12 ? `…${id.slice(-12)}` : id));
+  return row;
+}
+
 export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions): AccessPanelHandle {
   const { api, accountId } = options;
   const workspace = el('section', 'sa-access');
@@ -91,10 +142,10 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   heading.append(account);
   const tools = el('div', 'sa-header-tools');
   const refresh = iconButton('Обновить доступы', 'refresh', () => { void refreshView(); });
-  const add = button('Подключить клиента', 'plus', 'sw-button-primary', () => { void openCreate(); });
+  const add = button('Создать доступ по ключу', 'plus', 'sw-button-primary', () => { void openCreate(); });
   add.disabled = true;
   tools.append(refresh, add); header.append(heading, tools);
-  const availabilityHint = el('p', 'sa-availability', 'Проверяем доступность новых подключений…');
+  const availabilityHint = el('p', 'sa-availability', 'Проверяем доступность выдачи ключей…');
   availabilityHint.id = `${instanceId}-availability`; add.setAttribute('aria-describedby', availabilityHint.id);
   const tabs = el('div', 'sa-tabs'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Раздел доступа');
   const content = el('div', 'sa-content'); content.id = `${instanceId}-content`; content.setAttribute('role', 'tabpanel'); content.tabIndex = 0;
@@ -108,8 +159,11 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   let availabilityRequest = 0;
   let selectedPrincipal: string | null = null;
   let dialogState: DialogState | null = null;
+  let refreshing = false, connectionsAvailable = false, connectionsAttempted = false;
   const mutations = new Set<Promise<void>>();
-  const principals = page<Principal>(); const grants = page<Grant>(); const actions = page<Invocation>(); const events = page<AccessEvent>();
+  const principals = page<Principal>(); const connections = page<Connection>(); const grants = page<Grant>(); const actions = page<Invocation>(); const events = page<AccessEvent>();
+  const revokeOutcomes = new Map<string, 'unknown' | 'confirmed'>();
+  const expandedConnections = new Set<string>();
   const knownPrincipals = new Map<string, Principal>();
   const tabButtons = new Map<View, HTMLButtonElement>();
   const alive = (): boolean => !disposed && !invalid;
@@ -124,8 +178,8 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   }
   function erase() {
     closeDialog(true);
-    knownPrincipals.clear(); selectedPrincipal = null;
-    for (const list of [principals, grants, actions, events]) { list.items = []; list.request++; list.cursor = null; list.next = null; list.previous = []; }
+    knownPrincipals.clear(); revokeOutcomes.clear(); expandedConnections.clear(); selectedPrincipal = null;
+    for (const list of [principals, connections, grants, actions, events]) { list.items = []; list.request++; list.cursor = null; list.next = null; list.previous = []; }
     availability = { notesCreateEnabled: false, audience: null }; availabilityRequest++;
     host.replaceChildren();
   }
@@ -143,19 +197,24 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       if (!alive()) throw new Error('access_panel_closed');
       return result;
     } catch (error) {
-      if (['account_mismatch', 'device_revoked', 'authorization_required', 'authentication_required', 'local_profile_missing', 'account_required'].includes(codeOf(error))) accountClosed();
+      if (['ACTIVE_PROFILE_CHANGED', 'account_mismatch', 'device_revoked', 'authorization_required', 'authentication_required', 'local_profile_missing', 'account_required'].includes(codeOf(error))) accountClosed();
       throw error;
     }
   }
-  function openDialog(title: string): DialogState {
+  function openDialog(title: string, returnKey?: string): DialogState {
     closeDialog(true);
     const dialog = createDialog(title, () => {
       state.clearSecret(); state.dirty = false;
       if (dialogState === state) dialogState = null;
-    });
-    const state: DialogState = { dialog, busy: false, dirty: false, clearSecret: () => {} };
+    }, returnKey ? { isCurrent: () => alive() && view === 'clients' && workspace.isConnected,
+      resolve: () => [...content.querySelectorAll<HTMLElement>('[data-sa-focus]')].find(node => node.dataset.saFocus === returnKey) || content } : undefined);
+    const state: DialogState = { dialog, busy: false, dirty: false, keepBusyFocus: Boolean(returnKey), clearSecret: () => {} };
     dialog.element.classList.add('sa-dialog');
     dialog.element.addEventListener('cancel', event => { if (state.busy) event.preventDefault(); });
+    dialog.element.addEventListener('keydown', event => { if (state.busy && event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); } });
+    dialog.element.querySelector('.sw-dialog-header button')?.addEventListener('click', event => {
+      if (state.busy) { event.preventDefault(); event.stopImmediatePropagation(); }
+    }, true);
     dialogState = state;
     return state;
   }
@@ -163,7 +222,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     state.busy = busy;
     state.dialog.element.setAttribute('aria-busy', String(busy));
     const close = state.dialog.element.querySelector<HTMLButtonElement>('.sw-dialog-header button');
-    if (close) close.disabled = busy;
+    if (close) { close.disabled = state.keepBusyFocus ? false : busy; close.setAttribute('aria-disabled', String(busy)); }
   }
   function mutate(state: DialogState, work: () => Promise<void>) {
     if (state.busy || !dialogAlive(state)) return;
@@ -182,8 +241,8 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     if (!alive()) return;
     add.disabled = !availability.notesCreateEnabled || !availability.audience || mutations.size > 0;
     availabilityHint.textContent = availability.notesCreateEnabled
-      ? 'Подключённый клиент получает только выбранные вами действия.'
-      : 'Новое подключение пока недоступно. Существующими доступами можно управлять.';
+      ? 'Клиент с ключом получает только выбранные вами действия.'
+      : 'Выдача новых ключей пока недоступна. Существующими доступами можно управлять.';
     availabilityHint.classList.toggle('is-ready', availability.notesCreateEnabled);
   }
   async function checkAvailability(): Promise<AccessAvailability> {
@@ -193,7 +252,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     if (alive() && sequence === availabilityRequest) { availability = result; updateAvailabilityHint(); }
     return result;
   }
-  async function load<T>(list: Page<T>, loader: (cursor: string | null) => Promise<{ items: T[]; next: string | null }>, cursor: string | null, direction: 'reset' | 'next' | 'previous' = 'reset'): Promise<void> {
+  async function load<T>(list: Page<T>, loader: (cursor: string | null) => Promise<{ items: T[]; next: string | null }>, cursor: string | null, direction: 'reset' | 'next' | 'previous' = 'reset', settled?: (accepted: boolean) => void): Promise<void> {
     const sequence = ++list.request;
     list.loading = true; list.error = ''; render();
     try {
@@ -203,9 +262,11 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       else if (direction === 'previous') list.previous.pop();
       else list.previous = [];
       list.items = result.items; list.cursor = cursor; list.next = result.next; list.loaded = true;
+      settled?.(true);
     } catch (error) {
       if (!alive() || sequence !== list.request) return;
       list.error = errorLabel(error);
+      settled?.(false);
     } finally {
       if (alive() && sequence === list.request) { list.loading = false; render(); }
     }
@@ -214,10 +275,15 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   async function loadPrincipals(cursor: string | null = null, direction: 'reset' | 'next' | 'previous' = 'reset') {
     if (direction === 'reset') { selectedPrincipal = null; grants.request++; grants.items = []; grants.loaded = false; knownPrincipals.clear(); }
     await load(principals, async next => {
-      const result = await request<{ principals: Principal[]; cursor: string | null }>('access.principals.list', listParams(next));
-      for (const principal of result.principals) knownPrincipals.set(principal.id, principal);
+      const result = principalPage(await request('access.principals.list', listParams(next)), accountId);
       return { items: result.principals, next: result.cursor };
-    }, cursor, direction);
+    }, cursor, direction, accepted => { if (accepted) for (const principal of principals.items) knownPrincipals.set(principal.id, principal); });
+  }
+  async function loadConnections(cursor: string | null = null, direction: 'reset' | 'next' | 'previous' = 'reset') {
+    await load(connections, async next => {
+      const result = connectionPage(await request('oauth.connections.list', listParams(next)));
+      return { items: result.connections, next: result.nextCursor };
+    }, cursor, direction, accepted => { connectionsAvailable = accepted; connectionsAttempted = true; });
   }
   async function loadGrants(principalId: string, cursor: string | null = null, direction: 'reset' | 'next' | 'previous' = 'reset') {
     await load(grants, async next => {
@@ -238,10 +304,10 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     }, cursor, direction);
   }
   async function refreshView() {
-    if (!alive()) return;
-    refresh.disabled = true;
-    await Promise.allSettled([checkAvailability(), view === 'clients' ? loadPrincipals() : view === 'actions' ? loadActions() : loadEvents()]);
-    if (alive()) refresh.disabled = false;
+    if (!alive() || refreshing) return;
+    refreshing = true; refresh.setAttribute('aria-disabled', 'true');
+    await Promise.allSettled([checkAvailability(), view === 'clients' ? Promise.allSettled([loadPrincipals(), loadConnections()]) : view === 'actions' ? loadActions() : loadEvents()]);
+    if (alive()) { refreshing = false; refresh.setAttribute('aria-disabled', 'false'); }
   }
   function selectView(next: View) {
     view = next;
@@ -249,6 +315,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     content.setAttribute('aria-labelledby', `${instanceId}-${view}`);
     render();
     if (next === 'clients' && !principals.loaded && !principals.loading) void loadPrincipals();
+    if (next === 'clients' && !connections.loaded && !connections.loading) void loadConnections();
     if (next === 'actions' && !actions.loaded && !actions.loading) void loadActions();
     if (next === 'events' && !events.loaded && !events.loading) void loadEvents();
   }
@@ -266,11 +333,12 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
 
   function pager<T>(list: Page<T>, navigate: (cursor: string | null, direction: 'next' | 'previous') => Promise<void>): HTMLElement {
     const row = el('nav', 'sa-pagination'); row.setAttribute('aria-label', 'Страницы списка');
-    const back = button('Назад', 'back', '', () => { void navigate(list.previous.at(-1) ?? null, 'previous'); });
-    const next = button('Дальше', 'next', '', () => { void navigate(list.next, 'next'); });
-    const key = list === grants ? `grants-${selectedPrincipal}` : view;
+    const back = button('Назад', 'back', '', () => { if (!list.loading && list.previous.length) void navigate(list.previous.at(-1) ?? null, 'previous'); });
+    const next = button('Дальше', 'next', '', () => { if (!list.loading && list.next) void navigate(list.next, 'next'); });
+    const key = list === grants ? `grants-${selectedPrincipal}` : list === connections ? 'connections' : view;
     back.dataset.saFocus = `page-${key}-back`; next.dataset.saFocus = `page-${key}-next`;
-    back.disabled = list.loading || !list.previous.length; next.disabled = list.loading || !list.next;
+    back.disabled = !list.previous.length; next.disabled = !list.next;
+    back.setAttribute('aria-disabled', String(list.loading || back.disabled)); next.setAttribute('aria-disabled', String(list.loading || next.disabled));
     row.append(back, el('span', 'sa-page-number', `Страница ${list.previous.length + 1}`), next);
     return row;
   }
@@ -291,9 +359,12 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     if (!alive()) return;
     const previousFocus = document.activeElement instanceof HTMLElement && content.contains(document.activeElement) ? document.activeElement : null;
     const focusKey = previousFocus?.dataset.saFocus;
+    for (const detail of content.querySelectorAll<HTMLDetailsElement>('details[data-sa-connection]')) {
+      if (detail.open) expandedConnections.add(detail.dataset.saConnection!); else expandedConnections.delete(detail.dataset.saConnection!);
+    }
     content.replaceChildren();
     const list = view === 'clients' ? principals : view === 'actions' ? actions : events;
-    content.setAttribute('aria-busy', String(list.loading));
+    content.setAttribute('aria-busy', String(list.loading || view === 'clients' && connections.loading));
     if (view === 'clients') renderClients();
     else if (view === 'actions') renderActions();
     else renderEvents();
@@ -303,9 +374,72 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     }
   }
   function renderClients() {
-    if (listState(content, principals, 'Здесь будут ваши клиенты', 'Выданные разрешения и их отзыв всегда останутся под рукой.', () => loadPrincipals())) return;
+    const apps = el('section', 'sa-client-group'); apps.setAttribute('aria-label', 'Подключённые приложения');
+    apps.append(el('h2', 'sa-group-title', 'Подключённые приложения'), el('p', 'sa-group-description', 'Приложения, которым вы разрешили действия в Сотах. Каждое подключение имеет свой срок и лимит.'));
+    renderConnections(apps);
+    const keys = el('section', 'sa-client-group'); keys.setAttribute('aria-label', 'Доступ по ключу');
+    keys.append(el('h2', 'sa-group-title', 'Доступ по ключу'), el('p', 'sa-group-description', 'Клиенты, для которых вы создали ключ вручную.'));
+    renderKeyClients(keys); content.append(apps, keys);
+  }
+  function renderConnections(parent: HTMLElement) {
+    if (connectionsAvailable) {
+      if (!listState(parent, connections, 'Подключённых приложений пока нет', 'Начните подключение из нужного приложения и подтвердите его в Сотах.', () => loadConnections())) {
+        const list = el('div', 'sa-client-list');
+        for (const item of connections.items) list.append(renderConnection(item));
+        parent.append(list);
+      }
+      if (connections.next || connections.previous.length) parent.append(pager(connections, loadConnections));
+      return;
+    }
+    if (!connectionsAttempted) {
+      parent.append(el('p', 'sa-group-description', 'Проверяем подключения…')); return;
+    }
+    const warning = el('div', 'sa-load-error'); warning.setAttribute('role', 'status');
+    const retry = button('Проверить подключения', 'refresh', '', () => { if (!connections.loading) void loadConnections(); });
+    retry.dataset.saFocus = 'connections-retry'; retry.setAttribute('aria-disabled', String(connections.loading));
+    warning.append(el('span', '', 'Подробности подключений недоступны. Известный доступ можно отключить по списку клиентов.'), retry); parent.append(warning);
+    const marked = principals.items.filter(item => item.managedBy === 'oauth');
+    for (const principal of marked) {
+      const key = `principal:${principal.id}`, ended = principal.state === 'revoked' || revokeOutcomes.get(key) === 'confirmed';
+      const card = el('article', 'sa-client sa-connection-fallback');
+      const title = el('h3', '', principal.label); title.tabIndex = -1; title.dataset.saFocus = `connection-principal-${principal.id}`;
+      card.append(title, connectionIdentity('Код доступа', principal.id), stateBadge(ended ? 'Доступ отключён' : 'Подробности недоступны'),
+        el('p', 'sa-muted', ended ? 'Новые действия с этим доступом недоступны.' : 'Доступ к действиям будет закрыт без выдачи новых разрешений.'));
+      if (!ended) {
+        const revoke = button(revokeOutcomes.get(key) === 'unknown' ? 'Проверить отключение' : 'Отключить доступ', 'lock', 'sa-revoke', () => openConnectionRevoke({ kind: 'principal', id: principal.id, label: principal.label, cursor: principals.cursor }));
+        revoke.dataset.saFocus = `revoke-connection-principal-${principal.id}`; card.append(revoke);
+      }
+      parent.append(card);
+    }
+    if (!marked.length) parent.append(el('p', 'sa-group-description', principals.loading ? 'Читаем известные доступы…' : 'На текущей странице клиентов нет подключений с доступным резервным отключением.'));
+    if (principals.next || principals.previous.length) parent.append(el('p', 'sa-group-description', 'Другие известные подключения можно найти на страницах списка клиентов ниже.'));
+  }
+  function renderConnection(item: Connection): HTMLElement {
+    const key = `connection:${item.id}`, ended = item.revokedAt !== null || revokeOutcomes.get(key) === 'confirmed';
+    const card = el('article', 'sa-client'); card.classList.toggle('is-revoked', ended);
+    const top = el('div', 'sa-client-header'), mark = el('span', 'sa-client-mark'); mark.append(icon('tools'));
+    const title = el('div', 'sa-client-title'); title.append(el('h3', '', connectionLabel(item)), el('p', '', `Подключено ${dateLabel(item.createdAt)}`),
+      connectionIdentity('Код', item.id, true));
+    top.append(mark, title, stateBadge(ended ? 'Отключено' : item.active ? 'Подключено' : 'Доступ не действует', !ended && item.active ? 'accent' : '')); card.append(top);
+    const details = el('details', 'sa-connection-details'); details.dataset.saConnection = item.id; details.open = expandedConnections.has(item.id);
+    const summary = el('summary', '', 'Разрешения и отключение'); summary.dataset.saFocus = `connection-connection-${item.id}`; details.append(summary);
+    details.addEventListener('toggle', () => { if (details.isConnected) { if (details.open) expandedConnections.add(item.id); else expandedConnections.delete(item.id); } });
+    const body = el('div', 'sa-client-details'), facts = el('dl', 'sa-grant-facts');
+    facts.append(fact('Разрешено', 'Создавать новые личные записки'), fact('Срок', `До ${dateLabel(item.expiresAt)}`), fact('Лимит', `Осталось ${item.budget.remaining} из ${item.budget.limit} действий`));
+    if (item.budget.reserved) facts.append(fact('Ожидают результата', String(item.budget.reserved)));
+    facts.append(fact('Адрес сервиса', item.resource)); body.append(facts, connectionIdentity('Код подключения', item.id),
+      el('p', 'sa-muted', 'Созданные записки и результаты действий доступны в общих разделах Сот.'));
+    if (!ended) {
+      const revoke = button(revokeOutcomes.get(key) === 'unknown' ? 'Проверить отключение' : 'Отключить доступ', 'lock', 'sa-revoke', () => openConnectionRevoke({ kind: 'connection', id: item.id, label: connectionLabel(item), cursor: connections.cursor }));
+      revoke.dataset.saFocus = `revoke-connection-${item.id}`; body.append(revoke);
+    }
+    details.append(body); card.append(details); return card;
+  }
+  function renderKeyClients(parent: HTMLElement) {
+    if (listState(parent, principals, 'Доступов по ключу пока нет', 'Создайте ключ только для клиента, которому доверяете.', () => loadPrincipals())) return;
     const list = el('div', 'sa-client-list');
-    for (const principal of principals.items) {
+    const keys = principals.items.filter(principal => principal.managedBy !== 'oauth');
+    for (const principal of keys) {
       const card = el('article', 'sa-client'); card.classList.toggle('is-revoked', principal.state === 'revoked');
       const top = el('div', 'sa-client-header'); const mark = el('span', 'sa-client-mark'); mark.append(icon('tools'));
       const description = el('div', 'sa-client-title'); description.append(el('h2', '', principal.label), el('p', '', `Добавлен ${dateLabel(principal.createdAt)}`));
@@ -334,8 +468,9 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       }
       list.append(card);
     }
-    content.append(list);
-    if (principals.next || principals.previous.length) content.append(pager(principals, loadPrincipals));
+    if (keys.length) parent.append(list);
+    else parent.append(el('p', 'sa-group-description', 'На этой странице нет доступов по ключу. Подключения приложений показаны выше.'));
+    if (principals.next || principals.previous.length) parent.append(pager(principals, loadPrincipals));
   }
   function renderGrant(grant: Grant, principal: Principal): HTMLElement {
     const row = el('section', 'sa-grant'); const summary = el('div', 'sa-grant-heading');
@@ -406,6 +541,85 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       row.append(marker, label, detail); list.append(row);
     }
     content.append(list); if (events.next || events.previous.length) content.append(pager(events, loadEvents));
+  }
+
+  function openConnectionRevoke(input: ConnectionTarget): void {
+    if (!alive() || mutations.size) return;
+    // Capture the exact displayed subject. No label/profile joins or fresh
+    // list selection can retarget an already opened confirmation.
+    const target = Object.freeze({ ...input }), key = `${target.kind}:${target.id}`;
+    let needsRead = revokeOutcomes.get(key) === 'unknown';
+    const state = openDialog('Отключить доступ?', `connection-${target.kind}-${target.id}`), body = state.dialog.body;
+    state.dialog.element.classList.add('sa-connection-dialog');
+    const intro = el('p', 'sa-dialog-intro', target.label);
+    const impact = el('div', 'sa-consent-summary');
+    impact.append(icon('lock'), el('p', '', 'Это подключение потеряет доступ к новым действиям в Сотах. Другие подключения останутся без изменений.'));
+    const message = el('p', 'sa-form-message'); message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite');
+    const controls = el('div', 'sa-dialog-actions sa-dialog-footer');
+    const cancel = button('Закрыть', undefined, '', () => { if (!state.busy) closeDialog(); });
+    const confirm = button(needsRead ? 'Проверить подключение' : 'Отключить доступ', 'lock', 'sa-danger', () => {
+      if (state.busy || !dialogAlive(state)) return;
+      mutate(state, async () => {
+        confirm.setAttribute('aria-disabled', 'true'); cancel.setAttribute('aria-disabled', 'true');
+        try {
+          if (needsRead) {
+            if (target.kind === 'connection') {
+              const result = connectionPage(await request('oauth.connections.list', listParams(target.cursor)));
+              if (!dialogAlive(state)) return;
+              const current = result.connections.find(item => item.id === target.id);
+              if (current && current.revokedAt !== null) { confirmed(); return; }
+              message.textContent = current
+                ? 'Отзыв ещё не подтверждён. Можно явно повторить отключение этого же подключения.'
+                : 'Подключение не найдено на прочитанной странице. Можно повторить отключение того же доступа; другой выбран не будет.';
+            } else {
+              const result = principalPage(await request('access.principals.list', listParams(target.cursor)), accountId);
+              if (!dialogAlive(state)) return;
+              const current = result.principals.find(item => item.id === target.id);
+              if (current?.state === 'revoked') { confirmed(); return; }
+              message.textContent = current
+                ? 'Отзыв ещё не подтверждён. Можно явно повторить отключение этого же доступа.'
+                : 'Доступ не найден на прочитанной странице. Можно повторить отключение того же доступа; другой выбран не будет.';
+            }
+            needsRead = false; confirm.querySelector('span')!.textContent = 'Повторить отключение';
+            return;
+          }
+          message.textContent = 'Отключаем доступ…';
+          if (target.kind === 'connection') {
+            const result = await request<{ connectionId: unknown; revoked: unknown }>('oauth.connections.revoke', { connectionId: target.id });
+            if (!record(result) || result.connectionId !== target.id || result.revoked !== true) unconfirmed();
+          } else {
+            const result = await request<{ principal: unknown }>('access.principals.revoke', { principalId: target.id });
+            const principal = principalPage({ principals: [result?.principal], cursor: null }, accountId).principals[0];
+            if (principal?.id !== target.id || principal.state !== 'revoked' || principal.managedBy !== 'oauth') unconfirmed();
+          }
+          if (dialogAlive(state)) confirmed();
+        } catch {
+          if (dialogAlive(state)) {
+            revokeOutcomes.set(key, 'unknown'); needsRead = true;
+            message.textContent = 'Отключение не подтверждено. Проверьте состояние перед новой попыткой.';
+            confirm.querySelector('span')!.textContent = 'Проверить подключение';
+            render();
+          }
+        } finally {
+          if (dialogAlive(state)) { confirm.setAttribute('aria-disabled', 'false'); cancel.setAttribute('aria-disabled', 'false'); }
+        }
+      });
+    });
+    function confirmed() {
+      revokeOutcomes.set(key, 'confirmed');
+      // Reads started before the ACK cannot paint this access active again.
+      for (const list of [connections, principals]) { list.request++; list.loading = false; }
+      if (target.kind === 'connection') connections.items = connections.items.map(item => item.id === target.id ? { ...item, active: false } : item);
+      else principals.items = principals.items.map(item => item.id === target.id ? { ...item, state: 'revoked' } : item);
+      markChanged(); announce('Доступ этого подключения отключён. Отзыв не удаляет созданные записки.');
+      render(); state.busy = false; closeDialog();
+    }
+    if (needsRead) message.textContent = 'Результат прежней попытки неизвестен. Сначала проверьте состояние подключения.';
+    controls.append(message, cancel, confirm);
+    body.append(intro, connectionIdentity(target.kind === 'connection' ? 'Код подключения' : 'Код доступа', target.id), impact,
+      el('p', 'sa-muted', 'Отзыв не удаляет созданные записки и историю. Начатое действие могло успеть выполниться — его результат можно проверить в разделе «Действия».'));
+    state.dialog.element.append(controls);
+    cancel.focus();
   }
 
   async function inspectRevoke(principal: Principal, target?: Grant): Promise<void> {
