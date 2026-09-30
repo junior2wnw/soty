@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { assert, canonicalHash, canonicalJson, exact, freezeDeep, identifier, integer, newId, now, record, stringSet, text } from './validation.mjs';
+import { assert, AccessError, canonicalHash, canonicalJson, exact, freezeDeep, identifier, integer, newId, now, record, stringSet, text } from './validation.mjs';
+import { createNativeBaselineGuard } from './native-baseline.mjs';
 
 export const ACCESS_OPERATIONS = Object.freeze([
   'access.principals.create', 'access.principals.list', 'access.principals.revoke',
@@ -58,6 +59,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
   integer(maxTtl, 1, 365 * 24 * 60 * 60 * 1000);
   const actorRefs = new WeakMap();
   const authorizationRefs = new WeakSet();
+  const native = createNativeBaselineGuard({ db, error: code => new AccessError(code) });
 
   function publicGrant(row) {
     const value = grantDto(row);
@@ -413,6 +415,9 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     assert(['spent', 'released', 'uncertain'].includes(disposition), 'settlement_invalid');
     const row = db.prepare('SELECT * FROM cap_budget_reservations WHERE id=?').get(reservationId);
     assert(row, 'not_found');
+    // Baseline readers may retain uncertain quota but cannot settle a native
+    // effect without the future proof-first Notes reconciler.
+    if (disposition !== 'uncertain') native.assertGeneric(row.invocation_id);
     let actual = disposition === 'spent' ? row.amount : 0;
     if (actualCharges !== undefined) {
       assert(Array.isArray(actualCharges) && (actualCharges.length === 1 || (actualCharges.length === 0 && disposition !== 'spent')), 'settlement_invalid');

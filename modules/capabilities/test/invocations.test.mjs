@@ -11,7 +11,13 @@ import { createInvocationStore } from '../server/invocations.mjs';
 // These callbacks isolate the Invocation contract. Real credential/grant-chain tests
 // live in the access/acceptance suite; the database and transaction here are real.
 function harness(db, { quota = 20, time = 1000 } = {}) {
-  initializeCapabilitiesSchema(db);
+  // This isolated harness adds three test-only tables. Only a new database goes
+  // through the production exact recognizer; reopening the harness is not a
+  // product migration test. Real schema/reopen tests use unmodified layouts.
+  const version = db.prepare('PRAGMA user_version').get().user_version;
+  if (version === 0) initializeCapabilitiesSchema(db, { projectId: 'invocations-test' });
+  else assert.equal(version, 1);
+  db.exec('PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;');
   db.exec(`CREATE TABLE IF NOT EXISTS test_policy(subject TEXT PRIMARY KEY,enabled INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS test_budget(account TEXT PRIMARY KEY,limit_amount INTEGER,reserved INTEGER,spent INTEGER);
     CREATE TABLE IF NOT EXISTS test_reservations(id TEXT PRIMARY KEY,account TEXT,amount INTEGER,state TEXT,actual INTEGER);`);

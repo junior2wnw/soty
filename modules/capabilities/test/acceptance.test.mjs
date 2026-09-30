@@ -28,7 +28,7 @@ function fixture(t, { catalog = [CAPABILITY] } = {}) {
   const databasePath = join(directory, 'capabilities.sqlite');
   let now = 1_800_000_000_000;
   const activeDevices = new Set([ALICE, BOB].map(actor => `${actor.accountId}/${actor.deviceId}`));
-  const options = { databasePath, clock: () => now, catalog, documentation: fixtureDocumentation(catalog),
+  const options = { databasePath, projectId: 'capabilities-acceptance-test', clock: () => now, catalog, documentation: fixtureDocumentation(catalog),
     actorActive: actor => activeDevices.has(`${actor.accountId}/${actor.deviceId}`) };
   let service = createCapabilitiesService(options);
   t.after(() => {
@@ -334,7 +334,7 @@ test('two independent service instances cannot both reserve the final shared uni
   const script = `
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.serviceUrl).then(({ createCapabilitiesService }) => {
-      const service = createCapabilitiesService({ databasePath: workerData.databasePath,
+      const service = createCapabilitiesService({ databasePath: workerData.databasePath, projectId: 'capabilities-acceptance-test',
         catalog: [workerData.capability], documentation: workerData.documentation, clock: () => workerData.now,
         actorActive: actor => actor.accountId === workerData.owner.accountId && actor.deviceId === workerData.owner.deviceId });
       try {

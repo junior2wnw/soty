@@ -7,6 +7,7 @@ import { createCapabilitiesService } from './server/index.mjs';
 
 const capabilities = createCapabilitiesService({
   databasePath: '/server-data/capabilities/capabilities.sqlite',
+  projectId: 'soty', // Required trusted host project; never take this from the request.
   actorActive: actor => connect.isActorActive(actor),
   // Optional trusted server registry; callers cannot register executable tools.
   // catalog: [...],
@@ -87,6 +88,8 @@ External get/list/cancel are scoped to current account + client + principal + gr
 Dispatch/result/reconciliation methods and `listForOwner` are **internal host APIs**. Never map the whole `invocations` object to public HTTP. Existing connector jobs own execution leases; dispatch intents track handoff only. Public adapters will expose explicitly typed domain actions. Cancellation is a request, not rollback. Unknown dispatch/result outcomes must not be replayed automatically.
 
 The single `DatabaseSync` stores contracts, clients, principals, grants, credentials, audit, budgets, reservations, invocations, dispatch intents and receipts. Connect and Notes keep their own domain databases; cross-database work requires stable IDs and reconciliation. The schema is additive to the application; older incompatible capability readers are rejected.
+
+Storage readers support exact v1 and v2 formats. The strict boolean `allowNativeMigration` defaults to `false`: fresh storage is created as v1 and existing v1 remains v1. Explicit trusted `allowNativeMigration: true` permits the additive v2 migration. An existing v2 database is readable with the option disabled; `schemaVersion` reports the format actually opened, and its durable `registryId` remains stable. Migration and reader support do not enable Notes execution. The v2 baseline keeps native intents unresolved and their budgets held until a compatible native reconciler can verify their effects; generic dispatch/result methods cannot settle them. Rollout still requires the separately verified storage reader gate and a compatible rollback image before the first v2 write.
 
 Run the module tests from the repository root:
 

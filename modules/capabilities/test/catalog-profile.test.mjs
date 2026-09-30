@@ -89,7 +89,7 @@ test('real SQLite contract pins refuse semantic changes across reopen and permit
       locales: Object.fromEntries(['ru', 'en'].map(language => [language,
         { ...BUILTIN_DOCUMENTATION[0].locales[language], examples: [] }])),
     }));
-    return createCapabilitiesService({ databasePath, actorActive: () => false, catalog, documentation });
+    return createCapabilitiesService({ databasePath, projectId: 'catalog-profile-test', actorActive: () => false, catalog, documentation });
   };
   service = open(BUILTIN_CAPABILITIES);
   assert.equal(service.catalog.get({ capabilityId: entry.capabilityId, version: 1 }).capability.digest, NOTE_DIGEST);

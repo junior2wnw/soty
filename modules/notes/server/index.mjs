@@ -3,8 +3,8 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { check, keys, id, revision, document, hash, queryTerms, encodeCursor, decodeCursor, STATES, DEFAULT_LIMITS, NotesError } from './validation.mjs';
-import { migrateNotes, SCHEMA_VERSION } from './schema.mjs';
-export { NotesError, SCHEMA_VERSION, DEFAULT_LIMITS };
+import { migrateNotes, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS } from './schema.mjs';
+export { NotesError, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS, DEFAULT_LIMITS };
 export const NOTES_OPERATIONS = Object.freeze(['notes.list', 'notes.get', 'notes.put', 'notes.purge']);
 const moduleRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 function physicalPath(file) { try { return realpathSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; return resolve(physicalPath(dirname(file)), basename(file)); } }
@@ -18,16 +18,17 @@ const metadata = row => ({ noteId: row.id, title: row.title, preview: row.previe
 const fullNote = row => ({ ...metadata(row), body: row.body, items: JSON.parse(row.items) });
 
 /** Trusted Connect extension; actor MUST come from an authenticated, non-revoked signed installation. */
-export function createNotesService({ databasePath, projectId, clock = Date.now, limits: overrides = {} } = {}) {
+export function createNotesService({ databasePath, projectId, clock = Date.now, limits: overrides = {}, allowNativeMigration = false } = {}) {
   check(typeof databasePath === 'string' && databasePath.length > 0, 'notes_database_path_required');
   check(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'notes_project_id_required');
   check(typeof clock === 'function');
+  check(typeof allowNativeMigration === 'boolean');
   keys(overrides, Object.keys(DEFAULT_LIMITS)); const limits = { ...DEFAULT_LIMITS, ...overrides };
   for (const [key, value] of Object.entries(limits)) check(Number.isSafeInteger(value) && value > 0 && value <= DEFAULT_LIMITS[key]);
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') { check(outsideModule(file), 'notes_database_must_be_outside_module'); mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); }
-  const db = new DatabaseSync(file); let closed = false;
-  try { migrateNotes(db, projectId); } catch (error) { db.close(); throw error; }
+  const db = new DatabaseSync(file); let closed = false, storage;
+  try { storage = migrateNotes(db, projectId, { allowNativeMigration }); } catch (error) { db.close(); throw error; }
   const statements = new Map(); const prepare = sql => { if (!statements.has(sql)) statements.set(sql, db.prepare(sql)); return statements.get(sql); };
   const get = (sql, ...params) => prepare(sql).get(...params);
   const all = (sql, ...params) => prepare(sql).all(...params);
@@ -104,7 +105,8 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
   }
   const operations = new Set(NOTES_OPERATIONS);
   return {
-    projectId, schemaVersion: SCHEMA_VERSION, operations,
+    projectId, schemaVersion: storage.schemaVersion, registryId: storage.registryId,
+    supportedSchemaVersions: SUPPORTED_SCHEMA_VERSIONS, operations,
     execute({ op, args = {}, actor } = {}) {
       check(!closed, 'notes_service_closed'); check(operations.has(op), 'unsupported_operation');
       check(actor && typeof actor.accountId === 'string' && typeof actor.deviceId === 'string', 'authentication_required');

@@ -80,7 +80,7 @@ async function listening(t, app, close = async () => {}) {
   }) };
 }
 async function publicServer(t, { entries = BUILTIN_CAPABILITIES, docs = BUILTIN_DOCUMENTATION, origin = ORIGIN } = {}) {
-  const service = createCapabilitiesService({ databasePath: ':memory:', actorActive: () => false, catalog: entries, documentation: docs });
+  const service = createCapabilitiesService({ databasePath: ':memory:', projectId: 'discovery_acceptance', actorActive: () => false, catalog: entries, documentation: docs });
   const app = express(); app.disable('x-powered-by');
   attachCapabilitiesDiscovery(app, { catalog: service.catalog, origin });
   app.use((_req, res) => res.status(200).type('text/plain').end(SPA));
@@ -119,7 +119,7 @@ function errorResponse(response, code, status) {
 test('origin admission matches the actual Connect constructor and leaves existing storage byte-identical on rejection', async t => {
   const folder = temporaryDirectory(); t.after(() => removeTemporaryDirectory(folder));
   const dataDir = join(folder, 'data'); mkdirSync(dataDir);
-  const prior = createCapabilitiesService({ databasePath: join(dataDir, 'capabilities', 'registry.sqlite'), actorActive: () => false });
+  const prior = createCapabilitiesService({ databasePath: join(dataDir, 'capabilities', 'registry.sqlite'), projectId: 'discovery_acceptance', actorActive: () => false });
   prior.close(); writeFileSync(join(dataDir, 'preserve.txt'), 'synthetic pre-existing storage');
   const before = fileSnapshot(folder);
   const accepted = ['http://localhost:4170', 'http://127.0.0.1:4170', 'http://[::1]:4170', 'https://discovery.audit.test'];

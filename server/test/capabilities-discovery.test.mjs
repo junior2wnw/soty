@@ -231,7 +231,7 @@ test('invalid origins and missing public documentation fail before any applicati
     assert.equal(existsSync(dataDir), false);
   }
   const databasePath = join(dataDir, 'capabilities.sqlite');
-  assert.throws(() => createCapabilitiesService({ databasePath, actorActive: () => false, documentation: [] }), { code: 'documentation_missing' });
+  assert.throws(() => createCapabilitiesService({ databasePath, projectId: 'discovery_test', actorActive: () => false, documentation: [] }), { code: 'documentation_missing' });
   assert.equal(existsSync(dataDir), false);
 });
 

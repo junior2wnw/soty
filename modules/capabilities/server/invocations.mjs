@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createNativeBaselineGuard } from './native-baseline.mjs';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const EFFECT_STATES = new Set(['none', 'committed', 'partial', 'unknown']);
@@ -46,6 +47,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   const get = (sql, ...args) => prepare(sql).get(...args);
   const run = (sql, ...args) => prepare(sql).run(...args);
   const now = () => integer(clock());
+  const native = createNativeBaselineGuard({ db, error: code => new InvocationError(code) });
   function atomic(fn) {
     return transaction(() => { const result = fn(); check(!result || typeof result.then !== 'function', 'invocation_async_transaction_forbidden'); return result; });
   }
@@ -71,8 +73,11 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   }
   function projection(value) {
     const saved = get('SELECT value_json FROM cap_receipts WHERE invocation_id=?', value.id);
+    // The pre-effect marker can outlive the Notes COMMIT. This baseline cannot
+    // prove absence and must not describe an unresolved started intent as none.
+    const started = !TERMINAL.has(value.status) && native.find(value.id)?.started_at != null;
     return { invocationId: value.id, capabilityId: value.capability_id, version: value.capability_version,
-      status: value.status, cancelRequested: Boolean(value.cancel_requested), effectState: value.effect_state,
+      status: value.status, cancelRequested: Boolean(value.cancel_requested), effectState: started ? 'unknown' : value.effect_state,
       effects: JSON.parse(value.effects_json), createdAt: value.created_at, updatedAt: value.updated_at,
       ...(value.completed_at === null ? {} : { completedAt: value.completed_at }),
       ...(saved ? { receipt: JSON.parse(saved.value_json) } : {}) };
@@ -127,7 +132,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
     return authorized;
   }
   const notDispatched = (value, delivery) => delivery?.state === 'pending' && value.job_id === null
-    && value.effect_state === 'none' && JSON.parse(value.effects_json).length === 0;
+    && value.effect_state === 'none' && JSON.parse(value.effects_json).length === 0 && !native.find(value.id);
   function decodeCursor(cursor, scope) {
     if (cursor === undefined) return null;
     check(typeof cursor === 'string' && /^[A-Za-z0-9_-]{1,1024}$/u.test(cursor), 'invocation_invalid_cursor');
@@ -218,6 +223,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
         const delivery = intent(value.id), timestamp = now();
         const beforeDispatch = notDispatched(value, delivery);
         run('UPDATE cap_invocations SET cancel_requested=1,status=?,updated_at=?,completed_at=? WHERE id=?', beforeDispatch ? 'cancelled' : 'cancel_requested', timestamp, beforeDispatch ? timestamp : null, value.id);
+        if (native.find(value.id)?.started_at != null) run("UPDATE cap_invocations SET effect_state='unknown' WHERE id=?", value.id);
         if (beforeDispatch) {
           run("UPDATE cap_dispatch_intents SET state='cancelled',updated_at=? WHERE invocation_id=?", timestamp, value.id);
           settle(value, 'released');
@@ -231,11 +237,13 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
       return prepare(`SELECT d.invocation_id AS invocationId,d.internal_request_id AS internalRequestId,d.state
         FROM cap_dispatch_intents d JOIN cap_invocations i ON i.id=d.invocation_id
         WHERE d.state IN ('pending','dispatching','uncertain') AND i.status NOT IN ('succeeded','failed','cancelled')
+        ${native.available() ? 'AND NOT EXISTS(SELECT 1 FROM cap_native_note_intents n WHERE n.invocation_id=i.id)' : ''}
         ORDER BY d.created_at,d.invocation_id LIMIT ?`).all(limit);
     },
     beginDispatch({ invocationId } = {}) {
       return atomic(() => {
         const value = row(invocationId); check(value, 'invocation_not_found');
+        native.assertGeneric(value.id);
         check(!value.cancel_requested && !TERMINAL.has(value.status), 'invocation_dispatch_denied');
         const authorized = authorizeDispatch(value);
         const delivery = intent(value.id); check(delivery && ['pending', 'dispatching'].includes(delivery.state), 'invocation_reconcile_required');
@@ -260,6 +268,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
         if (TERMINAL.has(value.status)) return { authorized: false, invocation: projection(value) };
         const beforeDispatch = notDispatched(value, intent(value.id)), timestamp = now();
         run('UPDATE cap_invocations SET cancel_requested=1,status=?,updated_at=?,completed_at=? WHERE id=?', beforeDispatch ? 'cancelled' : 'cancel_requested', timestamp, beforeDispatch ? timestamp : null, value.id);
+        if (native.find(value.id)?.started_at != null) run("UPDATE cap_invocations SET effect_state='unknown' WHERE id=?", value.id);
         if (beforeDispatch) {
           run("UPDATE cap_dispatch_intents SET state='cancelled',updated_at=? WHERE invocation_id=?", timestamp, value.id);
           const receipt = { verificationMethod: 'unverified', artifacts: [], errorCode: 'authorization_no_longer_valid' };
@@ -278,6 +287,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
       identifier(jobId); identifier(internalRequestId);
       return atomic(() => {
         const value = row(invocationId); check(value, 'invocation_not_found');
+        native.assertGeneric(value.id);
         check(value.internal_request_id === internalRequestId, 'invocation_binding_mismatch');
         check(value.job_id === null || value.job_id === jobId, 'invocation_binding_mismatch');
         const delivery = intent(value.id);
@@ -292,6 +302,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
       const cleanEffects = sanitizeEffects(effects);
       return atomic(() => {
         const value = row(invocationId); check(value, 'invocation_not_found');
+        native.assertGeneric(value.id);
         if (TERMINAL.has(value.status)) return { invocation: projection(value) };
         check(['dispatching', 'bound', 'uncertain'].includes(intent(value.id)?.state), 'invocation_dispatch_not_started');
         const known = new Map([...JSON.parse(value.effects_json), ...cleanEffects].map(effect => [canonicalHash(effect), effect]));
@@ -312,6 +323,7 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
       const receiptJson = encoded(cleanReceipt, bounds.metadataBytes);
       return atomic(() => {
         const value = row(invocationId); check(value, 'invocation_not_found');
+        native.assertGeneric(value.id);
         // P1 supports count quotas only. Completed work cannot replenish its own
         // allowance by claiming zero cost or releasing a successful reservation.
         if (status === 'succeeded' || cleanEffects.length > 0) {

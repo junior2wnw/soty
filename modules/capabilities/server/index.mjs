@@ -6,15 +6,18 @@ import { BUILTIN_CAPABILITIES, createCatalog } from './catalog.mjs';
 import { createPublicDiscovery } from './discovery.mjs';
 import { BUILTIN_DOCUMENTATION } from './documentation.mjs';
 import { createInvocationStore } from './invocations.mjs';
-import { initializeCapabilitiesSchema } from './schema.mjs';
+import { initializeCapabilitiesSchema, CAPABILITIES_SUPPORTED_SCHEMA_VERSIONS } from './schema.mjs';
 import { assert, canonicalHash, exact, integer, newId } from './validation.mjs';
 
 export { ACCESS_OPERATIONS } from './access.mjs';
 export { BUILTIN_CAPABILITIES } from './catalog.mjs';
 export { AccessError } from './validation.mjs';
 
-export function createCapabilitiesService({ databasePath, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES, documentation = BUILTIN_DOCUMENTATION, limits = {} } = {}) {
+export function createCapabilitiesService({ databasePath, projectId, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES,
+  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
+  assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
+  assert(typeof allowNativeMigration === 'boolean', 'schema_configuration_invalid');
   assert(typeof actorActive === 'function', 'host_auth_required');
   exact(limits, ['access', 'invocations'], 'limits_invalid');
   const accessLimits = limits.access ?? {};
@@ -29,7 +32,8 @@ export function createCapabilitiesService({ databasePath, clock = Date.now, acto
   const publicCatalog = createPublicDiscovery({ catalog: registry, documentation });
   if (databasePath !== ':memory:') mkdirSync(path.dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
-  try { initializeCapabilitiesSchema(db); }
+  let storage;
+  try { storage = initializeCapabilitiesSchema(db, { projectId, allowNativeMigration }); }
   catch (error) { db.close(); throw error; }
   let closed = false;
   let inTransaction = false;
@@ -70,6 +74,8 @@ export function createCapabilitiesService({ databasePath, clock = Date.now, acto
     return invocations.listForOwner({ accountId: owner.accountId, limit: request.args.limit, cursor: request.args.cursor });
   }
   return Object.freeze({
+    projectId, schemaVersion: storage.schemaVersion, registryId: storage.registryId,
+    supportedSchemaVersions: CAPABILITIES_SUPPORTED_SCHEMA_VERSIONS,
     operations, execute,
     authenticateCredential: access.authenticateCredential, authorize: access.authorize,
     catalog: publicCatalog, invocations,

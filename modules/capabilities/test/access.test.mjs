@@ -24,7 +24,7 @@ function fixture(t, options = {}) {
   const revoked = new Set();
   const actorActive = actor => (actor.accountId === OWNER_A.accountId && actor.deviceId === OWNER_A.deviceId || actor.accountId === OWNER_B.accountId && actor.deviceId === OWNER_B.deviceId) && !revoked.has(actor.deviceId);
   const create = overrides => {
-    const config = { databasePath, clock: () => time, actorActive, catalog: [CAP], ...options, ...overrides };
+    const config = { databasePath, projectId: 'capabilities-access-test', clock: () => time, actorActive, catalog: [CAP], ...options, ...overrides };
     return createCapabilitiesService({ ...config, documentation: Object.hasOwn(config, 'documentation') ? config.documentation : fixtureDocumentation(config.catalog) });
   };
   let service = create();

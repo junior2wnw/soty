@@ -81,6 +81,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   let connect;
   const capabilities = createCapabilitiesService({
     databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
+    projectId: 'soty',
     actorActive: actor => connect?.isActorActive(actor) === true,
   });
   let apps;
