@@ -1,22 +1,65 @@
 import { button, el, iconButton } from './dom';
 
-export interface WorldDialog { element: HTMLDialogElement; body: HTMLElement; close(): void; }
+export interface DialogReturnTarget { isCurrent(): boolean; resolve(): HTMLElement | null; }
+export interface DialogCloseContext { interrupted: boolean; }
+export interface WorldDialog { element: HTMLDialogElement; body: HTMLElement; close(options?: { restoreFocus?: boolean }): void; }
 
-export function createDialog(title: string, onClose?: () => void): WorldDialog {
+/** Also accepts an explicit tabindex=-1 workflow heading/main, never a hidden control. */
+export function isDialogFocusTarget(node: HTMLElement | null): node is HTMLElement {
+  if (!node?.isConnected || node.matches(':disabled, [aria-disabled="true"]') || node.closest('[hidden], [inert]') ||
+      (node.tabIndex < 0 && !node.hasAttribute('tabindex')) || !node.getClientRects().length) return false;
+  const style = getComputedStyle(node);
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName === 'DETAILS' && !parent.hasAttribute('open') && !parent.querySelector(':scope > summary')?.contains(node)) return false;
+  }
+  return true;
+}
+
+export function createDialog(title: string, onClose?: (context: DialogCloseContext) => void, returnTarget?: DialogReturnTarget): WorldDialog {
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const parentDialog = returnFocus?.closest('dialog[open]') ?? null;
   const dialog = el('dialog', 'sw-dialog');
+  let finished = false, superseded = false;
+  // Native close restores its original opener before queuing the close event.
+  // An intervening action or another focus target cancels our fallback return.
+  const interveningAction = (): void => { if (!dialog.open) superseded = true; };
+  const interveningFocus = (event: FocusEvent): void => {
+    if (!dialog.open && event.target !== returnFocus && event.target !== document.body) superseded = true;
+  };
+  const finish = (restoreFocus = true): void => {
+    if (finished) return;
+    finished = true;
+    document.removeEventListener('pointerdown', interveningAction, true);
+    document.removeEventListener('keydown', interveningAction, true);
+    document.removeEventListener('click', interveningAction, true);
+    document.removeEventListener('focusin', interveningFocus, true);
+    const beforeCleanup = document.activeElement;
+    const ownedFocus = beforeCleanup === document.body || beforeCleanup === returnFocus || dialog.contains(beforeCleanup);
+    dialog.remove();
+    // Dispose and any synchronous render must precede resolving a replacement
+    // opener. Managed close cannot leave a later event to destroy that target.
+    onClose?.({ interrupted: superseded || !ownedFocus });
+    if (!restoreFocus || superseded || !ownedFocus || returnTarget && !returnTarget.isCurrent()) return;
+    const afterCleanup = document.activeElement;
+    if (afterCleanup !== document.body && afterCleanup !== beforeCleanup) return;
+    if (Array.from(document.querySelectorAll('dialog[open]')).some(value => value !== parentDialog)) return;
+    const target = returnTarget ? returnTarget.resolve() : returnFocus;
+    if (isDialogFocusTarget(target) && (!parentDialog || !parentDialog.hasAttribute('open') || parentDialog.contains(target))) target.focus({ preventScroll: true });
+  };
+  const close = (options?: { restoreFocus?: boolean }): void => {
+    if (finished) return;
+    dialog.close();
+    finish(options?.restoreFocus !== false);
+  };
   const titleId = `world-dialog-${crypto.randomUUID()}`;
   dialog.setAttribute('aria-labelledby', titleId);
   const header = el('div', 'sw-dialog-header');
   const heading = el('h2', '', title); heading.id = titleId;
-  header.append(heading, iconButton('Закрыть', 'close', () => dialog.close()));
+  header.append(heading, iconButton('Закрыть', 'close', () => close()));
   const body = el('div', 'sw-dialog-content');
   dialog.append(header, body); document.body.append(dialog);
-  dialog.addEventListener('close', () => {
-    dialog.remove();
-    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
-    onClose?.();
-  }, { once: true });
+  dialog.addEventListener('close', () => finish(), { once: true });
   dialog.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
     const controls = Array.from(dialog.querySelectorAll<HTMLElement>('button, input, textarea, select, summary, a[href], [tabindex]')).filter(node => {
@@ -34,7 +77,11 @@ export function createDialog(title: string, onClose?: () => void): WorldDialog {
     else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
   });
   dialog.showModal();
-  return { element: dialog, body, close: () => dialog.close() };
+  document.addEventListener('pointerdown', interveningAction, true);
+  document.addEventListener('keydown', interveningAction, true);
+  document.addEventListener('click', interveningAction, true);
+  document.addEventListener('focusin', interveningFocus, true);
+  return { element: dialog, body, close };
 }
 
 export function switchControl(label: string, checked: boolean, change: (next: boolean) => Promise<void>): HTMLButtonElement {

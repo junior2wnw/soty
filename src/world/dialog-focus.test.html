@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Возврат фокуса · изолированный стенд</title>
+<style>
+  body{margin:0;font:14px/1.4 system-ui;background:var(--sw-bg);color:var(--sw-ink)}
+  .qa-tools{padding:8px 12px}.qa-tools button{min-height:44px;font:inherit}
+  #qa-results{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0;max-height:130px;overflow:auto}
+  #qa-host.sw-app{position:relative;inset:auto;height:calc(100dvh - 160px);min-height:300px}
+</style>
+<div class="qa-tools">
+  <details><summary>Настоящие окна; только вымышленные данные</summary>
+    <p>API заменён локальным объектом, storage этой страницы хранится в памяти, iframe — srcdoc. Рабочие аккаунты не используются. Автоматические DOM-события не заменяют ручную клавиатуру и экранный диктор.</p>
+  </details>
+  <button id="qa-run">Проверить сценарии</button>
+  <button id="qa-main">Открыть пример для клавиатуры</button>
+  <button id="qa-outside">Внешняя контрольная кнопка</button>
+  <pre id="qa-results" role="status" data-test-status="idle">Готов к запуску.</pre>
+</div>
+<div id="qa-host"></div>
+<script type="module" src="./dialog-focus.test.ts"></script>
+</html>

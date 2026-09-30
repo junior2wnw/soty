@@ -263,7 +263,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     const value = confirmation, trigger = confirmTrigger;
     if (value.kind === 'leave') {
       confirmation = null; confirmTrigger = null;
-      if (current()) { if (value.preview) options.onPreview(value.preview); else { options.onClose(); value.afterClose?.(); } }
+      if (current()) { if (value.preview) options.onPreview(value.preview); else options.onClose(value.afterClose); }
       return;
     }
     await perform(async () => {
@@ -691,7 +691,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       if (!current()) { options.onClose(); return; }
       if (confirmation && !afterClose) { if (!busy || confirmation.kind === 'leave') dismissConfirmation(); return; }
       if (hasUnsavedDraft()) confirm({ kind: 'leave', ...(afterClose ? { afterClose } : {}) }, trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : summaryName));
-      else { options.onClose(); afterClose?.(); }
+      else options.onClose(afterClose);
     },
     dispose() { disposed = true; inspectionGeneration++; refreshGeneration++; copyGeneration++; devicesGeneration++; sourceGeneration++; historyGeneration++;
       lastDisplayedPending = null; sourceReadbackNotice = null; sourceModel?.dispose(); if (sourceTimer) clearTimeout(sourceTimer); if (observationTimer) clearTimeout(observationTimer);

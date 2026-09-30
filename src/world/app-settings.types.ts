@@ -42,5 +42,5 @@ export interface AppSettingsOptions {
   host: HTMLElement; accountId: string; appId: string; api: WorldApi; communities: WorldCommunity[];
   isCurrent(): boolean; onChanged(snapshot: AppInspection): void;
   onPreview(target: { domainId: string; path: string }): void;
-  onClose(): void;
+  onClose(afterClose?: () => void): void;
 }

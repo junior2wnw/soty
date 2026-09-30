@@ -34,7 +34,7 @@ const ports = {
 function evaluate(code, extra = {}) {
   const module = { exports: {} };
   vm.runInNewContext(code, { module, exports: module.exports, require: name => ({ ...ports, ...extra })[name] ?? {},
-    document: { activeElement: null }, HTMLElement: Element, URLSearchParams });
+    document: { activeElement: null }, location: { hash: '#mine' }, HTMLElement: Element, URLSearchParams });
   return module.exports;
 }
 

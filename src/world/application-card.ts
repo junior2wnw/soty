@@ -51,7 +51,8 @@ export function createApplicationCard(options: ApplicationCardOptions): HTMLElem
   } else {
     const scope = el('span', 'sx-card-scope'); scope.append(icon(audience.icon), el('span', '', audience.label)); context.append(scope);
   }
-  context.append(iconButton(`Связи и доступ: ${app.name}`, 'connections', options.inspect));
+  const inspect = iconButton(`Связи и доступ: ${app.name}`, 'connections', options.inspect);
+  inspect.dataset.appAction = 'inspect'; inspect.dataset.appId = app.appId; context.append(inspect);
   const pin = iconButton(`${options.pinned ? 'Открепить здесь' : 'Закрепить здесь'}: ${app.name}`, 'pin', () => {
     const pinned = options.togglePin(); pin.setAttribute('aria-pressed', String(pinned));
     pin.setAttribute('aria-label', `${pinned ? 'Открепить здесь' : 'Закрепить здесь'}: ${app.name}`); pin.title = pin.getAttribute('aria-label')!;
