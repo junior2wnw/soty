@@ -124,6 +124,8 @@ Named zone проверяется до открытия данных по PSL (`
 
 Контрольная точка UI — `89ada71`. A3 добавляет независимое распознавание Apps v1/v2 рядом с Rooms, строгие manifest/probe/START receipt v2 и отказ старым incomplete receipts. Авторский полный deploy suite — **150 pass / 0 fail / 2 explicit skip** (152 tests); reviewer независимо проверил прежний полный151test slice и исправленный focused34test slice (33pass/1skip). [Квитанция A3](p3-apps-reader.md) фиксирует границу внешних проверок. Найденный blocker: backend overlay наследовал прежние modules/deps, но объявлял нового Apps reader. Этот неподдерживаемый build path теперь отказывает до COPY/LABEL и указывает на единый полный Dockerfile.
 
+Дополнительный UI-аудит получил фактические landscape844×390 и667×375. Для шахмат устранён пустой80px резерв скрытой rail и обрезание истории; доска252×252/237×237 и чат прошли отдельный browser/независимый визуальный gate. Другие landscape-разделы, физический телефон и200% не объявляются завершёнными.
+
 Root повторил окончательный полный deploy suite: **152tests / 150pass / 0fail / 2skip**, exit0. A3 local gate принят; следующее изменение Apps schema не может полагаться на этот v2-only reader без отдельного обновления.
 
 Отдельный [Linux rooms canary](storage-linux-canary-result-20260930.md) прошёл на synthetic volume: RO WAL/SHM, mainheader0/SQLite2, unknown/corrupt отказы, copied container label не разрешает старый image. Cleanup всех8containers/1volume и неизменность serving baseline подтверждены отдельно. Это проверка закреплённого старого rooms probe, не нового Apps probe, backup restore или rollout.

@@ -144,8 +144,12 @@ body[data-soty-surface=classic][data-motion=off] *,body[data-soty-surface=classi
 @media(forced-colors:active){.hex::before,.hex.active::before{background:CanvasText}.hex::after{background:Canvas}.hex.active::after{background:Highlight}.chat-bubble,.side-action,.file-chip,.terminal-panel,.chess-panel,.access-sheet{border-color:CanvasText}.terminal-led,.chess-led,.traffic-pulse{background:CanvasText}.chess-square{forced-color-adjust:none}.soty-tooltip{border-color:CanvasText}.chat-bubble.is-pinned{border-top-color:Highlight}}
 
 @media(max-height:500px) and (orientation:landscape){
- body[data-tool=chess] #app:has(>.tools-navigation){padding-bottom:0}
+ body[data-tool=chess] #app:has(>.tools-navigation){padding-left:0;padding-bottom:0}
  body[data-tool=chess] .tools-rail{display:none}
+ body[data-tool=chess] .tools-header{left:0}
+ body[data-tool=chess] .shell:has(.chess-active){padding:6px}
+ body[data-tool=chess] .editor.chess-active .chess-panel{padding:8px;gap:8px}
+ body[data-tool=chess] .chess-panel:has(.chess-promotion[hidden]){grid-template-rows:auto minmax(0,1fr)}
  body[data-tool=chess] .chess-body{grid-template-columns:minmax(0,1fr) minmax(140px,200px);grid-template-rows:minmax(0,1fr);gap:12px}
  body[data-tool=chess] .chess-desk{max-height:100%;overflow:auto}
  body[data-tool=chess] .chess-stats{grid-template-columns:repeat(2,minmax(0,1fr))}

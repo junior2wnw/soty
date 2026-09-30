@@ -72,7 +72,7 @@
 |---|---|---|
 | V01 — desktop 1440/1024, одна иерархия | **pass** | Просмотрены оба размера apps-first главной; одна шапка/навигация, поиск/Add/контекст. Rooms receipt отдельно подтверждает отсутствие старого stylesheet. Заполненный каталог проверяется в V06/V15. |
 | V02 — mobile 390/320 | **partial** | Главная, Notes, последний основной Assistant при реальном innerWidth320; root DOM no-overflow, peer room/dialog; нижняя навигация видна. Pending в исправленном fixture scope просмотрен отдельно; длинная community strip и реальная экранная клавиатура ещё не покрыты. |
-| V03 — 768, landscape, 200% | **partial** | Свежий home 768 и peer rooms/chess 768 просмотрены. Landscape и 200% — **not-tested**. |
+| V03 — 768, landscape, 200% | **partial** | Свежий home768 и peer rooms/chess768 просмотрены. Шахматы отдельно проверены на реальных844×390 и667×375: доска252/237px квадратная, статистика и история видимы, composer чата помещается; независимый review PASS. Landscape остальных разделов и200% остаются **not-tested**. |
 | V04 — вся светлота и состояния | **partial** | Тема содержит 11514 численных contrast assertions плюс primary actions/chrome на каждом шаге; dark/light actual evidence. Все computed DOM пары disabled/focus/dialog при 0/25/50/75/100 ещё не замерены. |
 | V05 — геометрия, clipping, focus | **partial** | Геометрия/соседи/insets/safe rectangle проходят; single field 320 и room 82×71 наблюдались. Длинный mixed-script контент и focus каждого nested action в плотном поле ещё не пройдены. |
 | V06 — действия карточки без двойного launch | **not-tested** | Новые handlers прочитаны, но одного запуска Notes недостаточно для app open/connections/save/chat/menu на настоящем runtime app. |
