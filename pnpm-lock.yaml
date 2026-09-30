@@ -20,6 +20,9 @@ importers:
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
+      tldts:
+        specifier: 7.4.16
+        version: 7.4.16
       trustlink-kernel:
         specifier: git+https://github.com/junior2wnw/4-2-rf.git#082f47242177b56ac2548c3c5b8e8c264dbae500
         version: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/082f47242177b56ac2548c3c5b8e8c264dbae500
@@ -755,12 +758,19 @@ packages:
     resolution: {integrity: sha512-pn99VhoACYR8nFHhxqix+uvsbXineAasWm5ojXoN8xEwK5Kd3/TrhNn1wByuD52UxWRLy8pu+kRMniEi6Eq9Zg==}
     engines: {node: '>=12.0.0'}
 
+  tldts-core@7.4.16:
+    resolution: {integrity: sha512-MDolfaSJtlSK5Y0A1xl3277ekubZwobpBjugknDizI9O5Rm60a1m8k4ICK+MRsCDzPygT81mp3BBf5RKDlFRfA==}
+
+  tldts@7.4.16:
+    resolution: {integrity: sha512-QwBER5KMR86IIjpIiO7H/Z3IMJPsZ1A6RKPAqzTTgOyUQUSt9FdnKcqhTaJmkY6HVrgouZHZR0ncK5QxvmnQeg==}
+    hasBin: true
+
   toidentifier@1.0.1:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
   trustlink-kernel@https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/082f47242177b56ac2548c3c5b8e8c264dbae500:
-    resolution: {gitHosted: true, integrity: sha512-gIiKfMLB++DP0X6C7Pa9xpS4KoFnkIXaqfBOTaHZu10m3uRj9hy/odcSpBbVKdqzREcvrMiayocttCqnUeycww==, tarball: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/082f47242177b56ac2548c3c5b8e8c264dbae500}
+    resolution: {integrity: sha512-gIiKfMLB++DP0X6C7Pa9xpS4KoFnkIXaqfBOTaHZu10m3uRj9hy/odcSpBbVKdqzREcvrMiayocttCqnUeycww==, tarball: https://codeload.github.com/junior2wnw/4-2-rf/tar.gz/082f47242177b56ac2548c3c5b8e8c264dbae500}
     version: 0.1.0
     engines: {node: '>=22.12.0', pnpm: '>=9.0.0'}
     hasBin: true
@@ -1491,6 +1501,12 @@ snapshots:
     dependencies:
       fdir: 6.5.0(picomatch@4.0.4)
       picomatch: 4.0.4
+
+  tldts-core@7.4.16: {}
+
+  tldts@7.4.16:
+    dependencies:
+      tldts-core: 7.4.16
 
   toidentifier@1.0.1: {}
 

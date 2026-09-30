@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createHttpApp } from '../http-app.js';
 import { digestArgs } from '../../modules/connect/server/index.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { connectorKey } from '../../modules/apps/server/protocol.mjs';
 
 function identity(label) {
   const signing = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -17,7 +19,7 @@ function identity(label) {
 function good(result) { assert.equal(result.ok, true, result.error?.code); return result; }
 function denied(result) { assert.equal(result.ok, false); assert.equal(typeof result.error?.code, 'string'); return result.error.code; }
 
-async function fixture(t) {
+async function fixture(t, { namedApps = false } = {}) {
   const parent = resolve(tmpdir());
   const directory = mkdtempSync(join(parent, 'soty-capabilities-http-'));
   let app;
@@ -33,7 +35,9 @@ async function fixture(t) {
     rmSync(directory, { recursive: true, force: true });
   });
   app = createHttpApp(resolve('dist'), { dataDir: directory, connectOrigins: [origin],
-    appOriginTemplate: '', gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' } });
+    appOriginTemplate: namedApps ? `http://{appId}.legacy.localhost:${server.address().port}` : '',
+    namedAppZone: namedApps ? `http://named.localhost:${server.address().port}` : '',
+    gonka: { apiKey: '', baseUrl: 'http://127.0.0.1:1' } });
   async function send(input, requestOrigin = origin) {
     const response = await fetch(`${origin}/api/connect/rpc`, { method: 'POST',
       headers: { 'content-type': 'application/json', ...(requestOrigin ? { origin: requestOrigin } : {}) },
@@ -48,7 +52,7 @@ async function fixture(t) {
   }
   const call = async (actor, op, args = {}) => send(await proof(actor, op, args));
   const bootstrap = async actor => good(await call(actor, 'bootstrap', { label: actor.label, encryptionPublicJwk: actor.encryptionPublicJwk }));
-  return { service: app.locals.capabilitiesService, origin, send, proof, call, bootstrap };
+  return { service: app.locals.capabilitiesService, origin, directory, send, proof, call, bootstrap };
 }
 
 test('real application signed RPC keeps service clients account-scoped and revocation survives a retained actor', async t => {
@@ -134,4 +138,36 @@ test('the real signed app route accepts the account-bound UI and rejects an old 
   assert.equal(denied(await f.call(bob, 'apps.devices', { expectedAccountId: a.accountId })), 'authentication_required');
   assert.equal(denied(await f.call(bob, 'apps.revoke', { expectedAccountId: a.accountId, appId: 'app-00000000000000000000000000000000' })), 'authentication_required');
   assert.equal(denied(await f.call(alice, 'apps.devices', { expectedAccountId: a.accountId, extra: true })), 'unexpected_argument');
+});
+
+test('signed HTTP binds app-name claims and retries to the current account and exact request', async t => {
+  const f = await fixture(t, { namedApps: true });
+  const alice = identity('Publisher'), bob = identity('Other publisher');
+  const a = await f.bootstrap(alice), b = await f.bootstrap(bob);
+  // A synthetic already-paired device, never a real process or public project.
+  const device = { linkId: 'link_http_fixture', hostDeviceId: 'host_http_fixture', connectorId: 'connector_http_fixture' };
+  const db = new DatabaseSync(join(f.directory, 'apps', 'registry.sqlite'));
+  try { db.prepare('INSERT INTO app_devices VALUES (?,?,?,?,?)').run(connectorKey(device), a.accountId, JSON.stringify(device), 'Fixture', 1); }
+  finally { db.close(); }
+  const registered = good(await f.call(alice, 'apps.register', { expectedAccountId: a.accountId,
+    hostDeviceId: device.hostDeviceId, connectorId: device.connectorId, name: 'Fixture project', port: 9099, entryPath: '/', grants: { accountIds: [], communityIds: [] } }));
+  const appId = registered.app.id;
+  const before = good(await f.call(alice, 'apps.domains.get', { appId, expectedAccountId: a.accountId }));
+  assert.equal(before.revision, 0);
+  assert.equal(good(await f.call(alice, 'apps.names.check', { slug: 'my-work', expectedAccountId: a.accountId })).available, true);
+  const intent = { appId, slug: 'my-work', requestId: 'request_http_named_1', expectedDomainsRevision: 0, expectedAccountId: a.accountId };
+  const first = good(await f.call(alice, 'apps.domains.claim', intent));
+  const replay = good(await f.call(alice, 'apps.domains.claim', intent));
+  assert.equal(first.requestId, intent.requestId); assert.equal(replay.requestId, intent.requestId);
+  assert.equal(first.replayed, false); assert.equal(replay.replayed, true); assert.deepEqual(replay.receipt, first.receipt);
+  assert.equal(denied(await f.call(alice, 'apps.domains.claim', { ...intent, slug: 'different-name' })), 'app_domain_request_conflict');
+  assert.equal(denied(await f.call(bob, 'apps.domains.get', { appId, expectedAccountId: b.accountId })), 'apps_owner_required');
+  assert.equal(denied(await f.call(bob, 'apps.domains.claim', intent)), 'authentication_required');
+  const retired = good(await f.call(alice, 'apps.domains.retire', { appId, domainId: first.receipt.domainId,
+    requestId: 'request_http_retire_1', expectedDomainsRevision: 1, expectedAccountId: a.accountId }));
+  assert.equal(retired.receipt.state, 'tombstone');
+  const after = good(await f.call(alice, 'apps.domains.get', { appId, expectedAccountId: a.accountId }));
+  assert.equal(after.revision, 2); assert.equal(after.canonicalOrigin, before.canonicalOrigin);
+  assert.equal(after.domains.filter(domain => domain.role === 'alias').length, 1);
+  assert.equal(good(await f.call(bob, 'apps.names.check', { slug: 'my-work', expectedAccountId: b.accountId })).available, false);
 });

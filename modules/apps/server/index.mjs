@@ -4,32 +4,37 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocketServer } from 'ws';
 import { AppsError, assertApps, textId, appId, appName, appPort, requestPath, cleanGrants, connectorKey, cleanHeaders, createWebSocketLimiter, CHANNEL_SCHEMA, CHUNK_BYTES, FRAME_BYTES, LIMITS } from './protocol.mjs';
+import { migrateAppsSchema, inspectAppsSchema } from './schema.mjs';
+import { createDomainRegistry, domainOperations, readNamedOrigins } from './domains.mjs';
+import { normalizeLegacyTemplate, normalizeNamedAppZone, normalizeDomainLimits, validateNamedOrigins } from './domain-policy.mjs';
+import { createHostClassifier } from './hosts.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch']);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', ...domainOperations]);
 const cookieName = 'soty_app_session';
 const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
-export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', shellOrigins = [], actorActive = () => false,
+export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000 } = {}) {
   const origins = new Set(shellOrigins.map(value => new URL(value).origin));
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
+  const namedZone = normalizeNamedAppZone(namedAppZone), limits = normalizeDomainLimits(domainLimits);
+  validateNamedOrigins([namedZone], { shellOrigins: [...origins], validateNamedZone });
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-  db.exec(`CREATE TABLE IF NOT EXISTS apps_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS app_devices (connector_key TEXT PRIMARY KEY,owner_account_id TEXT NOT NULL,identity_json TEXT NOT NULL,name TEXT NOT NULL,created_at INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS local_apps (id TEXT PRIMARY KEY,owner_account_id TEXT NOT NULL,connector_key TEXT NOT NULL REFERENCES app_devices(connector_key),name TEXT NOT NULL,port INTEGER NOT NULL,entry_path TEXT NOT NULL,grants_json TEXT NOT NULL,state TEXT NOT NULL,revision INTEGER NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS local_apps_owner ON local_apps(owner_account_id);
-    CREATE TABLE IF NOT EXISTS local_app_grants (app_id TEXT NOT NULL REFERENCES local_apps(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN ('account','community')),principal_id TEXT NOT NULL,PRIMARY KEY(app_id,kind,principal_id));
-    CREATE INDEX IF NOT EXISTS local_app_grants_principal ON local_app_grants(kind,principal_id,app_id);`);
-  const schema = db.prepare("SELECT value FROM apps_meta WHERE key='schema'").get();
-  assertApps(!schema || schema.value === 'soty.apps-registry.v1', 'apps_schema_unsupported');
-  db.prepare("INSERT OR IGNORE INTO apps_meta(key,value) VALUES ('schema','soty.apps-registry.v1')").run();
-  db.exec(`INSERT OR IGNORE INTO local_app_grants SELECT a.id,'account',g.value FROM local_apps a,json_each(a.grants_json,'$.accountIds') g;
-    INSERT OR IGNORE INTO local_app_grants SELECT a.id,'community',g.value FROM local_apps a,json_each(a.grants_json,'$.communityIds') g;`);
+  let domains;
+  try {
+    db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
+    const schema = inspectAppsSchema(db);
+    if (schema === 'v2') validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
+    migrateAppsSchema(db, { legacyTemplate: template, now });
+    domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, domainLimits: limits,
+      shellOrigins: [...origins], validateNamedZone });
+    db.exec('PRAGMA journal_mode=WAL;');
+  } catch (error) { db.close(); throw error; }
+  const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins] });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
   const wss = new WebSocketServer({ noServer: true, maxPayload: FRAME_BYTES, perMessageDeflate: false });
   let closed = false;
@@ -132,6 +137,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       const { expectedAccountId: _expectedAccountId, ...operationArgs } = args;
       args = operationArgs;
     }
+    if (domainOperations.has(op)) return domains.execute({ actor, op, args });
     if (op === 'apps.devices') {
       exact(args, []);
       return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(item => {
@@ -174,7 +180,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       }
       assertApps(db.prepare('SELECT count(*) AS n FROM local_apps WHERE owner_account_id=?').get(actor.accountId).n < 100, 'apps_limit_reached', 429);
       const id = `app-${randomBytes(16).toString('hex')}`, timestamp = now();
-      transaction(() => { db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp); persistGrants(id, grants); });
+      transaction(() => { db.prepare('INSERT INTO local_apps VALUES (?,?,?,?,?,?,?,?,?,?,?)').run(id, actor.accountId, device.connector_key, name, port, entryPath, JSON.stringify(grants), 'enabled', 1, timestamp, timestamp);
+        persistGrants(id, grants); domains.ensureCanonicalForApp(row(id)); });
       sync(channels.get(device.connector_key)); return { app: publicApp(row(id), actor) };
     }
     const id = appId(args.appId), app = row(id);
@@ -197,13 +204,23 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     transaction(() => { db.prepare('UPDATE local_apps SET name=?,grants_json=?,revision=revision+1,updated_at=? WHERE id=?').run(name, JSON.stringify(grants), now(), id); persistGrants(id, grants); });
     invalidateAccess({ appId: id }); return { app: publicApp(row(id), actor) };
   }
-  function originFor(id) { return template.replace('{appId}', id); }
+  function originFor(id) { return domains.originFor(id); }
   function appForRequest(req) {
-    if (!template) return null;
-    const host = String(req.headers.host || '').toLowerCase();
-    const match = host.match(/app-[a-f0-9]{32}/u);
-    if (!match || new URL(originFor(match[0])).host !== host) return null;
-    return row(match[0]) || { id: match[0], missing: true };
+    const host = hostClassifier.classifyHost(req.headers.host);
+    if (host.kind === 'outside') return null;
+    if (host.kind !== 'canonical') return { hostStatus: host.kind, domainState: host.state };
+    return row(host.appId) || { missing: true };
+  }
+  function hostFailure(app) {
+    if (!app.hostStatus) return null;
+    if (app.hostStatus === 'invalid') return { status: 400, error: 'invalid_app_host' };
+    if (app.hostStatus === 'alias') return app.domainState === 'tombstone'
+      ? { status: 410, error: 'app_address_retired' } : { status: 503, error: 'app_named_runtime_unavailable' };
+    return { status: 404, error: 'app_not_found' };
+  }
+  function setStatusPolicy(res) {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; sandbox");
+    res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
   }
   function sessionFor(req, app) {
     const name = `__Host-${cookieName}`;
@@ -223,7 +240,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (new URL(originFor(id)).protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   }
   async function routeApp(req, res, app) {
-    setPolicy(res, app.id); assertApps(!app.missing, 'app_not_found', 404);
+    assertApps(!app.missing, 'app_not_found', 404); setPolicy(res, app.id);
     const path = requestPath(req.url || '/');
     if (path === '/_soty/boot' && req.method === 'GET') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -258,6 +275,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function handleRequest(req, res) {
     const app = appForRequest(req); if (!app) return false;
+    const failure = hostFailure(app);
+    if (failure) { setStatusPolicy(res); respondFailure(req, res, failure.status, failure.error); return true; }
     void routeApp(req, res, app).catch(error => { if (!res.headersSent) respondFailure(req, res, error.status || 400, error.code || 'app_invalid_request'); else res.destroy(); }); return true;
   }
   function openStream(app, session, values) {
@@ -287,11 +306,17 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return true; }
-    if (url.pathname === '/api/apps/channel' && !appForRequest(req)) {
+    const app = appForRequest(req);
+    const failure = app && hostFailure(app);
+    if (failure) {
+      const phrase = { 400: 'Bad Request', 404: 'Not Found', 410: 'Gone', 503: 'Service Unavailable' }[failure.status];
+      socket.end(`HTTP/1.1 ${failure.status} ${phrase}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n`); return true;
+    }
+    if (url.pathname === '/api/apps/channel' && !app) {
       if (req.headers.origin || url.search || wss.clients.size >= 256) { socket.destroy(); return true; }
       wss.handleUpgrade(req, socket, head, ws => acceptChannel(ws)); return true;
     }
-    const app = appForRequest(req); if (!app) return false;
+    if (!app) return false;
     try {
       assertApps(!app.missing && req.method === 'GET' && req.headers.upgrade?.toLowerCase() === 'websocket', 'app_upgrade_denied', 403);
       assertApps(req.headers.origin === originFor(app.id), 'app_origin_denied', 403);
@@ -381,23 +406,20 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     });
   }
   function allowsTlsDomain(domain) {
-    if (!template.startsWith('https://') || typeof domain !== 'string' || domain.length > 253 || !/^[a-z0-9.-]+$/u.test(domain)) return false;
-    const id = domain.match(/^app-[a-f0-9]{32}(?=\.)/u)?.[0];
-    return Boolean(id && new URL(originFor(id)).hostname === domain && row(id)?.state === 'enabled');
+    return hostClassifier.allowsTlsDomain(domain);
   }
   return { operations, execute, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+    classifyHost: hostClassifier.classifyHost,
     configured: Boolean(template), origins: template ? [new URL(template.replace('{appId}', 'app-00000000000000000000000000000000')).origin] : [],
     close() { if (closed) return; closed = true; clearInterval(auditTimer); clearInterval(connectorAuditTimer); unsubscribe?.(); for (const channel of channels.values()) channel.ws.terminate(); for (const stream of live.values()) closeStream(stream, 'app_server_closed', false); wss.close(); db.close(); },
   };
 }
 function exact(value, allowed) { assertApps(Object.keys(value).every(key => allowed.includes(key)), 'unexpected_argument'); }
 function validateTemplate(value, origins) {
-  if (!value) return '';
-  assertApps(typeof value === 'string' && value.split('{appId}').length === 2, 'invalid_apps_origin');
-  const probe = new URL(value.replace('{appId}', 'app-00000000000000000000000000000000'));
-  assertApps(probe.pathname === '/' && !probe.search && !probe.hash && !probe.username && !probe.password && probe.hostname.includes('app-00000000000000000000000000000000'), 'invalid_apps_origin');
-  assertApps(probe.protocol === 'https:' || (probe.protocol === 'http:' && probe.hostname.endsWith('.localhost')), 'apps_origin_requires_https');
-  assertApps(!origins.has(probe.origin), 'apps_origin_not_isolated'); return value.replace(/\/$/u, '');
+  const template = normalizeLegacyTemplate(value);
+  if (!template) return '';
+  const probe = new URL(template.replace('{appId}', 'app-00000000000000000000000000000000'));
+  assertApps(!origins.has(probe.origin), 'apps_origin_not_isolated'); return template;
 }
 function json(res, status, body) { if (res.destroyed || res.writableEnded) return; res.statusCode = status; res.setHeader('Content-Type', 'application/json; charset=utf-8'); res.setHeader('Cache-Control', 'no-store'); res.end(JSON.stringify(body)); }
 function respondFailure(req, res, status, error) {

@@ -12,14 +12,20 @@ import { createNotesService } from "../modules/notes/server/index.mjs";
 import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
 import { createCapabilitiesService } from "../modules/capabilities/server/index.mjs";
+import { hasSingleHostHeader, legacyAppFrameSource, validateNamedAppZone } from './app-domain-policy.mjs';
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
+  const shellOrigins = connectAllowedOrigins(connectOrigins);
+  // Validate before opening any storage: a rejected configuration cannot migrate data.
+  const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate });
+  const legacyFrameSource = legacyAppFrameSource(appOriginTemplate);
   const app = express();
   const safeConnectorPort = Number.isSafeInteger(localConnectorPort) && localConnectorPort >= 1024 && localConnectorPort <= 65535 ? localConnectorPort : 49424;
   const localConnectorOrigin = `http://127.0.0.1:${safeConnectorPort}`;
   app.disable("x-powered-by");
   if (process.env.SOTY_TRUST_PROXY) app.set('trust proxy', process.env.SOTY_TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
   app.use((req, res, next) => {
+    if (!hasSingleHostHeader(req)) { res.status(400).set('Cache-Control', 'no-store').end(); return; }
     if (app.locals.appsService?.handleRequest(req, res)) return;
     if (!trafficTunnel?.handleRequest(req, res)) {
       next();
@@ -42,7 +48,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ${localConnectorOrigin}${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
       "manifest-src 'self'",
       "worker-src 'self'",
-      `frame-src 'self'${appOriginTemplate ? ` ${appOriginTemplate.replace('{appId}', '*')}` : ''}`,
+      `frame-src 'self'${legacyFrameSource ? ` ${legacyFrameSource}` : ''}`,
       "frame-ancestors 'none'",
       "form-action 'self'"
     ].join("; "));
@@ -70,20 +76,27 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   const world = createWorldService({ databasePath: path.join(dataDir || path.resolve('data'), 'world', 'world.sqlite'), projectId: 'soty' });
   const notes = createNotesService({ databasePath: path.join(dataDir || path.resolve('data'), 'notes', 'notes.sqlite'), projectId: 'soty' });
   const connectors = attachConnectorApi(app, { dataDir, gonka });
-  const shellOrigins = connectAllowedOrigins(connectOrigins);
   let connect;
   const capabilities = createCapabilitiesService({
     databasePath: path.join(dataDir || path.resolve('data'), 'capabilities', 'capabilities.sqlite'),
     actorActive: actor => connect?.isActorActive(actor) === true,
   });
-  const apps = createAppsService({ dataDir, appOriginTemplate, shellOrigins,
+  let apps;
+  try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, shellOrigins,
+    validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate }),
     actorActive: actor => connect?.isActorActive(actor) === true,
     canAccessCommunity: (accountId, communityId) => world.canAccessCommunity(accountId, communityId),
     activeCommunityIds: accountId => world.activeCommunityIds(accountId),
     isGroupAdmin: (accountId, communityId) => world.isGroupAdmin(accountId, communityId),
     subscribeMembership: listener => world.subscribeMembership(listener),
     authenticateConnector: async auth => { await connectors.store.writeQueue; await connectors.store.readable(); return Boolean(connectors.store.authenticate({ ...auth, deviceId: auth.hostDeviceId || auth.deviceId })); },
-  });
+  }); } catch (error) {
+    // Retained zones still need validation when new claims are disabled. A
+    // rejected startup must not leave already opened services alive.
+    world.close(); notes.close(); capabilities.close();
+    void connectors.store.close().catch(() => {});
+    throw error;
+  }
   const appJobs = createAppJobsExtension({ store: connectors.store, actorActive: actor => connect?.isActorActive(actor) === true,
     inferenceReady: () => connectors.modelProxy.ready === true,
     resolveOwnedDevice: (actor, ids) => apps.resolveOwnedDevice(actor, ids.hostDeviceId, ids.connectorId) });

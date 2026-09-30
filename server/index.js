@@ -6,6 +6,7 @@ import { createHttpApp } from "./http-app.js";
 import { createRoomStore } from "./room-store.js";
 import { attachRealtime } from "./realtime.js";
 import { createTrafficTunnelProxy } from "./traffic-tunnel-proxy.js";
+import { hasSingleHostHeader } from './app-domain-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -33,6 +34,10 @@ const store = createRoomStore(dataDir);
 attachRealtime(wss, store);
 
 server.on("upgrade", (request, socket, head) => {
+  if (!hasSingleHostHeader(request)) {
+    socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return;
+  }
   let url;
   try { url = new URL(request.url || "/", "http://localhost"); }
   catch {

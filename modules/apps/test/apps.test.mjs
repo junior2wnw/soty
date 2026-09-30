@@ -52,13 +52,13 @@ async function setup({ secureOrigins = false } = {}) {
     close: async () => { runtime.stop(); service.close(); await sample.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(dir, { recursive: true, force: true }); } };
 }
 
-test('TLS edge permits only an enabled registered app on its exact isolated hostname', async t => {
+test('TLS edge permits exact registered HTTPS addresses, including retained revoked status pages', async t => {
   const env = await setup({ secureOrigins: true }); t.after(env.close);
   const domain = `${env.app.id}.apps.example.org`;
   assert.equal(env.service.allowsTlsDomain(domain), true);
   for (const value of [undefined, [domain], `${domain}.evil.test`, `prefix.${domain}`, `${domain}:443`, `https://${domain}`, `app-${'0'.repeat(32)}.apps.example.org`]) assert.equal(env.service.allowsTlsDomain(value), false);
   env.call(owner, 'apps.revoke', { appId: env.app.id });
-  assert.equal(env.service.allowsTlsDomain(domain), false);
+  assert.equal(env.service.allowsTlsDomain(domain), true, 'TLS ownership is separate from runtime access');
 });
 
 test('expected account guards every app operation before reads or mutation while legacy clients remain compatible', async t => {

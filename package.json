@@ -42,6 +42,7 @@
     "express": "^4.19.2",
     "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
+    "tldts": "7.4.16",
     "trustlink-kernel": "git+https://github.com/junior2wnw/4-2-rf.git#082f47242177b56ac2548c3c5b8e8c264dbae500",
     "ws": "^8.18.0",
     "yjs": "^13.6.21"
