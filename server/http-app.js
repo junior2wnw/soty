@@ -13,11 +13,13 @@ import { createAppsService } from "../modules/apps/server/index.mjs";
 import { createAppJobsExtension } from "./apps-jobs.js";
 import { createCapabilitiesService } from "../modules/capabilities/server/index.mjs";
 import { hasSingleHostHeader, legacyAppFrameSource, validateNamedAppZone } from './app-domain-policy.mjs';
+import { attachCapabilitiesDiscovery, validateDiscoveryOrigin } from './capabilities-discovery.js';
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
   const shellOrigins = connectAllowedOrigins(connectOrigins);
   // Validate before opening any storage: a rejected configuration cannot migrate data.
   const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate });
+  const admittedDiscoveryOrigin = validateDiscoveryOrigin({ discoveryOrigin, shellOrigins });
   const legacyFrameSource = legacyAppFrameSource(appOriginTemplate);
   const app = express();
   const safeConnectorPort = Number.isSafeInteger(localConnectorPort) && localConnectorPort >= 1024 && localConnectorPort <= 65535 ? localConnectorPort : 49424;
@@ -111,10 +113,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
   });
   app.locals.worldService = world;
   app.locals.capabilitiesService = capabilities;
-  app.get('/api/capabilities/v1/status', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null });
-  });
+  attachCapabilitiesDiscovery(app, { catalog: capabilities.catalog, origin: admittedDiscoveryOrigin,
+    status: () => app.locals.capabilitiesApiStatus?.() ?? { notesCreateEnabled: false, audience: null } });
   app.locals.connectService = connect = attachConnectModule(app, { dataDir, origins: shellOrigins, extensions: [world, apps, apps.sourcePreparationExtension, appJobs, notes, capabilities],
     canRequestContact: (actorId, targetId) => world.canRequestContact(actorId, targetId) });
   const unsubscribeRevocations = connect.subscribeRevocations(event => apps.invalidateAccess(event));

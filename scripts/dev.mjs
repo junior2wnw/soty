@@ -19,6 +19,7 @@ function developmentEnvironment(options) {
   Object.assign(env, {
     NODE_ENV: 'development', HOST: '127.0.0.1', PORT: String(options.apiPort), DATA_DIR: options.dataDir,
     SOTY_DIST_DIR: join(rootDir, 'public'), SOTY_CONNECT_ORIGINS: options.origin,
+    SOTY_DISCOVERY_ORIGIN: options.origin,
     SOTY_APP_ORIGIN_TEMPLATE: `http://{appId}.${options.namedApps ? 'legacy.' : ''}localhost:${options.apiPort}`,
     ...(options.namedApps ? { SOTY_NAMED_APP_ZONE: `http://named.localhost:${options.apiPort}` } : {}),
     SOTY_LOCAL_CONNECTOR_PORT: String(options.connectorPort),
@@ -108,7 +109,7 @@ export async function startDevelopment(input = {}) {
           '**/*.{crt,pem,key,pfx,p12,log,db,sqlite,sqlite3,sqlite-wal,sqlite-shm}',
         ] },
         proxy: {
-          '^/(?:api|ws)(?:/|\\?|$)|^/(?:health|ready)(?:\\?|$)': {
+          '^/(?:api|ws|agents)(?:/|\\?|$)|^/(?:health|ready)(?:\\?|$)': {
             target: `http://127.0.0.1:${options.apiPort}`, ws: true,
             // Preserve Host and Origin: Connect and room WebSockets validate
             // the browser's origin, including the frontend port.

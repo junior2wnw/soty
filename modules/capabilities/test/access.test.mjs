@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createCapabilitiesService, BUILTIN_CAPABILITIES } from '../server/index.mjs';
+import { fixtureDocumentation } from './support/documentation.mjs';
 
 const AUDIENCE = 'https://soty.test/api/capabilities/v1';
 const OWNER_A = Object.freeze({ accountId: 'account_a', deviceId: 'device_a' });
@@ -22,7 +23,10 @@ function fixture(t, options = {}) {
   let time = 1_800_000_000_000;
   const revoked = new Set();
   const actorActive = actor => (actor.accountId === OWNER_A.accountId && actor.deviceId === OWNER_A.deviceId || actor.accountId === OWNER_B.accountId && actor.deviceId === OWNER_B.deviceId) && !revoked.has(actor.deviceId);
-  const create = overrides => createCapabilitiesService({ databasePath, clock: () => time, actorActive, catalog: [CAP], ...options, ...overrides });
+  const create = overrides => {
+    const config = { databasePath, clock: () => time, actorActive, catalog: [CAP], ...options, ...overrides };
+    return createCapabilitiesService({ ...config, documentation: Object.hasOwn(config, 'documentation') ? config.documentation : fixtureDocumentation(config.catalog) });
+  };
   let service = create();
   t.after(() => {
     service.close();

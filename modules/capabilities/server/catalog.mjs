@@ -106,6 +106,12 @@ export function createCatalog(entries = BUILTIN_CAPABILITIES) {
     validateInput(entry, input) {
       canonicalJson(input);
       validateValue(entry.inputSchema, input);
+    },
+    validateOutput(entry, output) {
+      assert(entry && typeof entry.capabilityId === 'string' && Number.isSafeInteger(entry.version)
+        && byKey.get(`${entry.capabilityId}@${entry.version}`) === entry);
+      canonicalJson(output);
+      validateValue(entry.outputSchema, output);
     }
   });
 }

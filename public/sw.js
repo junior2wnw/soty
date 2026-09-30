@@ -46,6 +46,7 @@ function prepareUpdate() {
   if (preparing) return preparing;
   preparing = (async () => {
     const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+    const confirmedDocuments = new Map(clients.map(client => [client.id, client.url]));
     const decisions = await Promise.all(clients.map(client => new Promise(resolve => {
       const channel = new MessageChannel();
       const timer = setTimeout(() => { channel.port1.close(); resolve(false); }, 10_000);
@@ -55,7 +56,7 @@ function prepareUpdate() {
     if (!decisions.every(Boolean)) return false;
     // A newly opened client has not yet confirmed durable drafts.
     const latest = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
-    if (latest.some(client => !clients.some(previous => previous.id === client.id))) return false;
+    if (latest.some(client => confirmedDocuments.get(client.id) !== client.url)) return false;
     for (const client of latest) client.postMessage({ type: 'SOTY_UPDATE_COMMIT' });
     await self.skipWaiting();
     return true;
@@ -70,6 +71,12 @@ self.addEventListener("fetch", (event) => {
   }
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || url.pathname.startsWith("/ws")) {
+    return;
+  }
+  // These URLs describe server representations. A cached application shell is
+  // never an offline substitute for a contract, API error, or documentation.
+  if (['/agents', '/api/capabilities'].some(prefix => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`))) {
+    event.respondWith(fetch(request));
     return;
   }
   if (request.mode === "navigate") {

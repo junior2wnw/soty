@@ -29,6 +29,17 @@ test('fullstack development serves Vite, signed API and origin-checked WS, then 
   assert.equal((await fetch(`${dev.origin}/src/platform/world-adapter.ts`)).status, 200);
   assert.equal((await fetch(`${dev.origin}/var/${privateDir.slice(privateRoot.length).replaceAll('\\', '/')}/probe.txt`)).status, 403, 'Vite must not serve server data under the project root');
   assert.equal((await (await fetch(`${dev.origin}/health`)).json()).ok, true);
+  const docs = await fetch(`${dev.origin}/agents`), docsHtml = await docs.text();
+  assert.equal(docs.status, 200); assert.match(docsHtml, /<form\b/u);
+  assert.ok(docsHtml.includes(`${dev.origin}/agents`), 'canonical must use the configured frontend origin');
+  assert.ok(!docsHtml.includes('/@vite/client') && !docsHtml.includes('/src/entry.ts'), 'SSR documentation must bypass the SPA transform');
+  const missingDocs = await fetch(`${dev.origin}/agents/missing`);
+  assert.equal(missingDocs.status, 404); assert.equal((await missingDocs.json()).error.code, 'not_found');
+  const machine = await fetch(`${dev.origin}/api/capabilities/v1/catalog?query=save+note`);
+  assert.equal(machine.status, 200); assert.equal((await machine.json()).items[0].capabilityId, 'notes.createDraft');
+  const sitemap = await fetch(`${dev.origin}/agents/sitemap.xml`);
+  assert.equal(sitemap.status, 200); assert.ok((await sitemap.text()).includes(`${dev.origin}/agents`));
+  assert.match(await (await fetch(`${dev.origin}/agents-old`)).text(), /\/src\/entry\.ts/u);
   const capabilities = await (await fetch(`${dev.origin}/api/apps/capabilities`)).json();
   assert.equal(capabilities.configured, true); assert.equal(capabilities.localConnectorOrigin, `http://127.0.0.1:${ports[2]}`);
   const signing = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }), encryption = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });

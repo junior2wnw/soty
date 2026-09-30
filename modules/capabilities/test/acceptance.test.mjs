@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { createCapabilitiesService } from '../server/index.mjs';
+import { fixtureDocumentation } from './support/documentation.mjs';
 
 // Independent acceptance tests exercise the composed boundary, not mocked ACL callbacks.
 const ALICE = Object.freeze({ accountId: 'account_acceptance_alice', deviceId: 'device_acceptance_alice' });
@@ -27,7 +28,7 @@ function fixture(t, { catalog = [CAPABILITY] } = {}) {
   const databasePath = join(directory, 'capabilities.sqlite');
   let now = 1_800_000_000_000;
   const activeDevices = new Set([ALICE, BOB].map(actor => `${actor.accountId}/${actor.deviceId}`));
-  const options = { databasePath, clock: () => now, catalog,
+  const options = { databasePath, clock: () => now, catalog, documentation: fixtureDocumentation(catalog),
     actorActive: actor => activeDevices.has(`${actor.accountId}/${actor.deviceId}`) };
   let service = createCapabilitiesService(options);
   t.after(() => {
@@ -171,10 +172,12 @@ test('public discovery excludes private metadata before search, counts and pagin
   const second = f.service.catalog.search({ limit: 1, cursor: first.cursor });
   assert.equal(second.total, 2); assert.equal(second.items.length, 1); assert.equal(second.cursor, null);
   for (const query of ['PRIVATE_CATALOG_MARKER', 'PRIVATE_DESCRIPTION_MARKER', privateCapability.capabilityId]) {
-    const hidden = f.service.catalog.search({ query, actor: client.actor });
+    denied(() => f.service.catalog.search({ query, actor: client.actor }), ['invalid_input']);
+    const hidden = f.service.catalog.search({ query });
     assert.deepEqual(hidden.items, []); assert.equal(hidden.total, 0); assert.equal(hidden.cursor, null);
   }
-  denied(() => f.service.catalog.get({ capabilityId: privateCapability.capabilityId, version: 1, actor: client.actor }), ['not_found']);
+  denied(() => f.service.catalog.get({ capabilityId: privateCapability.capabilityId, version: 1, actor: client.actor }), ['invalid_input']);
+  denied(() => f.service.catalog.get({ capabilityId: privateCapability.capabilityId, version: 1 }), ['not_found']);
   denied(() => f.service.catalog.get({ capabilityId: 'acceptance.nonexistent', version: 1 }), ['not_found']);
   denied(() => f.service.catalog.search({ query: 'Second', cursor: first.cursor }), ['cursor_invalid']);
 });
@@ -332,7 +335,7 @@ test('two independent service instances cannot both reserve the final shared uni
     const { parentPort, workerData } = require('node:worker_threads');
     import(workerData.serviceUrl).then(({ createCapabilitiesService }) => {
       const service = createCapabilitiesService({ databasePath: workerData.databasePath,
-        catalog: [workerData.capability], clock: () => workerData.now,
+        catalog: [workerData.capability], documentation: workerData.documentation, clock: () => workerData.now,
         actorActive: actor => actor.accountId === workerData.owner.accountId && actor.deviceId === workerData.owner.deviceId });
       try {
         const actor = service.authenticateCredential({ token: workerData.token, audience: workerData.audience });
@@ -350,7 +353,7 @@ test('two independent service instances cannot both reserve the final shared uni
     const results = await Promise.all([first, second].map((client, index) => new Promise((resolveResult, reject) => {
       const worker = new Worker(script, { eval: true, workerData: {
         serviceUrl: new URL('../server/index.mjs', import.meta.url).href,
-        databasePath: f.databasePath, capability: CAPABILITY, now: f.now, owner: ALICE,
+        databasePath: f.databasePath, capability: CAPABILITY, documentation: fixtureDocumentation([CAPABILITY]), now: f.now, owner: ALICE,
         token: client.token, audience: AUDIENCE, key: `concurrent-shared-${index}`, latch: latch.buffer,
       } });
       workers.push(worker);

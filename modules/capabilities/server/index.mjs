@@ -3,15 +3,17 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createAccessStore } from './access.mjs';
 import { BUILTIN_CAPABILITIES, createCatalog } from './catalog.mjs';
+import { createPublicDiscovery } from './discovery.mjs';
+import { BUILTIN_DOCUMENTATION } from './documentation.mjs';
 import { createInvocationStore } from './invocations.mjs';
 import { initializeCapabilitiesSchema } from './schema.mjs';
-import { assert, canonicalHash, exact, integer, newId, text } from './validation.mjs';
+import { assert, canonicalHash, exact, integer, newId } from './validation.mjs';
 
 export { ACCESS_OPERATIONS } from './access.mjs';
 export { BUILTIN_CAPABILITIES } from './catalog.mjs';
 export { AccessError } from './validation.mjs';
 
-export function createCapabilitiesService({ databasePath, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES, limits = {} } = {}) {
+export function createCapabilitiesService({ databasePath, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES, documentation = BUILTIN_DOCUMENTATION, limits = {} } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof actorActive === 'function', 'host_auth_required');
   exact(limits, ['access', 'invocations'], 'limits_invalid');
@@ -23,6 +25,8 @@ export function createCapabilitiesService({ databasePath, clock = Date.now, acto
   const maximum = { inputBytes: 262144, metadataBytes: 32768, pageSize: 50 };
   for (const [key, value] of Object.entries(invocationLimits)) integer(value, 1, maximum[key], 'limits_invalid');
   const registry = createCatalog(catalog);
+  // Validate the complete public projection before creating or pinning storage.
+  const publicCatalog = createPublicDiscovery({ catalog: registry, documentation });
   if (databasePath !== ':memory:') mkdirSync(path.dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   try { initializeCapabilitiesSchema(db); }
@@ -57,34 +61,6 @@ export function createCapabilitiesService({ databasePath, clock = Date.now, acto
   const invocations = createInvocationStore({
     db, clock, transaction, authorize: access.authorizeInvocation,
     reserveBudget: access.reserveBudget, settleBudget: access.settleBudget, canonicalHash, newId, limits: invocationLimits
-  });
-  const entries = registry.listPublic().sort((a, b) => a.capabilityId < b.capabilityId ? -1 : a.capabilityId > b.capabilityId ? 1 : a.version - b.version);
-  const catalogRevision = canonicalHash(entries);
-  const publicCatalog = Object.freeze({
-    get({ capabilityId, version }) {
-      const entry = registry.get(capabilityId, version);
-      assert(entry?.visibility === 'public', 'not_found');
-      return { capability: entry };
-    },
-    search({ query = '', limit = 20, cursor } = {}) {
-      text(query, { min: 0, max: 200 }); integer(limit, 1, 40);
-      const normalized = query.normalize('NFKC').trim().toLowerCase();
-      const fingerprint = canonicalHash({ query: normalized, catalogRevision });
-      let offset = 0;
-      if (cursor !== undefined && cursor !== null) {
-        text(cursor, { max: 500 });
-        let decoded;
-        try { decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); }
-        catch { assert(false, 'cursor_invalid'); }
-        exact(decoded, ['fingerprint', 'offset'], 'cursor_invalid');
-        assert(decoded.fingerprint === fingerprint, 'cursor_invalid');
-        offset = integer(decoded.offset, 0, entries.length, 'cursor_invalid');
-      }
-      const matching = entries.filter(entry => `${entry.capabilityId} ${entry.title} ${entry.description}`.normalize('NFKC').toLowerCase().includes(normalized));
-      const items = matching.slice(offset, offset + limit);
-      const next = offset + items.length;
-      return { items, total: matching.length, cursor: next < matching.length ? Buffer.from(JSON.stringify({ fingerprint, offset: next })).toString('base64url') : null };
-    }
   });
   const operations = new Set([...access.operations, 'access.invocations.list']);
   function execute(request) {

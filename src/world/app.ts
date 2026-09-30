@@ -353,6 +353,11 @@ class WorldApplication {
     choice('Доступы и действия', 'shield', () => this.navigate('access'));
     choice('Оформление', 'sun', () => this.openAppearance());
     choice('Все возможности', 'grid', () => this.navigate('library'));
+    const developerDocs = el('a', 'sw-button sw-button-quiet');
+    developerDocs.href = '/agents'; developerDocs.target = '_blank'; developerDocs.rel = 'noopener';
+    developerDocs.setAttribute('aria-label', 'Для разработчиков и ИИ (в новой вкладке)');
+    developerDocs.append(icon('connections'), el('span', '', 'Для разработчиков и ИИ'), icon('external'));
+    list.append(developerDocs);
     choice('Аккаунт и восстановление', 'lock', () => this.runHook(() => this.options.openAccount('recovery')));
     dialog.body.append(list);
   }
