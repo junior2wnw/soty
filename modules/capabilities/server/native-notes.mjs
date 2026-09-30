@@ -51,7 +51,7 @@ export function validateNativeNoteComposition(value) {
 }
 
 export function createNativeNotesCoordinator({ db, projectId, registryId, schemaVersion, clock, registry, access, core,
-  settleNativeBudget, transaction, ensureOpen, composition, limits, invocationLimits = {} }) {
+  settleNativeBudget, transaction, ensureOpen, composition, limits, invocationLimits = {}, oauthScope, captureBindingReadiness }) {
   const { notes, withAuthorityFence } = composition;
   const contexts = new WeakMap();
   let activeFrame = null, running = false, knownRegistryId = registryId;
@@ -88,6 +88,14 @@ export function createNativeNotesCoordinator({ db, projectId, registryId, schema
     assert(value.projectId === projectId, 'native_store_mismatch');
     return value.registryId;
   }
+  if (captureBindingReadiness !== undefined) {
+    assert(typeof captureBindingReadiness === 'function', 'native_configuration_invalid');
+    captureBindingReadiness(() => {
+      try { capsIdentity(); notesIdentity(); return true; }
+      catch { return false; }
+    });
+  }
+  assert(oauthScope === undefined || typeof oauthScope === 'function', 'native_configuration_invalid');
   function fenced(action) {
     ensureOpen(); assert(!running, 'nested_transaction'); running = true;
     let invoked = false, accepting = true;
@@ -272,6 +280,17 @@ export function createNativeNotesCoordinator({ db, projectId, registryId, schema
           core.access(args.actor, previous, 'read');
           assert(previous.request_digest === requestDigest, 'invocation_request_conflict');
           return { reused: true, invocation: snapshot(previous) };
+        }
+        const oauth = oauthScope?.(args.actor);
+        if (oauth) {
+          assert(oauth.accountId === scope.accountId, 'authorization_required');
+          // Deny only. Durable connection pins keep an occupied opaque key in
+          // this OAuth namespace without disclosing the old row or its result.
+          const occupied = get(`SELECT 1 FROM cap_invocations i INDEXED BY cap_invocations_oauth_request
+            JOIN cap_oauth_connections c ON c.client_id=i.client_id AND c.account_id=i.account_id
+            WHERE i.account_id=? AND i.request_key=? AND c.issuer=? AND c.static_client_id=? AND c.resource=? AND c.id<>?
+            LIMIT 1`, oauth.accountId, requestKey, oauth.issuer, oauth.clientProfile, oauth.resource, oauth.connectionId);
+          assert(!occupied, 'invocation_request_conflict');
         }
         const sourceStoreId = capsIdentity(), notesStoreId = notesIdentity();
         const authorized = access.authorize({ actor: args.actor, action: 'invoke', capabilityId: ID, version: VERSION, input });

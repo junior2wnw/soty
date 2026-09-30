@@ -162,10 +162,14 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
   }
   function resolveActor(actor) {
     assert(actor && typeof actor === 'object' && actorRefs.has(actor), 'authorization_required');
-    const current = currentCredential(actorRefs.get(actor));
-    // This baseline only mints legacy actors. A later closed OAuth factory
-    // will carry an explicit private connection reference, never infer it.
-    assert(!current.oauthConnection, 'authorization_required');
+    const reference = actorRefs.get(actor), current = currentCredential(reference);
+    if (reference.oauth === undefined) assert(!current.oauthConnection, 'authorization_required');
+    else {
+      const connection = current.oauthConnection;
+      assert(connection && connection.id === reference.oauth.connectionId && connection.issuer === reference.oauth.issuer
+        && connection.static_client_id === reference.oauth.clientProfile && connection.resource === reference.oauth.resource,
+      'authorization_required');
+    }
     return current;
   }
   function credentialReference(row) {
@@ -488,6 +492,25 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     assert(typeof captureOAuthAuthority === 'function', 'host_auth_required');
     // A fixed coordinator-only seam; never returned as a service Access API.
     captureOAuthAuthority(Object.freeze({
+      authenticate({ tokenDigest: digest, issuer, audience: target }) {
+        assert(db.isTransaction, 'oauth_context_invalid');
+        assert(typeof digest === 'string' && /^[a-f0-9]{64}$/u.test(digest), 'authorization_required');
+        const row = db.prepare('SELECT * FROM cap_credentials WHERE digest=?').get(digest);
+        assert(row && row.audience === target, 'authorization_required');
+        const reference = credentialReference(row), connection = currentCredential(reference).oauthConnection;
+        assert(connection && connection.issuer === issuer && connection.resource === target, 'authorization_required');
+        const actor = freezeDeep({ type: 'service', accountId: row.account_id, clientId: row.client_id,
+          principalId: row.principal_id, grantId: row.grant_id });
+        actorRefs.set(actor, { ...reference, oauth: Object.freeze({ connectionId: connection.id,
+          issuer: connection.issuer, clientProfile: connection.static_client_id, resource: connection.resource }) });
+        return actor;
+      },
+      scope(actor) {
+        assert(db.isTransaction, 'oauth_context_invalid');
+        const connection = resolveActor(actor).oauthConnection;
+        return connection ? Object.freeze({ connectionId: connection.id, accountId: connection.account_id,
+          issuer: connection.issuer, clientProfile: connection.static_client_id, resource: connection.resource }) : null;
+      },
       create({ owner, clientProfile, expiresAt, budgetLimit, time }) {
         assert(db.isTransaction && ['soty-codex-cli', 'soty-opencode-cli'].includes(clientProfile), 'oauth_context_invalid');
         assert(actorActive(owner) === true, 'authorization_required');

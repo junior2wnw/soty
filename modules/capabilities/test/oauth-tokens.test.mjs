@@ -37,7 +37,7 @@ test('bound tokens persist encrypted with exact non-aligned expiry and immutable
     for (const payload of payloads) assert.equal(bytes.includes(Buffer.from(payload.jti)), false);
   }
   assert.deepEqual(f.oauth.readiness(), { schemaVersion: 3, available: false });
-  assert.throws(() => f.oauth.authenticateBearer({ token: at.jti, audience: f.primary.resource }), code('oauth_unavailable'));
+  assert.equal(f.oauth.authenticateBearer({ token: at.jti, audience: f.primary.resource }).accountId, f.owner.accountId);
 });
 
 test('actual pinned Provider models serialize, save, find and consume through the encrypted token port', async t => {

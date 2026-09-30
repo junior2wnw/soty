@@ -86,11 +86,14 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
     reserveBudget: access.reserveBudget, settleBudget: access.settleBudget, canonicalHash, newId, limits: invocationLimits,
     captureInternalCore: nativeComposition ? value => { invocationCore = value; } : undefined,
   });
+  let nativeBindingReady = () => false;
   const native = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, schemaVersion: storage.schemaVersion, clock,
     registry, access, core: invocationCore, settleNativeBudget: nativeSettlement, transaction, ensureOpen,
-    composition: nativeComposition, limits: nativeLimits, invocationLimits }) : null;
+    composition: nativeComposition, limits: nativeLimits, invocationLimits, oauthScope: oauthAuthority?.scope,
+    captureBindingReadiness(value) { nativeBindingReady = value; } }) : null;
   const oauthCoordinator = oauthComposition ? createOAuthConnections({ db, projectId, registryId: storage.registryId,
-    schemaVersion: storage.schemaVersion, clock, transaction, ensureOpen, configuration: oauthComposition, access, authority: oauthAuthority }) : null;
+    schemaVersion: storage.schemaVersion, clock, transaction, ensureOpen, configuration: oauthComposition, access,
+    authority: oauthAuthority, nativeBindingReady }) : null;
   const operations = new Set([...access.operations, 'access.invocations.list', ...(oauthCoordinator ? OAUTH_OPERATIONS : [])]);
   function execute(request) {
     if (oauthCoordinator && OAUTH_OPERATIONS.includes(request.op)) return oauthCoordinator.execute(request);

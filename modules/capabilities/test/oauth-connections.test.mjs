@@ -24,7 +24,7 @@ test('real signed decision creates one fixed authority atomically; owner fields 
   const list = good(await f.ownerCall('oauth.connections.list'));
   assert.deepEqual(Object.keys(list.connections[0]).sort(), ['active', 'budget', 'clientProfile', 'createdAt', 'expiresAt', 'id', 'resource', 'revokedAt'].sort());
   assert.equal(list.connections[0].active, true); assert.equal(list.connections[0].budget.remaining, 20);
-  assert.equal(f.oauth.readiness().available, false, 'token stage is still deliberately unavailable');
+  assert.equal(f.oauth.readiness().available, false, 'this fixture has no native Notes binding');
 });
 
 test('signed denial creates no authority; mismatched browser/digest/account and changed params cannot approve', async t => {

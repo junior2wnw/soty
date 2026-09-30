@@ -1,6 +1,6 @@
 # P4-C1c — encrypted domain ports
 
-Актуальная граница — increment T1 ниже: encrypted code/RT/AT lifecycle поверх принятого owner/Grant, с `readiness.available=false` и закрытым bearer. Прежние increments сохранены как исторические квитанции; их SHA и ограничения относятся к соответствующим срезам.
+Актуальная граница T2 описана отдельно в [p4-oauth-bearer-receipt.md](p4-oauth-bearer-receipt.md): linked bearer, readiness и deny-only occupied key. Increments ниже сохранены как исторические квитанции; их SHA и ограничения, включая закрытый bearer в T1, относятся только к соответствующим срезам.
 
 Дата: 2026-09-30. База: принятой domain3 `dc1ae217424b33cca0e9a5b60a6e4e719ea0d991`.
 

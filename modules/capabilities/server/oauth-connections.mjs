@@ -16,10 +16,10 @@ const integer = (value, min, max, code = 'oauth_invalid_artifact') => {
   oauthCheck(Number.isSafeInteger(value) && value >= min && value <= max, code); return value;
 };
 
-/** Fixed owner/Grant/token coordinator. No public arbitrary issuer or authority
- * factory. External bearer admission remains closed until its own increment. */
+/** Fixed owner/Grant/token coordinator. Bearers resolve only existing linked
+ * credentials; no public arbitrary issuer or authority factory is exposed. */
 export function createOAuthConnections({ db, projectId, registryId, schemaVersion, clock, transaction, ensureOpen,
-  configuration, access, authority, monotonic = () => performance.now() }) {
+  configuration, access, authority, nativeBindingReady = () => false, monotonic = () => performance.now() }) {
   const { issuer, withAuthorityFence } = configuration;
   let closed = false, running = false, fencing = false, auxCore;
   const contexts = new WeakMap(), activeContexts = new Set();
@@ -294,8 +294,13 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
     });
   }
   const oauth = Object.freeze({
-    // Token storage alone is not the complete AS/RS composition.
-    readiness() { ensureOpen(); return { schemaVersion, available: false }; },
+    readiness() {
+      ensureOpen();
+      try {
+        identity();
+        return { schemaVersion, available: codec?.available() === true && nativeBindingReady() === true };
+      } catch { return { schemaVersion, available: false }; }
+    },
     prepareInteraction(args) {
       oauthData(args, ['interactionId', 'browserNonce', 'durationMs', 'budgetLimit']);
       const id = oauthProviderId(args.interactionId), nonceHash = nonce(args.browserNonce);
@@ -346,7 +351,15 @@ export function createOAuthConnections({ db, projectId, registryId, schemaVersio
       const state = context && typeof context === 'object' ? contexts.get(context) : null;
       if (state) { state.live = false; activeContexts.delete(state); }
     },
-    authenticateBearer() { throw new AccessError('oauth_unavailable'); },
+    authenticateBearer(args) {
+      oauthData(args, ['token', 'audience']);
+      const { token, audience } = args;
+      oauthCheck(typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/u.test(token)
+        && Object.values(configuration.resources).includes(audience), 'authorization_required');
+      // Resource-server access survives AS key/operational unavailability. The
+      // immutable digest/link and current common authority are its evidence.
+      return fenced(() => authority.authenticate({ tokenDigest: sha(token), issuer, audience }));
+    },
     cleanup(args = {}) {
       oauthData(args, ['limit']); const limit = integer(args.limit ?? 64, 1, 64);
       return atomic(time => {
