@@ -3,7 +3,7 @@ import { BUILTIN_CAPABILITIES } from '../modules/capabilities/server/catalog.mjs
 import { canonicalJson, freezeDeep } from '../modules/capabilities/server/validation.mjs';
 import { NATIVE_HTTP_LIMITS } from './capabilities-ingress.js';
 import { CAPABILITIES_BASE as BASE, NOTES_DRAFT_PATH, INVOCATIONS_PATH, INVOCATION_ID_PATTERN,
-  NATIVE_NOTE_ID_PATTERN } from './capabilities-http-contract.js';
+  NATIVE_NOTE_ID_PATTERN, SERVICE_DELEGATION_PATH, SERVICE_DELEGATION_BODY_BYTES } from './capabilities-http-contract.js';
 
 const ref = name => ({ $ref: `#/components/schemas/${name}` });
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -17,7 +17,7 @@ const copy = value => structuredClone(value);
 export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigured = false } = {}) {
   const document = copy(buildDiscoveryOpenApi());
   const note = BUILTIN_CAPABILITIES.find(entry => entry.capabilityId === 'notes.createDraft' && entry.version === 1);
-  document.info = { title: 'Soty capabilities HTTP API', version: '1.2.0', description:
+  document.info = { title: 'Soty capabilities HTTP API', version: '1.3.0', description:
     'Public discovery and two private, typed Notes operations. Availability is deployment-specific: read /status before a new invocation. '
     + 'Public discovery requires no credentials and never grants execution rights. Private routes require an audience-bound bearer credential and live grant; cookies are not authentication. '
     + (oauthConfigured ? 'This host supports owner-approved OAuth connections and manually issued service credentials. OAuth issuer and resource metadata are separate endpoints; configuration does not imply issuance is currently enabled. '
@@ -62,6 +62,28 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
     url: { type: 'string', maxLength: 1024, description: 'Authenticated PWA link to the mutable Note. Receipt revision 1 is historical; this URL does not promise the Note still exists or reveal later edits.' } });
   schemas.NativeReadResponse = object({ invocation: ref('NativeInvocation'), result: ref('NativeNoteResult') }, ['invocation']);
   schemas.NativeCreateResponse = object({ invocation: ref('NativeInvocation'), reused: { type: 'boolean' }, result: ref('NativeNoteResult') }, ['invocation', 'reused']);
+  schemas.ServiceDelegationRequest = object({
+    label: { type: 'string', minLength: 1, maxLength: 100, 'x-soty-max-utf16-code-units': 100,
+      description: 'Well-formed Unicode label for the separate service client. No normalization.' }, expiresAt: timestamp,
+  });
+  schemas.ServiceDelegationRequest['x-soty-max-raw-bytes'] = SERVICE_DELEGATION_BODY_BYTES;
+  schemas.ServiceDelegationRequest.description = 'Exactly label and expiresAt; no duplicate decoded keys, nested values or authority fields. '
+    + 'Expiry is a safe integer in milliseconds, in the future, within the current credential, every ancestor grant and the configured maximum TTL.';
+  schemas.DerivedServicePrincipal = object({ id: ref('Identifier'), accountId: ref('Identifier'), clientId: ref('Identifier'),
+    label: copy(schemas.ServiceDelegationRequest.properties.label), kind: { const: 'service' }, state: { const: 'active' },
+    createdAt: timestamp, revokedAt: { type: 'null' } });
+  const singleton = item => ({ type: 'array', minItems: 1, maxItems: 1, items: item });
+  schemas.DerivedServiceGrant = object({ id: ref('Identifier'), accountId: ref('Identifier'), principalId: ref('Identifier'), clientId: ref('Identifier'),
+    parentGrantId: ref('Identifier'), rootGrantId: ref('Identifier'),
+    capabilities: singleton(object({ capabilityId: { const: 'notes.createDraft' }, version: { const: 1 } })),
+    resources: singleton({ const: 'notes:new' }), effects: singleton({ const: 'create' }), recipients: singleton({ const: 'soty:notes' }),
+    allowDelegation: { const: false }, maxDepth: { const: 0 }, depth: { type: 'integer', minimum: 1 },
+    expiresAt: timestamp, createdAt: timestamp, revokedAt: { type: 'null' }, policyEpoch: timestamp });
+  schemas.DerivedServiceCredential = object({ id: ref('Identifier'), audience: { type: 'string', maxLength: 512 },
+    expiresAt: timestamp, createdAt: timestamp, grantId: ref('Identifier') });
+  schemas.ServiceDelegationResponse = object({ principal: ref('DerivedServicePrincipal'), grant: ref('DerivedServiceGrant'),
+    credential: ref('DerivedServiceCredential'), token: { type: 'string', pattern: '^soty_cap_[A-Za-z0-9_-]{43}$',
+      'x-soty-one-shot-secret': true, description: 'Returned only on this successful response; never stored as plaintext or recoverable from the owner list.' } });
   const failures = {
     400: 'Malformed path, query, headers, JSON, Unicode or input.',
     401: 'Missing, invalid, expired or wrong-audience credential.',
@@ -115,6 +137,25 @@ export function buildCapabilitiesOpenApi({ oauthConfigured = false, mcpConfigure
     parameters: [{ name: 'invocationId', in: 'path', required: true, schema: ref('NativeInvocationId') }],
     responses: { 200: json('Content-free historical status; optional result only for a verified committed creation.', ref('NativeReadResponse')),
       ...errors([400, 401, 403, 404, 405, 500, 503]) } } };
+  const delegationFailures = errors([400, 401, 403, 405, 408, 413, 415, 429, 500, 503]);
+  for (const status of [429, 503]) delete delegationFailures[status].headers;
+  delegationFailures[403].description = 'Current parent authority cannot delegate, including an OAuth connection or exhausted delegation depth.';
+  delegationFailures[429].description = 'Ingress or existing account principal/grant/credential quota exhausted. No automatic retry of issuance.';
+  delegationFailures[500].description = 'Controlled failure; issuance may already have committed. Do not repeat automatically. The owner must inspect the child list/audit and revoke exact IDs.';
+  delegationFailures[503].description = 'Delegation unavailable or storage/authority contention. An ambiguous response is not proof that issuance failed. No automatic repeat or replacement token.';
+  document.tags.push({ name: 'Private access', description: 'Explicit, bounded service delegation; not a generic agent orchestrator.' });
+  document.paths[SERVICE_DELEGATION_PATH] = { post: { tags: ['Private access'], security: [{ CapabilityBearer: [] }],
+    operationId: 'deriveNotesServiceGrant', summary: 'Connect one bounded service helper',
+    description: 'A current ordinary service credential for canonical H is required; OAuth-linked and /mcp credentials cannot delegate. '
+      + 'Exactly one leaf client/principal/grant/credential is issued under the real Connect authority fence. Only new private Notes are allowed; no further delegation, separate budget or parent history access. '
+      + 'The existing root invocation budget is shared. Expiry cannot exceed the issuing credential or any ancestor. '
+      + 'No query/path alias, cookies, compression or wildcard CORS. Host/Origin and HTTPS are enforced even with the authorization server disabled. '
+      + '16KiB raw body, the same process ingress pool and 15s deadline as Notes. Issuance does not require native execution readiness. '
+      + 'The plaintext token is returned once with no-store. A lost response may leave the child committed: never automatically repeat issuance; inspect owner lists/service audit and revoke exact IDs. '
+      + 'Parent grant, principal or creator revocation closes descendants. Revoking only the issuing key blocks future parent requests but does not disable existing helpers.',
+    requestBody: { required: true, content: { 'application/json': { schema: ref('ServiceDelegationRequest') } } },
+    responses: { 201: json('One child was issued. Protect the one-shot token; current authority is checked again before responding.', ref('ServiceDelegationResponse')),
+      ...delegationFailures } } };
   document.paths[`${BASE}/status`].get.description = 'Current native Notes readiness and explicitly configured audience. Readiness does not grant access, reserve capacity or migrate storage.';
   document.paths[`${BASE}/openapi.json`].get.description = 'OpenAPI 3.1.2 for public discovery and the attached typed private HTTP operations. Local references only; schemas do not grant execution.';
   canonicalJson(document, { maxBytes: 256 * 1024 });

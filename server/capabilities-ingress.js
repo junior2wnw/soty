@@ -9,9 +9,10 @@ export const NATIVE_HTTP_LIMITS = Object.freeze({
   readers: 8, readersPerPeer: 2, attempts: 60, windowMs: 60000, peers: 2048,
 });
 
-/** Only a flat, three-string JSON request is accepted. JSON.parse decodes each
- * string; a bounded scan also rejects duplicate keys that JSON.parse discards. */
-export function parseNativeDraftJson(text) {
+/** Fixed flat scalar objects only. The scan rejects decoded duplicate keys
+ * before JSON.parse could discard them; no nested client structure is read. */
+function parseFlatScalarJson(text, fields) {
+  requireValue(typeof text === 'string', 'invalid_input');
   let at = 0;
   const whitespace = () => { while (at < text.length && ' \t\n\r'.includes(text[at])) at++; };
   const string = () => {
@@ -29,18 +30,32 @@ export function parseNativeDraftJson(text) {
   };
   whitespace(); requireValue(text[at++] === '{', 'invalid_input'); whitespace();
   const result = Object.create(null);
-  for (let count = 0; count < 3; count++) {
+  const fieldCount = Object.keys(fields).length;
+  for (let count = 0; count < fieldCount; count++) {
     const key = string();
-    requireValue(['title', 'body', 'idempotencyKey'].includes(key) && !Object.hasOwn(result, key), 'invalid_input');
+    requireValue(Object.hasOwn(fields, key) && !Object.hasOwn(result, key), 'invalid_input');
     whitespace(); requireValue(text[at++] === ':', 'invalid_input'); whitespace();
-    result[key] = string(); whitespace();
+    if (fields[key] === 'string') result[key] = string();
+    else {
+      const start = at;
+      while (at < text.length && '0123456789eE+-.'.includes(text[at])) at++;
+      try { result[key] = JSON.parse(text.slice(start, at)); }
+      catch { throw new CapabilityHttpError('invalid_input'); }
+      requireValue(Number.isSafeInteger(result[key]) && result[key] >= 0, 'invalid_input');
+    }
+    whitespace();
     if (text[at] === '}') break;
-    requireValue(text[at++] === ',' && count < 2, 'invalid_input'); whitespace();
+    requireValue(text[at++] === ',' && count < fieldCount - 1, 'invalid_input'); whitespace();
   }
-  requireValue(text[at++] === '}' && Object.keys(result).length === 3, 'invalid_input');
+  requireValue(text[at++] === '}' && Object.keys(result).length === fieldCount, 'invalid_input');
   whitespace(); requireValue(at === text.length, 'invalid_input');
   return result;
 }
+
+const DRAFT_FIELDS = Object.freeze({ title: 'string', body: 'string', idempotencyKey: 'string' });
+const DELEGATION_FIELDS = Object.freeze({ label: 'string', expiresAt: 'integer' });
+export const parseNativeDraftJson = text => parseFlatScalarJson(text, DRAFT_FIELDS);
+export const parseDelegationJson = text => parseFlatScalarJson(text, DELEGATION_FIELDS);
 
 export function singleHeader(req, name) {
   let value;
@@ -102,15 +117,21 @@ export function createNativeIngress({ limits = {} } = {}) {
     };
     return Object.freeze({
       release,
-      async read(req) {
+      async read(req, { parseJson = parseNativeDraftJson, maximumBytes = bounds.bodyBytes } = {}) {
         requireValue(!released && !reading, 'invalid_input'); reading = true;
-        try { nativeBodyHeaders(req, bounds.bodyBytes); }
+        let bodyBytes;
+        try {
+          requireValue(typeof parseJson === 'function' && Number.isSafeInteger(maximumBytes)
+            && maximumBytes > 0 && maximumBytes <= NATIVE_HTTP_LIMITS.bodyBytes, 'ingress_configuration_invalid');
+          bodyBytes = Math.min(maximumBytes, bounds.bodyBytes);
+          nativeBodyHeaders(req, bodyBytes);
+        }
         catch (error) { release(); throw error; }
         return new Promise((resolve, reject) => {
           let settled = false, bytes = 0;
           // One byte-bounded allocation also bounds object overhead when a
           // sender splits the request into millions of tiny HTTP chunks.
-          let buffer = Buffer.allocUnsafe(bounds.bodyBytes);
+          let buffer = Buffer.allocUnsafe(bodyBytes);
           const cleanup = () => {
             clearTimeout(timer);
             req.off('data', data); req.off('end', end); req.off('aborted', aborted);
@@ -132,7 +153,7 @@ export function createNativeIngress({ limits = {} } = {}) {
           const aborted = () => finish(new CapabilityHttpError('request_aborted'));
           const closed = () => { if (!req.complete) aborted(); };
           const data = chunk => {
-            if (bytes + chunk.length > bounds.bodyBytes) { finish(new CapabilityHttpError('payload_too_large')); return; }
+            if (bytes + chunk.length > bodyBytes) { finish(new CapabilityHttpError('payload_too_large')); return; }
             chunk.copy(buffer, bytes); bytes += chunk.length;
           };
           const end = () => {
@@ -141,7 +162,7 @@ export function createNativeIngress({ limits = {} } = {}) {
               // it instead of silently rewriting the submitted document.
               const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, bytes));
               buffer = null;
-              finish(null, parseNativeDraftJson(text));
+              finish(null, parseJson(text));
             } catch (error) {
               finish(error instanceof CapabilityHttpError ? error : new CapabilityHttpError('invalid_input'));
             }

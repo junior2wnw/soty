@@ -54,7 +54,7 @@ function audience(value) {
   return value;
 }
 
-export function createAccessStore({ db, clock = Date.now, transaction, actorActive, catalog, limits = {}, captureNativeSettlement, captureOAuthAuthority }) {
+export function createAccessStore({ db, clock = Date.now, transaction, actorActive, catalog, limits = {}, captureNativeSettlement, captureOAuthAuthority, captureDelegationAuthority }) {
   assert(typeof actorActive === 'function' && typeof transaction === 'function', 'host_auth_required');
   const maxTtl = limits.maxGrantTtlMs ?? 30 * 24 * 60 * 60 * 1000;
   integer(maxTtl, 1, 365 * 24 * 60 * 60 * 1000);
@@ -294,6 +294,12 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
       .run(principalId, owner.accountId, clientId, label, owner.deviceId, time);
     return ownedPrincipal(owner.accountId, principalId);
   }
+  function insertCredential(accountId, grant, target, expiresAt, time) {
+    const id = newId('credential'); const token = TOKEN_PREFIX + randomBytes(32).toString('base64url');
+    db.prepare('INSERT INTO cap_credentials(id,digest,account_id,client_id,principal_id,grant_id,audience,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(id, tokenDigest(token), accountId, grant.client_id, grant.principal_id, grant.id, target, expiresAt, time);
+    return { credential: { id, audience: target, expiresAt, createdAt: time, grantId: grant.id }, token };
+  }
   function revokeGrant(id, accountId, time) {
     const grant = db.prepare('SELECT * FROM cap_grants WHERE id=? AND account_id=?').get(id, accountId);
     assert(grant, 'not_found');
@@ -372,10 +378,7 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
           integer(expiresAt, time + 1, grant.expires_at, 'expiry_invalid');
           const target = audience(args.audience);
           assert(oauth.legacyCredentialCount(owner.accountId) < 10000, 'quota_exceeded');
-          const id = newId('credential'); const token = TOKEN_PREFIX + randomBytes(32).toString('base64url');
-          db.prepare('INSERT INTO cap_credentials(id,digest,account_id,client_id,principal_id,grant_id,audience,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
-            .run(id, tokenDigest(token), owner.accountId, grant.client_id, grant.principal_id, grant.id, target, expiresAt, time);
-          return { credential: { id, audience: target, expiresAt, createdAt: time, grantId: grant.id }, token };
+          return insertCredential(owner.accountId, grant, target, expiresAt, time);
         }
         case 'access.credentials.revoke': {
           exact(args, ['expectedAccountId', 'credentialId']); identifier(args.credentialId);
@@ -475,6 +478,37 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     assert(row, 'not_found');
     if (args.disposition !== 'uncertain') native.assertGeneric(row.invocation_id);
     return settleBudgetCore(args);
+  }
+  if (captureDelegationAuthority !== undefined) {
+    assert(typeof captureDelegationAuthority === 'function', 'host_auth_required');
+    // Captured by the fixed coordinator only. A public/fabricated service DTO
+    // never substitutes for the credential reference in actorRefs.
+    captureDelegationAuthority(({ actor, label, expiresAt, audience: target }) => {
+      assert(db.isTransaction, 'delegation_context_invalid');
+      const { credential, ancestry, oauthConnection } = resolveActor(actor);
+      assert(!oauthConnection, 'delegation_denied');
+      assert(credential.audience === target, 'access_denied');
+      const parent = ancestry[0], time = now(clock);
+      const args = { capabilities: [{ capabilityId: 'notes.createDraft', version: 1 }],
+        resources: ['notes:new'], effects: ['create'], recipients: ['soty:notes'],
+        allowDelegation: false, maxDepth: 0, expiresAt };
+      integer(expiresAt, time + 1, Math.min(credential.expires_at, ...ancestry.map(row => row.expires_at)), 'expiry_invalid');
+      assert(parent.depth < 8, 'delegation_denied');
+      normalizeGrant(args, time, parent);
+      oauth.assertUnmanaged({ clientId: parent.client_id, principalId: parent.principal_id, grantId: parent.root_id });
+      const accountId = credential.account_id;
+      // All provisioning quotas precede the first INSERT, including the client.
+      assert(db.prepare('SELECT count(*) AS n FROM cap_principals WHERE account_id=?').get(accountId).n < 1000, 'quota_exceeded');
+      assert(db.prepare('SELECT count(*) AS n FROM cap_grants WHERE account_id=?').get(accountId).n < 10000, 'quota_exceeded');
+      assert(oauth.legacyCredentialCount(accountId) < 10000, 'quota_exceeded');
+      const creator = { accountId, deviceId: parent.creator_device_id };
+      const principal = insertPrincipal(creator, label, label, time);
+      const grant = insertGrant(creator, principal, args, time, parent);
+      const issued = insertCredential(accountId, db.prepare('SELECT * FROM cap_grants WHERE id=?').get(grant.id), target, expiresAt, time);
+      db.prepare('INSERT INTO cap_audit(id,account_id,kind,object_type,object_id,actor_type,actor_id,created_at) VALUES(?,?,?,?,?,?,?,?)')
+        .run(newId('event'), accountId, 'access.grants.derive', 'grant', grant.id, 'service', parent.principal_id, time);
+      return freezeDeep({ principal: publicPrincipal(principal), grant, ...issued });
+    });
   }
   if (captureNativeSettlement !== undefined) {
     assert(typeof captureNativeSettlement === 'function', 'host_auth_required');

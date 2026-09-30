@@ -3,9 +3,9 @@ import { InvocationError } from '../modules/capabilities/server/invocations.mjs'
 import { NotesError } from '../modules/notes/server/validation.mjs';
 import { ConnectError } from '../modules/connect/server/index.mjs';
 import { validateDiscoveryOrigin } from './capabilities-discovery.js';
-import { CapabilityHttpError, createNativeIngress, singleHeader } from './capabilities-ingress.js';
+import { CapabilityHttpError, createNativeIngress, parseDelegationJson, singleHeader } from './capabilities-ingress.js';
 import { CAPABILITIES_BASE as BASE, NOTES_DRAFT_PATH as CREATE, INVOCATIONS_PATH as HISTORY,
-  INVOCATION_ID_PATTERN, NATIVE_NOTE_ID_PATTERN } from './capabilities-http-contract.js';
+  INVOCATION_ID_PATTERN, NATIVE_NOTE_ID_PATTERN, SERVICE_DELEGATION_PATH, SERVICE_DELEGATION_BODY_BYTES } from './capabilities-http-contract.js';
 
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const INVOCATION_ID = new RegExp(INVOCATION_ID_PATTERN, 'u'), NOTE_ID = new RegExp(NATIVE_NOTE_ID_PATTERN, 'u');
@@ -24,23 +24,26 @@ function routeFor(target) {
   let decoded;
   try { decoded = decodeURIComponent(pathname); } catch { decoded = pathname; }
   const privateNamespace = [pathname, decoded].some(value =>
-    [ `${BASE}/notes`, HISTORY ].some(prefix => value === prefix || value.startsWith(`${prefix}/`)));
+    [ `${BASE}/notes`, HISTORY, `${BASE}/grants` ].some(prefix => value === prefix || value.startsWith(`${prefix}/`)));
   if (!privateNamespace) return null;
   requireValue(Buffer.byteLength(target) <= 8192 && !/[^\u0021-\u007e]|[#\\]/u.test(target)
     && pathname === decoded && !pathname.includes('%') && split < 0, 'invalid_input');
   if (pathname === CREATE) return { kind: 'create', method: 'POST' };
+  if (pathname === SERVICE_DELEGATION_PATH) return { kind: 'derive', method: 'POST' };
+  requireValue(!pathname.startsWith(`${BASE}/grants`), 'invalid_input');
   const invocationId = pathname.startsWith(`${HISTORY}/`) ? pathname.slice(HISTORY.length + 1) : '';
   requireValue(INVOCATION_ID.test(invocationId), 'invocation_not_found');
   return { kind: 'get', method: 'GET', invocationId };
 }
 
-const BAD_INPUT = new Set(['invalid_input', 'invalid_unicode', 'invocation_invalid_arguments', 'notes_invalid_arguments']);
+const BAD_INPUT = new Set(['invalid_input', 'invalid_unicode', 'expiry_invalid', 'invocation_invalid_arguments', 'notes_invalid_arguments']);
 const LARGE = new Set(['payload_too_large', 'invocation_payload_too_large', 'notes_note_too_large']);
-const LIMITED = new Set(['ingress_capacity', 'ingress_rate_limit', 'budget_exceeded', 'native_admission_limit', 'native_rate_limit', 'native_ledger_limit']);
+const LIMITED = new Set(['ingress_capacity', 'ingress_rate_limit', 'budget_exceeded', 'quota_exceeded', 'native_admission_limit', 'native_rate_limit', 'native_ledger_limit']);
 const UNAVAILABLE = new Set(['capability_disabled', 'native_unavailable', 'native_store_mismatch', 'native_storage_busy',
   'connect_authority_busy', 'service_closed', 'notes_storage_corrupt', 'capabilities_storage_corrupt',
   'oauth_unavailable', 'oauth_storage_busy', 'oauth_storage_key_unavailable',
-  'native_legacy_invocation_unsupported', 'native_attempt_not_started']);
+  'native_legacy_invocation_unsupported', 'native_attempt_not_started', 'delegation_unavailable',
+  'delegation_context_invalid', 'delegation_storage_busy']);
 function errorResponse(error) {
   if (!(error instanceof CapabilityHttpError || error instanceof AccessError || error instanceof InvocationError
     || error instanceof NotesError || error instanceof ConnectError)) return { status: 500, code: 'internal_error' };
@@ -49,7 +52,7 @@ function errorResponse(error) {
   if (LARGE.has(code)) return { status: 413, code: 'payload_too_large' };
   if (LIMITED.has(code)) return { status: 429, code, retry: 60 };
   if (UNAVAILABLE.has(code)) return { status: 503, code: 'service_unavailable', retry: 1 };
-  const statuses = { authorization_required: 401, access_denied: 403, invocation_not_found: 404, not_found: 404,
+  const statuses = { authorization_required: 401, access_denied: 403, delegation_denied: 403, invocation_not_found: 404, not_found: 404,
     invocation_request_conflict: 409, unsupported_media_type: 415, unsupported_encoding: 415,
     request_timeout: 408, method_not_allowed: 405 };
   return Object.hasOwn(statuses, code) ? { status: statuses[code], code: code === 'not_found' ? 'invocation_not_found' : code }
@@ -157,6 +160,35 @@ function send(res, status, value) {
   res.status(status).set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': String(body.length) }).end(body);
 }
 
+/** The only route that returns a new one-shot service secret. Select fields
+ * explicitly so future domain internals cannot become part of this response. */
+function projectDelegation(value, audience) {
+  const { principal, grant, credential, token } = value ?? {};
+  requireValue(principal && grant && credential && typeof token === 'string'
+    && /^soty_cap_[A-Za-z0-9_-]{43}$/u.test(token));
+  const select = (source, keys) => Object.fromEntries(keys.map(key => [key, source[key]]));
+  requireValue(['id', 'accountId', 'clientId'].every(key => safeId(principal[key]))
+    && typeof principal.label === 'string' && principal.label.length >= 1 && principal.label.length <= 100
+    && principal.kind === 'service' && principal.state === 'active' && timestamp(principal.createdAt)
+    && principal.revokedAt === null);
+  requireValue(['id', 'accountId', 'principalId', 'clientId', 'parentGrantId', 'rootGrantId'].every(key => safeId(grant[key]))
+    && grant.accountId === principal.accountId && grant.clientId === principal.clientId && grant.principalId === principal.id
+    && grant.capabilities?.length === 1 && grant.capabilities[0].capabilityId === 'notes.createDraft' && grant.capabilities[0].version === 1
+    && ['resources', 'effects', 'recipients'].every(key => Array.isArray(grant[key]) && grant[key].length === 1)
+    && grant.resources[0] === 'notes:new' && grant.effects[0] === 'create' && grant.recipients[0] === 'soty:notes'
+    && grant.allowDelegation === false && grant.maxDepth === 0 && Number.isSafeInteger(grant.depth) && grant.depth > 0
+    && timestamp(grant.expiresAt) && timestamp(grant.createdAt) && grant.revokedAt === null && timestamp(grant.policyEpoch));
+  requireValue(safeId(credential.id) && credential.audience === audience && credential.grantId === grant.id
+    && credential.expiresAt === grant.expiresAt && timestamp(credential.expiresAt) && timestamp(credential.createdAt));
+  return {
+    principal: select(principal, ['id', 'accountId', 'clientId', 'label', 'kind', 'state', 'createdAt', 'revokedAt']),
+    grant: { ...select(grant, ['id', 'accountId', 'principalId', 'clientId', 'parentGrantId', 'rootGrantId', 'allowDelegation',
+      'maxDepth', 'depth', 'expiresAt', 'createdAt', 'revokedAt', 'policyEpoch']),
+      capabilities: [{ capabilityId: 'notes.createDraft', version: 1 }], resources: ['notes:new'], effects: ['create'], recipients: ['soty:notes'] },
+    credential: select(credential, ['id', 'audience', 'expiresAt', 'createdAt', 'grantId']), token,
+  };
+}
+
 /** Host composition only. This is not a generic invocation/executor gateway. */
 export function attachCapabilitiesActions(app, { service, audience = '', ingressOptions, resourceMetadata = null } = {}) {
   requireValue(service && typeof service.authenticateCredential === 'function', 'capability_configuration_invalid');
@@ -165,16 +197,16 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
   const ingress = createNativeIngress(ingressOptions);
   const operations = createCapabilityOperations({ service, origin: audience });
   const host = audience ? new URL(audience).host : null;
-  const secureResource = resourceMetadata !== null && new URL(audience).protocol === 'https:';
+  const secureResource = audience !== '' && new URL(audience).protocol === 'https:';
   const status = () => {
     let ready = false;
     try { ready = Boolean(audience) && service.nativeNotes?.readiness().ready === true; } catch { /* Fail closed. */ }
     return { notesCreateEnabled: ready, audience: audience || null };
   };
   app.use(async (req, res, next) => {
-    let lease;
+    let lease, route;
     try {
-      const route = routeFor(req.originalUrl || req.url);
+      route = routeFor(req.originalUrl || req.url);
       if (!route) { next(); return; }
       res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' });
       requireValue(audience, 'native_unavailable');
@@ -186,17 +218,27 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
       // proxy. An arbitrary Forwarded/X-Forwarded-Proto header is not authority.
       requireValue(!secureResource || req.secure === true, 'access_denied');
       if (req.method !== route.method) { res.set('Allow', route.method); throw new CapabilityHttpError('method_not_allowed'); }
-      if (route.kind === 'create') lease = ingress.enter(req);
+      if (route.kind !== 'get') lease = ingress.enter(req);
       else requireValue(singleHeader(req, 'transfer-encoding') === undefined
         && [undefined, '0'].includes(singleHeader(req, 'content-length')), 'invalid_input');
       // No lock spans the network read. Admission and the final read repeat the
       // live authority check under Connect -> Capabilities.
-      const actor = operations.authenticate({ authorization: singleHeader(req, 'authorization'), audience });
-      requireValue(service.nativeNotes, 'native_unavailable');
+      const authorization = singleHeader(req, 'authorization');
+      const actor = operations.authenticate({ authorization, audience });
+      if (route.kind === 'derive') requireValue(/^Bearer soty_cap_[A-Za-z0-9_-]{43}$/iu.test(authorization), 'delegation_denied');
+      else requireValue(service.nativeNotes, 'native_unavailable');
       let result;
       if (route.kind === 'create') {
         const { title, body, idempotencyKey } = await lease.read(req);
         result = operations.create({ actor, title, body, idempotencyKey });
+      } else if (route.kind === 'derive') {
+        const { label, expiresAt } = await lease.read(req, { parseJson: parseDelegationJson, maximumBytes: SERVICE_DELEGATION_BODY_BYTES });
+        requireValue(typeof service.delegation?.derive === 'function', 'delegation_unavailable');
+        const issued = service.delegation.derive({ actor, label, expiresAt });
+        // A COMMIT may precede a lost/denied response. Never issue a replacement
+        // key here; the owner can inspect and revoke the existing child.
+        operations.authenticate({ authorization, audience });
+        result = { status: 201, body: projectDelegation(issued, audience) };
       } else result = operations.read({ actor, invocationId: route.invocationId });
       if (route.kind === 'create') res.set('Location', `${audience}${HISTORY}/${result.body.invocation.invocationId}`);
       send(res, result.status, result.body);
@@ -205,7 +247,7 @@ export function attachCapabilitiesActions(app, { service, audience = '', ingress
       const safe = errorResponse(error);
       if (!req.complete || !req.readableEnded) { res.shouldKeepAlive = false; res.set('Connection', 'close'); }
       if (safe.status === 401) res.set('WWW-Authenticate', `Bearer realm="soty"${resourceMetadata ? `, resource_metadata="${resourceMetadata}"` : ''}`);
-      if (safe.retry) res.set('Retry-After', String(safe.retry));
+      if (safe.retry && route?.kind !== 'derive') res.set('Retry-After', String(safe.retry));
       send(res, safe.status, { error: { code: safe.code } });
     } finally { lease?.release(); }
   });

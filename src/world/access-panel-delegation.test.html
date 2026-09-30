@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Доступы помощников — изолированный UI fixture</title>
+<style>
+body{margin:0;background:var(--sw-bg);color:var(--sw-ink);font-family:system-ui,sans-serif}
+.qa-controls{padding:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid var(--sw-line);font-size:12px;line-height:1.5}
+.qa-controls>p{width:100%;margin:0}.qa-controls button,.qa-controls select{min-height:44px;max-width:100%;padding:8px 10px;border:1px solid var(--sw-control-border);background:var(--sw-surface);color:var(--sw-ink);font:inherit;border-radius:8px}
+#qa-status{margin:0;padding:10px 12px;font-size:12px;line-height:1.5;overflow-wrap:anywhere}#qa-host{min-height:60vh}
+</style>
+<div class="qa-controls">
+  <p>Изолированный UI · вымышленные данные · настоящие API и базы не вызываются</p>
+  <label>Сценарий <select id="qa-mode"><option value="normal">Родитель и помощник</option><option value="lost">Потерян ответ с ключом</option><option value="late">Поздний ключ · 2 секунды</option></select></label>
+  <button id="qa-reset">Открыть заново</button><button id="qa-account">Сменить аккаунт</button><button id="qa-theme">Сменить тему</button>
+</div>
+<p id="qa-status" role="status"></p><main id="qa-host"></main>
+<script type="module">
+import './world.css';
+import { createPalette } from './theme/palette.mjs';
+import { mountAccessPanel } from './access-panel.ts';
+const host=document.querySelector('#qa-host'),status=document.querySelector('#qa-status'),mode=document.querySelector('#qa-mode');
+let handle,account='qa_owner_a',scheme='dark',generation=0;
+function theme(){for(const [key,value] of Object.entries(createPalette(scheme,50)))document.documentElement.style.setProperty(key,value);document.documentElement.style.colorScheme=scheme;}
+theme();
+document.querySelector('#qa-theme').onclick=()=>{scheme=scheme==='dark'?'light':'dark';theme();};
+function reset(){
+  handle?.dispose();const run=++generation,accountId=account,time=Date.now();let created=0,writes=0,keyIssues=0;
+  const rootId='qa_parent_grant_'+ 'p'.repeat(90),childId='qa_child_grant_'+ 'c'.repeat(90);
+  const principal=(id,label)=>({id,accountId,clientId:`client_${id}`,label,state:'active',createdAt:time-60000,revokedAt:null});
+  const principals=[principal('qa_parent','Мой клиент'),principal('qa_child','Помощник с длинным названием для проверки узкого экрана и точной связи')];
+  const grant=(id,subject,extra={})=>({id,principalId:subject.id,clientId:subject.clientId,parentGrantId:null,rootGrantId:id,
+    capabilities:[{capabilityId:'notes.createDraft',version:1}],resources:['notes:new'],effects:['create'],recipients:['soty:notes'],
+    expiresAt:time+86400000,createdAt:time-60000,revokedAt:null,allowDelegation:false,maxDepth:0,depth:0,
+    budget:{unit:'invocations',limit:10,spent:2,reserved:1,remaining:7,uncertain:1},...extra});
+  const grants=[grant(rootId,principals[0],{allowDelegation:true,maxDepth:1}),grant(childId,principals[1],{parentGrantId:rootId,rootGrantId:rootId,depth:1})];
+  const events=[{id:'qa_owner_event',kind:'access.grants.issue',objectType:'grant',objectId:rootId,actorType:'connect',actorId:'qa_owner_device',createdAt:time-60000},
+    {id:'qa_service_event',kind:'access.grants.derive',objectType:'grant',objectId:childId,actorType:'service',actorId:principals[0].id,createdAt:time-30000}];
+  const update=()=>{if(run===generation)status.textContent=`${accountId}. Синтетические изменения: ${writes}; выдачи ключа: ${keyIssues}. Реальных изменений: 0.`;};
+  const api={async request(method,args){
+    if(args.expectedAccountId!==accountId)throw Object.assign(new Error('Synthetic mismatch'),{code:'account_mismatch'});
+    if(!method.endsWith('.list'))writes++;update();
+    if(method==='access.principals.list')return{principals:structuredClone(principals),cursor:null};
+    if(method==='oauth.connections.list')return{connections:[],nextCursor:null};
+    if(method==='access.grants.list')return{grants:structuredClone(grants.filter(row=>row.principalId===args.principalId)),cursor:null};
+    if(method==='access.events.list')return{events:structuredClone(events),cursor:null};
+    if(method==='access.invocations.list')return{invocations:[],nextCursor:null};
+    if(method==='access.principals.create'){const item=principal(`qa_new_${++created}`,args.label);principals.unshift(item);return{principal:structuredClone(item)};}
+    if(method==='access.grants.issue'){const item=grant(`qa_new_grant_${created}`,principals.find(row=>row.id===args.principalId),{...args,budget:{unit:'invocations',limit:args.budget.limit,spent:0,reserved:0,remaining:args.budget.limit,uncertain:0}});grants.push(item);return{grant:structuredClone(item)};}
+    if(method==='access.credentials.issue'){
+      keyIssues++;update();
+      if(mode.value==='lost')throw new TypeError('Synthetic lost acknowledgement');
+      const result={token:`soty_cap_${'q'.repeat(43)}`,credential:{id:'qa_key',grantId:args.grantId,audience:args.audience,expiresAt:args.expiresAt}};
+      if(mode.value==='late')await new Promise(resolve=>setTimeout(resolve,2000));return result;
+    }
+    if(method==='access.principals.revoke'){const item=principals.find(row=>row.id===args.principalId);item.state='revoked';item.revokedAt=Date.now();return{principal:structuredClone(item)};}
+    if(method==='access.grants.revoke'){const item=grants.find(row=>row.id===args.grantId);item.revokedAt=Date.now();return{grant:structuredClone(item)};}
+    throw new Error('Unexpected synthetic operation');
+  }};
+  handle=mountAccessPanel(host,{api,accountId,accountLabel:accountId==='qa_owner_a'?'Вымышленный владелец A':'Вымышленный владелец B',availability:async()=>({notesCreateEnabled:true,audience:'https://delegation.example.invalid'})});update();
+}
+document.querySelector('#qa-reset').onclick=reset;
+document.querySelector('#qa-account').onclick=()=>{account=account==='qa_owner_a'?'qa_owner_b':'qa_owner_a';reset();};
+reset();
+</script>
+</html>

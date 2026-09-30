@@ -22,7 +22,7 @@ interface Budget { unit: string; limit: number; reserved: number; spent: number;
 interface Grant {
   id: string; principalId: string; clientId: string; parentGrantId: string | null; rootGrantId: string;
   capabilities: { capabilityId: string; version: number }[]; resources: string[]; effects: string[]; recipients: string[];
-  expiresAt: number; createdAt: number; revokedAt: number | null; allowDelegation: boolean; budget?: Budget;
+  expiresAt: number; createdAt: number; revokedAt: number | null; allowDelegation: boolean; maxDepth: number; depth: number; budget?: Budget;
 }
 interface AccessEvent { id: string; kind: string; objectType: string; objectId: string; actorType: string; actorId: string; createdAt: number }
 interface Effect { kind: string; resourceType: string; resourceId: string; revision?: number }
@@ -378,7 +378,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     apps.append(el('h2', 'sa-group-title', 'Подключённые приложения'), el('p', 'sa-group-description', 'Приложения, которым вы разрешили действия в Сотах. Каждое подключение имеет свой срок и лимит.'));
     renderConnections(apps);
     const keys = el('section', 'sa-client-group'); keys.setAttribute('aria-label', 'Доступ по ключу');
-    keys.append(el('h2', 'sa-group-title', 'Доступ по ключу'), el('p', 'sa-group-description', 'Клиенты, для которых вы создали ключ вручную.'));
+    keys.append(el('h2', 'sa-group-title', 'Доступ по ключу'), el('p', 'sa-group-description', 'Клиенты с отдельным ключом, в том числе подключённые помощники.'));
     renderKeyClients(keys); content.append(apps, keys);
   }
   function renderConnections(parent: HTMLElement) {
@@ -455,6 +455,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       actions.append(expand); top.append(mark, description, actions); card.append(top);
       if (selectedPrincipal === principal.id) {
         const details = el('div', 'sa-client-details'); details.id = `${instanceId}-grants-${principal.id}`;
+        details.append(connectionIdentity('Код исполнителя', principal.id));
         if (!listState(details, grants, 'Разрешений пока нет', 'Клиент не получил действий через этот список.', () => loadGrants(principal.id))) {
           for (const grant of grants.items) details.append(renderGrant(grant, principal));
           if (grants.next || grants.previous.length) details.append(pager(grants, (cursor, direction) => loadGrants(principal.id, cursor, direction)));
@@ -475,28 +476,35 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
   function renderGrant(grant: Grant, principal: Principal): HTMLElement {
     const row = el('section', 'sa-grant'); const summary = el('div', 'sa-grant-heading');
     const ended = grant.revokedAt !== null || principal.state === 'revoked'; const expired = grant.expiresAt <= Date.now();
-    summary.append(el('h3', '', grantName(grant)), stateBadge(ended ? 'Отозван' : expired ? 'Срок истёк' : 'Выдан', ended || expired ? '' : 'accent'));
+    const shared = grant.parentGrantId !== null || grant.allowDelegation;
+    summary.append(el('h3', '', grantName(grant)), stateBadge(grant.revokedAt !== null ? 'Отозван' : principal.state === 'revoked' ? 'Клиент отключён' : expired ? 'Срок истёк' : 'Выдан', ended || expired ? '' : 'accent'));
     const facts = el('dl', 'sa-grant-facts');
     facts.append(fact('Срок', `До ${dateLabel(grant.expiresAt)}`), fact('Данные', grant.resources.every(value => value === 'notes:new') ? 'Только новые личные записки' : 'Выбранные ресурсы приложения'));
-    if (grant.parentGrantId) facts.append(fact('Связь', 'Часть ранее выданного доступа'));
+    if (grant.parentGrantId) facts.append(fact('Связь', 'Доступ помощника · часть исходного разрешения'));
     if (grant.budget?.unit === 'invocations') {
-      facts.append(fact('Лимит', `Осталось ${grant.budget.remaining} из ${grant.budget.limit} действий`));
+      facts.append(fact(shared ? 'Общий лимит' : 'Лимит', `Осталось ${grant.budget.remaining} из ${grant.budget.limit} действий${shared ? ' на всю цепочку' : ''}`));
       if (grant.budget.reserved > 0) facts.append(fact('Ожидают результата', String(grant.budget.reserved)));
       if (grant.budget.uncertain > 0) facts.append(fact('Не подтверждено', String(grant.budget.uncertain)));
     }
     row.append(summary, facts);
+    if (grant.parentGrantId) row.append(el('p', 'sa-muted', 'Выдача записана. Доступ зависит от ключа и всей цепочки разрешений; они проверяются перед каждым действием.'));
     if (grant.budget?.unit === 'invocations' && grant.budget.limit > 0) {
       const progress = el('progress', 'sa-budget'); progress.max = grant.budget.limit; progress.value = grant.budget.spent + grant.budget.reserved;
-      progress.setAttribute('aria-label', `Использовано или зарезервировано ${progress.value} из ${grant.budget.limit} действий`); row.append(progress);
+      progress.setAttribute('aria-label', `Использовано или зарезервировано ${progress.value} из ${grant.budget.limit} действий${shared ? ' общего лимита' : ''}`); row.append(progress);
     }
-    const detail = el('details', 'sa-permission-detail'); detail.append(el('summary', '', 'Что разрешено'));
+    const detail = el('details', 'sa-permission-detail'); detail.append(el('summary', '', 'Разрешения и связь'));
     const precise = el('dl', 'sa-grant-facts');
     precise.append(fact('Действия', grant.effects.map(effect => effectNames[effect] || effect).join(', ') || 'Нет'), fact('Получатель', grant.recipients.map(recipient => recipient === 'soty:notes' ? 'Записки в Сотах' : recipient).join(', ') || 'Не указан'),
-      fact('Передача доступа', grant.allowDelegation ? 'Разрешена в пределах этого доступа' : 'Не разрешена'));
+      fact('Помощники', grant.allowDelegation ? 'Разрешены в пределах срока и общего лимита' : 'Подключать новых помощников нельзя'),
+      fact('Код разрешения', grant.id), fact('Код клиента', grant.clientId));
+    if (grant.parentGrantId) precise.append(fact('Исходное разрешение', grant.parentGrantId));
+    if (shared) precise.append(fact('Корневое разрешение', grant.rootGrantId));
     if (!grant.capabilities.every(capability => capability.capabilityId === notesCapability.capabilityId)) precise.append(fact('Функции', grant.capabilities.map(capability => `${capability.capabilityId} · v${capability.version}`).join(', ')), fact('Ресурсы', grant.resources.join(', ')));
-    detail.append(precise); row.append(detail);
+    detail.append(precise);
+    if (shared) detail.append(el('p', 'sa-muted', 'Отзыв одного ключа не отключает уже подключённых помощников. Отзыв исходного разрешения или отключение его клиента закрывает и переданные доступы.'));
+    row.append(detail);
     if (!ended) {
-      const revoke = button('Отозвать', 'lock', 'sa-revoke', () => { void inspectRevoke(principal, grant); });
+      const revoke = button('Отозвать доступ', 'lock', 'sa-revoke', () => { void inspectRevoke(principal, grant); });
       revoke.dataset.saFocus = `revoke-grant-${grant.id}`; row.append(revoke);
     }
     return row;
@@ -537,7 +545,8 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       const row = el('li', 'sa-event'); const marker = el('span', 'sa-event-marker'); marker.append(icon(item.kind.endsWith('.revoke') ? 'lock' : 'check'));
       const label = el('div'); label.append(el('strong', '', auditNames[item.kind] || 'Доступ изменён'), el('span', 'sa-muted', dateLabel(item.createdAt)));
       const detail = el('details', 'sa-event-detail'); detail.append(el('summary', '', 'Подробнее'));
-      const facts = el('dl', 'sa-grant-facts'); facts.append(fact('Объект', knownPrincipals.get(item.objectId)?.label || item.objectId), fact('Изменено с устройства', item.actorId)); detail.append(facts);
+      const facts = el('dl', 'sa-grant-facts'); facts.append(fact('Объект', knownPrincipals.get(item.objectId)?.label || item.objectId),
+        fact(item.actorType === 'service' ? 'Передал клиент' : item.actorType === 'connect' ? 'Изменено с устройства' : 'Источник изменения', item.actorId)); detail.append(facts);
       row.append(marker, label, detail); list.append(row);
     }
     content.append(list); if (events.next || events.previous.length) content.append(pager(events, loadEvents));
@@ -629,14 +638,16 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
       const result = await request<{ grants: Grant[]; cursor: string | null }>('access.grants.list', { principalId: principal.id, limit: 40, ...(target && grants.cursor ? { cursor: grants.cursor } : {}) });
       if (!dialogAlive(state)) return;
       const grant = target ? result.grants.find(value => value.id === target.id) || target : undefined;
-      body.replaceChildren(el('p', 'sa-dialog-intro', principal.label));
+      body.replaceChildren(el('p', 'sa-dialog-intro', principal.label), connectionIdentity('Код исполнителя', principal.id));
+      if (target) body.append(connectionIdentity('Код разрешения', target.id));
       const impact = el('div', 'sa-consent-summary');
       impact.append(icon('lock'), el('p', '', target ? `Будет закрыт доступ «${grantName(grant!)}» и разрешения, переданные на его основе.` : 'Будут закрыты все разрешения этого клиента, в том числе переданные другим клиентам.'));
       const details = el('dl', 'sa-grant-facts');
       const visible = target ? [grant!] : result.grants.filter(value => value.revokedAt === null).slice(0, 3);
       for (const item of visible) details.append(fact(grantName(item), `До ${dateLabel(item.expiresAt)}`));
       if (!target && result.cursor) details.append(fact('Также', 'Остальные разрешения этого клиента'));
-      body.append(impact, details, el('p', 'sa-muted', 'Уже выполненные изменения сохранятся. Начатые задания могут ещё выполняться.'));
+      body.append(impact, details, el('p', 'sa-muted', 'Отзыв одного ключа не отключает уже подключённых помощников. Здесь отзывается сам доступ вместе с переданными на его основе разрешениями.'),
+        el('p', 'sa-muted', 'Уже выполненные изменения сохранятся. Начатые задания могут ещё выполняться.'));
       const message = el('p', 'sa-form-message'); message.setAttribute('role', 'alert');
       const controls = el('div', 'sa-dialog-actions'); const cancel = button('Оставить', undefined, '', () => closeDialog());
       const confirm = button(target ? 'Отозвать доступ' : 'Отключить клиента', 'lock', 'sa-danger', () => {
@@ -685,21 +696,37 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     const consent = el('div', 'sa-consent-summary'); consent.append(icon('list'), el('div', '', 'Только создание новых личных записок'));
     const facts = el('dl', 'sa-consent-facts');
     const accountValue = options.accountLabel ? `${options.accountLabel} · ${accountId}` : accountId;
-    facts.append(fact('Аккаунт', accountValue), fact('Получатель текста', 'Записки в Сотах'), fact('Доступ к прежним запискам', 'Не предоставляется'), fact('Передача доступа', 'Не разрешена'));
+    facts.append(fact('Аккаунт', accountValue), fact('Получатель текста', 'Записки в Сотах'), fact('Доступ к прежним запискам', 'Не предоставляется'));
+    const delegation = el('input', 'sa-delegation-check'); delegation.type = 'checkbox'; delegation.checked = false;
+    delegation.id = `${instanceId}-delegation`; delegation.dataset.saDelegation = 'allow';
+    const delegationLabel = el('label', 'sa-delegation'); delegationLabel.htmlFor = delegation.id;
+    delegationLabel.append(delegation, el('span', '', 'Разрешить этому клиенту подключать помощников'));
+    const delegationHint = el('p', 'sa-muted', 'Только записки, в пределах этого же срока и общего лимита. Помощники не могут передавать доступ дальше.');
+    delegationHint.id = `${instanceId}-delegation-hint`; delegation.setAttribute('aria-describedby', delegationHint.id);
+    const delegationDetails = el('details', 'sa-permission-detail'); delegationDetails.append(el('summary', '', 'Как отключить помощников'),
+      el('p', 'sa-muted', 'Отзыв одного ключа не отключает уже подключённых помощников. Отзовите исходное разрешение или отключите клиента, чтобы закрыть и переданные доступы.'));
+    const delegationChoice = el('div', 'sa-delegation-choice'); delegationChoice.append(delegationLabel, delegationHint, delegationDetails);
     const totals = el('p', 'sa-consent-total');
-    const updateTotals = () => { totals.textContent = `До ${Math.max(0, Number(count.value) || 0)} действий · ${expiry.selectedOptions[0]?.textContent || ''} · без публикации`; };
+    const updateTotals = () => { totals.textContent = `${delegation.checked ? 'Общий лимит: до' : 'До'} ${Math.max(0, Number(count.value) || 0)} действий · ${expiry.selectedOptions[0]?.textContent || ''} · без публикации`; };
     updateTotals();
     const message = el('p', 'sa-form-message'); message.setAttribute('role', 'alert');
     const submit = button('Создать ключ доступа', 'lock', 'sw-button-primary'); submit.type = 'submit';
-    form.append(labeledField('Название клиента', name), pair, consent, facts, totals, message, submit);
+    form.append(labeledField('Название клиента', name), pair, consent, facts, delegationChoice, totals, message, submit);
     for (const input of [name, expiry, count]) input.addEventListener('input', () => { state.dirty = true; updateTotals(); });
+    delegation.addEventListener('change', () => { state.dirty = true; updateTotals(); });
+    let attempted = false;
     form.addEventListener('submit', event => {
-      event.preventDefault(); if (!form.reportValidity() || state.busy) return;
+      event.preventDefault(); if (!dialogAlive(state) || attempted || state.busy || !form.reportValidity()) return;
       const label = name.value.trim(); const limit = Number(count.value); const hours = Number(expiry.value);
       if (!label || !Number.isSafeInteger(limit) || limit < 1 || limit > 1000 || ![1, 24, 168].includes(hours)) { message.textContent = 'Укажите название, срок и целый лимит от 1 до 1000.'; return; }
+      // Consent is the value actually submitted, never a field reread after an
+      // availability check or another signed request has yielded.
+      const allowDelegation = delegation.checked;
+      attempted = true;
       mutate(state, async () => {
-        submit.disabled = true; name.disabled = true; expiry.disabled = true; count.disabled = true; message.textContent = 'Подключаем…';
-        let principalId: string | null = null;
+        submit.disabled = true; name.disabled = true; expiry.disabled = true; count.disabled = true; delegation.disabled = true; message.textContent = 'Подключаем…';
+        let principalId: string | null = null, grantId: string | null = null;
+        let issuingKey = false;
         try {
           const ready = await checkAvailability();
           if (!dialogAlive(state)) return;
@@ -710,22 +737,29 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
           principalId = principal.principal.id;
           const expiresAt = Date.now() + hours * 60 * 60 * 1000;
           const grant = await request<{ grant: Grant }>('access.grants.issue', { principalId, capabilities: [notesCapability], resources: ['notes:new'], effects: ['create'], recipients: ['soty:notes'],
-            expiresAt, allowDelegation: false, maxDepth: 0, budget: { unit: 'invocations', limit } });
+            expiresAt, allowDelegation, maxDepth: allowDelegation ? 1 : 0, budget: { unit: 'invocations', limit } });
           if (!dialogAlive(state)) return;
-          if (!grant.grant?.id || grant.grant.principalId !== principalId) throw new Error('unconfirmed');
+          if (!grant.grant?.id || grant.grant.principalId !== principalId || grant.grant.allowDelegation !== allowDelegation
+            || grant.grant.maxDepth !== (allowDelegation ? 1 : 0)) throw new Error('unconfirmed');
+          grantId = grant.grant.id;
           const stillReady = await checkAvailability();
           if (!dialogAlive(state)) return;
           if (!stillReady.notesCreateEnabled || stillReady.audience !== ready.audience) throw Object.assign(new Error('capability_disabled'), { code: 'capability_disabled' });
+          issuingKey = true;
           const issued = await request<{ token: string; credential: { id: string; grantId: string; audience: string; expiresAt: number } }>('access.credentials.issue', { grantId: grant.grant.id, audience: ready.audience, expiresAt });
           if (!dialogAlive(state)) return;
           if (typeof issued.token !== 'string' || !/^soty_cap_[A-Za-z0-9_-]{43}$/u.test(issued.token) || issued.credential?.audience !== ready.audience || issued.credential.grantId !== grant.grant.id || issued.credential.expiresAt !== expiresAt) throw new Error('unconfirmed');
           state.dirty = false; markChanged(); knownPrincipals.set(principalId, principal.principal);
-          showSecret(state, issued.token, label, expiresAt, limit); announce('Ограниченный ключ создан. Скопируйте его до закрытия.');
+          showSecret(state, issued.token, label, expiresAt, limit, { principalId, grantId, allowDelegation }); announce('Ограниченный ключ создан. Скопируйте его до закрытия.');
           void loadPrincipals();
         } catch (error) {
           if (!dialogAlive(state)) return;
-          message.textContent = principalId ? 'Настройка не завершена. Перед повтором закройте уже созданный доступ.' : codeOf(error) === 'capability_disabled' ? errorLabel(error) : 'Создание не подтверждено. Проверьте список клиентов перед новой попыткой.';
+          message.textContent = issuingKey ? 'Ключ мог быть выдан, но ответ не подтверждён. Секрет нельзя восстановить. Проверьте доступ в списке клиентов и истории; перед новой выдачей отзовите прежний доступ.'
+            : principalId ? 'Настройка не подтверждена. Проверьте созданный доступ в списке клиентов и истории; перед новой выдачей отзовите его.'
+              : codeOf(error) === 'capability_disabled' ? errorLabel(error) : 'Создание могло состояться, но ответ не подтверждён. Проверьте список клиентов и историю перед новой попыткой.';
           submit.hidden = true;
+          if (principalId) form.append(connectionIdentity('Код исполнителя', principalId));
+          if (grantId) form.append(connectionIdentity('Код разрешения', grantId));
           if (principalId) {
             const createdId = principalId;
             const cleanup = button('Закрыть созданный доступ', 'lock', 'sa-danger', () => {
@@ -734,27 +768,28 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
                 try {
                   const result = await request<{ principal: Principal }>('access.principals.revoke', { principalId: createdId });
                   if (!dialogAlive(state)) return;
-                  if (result.principal?.state !== 'revoked') throw new Error('unconfirmed');
+                  if (result.principal?.id !== createdId || result.principal.accountId !== accountId || result.principal.state !== 'revoked') throw new Error('unconfirmed');
                   announce('Незавершённое подключение закрыто.'); state.busy = false; state.dirty = false; closeDialog(); markChanged(); void loadPrincipals();
                 } catch { if (dialogAlive(state)) { message.textContent = 'Отзыв не подтверждён. Обновите список клиентов и проверьте доступ.'; cleanup.disabled = false; } }
               });
             });
             form.append(cleanup);
-          } else form.append(button('Проверить список', 'refresh', '', () => { state.dirty = false; closeDialog(); selectView('clients'); void loadPrincipals(); }));
+          }
+          form.append(button('Проверить список', 'refresh', '', () => { state.dirty = false; closeDialog(); selectView('clients'); void loadPrincipals(); }));
         }
       });
     });
     state.dialog.body.replaceChildren(form); name.focus();
   }
 
-  function showSecret(state: DialogState, value: string, label: string, expiresAt: number, limit: number) {
+  function showSecret(state: DialogState, value: string, label: string, expiresAt: number, limit: number, access: { principalId: string; grantId: string; allowDelegation: boolean }) {
     let secret: string | null = value;
     state.dirty = true;
     const body = state.dialog.body;
     const title = state.dialog.element.querySelector('h2'); if (title) title.textContent = 'Ключ готов';
     const input = el('input', 'sa-secret'); input.type = 'password'; input.readOnly = true; input.autocomplete = 'off'; input.spellcheck = false; input.value = value; input.setAttribute('aria-label', 'Ключ доступа');
     state.clearSecret = () => { secret = null; input.value = ''; input.removeAttribute('value'); state.dirty = false; };
-    const info = el('p', 'sa-muted', 'Скопируйте ключ в ваш клиент. После закрытия он исчезнет с этого экрана.');
+    const info = el('p', 'sa-muted', 'Скопируйте ключ в ваш клиент. Он показывается один раз и не восстанавливается после закрытия.');
     const token = el('div', 'sa-secret-row');
     const reveal = button('Показать', 'eye', '', () => { input.type = input.type === 'password' ? 'text' : 'password'; reveal.querySelector('span')!.textContent = input.type === 'password' ? 'Показать' : 'Скрыть'; reveal.setAttribute('aria-pressed', String(input.type === 'text')); });
     reveal.setAttribute('aria-pressed', 'false'); token.append(input, reveal);
@@ -770,8 +805,12 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
         if (dialogAlive(state)) { status.classList.remove('is-success'); input.type = 'text'; input.focus(); input.select(); reveal.setAttribute('aria-pressed', 'true'); reveal.querySelector('span')!.textContent = 'Скрыть'; status.textContent = 'Скопируйте выделенный ключ вручную.'; }
       }).finally(() => { if (dialogAlive(state)) copy.disabled = false; });
     });
-    const summary = el('dl', 'sa-consent-facts'); summary.append(fact('Клиент', label), fact('Срок', `До ${dateLabel(expiresAt)}`), fact('Лимит', `${limit} действий`));
-    body.replaceChildren(el('div', 'sa-key-mark'), info, summary, token, status, copy, button('Готово, закрыть', undefined, '', () => { state.dirty = false; closeDialog(); }));
+    const summary = el('dl', 'sa-consent-facts'); summary.append(fact('Клиент', label), fact('Срок', `До ${dateLabel(expiresAt)}`),
+      fact(access.allowDelegation ? 'Общий лимит' : 'Лимит', `${limit} действий${access.allowDelegation ? ' на всю цепочку' : ''}`), fact('Помощники', access.allowDelegation ? 'Разрешены · один уровень' : 'Не разрешены'));
+    const reference = el('details', 'sa-permission-detail'); reference.append(el('summary', '', 'Доступ и отключение'),
+      connectionIdentity('Код исполнителя', access.principalId), connectionIdentity('Код разрешения', access.grantId));
+    if (access.allowDelegation) reference.append(el('p', 'sa-muted', 'Отзыв одного ключа не отключает уже подключённых помощников. Отзовите это разрешение или отключите клиента, чтобы закрыть и переданные доступы.'));
+    body.replaceChildren(el('div', 'sa-key-mark'), info, summary, token, status, copy, reference, button('Готово, закрыть', undefined, '', () => { state.dirty = false; closeDialog(); }));
     body.querySelector('.sa-key-mark')?.append(icon('check')); copy.focus();
   }
 

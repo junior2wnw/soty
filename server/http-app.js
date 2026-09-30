@@ -110,6 +110,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
         if (!connect) throw new AccessError('native_unavailable');
         return connect.withAuthorityFence(action);
       } },
+      ...(admittedCapabilityAudience ? { delegation: { audience: admittedCapabilityAudience, withAuthorityFence: action => {
+        if (!connect) throw new AccessError('delegation_unavailable');
+        return connect.withAuthorityFence(action);
+      } } } : {}),
       ...(oauthProfile ? { oauth: oauthProfile.domainConfiguration(action => {
         if (!connect) throw new AccessError('oauth_unavailable');
         return connect.withAuthorityFence(action);

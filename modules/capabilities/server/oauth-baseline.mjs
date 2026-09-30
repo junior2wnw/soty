@@ -206,12 +206,18 @@ export function createOAuthBaselineGuard({ db }) {
     return connection ? revokeConnection(connection, time) : false;
   }
   function legacyCredentialCount(accountId) {
-    if (!available()) return db.prepare('SELECT count(*) AS n FROM cap_credentials WHERE account_id=?').get(accountId).n;
-    return db.prepare(`SELECT count(*) AS n FROM cap_credentials k WHERE k.account_id=? AND NOT EXISTS(
+    // Begin with the account's grants, using the existing lineage indexes.
+    // Every legitimately issued credential belongs to its grant's account.
+    // CROSS JOIN fixes that bounded join order even on a populated store.
+    const from = `FROM cap_grants g INDEXED BY cap_grants_account
+      CROSS JOIN cap_credentials k INDEXED BY cap_credentials_grant ON k.grant_id=g.id
+      WHERE g.account_id=? AND k.account_id=?`;
+    if (!available()) return db.prepare(`SELECT count(*) AS n ${from}`).get(accountId, accountId).n;
+    return db.prepare(`SELECT count(*) AS n ${from} AND NOT EXISTS(
       SELECT 1 FROM cap_oauth_credentials l JOIN cap_oauth_connections c ON c.id=l.connection_id
       WHERE l.credential_id=k.id AND l.token_digest=k.digest AND l.created_at=k.created_at AND l.expires_at=k.expires_at
         AND c.account_id=k.account_id AND c.client_id=k.client_id AND c.principal_id=k.principal_id
-        AND c.root_grant_id=k.grant_id AND c.resource=k.audience)`).get(accountId).n;
+        AND c.root_grant_id=k.grant_id AND c.resource=k.audience)`).get(accountId, accountId).n;
   }
   return Object.freeze({ managed, validateCredential, assertUnmanaged, revokeForCredential, legacyCredentialCount,
     validateConnection(connection) { return connectionCheck(db, connection); }, revokeConnection });
