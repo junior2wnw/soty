@@ -76,3 +76,25 @@ SHA256 working bytes после repairs:
 | `docs/implementation/p4-native-storage-contract.md` | `2ae6181faef1d38d3d4ddd7825c96398bd1a3d967e827abd21f4b21a1df0c273` |
 
 Дополнительный read-only B2 host review подтверждает внесённые решения: свежая внешняя read ACL после actorless execution/reconcile, replay до disable/new-admission checks, общий Connect nested/close guard, неизменяемое исходное execution authorization. HTTP plan теперь задаёт raw2 MiB /15 s /8 global readers /2 peer readers /60 POST за60 s /2048 peer records. Это конечные проектные пределы до реализации, не проверенный HTTP результат и не distributed SLA.
+
+## Последующая совместимость теста с B2 native port
+
+30.09.2026. После появления принятого B2 API root разрешил узко заменить прежнее `native === undefined` в первом Notes case. Исторический B1 результат выше сохранён: его source/hash и evidence не переносятся автоматически на B2. Новый port существует и на default v1 reopen, и после explicit v2 migration; без `verifyNativeContext` он должен оставаться закрытым.
+
+Независимый case теперь вызывает настоящий service: pure `validateDraftInput` принимает корректный input, а `storageIdentity`, `readCreateProof` и `createDraftForInvocation` отвечают `native_unavailable` в обеих версиях. До/после отказов совпадают Notes/accounts/FTS/обычные receipts/native proofs/metadata, `user_version`, `data_version` отдельного соединения и hashes main/WAL. Прежние assertions schemaVersion/registryId/default-off/replay/reopen/checkpoint сохранены. Production и author tests не изменялись.
+
+Собственный ограниченный прогон **6/6 PASS,0 FAIL,0 SKIP**,871.6647ms, Node24.21.0/SQLite3.53.4:
+
+```powershell
+$independentNode = Join-Path (Get-Location).Path 'var/toolchains/node-v24.21.0-win-x64'
+$env:PATH = $independentNode + [IO.Path]::PathSeparator + $env:PATH
+& (Join-Path $independentNode 'node.exe') --test --test-concurrency=1 modules/notes/test/native-storage.acceptance.test.mjs
+```
+
+| Файл после узкой адаптации | SHA256 |
+| --- | --- |
+| Independent Notes test | `5b1257eb80d538041ed36c8f07fb3717a122b8a01bbc5075f45208959d205bc1` |
+| `modules/notes/server/native.mjs`, read-only | `1dcff0bb9bdae66a855f971363204081e5f70b81253c6bd9abc3413f9cb2cb65` |
+| `modules/notes/server/index.mjs`, read-only | `32befd49b596714293f01ae08a7b5a0015e15fc7b9f8eb9311e95d76b8a9dfc7` |
+
+Этот case доказывает закрытый порт без verifier; настоящую opaque authority, effect/reconcile, crash ordering и HTTP composition должны проверять отдельные B2 gates. Полный114-test domain regression здесь не повторялся.

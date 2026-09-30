@@ -79,10 +79,31 @@ function populateHistorical(db) {
 
 test('historical populated Notes v1 survives default reopen and explicit v2 migration with usable checkpoints', async t => {
   const f = await fixture(t), original = populateHistorical(f.db), before = snapshot(f.db);
+  const assertNativeClosed = (service, db) => {
+    const rows = snapshot(db), metadata = db.prepare('SELECT * FROM notes_meta ORDER BY key').all();
+    const nativeRows = () => service.schemaVersion === 2 ? db.prepare('SELECT * FROM note_native_creates').all() : null;
+    const proofs = nativeRows(), files = fileProof(f.databasePath), version = db.prepare('PRAGMA data_version').get().data_version;
+    const input = { title: 'Без доверенного контекста', body: 'Этот текст не должен сохраниться 🐝' };
+    const context = Object.freeze({ projectId: 'soty', sourceStoreId: '8'.repeat(32), notesStoreId: service.registryId,
+      invocationId: 'inv_closed_native', accountId: OWNER.accountId, noteId: `n_${'a'.repeat(64)}`,
+      mutationId: `m_${'a'.repeat(64)}`, inputDigest: sha(JSON.stringify({ body: input.body, title: input.title })),
+      capabilityDigest: '95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c162204' });
+    const validation = service.native.validateDraftInput({ input });
+    assert.ok(Number.isSafeInteger(validation.documentBytes) && validation.documentBytes > 0);
+    assert.throws(() => service.native.storageIdentity(), fault('native_unavailable'));
+    assert.throws(() => service.native.readCreateProof({ context }), fault('native_unavailable'));
+    assert.throws(() => service.native.createDraftForInvocation({ context, input }), fault('native_unavailable'));
+    assert.deepEqual(snapshot(db), rows); assert.deepEqual(nativeRows(), proofs);
+    assert.deepEqual(db.prepare('SELECT * FROM notes_meta ORDER BY key').all(), metadata);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, service.schemaVersion);
+    assert.equal(db.prepare('PRAGMA data_version').get().data_version, version);
+    assert.deepEqual(fileProof(f.databasePath), files);
+  };
   f.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE'); f.close(f.db);
   const baseline = f.open(); assert.equal(baseline.schemaVersion, 1); assert.equal(baseline.registryId, null);
-  assert.deepEqual(baseline.supportedSchemaVersions, [1, 2]); assert.equal(baseline.native, undefined);
+  assert.deepEqual(baseline.supportedSchemaVersions, [1, 2]);
   const inspection = f.raw(); assert.deepEqual(snapshot(inspection), before);
+  assertNativeClosed(baseline, inspection);
   assert.equal(inspection.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get().busy, 0);
   assert.equal(request(baseline, 'notes.get', { noteId: 'note_seed_active' }).note.body, original);
   assert.equal(request(baseline, 'notes.list', { query: 'Сохранённый' }).notes.length, 1);
@@ -93,6 +114,7 @@ test('historical populated Notes v1 survives default reopen and explicit v2 migr
   const upgraded = f.open({ allowNativeMigration: true }), check = f.raw();
   assert.equal(upgraded.schemaVersion, 2); assert.match(upgraded.registryId, /^[a-f0-9]{32}$/u);
   assert.deepEqual(snapshot(check), before); assert.equal(check.prepare('SELECT count(*) AS n FROM note_native_creates').get().n, 0);
+  assertNativeClosed(upgraded, check);
   assert.equal(check.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get().busy, 0);
   const registryId = upgraded.registryId; f.close(upgraded);
   const reopened = f.open(); assert.equal(reopened.registryId, registryId); assert.equal(reopened.schemaVersion, 2);

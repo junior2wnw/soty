@@ -538,7 +538,7 @@ export function mountAccessPanel(host: HTMLElement, options: AccessPanelOptions)
     state.dirty = true;
     const body = state.dialog.body;
     const title = state.dialog.element.querySelector('h2'); if (title) title.textContent = 'Ключ готов';
-    const input = el('input', 'sa-secret'); input.type = 'password'; input.readOnly = true; input.autocomplete = 'off'; input.spellcheck = false; input.value = value; input.setAttribute('aria-label', 'Одноразовый ключ доступа');
+    const input = el('input', 'sa-secret'); input.type = 'password'; input.readOnly = true; input.autocomplete = 'off'; input.spellcheck = false; input.value = value; input.setAttribute('aria-label', 'Ключ доступа');
     state.clearSecret = () => { secret = null; input.value = ''; input.removeAttribute('value'); state.dirty = false; };
     const info = el('p', 'sa-muted', 'Скопируйте ключ в ваш клиент. После закрытия он исчезнет с этого экрана.');
     const token = el('div', 'sa-secret-row');

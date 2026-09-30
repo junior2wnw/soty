@@ -10,7 +10,7 @@
 | P1. Права, контракты, история | Локальная приёмка пройдена | Ограниченные допуски, отзываемые цепочки, устойчивые Invocation/receipt, общий лимит вызовов; runtime enforcement отдельно в P5 |
 | P2. Цельный интерфейс | Локальная реализация и финальная приёмка | Apps-first оболочка, графит, новые панели, доступы, Notes offline; внешний UX/установленная PWA остаются отдельными gates |
 | P3. Именные приложения | A/B/C/D/R локально приняты; E открыт | Apps6, публикация, источники, сохранения/обсуждения, bounded WS liveness/recovery; D4 browser/signed цикл проверен, публичный пилот ещё впереди |
-| P4. Внешние ИИ | A, B1/B1a/B1b локально приняты; B2 интегрируется | Публичные HTML/HTTP схемы и поиск; точные source/deployment readers Notes1/2 и Capabilities1/2 с default-off migration; прежний Linux bridge принят, reader2 image/restore и OAuth/MCP ещё открыты |
+| P4. Внешние ИИ | A, B1/B1a/B1b и B2 локально приняты; C1 следующий | Публичный поиск/схемы, native Notes create/status/replay, общий PWA-результат; source/deployment readers1/2; reader2 Linux/image/restore, OAuth/MCP и реальные внешние AI-клиенты ещё открыты |
 | P5. Устройства и исполнитель | Ожидает P1 | Реальные ограничения, остановка, отзыв, стоимость |
 | P6A. Авторский SDK | Ожидает P1/P4 | Независимая узкая функция без изменения ядра |
 | P6B. Длительные функции | Ожидает P6A | Start/status/cancel/reconnect/result без повторного эффекта |
@@ -209,3 +209,13 @@ Host-only `withAuthorityFence` сериализует короткий синх�
 ## P4-B1b — локальный deployment reader2 принят
 
 Exact deployment probe/guard и Dockerfile manifest поддерживают Notes1/2 и Capabilities1/2. Unknown3 и частично подменённый layout отвергаются; настоящий original reader1 не получает разрешения стартовать на format2. [Root приёмка](p4-reader2-root-gate.md) сохраняет исходные два FAIL старых fixtures и их отдельное закрытие: обновлённое покрытие deploy suites242 PASS/3 platform SKIP, без заявления об одном общем зелёном запуске. [Авторский receipt](p4-reader2-implementation.md) и [независимый аудит](p4-storage-bridge-independent.md) дополняют реальные mixed/WAL и retained-witness проверки. Следующий [Linux reader2 canary](p4-reader2-linux-plan.md) имеет новый namespace и не переисполняет прежние bundles. Полный image/bootstrap/restore и production остаются открыты.
+
+## P4-B2 — native Notes и общий HTTP/PWA результат приняты локально
+
+- [x] B2a: opaque Notes port, admission/attempt/proof-first coordinator; прежние generic dispatch пути не получают native bypass.
+- [x] B2b: реальные два writer/process-kill seams, отзыв/expiry/disable/cancel, edit/purge, квоты, короткие locks и bounded recovery. [Доменная квитанция](p4-native-effect-b2b.md) сохраняет четыре выявленных и исправленных дефекта; [независимые3/3](p4-native-effect-independent.md) не используют авторский fixture.
+- [x] B2c: typed POST/create и GET/status, bounded strict ingress, fresh authorization перед ответом, content-free receipt, OpenAPI и timer recovery. [HTTP приёмка](p4-native-http.md), [ingress audit](p4-capabilities-ingress-independent.md), [независимый wire audit](p4-native-http-independent.md).
+- [x] Настоящий [PWA-сценарий](p4-native-pwa-proof.md): владелец выдаёт узкий ключ в UI, клиент создаёт записку и повторяет тот же запрос, история открывает точный Unicode-текст, человек правит и перезагружает;390px без overflow. В SQLite один эффект/receipt,spent1,reserved0, удалённый terminal input.
+- [x] Один общий regression:1141 tests /1136 PASS /0 FAIL /5 прежних opt-in SKIP,119.905s. Typecheck, штатный prebuild и production build PASS. Логи и точные ограничения — в HTTP receipt.
+
+Native execution по умолчанию выключен, host не мигрирует stores. B2 не объявляет OAuth/MCP, настоящие внешние AI-клиенты, reader2 Linux/full image/bootstrap/restore или production выполненными. Следующая последовательная работа — C1 подключение клиента через maintained OAuth provider и существующие Connect/Capabilities; scope, полномочия, подтверждение и реальные client versions проверяются до реализации.

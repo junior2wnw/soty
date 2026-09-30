@@ -4,6 +4,7 @@ import { basename, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { check, keys, id, revision, document, hash, queryTerms, encodeCursor, decodeCursor, STATES, DEFAULT_LIMITS, NotesError } from './validation.mjs';
 import { migrateNotes, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS } from './schema.mjs';
+import { createNativeNotesPort } from './native.mjs';
 export { NotesError, SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS, DEFAULT_LIMITS };
 export const NOTES_OPERATIONS = Object.freeze(['notes.list', 'notes.get', 'notes.put', 'notes.purge']);
 const moduleRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -18,21 +19,45 @@ const metadata = row => ({ noteId: row.id, title: row.title, preview: row.previe
 const fullNote = row => ({ ...metadata(row), body: row.body, items: JSON.parse(row.items) });
 
 /** Trusted Connect extension; actor MUST come from an authenticated, non-revoked signed installation. */
-export function createNotesService({ databasePath, projectId, clock = Date.now, limits: overrides = {}, allowNativeMigration = false } = {}) {
+export function createNotesService({ databasePath, projectId, clock = Date.now, limits: overrides = {}, allowNativeMigration = false,
+  verifyNativeContext } = {}) {
   check(typeof databasePath === 'string' && databasePath.length > 0, 'notes_database_path_required');
   check(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'notes_project_id_required');
   check(typeof clock === 'function');
   check(typeof allowNativeMigration === 'boolean');
+  check(verifyNativeContext === undefined || (typeof verifyNativeContext === 'function'
+    && verifyNativeContext.constructor?.name !== 'AsyncFunction'), 'native_context_invalid');
   keys(overrides, Object.keys(DEFAULT_LIMITS)); const limits = { ...DEFAULT_LIMITS, ...overrides };
   for (const [key, value] of Object.entries(limits)) check(Number.isSafeInteger(value) && value > 0 && value <= DEFAULT_LIMITS[key]);
   const file = databasePath === ':memory:' ? databasePath : resolve(databasePath);
   if (file !== ':memory:') { check(outsideModule(file), 'notes_database_must_be_outside_module'); mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); }
-  const db = new DatabaseSync(file); let closed = false, storage;
+  const db = new DatabaseSync(file); let closed = false, inTransaction = false, storage;
   try { storage = migrateNotes(db, projectId, { allowNativeMigration }); } catch (error) { db.close(); throw error; }
   const statements = new Map(); const prepare = sql => { if (!statements.has(sql)) statements.set(sql, db.prepare(sql)); return statements.get(sql); };
   const get = (sql, ...params) => prepare(sql).get(...params);
   const all = (sql, ...params) => prepare(sql).all(...params);
   const run = (sql, ...params) => prepare(sql).run(...params);
+  const ensureOpen = () => check(!closed, 'notes_service_closed');
+  function transaction(action, { write = true, busyMs } = {}) {
+    ensureOpen(); check(!inTransaction && !db.isTransaction, 'notes_nested_transaction');
+    inTransaction = true;
+    let result, failure, failed = false, timeout, began = false;
+    try {
+      if (busyMs !== undefined) { timeout = get('PRAGMA busy_timeout').timeout; db.exec(`PRAGMA busy_timeout=${busyMs}`); }
+      db.exec(write ? 'BEGIN IMMEDIATE' : 'BEGIN'); began = true;
+      result = action(); check(!result || typeof result.then !== 'function', 'notes_async_transaction_forbidden');
+      db.exec('COMMIT');
+    } catch (error) {
+      failed = true; failure = error;
+      if (began && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the primary failure. */ } }
+    } finally {
+      try { if (timeout !== undefined) db.exec(`PRAGMA busy_timeout=${timeout}`); }
+      catch (error) { if (!failed) { failed = true; failure = error; } }
+      inTransaction = false;
+    }
+    if (failed) throw failure;
+    return result;
+  }
   const accountUsage = accountId => {
     const row = get('SELECT bytes,active,archived,trashed FROM note_accounts WHERE account_id=?', accountId) || { bytes: 0, active: 0, archived: 0, trashed: 0 };
     return { bytes: row.bytes, maxBytes: limits.accountBytes, maxNotes: limits.notes, counts: { active: row.active, archived: row.archived, trashed: row.trashed } };
@@ -78,7 +103,9 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
     check(usage.bytes - (previous?.bytes || 0) + doc.bytes <= limits.accountBytes, 'notes_storage_quota');
     const nextRevision = (previous?.revision || 0) + 1;
     const updatedAt = Math.max(now, (previous?.updated_at || 0) + 1);
-    const preview = (doc.body.trim() || doc.items.map(item => `${item.done ? '✓ ' : '□ '}${item.text}`).join(' · ')).replace(/\s+/gu, ' ').slice(0, 180);
+    const previewText = (doc.body.trim() || doc.items.map(item => `${item.done ? '✓ ' : '□ '}${item.text}`).join(' · ')).replace(/\s+/gu, ' ');
+    let preview = previewText.slice(0, 180);
+    if (/[\uD800-\uDBFF]$/u.test(preview) && /^[\uDC00-\uDFFF]/u.test(previewText.slice(180))) preview = preview.slice(0, -1);
     const values = [doc.title, doc.body, JSON.stringify(doc.items), preview, doc.color, Number(doc.pinned), doc.state, nextRevision, doc.bytes, updatedAt];
     let rowid;
     if (previous) {
@@ -104,17 +131,17 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
     const result = { noteId, revision: previous.revision + 1, updatedAt, deleted: true }; record(accountId, noteId, mutationId, digest, result); return result;
   }
   const operations = new Set(NOTES_OPERATIONS);
+  const native = createNativeNotesPort({ db, projectId, clock, limits, verifyNativeContext, transaction, put, ensureOpen });
   return {
     projectId, schemaVersion: storage.schemaVersion, registryId: storage.registryId,
-    supportedSchemaVersions: SUPPORTED_SCHEMA_VERSIONS, operations,
+    supportedSchemaVersions: SUPPORTED_SCHEMA_VERSIONS, operations, native,
     execute({ op, args = {}, actor } = {}) {
       check(!closed, 'notes_service_closed'); check(operations.has(op), 'unsupported_operation');
       check(actor && typeof actor.accountId === 'string' && typeof actor.deviceId === 'string', 'authentication_required');
       const accountId = id(actor.accountId); id(actor.deviceId);
       check(args && args.expectedAccountId === accountId, 'notes_account_changed');
       const now = clock(); check(Number.isSafeInteger(now) && now >= 0);
-      db.exec(op === 'notes.get' || op === 'notes.list' ? 'BEGIN' : 'BEGIN IMMEDIATE');
-      try {
+      return transaction(() => {
         let result;
         if (op === 'notes.list') result = list(args, accountId);
         else if (op === 'notes.put') result = put(args, accountId, now);
@@ -124,9 +151,9 @@ export function createNotesService({ databasePath, projectId, clock = Date.now, 
           const row = get("SELECT * FROM notes WHERE account_id=? AND id=? AND state!='deleted'", accountId, noteId);
           check(row, 'notes_note_not_found'); result = { note: fullNote(row) };
         }
-        db.exec('COMMIT'); return result;
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
+        return result;
+      }, { write: op !== 'notes.get' && op !== 'notes.list' });
     },
-    close() { if (!closed) { closed = true; statements.clear(); db.close(); } },
+    close() { if (!closed) { check(!inTransaction && !db.isTransaction, 'notes_nested_transaction'); closed = true; statements.clear(); db.close(); } },
   };
 }

@@ -6,6 +6,7 @@ import { BUILTIN_CAPABILITIES, createCatalog } from './catalog.mjs';
 import { createPublicDiscovery } from './discovery.mjs';
 import { BUILTIN_DOCUMENTATION } from './documentation.mjs';
 import { createInvocationStore } from './invocations.mjs';
+import { createNativeNotesCoordinator, normalizeNativeNoteLimits, validateNativeNoteComposition } from './native-notes.mjs';
 import { initializeCapabilitiesSchema, CAPABILITIES_SUPPORTED_SCHEMA_VERSIONS } from './schema.mjs';
 import { assert, canonicalHash, exact, integer, newId } from './validation.mjs';
 
@@ -14,12 +15,15 @@ export { BUILTIN_CAPABILITIES } from './catalog.mjs';
 export { AccessError } from './validation.mjs';
 
 export function createCapabilitiesService({ databasePath, projectId, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES,
-  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false } = {}) {
+  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, nativeNotes } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof allowNativeMigration === 'boolean', 'schema_configuration_invalid');
   assert(typeof actorActive === 'function', 'host_auth_required');
-  exact(limits, ['access', 'invocations'], 'limits_invalid');
+  assert(typeof clock === 'function', 'clock_invalid');
+  const nativeComposition = validateNativeNoteComposition(nativeNotes);
+  exact(limits, ['access', 'invocations', 'nativeNotes'], 'limits_invalid');
+  const nativeLimits = normalizeNativeNoteLimits(limits.nativeNotes);
   const accessLimits = limits.access ?? {};
   const invocationLimits = limits.invocations ?? {};
   exact(accessLimits, ['maxGrantTtlMs'], 'limits_invalid');
@@ -37,20 +41,28 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
   catch (error) { db.close(); throw error; }
   let closed = false;
   let inTransaction = false;
-  function transaction(fn) {
+  const ensureOpen = () => assert(!closed, 'service_closed');
+  function transaction(fn, { busyMs } = {}) {
     assert(!closed, 'service_closed');
-    assert(!inTransaction, 'nested_transaction');
+    assert(!inTransaction && !db.isTransaction, 'nested_transaction');
     inTransaction = true;
+    let result, failure, failed = false, timeout, began = false;
     try {
-      db.exec('BEGIN IMMEDIATE');
-      const result = fn();
+      if (busyMs !== undefined) { timeout = db.prepare('PRAGMA busy_timeout').get().timeout; db.exec(`PRAGMA busy_timeout=${busyMs}`); }
+      db.exec('BEGIN IMMEDIATE'); began = true;
+      result = fn();
       assert(!result || typeof result.then !== 'function', 'async_transaction_not_allowed');
       db.exec('COMMIT');
-      return result;
     } catch (error) {
-      try { db.exec('ROLLBACK'); } catch { /* The failed BEGIN may have no transaction. */ }
-      throw error;
-    } finally { inTransaction = false; }
+      failed = true; failure = error;
+      if (began && db.isTransaction) { try { db.exec('ROLLBACK'); } catch { /* Preserve the primary failure. */ } }
+    } finally {
+      try { if (timeout !== undefined) db.exec(`PRAGMA busy_timeout=${timeout}`); }
+      catch (error) { if (!failed) { failed = true; failure = error; } }
+      inTransaction = false;
+    }
+    if (failed) throw failure;
+    return result;
   }
   try {
     transaction(() => {
@@ -61,11 +73,17 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
       }
     });
   } catch (error) { db.close(); closed = true; throw error; }
-  const access = createAccessStore({ db, clock, transaction, actorActive, catalog: registry, limits: accessLimits });
+  let invocationCore, nativeSettlement;
+  const access = createAccessStore({ db, clock, transaction, actorActive, catalog: registry, limits: accessLimits,
+    captureNativeSettlement: nativeComposition ? value => { nativeSettlement = value; } : undefined });
   const invocations = createInvocationStore({
     db, clock, transaction, authorize: access.authorizeInvocation,
-    reserveBudget: access.reserveBudget, settleBudget: access.settleBudget, canonicalHash, newId, limits: invocationLimits
+    reserveBudget: access.reserveBudget, settleBudget: access.settleBudget, canonicalHash, newId, limits: invocationLimits,
+    captureInternalCore: nativeComposition ? value => { invocationCore = value; } : undefined,
   });
+  const native = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, clock,
+    registry, access, core: invocationCore, settleNativeBudget: nativeSettlement, transaction, ensureOpen,
+    composition: nativeComposition, limits: nativeLimits, invocationLimits }) : null;
   const operations = new Set([...access.operations, 'access.invocations.list']);
   function execute(request) {
     if (request.op !== 'access.invocations.list') return access.execute(request);
@@ -78,7 +96,7 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
     supportedSchemaVersions: CAPABILITIES_SUPPORTED_SCHEMA_VERSIONS,
     operations, execute,
     authenticateCredential: access.authenticateCredential, authorize: access.authorize,
-    catalog: publicCatalog, invocations,
-    close() { if (!closed) { db.close(); closed = true; } }
+    catalog: publicCatalog, invocations, nativeNotes: native,
+    close() { if (!closed) { assert(!inTransaction && !db.isTransaction, 'nested_transaction'); db.close(); closed = true; } }
   });
 }

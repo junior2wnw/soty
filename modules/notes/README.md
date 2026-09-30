@@ -15,6 +15,10 @@ const connect = createConnectService({ /* existing options */, extensions: [worl
 
 База обязана находиться вне заменяемого каталога модуля. WAL, synchronous=FULL, атомарные изменения текста/индекса/квот/receipt. Схема и projectId проверяются при открытии. Записи не зашифрованы сквозным ключом; сервер хранит текст, защищённый авторизацией. Старые зашифрованные комнаты сохраняют прежнюю модель.
 
+Внутренний `notes.native` используется только фиксированным Capabilities coordinator для `notes.createDraft@1`. Constructor option `verifyNativeContext(token, 'create'|'reconcile')` — синхронная доверенная closure этого coordinator; без неё effect/proof методы закрыты. Публичные RPC и их actor-модель не меняются. `validateDraftInput({input:{title,body}})` — чистая проверка полного документа с серверными defaults; она не даёт разрешения на запись. `storageIdentity()` возвращает фактические project/registry/schema2 только для готового native store. `createDraftForInvocation({context,input})` коммитит записку, FTS/квоты и постоянный proof одной Notes transaction; `readCreateProof({context})` читает только этот proof, без нынешнего текста/существования записки. Opaque context проверяется до transaction, внутри неё и перед COMMIT. Он недействителен после синхронного frame coordinator.
+
+Native вход обязан быть корректным Unicode; lone surrogate отклоняется без замены или нормализации. Исторический человеческий input validator не меняется. Производный preview не разрезает корректную surrogate pair на границе 180 UTF-16 единиц. Native methods не открывают новую HTTP/Connect операцию и не включают миграцию: `allowNativeMigration` по-прежнему strict boolean с default `false`.
+
 ## RPC
 
 Идентификаторы `noteId`, `mutationId`, checklist item `id`: 8–96 ASCII символов `[A-Za-z0-9_-]`, первый — буква/цифра. Клиент генерирует UUID. `state`: `active | archived | trashed`; `color`: `plain | honey | sage | lilac | blue | coral`.

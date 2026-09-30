@@ -87,7 +87,8 @@ capabilities.nativeNotes: null | Readonly<{
     outcome: NativeOutcome; invocation: Invocation;
   };
   reconcilePage(args?: {cursor?: string}): {
-    items: Array<{invocationId: string; outcome: NativeOutcome}>;
+    items: Array<{invocationId: string; outcome: NativeOutcome}
+      | {invocationId: string; errorCode: 'native_reconciliation_failed'}>;
     nextCursor: string | null;
   };
   verifyContext(token: object, mode: 'create' | 'reconcile'):
@@ -104,6 +105,12 @@ capabilities.nativeNotes: null | Readonly<{
 Terminal row возвращается как исторический факт до обращения к Notes. Legacy generic Invocation без `cap_native_note_intents` может читаться/replay-иться, но begin/execute/reconcile отказывают `native_legacy_invocation_unsupported`; backfill IDs/proof запрещён. Для новой намеренной попытки нужен новый key.
 
 `reconcilePage` читает максимум 16 native nonterminal identities, keyset `(created_at,id)` и bounded cursor. Короткая transaction выбора закрывается до последовательных вызовов `reconcile`; каждый получает новый собственный fence, без nested transaction. Body читается только для одной текущей операции и освобождается до следующей. Это проход восстановления, не новая очередь исполнения и не auto-execute. Cursor не является authority и нигде не доступен внешнему клиенту. Один проход не собирает весь input; host не запускает параллельные recovery loops и не крутит busy/held страницы без задержки.
+
+Уточнение B2b после воспроизведённого отказа старой Notes incarnation: ошибка отдельной операции возвращает только `{invocationId,errorCode:'native_reconciliation_failed'}`, без `outcome`, input или внутренних причин. Следующие IDs этой страницы всё равно проверяются, keyset cursor сохраняется. Нельзя подменять такой отказ результатом `held`, `not_applied` или отрицательным proof. Ошибка самого выбора страницы/registry identity по-прежнему бросается; уже совершённые commits отдельных операций не отменяются. Host различает item error и page error, делает задержку и никогда не исполняет intent из recovery loop.
+
+Временный `capability_disabled` не означает user cancellation. Generic `reconcileAuthorization` для native intent не записывает по нему `cancel_requested`; native reconciliation сначала завершает положительный proof, а при его отсутствии сохраняет `held`. Явная requestCancel и настоящая потеря исходной authority остаются отдельными основаниями для proof-first terminal negative. После terminal состояние не переоткрывается.
+
+Дефект trusted composition, возвратившей Promise из sync callback/port/verifier, даёт controlled refusal. Rejected Promise получает rejection handler, но не ожидается; opaque frame и context прекращают действовать до поздней работы. Сохранённая callback самого `withAuthorityFence` также закрывается при выходе из вызова, даже если malformed host не вызвал её синхронно. Это защита от неправильной host composition, не обещание корректной работы произвольного async executor.
 
 ## 4. Admission: replay раньше новых ограничений
 

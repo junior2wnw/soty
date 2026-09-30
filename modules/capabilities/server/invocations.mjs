@@ -38,7 +38,7 @@ const hash = value => createHash('sha256').update(JSON.stringify(canonical(value
  * Dispatch intents are recoverable delivery records; connector jobs own execution leases.
  * Internal dispatch/result methods must never be exposed as unauthenticated HTTP operations. */
 export function createInvocationStore({ db, clock = Date.now, transaction, authorize, reserveBudget, settleBudget,
-  canonicalHash = hash, newId = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`, limits = {} } = {}) {
+  canonicalHash = hash, newId = prefix => `${prefix}_${randomUUID().replaceAll('-', '')}`, limits = {}, captureInternalCore } = {}) {
   check(db && typeof db.prepare === 'function' && [transaction, authorize, reserveBudget, settleBudget, clock, canonicalHash, newId].every(fn => typeof fn === 'function'), 'invocation_configuration_required');
   const bounds = { ...DEFAULT_LIMITS, ...limits };
   for (const [name, value] of Object.entries(bounds)) check(Object.hasOwn(DEFAULT_LIMITS, name) && Number.isSafeInteger(value) && value > 0 && value <= DEFAULT_LIMITS[name], 'invocation_invalid_limits');
@@ -144,6 +144,35 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
   const nextCursor = (values, limit, scope) => values.length > limit
     ? Buffer.from(JSON.stringify({ scope, at: values[limit - 1].created_at, id: values[limit - 1].id })).toString('base64url') : null;
 
+  function insertAuthorized({ authorized, capabilityId, version, inputJson, targetJson, requestKey, requestDigest }) {
+    check(db.isTransaction, 'invocation_transaction_required');
+    const id = identifier(newId('inv')); const timestamp = now();
+    const internalRequestId = `cap_${canonicalHash(id)}`;
+    const reservation = reserveBudget({ authorization: authorized, invocationId: id, attemptId: 'admission', charges: authorized.charges });
+    check(reservation && typeof reservation.then !== 'function', 'invocation_budget_required');
+    const reservationId = identifier(reservation.reservationId);
+    run(`INSERT INTO cap_invocations(id,account_id,client_id,principal_id,grant_id,root_grant_id,policy_epoch,
+      capability_id,capability_version,capability_digest,request_key,request_digest,internal_request_id,input_json,target_json,
+      authorization_json,status,cancel_requested,effect_state,effects_json,reservation_id,job_id,created_at,updated_at,completed_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, authorized.accountId, authorized.clientId, authorized.principalId,
+      identifier(authorized.grantId), identifier(authorized.rootGrantId), integer(authorized.policyEpoch), capabilityId, version,
+      identifier(authorized.capabilityDigest), requestKey, requestDigest, internalRequestId, inputJson, targetJson,
+      authorizationSnapshot(authorized), 'accepted', 0, 'none', '[]', reservationId, null, timestamp, timestamp, null);
+    run('INSERT INTO cap_dispatch_intents(invocation_id,internal_request_id,state,created_at,updated_at) VALUES(?,?,?,?,?)', id, internalRequestId, 'pending', timestamp, timestamp);
+    return row(id);
+  }
+  // Only the composing service receives this transaction core. It is not part
+  // of the returned Invocation API and never accepts a public native bypass flag.
+  if (captureInternalCore !== undefined) {
+    check(typeof captureInternalCore === 'function', 'invocation_configuration_required');
+    captureInternalCore(Object.freeze({
+      row: id => { check(db.isTransaction); return row(id); },
+      projection: value => { check(db.isTransaction); return projection(value); },
+      access: (actor, value, action) => { check(db.isTransaction); return access(actor, value, action); },
+      insertAuthorized,
+    }));
+  }
+
   return Object.freeze({
     admit({ actor, capabilityId, version, idempotencyKey, input, target } = {}) {
       identifier(capabilityId); check(Number.isSafeInteger(version) && version >= 1 && version <= 1000000);
@@ -165,20 +194,8 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
           access(actor, previous, 'read');
           return { reused: true, invocation: projection(previous) };
         }
-        const id = identifier(newId('inv')); const timestamp = now();
-        const internalRequestId = `cap_${canonicalHash(id)}`;
-        const reservation = reserveBudget({ authorization: authorized, invocationId: id, attemptId: 'admission', charges: authorized.charges });
-        check(reservation && typeof reservation.then !== 'function', 'invocation_budget_required');
-        const reservationId = identifier(reservation.reservationId);
-        run(`INSERT INTO cap_invocations(id,account_id,client_id,principal_id,grant_id,root_grant_id,policy_epoch,
-          capability_id,capability_version,capability_digest,request_key,request_digest,internal_request_id,input_json,target_json,
-          authorization_json,status,cancel_requested,effect_state,effects_json,reservation_id,job_id,created_at,updated_at,completed_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, authorized.accountId, authorized.clientId, authorized.principalId,
-          identifier(authorized.grantId), identifier(authorized.rootGrantId), integer(authorized.policyEpoch), capabilityId, version,
-          identifier(authorized.capabilityDigest), requestKey, requestDigest, internalRequestId, inputJson, targetJson,
-          authorizationSnapshot(authorized), 'accepted', 0, 'none', '[]', reservationId, null, timestamp, timestamp, null);
-        run('INSERT INTO cap_dispatch_intents(invocation_id,internal_request_id,state,created_at,updated_at) VALUES(?,?,?,?,?)', id, internalRequestId, 'pending', timestamp, timestamp);
-        return { reused: false, invocation: projection(row(id)) };
+        const value = insertAuthorized({ authorized, capabilityId, version, inputJson, targetJson, requestKey, requestDigest });
+        return { reused: false, invocation: projection(value) };
       });
     },
     get({ actor, invocationId } = {}) {
@@ -264,6 +281,12 @@ export function createInvocationStore({ db, clock = Date.now, transaction, autho
           return { authorized: true, invocation: projection(value) };
         } catch (error) {
           if (!AUTHORIZATION_DENIALS.has(error?.code)) throw error;
+          // Pausing a fixed native handler does not express user cancellation.
+          // Its reconciler must still settle an existing proof, or keep a null
+          // proof held until the handler is enabled again.
+          if (error.code === 'capability_disabled' && native.find(value.id)) {
+            return { authorized: false, invocation: projection(value) };
+          }
         }
         if (TERMINAL.has(value.status)) return { authorized: false, invocation: projection(value) };
         const beforeDispatch = notDispatched(value, intent(value.id)), timestamp = now();

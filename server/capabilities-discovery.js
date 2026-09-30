@@ -123,8 +123,9 @@ function sitemap(catalog, origin) {
 }
 
 /** Read-only public transport. It neither authenticates nor executes an action. */
-export function attachCapabilitiesDiscovery(app, { catalog, origin = '', status = () => ({ notesCreateEnabled: false, audience: null }) }) {
-  const openapi = JSON.stringify(buildDiscoveryOpenApi());
+export function attachCapabilitiesDiscovery(app, { catalog, origin = '', status = () => ({ notesCreateEnabled: false, audience: null }),
+  openApi = buildDiscoveryOpenApi() }) {
+  const openapi = JSON.stringify(openApi);
   app.use((req, res, next) => {
     const target = req.originalUrl || req.url;
     const split = target.indexOf('?'), pathname = split < 0 ? target : target.slice(0, split);

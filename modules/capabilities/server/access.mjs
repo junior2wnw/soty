@@ -53,7 +53,7 @@ function audience(value) {
   return value;
 }
 
-export function createAccessStore({ db, clock = Date.now, transaction, actorActive, catalog, limits = {} }) {
+export function createAccessStore({ db, clock = Date.now, transaction, actorActive, catalog, limits = {}, captureNativeSettlement }) {
   assert(typeof actorActive === 'function' && typeof transaction === 'function', 'host_auth_required');
   const maxTtl = limits.maxGrantTtlMs ?? 30 * 24 * 60 * 60 * 1000;
   integer(maxTtl, 1, 365 * 24 * 60 * 60 * 1000);
@@ -410,14 +410,11 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
       .run(id, invocationId, attemptId, authorization.rootGrantId, 'invocations', amount, digest, time, time);
     return { reservationId: id };
   }
-  function settleBudget({ reservationId, disposition, actualCharges }) {
+  function settleBudgetCore({ reservationId, disposition, actualCharges }) {
     identifier(reservationId);
     assert(['spent', 'released', 'uncertain'].includes(disposition), 'settlement_invalid');
     const row = db.prepare('SELECT * FROM cap_budget_reservations WHERE id=?').get(reservationId);
     assert(row, 'not_found');
-    // Baseline readers may retain uncertain quota but cannot settle a native
-    // effect without the future proof-first Notes reconciler.
-    if (disposition !== 'uncertain') native.assertGeneric(row.invocation_id);
     let actual = disposition === 'spent' ? row.amount : 0;
     if (actualCharges !== undefined) {
       assert(Array.isArray(actualCharges) && (actualCharges.length === 1 || (actualCharges.length === 0 && disposition !== 'spent')), 'settlement_invalid');
@@ -440,6 +437,24 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
       .run(row.amount, actual, row.root_grant_id, row.unit);
     db.prepare('UPDATE cap_budget_reservations SET disposition=?,actual_amount=?,updated_at=? WHERE id=?').run(disposition, actual, now(clock), row.id);
     return { reservationId, disposition, actualAmount: actual };
+  }
+  function settleBudget(args) {
+    const row = db.prepare('SELECT invocation_id FROM cap_budget_reservations WHERE id=?').get(identifier(args.reservationId));
+    assert(row, 'not_found');
+    if (args.disposition !== 'uncertain') native.assertGeneric(row.invocation_id);
+    return settleBudgetCore(args);
+  }
+  if (captureNativeSettlement !== undefined) {
+    assert(typeof captureNativeSettlement === 'function', 'host_auth_required');
+    // Captured only by the fixed coordinator, never returned as an Access API.
+    captureNativeSettlement(({ invocationId, reservationId, disposition }) => {
+      assert(db.isTransaction && native.find(invocationId), 'native_context_invalid');
+      const row = db.prepare('SELECT invocation_id,unit,amount FROM cap_budget_reservations WHERE id=?').get(reservationId);
+      assert(row?.invocation_id === invocationId && row.unit === 'invocations' && row.amount === 1
+        && ['spent', 'released'].includes(disposition), 'settlement_invalid');
+      return settleBudgetCore({ reservationId, disposition,
+        ...(disposition === 'spent' ? { actualCharges: [{ unit: 'invocations', amount: 1 }] } : {}) });
+    });
   }
   return Object.freeze({ operations: new Set(ACCESS_OPERATIONS), execute, authenticateCredential, authorize, authorizeInvocation, reserveBudget, settleBudget,
     verifyOwner({ actor, args }) { return hostOwner(actor, args); } });
