@@ -49,9 +49,9 @@ export function createApplicationCard(options: ApplicationCardOptions): HTMLElem
       el('span', '', app.audience || (shared ? 'Выбранным участникам' : app.ownerAccountId === options.accountId ? 'Личное' : 'Вам доступно'))); context.append(scope);
   }
   context.append(iconButton(`Связи и доступ: ${app.name}`, 'connections', options.inspect));
-  const pin = iconButton(`${options.pinned ? 'Открепить' : 'Закрепить'}: ${app.name}`, 'pin', () => {
+  const pin = iconButton(`${options.pinned ? 'Открепить здесь' : 'Закрепить здесь'}: ${app.name}`, 'pin', () => {
     const pinned = options.togglePin(); pin.setAttribute('aria-pressed', String(pinned));
-    pin.setAttribute('aria-label', `${pinned ? 'Открепить' : 'Закрепить'}: ${app.name}`); pin.title = pin.getAttribute('aria-label')!;
+    pin.setAttribute('aria-label', `${pinned ? 'Открепить здесь' : 'Закрепить здесь'}: ${app.name}`); pin.title = pin.getAttribute('aria-label')!;
   });
   pin.dataset.homeControl = `pin:${app.appId}`;
   pin.setAttribute('aria-pressed', String(options.pinned)); context.append(pin);

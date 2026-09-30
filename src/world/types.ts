@@ -1,4 +1,4 @@
-import type { AppLaunchRequest } from './app-launch.mjs';
+import type { AppLaunchRequest, AppResolvedEntry } from './app-launch.mjs';
 
 export type WorldColor = 'honey' | 'sage' | 'lilac' | 'coral' | 'blue';
 export interface WorldProfile {
@@ -86,7 +86,7 @@ export interface WorldAppOptions {
   listDevices?: () => Promise<WorldDevice[]>;
   listApps?: (communityId?: string) => Promise<WorldAppRecord[]>;
   addApp?: (communityId?: string) => void | Promise<void>;
-  openApp?: (app: WorldAppRecord, launch?: AppLaunchRequest) => Promise<{ url: string; status?: string }>;
+  openApp?: (app: WorldAppRecord, launch?: AppLaunchRequest) => Promise<{ url: string; entry: AppResolvedEntry; status?: string }>;
 }
 export type WorldEntity = { type: 'community'; value: WorldCommunity } | { type: 'person'; value: WorldProfile };
 

@@ -14,7 +14,8 @@ function fixture(request) {
   const calls = [];
   const launcher = createAppLauncher({ target, accountId: state.accountId, shellUrl,
     isCurrent: accountId => !state.destroyed && state.accountId === accountId && state.generation === 1,
-    request: async parameters => { calls.push(parameters); return request(parameters); },
+    request: async parameters => { calls.push(parameters); const result = await request(parameters);
+      return { ...result, entry: { ...target, origin: 'https://demo.apps.example' } }; },
   });
   return { state, calls, launcher };
 }

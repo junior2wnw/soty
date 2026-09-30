@@ -138,13 +138,13 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     staleInspection = true;
     if (result.status !== 'accepted' || !result.pending || !result.response) {
       sourceNotice = '';
-      notice = 'Прежний запрос уже завершили в другом окне. Читаем текущее состояние.'; await inspect(); return;
+      notice = 'Прежний запрос уже завершили в другом окне.'; await inspect(); return;
     }
     const accepted = result.pending;
     if (accepted.op === 'apps.domains.claim') {
       // A replay may precede later activation or retirement. Only inspection
       // describes the current address, not this historical receipt.
-      notice = `Подтверждено закрепление имени «${String(accepted.args.slug)}». Читаем его текущее состояние.`;
+      notice = `Подтверждено закрепление имени «${String(accepted.args.slug)}».`;
       if (model && model.read().draft.slug.trim().toLowerCase() === accepted.args.slug) model.patch({ slug: '' });
     } else if (accepted.op === 'apps.domains.retire') notice = 'Закрытие адреса подтверждено. Имя остаётся закреплённым.';
     else if (accepted.op === 'apps.source.promote') {
@@ -153,7 +153,7 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
       sourceNotice = result.response.replayed ? 'Прежнее переключение подтверждено. Читаем текущий источник.' : 'Переключение подтверждено. Читаем текущий источник.';
       notice = sourceNotice;
     }
-    else notice = result.response.replayed ? 'Прежний запрос подтверждён. Текущее состояние могло измениться.' : 'Запрос доступа подтверждён. Читаем текущее состояние.';
+    else notice = result.response.replayed ? 'Прежний запрос подтверждён. Текущее состояние могло измениться.' : 'Изменение подтверждено.';
     try {
       const inspected = await inspect(accepted.op === 'apps.publication.update' ? { kind: 'publication', args: accepted.args } : undefined,
         accepted.op === 'apps.source.promote' ? accepted : undefined);

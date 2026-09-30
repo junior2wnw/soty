@@ -1,0 +1,36 @@
+.sa-stage { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--sw-surface); }
+.sa-toolbar { flex: none; display: flex; align-items: center; gap: 8px; min-height: 64px; padding: 8px 16px; border-bottom: 1px solid var(--sw-line); background: var(--sw-bg); z-index: 2; }
+.sa-toolbar>.sw-icon-button, .sa-more>.sw-icon-button { flex: none; width: 44px; height: 44px; min-width: 44px; padding: 0; border-color: transparent; background: transparent; }
+.sa-title { flex: 1; min-width: 0; }
+.sa-title h2 { margin: 0; font-size: 15px; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sa-title p { margin: 2px 0 0; font-size: 12px; line-height: 18px; color: var(--sw-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sa-toolbar [aria-expanded=true] { background: var(--sw-selected); color: var(--sw-ink); }
+.sa-saved { flex: none; min-width: 44px; }
+.sa-saved[hidden], .sa-message[hidden], .sa-discussion[hidden], .sa-more-body[hidden], .sa-more-body>[hidden] { display: none; }
+.sa-more { position: relative; flex: none; }
+.sa-more-body { position: absolute; inset-inline-end: 0; top: calc(100% + 8px); display: flex; flex-direction: column; width: min(288px, calc(100vw - 32px)); padding: 6px; border: 1px solid var(--sw-line); border-radius: 16px; background: var(--sw-surface); box-shadow: 0 12px 32px rgb(0 0 0 / 14%); max-height: min(70dvh, 380px); overflow-y: auto; overscroll-behavior: contain; }
+.sa-more-body>.sw-button { justify-content: flex-start; min-height: 44px; width: 100%; padding: 10px 12px; text-align: start; }
+.sa-more-body>.sw-button>span { min-width: 0; overflow-wrap: anywhere; }
+.sa-message { flex: none; margin: 0; padding: 10px 16px; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; border-bottom: 1px solid var(--sw-line); }
+.sa-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.sa-runtime { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.sa-runtime>.sw-empty { flex: 1; overflow: auto; }
+.sa-loading { margin: auto; padding: 24px; color: var(--sw-muted); font-size: 14px; }
+.sa-frame { flex: 1; width: 100%; min-width: 0; min-height: 0; border: 0; background: var(--sw-surface); }
+.sa-discussion { flex: 0 0 clamp(320px, 33%, 440px); min-width: 0; min-height: 0; display: flex; border-inline-start: 1px solid var(--sw-line); background: var(--sw-bg); }
+.sa-discussion>.se-discussion { flex: 1; min-width: 0; }
+@media (max-width: 900px) {
+  .sa-stage.has-discussion .sa-runtime { display: none; }
+  .sa-discussion { flex: 1; width: 100%; border: 0; }
+}
+@media (max-width: 760px) {
+  .sa-toolbar { min-height: 56px; padding: 6px 8px; gap: 4px; }
+  .sa-title h2 { font-size: 14px; }
+  .sa-title p { display: none; }
+  .sa-saved .se-saved-control { width: 44px; min-width: 44px; height: 44px; padding: 0; }
+  .sa-saved .se-saved-control>span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sa-more-body { animation: sa-reveal 120ms ease-out; transform-origin: top right; }
+  @keyframes sa-reveal { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+}

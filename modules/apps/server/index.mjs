@@ -18,8 +18,9 @@ import { createLaunchPath } from './launch-path.mjs';
 import { createEngagementEntryResolver } from './engagement-access.mjs';
 import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
+import { createEngagementTransaction } from './engagement-transaction.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
@@ -50,11 +51,23 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   } catch (error) { db.close(); throw error; }
   const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins] });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
-  let inspection, saved, discussions;
+  let inspection, saved, discussions, entryRead;
   try {
     inspection = createAppInspection({ db, assertActor, domains, publications, inspectSource, inspectBinding, now,
       shellOrigin: [...origins][0], nameClaimsEnabled: Boolean(namedZone), namedAppZone: namedZone });
     const resolveEntry = createEngagementEntryResolver({ db, assertActor, publications, inspectSource });
+    const readEntryTransaction = createEngagementTransaction({ db, assertActor, withAuthorityFence, responseBytes: 32 * 1024,
+      busyCode: 'apps_entry_busy', timeoutCode: 'apps_entry_timeout_invalid', responseCode: 'apps_entry_response_too_large' });
+    entryRead = (actor, args) => {
+      exact(args, ['appId', 'domainId', 'path']);
+      const requested = { appId: appId(args.appId), ...(args.domainId === undefined ? {} : { domainId: textId(args.domainId) }),
+        ...(args.path === undefined ? {} : { path: createLaunchPath(args.path).entryPath }) };
+      return readEntryTransaction(actor, captured => {
+        const entry = resolveEntry({ actor: captured, ...requested });
+        assertApps(entry, 'app_unavailable', 404);
+        return { entry: { appId: entry.appId, domainId: entry.domainId, origin: entry.origin, path: entry.path } };
+      });
+    };
     saved = createSavedRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry });
     discussions = createDiscussionRegistry({ db, now, assertActor, withAuthorityFence, resolveEntry, canUse,
       readCommunityAuthority(actor, ownerAccountId, relevantCommunityIds) {
@@ -283,6 +296,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     if (domainOperations.has(op)) return domains.execute({ actor, op, args });
     if (publicationOperations.has(op)) return publications.execute({ actor, op, args });
     if (op === 'apps.inspect') return inspection.read(actor, args);
+    if (op === 'apps.entry.get') return entryRead(actor, args);
     if (op === 'apps.devices') {
       exact(args, []);
       return { devices: db.prepare('SELECT * FROM app_devices WHERE owner_account_id=? ORDER BY created_at').all(actor.accountId).map(deviceProjection) };
@@ -351,7 +365,8 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       assertApps(tickets.size < 4096, 'apps_launch_busy', 429);
       const ticket = secret();
       tickets.set(digest(ticket), { decision, entryPath });
-      return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt };
+      return { launchUrl: `${domain.origin}${bootPath}#${ticket}`, expiresAt: decision.expiresAt,
+        entry: { appId: id, domainId: domain.id, origin: domain.origin, path: entryPath } };
     }
     if (op === 'apps.revoke') {
       exact(args, ['appId']);

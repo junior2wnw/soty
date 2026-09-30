@@ -41,7 +41,7 @@ export function createConnectHandler(service, { path = '/api/connect/rpc', maxBy
       // operation. Preserve the typed RPC error and expose temporary service
       // unavailability, rather than classifying contention as malformed input.
       // The adapter never retries a signed mutation on the caller's behalf.
-      const busy = !result.ok && ['apps_saved_busy', 'apps_discussion_busy', 'world_authority_busy'].includes(result.error?.code);
+      const busy = !result.ok && ['apps_saved_busy', 'apps_discussion_busy', 'apps_entry_busy', 'world_authority_busy'].includes(result.error?.code);
       const rateLimited = !result.ok && result.error?.code === 'apps_discussion_rate_limited';
       reply(result.ok ? 200 : busy ? 503 : rateLimited ? 429 : 400, result);
     } catch { reply(400, error('request_failed')); }
