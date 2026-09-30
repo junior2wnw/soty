@@ -195,7 +195,11 @@ export function createOAuthUnboundProfile(configuration) {
         oauthData(value.prompt, ['name', 'reasons', 'details']); oauthId(value.prompt.name);
         strings(value.prompt.reasons, 32); oauthData(value.prompt.details);
         optional(value, 'result', result);
-        optional(value, 'lastSubmission', result); optional(value, 'trusted', boolean); optional(value, 'grantId', oauthProviderId);
+        optional(value, 'lastSubmission', result);
+        // Interaction carries the names trusted by request-object processing,
+        // not the boolean used by the separate (disabled) PAR model.
+        optional(value, 'trusted', item => oauthCheck(Array.isArray(item) && item.length === 0));
+        optional(value, 'grantId', oauthProviderId);
         oauthCheck(value.returnTo === `${issuer}/authorize/${id}`, 'oauth_invalid_artifact');
         if (value.session !== undefined) {
           oauthData(value.session, ['accountId', 'uid', 'cookie', 'acr', 'amr']); oauthId(value.session.accountId);
@@ -208,4 +212,26 @@ export function createOAuthUnboundProfile(configuration) {
         retainUntil: Math.min(createdAt + 600000, Number.MAX_SAFE_INTEGER) };
     },
   });
+}
+
+/** Fixed C1 Grant, using Provider's second precision without changing the
+ * connection's millisecond lifetime or the row's actual admission timestamp. */
+export function snapshotOAuthGrant({ id, payload, connection, nowMs, expiresIn, allowExpired = false }) {
+  oauthProviderId(id); oauthTime(nowMs);
+  const value = snapshotOAuthJson(payload);
+  oauthData(value, ['iat', 'exp', 'jti', 'kind', 'accountId', 'clientId', 'resources', 'openid', 'rejected', 'rar']);
+  oauthCheck(value.kind === 'Grant' && value.jti === id && value.accountId === connection.account_id
+    && value.clientId === connection.static_client_id);
+  const iat = oauthSeconds(value.iat), expiresAt = oauthSeconds(value.exp) * 1000;
+  oauthCheck(iat * 1000 <= nowMs && iat >= Math.floor(connection.created_at / 1000)
+    && value.exp > iat && expiresAt <= connection.expires_at && (allowExpired || expiresAt > nowMs));
+  if (expiresIn !== undefined) oauthCheck(typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0 && expiresIn <= 86400);
+  oauthData(value.resources, [connection.resource]);
+  oauthCheck(value.resources[connection.resource] === OAUTH_SCOPE);
+  for (const field of ['openid', 'rejected']) if (value[field] !== undefined) {
+    oauthData(value[field], []);
+  }
+  if (value.rar !== undefined) oauthCheck(Array.isArray(value.rar) && value.rar.length === 0);
+  const json = canonicalOAuthJson(value);
+  return { payload: JSON.parse(json), json, expiresAt, retainUntil: connection.expires_at };
 }

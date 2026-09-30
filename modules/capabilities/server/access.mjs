@@ -54,7 +54,7 @@ function audience(value) {
   return value;
 }
 
-export function createAccessStore({ db, clock = Date.now, transaction, actorActive, catalog, limits = {}, captureNativeSettlement }) {
+export function createAccessStore({ db, clock = Date.now, transaction, actorActive, catalog, limits = {}, captureNativeSettlement, captureOAuthAuthority }) {
   assert(typeof actorActive === 'function' && typeof transaction === 'function', 'host_auth_required');
   const maxTtl = limits.maxGrantTtlMs ?? 30 * 24 * 60 * 60 * 1000;
   integer(maxTtl, 1, 365 * 24 * 60 * 60 * 1000);
@@ -272,6 +272,14 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
     }
     return publicGrant(db.prepare('SELECT * FROM cap_grants WHERE id=?').get(id));
   }
+  function insertPrincipal(owner, label, clientLabel, time) {
+    assert(db.prepare('SELECT count(*) AS n FROM cap_principals WHERE account_id=?').get(owner.accountId).n < 1000, 'quota_exceeded');
+    const clientId = newId('client'), principalId = newId('principal');
+    db.prepare("INSERT INTO cap_clients(id,account_id,label,state,created_at) VALUES(?,?,?,'active',?)").run(clientId, owner.accountId, clientLabel, time);
+    db.prepare("INSERT INTO cap_principals(id,account_id,client_id,kind,label,state,creator_device_id,created_at) VALUES(?,?,?,'service',?,'active',?,?)")
+      .run(principalId, owner.accountId, clientId, label, owner.deviceId, time);
+    return ownedPrincipal(owner.accountId, principalId);
+  }
   function revokeGrant(id, accountId, time) {
     const grant = db.prepare('SELECT * FROM cap_grants WHERE id=? AND account_id=?').get(id, accountId);
     assert(grant, 'not_found');
@@ -293,11 +301,8 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
           exact(args, ['expectedAccountId', 'label', 'clientLabel']);
           const label = text(args.label, { max: 100 });
           const clientLabel = args.clientLabel === undefined ? label : text(args.clientLabel, { max: 100 });
-          assert(db.prepare('SELECT count(*) AS n FROM cap_principals WHERE account_id=?').get(owner.accountId).n < 1000, 'quota_exceeded');
-          const clientId = newId('client'); const principalId = newId('principal');
-          db.prepare("INSERT INTO cap_clients(id,account_id,label,state,created_at) VALUES(?,?,?,'active',?)").run(clientId, owner.accountId, clientLabel, time);
-          db.prepare("INSERT INTO cap_principals(id,account_id,client_id,kind,label,state,creator_device_id,created_at) VALUES(?,?,?,'service',?,'active',?,?)").run(principalId, owner.accountId, clientId, label, owner.deviceId, time);
-          return { principal: principalDto(ownedPrincipal(owner.accountId, principalId)), client: { id: clientId, label: clientLabel, state: 'active' } };
+          const principal = insertPrincipal(owner, label, clientLabel, time);
+          return { principal: principalDto(principal), client: { id: principal.client_id, label: clientLabel, state: 'active' } };
         }
         case 'access.principals.list': {
           exact(args, ['expectedAccountId', 'limit', 'cursor']);
@@ -468,6 +473,33 @@ export function createAccessStore({ db, clock = Date.now, transaction, actorActi
       return settleBudgetCore({ reservationId, disposition,
         ...(disposition === 'spent' ? { actualCharges: [{ unit: 'invocations', amount: 1 }] } : {}) });
     });
+  }
+  if (captureOAuthAuthority !== undefined) {
+    assert(typeof captureOAuthAuthority === 'function', 'host_auth_required');
+    // A fixed coordinator-only seam; never returned as a service Access API.
+    captureOAuthAuthority(Object.freeze({
+      create({ owner, clientProfile, expiresAt, budgetLimit, time }) {
+        assert(db.isTransaction && ['soty-codex-cli', 'soty-opencode-cli'].includes(clientProfile), 'oauth_context_invalid');
+        assert(actorActive(owner) === true, 'authorization_required');
+        integer(budgetLimit, 1, 20); integer(expiresAt, time + 1, Math.min(time + 86400000, Number.MAX_SAFE_INTEGER));
+        const label = clientProfile === 'soty-codex-cli' ? 'Codex CLI' : 'OpenCode CLI';
+        const principal = insertPrincipal(owner, label, label, time);
+        const grant = insertGrant(owner, principal, { capabilities: [{ capabilityId: 'notes.createDraft', version: 1 }],
+          resources: ['notes:new'], effects: ['create'], recipients: ['soty:notes'], allowDelegation: false, maxDepth: 0,
+          expiresAt, budget: { unit: 'invocations', limit: budgetLimit } }, time, null);
+        return { clientId: principal.client_id, principalId: principal.id, rootGrantId: grant.id };
+      },
+      live(connection, time) {
+        assert(db.isTransaction, 'oauth_context_invalid');
+        oauth.validateConnection(connection);
+        assert(connection.state === 'active' && connection.expires_at > time, 'access_denied');
+        const ancestry = chain(connection.root_grant_id, connection.account_id, time);
+        assert(ancestry.length === 1 && ancestry[0].client_id === connection.client_id
+          && ancestry[0].principal_id === connection.principal_id, 'access_denied');
+        return true;
+      },
+      revoke(connection, time) { oauth.validateConnection(connection); return oauth.revokeConnection(connection, time); },
+    }));
   }
   return Object.freeze({ operations: new Set(ACCESS_OPERATIONS), execute, authenticateCredential, authorize, authorizeInvocation, reserveBudget, settleBudget,
     verifyOwner({ actor, args }) { return hostOwner(actor, args); } });

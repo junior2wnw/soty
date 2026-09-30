@@ -202,9 +202,9 @@ test('actual pinned Provider Session and first Interaction serialize through the
   assert.equal(rows(f.db)[0].created_at, initialIat * 1000);
   const template = interaction('actual', Date.now());
   const first = new provider.Interaction(template.jti, { params: template.params, prompt: template.prompt,
-    cid: template.cid, returnTo: template.returnTo, session: loaded, lastSubmission: undefined, trusted: false });
+    cid: template.cid, returnTo: template.returnTo, session: loaded, lastSubmission: undefined });
   await first.save(600);
   const saved = store.find({ model: 'Interaction', id: first.jti });
   assert.equal(saved.result, undefined); assert.equal(saved.params.state, template.params.state);
-  assert.equal(saved.trusted, false);
+  assert.equal(saved.trusted, undefined);
 });

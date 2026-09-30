@@ -8,20 +8,24 @@ import { BUILTIN_DOCUMENTATION } from './documentation.mjs';
 import { createInvocationStore } from './invocations.mjs';
 import { createNativeNotesCoordinator, normalizeNativeNoteLimits, validateNativeNoteComposition } from './native-notes.mjs';
 import { initializeCapabilitiesSchema, CAPABILITIES_SUPPORTED_SCHEMA_VERSIONS } from './schema.mjs';
+import { normalizeOAuthConfiguration } from './oauth-profile.mjs';
+import { createOAuthConnections, OAUTH_OPERATIONS } from './oauth-connections.mjs';
 import { assert, canonicalHash, exact, integer, newId } from './validation.mjs';
 
 export { ACCESS_OPERATIONS } from './access.mjs';
 export { BUILTIN_CAPABILITIES } from './catalog.mjs';
 export { AccessError } from './validation.mjs';
+export { OAUTH_OPERATIONS } from './oauth-connections.mjs';
 
 export function createCapabilitiesService({ databasePath, projectId, clock = Date.now, actorActive, catalog = BUILTIN_CAPABILITIES,
-  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, allowOAuthMigration = false, nativeNotes } = {}) {
+  documentation = BUILTIN_DOCUMENTATION, limits = {}, allowNativeMigration = false, allowOAuthMigration = false, nativeNotes, oauth } = {}) {
   assert(typeof databasePath === 'string' && databasePath.length > 0, 'database_path_required');
   assert(typeof projectId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(projectId), 'project_id_required');
   assert(typeof allowNativeMigration === 'boolean' && typeof allowOAuthMigration === 'boolean', 'schema_configuration_invalid');
   assert(typeof actorActive === 'function', 'host_auth_required');
   assert(typeof clock === 'function', 'clock_invalid');
   const nativeComposition = validateNativeNoteComposition(nativeNotes);
+  const oauthComposition = normalizeOAuthConfiguration(oauth);
   exact(limits, ['access', 'invocations', 'nativeNotes'], 'limits_invalid');
   const nativeLimits = normalizeNativeNoteLimits(limits.nativeNotes);
   const accessLimits = limits.access ?? {};
@@ -73,9 +77,10 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
       }
     });
   } catch (error) { db.close(); closed = true; throw error; }
-  let invocationCore, nativeSettlement;
+  let invocationCore, nativeSettlement, oauthAuthority;
   const access = createAccessStore({ db, clock, transaction, actorActive, catalog: registry, limits: accessLimits,
-    captureNativeSettlement: nativeComposition ? value => { nativeSettlement = value; } : undefined });
+    captureNativeSettlement: nativeComposition ? value => { nativeSettlement = value; } : undefined,
+    captureOAuthAuthority: oauthComposition ? value => { oauthAuthority = value; } : undefined });
   const invocations = createInvocationStore({
     db, clock, transaction, authorize: access.authorizeInvocation,
     reserveBudget: access.reserveBudget, settleBudget: access.settleBudget, canonicalHash, newId, limits: invocationLimits,
@@ -84,8 +89,11 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
   const native = nativeComposition ? createNativeNotesCoordinator({ db, projectId, registryId: storage.registryId, schemaVersion: storage.schemaVersion, clock,
     registry, access, core: invocationCore, settleNativeBudget: nativeSettlement, transaction, ensureOpen,
     composition: nativeComposition, limits: nativeLimits, invocationLimits }) : null;
-  const operations = new Set([...access.operations, 'access.invocations.list']);
+  const oauthCoordinator = oauthComposition ? createOAuthConnections({ db, projectId, registryId: storage.registryId,
+    schemaVersion: storage.schemaVersion, clock, transaction, ensureOpen, configuration: oauthComposition, access, authority: oauthAuthority }) : null;
+  const operations = new Set([...access.operations, 'access.invocations.list', ...(oauthCoordinator ? OAUTH_OPERATIONS : [])]);
   function execute(request) {
+    if (oauthCoordinator && OAUTH_OPERATIONS.includes(request.op)) return oauthCoordinator.execute(request);
     if (request.op !== 'access.invocations.list') return access.execute(request);
     exact(request.args, ['expectedAccountId', 'limit', 'cursor']);
     const owner = access.verifyOwner(request);
@@ -97,6 +105,8 @@ export function createCapabilitiesService({ databasePath, projectId, clock = Dat
     operations, execute,
     authenticateCredential: access.authenticateCredential, authorize: access.authorize,
     catalog: publicCatalog, invocations, nativeNotes: native,
-    close() { if (!closed) { assert(!inTransaction && !db.isTransaction, 'nested_transaction'); db.close(); closed = true; } }
+    ...(oauthCoordinator ? { oauth: oauthCoordinator.oauth } : {}),
+    close() { if (!closed) { assert(!inTransaction && !db.isTransaction, 'nested_transaction'); oauthCoordinator?.close();
+      db.close(); closed = true; oauthComposition?.artifactKey?.fill(0); } }
   });
 }

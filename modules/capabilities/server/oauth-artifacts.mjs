@@ -12,7 +12,7 @@ const safeTime = value => Number.isSafeInteger(value) && value >= 0;
  * deliberately admits no Grant/token, actor, consent or execution authority.
  * The service does not expose it before the complete coordinator is ready. */
 export function createOAuthArtifactStore({ db, projectId, registryId, schemaVersion, clock,
-  transaction, ensureOpen, configuration }) {
+  transaction, ensureOpen, configuration, captureCore }) {
   oauthCheck(typeof clock === 'function' && typeof transaction === 'function' && typeof ensureOpen === 'function', 'oauth_configuration_invalid');
   const { issuer } = configuration;
   const codec = schemaVersion === 3 ? createOAuthArtifactCodec({ registryId, issuer,
@@ -97,34 +97,52 @@ export function createOAuthArtifactStore({ db, projectId, registryId, schemaVers
     const total = get('SELECT count(*) AS n FROM cap_oauth_artifacts').n;
     oauthCheck(auxiliary < 1024 && total < 65536, 'oauth_quota_exceeded');
   }
+  function findInTransaction(args, time) {
+    const idHash = modelId(args, ['model', 'id']);
+    oauthCheck(db.isTransaction, 'oauth_context_invalid'); identity();
+    oauthCheck(codec?.available(), 'oauth_storage_key_unavailable');
+    const row = rowFor(args.model, idHash);
+    if (!row || row.expires_at <= time) return undefined;
+    return checked(row, time, args.id).payload;
+  }
+  function upsertInTransaction(args, time) {
+    oauthCheck(db.isTransaction, 'oauth_context_invalid'); identity();
+    oauthCheck(codec?.available(), 'oauth_storage_key_unavailable');
+    const idHash = modelId(args, ['model', 'id', 'payload', 'expiresIn', 'request', 'stagedGrant']);
+    const { model, id, payload, expiresIn } = args;
+    oauthCheck(args.request === undefined && args.stagedGrant === undefined, 'oauth_context_invalid');
+    const next = profile.snapshot({ model, id, payload, nowMs: time, expiresIn });
+    metadataReferences(next.payload);
+    const current = rowFor(model, idHash);
+    const sessionUidHash = model === 'Session' ? digest(next.payload.uid) : null;
+    if (current) {
+      const previous = checked(current, time, id);
+      oauthCheck(current.expires_at > time && previous.createdAt === next.createdAt
+        && current.session_uid_hash === sessionUidHash && previous.retainUntil === next.retainUntil);
+    } else {
+      quota();
+      if (sessionUidHash) oauthCheck(!get("SELECT 1 FROM cap_oauth_artifacts WHERE model='Session' AND session_uid_hash=?", sessionUidHash));
+    }
+    const sealed = codec.seal({ model, idHash, payload: next.payload });
+    if (current) db.prepare(`UPDATE cap_oauth_artifacts SET payload_cipher=?,payload_digest=?,expires_at=?
+      WHERE model=? AND id_hash=?`).run(sealed.payloadCipher, sealed.payloadDigest, next.expiresAt, model, idHash);
+    else db.prepare(`INSERT INTO cap_oauth_artifacts(model,id_hash,issuer,profile,key_id,payload_cipher,payload_digest,
+      connection_id,provider_grant_id,session_uid_hash,created_at,expires_at,retain_until,consumed_at)
+      VALUES(?,?,?,?,?,?,?,NULL,NULL,?,?,?,?,NULL)`).run(model, idHash, issuer, sealed.profile, sealed.keyId,
+      sealed.payloadCipher, sealed.payloadDigest, sessionUidHash, next.createdAt, next.expiresAt, next.retainUntil);
+  }
+  if (captureCore !== undefined) {
+    oauthCheck(typeof captureCore === 'function', 'oauth_configuration_invalid');
+    oauthSynchronous(captureCore(Object.freeze({ findInTransaction, upsertInTransaction })));
+  }
   return Object.freeze({
     hasKey() { return !closed && Boolean(codec?.available()); },
     upsert(args) {
-      const idHash = modelId(args, ['model', 'id', 'payload', 'expiresIn', 'request', 'stagedGrant']);
+      modelId(args, ['model', 'id', 'payload', 'expiresIn', 'request', 'stagedGrant']);
       const { model, id, payload, expiresIn } = args;
       // No context silently gains a use outside its future Grant-only port.
       oauthCheck(args.request === undefined && args.stagedGrant === undefined, 'oauth_context_invalid');
-      return atomic(time => {
-        const next = profile.snapshot({ model, id, payload, nowMs: time, expiresIn });
-        metadataReferences(next.payload);
-        const current = rowFor(model, idHash);
-        const sessionUidHash = model === 'Session' ? digest(next.payload.uid) : null;
-        if (current) {
-          const previous = checked(current, time, id);
-          oauthCheck(current.expires_at > time && previous.createdAt === next.createdAt
-            && current.session_uid_hash === sessionUidHash && previous.retainUntil === next.retainUntil);
-        } else {
-          quota();
-          if (sessionUidHash) oauthCheck(!get("SELECT 1 FROM cap_oauth_artifacts WHERE model='Session' AND session_uid_hash=?", sessionUidHash));
-        }
-        const sealed = codec.seal({ model, idHash, payload: next.payload });
-        if (current) db.prepare(`UPDATE cap_oauth_artifacts SET payload_cipher=?,payload_digest=?,expires_at=?
-          WHERE model=? AND id_hash=?`).run(sealed.payloadCipher, sealed.payloadDigest, next.expiresAt, model, idHash);
-        else db.prepare(`INSERT INTO cap_oauth_artifacts(model,id_hash,issuer,profile,key_id,payload_cipher,payload_digest,
-          connection_id,provider_grant_id,session_uid_hash,created_at,expires_at,retain_until,consumed_at)
-          VALUES(?,?,?,?,?,?,?,NULL,NULL,?,?,?,?,NULL)`).run(model, idHash, issuer, sealed.profile, sealed.keyId,
-          sealed.payloadCipher, sealed.payloadDigest, sessionUidHash, next.createdAt, next.expiresAt, next.retainUntil);
-      });
+      return atomic(time => upsertInTransaction({ model, id, payload, expiresIn }, time));
     },
     find(args) {
       const idHash = modelId(args, ['model', 'id']);

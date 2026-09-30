@@ -88,7 +88,7 @@ function artifactCheck(db, row) {
   const connection = db.prepare('SELECT * FROM cap_oauth_connections WHERE id=?').get(row.connection_id);
   check(connection && row.issuer === connection.issuer && row.provider_grant_id === connection.provider_grant_id
     && row.created_at >= connection.created_at && row.expires_at <= connection.expires_at);
-  if (row.model === 'Grant') check(row.id_hash === digest(row.provider_grant_id) && row.expires_at === connection.expires_at);
+  if (row.model === 'Grant') check(row.id_hash === digest(row.provider_grant_id));
   if (row.model === 'AuthorizationCode') check(row.expires_at - row.created_at <= 60000);
   if (row.model === 'AccessToken') check(row.expires_at - row.created_at <= 300000 && row.retain_until === row.expires_at);
   else check(row.retain_until === connection.expires_at);
@@ -186,9 +186,7 @@ export function createOAuthBaselineGuard({ db }) {
   function assertUnmanaged(reference) {
     if (managed(reference)) throw new AccessError('oauth_managed_authority');
   }
-  function revokeForCredential(row, time) {
-    const connection = managed({ clientId: row.client_id, principalId: row.principal_id, grantId: row.grant_id });
-    if (!connection) return false;
+  function revokeConnection(connection, time) {
     // The caller holds the ordinary signed Access transaction. Safety revoke
     // never depends on the old token being live or on decrypting AS artifacts.
     check(db.isTransaction && safe(time) && time >= connection.created_at);
@@ -203,6 +201,10 @@ export function createOAuthBaselineGuard({ db }) {
     if (connection.state === 'active') db.prepare("UPDATE cap_oauth_connections SET state='revoked',revoked_at=? WHERE id=?").run(time, connection.id);
     return true;
   }
+  function revokeForCredential(row, time) {
+    const connection = managed({ clientId: row.client_id, principalId: row.principal_id, grantId: row.grant_id });
+    return connection ? revokeConnection(connection, time) : false;
+  }
   function legacyCredentialCount(accountId) {
     if (!available()) return db.prepare('SELECT count(*) AS n FROM cap_credentials WHERE account_id=?').get(accountId).n;
     return db.prepare(`SELECT count(*) AS n FROM cap_credentials k WHERE k.account_id=? AND NOT EXISTS(
@@ -211,5 +213,6 @@ export function createOAuthBaselineGuard({ db }) {
         AND c.account_id=k.account_id AND c.client_id=k.client_id AND c.principal_id=k.principal_id
         AND c.root_grant_id=k.grant_id AND c.resource=k.audience)`).get(accountId).n;
   }
-  return Object.freeze({ managed, validateCredential, assertUnmanaged, revokeForCredential, legacyCredentialCount });
+  return Object.freeze({ managed, validateCredential, assertUnmanaged, revokeForCredential, legacyCredentialCount,
+    validateConnection(connection) { return connectionCheck(db, connection); }, revokeConnection });
 }

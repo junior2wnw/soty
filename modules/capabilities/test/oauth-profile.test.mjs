@@ -59,6 +59,7 @@ test('initial Interaction needs no result and rejects disabled protocol fields, 
   const optional = { ...value, result: undefined, session: undefined, trusted: undefined,
     prompt: { ...value.prompt, details: { missingOIDCScope: undefined } } };
   assert.deepEqual(snap(optional).payload, value);
+  assert.deepEqual(snap({ ...value, trusted: [] }).payload.trusted, []);
   const variants = [
     { ...value, deviceCode: undefined }, { ...value, returnTo: ORIGIN + '/oauth/authorize/' + id('other') },
     { ...value, returnTo: ORIGIN + '/oauth/auth/' + value.jti },
@@ -67,6 +68,8 @@ test('initial Interaction needs no result and rejects disabled protocol fields, 
     { ...value, result: { login: { accountId: 'account_1' }, error: 'access_denied' } },
     { ...value, result: { login: { accountId: 'account_1', unknown: undefined } } },
     { ...value, params: { ...value.params, state: '\ud800' } },
+    { ...value, trusted: false }, { ...value, trusted: true },
+    { ...value, trusted: ['client_id'] }, { ...value, trusted: [false] },
   ];
   for (const bad of variants) assert.throws(() => snap(bad), code('oauth_invalid_artifact'));
   assert.equal(snap({ ...value, result: { error: 'access_denied' } }).payload.result.error, 'access_denied');

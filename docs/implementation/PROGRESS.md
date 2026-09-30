@@ -258,3 +258,9 @@ Parser теперь знает Capabilities3; реальный Dockerfile/curren
 ## P4-C1 — экран согласия принят как локальный компонент
 
 [Browser/root receipt](p4-oauth-consent-browser.md), [независимый controller audit](p4-oauth-consent-independent.md). Исправлены реальные account/focus/clock/disclosure дефекты и browser overflow длинного имени/отсутствующий общий hex clip. Итоговый root UI/PWA25/25PASS,0skip; typecheck и стандартная сборка с prebuildPASS. Actual IAB320/667/1280 и светлая/графитовая темы проверены на явно синтетических ports. Это не full signed OAuth flow: host/token/owner list/revoke и два настоящих клиента ещё следующие. Default-off и все последующие этапы master-плана сохранены.
+
+## P4-C1c — signed owner decision и Grant приняты локально
+
+[Доменный receipt, increment2 и narrow refreeze](p4-oauth-domain-ports.md): подписанные approve/deny/list/revoke, durable replay после потерянного ответа, bounded private staging и атомарная encrypted Grant/connection привязка. Root прочитал весь coordinator и affected access/index/aux/profile; отдельный critic source pass не обнаружил нового blocker и подтвердил границу без полного host→signed→encrypted-token flow. DDL неизменён; available=false, token/bearer/dedup пока не реализованы.
+
+Независимый source audit обнаружил неверный boolean `Interaction.trusted`; actual Provider HTTP login→resume→second consent воспроизвёл RED. Узкое исправление допускает только absent/[]; авторский composed31/31PASS. После refreeze итоговая root интеграция **всех Capabilities + всех capabilities HTTP suites + executor policy:295/295PASS,0fail,0skip**,53041.1516ms, `p4-oauth-owner-integrated.log`. Отдельная host metadata проверка продолжается: зелёный domain checkpoint не означает включённый AS. Следующая реализация — T1 tokens/lifecycle, затем T2 branded bearer/native dedup и full composition.
