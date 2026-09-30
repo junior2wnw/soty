@@ -10,6 +10,7 @@ getPwaController();
 
 const root = document.querySelector<HTMLElement>('#app')!;
 const url = new URL(window.location.href);
+const consent = /^\/oauth\/interaction\/([A-Za-z0-9_-]{16,128})$/u.exec(url.pathname);
 const legacyParameters = ['j', 'connector', 'link', 'agent', 'agentRelay', 'agentRelayId', 'reset-local', 'soty-reset', 'repair', 'traffic'];
 const classic = url.searchParams.get('view') === 'classic'
   || legacyParameters.some(name => url.searchParams.has(name))
@@ -17,6 +18,11 @@ const classic = url.searchParams.get('view') === 'classic'
 document.body.dataset.sotySurface = classic ? 'classic' : 'world';
 
 async function start(): Promise<void> {
+  if (consent) {
+    const { startOAuthConsent } = await import('./platform/oauth-consent');
+    await startOAuthConsent(root, consent[1]!);
+    return;
+  }
   if (classic) {
     await import('./main');
     return;

@@ -219,7 +219,7 @@ Host-only `service.oauth`:
 readiness() -> {schemaVersion, available:boolean}
 prepareInteraction({interactionId,browserNonce,durationMs=86400000,budgetLimit=20})
   -> {interactionId,contextDigest,clientProfile,resource,scope,durationMs,budgetLimit,
-      expiresAt,decision:'pending'|'approved'|'denied'}
+      expiresAt,checkedAt,decision:'pending'|'approved'|'denied',decidedAccountId:string|null}
 readInteraction({interactionId,browserNonce}) -> та же безопасная presentation
 beginGrantBinding({interactionId,browserNonce})
   -> {context,providerGrantId:string|null,
@@ -239,6 +239,8 @@ artifactStore.revokeByGrantId({providerGrantId}) -> void
 `Client.find` unknown и `findByUserCode` wrapper возвращает undefined без DB lookup; unknown mutable model — отказ. `request` — свежий snapshot `{clientId,resource?,scope?,grantType?}` из public Provider.ctx, не объект HTTP body и не actor. Для code/RT consume обязательны authenticated clientId + grantType authorization_code/refresh_token соответствующей модели; optional resource/scope только exact own strings. AT/RT/code upsert проверяет current request/client/pins; Grant упоминает staging только при первом сохранении; Session/Interaction не превращают request в actor. Полный raw request, tokens и callback Functions не сериализуются.
 
 `prepareInteraction` **читает настоящий encrypted Interaction artifact**, проверяет exact code params/expiry и server redirect allowlist, сохраняет request pins и SHA256(browserNonce), а не принимает account/client/resource из arbitrary UI. Не вводится второй список redirects: `isRegisteredRedirect({clientId,redirectUri}) -> literal true/false` — closed sync callback по той же static client configuration root. Domain самостоятельно проверяет URI/loopback форму и отсутствие credentials/fragment; callback не может разрешить иной resource/scope/account. Nonce — host-generated 32 bytes base64url, bound cookie; повтор exact uid/nonce/limits возвращает прежнее предложение, иное — conflict. Context digest — canonical hash `['soty.oauth-consent.v1', issuer, uidHash, staticClientId, redirectUri, resource, scope, codeChallenge, 'S256', state === undefined ? null : SHA256(state), durationMs, budgetLimit, expiresAt]`; raw state не попадает в presentation. Optional state — well-formed string≤512 UTF-8 bytes, без coercion; provider возвращает исходное значение.
+
+Уточнение после независимого UX review: presentation содержит `checkedAt` из domain clock текущего чтения и `decidedAccountId` (null до решения, точный signed actor account после решения). Эти поля не меняют digest/DDL и не дают новых полномочий. Browser использует server remaining time с консервативным вычитанием network elapsed и monotonic clock, а не часы компьютера. При смене локального аккаунта завершение решения другого аккаунта блокируется; same-origin completion form несёт только `expectedAccountId`, который host сравнивает с durable decidedAccountId перед binding. Raw code, state и секреты в форме не передаются. Проверка локального аккаунта — защита ясности интерфейса; источником полномочий остаются signed decision и действующий Connect fence.
 
 Signed operations через существующий `service.execute({op,actor,args})`:
 
