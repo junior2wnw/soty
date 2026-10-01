@@ -72,9 +72,22 @@ async function assertWriters(engine, mount, allowedId) {
   const items = await engine.request('GET', '/containers/json');
   requireThat(Array.isArray(items), 'storage_writer_check_failed');
   for (const c of items) {
+    requireThat(matches(ID, c?.Id), 'storage_writer_check_failed');
     if (c.Id === allowedId) continue;
-    const conflict = (c.Mounts || []).some(m => m.RW !== false && ((mount.name && m.Name === mount.name)
-      || (typeof m.Source === 'string' && overlaps(m.Source, mount.source))));
+    let mounts = c.Mounts;
+    // Docker's list summary may omit an anonymous volume's Source. Empty is
+    // not a host root, and an incomplete summary is not proof of no writer.
+    if (!Array.isArray(mounts) || mounts.some(m => !m || (m.RW !== false
+      && (typeof m.Source !== 'string' || !path.posix.isAbsolute(m.Source))))) {
+      let full;
+      try { full = await engine.inspect(c.Id); } catch { throw new SafeError('storage_writer_check_failed'); }
+      requireThat(full?.Id === c.Id && full.State?.Running === true && Array.isArray(full.Mounts)
+        && full.Mounts.every(m => m && typeof m.RW === 'boolean' && (m.RW === false
+          || (typeof m.Source === 'string' && path.posix.isAbsolute(m.Source)))), 'storage_writer_check_failed');
+      mounts = full.Mounts;
+    }
+    const conflict = mounts.some(m => m.RW !== false && ((mount.name && m.Name === mount.name)
+      || overlaps(m.Source, mount.source)));
     requireThat(!conflict, 'storage_other_writer');
   }
 }

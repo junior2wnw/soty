@@ -290,6 +290,56 @@ test('another writer or a changed volume prevents application start, including a
   await assert.rejects(guardStorageStart(f.context, { ...f.runtime }), /storage_runtime_changed/);
 });
 
+test('sparse Docker writer summaries resolve anonymous volumes through exact full inspect before admission', async () => {
+  for (const Source of [undefined, '', 'relative-volume-source']) {
+    const f = fixture(), otherId = id(90), inspected = [];
+    f.containers.set(otherId, { Id: otherId, State: { Running: true }, Mounts: [{ Type: 'volume', Name: 'unrelated-anonymous-volume', Source: '/docker/volumes/unrelated-anonymous-volume/_data', RW: true }] });
+    const request = f.engine.request, inspect = f.engine.inspect;
+    f.engine.request = async (method, route) => route === '/containers/json'
+      ? [{ Id: otherId, State: 'running', Mounts: [{ Type: 'volume', Name: 'unrelated-anonymous-volume', Source, RW: true }] }]
+      : request(method, route);
+    f.engine.inspect = async key => { if (key === otherId) inspected.push(key); return inspect(key); };
+    const receipt = await guardStorageStart(f.context, f.runtime);
+    requireStorageStartReceipt(receipt, f.runtime.Id);
+    assert.ok(inspected.length >= 2, 'both pre-probe and post-probe writer checks require exact inspection');
+    assert.ok(inspected.every(key => key === otherId));
+  }
+});
+
+test('sparse writer inspect still refuses real volume-name and absolute-path conflicts', async () => {
+  for (const actual of [
+    { Name: 'live-data', Source: '/docker/volumes/another-name/_data' },
+    { Name: 'other', Source: '/docker/volumes/live-data/_data/nested' },
+    { Name: 'other', Source: '/docker/volumes' },
+  ]) {
+    const f = fixture(), otherId = id(91); let inspected = 0;
+    const request = f.engine.request, inspect = f.engine.inspect;
+    f.engine.request = async (method, route) => route === '/containers/json'
+      ? [{ Id: otherId, Mounts: [{ Name: 'summary-name', Source: '', RW: true }] }]
+      : request(method, route);
+    f.engine.inspect = async key => key === otherId
+      ? (++inspected, { Id: otherId, State: { Running: true }, Mounts: [{ Type: 'volume', ...actual, RW: true }] }) : inspect(key);
+    await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_other_writer/);
+    assert.equal(inspected, 1); assert.deepEqual(f.events, []);
+  }
+});
+
+test('sparse writer missing or incomplete full inspection fails closed without a helper START', async () => {
+  for (const actual of [null, { Id: id(93), State: { Running: true }, Mounts: [] },
+    { Id: id(92), State: { Running: false }, Mounts: [] },
+    { Id: id(92), State: { Running: true } },
+    { Id: id(92), State: { Running: true }, Mounts: [{ RW: true, Source: '' }] },
+    { Id: id(92), State: { Running: true }, Mounts: [{ RW: true, Source: 'still-relative' }] },
+  ]) {
+    const f = fixture(), otherId = id(92), request = f.engine.request, inspect = f.engine.inspect;
+    f.engine.request = async (method, route) => route === '/containers/json'
+      ? [{ Id: otherId, Mounts: [{ Source: '', RW: true }] }] : request(method, route);
+    f.engine.inspect = async key => { if (key !== otherId) return inspect(key); if (actual === null) throw new Error('unavailable'); return actual; };
+    await assert.rejects(guardStorageStart(f.context, f.runtime), /storage_writer_check_failed/);
+    assert.deepEqual(f.events, []);
+  }
+});
+
 test('nested data mounts cannot hide another room database from the isolated format probe', async () => {
   const f = fixture();
   f.runtime.Mounts.push({ Type: 'bind', Source: '/another/rooms-v2.sqlite', Destination: '/data/rooms-v2.sqlite', RW: true });
