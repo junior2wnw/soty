@@ -65,9 +65,9 @@ test('registered callbacks accept only the observed static client path and expli
   assert.equal(isRegisteredOAuthRedirect({ clientId: 'soty-codex-cli', redirectUri: 'http://127.0.0.1:19876/mcp/oauth/callback' }), false);
 });
 
-test('actual disabled host reserves OAuth and MCP paths without returning the SPA or discovery promises', async t => {
+test('actual AS-off host reserves OAuth paths and keeps the authenticated MCP boundary without returning the SPA', async t => {
   const f = await nativeHttpFixture(t, { enabled: false, capabilitiesVersion: 3 });
-  for (const route of ['/oauth', '/oauth/authorize', '/oauth/unknown', '/mcp', '/mcp/unknown',
+  for (const route of ['/oauth', '/oauth/authorize', '/oauth/unknown',
     '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp',
     '/.well-known/oauth-authorization-server/oauth', '/oauth/.well-known/openid-configuration',
     '/%6fAuth/authorize', '/%256fauth/authorize']) {
@@ -77,6 +77,17 @@ test('actual disabled host reserves OAuth and MCP paths without returning the SP
     assert.deepEqual(await response.json(), { error: 'temporarily_unavailable' });
     assert.equal(response.headers.has('set-cookie'), false);
   }
+  for (const [route, status, code] of [['/mcp', 405, -32601], ['/mcp/unknown', 400, -32600]]) {
+    const response = await fetch(f.origin + route, { redirect: 'manual' });
+    assert.equal(response.status, status, route); assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.match(response.headers.get('content-type'), /^application\/json/u);
+    const body = await response.json(); assert.equal(body.jsonrpc, '2.0'); assert.equal(body.error.code, code);
+    assert.equal(Object.hasOwn(body, 'result'), false); assert.equal(response.headers.has('set-cookie'), false);
+    if (route === '/mcp') assert.equal(response.headers.get('allow'), 'POST');
+  }
+  const unauthenticatedMcp = await fetch(f.origin + '/mcp', { method: 'POST' });
+  assert.equal(unauthenticatedMcp.status, 401);
+  assert.equal((await unauthenticatedMcp.json()).error.message, 'authorization_required');
   const metadataPost = await fetch(f.origin + '/oauth/token', { method: 'POST' });
   assert.equal(metadataPost.status, 503);
   const ordinary = await fetch(f.origin + '/api/apps/capabilities');

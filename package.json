@@ -7,7 +7,7 @@
   "scripts": {
     "connect:test": "node --test modules/connect/test/*.test.mjs",
     "capabilities:test": "node --test modules/capabilities/test/*.test.mjs server/test/capabilities-*.test.mjs scripts/executor-policy.test.mjs",
-    "world:test": "node --test modules/world/test/*.test.mjs modules/apps/test/*.test.mjs modules/notes/test/*.test.mjs server/test/*.test.mjs src/world/*.test.mjs src/geometry/*.test.mjs src/world/theme/*.test.mjs src/platform/*.test.mjs src/transport/*.test.mjs",
+    "world:test": "node --test --test-concurrency=2 modules/world/test/*.test.mjs modules/apps/test/*.test.mjs modules/notes/test/*.test.mjs server/test/*.test.mjs src/world/*.test.mjs src/geometry/*.test.mjs src/world/theme/*.test.mjs src/platform/*.test.mjs src/transport/*.test.mjs",
     "dev:test": "node --test scripts/dev.test.mjs",
     "connect:release:test": "node --test deploy/connect/*.test.mjs",
     "connect:update": "node modules/connect/update/cli.mjs",

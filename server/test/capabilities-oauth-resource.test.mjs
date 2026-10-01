@@ -69,9 +69,17 @@ test('loopback profile uses OAuth resolver without an execution-readiness guard;
   assert.equal(f.calls.read, 1);
 });
 
-test('an unconfigured legacy resource preserves its existing transport policy and challenge', async t => {
-  const f = await fixture(t, { configured: false });
+test('AS-off HTTPS still requires trusted TLS, while loopback legacy access keeps its plain challenge', async t => {
+  const secure = await fixture(t, { configured: false });
+  for (const transport of [{}, { 'x-forwarded-proto': 'https' }]) {
+    const denied = await secure.http({ authorization: 'Bearer soty_cap_synthetic', ...transport });
+    assert.equal(denied.status, 403); assert.deepEqual(denied.body, { error: { code: 'access_denied' } });
+  }
+  assert.deepEqual(secure.calls, { legacy: 0, oauth: 0, read: 0 });
+  const f = await fixture(t, { configured: false, secure: false });
   assert.equal((await f.http({ authorization: 'Bearer soty_cap_synthetic' })).status, 200);
   f.fail('authorization_required');
-  assert.equal((await f.http()).headers['www-authenticate'], 'Bearer realm="soty"');
+  const denied = await f.http({ authorization: 'Bearer soty_cap_synthetic-invalid' });
+  assert.equal(denied.status, 401); assert.equal(denied.headers['www-authenticate'], 'Bearer realm="soty"');
+  assert.deepEqual(f.calls, { legacy: 2, oauth: 0, read: 1 });
 });
