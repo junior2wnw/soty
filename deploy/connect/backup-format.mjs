@@ -1,5 +1,6 @@
-// Internal SOTYBAK1 reader. No plaintext, metadata or file-name callback escapes
-// this module. The public verifier and private restore inspection share one parser.
+// Internal SOTYBAK1 reader and fixed restore parser. The public verifier and dry
+// inspection expose no plaintext/metadata callback; only the private Linux
+// receiver composes this parser with its fixed internal sink.
 import { open } from 'node:fs/promises';
 import { createDecipheriv, privateDecrypt, createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 
@@ -106,8 +107,8 @@ function add(value, amount, maximum) {
 // Producers and the separate cold-source witness must implement this same contract.
 class RestoreInventory {
   files = new Map(); seen = new Set(); headers = 0; dataBytes = 0; externalCount = 0; externalBytes = 0;
-  constructor(options) { this.options = options; }
-  metadata(metadata) {
+  constructor(options, sink = null) { this.options = options; this.sink = sink; }
+  async metadata(metadata) {
     const { limits, sourceWitness, expectedManifestSha256 } = this.options;
     if (!metadata.restoreManifest) incomplete();
     const manifest = metadata.restoreManifest;
@@ -189,9 +190,19 @@ class RestoreInventory {
       try { if (bytes.length !== file.size || bytes.toString('base64') !== encoded || hash(bytes) !== file.sha256) incomplete(); }
       finally { bytes.fill(0); }
     }
+    // Every manifest/config hash and both independent pins have passed before
+    // the private sink is allowed to perform its first materializing write.
+    if (this.sink) {
+      await this.sink.prepare({ files, external, dataBytes: this.dataBytes, externalBytes: this.externalBytes });
+      for (const file of external) {
+        if (!file.present) continue;
+        const bytes = Buffer.from(metadata.restoreFiles[file.id], 'base64');
+        try { await this.sink.config(file, bytes); } finally { bytes.fill(0); }
+      }
+    }
   }
   header() { this.headers = add(this.headers, 1, this.options.limits.headers); }
-  begin(entry) {
+  async begin(entry) {
     const expected = this.files.get(entry.name);
     if (this.seen.has(entry.name)) invalid();
     if (!expected) incomplete();
@@ -201,12 +212,15 @@ class RestoreInventory {
         || expected.uid !== entry.uid || expected.gid !== entry.gid || expected.mode !== entry.mode) incomplete();
     this.seen.add(entry.name);
     entry.digest = entry.type === '0' ? createHash('sha256') : null;
+    if (this.sink) await this.sink.begin(expected);
   }
-  finishEntry(entry) {
+  async finishEntry(entry) {
     if (entry.digest && entry.digest.digest('hex') !== this.files.get(entry.name).sha256) incomplete();
+    if (this.sink && entry.type === '0') await this.sink.end();
   }
-  finish() {
+  async finish() {
     if (this.seen.size !== this.files.size) incomplete();
+    if (this.sink) await this.sink.finish();
     return { externalFiles: this.externalCount, verifiedFileBytes: this.dataBytes + this.externalBytes };
   }
 }
@@ -216,7 +230,7 @@ class TarVerifier {
   entry = null; zeroBlocks = 0; ended = false; count = 0; rooms = 0; sqlite = 0; emptySqlite = 0;
   connectorStore = false; nextPax = {}; globalPax = {}; longName = null; longLink = null;
   constructor(policy = null) { this.policy = policy; }
-  feed(chunk) {
+  async feed(chunk) {
     let at = 0;
     while (at < chunk.length) {
       if (this.remaining) {
@@ -227,8 +241,9 @@ class TarVerifier {
           part.copy(this.entry.prefix, this.entry.prefixUsed, 0, count); this.entry.prefixUsed += count;
         }
         this.entry.digest?.update(part);
+        if (!this.entry.extension && this.entry.type === '0' && this.policy?.sink) await this.policy.sink.write(part);
         this.remaining -= size; at += size;
-        if (!this.remaining) this.finishEntry();
+        if (!this.remaining) await this.finishEntry();
       } else if (this.padding) {
         const size = Math.min(this.padding, chunk.length - at);
         if (!chunk.subarray(at, at + size).every(byte => byte === 0)) invalid();
@@ -236,11 +251,11 @@ class TarVerifier {
       } else {
         const size = Math.min(512 - this.headerUsed, chunk.length - at);
         chunk.copy(this.header, this.headerUsed, at); this.headerUsed += size; at += size;
-        if (this.headerUsed === 512) { this.headerUsed = 0; this.beginEntry(); }
+        if (this.headerUsed === 512) { this.headerUsed = 0; await this.beginEntry(); }
       }
     }
   }
-  beginEntry() {
+  async beginEntry() {
     this.policy?.header();
     const h = this.header;
     if (h.every(byte => byte === 0)) { this.zeroBlocks++; if (this.zeroBlocks >= 2) this.ended = true; return; }
@@ -289,11 +304,11 @@ class TarVerifier {
     this.entry = { name, type, size, uid, gid, mode: permissions, extension, sqlite, emptySqlite,
       prefix: Buffer.alloc(sqlite ? 100 : 0), prefixUsed: 0,
       extensionBytes: extension ? Buffer.alloc(size) : null, extensionUsed: 0 };
-    if (!extension) this.policy?.begin(this.entry);
+    if (!extension) await this.policy?.begin(this.entry);
     this.remaining = size; this.padding = (512 - size % 512) % 512;
-    if (!size) this.finishEntry();
+    if (!size) await this.finishEntry();
   }
-  finishEntry() {
+  async finishEntry() {
     const entry = this.entry;
     if (entry.extension) {
       const bytes = entry.extensionBytes;
@@ -318,16 +333,16 @@ class TarVerifier {
         this.sqlite++;
         if (entry.name === 'connector-store.sqlite') this.connectorStore = true;
       }
-      this.policy?.finishEntry(entry);
+      await this.policy?.finishEntry(entry);
     }
     entry.prefix.fill(0); this.entry = null;
   }
-  finish() {
+  async finish() {
     if (!this.ended || this.headerUsed || this.remaining || this.padding || this.entry
         || Object.keys(this.nextPax).length || this.longName !== null || this.longLink !== null
         || !this.connectorStore || !this.count) invalid();
     return { archiveEntries: this.count, roomFiles: this.rooms, sqliteFiles: this.sqlite, emptySqliteFiles: this.emptySqlite,
-      ...(this.policy?.finish() ?? {}) };
+      ...((await this.policy?.finish()) ?? {}) };
   }
   clear() { this.header.fill(0); this.entry?.prefix.fill(0); this.entry?.extensionBytes?.fill(0); }
 }
@@ -335,7 +350,7 @@ class PlaintextVerifier {
   sizeBytes = Buffer.alloc(4); sizeUsed = 0; metadataSize = null; metadataBuffer = null; metadataBytes = 0;
   metadataReady = false;
   constructor(policy = null) { this.policy = policy; this.tar = new TarVerifier(policy); }
-  feed(chunk) {
+  async feed(chunk) {
     let at = 0;
     if (this.metadataSize === null) {
       const size = Math.min(4 - this.sizeUsed, chunk.length);
@@ -357,13 +372,18 @@ class PlaintextVerifier {
       if (metadata.offline !== true || metadata.original?.State?.Running !== false || metadata.dataFormat !== 'tar'
           || !Array.isArray(metadata.original?.Mounts)
           || !metadata.original.Mounts.some(mount => mount.Destination === '/data' && mount.Type === 'volume')) invalid();
-      this.policy?.metadata(metadata);
+      await this.policy?.metadata(metadata);
       this.metadataReady = true;
     }
-    if (at < chunk.length) this.tar.feed(chunk.subarray(at));
+    if (at < chunk.length) await this.tar.feed(chunk.subarray(at));
   }
-  finish() { if (!this.metadataReady) invalid(); return this.tar.finish(); }
+  async finish() { if (!this.metadataReady) invalid(); return this.tar.finish(); }
   clear() { this.sizeBytes.fill(0); this.metadataBuffer?.fill(0); this.tar.clear(); }
+}
+// Internal fixed-profile seam used only by the private extraction API. Public
+// verifier/dry ports still accept no sink, stream, plaintext callback or output.
+export function createRestoreParser(restore, sink) {
+  return new PlaintextVerifier(new RestoreInventory(restore, sink));
 }
 async function readExactly(handle, size, position, check) {
   const bytes = Buffer.alloc(size); let at = 0;
@@ -422,10 +442,10 @@ export async function readEncryptedBackup({ file, privateKeyPem, restore = null 
     const digest = createHash('sha256').update(prefix), parser = new PlaintextVerifier(restore ? new RestoreInventory(restore) : null);
     const encrypted = Buffer.alloc(CHUNK_BYTES), ciphertextEnd = stat.size - 16;
     let plaintextBytes = 0;
-    const feed = plain => {
+    const feed = async plain => {
       try {
         if (restore) plaintextBytes = add(plaintextBytes, plain.length, restore.limits.plaintextBytes);
-        parser.feed(plain);
+        await parser.feed(plain);
       } finally { plain.fill(0); }
     };
     try {
@@ -435,12 +455,12 @@ export async function readEncryptedBackup({ file, privateKeyPem, restore = null 
         check?.(bytesRead > 0);
         if (!bytesRead) invalid();
         const bytes = encrypted.subarray(0, bytesRead);
-        digest.update(bytes); feed(cipher.update(bytes)); position += bytesRead;
+        digest.update(bytes); await feed(cipher.update(bytes)); position += bytesRead;
       }
       let final;
       try { final = cipher.final(); } catch { throw formatFailure('restore_authentication_failed'); }
-      feed(final); digest.update(tag);
-      const counts = parser.finish(), sha256 = digest.digest('hex');
+      await feed(final); digest.update(tag);
+      const counts = await parser.finish(), sha256 = digest.digest('hex');
       if (restore && sha256 !== restore.expectedSha256) throw formatFailure('restore_authentication_failed');
       check?.();
       receipt = { ok: true, authenticated: true, offline: true, ...counts, sha256 };

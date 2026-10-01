@@ -10,8 +10,8 @@
 | P1. Права, контракты, история | Локальная приёмка пройдена | Ограниченные допуски, отзываемые цепочки, устойчивые Invocation/receipt, общий лимит вызовов; runtime enforcement отдельно в P5 |
 | P2. Цельный интерфейс | Локальная реализация и финальная приёмка | Apps-first оболочка, графит, новые панели, доступы, Notes offline; внешний UX/установленная PWA остаются отдельными gates |
 | P3. Именные приложения | A/B/C/D/R локально приняты; E открыт | Apps6, публикация, источники, сохранения/обсуждения, bounded WS liveness/recovery; D4 browser/signed цикл проверен, публичный пилот ещё впереди |
-| P4. Внешние ИИ | A/B и C1 local browser приняты в описанных пределах; C2a в работе | Публичный поиск/схемы, native Notes/HTTP, OAuth/signed PWA; reader2/3 Linux fixtures приняты. MCP/headless/CLI, модельный D1, HTTPS/full image/restore ещё открыты |
-| P5. Устройства и исполнитель | Ожидает P1 | Реальные ограничения, остановка, отзыв, стоимость |
+| P4. Внешние ИИ | A/B/C1 и C2a–c локально приняты; D1/D2 открыты | Поиск/схемы, Notes/HTTP, OAuth/MCP/signed PWA и два actual CLI-клиента; Linux reader2/3 fixtures приняты. Реальные модели, HTTPS/full image и полный restore ещё открыты |
+| P5. Устройства и исполнитель | Подплан подготовлен; реализация после P4 | Реальные ограничения, остановка, отзыв, стоимость; P1 принят, runtime enforcement впереди |
 | P6A. Авторский SDK | Ожидает P1/P4 | Независимая узкая функция без изменения ядра |
 | P6B. Длительные функции | Ожидает P6A | Start/status/cancel/reconnect/result без повторного эффекта |
 | P6C. Постоянное размещение | Ожидает P3 | Проверенный статический artifact и rollback |
@@ -357,7 +357,7 @@ Checkpoint C2b `2103d755c081f03cdad98959fe593c6151ea2eec` committed/pushed; то
 
 [API receipt и bounds](p4-backup-verifier-api.md): существующая encrypted-backup проверка выделена в `verifyEncryptedBackup`, import не запускает CLI; fixed safe failure и прежние SOTYBAK1/parser/CLI limits сохранены. Root serial run на pinned Node24.21.0 и совпавших frozen source SHA: **10/10 PASS, 0 fail/skip/cancel, 2786.5212 ms**. Первый log `output/implementation-20260930/p4-backup-verifier-root-first.log`, SHA256 `a449fa7d1aed4b1e4b82f00909668e584c2dac3af24674c643be873e30756aed`; авторский source-only freeze сохранён отдельно, suite не повторялся.
 
-R0 закрывает только API/CLI extraction на encrypted fixtures. Independent source и evidence audits получили GO без blockers после сверки pins и первого TAP log; suite не повторялся. Real all-store backup, extractor/restore, full image, first transition и production этим не подтверждены. D1/D2 и следующие этапы master сохраняются.
+R0 закрывает только API/CLI verification на encrypted fixtures. Independent source и evidence audits получили GO без blockers после сверки pins и первого TAP log; suite не повторялся. Real all-store backup, extractor/restore, full image, first transition и production этим не подтверждены. D1/D2 и следующие этапы master сохраняются.
 
 Checkpoint R0 `dda44868fd708f87e5ac2b4f4f854fa05caca2f2` committed/pushed; exact remote SHA root подтвердил.
 
@@ -374,3 +374,15 @@ Checkpoint R0 `dda44868fd708f87e5ac2b4f4f854fa05caca2f2` committed/pushed; exact
 Root первый frozen serial gate **22/22 PASS, 0 fail/skip/cancel, 4553.2542 ms**. После обнаруженного пробела покрытия добавлена только timeout group: её affected-only gate **4/4 PASS, 0 fail/skip/cancel, 407.3425 ms** подтверждает wall/idle refusal и awaited actual descriptor close. Первоначальные12 assertions восстановлены до точного SHA; production и старый10-case файл не менялись. Два самостоятельных logs сохранены, общий suite после PASS не повторялся.
 
 [Docker stream preflight](p4-docker-stream-preflight.md) cross-reviewed как SOURCE-ONLY / NOT RUN: bounded frame decoder, live attach при LogConfig:none, receipt+actual completion и отсутствие повторной mutation при lost ACK. Это не выполненный transport. Следом R1b Linux sink, затем R1c handoff, R1d completeness, exact C/R и first transition; D1 и master P5–P8 остаются открытыми.
+
+## P4-D2-R1b — private Linux extraction и отдельный RO audit приняты
+
+[Sink plan](p4-restore-sink-plan.md) и [source receipt](p4-restore-sink-receipt.md) прошли independent source review. [Root evidence](p4-restore-sink-root-result.md) фиксирует **27/27 Windows PASS**, **41/41 actual synthetic Linux PASS** и отдельный retained writer→RO auditor после actual writer exit. Все14 Linux sink subtests выполнены; аудитор подтвердил9 entries/7 files/53,391B, bytes/metadata/настоящий WAL/sentinel по независимому witness. Оба helper exit0/OOMfalse; cleanup с readback404 завершён, serving неизменён. Два независимых reviewers приняли R1b. Windows branch подтверждает только unsupported-before-I/O, не Linux.
+
+Первая preparation остановилась локально на source transport bound; remote effect0. Отдельная measurement установила compressed writer59090>32768 при raw86829≤98304. Reviewed [code-delivery addendum](p4-restore-sink-linux-preflight.md) сохраняет41 cases/старые caps и передаёт exact trusted code files одним Docker archive PUT до START. Этот QA-канал не является authenticated recovery handoff. Library source неизменён после27-case Windows gate; полный повтор не требовался.
+
+Хронология сохранена: local13/21 gates PASS; send3 **RED** без принятого41-case receipt, причина неизвестна. Diagnostic delta прошла два source GO и affected gate **8/8 PASS**. Send4 **RED** сохранил closed failure до cleanup: case_unknown, actual adapter close1, cgroup max-events0→1 при PIDs32/CPU1. Это доказывает PID-limit enforcement в новом helper, не точный syscall/единственную причину или причину review3. Оба RED имеют cleanupComplete/servingUnchanged=true и не перезаписывались/не повторялись.
+
+Минимальный reviewed startup delta задаёт `UV_THREADPOOL_SIZE=1` и `NODE_OPTIONS=--v8-pool-size=1` до init и наследуется children; PIDs32/CPU1/RAM/capabilities/41 cases/source11 pins сохранены. Affected-only gate **4/4 PASS**; preparation5/actual system-tar round trip PASS. Единственный send5 run `f41f1c60d038fc6203e854d2261c7d14` actual SSH close0/без timeout/overflow, receipt SHA `7c58549df996c70ce260d60d079c3a264ff2d0bfc9f178c4d3ba019fb08cec3d`.9 mutations, PUT ACK до START,0 serving STOP/live-data/migration/models. Success DTO не содержит PID snapshots, поэтому PASS не доказывает отсутствие любого PID-limit event.
+
+Следующий [sender plan](p4-authenticated-sender-plan.md) получил root/independent GO только как SOURCE-ONLY план. R1c authenticated handoff/R1d real-B completeness/full image/first transition/production и все последующие этапы master остаются открытыми; synthetic R1b receipt их не заменяет.
