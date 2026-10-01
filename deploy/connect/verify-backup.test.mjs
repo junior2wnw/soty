@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import { encryptBackup } from './backup.mjs';
+import { verifyEncryptedBackup } from './verify-backup.mjs';
 
 const script = fileURLToPath(new URL('./verify-backup.mjs', import.meta.url));
 const keys = generateKeyPairSync('rsa', { modulusLength: 3072 });
@@ -42,13 +43,16 @@ async function fixture(t, { emptySqlite = false } = {}) {
     await encryptBackup({ output, publicKey, metadata: meta, stream: Readable.from([tar]) }); return output;
   } };
 }
-async function verify(file) {
+async function verify(file, input = JSON.stringify({ file, privateKeyPem })) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
     child.on('error', reject); child.on('close', code => resolve({ code, stdout, stderr }));
-    child.stdin.end(JSON.stringify({ file, privateKeyPem }));
+    // A verifier rejecting an oversized input may close its pipe before the
+    // parent finishes writing. The actual exit/output still decide the test.
+    child.stdin.on('error', error => { if (error.code !== 'EPIPE') reject(new Error('verification_child_input_failed')); });
+    child.stdin.end(input);
   });
 }
 function headerAt(tar, wanted) {
@@ -135,4 +139,95 @@ test('metadata and header bounds are checked before allocating archive-sized buf
   failed(await verify(await f.encrypt(f.tar, { ...metadata, excessive: 'x'.repeat(4 * 1024 * 1024) }, 'metadata-size')));
   const file = await f.encrypt(f.tar, metadata, 'header-size'); const bytes = await readFile(file);
   bytes.writeUInt32BE(0xffffffff, 8); await writeFile(file, bytes); failed(await verify(file));
+});
+
+test('import with hostile stdin neither reads the stream nor writes a CLI response', async () => {
+  const moduleUrl = new URL('./verify-backup.mjs', import.meta.url).href;
+  const program = `
+    const stdin = process.stdin;
+    const originalRead = stdin.read, originalIterator = stdin[Symbol.asyncIterator];
+    let readCalls = 0, iteratorCalls = 0;
+    stdin.read = function () { readCalls++; throw new Error('synthetic_hostile_stdin_read'); };
+    stdin[Symbol.asyncIterator] = function () { iteratorCalls++; throw new Error('synthetic_hostile_stdin_iterator'); };
+    const imported = await import(${JSON.stringify(moduleUrl)});
+    const result = { readCalls, iteratorCalls, hasApi: typeof imported.verifyEncryptedBackup === 'function' };
+    stdin.read = originalRead; stdin[Symbol.asyncIterator] = originalIterator;
+    stdin.destroy();
+    process.send(result, () => process.disconnect());
+  `;
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', program], {
+      windowsHide: true, timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    });
+    let stdout = '', stderr = '', report = null, childError = false;
+    child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('message', value => { report = value; });
+    child.on('error', () => { childError = true; });
+    child.on('close', code => resolve({ code, stdout, stderr, report, childError }));
+    child.stdin.on('error', error => { if (error.code !== 'EPIPE') reject(new Error('import_probe_input_failed')); });
+    child.stdin.end('{synthetic_hostile_stdin_payload');
+  });
+  assert.equal(result.childError, false); assert.equal(result.code, 0);
+  assert.ok(result.stdout.length === 0, 'import must not print stdout');
+  assert.ok(result.stderr.length === 0, 'import must not print stderr');
+  assert.deepEqual(result.report, { readCalls: 0, iteratorCalls: 0, hasApi: true });
+});
+
+test('actual API and CLI return the same safe receipt for an encrypted SQLite tar fixture', async t => {
+  const f = await fixture(t, { emptySqlite: true }); const file = await f.encrypt(f.tar);
+  const receipt = await verifyEncryptedBackup({ file, privateKeyPem });
+  const cli = await verify(file);
+  assert.equal(cli.code, 0); assert.ok(cli.stderr.length === 0, 'successful CLI must have no stderr');
+  let cliReceipt;
+  try { cliReceipt = JSON.parse(cli.stdout); } catch { assert.fail('CLI receipt must be JSON'); }
+  const fields = ['ok', 'authenticated', 'offline', 'archiveEntries', 'roomFiles', 'sqliteFiles', 'emptySqliteFiles', 'sha256'].sort();
+  assert.deepEqual(Object.keys(receipt).sort(), fields); assert.deepEqual(Object.keys(cliReceipt).sort(), fields);
+  assert.deepEqual(receipt, cliReceipt);
+  assert.equal(receipt.ok, true); assert.equal(receipt.authenticated, true); assert.equal(receipt.offline, true);
+  assert.equal(receipt.roomFiles, 2); assert.equal(receipt.sqliteFiles, 1); assert.equal(receipt.emptySqliteFiles, 1);
+  assert.equal(receipt.sha256, createHash('sha256').update(await readFile(file)).digest('hex'));
+});
+
+test('API failures expose only the fixed error for wrong keys, damaged archives and throwing options', async t => {
+  const f = await fixture(t); const file = await f.encrypt(f.tar); const bytes = await readFile(file);
+  const badTag = Buffer.from(bytes); badTag[badTag.length - 1] ^= 1;
+  const tagged = path.join(f.root, 'synthetic-secret-tag.enc'); await writeFile(tagged, badTag);
+  const truncated = path.join(f.root, 'synthetic-secret-truncated.enc'); await writeFile(truncated, bytes.subarray(0, -40));
+  const badTar = Buffer.from(f.tar); badTar[0] ^= 1;
+  const corrupt = await f.encrypt(badTar, metadata, 'synthetic-secret-corrupt-tar');
+  const wrongKeys = generateKeyPairSync('rsa', { modulusLength: 3072 });
+  const wrongPem = wrongKeys.privateKey.export({ type: 'pkcs8', format: 'pem' });
+  const throwing = { get file() { throw new Error('synthetic-secret C:/synthetic/private/archive.enc', { cause: 'synthetic-private-cause' }); } };
+  const cases = [
+    { file, privateKeyPem: wrongPem },
+    { file, privateKeyPem: 'synthetic-invalid-private-key' },
+    { file: tagged, privateKeyPem }, { file: truncated, privateKeyPem }, { file: corrupt, privateKeyPem },
+    null, undefined, throwing,
+  ];
+  for (const options of cases) {
+    let failure;
+    try { await verifyEncryptedBackup(options); } catch (error) { failure = error; }
+    assert.ok(failure instanceof Error, 'API must reject with its safe error');
+    // Boolean assertions avoid echoing any regressed error/secret into a test log.
+    assert.ok(failure.message === 'backup_verification_failed', 'API message must be fixed');
+    assert.ok(failure.code === 'backup_verification_failed', 'API code must be fixed');
+    assert.ok(failure.stack === 'Error: backup_verification_failed', 'API stack must contain no path');
+    assert.equal(Object.hasOwn(failure, 'cause'), false);
+    assert.deepEqual(Object.getOwnPropertyNames(failure).sort(), ['code', 'message', 'stack']);
+    assert.ok(JSON.stringify(failure) === '{"code":"backup_verification_failed"}', 'API JSON must contain only the safe code');
+  }
+});
+
+test('CLI preserves its exact 64 KiB stdin limit while the API takes an object', async t => {
+  const f = await fixture(t); const file = await f.encrypt(f.tar);
+  const encoded = Buffer.from(JSON.stringify({ file, privateKeyPem }));
+  assert.ok(encoded.length < 64 * 1024);
+  const atLimit = Buffer.concat([encoded, Buffer.alloc(64 * 1024 - encoded.length, 32)]);
+  const accepted = await verify(file, atLimit);
+  assert.equal(accepted.code, 0); assert.ok(accepted.stderr.length === 0, 'limit input must verify');
+  const expected = await verifyEncryptedBackup({ file, privateKeyPem });
+  let actual;
+  try { actual = JSON.parse(accepted.stdout); } catch { assert.fail('limit receipt must be JSON'); }
+  assert.deepEqual(actual, expected);
+  failed(await verify(file, Buffer.concat([atLimit, Buffer.from(' ')])));
 });

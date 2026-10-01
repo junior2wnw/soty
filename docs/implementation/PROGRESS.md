@@ -352,3 +352,9 @@ Checkpoint C2b `2103d755c081f03cdad98959fe593c6151ea2eec` committed/pushed; то
 [Fixed corpus/manifest](p4-real-model-corpus.md) прошли independent source GO и root offline6/6 PASS0skip; все24 prompts, substitution negatives и nonexecuting manifest semantics реально проверены. Model calls/расходы0; это не48-result D1. Два ready context до отзыва, cap11/expected10 и typed authority denial сохраняют достоверность следующего paid gate.
 
 [Свежий D2 RO preflight](p4-d2-readonly-preflight.md) подтвердил actual serving image/ID/start/revision unchanged, один наблюдённый Docker RW consumer, health/storageReadytrue/maintenancefalse/inference0. Actual image unlabelled, STOP/START не выполнялись. Semantic local DPAPI public-trust matchtrue не подменяет server/archive restore proof. [First release/recovery plan](p4-release-recovery-plan.md) готов для отдельного independent review; adapter/extractor/full images/restore/production ещё не реализованы.
+
+## P4-D2-R0 — root gate verifier API/CLI пройден
+
+[API receipt и bounds](p4-backup-verifier-api.md): существующая encrypted-backup проверка выделена в `verifyEncryptedBackup`, import не запускает CLI; fixed safe failure и прежние SOTYBAK1/parser/CLI limits сохранены. Root serial run на pinned Node24.21.0 и совпавших frozen source SHA: **10/10 PASS, 0 fail/skip/cancel, 2786.5212 ms**. Первый log `output/implementation-20260930/p4-backup-verifier-root-first.log`, SHA256 `a449fa7d1aed4b1e4b82f00909668e584c2dac3af24674c643be873e30756aed`; авторский source-only freeze сохранён отдельно, suite не повторялся.
+
+R0 закрывает только API/CLI extraction на encrypted fixtures. Independent source и evidence audits получили GO без blockers после сверки pins и первого TAP log; suite не повторялся. Real all-store backup, extractor/restore, full image, first transition и production этим не подтверждены. D1/D2 и следующие этапы master сохраняются.

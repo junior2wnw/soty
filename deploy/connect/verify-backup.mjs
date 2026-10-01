@@ -2,6 +2,7 @@
 // No success receipt is emitted before GCM authentication and full tar checks.
 import { open } from 'node:fs/promises';
 import { createDecipheriv, privateDecrypt, createHash, createPrivateKey, createPublicKey } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 const MAX_INPUT = 64 * 1024, MAX_HEADER = 16 * 1024, MAX_METADATA = 4 * 1024 * 1024;
 const SQLITE_MAGIC = Buffer.from('SQLite format 3\0');
@@ -174,49 +175,65 @@ async function readExactly(handle, size, position) {
   while (at < size) { const result = await handle.read(bytes, at, size - at, position + at); if (!result.bytesRead) invalid(); at += result.bytesRead; }
   return bytes;
 }
-try {
-  const chunks = []; let length = 0;
-  for await (const chunk of process.stdin) { length += chunk.length; if (length > MAX_INPUT) invalid(); chunks.push(chunk); }
-  const input = Buffer.concat(chunks);
-  const { file, privateKeyPem } = JSON.parse(input.toString('utf8').replace(/^\uFEFF/, ''));
-  input.fill(0); chunks.forEach(chunk => chunk.fill(0));
-  const privateKey = createPrivateKey(privateKeyPem);
-  if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.modulusLength < 3072) invalid();
-  const handle = await open(file, 'r');
-  let receipt;
+export async function verifyEncryptedBackup(input) {
   try {
-    const stat = await handle.stat(); if (!stat.isFile() || stat.size < 32) invalid();
-    const first = await readExactly(handle, 12, 0);
-    if (first.subarray(0, 8).toString() !== 'SOTYBAK1') invalid();
-    const headerSize = first.readUInt32BE(8), end = 12 + headerSize;
-    if (headerSize < 2 || end > MAX_HEADER || stat.size < end + 20) invalid();
-    const headerBytes = await readExactly(handle, headerSize, 12), prefix = Buffer.concat([first, headerBytes]);
-    const header = JSON.parse(headerBytes.toString('utf8'));
-    const keyId = createHash('sha256').update(createPublicKey(privateKey).export({ type: 'spki', format: 'der' })).digest('hex');
-    if (header.format !== 'soty.encrypted-backup.v1' || header.algorithm !== 'RSA-OAEP-SHA256/AES-256-GCM' || header.keyId !== keyId) invalid();
-    const iv = Buffer.from(header.iv, 'base64'); if (iv.length !== 12) invalid();
-    const key = privateDecrypt({ key: privateKey, oaepHash: 'sha256' }, Buffer.from(header.key, 'base64'));
-    if (key.length !== 32) invalid();
-    const cipher = createDecipheriv('aes-256-gcm', key, iv); key.fill(0);
-    const tag = await readExactly(handle, 16, stat.size - 16);
-    cipher.setAAD(prefix); cipher.setAuthTag(tag);
-    const digest = createHash('sha256').update(prefix), parser = new PlaintextVerifier();
-    // Keep one owner of the descriptor. A ReadStream destroyed by a parser
-    // exception can close an externally supplied fd and mask that exception
-    // with EBADF when the FileHandle is later closed.
-    const encrypted = Buffer.alloc(64 * 1024), ciphertextEnd = stat.size - 16;
-    for (let position = end; position < ciphertextEnd;) {
-      const { bytesRead } = await handle.read(encrypted, 0, Math.min(encrypted.length, ciphertextEnd - position), position);
-      if (!bytesRead) invalid();
-      const bytes = encrypted.subarray(0, bytesRead);
-      digest.update(bytes); const plain = cipher.update(bytes);
-      try { parser.feed(plain); } finally { plain.fill(0); }
-      position += bytesRead;
-    }
-    const final = cipher.final();
-    try { parser.feed(final); } finally { final.fill(0); }
-    digest.update(tag);
-    receipt = { ok: true, authenticated: true, offline: true, ...parser.finish(), sha256: digest.digest('hex') };
-  } finally { await handle.close(); }
-  console.log(JSON.stringify(receipt));
-} catch { console.error(JSON.stringify({ ok: false, code: 'backup_verification_failed' })); process.exitCode = 1; }
+    const { file, privateKeyPem } = input;
+    const privateKey = createPrivateKey(privateKeyPem);
+    if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.modulusLength < 3072) invalid();
+    const handle = await open(file, 'r');
+    let receipt;
+    try {
+      const stat = await handle.stat(); if (!stat.isFile() || stat.size < 32) invalid();
+      const first = await readExactly(handle, 12, 0);
+      if (first.subarray(0, 8).toString() !== 'SOTYBAK1') invalid();
+      const headerSize = first.readUInt32BE(8), end = 12 + headerSize;
+      if (headerSize < 2 || end > MAX_HEADER || stat.size < end + 20) invalid();
+      const headerBytes = await readExactly(handle, headerSize, 12), prefix = Buffer.concat([first, headerBytes]);
+      const header = JSON.parse(headerBytes.toString('utf8'));
+      const keyId = createHash('sha256').update(createPublicKey(privateKey).export({ type: 'spki', format: 'der' })).digest('hex');
+      if (header.format !== 'soty.encrypted-backup.v1' || header.algorithm !== 'RSA-OAEP-SHA256/AES-256-GCM' || header.keyId !== keyId) invalid();
+      const iv = Buffer.from(header.iv, 'base64'); if (iv.length !== 12) invalid();
+      const key = privateDecrypt({ key: privateKey, oaepHash: 'sha256' }, Buffer.from(header.key, 'base64'));
+      if (key.length !== 32) invalid();
+      const cipher = createDecipheriv('aes-256-gcm', key, iv); key.fill(0);
+      const tag = await readExactly(handle, 16, stat.size - 16);
+      cipher.setAAD(prefix); cipher.setAuthTag(tag);
+      const digest = createHash('sha256').update(prefix), parser = new PlaintextVerifier();
+      // Keep one owner of the descriptor. A ReadStream destroyed by a parser
+      // exception can close an externally supplied fd and mask that exception
+      // with EBADF when the FileHandle is later closed.
+      const encrypted = Buffer.alloc(64 * 1024), ciphertextEnd = stat.size - 16;
+      for (let position = end; position < ciphertextEnd;) {
+        const { bytesRead } = await handle.read(encrypted, 0, Math.min(encrypted.length, ciphertextEnd - position), position);
+        if (!bytesRead) invalid();
+        const bytes = encrypted.subarray(0, bytesRead);
+        digest.update(bytes); const plain = cipher.update(bytes);
+        try { parser.feed(plain); } finally { plain.fill(0); }
+        position += bytesRead;
+      }
+      const final = cipher.final();
+      try { parser.feed(final); } finally { final.fill(0); }
+      digest.update(tag);
+      receipt = { ok: true, authenticated: true, offline: true, ...parser.finish(), sha256: digest.digest('hex') };
+    } finally { await handle.close(); }
+    return receipt;
+  } catch {
+    // Public callers receive no original error, input path, crypto diagnostic or cause.
+    throw Object.assign(new Error('backup_verification_failed'), {
+      code: 'backup_verification_failed', stack: 'Error: backup_verification_failed',
+    });
+  }
+}
+
+async function main() {
+  try {
+    const chunks = []; let length = 0;
+    for await (const chunk of process.stdin) { length += chunk.length; if (length > MAX_INPUT) invalid(); chunks.push(chunk); }
+    const input = Buffer.concat(chunks);
+    const options = JSON.parse(input.toString('utf8').replace(/^\uFEFF/, ''));
+    input.fill(0); chunks.forEach(chunk => chunk.fill(0));
+    console.log(JSON.stringify(await verifyEncryptedBackup(options)));
+  } catch { console.error(JSON.stringify({ ok: false, code: 'backup_verification_failed' })); process.exitCode = 1; }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
