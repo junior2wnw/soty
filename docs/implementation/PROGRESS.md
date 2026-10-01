@@ -386,3 +386,18 @@ Root первый frozen serial gate **22/22 PASS, 0 fail/skip/cancel, 4553.2542
 Минимальный reviewed startup delta задаёт `UV_THREADPOOL_SIZE=1` и `NODE_OPTIONS=--v8-pool-size=1` до init и наследуется children; PIDs32/CPU1/RAM/capabilities/41 cases/source11 pins сохранены. Affected-only gate **4/4 PASS**; preparation5/actual system-tar round trip PASS. Единственный send5 run `f41f1c60d038fc6203e854d2261c7d14` actual SSH close0/без timeout/overflow, receipt SHA `7c58549df996c70ce260d60d079c3a264ff2d0bfc9f178c4d3ba019fb08cec3d`.9 mutations, PUT ACK до START,0 serving STOP/live-data/migration/models. Success DTO не содержит PID snapshots, поэтому PASS не доказывает отсутствие любого PID-limit event.
 
 Следующий [sender plan](p4-authenticated-sender-plan.md) получил root/independent GO только как SOURCE-ONLY план. R1c authenticated handoff/R1d real-B completeness/full image/first transition/production и все последующие этапы master остаются открытыми; synthetic R1b receipt их не заменяет.
+
+Checkpoint R1b `c030addbc2cfa378bc1de2e41e3cdcf8971bdb48` committed/pushed; root подтвердил exact remote SHA. Финальный staged source/docs audit не обнаружил blockers или private artifacts в11files.
+
+## P4-D2-R1c — подплан authenticated handoff
+
+- [x] Принять source-only sender plan и завершить предыдущий R1b checkpoint.
+- [x] Выделить внутренний same-FD encrypted pass, сохранив прежний R0/dry контракт; private sender выполняет полный authenticated pass до первой отправки.
+- [x] Реализовать bounded owned Writable lifecycle и meaningful causal tests: same-FD/source mutation, write backpressure, held write/final/destroy, abort/deadline, actual close и fixed diagnostics.
+- [x] Library source freeze → независимый аудит → root serial parity/sender gate → приёмка: source GO и Windows52 PASS приняты двумя независимыми evidence reviews. Library receipt не подменяет transport result.
+- [ ] Проверить Windows private ciphertext copy/DACL/read-sharing keeper на synthetic данных; bounded local key input и бинарный pinned SSH/Docker handoff без plaintext file/remote key.
+- [ ] Root actual isolated handoff → sender/receiver receipts и actual completion → отдельный RO readback → независимая приёмка/commit/push.
+
+Implementation GO выдан только для library slice. Operator/transport получает отдельный source preflight; root сохраняет единственный runtime slot. R1d completeness, full-image и serving transition начинаются после своей отдельной приёмки, не по EOF или словам sender.
+
+[Sender source receipt](p4-authenticated-sender-receipt.md) и [root evidence](p4-authenticated-sender-root-result.md): первый serial Windows gate **52/52 PASS,0fail/cancelled/skipped/todo,6638.726ms**. Log SHA `2c0f609c303c9bf88d9e99f0da8a06edf60b03e113b23f86c27fab86c79db74d`; frozen source/runtime pins совпали до/после. Narrow source audit до запуска добавил native writableFinished guard и один causal held-final/manual-finish case; это source finding, не runtime RED. Whole-product critic и publisher сверили весь log/case inventory/source pins, оба evidence GO. Linux66, Windows guard и actual transport ещё не выполнялись; R1c handoff и все дальнейшие release gates открыты.

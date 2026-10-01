@@ -1,6 +1,6 @@
-// Internal SOTYBAK1 reader and fixed restore parser. The public verifier and dry
-// inspection expose no plaintext/metadata callback; only the private Linux
-// receiver composes this parser with its fixed internal sink.
+// Internal SOTYBAK1 reader and fixed restore parser. Public verifier/dry ports
+// expose no plaintext callback. The private receiver and sender use fixed
+// internal sinks; no caller-supplied callback enters the public reader.
 import { open } from 'node:fs/promises';
 import { createDecipheriv, privateDecrypt, createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 
@@ -396,20 +396,20 @@ async function readExactly(handle, size, position, check) {
   return bytes;
 }
 
-// Internal entrypoint: restore is a previously validated, captured policy, not
-// an arbitrary callback API. The only observable result contains safe counts.
-export async function readEncryptedBackup({ file, privateKeyPem, restore = null }) {
-  const check = restore?.check;
-  check?.();
-  let privateKey;
+function backupPrivateKey(privateKeyPem) {
   try {
-    privateKey = createPrivateKey(privateKeyPem);
+    const privateKey = createPrivateKey(privateKeyPem);
     if (privateKey.asymmetricKeyType !== 'rsa' || privateKey.asymmetricKeyDetails.modulusLength < 3072) invalid();
+    return privateKey;
   } catch { throw formatFailure('restore_authentication_failed'); }
-  check?.();
-  const handle = await open(file, 'r');
-  let receipt;
-  try {
+}
+
+// One positional pass; ownership and closing of the FileHandle stay outside.
+// output, when present, is restore-backup's private OwnedOutput, never an API
+// option accepted by R0/dry. Its write waits for the supplied callback even if
+// native destroy has already emitted close, so feed may safely wipe afterwards.
+async function encryptedPass(handle, privateKey, restore, output = null) {
+    const check = restore?.check;
     check?.();
     const stat = await handle.stat(); check?.();
     if (!stat.isFile() || stat.size < 32) invalid();
@@ -439,13 +439,16 @@ export async function readEncryptedBackup({ file, privateKeyPem, restore = null 
     check?.();
     const tag = await readExactly(handle, 16, stat.size - 16, check);
     cipher.setAAD(prefix); cipher.setAuthTag(tag);
-    const digest = createHash('sha256').update(prefix), parser = new PlaintextVerifier(restore ? new RestoreInventory(restore) : null);
+    const digest = createHash('sha256').update(prefix), plainDigest = restore ? createHash('sha256') : null;
+    const parser = new PlaintextVerifier(restore ? new RestoreInventory(restore) : null);
     const encrypted = Buffer.alloc(CHUNK_BYTES), ciphertextEnd = stat.size - 16;
     let plaintextBytes = 0;
     const feed = async plain => {
       try {
         if (restore) plaintextBytes = add(plaintextBytes, plain.length, restore.limits.plaintextBytes);
+        plainDigest?.update(plain);
         await parser.feed(plain);
+        if (output && plain.length) await output.write(plain);
       } finally { plain.fill(0); }
     };
     try {
@@ -463,9 +466,30 @@ export async function readEncryptedBackup({ file, privateKeyPem, restore = null 
       const counts = await parser.finish(), sha256 = digest.digest('hex');
       if (restore && sha256 !== restore.expectedSha256) throw formatFailure('restore_authentication_failed');
       check?.();
-      receipt = { ok: true, authenticated: true, offline: true, ...counts, sha256 };
+      return { receipt: { ok: true, authenticated: true, offline: true, ...counts, sha256 },
+        plaintextBytes, plaintextSha256: plainDigest?.digest('hex') ?? null };
     } finally { encrypted.fill(0); parser.clear(); }
-  } finally { await handle.close(); }
+}
+
+// Private same-FD seam. Only the fixed sender uses its second argument; no
+// plaintext is returned and there is no alternate crypto/parser implementation.
+export async function readEncryptedPass({ handle, privateKeyPem, restore }, output = null) {
+  restore.check();
+  const privateKey = backupPrivateKey(privateKeyPem);
+  restore.check();
+  return encryptedPass(handle, privateKey, restore, output);
+}
+
+// Preserve legacy key-before-open ordering, counts, close and final check.
+export async function readEncryptedBackup({ file, privateKeyPem, restore = null }) {
+  const check = restore?.check;
   check?.();
-  return receipt;
+  const privateKey = backupPrivateKey(privateKeyPem);
+  check?.();
+  const handle = await open(file, 'r');
+  let result;
+  try { result = await encryptedPass(handle, privateKey, restore); }
+  finally { await handle.close(); }
+  check?.();
+  return result.receipt;
 }
