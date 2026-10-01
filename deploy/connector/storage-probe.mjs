@@ -1,6 +1,7 @@
 // This trusted host source is passed to a pinned helper's Node executable.
 // Do not import application code: the candidate must not attest its own reader.
-import { lstat, opendir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, opendir, open, mkdtemp, unlink, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -292,17 +293,100 @@ async function checkedDatabaseFile(filename, info) {
   }
 }
 
-function inspectDatabase(filename, inspect) {
+function queryDatabase(filename, inspect) {
   let db;
   try {
     // Read WAL normally. immutable=1 could silently ignore committed WAL data.
     db = new DatabaseSync(filename, { readOnly: true });
     db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=3000; BEGIN');
     return inspect(db);
+  } finally { db?.close(); }
+}
+
+const coldSuffixes = ['', '-wal', '-shm', '-journal'];
+const coldBundleLimit = 134217728n;
+const sameFile = (a, b) => a === null || b === null ? a === b
+  : ['dev', 'ino', 'mode', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => a[key] === b[key]);
+
+async function coldFiles(filename) {
+  const files = [];
+  let total = 0n;
+  for (const suffix of coldSuffixes) {
+    let info;
+    try { info = await lstat(filename + suffix, { bigint: true }); }
+    catch (e) { if (e.code !== 'ENOENT') throw e; info = null; }
+    if (info && (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n)) fail('storage_format_unreadable');
+    files.push(info);
+    total += info?.size ?? 0n;
+  }
+  // A rollback journal needs a different recovery path; never silently omit it.
+  if (!files[0] || files[0].size < 100n || files[3] || total > coldBundleLimit) fail('storage_format_unreadable');
+  return files;
+}
+
+async function copyColdFile(source, destination, expected) {
+  let input, output;
+  const buffer = Buffer.alloc(65536);
+  try {
+    input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!sameFile(expected, await input.stat({ bigint: true }))) fail('storage_format_unreadable');
+    output = await open(destination, 'wx', 0o600);
+    let position = 0;
+    while (position < Number(expected.size)) {
+      const { bytesRead } = await input.read(buffer, 0, Math.min(buffer.length, Number(expected.size) - position), position);
+      if (!bytesRead) fail('storage_format_unreadable');
+      let written = 0;
+      while (written < bytesRead) {
+        const result = await output.write(buffer, written, bytesRead - written, position + written);
+        if (!result.bytesWritten) fail('storage_format_unreadable');
+        written += result.bytesWritten;
+      }
+      position += bytesRead;
+    }
+    if ((await input.read(buffer, 0, 1, position)).bytesRead || !sameFile(expected, await input.stat({ bigint: true }))) fail('storage_format_unreadable');
+  } finally {
+    buffer.fill(0);
+    try { await output?.close(); } finally { await input?.close(); }
+  }
+}
+
+async function inspectColdCopy(filename, inspect) {
+  const before = await coldFiles(filename);
+  const directory = await mkdtemp('/tmp/soty-storage-cold-');
+  const copy = path.join(directory, 'database.sqlite');
+  try {
+    for (let i = 0; i < 3; i++) if (before[i]) await copyColdFile(filename + coldSuffixes[i], copy + coldSuffixes[i], before[i]);
+    const copied = await coldFiles(filename);
+    if (!before.every((info, i) => sameFile(info, copied[i]))) fail('storage_format_unreadable');
+    return queryDatabase(copy, inspect);
+  } finally {
+    try {
+      const after = await coldFiles(filename);
+      if (!before.every((info, i) => sameFile(info, after[i]))) fail('storage_format_unreadable');
+    } finally {
+      // Only this fresh directory and fixed SQLite filenames are ours. No recursive removal.
+      for (const suffix of coldSuffixes) {
+        try { await unlink(copy + suffix); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      }
+      await rmdir(directory);
+    }
+  }
+}
+
+async function inspectDatabase(filename, inspect) {
+  try {
+    try { return queryDatabase(filename, inspect); }
+    catch (e) {
+      const sqliteCode = Number.isSafeInteger(e.errcode) ? e.errcode & 255 : -1;
+      if (process.platform !== 'linux' || process.env.SOTY_STORAGE_COLD !== '1'
+        || e.code !== 'ERR_SQLITE_ERROR' || (sqliteCode !== 8 && sqliteCode !== 14)) throw e;
+      // Only a stopped writer, enforced by the host guard, permits a bounded snapshot.
+      return await inspectColdCopy(filename, inspect);
+    }
   } catch (e) {
     if (e.code === 'storage_format_unknown' || e.code === 'storage_format_unreadable') throw e;
     fail('storage_format_unreadable');
-  } finally { db?.close(); }
+  }
 }
 
 async function readRoomsFormat(dataDir) {

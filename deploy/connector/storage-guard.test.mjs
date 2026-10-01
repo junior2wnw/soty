@@ -130,7 +130,9 @@ test('start gate uses actual image, pinned helper, only read-only data mount and
   assert.equal(receipt.notes, 'empty'); assert.equal(receipt.capabilities, 'empty');
   const created = f.events.find(e => e.verb === 'create').body;
   assert.equal(created.Image, imageId(3)); assert.notEqual(created.Image, f.runtime.Image);
-  assert.deepEqual(created.Env, ['SOTY_STORAGE_PROBE=1']);
+  assert.deepEqual(created.Env, ['SOTY_STORAGE_PROBE=1', 'SOTY_STORAGE_COLD=1']);
+  assert.equal(created.HostConfig.Memory, 536870912);
+  assert.equal(created.HostConfig.Tmpfs['/tmp'], 'rw,noexec,nosuid,size=268435456');
   assert.equal(created.HostConfig.NetworkMode, 'none'); assert.equal(created.HostConfig.ReadonlyRootfs, true);
   assert.equal(created.HostConfig.PortBindings, undefined); assert.equal(created.HostConfig.Binds, undefined);
   assert.deepEqual(created.HostConfig.Mounts, [{ Type: 'volume', Source: 'live-data', Target: '/data', ReadOnly: true, VolumeOptions: { NoCopy: true } }]);
@@ -147,6 +149,17 @@ test('container label cannot make a legacy, rooms-only or unlabelled image compa
     await assert.rejects(guardStorageStart(f.context, f.runtime), readers === jsonOnly ? /storage_reader_incompatible/ : /storage_reader_unknown/);
     assert.ok(!f.events.some(e => e.verb === 'start' && e.id === f.runtime.Id));
   }
+});
+
+test('running storage probe keeps direct read-only profile and never enables a cold snapshot', async () => {
+  const f = fixture();
+  f.runtime.State = { Running: true, Status: 'running' };
+  await guardStorageStart(f.context, f.runtime, { running: true });
+  const created = f.events.find(e => e.verb === 'create').body;
+  assert.deepEqual(created.Env, ['SOTY_STORAGE_PROBE=1']);
+  assert.equal(created.HostConfig.Memory, 134217728);
+  assert.equal(created.HostConfig.Tmpfs['/tmp'], 'rw,noexec,nosuid,size=16777216');
+  assert.equal(created.HostConfig.Mounts[0].ReadOnly, true);
 });
 
 test('Apps version is an independent reader requirement and is retained in the start receipt', async () => {
