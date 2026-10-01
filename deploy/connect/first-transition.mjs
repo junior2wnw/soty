@@ -306,11 +306,11 @@ async function runLocked(host, request, recover, ports) {
     await host.action('start', c.Id, undefined, x => x.State.Running);
   }
   c = await candidate(host, ports, role); requireThat(c.State.Running && !(await oldRuntime(host)).State.Running, 'first_transition_runtime_not_running');
-  await host.guardStart(c.Id, { running: true });
   const status = await host.probe('status', c);
   requireThat(status.count === 0 && (!status.maintenance || status.owned), 'first_transition_candidate_busy');
   const imageEntry = { image: entry.image, revision: entry.buildRevision, version: t.version, hasConnect: true };
   host.compareHealth(await host.ready({ entry: imageEntry, maintenance: status.maintenance, idle: true }));
+  await host.guardStart(c.Id, { running: true });
   if (status.maintenance) { const cleared = await host.probe('leave', c); requireThat(!cleared.maintenance && cleared.count === 0, 'first_transition_marker_uncleared'); }
   await host.note('serving_verified', { restartEnabled: role });
   if (!same(c.HostConfig.RestartPolicy, t.restartPolicy)) await host.action('restartPolicy', c.Id, t.restartPolicy, x => same(x.HostConfig.RestartPolicy, t.restartPolicy));
