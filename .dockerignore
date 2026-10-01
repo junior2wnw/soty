@@ -11,7 +11,20 @@ data
 var
 backups
 upstream
-deploy
+# Historical test imports only; the final image does not COPY /app/deploy.
+deploy/**
+!deploy/connector/
+deploy/connector/**
+!deploy/connector/apps-v2.fixture.mjs
+!deploy/connector/apps-v3.fixture.mjs
+!deploy/connector/apps-v4.fixture.mjs
+!deploy/connector/apps-v5.fixture.mjs
+!deploy/connector/notes-v1.fixture.mjs
+!deploy/connector/fixtures/
+deploy/connector/fixtures/**
+!deploy/connector/fixtures/notes-v1/
+deploy/connector/fixtures/notes-v1/**
+!deploy/connector/fixtures/notes-v1/schema.mjs
 install-op-cases
 usb-recovery-backup-*
 windows-media-tool

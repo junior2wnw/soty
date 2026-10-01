@@ -4,7 +4,7 @@ import path from 'node:path';
 import { SafeError } from './docker-api.mjs';
 
 export const storageReaderLabel = 'io.soty.storage.readers';
-export const currentStorageReaders = '{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1,2],"capabilities":[1,2]}}';
+export const currentStorageReaders = '{"version":3,"readers":{"rooms":[1,2],"apps":[1,2,3,4,5,6],"notes":[1,2],"capabilities":[1,2,3]}}';
 const ID = /^[a-f0-9]{64}$/u, IMAGE = /^sha256:[a-f0-9]{64}$/u;
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');

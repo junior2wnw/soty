@@ -191,8 +191,8 @@ test('old or extended probe and start receipts never authorize a restart', () =>
   }
 });
 
-test('reader2 requires actual v3 even on empty stores and preserves every independent format in start evidence', async () => {
-  for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2]) {
+test('current readers require actual v3 even on empty stores and preserve every independent format in start evidence', async () => {
+  for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2, 3]) {
     const f = fixture({ rooms: 2, apps: 6, notes, capabilities });
     const receipt = await guardStorageStart(f.context, f.runtime);
     requireStorageStartReceipt(receipt, f.runtime.Id);
@@ -344,8 +344,10 @@ test('failed probe remains explicit and never becomes a successful start receipt
   assert.equal(f.events.filter(e => e.verb === 'start').length, 1);
 });
 
-test('the full application image declares the accepted readers beside its real module and dependency copies', async () => {
+test('the full application image declares its readers beside its real module and dependency copies', async () => {
   const source = await readFile(new URL('../../Dockerfile', import.meta.url), 'utf8');
+  assert.deepEqual(JSON.parse(currentStorageReaders), { version: 3,
+    readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3] } });
   assert.ok(source.includes('LABEL ' + storageReaderLabel + '="' + currentStorageReaders.replaceAll('"', '\\"') + '"'));
   assert.match(source, /^COPY --from=build \/app\/modules \.\/modules$/mu);
   assert.match(source, /^COPY --from=build \/app\/node_modules \.\/node_modules$/mu);

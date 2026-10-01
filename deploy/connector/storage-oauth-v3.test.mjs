@@ -30,6 +30,7 @@ const layout = db => db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schem
 const put = (db, table, values) => db.prepare(`INSERT INTO ${table}(${Object.keys(values).join(',')}) VALUES(${Object.keys(values).map(() => '?').join(',')})`).run(...Object.values(values));
 const file = (root, store = 'capabilities') => path.join(root, store, store + '.sqlite');
 const format = (notes, capabilities) => ({ ok: true, schema: 'soty.storage-format.v3', rooms: 'empty', apps: 'empty', notes, capabilities });
+const reader2 = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2] } });
 const reader3 = JSON.stringify({ version: 3, readers: { rooms: [1, 2], apps: [1, 2, 3, 4, 5, 6], notes: [1, 2], capabilities: [1, 2, 3] } });
 const image = (readers = reader3) => ({ Id: 'sha256:' + '2'.repeat(64), Config: { Labels: { [storageReaderLabel]: readers } } });
 const contractDigest = '95008a3424e375b6bdefec6e41bbdfb411dc98e6b4fd4505f387ce552c162204';
@@ -199,17 +200,17 @@ test('literal3 has all 64 pinned SQL objects and matches the committed baseline3
   } finally { actual.close(); literal.close(); }
 });
 
-test('all twelve independent store pairs are read-only; image2 capability is never silently raised', async t => {
-  assert.deepEqual(JSON.parse(currentStorageReaders).readers.capabilities, [1, 2]);
+test('all twelve independent store pairs are read-only; current image reads3 while image2 remains incompatible', async t => {
+  assert.deepEqual(JSON.parse(currentStorageReaders), JSON.parse(reader3));
   for (const notes of ['empty', 1, 2]) for (const capabilities of ['empty', 1, 2, 3]) {
     const root = await directory(t);
     if (notes !== 'empty') (await database(root, notes, 'notes')).close();
     if (capabilities !== 'empty') (await database(root, capabilities)).close();
     const before = await Promise.all(['notes', 'capabilities'].map(store => persistent(root, store)));
     const result = await readStorageFormat(root); assert.deepEqual(result, format(notes, capabilities));
-    assertStorageCompatible(image(), result);
-    if (capabilities === 3) assert.throws(() => assertStorageCompatible(image(currentStorageReaders), result), /storage_reader_incompatible/u);
-    else assertStorageCompatible(image(currentStorageReaders), result);
+    assertStorageCompatible(image(currentStorageReaders), result);
+    if (capabilities === 3) assert.throws(() => assertStorageCompatible(image(reader2), result), /storage_reader_incompatible/u);
+    else assertStorageCompatible(image(reader2), result);
     assert.deepEqual(await Promise.all(['notes', 'capabilities'].map(store => persistent(root, store))), before);
     assert.deepEqual(Object.keys(result).sort(), ['apps', 'capabilities', 'notes', 'ok', 'rooms', 'schema']);
   }
@@ -383,7 +384,7 @@ test('marker-only3 is still invalid; future4 is refused on main and committed WA
 
 test('fresh START probes actual3 after prior receipt2; only an explicit actual-image reader3 declaration may admit it', async t => {
   const root = await directory(t), db = await database(root, 2), actions = [];
-  let declared = currentStorageReaders;
+  let declared = reader2;
   const runtime = { Id: '1'.repeat(64), Image: image().Id, State: { Running: false }, Config: { Env: ['DATA_DIR=/data'], Labels: { [storageReaderLabel]: reader3 } },
     Mounts: [{ Type: 'volume', RW: true, Name: 'synthetic-reader3', Source: '/volumes/synthetic-reader3/_data', Destination: '/data' }] };
   const context = { engine: { inspect: async () => runtime, image: async () => image(declared),
@@ -397,7 +398,7 @@ test('fresh START probes actual3 after prior receipt2; only an explicit actual-i
     const before = await persistent(root);
     await assert.rejects(guardStorageStart(context, runtime), /storage_reader_incompatible/u, 'a container label and prior receipt cannot replace actual image capability');
     assert.deepEqual(actions, []); assert.deepEqual(await persistent(root), before);
-    declared = reader3;
+    declared = currentStorageReaders;
     const current = await guardStorageStart(context, runtime);
     assert.equal(current.capabilities, 3); assert.equal(current.notes, 'empty');
     requireStorageStartReceipt(current, runtime.Id); assert.deepEqual(actions, []);
