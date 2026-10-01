@@ -9,6 +9,7 @@ import { modelReadiness } from '../connector/runtime.mjs';
 import { guardStorageStart, reconcileStorageProbe, requireStorageStartReceipt, storageReaders } from '../connector/storage-guard.mjs';
 // Pinned host code must stay available when the replaceable module is rolled back.
 import { applyRelease, recoverRelease, fetchRelease, canonical, sha256 } from './update-engine.mjs';
+import { FIRST_TRANSITION, runFirstTransition, readFirstTransitionFile, checkedCompleteBackup, assertFirstTransitionAction } from './first-transition.mjs';
 
 const requireThat = (ok, code) => { if (!ok) throw new SafeError(code); };
 const IMAGE = /^sha256:[a-f0-9]{64}$/;
@@ -177,17 +178,19 @@ export class HostController {
     this.probeOverride = dependencies.probe;
     this.storageProbeOverride = dependencies.storageProbe;
     this.checkSourceOverride = dependencies.checkSource;
+    this.backupOverride = dependencies.backup;
+    this.verifyFirstTransition = dependencies.verifyFirstTransition;
     this.target = path.join(this.config.sourceRoot, 'modules', 'connect');
     this.file = path.join(this.config.stateDir, 'host-state.json');
     this.moduleStateDir = path.join(this.config.stateDir, 'module-update');
   }
   async save() { await this.write(this.file, this.state); }
   async note(phase, fields = {}) { this.state.transaction = { ...this.state.transaction, ...fields, phase }; await this.save(); }
-  async checkSource() {
-    if (this.checkSourceOverride) return this.checkSourceOverride();
-    const head = (await this.command(['git', 'rev-parse', 'HEAD'], { cwd: this.config.sourceRoot, capture: true })).trim();
-    requireThat(head === this.config.revision, 'source_revision_changed');
-    const paths = await this.command(['git', 'status', '--porcelain=v1', '--untracked-files=all'], { cwd: this.config.sourceRoot, capture: true });
+  async checkSource(config = this.config) {
+    if (this.checkSourceOverride) return this.checkSourceOverride(config);
+    const head = (await this.command(['git', 'rev-parse', 'HEAD'], { cwd: config.sourceRoot, capture: true })).trim();
+    requireThat(head === config.revision, 'source_revision_changed');
+    const paths = await this.command(['git', 'status', '--porcelain=v1', '--untracked-files=all'], { cwd: config.sourceRoot, capture: true });
     for (const line of paths.split(/\r?\n/).filter(Boolean)) requireThat(/^.. modules\/connect(?:\/|\.(?:stage-|previous-))/.test(line), 'source_host_changed');
   }
   async poll(id, predicate) {
@@ -203,6 +206,7 @@ export class HostController {
     return guardStorageStart(this.storageContext(), await this.engine.inspect(id), { running });
   }
   async action(kind, id, value, predicate) {
+    assertFirstTransitionAction(this.state, kind, id, value);
     const needsGuard = kind === 'start' || (kind === 'restartPolicy' && value.Name !== 'no');
     const storageGuard = needsGuard ? await this.guardStart(id, { running: kind !== 'start' && (await this.engine.inspect(id)).State.Running }) : undefined;
     await this.note(this.state.transaction.phase, { operation: { kind, id, ...(value === undefined ? {} : { value }), ...(storageGuard ? { storageGuard } : {}) } });
@@ -215,6 +219,7 @@ export class HostController {
   }
   async reconcileOperation() {
     const o = this.state.transaction?.operation; if (!o) return;
+    assertFirstTransitionAction(this.state, o.kind, o.id, o.value);
     const predicates = { stop: c => !c.State.Running, start: c => c.State.Running, rename: c => c.Name === '/' + o.value, restartPolicy: c => hash(c.HostConfig.RestartPolicy) === hash(o.value) };
     requireThat(predicates[o.kind] && ID.test(o.id), 'host_operation_invalid');
     const needsGuard = o.kind === 'start' || (o.kind === 'restartPolicy' && o.value?.Name !== 'no');
@@ -228,6 +233,7 @@ export class HostController {
     await this.note(this.state.transaction.phase, { operation: null });
   }
   async probe(verb, runtime) {
+    requireThat(!(this.state?.transaction?.mode === FIRST_TRANSITION && runtime.Id === this.state.transaction.oldId && (verb !== 'status' || !runtime.State.Running)), 'first_transition_outgoing_stop_only');
     if (this.probeOverride) return statusValue(await this.probeOverride(verb, runtime, this));
     const tx = this.state?.transaction;
     const script = await readFile(new URL('./maintenance-probe.mjs', import.meta.url), 'utf8');
@@ -294,12 +300,20 @@ export class HostController {
   async ensureStopped(c) { if (c.State.Running) await this.action('stop', c.Id, undefined, x => !x.State.Running); else requireThat(!c.State.Running, 'container_stop_unconfirmed'); }
   async backup(containerId) {
     await this.note('backing_up');
-    const stdout = await this.command(this.config.backupCommand.map(v => v === '{containerId}' ? containerId : v), { cwd: this.config.sourceRoot, timeoutMs: 300_000, capture: true });
-    let receipt; try { receipt = JSON.parse(stdout); } catch { throw new SafeError('backup_receipt_invalid'); }
+    const tx = this.state.transaction;
+    let receipt;
+    if (this.backupOverride) receipt = await this.backupOverride({ containerId, transactionId: tx.id, checkpointSha256: tx.coldCheckpointSha256 });
+    else {
+      const fields = { '{containerId}': containerId, '{transactionId}': tx.id, '{checkpointSha256}': tx.coldCheckpointSha256 };
+      const stdout = await this.command(this.config.backupCommand.map(v => fields[v] === undefined ? v : fields[v]), { cwd: this.config.sourceRoot, timeoutMs: 300_000, capture: true });
+      try { receipt = JSON.parse(stdout); } catch { throw new SafeError('backup_receipt_invalid'); }
+    }
     requireThat(receipt?.ok === true && receipt.encrypted === true && path.isAbsolute(receipt.receiptPath || '') && TREE.test(receipt.sha256 || ''), 'backup_receipt_invalid');
-    await this.note('backed_up', { backup: { receiptPath: receipt.receiptPath, sha256: receipt.sha256, encrypted: true } });
+    const backup = tx.mode === FIRST_TRANSITION ? checkedCompleteBackup(receipt, tx) : { receiptPath: receipt.receiptPath, sha256: receipt.sha256, encrypted: true };
+    await this.note('backed_up', { backup });
   }
   async activate(directory) {
+    requireThat(this.state.transaction?.mode !== FIRST_TRANSITION, 'first_transition_explicit_resume_required');
     // Recovery executes pinned host helpers just as a forward activation does.
     await this.checkSource();
     const module = await moduleTree(directory), entry = await this.imageEntry(module.tree);
@@ -373,6 +387,7 @@ export class HostController {
   }
   compareHealth(value) { const t = this.state.transaction; requireThat(value.modelsHash === t.modelsHash && value.policyHash === t.policyHash, 'runtime_model_readiness_changed'); }
   async restore() {
+    requireThat(this.state.transaction?.mode !== FIRST_TRANSITION, 'first_transition_outgoing_stop_only');
     const t = this.state.transaction; await reconcileStorageProbe(this.storageContext()); await this.reconcileOperation();
     if (t.helper) await this.reconcileHelper();
     let next;
@@ -427,6 +442,7 @@ export class HostController {
   }
   async settle() {
     const t = this.state.transaction; if (!t) return;
+    requireThat(t.mode !== FIRST_TRANSITION, 'first_transition_explicit_resume_required');
     await this.checkSource();
     requireThat(!t.operation && !t.helper && !t.storageGuardHelper, 'host_recovery_required');
     const current = await moduleTree(this.target);
@@ -448,7 +464,8 @@ export class HostController {
   async load() {
     if (await exists(this.file)) {
       this.state = JSON.parse(await readFile(this.file, 'utf8'));
-      requireThat(this.state.schema === 'soty.connect.host.v1' && this.state.revision === this.config.revision && this.state.sourceRoot === this.config.sourceRoot && this.state.images && this.state.active && TREE.test(this.state.active.tree) && IMAGE.test(this.state.active.image) && ID.test(this.state.active.containerId), 'host_state_invalid');
+      requireThat(['soty.connect.host.v1', 'soty.connect.host.v2'].includes(this.state.schema) && this.state.revision === this.config.revision && this.state.sourceRoot === this.config.sourceRoot && this.state.images && this.state.active && TREE.test(this.state.active.tree) && IMAGE.test(this.state.active.image) && ID.test(this.state.active.containerId), 'host_state_invalid');
+      if (this.state.schema === 'soty.connect.host.v2') requireThat(this.state.transaction?.mode === FIRST_TRANSITION || this.state.firstTransition?.id, 'host_state_invalid');
       for (const [tree, entry] of Object.entries(this.state.images)) requireThat(TREE.test(tree) && IMAGE.test(entry.image) && typeof entry.hasConnect === 'boolean', 'host_mapping_invalid');
       return;
     }
@@ -470,7 +487,7 @@ export class HostController {
     requireThat(module.tree === active.tree && entry.image === active.image && runtime.Image === entry.image && runtime.State.Running && runtime.Name === '/' + this.config.runtimeName, 'active_runtime_changed');
     await this.ready({ entry, maintenance: false });
   }
-  async run({ bootstrapRelease } = {}) {
+  async run({ bootstrapRelease, firstTransition, recoverFirstTransition = false } = {}) {
     await safePaths(this.config); await mkdir(this.config.stateDir, { recursive: true, mode: 0o700 });
     const lockFile = path.join(this.config.stateDir, 'host-controller.lock'); let lock;
     try { lock = await open(lockFile, 'wx', 0o600); } catch (error) { if (error.code === 'EEXIST') throw new SafeError('host_locked_operator_verification_required'); throw new SafeError('host_lock_failed'); }
@@ -481,6 +498,12 @@ export class HostController {
       // This is before load(), whose baseline path can execute a status probe.
       await this.checkSource();
       await this.load();
+      requireThat(!this.state.transaction?.mode || this.state.transaction.mode === FIRST_TRANSITION, 'host_transaction_mode_invalid');
+      if (firstTransition || this.state.transaction?.mode === FIRST_TRANSITION) {
+        requireThat(firstTransition && !bootstrapRelease, 'first_transition_explicit_resume_required');
+        return await runFirstTransition(this, firstTransition, { recover: recoverFirstTransition, moduleTree, candidateConfig, originalPreservationHash });
+      }
+      requireThat(!recoverFirstTransition, 'first_transition_request_required');
       await this.recover({ target: this.target, stateDir: this.moduleStateDir, activate: target => this.activate(target) });
       await this.settle();
       await this.verifyActive();
@@ -509,10 +532,11 @@ export class HostController {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  requireThat(argv.length === 1 || (argv.length === 3 && argv[1] === '--bootstrap-release'), 'usage_config_path_required');
+  const first = (argv.length === 3 || (argv.length === 4 && argv[3] === '--recover')) && argv[1] === '--first-transition';
+  requireThat(first || argv.length === 1 || (argv.length === 3 && argv[1] === '--bootstrap-release'), 'usage_config_path_required');
   requireThat(path.isAbsolute(argv[0]), 'config_path_absolute_required');
   const c = JSON.parse(await readFile(argv[0], 'utf8'));
-  return new HostController(c).run({ bootstrapRelease: argv[2] });
+  return new HostController(c).run(first ? { firstTransition: await readFirstTransitionFile(argv[2]), recoverFirstTransition: argv[3] === '--recover' } : { bootstrapRelease: argv[2] });
 }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
   try { console.log(JSON.stringify(await main())); }
