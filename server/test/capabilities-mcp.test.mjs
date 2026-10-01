@@ -191,7 +191,7 @@ test('unsupported revision negotiation advertises only fixed versions without re
     const message = envelope('tools/list', { _meta: { [PROTOCOL_VERSION_META_KEY]: declared } });
     const response = await wire(f, f.identity.token, message, { version });
     assert.equal(response.status, 400); assert.equal(response.messages[0].error.code, -32022);
-    assert.deepEqual(response.messages[0].error.data, { supported: [MODERN, LEGACY], requested: expected });
+    assert.deepEqual(response.messages[0].error.data, { supported: [MODERN, LEGACY, '2025-06-18'], requested: expected });
     absent(response, ['untrusted-header-value', 'untrusted-meta-value']);
   }
 });
@@ -201,7 +201,7 @@ test('headerless legacy initialization with an unsupported version remains a neg
   const response = await wire(f, f.identity.token, envelope('initialize', { protocolVersion: '2025-03-26',
     capabilities: {}, clientInfo: { name: 'old-fixture', version: '1' } }, LEGACY), { version: null });
   assert.equal(response.status, 400); assert.equal(response.messages[0].error.code, -32022);
-  assert.deepEqual(response.messages[0].error.data, { supported: [MODERN, LEGACY], requested: '2025-03-26' });
+  assert.deepEqual(response.messages[0].error.data, { supported: [MODERN, LEGACY, '2025-06-18'], requested: '2025-03-26' });
 });
 
 test('real OAuth MCP resource refresh and keyless AS-off replay preserve original invocation authority', async t => {

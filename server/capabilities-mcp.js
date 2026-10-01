@@ -5,7 +5,8 @@ import { validateDiscoveryOrigin } from './capabilities-discovery.js';
 import { createMcpIngress, McpIngressError, singleHeader } from './capabilities-mcp-ingress.js';
 import { createMcpTools } from './capabilities-mcp-tools.js';
 
-export const MCP_REVISIONS = Object.freeze(['2026-07-28', '2025-11-25']);
+const LEGACY_REVISIONS = Object.freeze(['2025-11-25', '2025-06-18']);
+export const MCP_REVISIONS = Object.freeze(['2026-07-28', ...LEGACY_REVISIONS]);
 const requireValue = (value, code = 'invalid_input', protocolCode = -32600) => {
   if (!value) throw new McpIngressError(code, protocolCode);
 };
@@ -32,7 +33,7 @@ function revision(headers, body) {
   };
   if (header !== null) supported(header);
   if (declared !== undefined) supported(declared);
-  if (body.method === 'initialize' && body.params?.protocolVersion !== '2025-11-25') {
+  if (body.method === 'initialize' && !LEGACY_REVISIONS.includes(body.params?.protocolVersion)) {
     supported(body.params?.protocolVersion);
     throw new McpIngressError('invalid_input', -32020);
   }
@@ -40,7 +41,7 @@ function revision(headers, body) {
     // Only the first legacy initialize may omit its header. Do not inherit
     // the SDK transport's historical 2025-03-26 default on later requests.
     if (declared !== undefined) return; // SDK rejects missing modern header.
-    requireValue(body.method === 'initialize' && body.params?.protocolVersion === '2025-11-25', 'invalid_input', -32020);
+    requireValue(body.method === 'initialize' && LEGACY_REVISIONS.includes(body.params?.protocolVersion), 'invalid_input', -32020);
   }
 }
 function wireFailure(res, failure, id, protocolCode, protocolData) {
