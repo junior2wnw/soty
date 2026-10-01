@@ -45,4 +45,4 @@ Immutable `var/p4-cli-clients/5e9d04a7999c7e00d7ea3945d719262c/result-receipt.js
 
 Независимый critic повторно подтвердил обе неизменённые квитанции, frozen sources/dist, холодные выбранные RO запросы, replay/privacy и отдельные отрицательные wire события. Production diff385e105d и два прежних supported-list литерала проверены, unknown03/header/error/requested negatives сохранены; отдельные root2/2 и24/24 logs прочитаны. **C2c принят как OpenCode COMPLETE из5521 плюс Codex COMPLETE из5523**. Старый Codex5521 остаётся PARTIAL и не смешивается с новым owner/профилем.
 
-Далее commit/push этого локального checkpoint, D1 с фиксированными24 RU/EN задачами на каждый настоящий клиент, D2 внешние HTTPS/полный cold restore/release и P5–P8. C2c не означает модельную или production готовность.
+Checkpoint `7a30c77ec7f2442675a082fc2efd60acff7ded4b` committed/pushed; root подтвердил exact remote SHA. Далее D1 с фиксированными24 RU/EN задачами на каждый настоящий клиент, D2 внешние HTTPS/полный cold restore/release и P5–P8. C2c не означает модельную или production готовность.

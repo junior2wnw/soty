@@ -122,7 +122,7 @@ Privacy oracle проверяет **сам ответ `invocations_get`/tool**, 
 | `server/gonka-proxy.js`, `docs/inference-routing-20260920.md`, `scripts/gonka-proxy-live-smoke.mjs` | Реальная платформа Chat Completions и исторические operational ограничения. Smoke не запускался здесь, не заменяет D1 и не hard cost guard |
 | `server/test/capabilities-mcp*.test.mjs`, текущие OAuth/native acceptance receipts | Domain/wire evidence и настоящие fixtures; SDK tests не реальные две модели |
 
-**Отсутствуют как готовый D1 gate:** frozen JSON 24-case corpus/manifest, Codex real-turn channel, OpenCode arbitrary-corpus channel вместо finite stages, approved Responses profile, проверенный attempt spend guard/тарифный manifest, точный lost-ACK model-facing cut, 48-result evidence/owner PWA receipt. Этот документ не создаёт и не имитирует эти файлы.
+**Первоначальный source-only инвентарь:** frozen JSON 24-case corpus/manifest тогда отсутствовал. Следующий [D1.1 preparation](p4-real-model-corpus.md) уже создал корпус/loader/manifest; root offline6/6 PASS, без model calls. **По-прежнему отсутствуют как готовый D1 gate:** Codex real-turn channel, OpenCode arbitrary-corpus channel вместо finite stages, approved Responses profile, проверенный attempt spend guard/тарифный manifest, точный lost-ACK model-facing cut, 48-result evidence/owner PWA receipt. Этот план не имитирует их результат.
 
 Минимальный следующий подплан без расширения production:
 

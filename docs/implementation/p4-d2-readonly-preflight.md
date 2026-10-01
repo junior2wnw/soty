@@ -1,0 +1,13 @@
+# P4-D2 — свежая безопасная инвентаризация
+
+Root observation **2026-10-01T02:29:54.433Z**, после source-only independent GO. Программа `output/implementation-20260930/p4-d2-serving-inspection.mjs`, SHA256 **`b19c6ccf81b45754f5f3fc07f0fd31958daef3fe3f44b255e620cfec93a4a8db`**; SSH `dev`, exit0. Immutable create-new result: `output/implementation-20260930/p4-d2-serving-inspection-result.json`, SHA256 **`d6adb3cad6f5c6dd25a59d5bcfdddb03eee7867133c6dbf840bd750071ee84ef`**. Только Docker GET inspect/name/image/list и fixed loopback health/storage-ready; 30s общий срок, 8s на запрос, ограниченные ответы и selected safe stdout. Env/config/key values, Notes/Rooms bodies и SQL histories не выводились.
+
+- Current serving ID `d86bc0b9b8f88a7693a227cca0b15864ac5388a8c6e478f25e0f1c3c7d9c4ceb`, image `sha256:d07345cb66b2c1ab903861f36902d7b301cc25289778d0d178c81143281ca97e`, revision `24c2da22d48b89d295da52b100ef067c7b61ef63`, StartedAt `2026-09-28T01:15:45.442670947Z`, restartCount0. Финальный inspect повторён **по имени** и подтвердил ID/image/name/start/restart/binding unchanged.
+- Requested/realised `127.0.0.1:18182` → `8080/tcp` binding подтверждён. Health/storageReady true, maintenance false, обе inference очереди/активные запросы0. Connector job count этим endpoint не измерялся.
+- `/data` — named Docker volume `soty-online-chat-data`, один наблюдённый running Docker RW consumer. Driver/scope и host/sidecar/path-alias writers не проверены; cold generation этим не доказана.
+- **Actual image не содержит storage-reader label**. Строгий обычный rollout не получает из этого разрешение STOP/START; нужен проверенный first-transition путь из [D2 плана](p4-release-recovery-plan.md). Host process.version — v24.15.0; image `NODE_VERSION=24.15.0` получен только из metadata, не исполнением runtime этого image. Полный новый application image/compatible code fallback не запускались.
+- Mutations0, modelCalls0, dataVolumesOpened0. Сервер/таймер/maintenance/configuration не менялись; CREATE/STOP/START helpers не выполнялись.
+
+Отдельная root local memory-only проверка operator DPAPI: store readable, backup private key присутствует, public key SPKI DER совпадает с checked-out public trust. Literal PEM не совпал из-за CRLF; семантическое сравнение это разрешило. Private key/value/hash не выводились и не сохранялись; RAM buffer обнулён. Это не проверка authoritative server/archive pin, не GCM validation и не actual restore. Ключи не ротировались.
+
+Открыты current external inventory/authority keys/controller locks/jobs/writers, authenticated all-store backup, настоящий isolated restore, full C/R image gates и внешний D2. Старые receipts остаются историческими; этот документ обновляет только выбранные наблюдения.
