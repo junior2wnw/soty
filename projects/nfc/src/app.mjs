@@ -1,8 +1,8 @@
 import './style.css';
 import QRCode from 'qrcode';
-import { recordTypes, makeRecord, compileDraft, estimateBytes, estimateTagBytes, restoreRecord, validateDraft, fromBase64 } from './records.mjs';
+import { recordTypes, makeRecord, compileDraft, estimateBytes, estimateTagBytes, validateDraft, fromBase64 } from './records.mjs';
 import { createNfcController, nfcAvailability } from './nfc.mjs';
-import { loadLocal, loadTemplates, saveLocal, storageKeys, templateFile, draftLink, parseDraftLink } from './storage.mjs';
+import { loadLocal, loadTemplates, restoreLocalDraft, saveLocal, saveTemplates, recoveryFile, templateLimit, storageKeys, templateFile, draftLink, parseDraftLink } from './storage.mjs';
 import { readableRecord } from './readable.mjs';
 
 const paths = {
@@ -44,15 +44,8 @@ const embedded = window.top !== window;
 const availability = nfcAvailability({ Reader: window.NDEFReader, secure: window.isSecureContext, embedded, userAgent: navigator.userAgent });
 let draft = { schema: 'soty.nfc-template.v1', name: '', records: [makeRecord()] };
 const recalled = loadLocal(storage, storageKeys.draft, null);
-if (recalled?.schema === draft.schema && Array.isArray(recalled.records) && recalled.records.length > 0 && recalled.records.length <= 16) {
-  try {
-    const records = recalled.records.map(record => {
-      if (record.kind === 'raw') { restoreRecord(record.snapshot); return { key: crypto.randomUUID(), kind: 'raw', snapshot: record.snapshot }; }
-      const type = recordTypes.find(item => item.id === record.kind); if (!type || !record.values) throw new Error('invalid');
-      const fresh = makeRecord(type.id); for (const key of Object.keys(fresh.values)) if (typeof record.values[key] === 'string' && record.values[key].length <= 16_384) fresh.values[key] = record.values[key]; return fresh;
-    }); draft = { ...draft, name: typeof recalled.name === 'string' ? recalled.name.slice(0, 80) : '', records };
-  } catch { /* Retain the invalid stored value; opening the app never erases it. */ }
-}
+try { if (recalled !== null) draft = restoreLocalDraft(recalled); }
+catch { /* Keep unreadable data until an explicit edit; saveLocal preserves its original. */ }
 let incomingDraft = null, initialError = '';
 if (location.hash.startsWith('#draft=')) {
   try { incomingDraft = parseDraftLink(location.hash); } catch (error) { initialError = error.message; }
@@ -80,7 +73,8 @@ const toastNode = el('div', 'toast'); toastNode.setAttribute('role', 'status'); 
 root.append(header, content, footer, nav, toastNode);
 const operationDialog = el('dialog', 'operation-screen'); operationDialog.setAttribute('aria-labelledby', 'operation-title'); operationDialog.addEventListener('cancel', event => { if (controller.busy) { event.preventDefault(); controller.cancel(); } }); document.body.append(operationDialog);
 const controller = createNfcController({ Reader: window.NDEFReader, onState: next => { operation = next; updateOperation(); if (next.phase === 'read') { lastRead = next.result; if (view === 'read') renderReadResult(); } } });
-function persist() { storageReady = saveLocal(storage, storageKeys.draft, draft); const note = document.querySelector('[data-draft-status]'); if (note) { note.hidden = storageReady; note.textContent = storageReady ? '' : 'Черновик не сохранился. Скачайте его в меню.'; } }
+function draftStatus() { const note = document.querySelector('[data-draft-status]'); if (note) { note.hidden = storageReady; note.textContent = storageReady ? '' : 'Черновик не сохранился. Скачайте его в меню.'; } }
+function persist() { storageReady = saveLocal(storage, storageKeys.draft, draft); draftStatus(); }
 function toast(text) { clearTimeout(noticeTimer); toastNode.textContent = text; toastNode.hidden = false; noticeTimer = setTimeout(() => { toastNode.hidden = true; }, 4500); }
 function modal(title) {
   const previous = document.activeElement, dialog = el('dialog', 'dialog'), head = el('div', 'dialog-head'), body = el('div', 'dialog-body');
@@ -215,7 +209,7 @@ function renderWrite() {
     builder.append(write);
     if (overwrite) builder.append(button('Перезапись включена', 'settings', 'overwrite-indicator', settings));
   }
-  layout.append(preview, builder); content.append(layout); persist(); updatePreview(); updateOperation();
+  layout.append(preview, builder); content.append(layout); draftStatus(); updatePreview(); updateOperation();
 }
 function settings() {
   const { body } = modal('Метка');
@@ -247,6 +241,10 @@ function actionsMenu() {
   if (embedded) { try { compileDraft(draft); transferable = true; } catch { /* Existing embedded drafts can still be exported when valid. */ } }
   const visible = embedded ? items.filter(([label]) => ['На телефон', 'Как работает NFC'].includes(label) || (label === 'Скачать файл' && transferable)) : items;
   for (const [label, symbol, action] of visible) body.append(button(label, symbol, 'menu-item', () => { dialog.close(); action(); }));
+  const recovery = recoveryFile(storage);
+  if (recovery) body.append(button('Скачать сохранённые исходные данные', 'download', 'menu-item', () => {
+    dialog.close(); confirm('Скачать исходные данные?', 'В файле могут быть пароли и содержимое прежних меток. Храните его у себя.', 'Скачать', () => downloadFile(recovery, 'nfc-recovery.json'));
+  }));
   if (availability.supported) {
     body.append(button('Очистить метку', 'trash', 'menu-item danger-text', () => { dialog.close(); confirm('Очистить метку?', 'Прежнее NDEF-содержимое будет заменено пустой записью. Это не полное стирание памяти чипа.', 'Очистить', () => void controller.write({ records: [{ recordType: 'empty' }] }, { overwrite: true }).catch(() => {}), true); }));
     if (window.NDEFReader?.prototype?.makeReadOnly) body.append(button('Закрыть запись навсегда', 'lock', 'menu-item danger-text', () => { dialog.close(); lockDialog(); }));
@@ -359,14 +357,19 @@ function saveTemplate() {
   const note = el('p', 'muted small', 'Шаблон хранится только в этом браузере. Его можно скачать и перенести на телефон.');
   body.append(field, note, button('Сохранить', 'check', 'button button-primary button-wide', () => {
     if (!input.value.trim()) { input.focus(); return; }
+    templates = loadTemplates(storage);
+    if (templates.length >= templateLimit) { note.textContent = 'Уже сохранено 40 шаблонов. Скачайте новый файлом или удалите ненужный в «Мои».'; return; }
     const next = { ...templateFile(draft), name: input.value.trim(), key: crypto.randomUUID(), updatedAt: Date.now() };
-    const values = [next, ...templates].slice(0, 40); if (!saveLocal(storage, storageKeys.templates, values)) { note.textContent = 'Браузер не смог сохранить шаблон. Скачайте его файлом.'; return; }
+    const values = [next, ...templates]; if (!saveTemplates(storage, values)) { note.textContent = 'Браузер не смог сохранить шаблон. Скачайте его файлом.'; return; }
     templates = values; draft.name = next.name; persist(); dialog.close(); toast('Шаблон «' + next.name + '» сохранён.');
-  })); input.focus();
+  }), button('Скачать файл', 'download', 'text-button', () => download({ ...draft, name: input.value.trim() || draft.name }))); input.focus();
 }
 function download(draftValue) {
-  const blob = new Blob([JSON.stringify(templateFile(draftValue), null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob);
-  const link = el('a'); link.href = url; link.download = 'nfc-template.json'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  downloadFile(templateFile(draftValue), 'nfc-template.json');
+}
+function downloadFile(value, name) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob);
+  const link = el('a'); link.href = url; link.download = name; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 function importTemplate() {
   const input = el('input'); input.type = 'file'; input.accept = '.json,application/json';
@@ -381,6 +384,7 @@ function acceptDraft(value) {
   confirm('Открыть шаблон «' + (value.name || 'Моя метка') + '»?', 'Он заменит текущий черновик. Сохраните прежний как шаблон, если он вам нужен.', 'Открыть шаблон', use);
 }
 function renderTemplates() {
+  templates = loadTemplates(storage);
   const head = el('div', 'templates-head'); head.append(el('h1', 'stage-title', 'Мои метки'), button('Открыть файл', 'upload', 'icon-button', importTemplate)); content.append(head);
   if (!templates.length) {
     const empty = el('section', 'templates-empty'); empty.append(tagVisual('templates'), el('h2', '', 'Сохраните первую'), button('Новая метка', 'plus', 'button button-dark button-wide', () => { view = 'write'; render(); }));
@@ -392,7 +396,7 @@ function renderTemplates() {
     const open = button(template.name, symbol, 'template-open', () => acceptDraft(validateDraft(template))); open.append(el('small', '', info.detail));
     const menu = button('Действия с шаблоном ' + template.name, 'more', 'icon-button', () => {
       const { dialog, body } = modal(template.name);
-      body.append(button('Скачать файл', 'download', 'menu-item', () => { dialog.close(); download(template); }), button('Удалить', 'trash', 'menu-item danger-text', () => { dialog.close(); confirm('Удалить шаблон?', 'Шаблон исчезнет с этого устройства. Записанные метки останутся.', 'Удалить', () => { const values = templates.filter(item => item.key !== template.key); if (!saveLocal(storage, storageKeys.templates, values)) { toast('Не удалось сохранить изменение.'); return; } templates = values; render(); }, true); }));
+      body.append(button('Скачать файл', 'download', 'menu-item', () => { dialog.close(); download(template); }), button('Удалить', 'trash', 'menu-item danger-text', () => { dialog.close(); confirm('Удалить шаблон?', 'Шаблон исчезнет с этого устройства. Записанные метки останутся.', 'Удалить', () => { const values = loadTemplates(storage).filter(item => item.key !== template.key); if (!saveTemplates(storage, values)) { toast('Не удалось сохранить изменение.'); return; } templates = values; render(); }, true); }));
     }); card.append(open, menu); grid.append(card);
   } content.append(grid);
 }

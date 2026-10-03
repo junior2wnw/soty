@@ -256,8 +256,8 @@ test('same-account network loss during shell refresh preserves the running app s
   assert.equal(f.app.lastToast, 'NETWORK_ERROR'); f.app.cleanScreen();
 });
 
-test('actual app controller enqueues launch before slow optional metadata on the real serialized Connect client', async t => {
-  for (const held of ['apps.list', 'world.community.get']) {
+test('actual app controller enqueues launch before slow optional metadata on the real serialized Connect client', { timeout: 10_000 }, async t => {
+  for (const held of ['apps.list', 'apps.catalog', 'world.community.get']) {
     const projectId = 'actual-app-queue', origin = 'https://shell.example', endpoint = `${origin}/rpc`, scope = { projectId, endpoint };
     const appId = `app-${'a'.repeat(32)}`, domainId = `dom_${'b'.repeat(32)}`, operations = [], entered = deferred(), release = deferred();
     const launchUrl = `https://app.runtime.example/_soty/boot?path=%2F#${'t'.repeat(43)}`;
@@ -271,10 +271,13 @@ test('actual app controller enqueues launch before slow optional metadata on the
       },
     };
     const service = createConnectService({ databasePath: ':memory:', projectId, allowedOrigins: [origin], extensions: [{
-      operations: new Set(['apps.launch', 'apps.list', 'world.community.get']), execute({ op, actor }) {
+      operations: new Set(['apps.launch', 'apps.list', 'apps.catalog', 'world.community.get']), execute({ op, actor }) {
         operations.push(op);
         if (op === 'apps.launch') return { launchUrl, entry: { appId, domainId, origin: 'https://app.runtime.example', path: '/' } };
         if (op === 'world.community.get') return { community: { communityId: 'community-test', membership: { state: 'none' } } };
+        if (op === 'apps.list' && held === 'apps.catalog') return { apps: [] };
+        if (op === 'apps.catalog') return { apps: [{ id: appId, name: 'Actual app name', state: 'enabled', ownerAccountId: 'another-owner',
+          publication: { named: { access: 'anyone', listed: true } }, entry: { domainId: `dom_${'c'.repeat(32)}`, origin: 'https://metadata.runtime.example', path: '/changed' } }] };
         return { apps: [{ id: appId, name: 'Actual app name', state: 'enabled', ownerAccountId: actor.accountId, hostDeviceId: 'fixture-device' }] };
       },
     }] });
@@ -285,9 +288,11 @@ test('actual app controller enqueues launch before slow optional metadata on the
     } }, storage);
     t.after(() => { client.dispose(); service.close(); });
     const identity = await client.bootstrap('Owner');
-    const route = appLaunch.formatAppLaunchRoute(held === 'apps.list' ? { appId, domainId } : { appId }, held === 'apps.list' ? undefined : 'community-test');
+    const route = appLaunch.formatAppLaunchRoute(held !== 'world.community.get' ? { appId, domainId } : { appId }, held !== 'world.community.get' ? undefined : 'community-test');
     const f = fixture({ initial: identity.accountId, hash: `#${route}` }); f.app.communities = [];
     f.app.api = { request: (op, args) => client.extension(op, JSON.parse(JSON.stringify(args ?? {})), { expectedAccountId: identity.accountId }) };
+    const metadata = deferred(), loadApps = f.app.loadApps.bind(f.app);
+    f.app.loadApps = async (...args) => { try { return await loadApps(...args); } finally { metadata.resolve(); } };
     const opening = f.app.openApplication({ appId, name: 'Приложение' }, appLaunch.parseAppLaunchRoute(route), true);
     try {
       await entered.promise; await turn();
@@ -295,8 +300,10 @@ test('actual app controller enqueues launch before slow optional metadata on the
       assert.equal(f.app.main.querySelector('iframe')?.src, launchUrl, 'runtime frame is mounted while optional response is still held');
       await opening;
     } finally { release.resolve(); await opening; }
-    await client.getLocalState(); await turn();
+    await metadata.promise; await turn();
     assert.equal(f.app.main.querySelector('iframe')?.title, 'Actual app name');
+    assert.equal(f.app.main.querySelector('iframe')?.src, launchUrl, 'public metadata cannot replace the admitted runtime');
+    assert.deepEqual(f.app.appStage.entry(), { appId, domainId, origin: 'https://app.runtime.example', path: '/' });
     f.app.cleanScreen();
   }
 });

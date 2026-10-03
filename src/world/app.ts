@@ -1156,7 +1156,7 @@ class WorldApplication {
         if (!current() || result.community.membership?.state !== 'active') return;
         this.group = result.community; this.renderNavigation(); this.avatars.setContext(communityId); stage.updateCommunity(result.community);
       }).catch(() => { /* App admission does not grant or require community chat access. */ });
-    if (resolveMetadata) void this.loadApps(communityId, false).then(apps => {
+    if (resolveMetadata) void this.loadApps(communityId, !!launchIntent.target.domainId).then(apps => {
       if (!current()) return;
       const found = apps.find(value => value.appId === launchIntent.target.appId);
       if (found) { app = found; stage.updateApp(found); }
