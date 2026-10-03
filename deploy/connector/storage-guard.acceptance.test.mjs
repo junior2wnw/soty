@@ -44,6 +44,24 @@ function gateFixture({ running = false, production = false } = {}) {
   return { runtime, objects, volumes, journal, calls, engine, context, probes: () => probes, setObserved: value => { observed = value; } };
 }
 
+test('an omitted anonymous volume path is inspected exactly; unrelated and read-only volumes are allowed while overlap or unresolved paths fail closed', async () => {
+  for (const variant of ['unrelated', 'overlap', 'read-only', 'unresolved']) {
+    const f = gateFixture({ running: true });
+    const extra = { Id: id(4), State: { Running: true }, Mounts: [{ Type: 'volume', Name: 'anonymous', Destination: '/cache',
+      Source: variant === 'unrelated' ? '/var/lib/docker/volumes/anonymous/_data' : variant === 'unresolved' ? '' : f.runtime.Mounts[0].Source,
+      RW: variant !== 'read-only' }] };
+    f.objects.set(extra.Id, extra);
+    const request = f.engine.request; let inspections = 0; const inspect = f.engine.inspect;
+    f.engine.request = async (verb, path) => { const value = await request(verb, path); if (path === '/containers/json') value.find(c => c.Id === extra.Id).Mounts[0].Source = ''; return value; };
+    f.engine.inspect = async key => { if (key === extra.Id) inspections++; return inspect(key); };
+    if (variant === 'overlap' || variant === 'unresolved') {
+      await assert.rejects(guardStorageStart(f.context, f.runtime, { running: true }), { code: variant === 'overlap' ? 'storage_other_writer' : 'storage_writer_check_failed' });
+      assert.equal(f.probes(), 0);
+    } else await guardStorageStart(f.context, f.runtime, { running: true });
+    assert.ok(inspections > 0);
+  }
+});
+
 test('the checked /data view must match the runtime: missing env, duplicate env, nested mounts and volume subpath are rejected before a probe', async () => {
   const variants = [
     runtime => { runtime.Config.Env = []; },

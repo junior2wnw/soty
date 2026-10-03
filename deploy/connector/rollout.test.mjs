@@ -191,7 +191,7 @@ test('the first v3 bridge cannot silently replace a serving v2-manifest image',a
 
 for(const store of ['notes','capabilities'])test(`fresh ${store} format is checked before stopping the original`,async()=>{
  const f=fixture();await f.run.prepare(args);
- f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:3});
+ f.run.storageProbe=async()=>({ok:true,schema:'soty.storage-format.v3',rooms:1,apps:'empty',notes:'empty',capabilities:'empty',[store]:store==='capabilities'?4:3});
  await assert.rejects(f.run.promote(),/storage_probe_invalid/);
  assert.equal(f.map.get(args.originalId).State.Running,true);
  assert.equal(f.map.get(args.originalId).HostConfig.RestartPolicy.Name,'unless-stopped');

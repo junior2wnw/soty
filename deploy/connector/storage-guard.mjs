@@ -73,7 +73,19 @@ async function assertWriters(engine, mount, allowedId) {
   requireThat(Array.isArray(items), 'storage_writer_check_failed');
   for (const c of items) {
     if (c.Id === allowedId) continue;
-    const conflict = (c.Mounts || []).some(m => m.RW !== false && ((mount.name && m.Name === mount.name)
+    let mounts = c.Mounts || [];
+    // Docker's list projection can omit an anonymous volume's Source. An empty
+    // string is not a filesystem root; inspect its exact container before
+    // deciding whether the runtime overlaps this managed data volume.
+    if (mounts.some(m => m.Type !== 'tmpfs' && (typeof m.Source !== 'string' || m.Source === ''))) {
+      requireThat(matches(ID, c.Id), 'storage_writer_check_failed');
+      const full = await engine.inspect(c.Id);
+      requireThat(full.Id === c.Id && Array.isArray(full.Mounts) && typeof full.State?.Running === 'boolean', 'storage_writer_check_failed');
+      if (!full.State.Running) continue;
+      mounts = full.Mounts;
+      requireThat(mounts.every(m => m.Type === 'tmpfs' || (typeof m.Source === 'string' && path.posix.isAbsolute(m.Source))), 'storage_writer_check_failed');
+    }
+    const conflict = mounts.some(m => m.Type !== 'tmpfs' && m.RW !== false && ((mount.name && m.Name === mount.name)
       || (typeof m.Source === 'string' && overlaps(m.Source, mount.source))));
     requireThat(!conflict, 'storage_other_writer');
   }
