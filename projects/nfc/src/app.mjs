@@ -63,11 +63,13 @@ let storageReady = true, noticeTimer;
 let stage = draft.records.some(record => record.kind === 'raw' || Object.entries(record.values).some(([key, value]) => !['security', 'mediaType'].includes(key) && value.trim())) ? 'edit' : 'choose';
 let choiceKind = draft.records[0].kind, showValidation = false;
 const root = document.querySelector('#app');
+root.classList.toggle('embedded', embedded);
 const header = el('header', 'topbar'), brand = el('div', 'brand'), brandMark = el('span', 'brand-mark'); brandMark.append(icon('nfc'));
 brand.append(brandMark, el('strong', '', 'метки'), el('span', 'brand-by', 'в сотах'));
 const headerActions = el('div', 'header-actions'); headerActions.append(button('Действия с меткой', 'more', 'icon-button', actionsMenu));
 header.append(brand, headerActions);
 const nav = el('nav', 'tabs'); nav.setAttribute('aria-label', 'Работа с NFC');
+nav.hidden = embedded;
 for (const [id, label, symbol] of [['write', 'Записать', 'write'], ['read', 'Считать', 'nfc'], ['templates', 'Мои', 'templates']]) {
   const target = button(label, symbol, 'tab', () => { if (controller.busy) { toast('Сначала завершите или остановите текущую операцию.'); return; } view = id; render(); });
   target.dataset.view = id; nav.append(target);
@@ -176,6 +178,12 @@ function mainAction(read = false) {
   return { label: 'На телефон', symbol: 'phone', action: () => void share() };
 }
 function renderWrite() {
+  if (embedded) {
+    const entry = el('section', 'entry-gate');
+    entry.append(tagVisual('nfc', 'NFC'), button('Открыть NFC', 'external', 'button button-primary button-wide primary-action', openSeparately));
+    content.append(entry);
+    return;
+  }
   const layout = el('div', 'write-layout ' + (stage === 'choose' ? 'choosing' : 'editing'));
   const preview = el('section', 'preview'); preview.setAttribute('aria-label', 'Предпросмотр метки');
   const record = draft.records[Math.min(selected, draft.records.length - 1)]; selected = Math.min(selected, draft.records.length - 1);
@@ -235,7 +243,10 @@ function actionsMenu() {
     ['Открыть файл', 'upload', importTemplate],
     ['Как работает NFC', 'help', help],
   ];
-  for (const [label, symbol, action] of items) body.append(button(label, symbol, 'menu-item', () => { dialog.close(); action(); }));
+  let transferable = false;
+  if (embedded) { try { compileDraft(draft); transferable = true; } catch { /* Existing embedded drafts can still be exported when valid. */ } }
+  const visible = embedded ? items.filter(([label]) => ['На телефон', 'Как работает NFC'].includes(label) || (label === 'Скачать файл' && transferable)) : items;
+  for (const [label, symbol, action] of visible) body.append(button(label, symbol, 'menu-item', () => { dialog.close(); action(); }));
   if (availability.supported) {
     body.append(button('Очистить метку', 'trash', 'menu-item danger-text', () => { dialog.close(); confirm('Очистить метку?', 'Прежнее NDEF-содержимое будет заменено пустой записью. Это не полное стирание памяти чипа.', 'Очистить', () => void controller.write({ records: [{ recordType: 'empty' }] }, { overwrite: true }).catch(() => {}), true); }));
     if (window.NDEFReader?.prototype?.makeReadOnly) body.append(button('Закрыть запись навсегда', 'lock', 'menu-item danger-text', () => { dialog.close(); lockDialog(); }));
