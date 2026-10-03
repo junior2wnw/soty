@@ -1,0 +1,23 @@
+{
+  "schema": "soty.nfc-agent.v1",
+  "name": "Метки",
+  "origin": "https://nfc.xn--n1afe0b.online",
+  "templateSchema": "soty.nfc-template.v1",
+  "maxRecords": 16,
+  "recordTypes": {
+    "url": ["url"],
+    "text": ["text"],
+    "wifi": ["ssid", "security", "password"],
+    "contact": ["name", "phone", "email", "company", "url"],
+    "phone": ["phone"],
+    "email": ["email", "subject", "body"],
+    "sms": ["phone", "body"],
+    "location": ["latitude", "longitude"],
+    "json": ["json"],
+    "binary": ["mediaType", "hex"]
+  },
+  "example": { "schema": "soty.nfc-template.v1", "name": "Соты", "records": [{ "kind": "url", "values": { "url": "https://соты.online" } }] },
+  "handoff": "Create a UTF-8 JSON template with string field values. The user opens it via Действия → Открыть файл, reviews it, then presses Записать on Android Chrome with NFC. The browser requires the user's gesture and NFC permission. There is no remote tag-writing API.",
+  "wifiSecurity": ["wpa2", "open"],
+  "privacy": "Tag data and imported templates stay on the user's device. Do not include credentials in example templates or URLs."
+}

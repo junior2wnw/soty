@@ -120,7 +120,7 @@ export async function reconcileStorageProbe(context) {
   await context.record({ storageGuardHelper: null });
 }
 
-async function productionProbe(context, mount) {
+async function productionProbe(context, mount, { running = false } = {}) {
   const { engine, getState, record, transactionId, probeImage, wait = pause, maxPolls = 60 } = context;
   requireThat(/^[a-f0-9]{16,40}$/u.test(transactionId || ''), 'storage_transaction_invalid');
   requireThat(IMAGE.test(probeImage || ''), 'storage_probe_image_required');
@@ -128,13 +128,17 @@ async function productionProbe(context, mount) {
   await reconcileStorageProbe(context);
   const sequence = (getState()?.storageGuardSequence || 0) + 1;
   const name = `soty-storage-probe-${transactionId}-${sequence}`;
-  const script = await readFile(new URL('./storage-probe.mjs', import.meta.url), 'utf8');
+  let script = await readFile(new URL('./storage-probe.mjs', import.meta.url), 'utf8');
+  if (!running) {
+    const snapshot = await readFile(new URL('./storage-snapshot.mjs', import.meta.url), 'utf8');
+    script = snapshot + '\n' + script.replace("await readStorageFormat('/data')", "await readStorageFormat(await snapshotStorage('/data', '/tmp/soty-storage-snapshot'))");
+  }
   const data = { Type: 'volume', Source: mount.name, Target: '/data', ReadOnly: true, VolumeOptions: { NoCopy: true } };
   const body = { Image: probeImage, User: '0:0', WorkingDir: '/', Env: ['SOTY_STORAGE_PROBE=1'], Entrypoint: ['node'],
     Cmd: ['--input-type=module', '-e', script], Tty: false, Labels: { 'io.soty.storage.probe': transactionId },
     HostConfig: { Mounts: [data], NetworkMode: 'none', RestartPolicy: { Name: 'no' }, ReadonlyRootfs: true,
-      Memory: 134217728, NanoCpus: 500000000, PidsLimit: 16, CapDrop: ['ALL'], CapAdd: ['DAC_READ_SEARCH'],
-      SecurityOpt: ['no-new-privileges'], Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=16777216' } }, NetworkingConfig: { EndpointsConfig: {} } };
+      Memory: 268435456, NanoCpus: 500000000, PidsLimit: 16, CapDrop: ['ALL'], CapAdd: ['DAC_READ_SEARCH'],
+      SecurityOpt: ['no-new-privileges'], Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=67108864' } }, NetworkingConfig: { EndpointsConfig: {} } };
   let receipt = { name, image: probeImage, state: 'creating' };
   await record({ storageGuardSequence: sequence, storageGuardHelper: receipt });
   try { await engine.create(name, body); } catch { /* Resolve exact identity, never repeat CREATE. */ }
@@ -165,7 +169,7 @@ export async function guardStorageStart(context, runtime, { running = false } = 
   storageReaders(image); // A copied container label cannot attest an old image.
   await assertLocalVolume(engine, mount);
   await assertWriters(engine, mount, running ? current.Id : undefined);
-  const observed = context.probe ? await context.probe(current) : await productionProbe(context, mount);
+  const observed = context.probe ? await context.probe(current) : await productionProbe(context, mount, { running });
   const format = assertStorageCompatible(image, observed);
   const after = await engine.inspect(runtime.Id);
   requireThat(after.Image === runtime.Image && after.State.Running === running && hash(dataMount(after)) === mountHash, 'storage_runtime_changed');

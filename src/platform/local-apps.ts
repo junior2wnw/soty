@@ -4,6 +4,7 @@ import { icon } from '../world/icons';
 import { createDialog, errorText, type WorldDialog } from '../world/dialogs';
 import { createAppCreateState, type AppCreateDraft, type AppCreateReceipt } from './app-create-state.mjs';
 import { registerUpdateGuard } from './pwa';
+import { parseDeviceLink } from './device-link.mjs';
 import './local-apps.css';
 
 interface HostDevice { hostDeviceId: string; connectorId: string; name: string; online: boolean }
@@ -67,6 +68,34 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     const status = el('p', 'sw-muted', 'Соединяемся с вашим коннектором…'); status.setAttribute('role', 'status');
     const body = el('div', 'sw-stack'); body.append(status); panel.body.append(body);
     let busy = false, forwardedPort: number | null = null;
+    const attach = async (claim: { hostDeviceId: string; connectorId: string; claimCode: string }) => {
+      const result = await client.extension<{ device: HostDevice }>('apps.claim', claim);
+      claim.claimCode = '';
+      if (closed) return;
+      status.textContent = 'Его приложения теперь можно добавить в ваши соты.';
+      body.replaceChildren(el('h3', '', result.device.name), status, button('Готово', 'check', 'sw-button-primary', () => panel.close()));
+      await refresh();
+    };
+    const fileConnection = () => {
+      if (busy || closed) return;
+      const input = document.createElement('input'); input.type = 'file'; input.accept = '.json,application/json';
+      input.addEventListener('change', () => { void (async () => {
+        const file = input.files?.[0]; if (!file || busy || closed) return; busy = true;
+        try {
+          if (file.size > 4096) throw new Error('device_link_invalid');
+          const claim = parseDeviceLink(await file.text(), window.location.origin);
+          if (closed) return;
+          body.replaceChildren(status); status.textContent = 'Подключаем устройство…';
+          await attach(claim);
+        } catch (error) {
+          if (closed) return;
+          status.textContent = error instanceof Error && error.message === 'device_link_invalid'
+            ? 'Нужен файл подключения от коннектора для этого адреса Сот.' : friendly(error);
+          body.replaceChildren(status, el('p', 'sw-muted', 'Файл действует 5 минут. Создайте новый, если время истекло.'),
+            button('Выбрать файл', 'folder', 'sw-button-primary', fileConnection));
+        } finally { busy = false; }
+      })(); }); input.click();
+    };
     const connect = async () => {
       if (busy || closed) return; busy = true;
       let stage: 'service' | 'connector' | 'claim' = 'service';
@@ -86,15 +115,10 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
         if (!claimed.ok || !claim.ok) throw Object.assign(new Error('Connector unavailable'), { code: 'apps_connector_offline' });
         if (closed) return;
         stage = 'claim';
-        const result = await client.extension<{ device: HostDevice }>('apps.claim', { hostDeviceId: claim.hostDeviceId, connectorId: claim.connectorId, claimCode: claim.claimCode });
-        claim.claimCode = '';
-        if (closed) return;
-        status.textContent = 'Теперь его приложения могут появляться в ваших сотах.';
-        body.replaceChildren(el('h3', '', result.device.name), status, button('Готово', 'check', 'sw-button-primary', () => panel.close()));
-        await refresh();
+        await attach({ hostDeviceId: claim.hostDeviceId, connectorId: claim.connectorId, claimCode: claim.claimCode }); claim.claimCode = '';
       } catch (error) {
         if (closed) return;
-        status.textContent = stage === 'connector' ? 'Не найдено подключение к этому компьютеру.' : friendly(error);
+        status.textContent = stage === 'connector' ? forwardedPort ? `Не удалось подключиться через порт ${forwardedPort}.` : 'Не найдено подключение к этому компьютеру.' : friendly(error);
         const windows = /Windows/i.test(navigator.userAgent);
         const mobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
         const installer = (forWindows: boolean, primary = false): HTMLAnchorElement => {
@@ -104,9 +128,11 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
         };
         const downloads = el('div', 'sw-row');
         downloads.append(installer(windows, !mobile), installer(!windows));
-        body.replaceChildren(status, el('p', 'sw-muted', 'Установите коннектор на этом компьютере, откройте его и нажмите «Повторить».'),
+        body.replaceChildren(status, el('p', 'sw-muted', forwardedPort ? 'Проверьте SSH-туннель и разрешение браузера на доступ к приложениям этого устройства. Можно подключить сервер файлом от его коннектора.' : 'Откройте коннектор и разрешите браузеру подключение к нему. Затем нажмите «Повторить».'),
           button('Повторить', 'refresh', '', () => { void connect(); }),
-          button('Другое подключение', 'settings', 'sw-button-quiet', forwardedConnection), downloads);
+          button('Подключить по файлу', 'folder', 'sw-button-quiet', fileConnection),
+          button('Другое подключение', 'settings', 'sw-button-quiet', forwardedConnection));
+        if (!forwardedPort) body.append(downloads);
         if (openAccount) body.append(button('Открыть мой профиль на другом устройстве', 'phone', 'sw-button-quiet', () => { panel.close(); void openAccount(); }));
       } finally { busy = false; }
     };
@@ -118,7 +144,8 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
       port.type = 'number'; port.min = '1024'; port.max = '65535'; port.required = true;
       const submit = button('Подключить сервер', 'laptop', 'sw-button-primary'); submit.type = 'submit';
       form.append(el('p', 'sw-muted', 'Для сервера с SSH подключите его коннектор через локальный туннель. Соты обращаются только к вашему компьютеру, а туннель передаёт запрос серверу.'),
-        labeledField('Локальный порт туннеля', port, 'Сам коннектор на сервере должен быть подключён к этому адресу Сот.'), submit);
+        labeledField('Локальный порт туннеля', port, 'Сам коннектор на сервере должен быть подключён к этому адресу Сот.'), submit,
+        button('Подключить по файлу', 'folder', 'sw-button-quiet', fileConnection));
       form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity()) return; const value = Number(port.value);
         if (!Number.isSafeInteger(value) || value < 1024 || value > 65535) return; forwardedPort = value; void connect(); });
       body.replaceChildren(form); port.focus();

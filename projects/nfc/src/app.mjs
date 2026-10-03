@@ -31,6 +31,9 @@ const paths = {
   help: '<circle cx="12" cy="12" r="9"/><path d="M9 8a3 3 0 0 1 6 0c0 3-3 2-3 5m0 3v1"/>',
   nfc: '<path d="M7 8a6 6 0 0 1 0 8m5-12a12 12 0 0 1 0 16m5-18a16 16 0 0 1 0 20"/>',
   external: '<path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  back: '<path d="m14 5-7 7 7 7"/>',
+  settings: '<path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3" fill="var(--surface)"/><circle cx="15" cy="17" r="3" fill="var(--surface)"/>',
 };
 function icon(name) { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '1.7'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true'); svg.innerHTML = paths[name] || paths.nfc; return svg; }
 function el(tag, className = '', text = '') { const node = document.createElement(tag); if (className) node.className = className; if (text) node.textContent = text; return node; }
@@ -57,26 +60,25 @@ if (location.hash.startsWith('#draft=')) {
 }
 let templates = loadTemplates(storage), selected = 0, view = 'write', capacity = 0, overwrite = false, lastRead = null, operation = { phase: 'idle' }, compiled = null;
 let storageReady = true, noticeTimer;
+let stage = draft.records.some(record => record.kind === 'raw' || Object.entries(record.values).some(([key, value]) => !['security', 'mediaType'].includes(key) && value.trim())) ? 'edit' : 'choose';
+let choiceKind = draft.records[0].kind, showValidation = false;
 const root = document.querySelector('#app');
 const header = el('header', 'topbar'), brand = el('div', 'brand'), brandMark = el('span', 'brand-mark'); brandMark.append(icon('nfc'));
-const brandCopy = el('div'); brandCopy.append(el('strong', '', 'Метки'), el('small', '', 'NFC · приложение в Сотах')); brand.append(brandMark, brandCopy);
-const headerActions = el('div', 'header-actions'); headerActions.append(button('На телефон', 'phone', 'button button-small', () => void share()), button('Как это работает', 'help', 'icon-button help-button', help));
+brand.append(brandMark, el('strong', '', 'метки'), el('span', 'brand-by', 'в сотах'));
+const headerActions = el('div', 'header-actions'); headerActions.append(button('Действия с меткой', 'more', 'icon-button', actionsMenu));
 header.append(brand, headerActions);
-const intro = el('section', 'intro'); intro.append(el('p', 'eyebrow', 'ИЗ ЦИФРОВОГО — В ФИЗИЧЕСКОЕ'), el('h1', '', 'Одно касание. Нужное действие.'), el('p', 'intro-detail', 'Ссылка, контакт или Wi-Fi на маленькой метке. Подготовьте данные, приложите телефон — готово.'));
 const nav = el('nav', 'tabs'); nav.setAttribute('aria-label', 'Работа с NFC');
-for (const [id, label, symbol] of [['write', 'Записать', 'write'], ['read', 'Прочитать', 'read'], ['templates', 'Шаблоны', 'templates']]) {
+for (const [id, label, symbol] of [['write', 'Записать', 'write'], ['read', 'Считать', 'nfc'], ['templates', 'Мои', 'templates']]) {
   const target = button(label, symbol, 'tab', () => { if (controller.busy) { toast('Сначала завершите или остановите текущую операцию.'); return; } view = id; render(); });
   target.dataset.view = id; nav.append(target);
 }
-const support = el('aside', 'support'), supportCopy = el('div', 'support-copy'); supportCopy.append(el('strong', '', availability.title), el('p', '', availability.detail)); support.append(icon(availability.supported ? 'check' : embedded ? 'external' : 'phone'), supportCopy);
-if (embedded) support.append(button('Открыть отдельно', 'external', 'button button-primary button-small', openSeparately));
-else if (!availability.supported) support.append(button('Открыть на телефоне', 'arrow', 'button button-small', () => void share()));
 const content = el('main', 'content'); content.id = 'main'; content.tabIndex = -1;
-const footer = el('footer', 'footer'); footer.append(el('span', '', 'Ваши данные остаются на этом устройстве.'), button('О метках и совместимости', 'help', 'text-button', help));
+const footer = el('footer', 'footer'); const compatibility = button(availability.supported ? 'NFC готов' : embedded ? 'NFC · отдельное окно' : 'Запись · Android + NFC', availability.supported ? 'check' : 'phone', 'compatibility', help); compatibility.title = availability.detail; footer.append(compatibility);
 const toastNode = el('div', 'toast'); toastNode.setAttribute('role', 'status'); toastNode.hidden = true;
-root.append(header, intro, nav, support, content, footer, toastNode);
+root.append(header, content, footer, nav, toastNode);
+const operationDialog = el('dialog', 'operation-screen'); operationDialog.setAttribute('aria-labelledby', 'operation-title'); operationDialog.addEventListener('cancel', event => { if (controller.busy) { event.preventDefault(); controller.cancel(); } }); document.body.append(operationDialog);
 const controller = createNfcController({ Reader: window.NDEFReader, onState: next => { operation = next; updateOperation(); if (next.phase === 'read') { lastRead = next.result; if (view === 'read') renderReadResult(); } } });
-function persist() { storageReady = saveLocal(storage, storageKeys.draft, draft); const note = document.querySelector('[data-draft-status]'); if (note) { note.textContent = storageReady ? 'Черновик на этом устройстве' : 'Не удалось сохранить черновик. Скачайте его перед закрытием.'; note.classList.toggle('warning', !storageReady); } }
+function persist() { storageReady = saveLocal(storage, storageKeys.draft, draft); const note = document.querySelector('[data-draft-status]'); if (note) { note.hidden = storageReady; note.textContent = storageReady ? '' : 'Черновик не сохранился. Скачайте его в меню.'; } }
 function toast(text) { clearTimeout(noticeTimer); toastNode.textContent = text; toastNode.hidden = false; noticeTimer = setTimeout(() => { toastNode.hidden = true; }, 4500); }
 function modal(title) {
   const previous = document.activeElement, dialog = el('dialog', 'dialog'), head = el('div', 'dialog-head'), body = el('div', 'dialog-body');
@@ -102,13 +104,12 @@ function addRecord(kind) {
   else draft.records.push(record);
   selected = draft.records.length - 1; persist(); render();
 }
-function chooseRecord() {
+function chooseRecord(replace = false) {
   const { dialog, body } = modal('Что запишем на метку?'); const grid = el('div', 'type-grid');
   for (const type of recordTypes) {
-    const choice = button(type.title, type.icon, 'type-choice', () => { dialog.close(); addRecord(type.id); });
-    choice.append(el('small', '', type.detail)); grid.append(choice);
+    const choice = button(type.title, type.icon, 'type-choice', () => { dialog.close(); if (replace) changeType(type.id); else { stage = 'edit'; addRecord(type.id); } }); grid.append(choice);
   }
-  body.append(grid, el('p', 'muted small', 'Можно добавить несколько записей. Телефон обычно открывает первую подходящую.'));
+  body.append(grid);
 }
 const fieldDefinitions = {
   url: [['url', 'Ссылка', 'https://example.com', 'url']],
@@ -123,55 +124,122 @@ const fieldDefinitions = {
   binary: [['mediaType', 'MIME-тип', 'application/octet-stream'], ['hex', 'Байты в HEX', '01 02 0A FF', 'textarea']],
 };
 function editor(record) {
-  const host = el('div', 'editor-fields');
+  const host = el('div', 'editor-fields'); host.dataset.kind = record.kind;
   if (record.kind === 'raw') { host.append(el('p', 'muted', 'Запись скопирована с метки. При записи сохранятся её тип и содержимое.'), snapshotCard(record.snapshot)); return host; }
   for (const [key, title, placeholder, inputType] of fieldDefinitions[record.kind]) {
     if (record.kind === 'wifi' && key === 'password' && record.values.security === 'open') continue;
     const field = el('label', 'field'), label = el('span', 'field-label', title); const input = el(inputType === 'textarea' ? 'textarea' : inputType === 'select' ? 'select' : 'input', 'input');
     input.name = key; input.value = record.values[key]; input.setAttribute('aria-label', title); input.autocomplete = 'off';
     if (inputType === 'select') { for (const [value, title] of [['wpa2', 'WPA2 — с паролем'], ['open', 'Открытая — без пароля']]) { const option = el('option', '', title); option.value = value; option.selected = record.values[key] === value; input.append(option); } }
-    else { input.placeholder = placeholder || ''; input.maxLength = key === 'ssid' ? 64 : record.kind === 'text' || inputType === 'textarea' ? 16_384 : 2048; if (input.tagName === 'INPUT') input.type = inputType === 'url' ? 'text' : inputType || 'text'; else input.rows = ['text', 'json', 'binary'].includes(record.kind) ? 6 : 3; }
-    input.addEventListener('input', () => { record.values[key] = input.value; persist(); updatePreview(); });
+    else { input.placeholder = placeholder || ''; input.maxLength = key === 'ssid' ? 64 : record.kind === 'text' || inputType === 'textarea' ? 16_384 : 2048; if (input.tagName === 'INPUT') input.type = inputType === 'url' ? 'text' : inputType || 'text'; else input.rows = ['text', 'json', 'binary'].includes(record.kind) ? 4 : 3; }
+    input.addEventListener('input', () => { record.values[key] = input.value; showValidation = true; persist(); updatePreview(); });
     if (inputType === 'select') input.addEventListener('change', () => { record.values[key] = input.value; persist(); render(); });
     field.append(label, input);
     if (inputType === 'password') { const toggle = button('Показать пароль', undefined, 'text-button field-toggle', () => { const visible = input.type === 'password'; input.type = visible ? 'text' : 'password'; const label = visible ? 'Скрыть пароль' : 'Показать пароль'; toggle.querySelector('span').textContent = label; toggle.setAttribute('aria-label', label); }); field.append(toggle); }
     host.append(field);
   }
-  if (record.kind === 'wifi') host.append(el('p', 'field-hint', 'Подключение по NFC зависит от телефона. iPhone не подключается к Wi-Fi по такой записи. Пароль будет доступен тем, кто прочитает метку.'));
-  if (record.kind === 'binary' || record.kind === 'json') host.append(el('p', 'field-hint', 'Эти данные прочитает приложение, которое знает их формат. Большие файлы лучше открывать по ссылке.'));
-  if (record.kind === 'location') host.append(el('p', 'field-hint', 'Укажите десятичные координаты. Точка отделяет дробную часть.'));
+  if (record.kind === 'wifi') host.append(el('p', 'field-hint', 'Пароль сможет прочитать каждый с доступом к метке.'));
+  if (record.kind === 'binary' || record.kind === 'json') host.append(el('p', 'field-hint', 'Для приложений, которые знают этот формат.'));
+  if (record.kind === 'location') host.append(el('p', 'field-hint', 'Координаты с десятичной точкой.'));
   return host;
 }
+function hasContent(record) {
+  return record.kind === 'raw' || Object.entries(record.values).some(([key, value]) => !['security', 'mediaType'].includes(key) && value.trim());
+}
+function changeType(kind) {
+  const current = draft.records[selected];
+  if (current.kind === kind) { stage = 'edit'; render(); return; }
+  const replace = () => { draft.records[selected] = makeRecord(kind); choiceKind = kind; stage = 'edit'; showValidation = false; persist(); render(); };
+  if (hasContent(current)) confirm('Сменить содержимое?', 'Поля этой записи будут заменены. Остальные записи останутся.', 'Сменить', replace);
+  else replace();
+}
+function tagVisual(symbol = 'nfc', detail = '', className = '') {
+  const tag = el('div', 'tag-visual ' + className); tag.setAttribute('aria-label', detail ? 'Метка: ' + detail : 'NFC-метка');
+  const coils = el('div', 'tag-coils'); coils.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < 6; i++) coils.append(el('i'));
+  const label = el('div', 'tag-label'); label.append(icon(symbol));
+  const text = el('div', 'preview-copy', detail); label.append(text); tag.append(coils, label, el('span', 'tag-engraving', 'NFC'));
+  return tag;
+}
+function typeGrid(host, select) {
+  const grid = el('div', 'type-grid quick-grid');
+  for (const kind of ['url', 'text', 'wifi', 'contact', 'location']) {
+    const type = recordTypes.find(type => type.id === kind);
+    const choice = button(type.title, type.icon, 'type-choice', () => select(kind));
+    choice.setAttribute('aria-pressed', String(choiceKind === kind)); grid.append(choice);
+  }
+  grid.append(button('Ещё', 'more', 'type-choice', () => chooseRecord(true))); host.append(grid);
+}
+function mainAction(read = false) {
+  if (availability.supported) return { label: read ? 'Считать' : 'Записать', symbol: 'nfc', action: read ? () => void controller.read().catch(() => {}) : () => void writeDraft() };
+  if (embedded) return { label: 'Открыть приложение', symbol: 'external', action: openSeparately };
+  return { label: 'На телефон', symbol: 'phone', action: () => void share() };
+}
 function renderWrite() {
-  const layout = el('div', 'write-layout'), builder = el('section', 'card builder'), side = el('aside', 'write-side');
-  const head = el('div', 'section-head'); head.append(el('div', '', 'Что будет на метке'), el('span', 'count-label', recordCount(draft.records.length)));
-  const choices = el('div', 'record-tabs'); choices.setAttribute('aria-label', 'Записи на метке');
-  draft.records.forEach((record, index) => {
-    const type = recordTypes.find(type => type.id === record.kind); const target = button((index + 1) + '. ' + (type?.title || 'С метки'), type?.icon || 'chip', 'record-tab', () => { selected = index; render(); }); target.setAttribute('aria-pressed', String(selected === index)); choices.append(target);
-  });
-  const selectedRecord = draft.records[selected] || draft.records[0]; selected = Math.min(selected, draft.records.length - 1);
-  const quick = el('div', 'quick-types');
-  for (const kind of ['url', 'text', 'wifi']) { const type = recordTypes.find(type => type.id === kind); quick.append(button(type.title, type.icon, 'button button-small', () => addRecord(kind))); }
-  quick.append(button('Другой тип', 'plus', 'button button-small', chooseRecord));
-  const editing = el('div', 'editing-head'); editing.append(el('h2', '', recordTypes.find(type => type.id === selectedRecord.kind)?.title || 'Содержимое с метки'));
-  if (draft.records.length > 1) editing.append(button('Убрать запись', 'trash', 'icon-button', () => { draft.records.splice(selected, 1); selected = Math.max(0, selected - 1); persist(); render(); }));
-  builder.append(head, choices, editing, editor(selectedRecord), quick);
-  const actions = el('div', 'builder-footer'), draftStatus = el('span', 'small muted'); draftStatus.dataset.draftStatus = ''; actions.append(draftStatus, button('Сохранить шаблон', 'templates', 'text-button', saveTemplate)); builder.append(actions);
-  const preview = el('section', 'card preview'); preview.setAttribute('aria-label', 'Предпросмотр метки'); preview.append(el('p', 'eyebrow', 'ВАША МЕТКА'));
-  const tag = el('div', 'tag-visual'); tag.append(el('span', 'tag-hole'), icon('nfc')); preview.append(tag);
-  const previewText = el('div', 'preview-copy'); previewText.dataset.preview = ''; preview.append(previewText); side.append(preview);
-  const writeCard = el('section', 'card write-actions'); const capacityField = el('label', 'capacity-field'); capacityField.append(el('span', '', 'Размер метки'));
-  const sizes = el('select', 'capacity-select'); sizes.setAttribute('aria-label', 'Размер метки');
-  for (const [value, label] of [[0, 'Не знаю'], [144, 'NTAG213 · 144 Б'], [504, 'NTAG215 · 504 Б'], [888, 'NTAG216 · 888 Б']]) { const option = el('option', '', label); option.value = String(value); option.selected = capacity === value; sizes.append(option); }
-  sizes.addEventListener('change', () => { capacity = Number(sizes.value); updatePreview(); }); capacityField.append(sizes);
-  const meter = el('div', 'memory'); meter.dataset.memory = ''; const validation = el('p', 'validation'); validation.dataset.validation = '';
-  const permission = el('label', 'check-row'), check = el('input'); check.type = 'checkbox'; check.checked = overwrite; check.addEventListener('change', () => { overwrite = check.checked; }); permission.append(check, el('span', '', 'Разрешить замену прежнего содержимого'));
-  const write = button('Записать на метку', 'nfc', 'button button-primary button-wide', () => void writeDraft()); write.dataset.write = '';
-  const status = operationPanel(); writeCard.append(capacityField, meter, validation, permission, write, status, el('p', 'write-hint', 'Поднесите метку после нажатия. Держите её до конца записи и проверки.'));
-  const advanced = el('details', 'advanced'); advanced.append(el('summary', '', 'Очистка и защита метки')); const extra = el('div', 'advanced-body');
-  const erase = button('Очистить содержимое', 'trash', 'text-button', () => confirm('Очистить метку?', 'Прежнее NDEF-содержимое будет заменено пустой записью. Это не полное стирание памяти чипа.', 'Очистить', () => void controller.write({ records: [{ recordType: 'empty' }] }, { overwrite: true }).catch(() => {}), true)); erase.disabled = !availability.supported;
-  const lock = button('Запретить запись навсегда', 'lock', 'text-button danger-text', lockDialog); lock.disabled = !availability.supported || !window.NDEFReader?.prototype?.makeReadOnly;
-  extra.append(erase, lock); advanced.append(extra); writeCard.append(advanced); side.append(writeCard); layout.append(builder, side); content.append(layout); persist(); updatePreview(); updateOperation();
+  const layout = el('div', 'write-layout ' + (stage === 'choose' ? 'choosing' : 'editing'));
+  const preview = el('section', 'preview'); preview.setAttribute('aria-label', 'Предпросмотр метки');
+  const record = draft.records[Math.min(selected, draft.records.length - 1)]; selected = Math.min(selected, draft.records.length - 1);
+  const type = recordTypes.find(type => type.id === (stage === 'choose' ? choiceKind : draft.records[0].kind));
+  const visual = tagVisual(type?.icon || 'chip'); visual.querySelector('.preview-copy').dataset.preview = '';
+  preview.append(visual);
+  const meter = button('Память и перезапись', 'chip', 'memory', settings); meter.dataset.memory = ''; preview.append(meter);
+  const builder = el('section', 'builder');
+  if (stage === 'choose') {
+    builder.append(el('h1', 'stage-title', 'Что запишем?'));
+    typeGrid(builder, kind => { choiceKind = kind; render(); });
+    builder.append(button('Продолжить', 'arrow', 'button button-dark button-wide primary-action', () => changeType(choiceKind)));
+  } else {
+    if (draft.records.length > 1) {
+      const choices = el('div', 'record-tabs'); choices.setAttribute('aria-label', 'Записи на метке');
+      draft.records.forEach((entry, index) => {
+        const entryType = recordTypes.find(type => type.id === entry.kind);
+        const choice = button((index + 1) + '. ' + (entryType?.title || 'С метки'), entryType?.icon || 'chip', 'record-tab', () => { selected = index; showValidation = false; render(); });
+        choice.setAttribute('aria-pressed', String(selected === index)); choices.append(choice);
+      }); builder.append(choices);
+    }
+    const editing = el('div', 'editing-head');
+    const typeButton = button(recordTypes.find(type => type.id === record.kind)?.title || 'С метки', undefined, 'type-switch', () => chooseRecord(true)); typeButton.setAttribute('aria-label', 'Изменить тип записи'); typeButton.append(icon('more')); editing.append(typeButton);
+    if (draft.records.length > 1) editing.append(button('Убрать запись', 'trash', 'icon-button', () => { draft.records.splice(selected, 1); selected = Math.max(0, selected - 1); persist(); render(); }));
+    const validation = el('p', 'validation'); validation.dataset.validation = ''; validation.setAttribute('role', 'alert'); validation.hidden = true;
+    const status = el('p', 'validation'); status.dataset.draftStatus = ''; status.setAttribute('role', 'status'); status.hidden = true;
+    builder.append(editing, editor(record), validation, status);
+    const action = mainAction(), write = button(action.label, action.symbol, 'button button-primary button-wide primary-action', action.action); write.dataset.write = '';
+    builder.append(write);
+    if (overwrite) builder.append(button('Перезапись включена', 'settings', 'overwrite-indicator', settings));
+  }
+  layout.append(preview, builder); content.append(layout); persist(); updatePreview(); updateOperation();
+}
+function settings() {
+  const { body } = modal('Метка');
+  const field = el('label', 'field'); field.append(el('span', 'field-label', 'Память'));
+  const sizes = el('select', 'input'); sizes.setAttribute('aria-label', 'Размер метки');
+  for (const [value, label] of [[0, 'Не знаю'], [144, 'NTAG213 · 144 Б'], [504, 'NTAG215 · 504 Б'], [888, 'NTAG216 · 888 Б']]) {
+    const option = el('option', '', label); option.value = String(value); option.selected = capacity === value; sizes.append(option);
+  }
+  sizes.addEventListener('change', () => { capacity = Number(sizes.value); updatePreview(); }); field.append(sizes);
+  const permission = el('label', 'check-field'), check = el('input'); check.type = 'checkbox'; check.checked = overwrite;
+  check.addEventListener('change', () => { overwrite = check.checked; render(); });
+  permission.append(check, el('span', '', 'Заменить прежнее содержимое'));
+  body.append(field, permission, el('p', 'muted small', 'По умолчанию записываем только пустую метку. Размер — ваша оценка; телефон проверит реальную память.'));
+}
+function actionsMenu() {
+  if (controller.busy) return;
+  const { dialog, body } = modal('Действия');
+  const items = [
+    ['Новая метка', 'plus', () => confirm('Новая метка?', 'Текущий черновик будет заменён. Сохраните его, если он нужен.', 'Создать', () => { draft = { schema: draft.schema, name: '', records: [makeRecord()] }; selected = 0; choiceKind = 'url'; stage = 'choose'; view = 'write'; overwrite = false; persist(); render(); })],
+    ['Сохранить', 'templates', saveTemplate],
+    ['На телефон', 'phone', () => void share()],
+    ['Добавить запись', 'plus', () => chooseRecord()],
+    ['Память и перезапись', 'settings', settings],
+    ['Скачать файл', 'download', () => { try { compileDraft(draft); download(draft); } catch (error) { toast(error.message); } }],
+    ['Открыть файл', 'upload', importTemplate],
+    ['Как работает NFC', 'help', help],
+  ];
+  for (const [label, symbol, action] of items) body.append(button(label, symbol, 'menu-item', () => { dialog.close(); action(); }));
+  if (availability.supported) {
+    body.append(button('Очистить метку', 'trash', 'menu-item danger-text', () => { dialog.close(); confirm('Очистить метку?', 'Прежнее NDEF-содержимое будет заменено пустой записью. Это не полное стирание памяти чипа.', 'Очистить', () => void controller.write({ records: [{ recordType: 'empty' }] }, { overwrite: true }).catch(() => {}), true); }));
+    if (window.NDEFReader?.prototype?.makeReadOnly) body.append(button('Закрыть запись навсегда', 'lock', 'menu-item danger-text', () => { dialog.close(); lockDialog(); }));
+  }
 }
 function previewLabel(record) {
   if (record.kind === 'raw') return { title: record.snapshot.recordType === 'url' ? 'Откроет ссылку' : 'Данные с метки', detail: record.snapshot.text || record.snapshot.mediaType || 'Содержимое сохранится без изменений' };
@@ -191,41 +259,53 @@ function previewLabel(record) {
 }
 function updatePreview() {
   const preview = document.querySelector('[data-preview]'); if (!preview) return;
-  preview.replaceChildren(); const info = previewLabel(draft.records[0]); preview.append(el('h3', '', info.title), el('p', '', info.detail));
-  if (draft.records.length > 1) preview.append(el('small', 'muted', '+ ещё ' + recordCount(draft.records.length - 1)));
+  const record = draft.records[0], info = previewLabel(record);
+  let detail = info.detail;
+  if (stage === 'choose') detail = recordTypes.find(type => type.id === choiceKind)?.title || 'NFC';
+  else if (record.kind === 'url' && record.values.url.trim()) {
+    detail = record.values.url.trim().replace(/^https?:\/\//i, '').replace(/\/$/, '');
+  }
+  preview.textContent = detail; preview.title = info.detail;
+  const extra = document.querySelector('.tag-extra'); extra?.remove();
+  if (draft.records.length > 1) preview.parentNode.append(el('span', 'tag-extra', '+' + (draft.records.length - 1)));
   const memory = document.querySelector('[data-memory]'), validation = document.querySelector('[data-validation]'), write = document.querySelector('[data-write]');
   compiled = null; let bytes = 0, error = '';
-  try { compiled = compileDraft(draft); bytes = estimateTagBytes(compiled); if (capacity && bytes > capacity) { error = 'Содержимое больше выбранной памяти. Сократите данные или возьмите метку большего размера.'; compiled = null; } }
+  try { compiled = compileDraft(draft); bytes = estimateTagBytes(compiled); if (capacity && bytes > capacity) { error = 'Нужно ' + bytes + ' Б. В выбранной метке ' + capacity + ' Б.'; compiled = null; } }
   catch (reason) { error = reason.message; }
-  memory.replaceChildren(); const row = el('div', 'memory-caption'); row.append(el('strong', '', bytes ? bytes + ' Б' : '—'), el('span', '', capacity ? 'из ' + capacity + ' Б памяти' : 'объём NDEF · оценка')); memory.append(row);
-  if (capacity) { const track = el('div', 'memory-track'), fill = el('div', bytes > capacity ? 'over' : ''); fill.style.width = Math.min(100, bytes / capacity * 100) + '%'; track.append(fill); memory.append(track, el('small', 'muted', 'Размер выбран вручную. Служебные данные тоже занимают память.')); }
-  validation.textContent = error; validation.hidden = !error; write.disabled = !availability.supported || !compiled || controller.busy;
-}
-function operationPanel() {
-  const host = el('div', 'operation'); host.dataset.operation = ''; host.setAttribute('aria-live', 'polite'); host.hidden = true;
-  host.append(el('strong'), el('p'), button('Остановить', 'close', 'button button-small', () => controller.cancel())); return host;
+  memory.replaceChildren(icon('chip'), el('span', '', bytes ? bytes + ' Б' + (capacity ? ' / ' + capacity + ' Б' : '') : 'NFC · NDEF'));
+  memory.classList.toggle('over', !!capacity && bytes > capacity);
+  if (validation) { validation.textContent = error; validation.hidden = !error || !showValidation; }
+  if (write) write.disabled = controller.busy;
 }
 function updateOperation() {
   const phase = operation.phase, busy = ['scanning', 'writing', 'verifying', 'locking'].includes(phase);
-  const titles = { scanning: 'Ищем метку…', writing: 'Ждём метку для записи…', verifying: 'Записано. Проверяем содержимое…', verified: 'Записано и проверено', written: 'Записано · проверка не завершена', read: 'Метка прочитана', locking: 'Ждём метку для защиты…', locked: 'Запись на метку закрыта навсегда', cancelled: 'Операция остановлена', error: 'Не удалось закончить' };
-  for (const host of document.querySelectorAll('[data-operation]')) {
-    host.hidden = phase === 'idle'; host.dataset.phase = phase; host.classList.toggle('busy', busy);
-    host.querySelector('strong').textContent = titles[phase] || '';
-    host.querySelector('p').textContent = operation.message || operation.hint || (busy ? 'Держите эту метку у NFC-антенны телефона. Не убирайте её до завершения.' : phase === 'verified' ? 'Содержимое прочитано обратно и совпадает с вашим шаблоном.' : '');
-    host.querySelector('button').hidden = !busy;
+  const write = document.querySelector('[data-write]'); if (write) write.disabled = busy;
+  const read = document.querySelector('[data-read]'); if (read) read.disabled = busy;
+  if (['idle', 'read', 'cancelled'].includes(phase)) {
+    if (operationDialog.open) operationDialog.close();
+    if (phase === 'cancelled') toast(operation.message || 'Остановлено'); return;
   }
-  const write = document.querySelector('[data-write]'); if (write) write.disabled = !availability.supported || !compiled || busy;
-  const read = document.querySelector('[data-read]'); if (read) read.disabled = !availability.supported || busy;
+  const titles = { scanning: 'Поднесите метку', writing: 'Поднесите метку', verifying: 'Проверяем', verified: 'Готово', written: 'Записано', locking: 'Поднесите метку', locked: 'Запись закрыта', error: 'Не получилось' };
+  operationDialog.dataset.phase = phase; operationDialog.replaceChildren();
+  const signal = el('div', 'signal-stage ' + (busy ? 'pulsing' : ''));
+  signal.append(el('i', 'signal-ring'), el('i', 'signal-ring'), tagVisual(recordTypes.find(type => type.id === draft.records[0].kind)?.icon || 'chip', previewLabel(draft.records[0]).detail));
+  if (!busy) { const badge = el('span', 'result-badge'); badge.append(icon(phase === 'error' ? 'close' : phase === 'written' ? 'help' : 'check')); signal.append(badge); }
+  const title = el('h2', '', titles[phase] || 'NFC'); title.id = 'operation-title';
+  const hint = el('p', 'operation-hint', operation.message || operation.hint || (phase === 'verified' ? 'Записано и проверено' : phase === 'verifying' ? 'Не убирайте метку' : busy ? 'К задней стороне телефона' : ''));
+  const action = button(busy ? 'Отмена' : 'Готово', undefined, 'button button-wide operation-action', () => { if (busy) controller.cancel(); else operationDialog.close(); });
+  operationDialog.append(signal, title, hint, action);
+  if (!operationDialog.open) operationDialog.showModal();
 }
 async function writeDraft() {
-  if (!compiled || !availability.supported) return; persist();
-  try { await controller.write(compileDraft(draft), { overwrite }); } catch { /* Typed state is shown by the controller. */ }
+  showValidation = true; updatePreview();
+  if (!compiled) { document.querySelector('.editor-fields .input')?.focus(); return; }
+  if (!availability.supported) return; persist();
+  try { await controller.write(compiled, { overwrite }); } catch { /* Controller exposes the actual outcome. */ }
 }
 function renderRead() {
-  const card = el('section', 'card read-card'), mark = el('div', 'read-mark'); mark.append(icon('read'));
-  card.append(mark, el('h2', '', 'Что уже записано на метке?'), el('p', 'muted', 'Нажмите «Прочитать», затем приложите метку к телефону. Ссылки и действия сами не запускаются.'));
-  const read = button('Прочитать метку', 'read', 'button button-primary', () => void controller.read().catch(() => {})); read.dataset.read = ''; read.disabled = !availability.supported;
-  card.append(read, operationPanel()); content.append(card); const results = el('section', 'read-results'); results.dataset.readResults = ''; content.append(results); renderReadResult(); updateOperation();
+  const card = el('section', 'read-card'); card.append(tagVisual('nfc'), el('h1', 'stage-title', 'Считать метку'));
+  const action = mainAction(true), read = button(action.label, action.symbol, 'button button-primary button-wide primary-action', action.action); read.dataset.read = '';
+  card.append(read); content.append(card); const results = el('section', 'read-results'); results.dataset.readResults = ''; content.append(results); renderReadResult();
 }
 function snapshotCard(snapshot) {
   const card = el('article', 'read-record'), header = el('div', 'read-record-head');
@@ -258,7 +338,7 @@ function renderReadResult() {
   if (!lastRead.records.length) results.append(el('p', 'muted', 'NDEF-содержимого нет.'));
   for (const record of lastRead.records) results.append(snapshotCard(record));
   if (lastRead.records.length) results.append(button('Использовать для записи', 'copy', 'button', () => {
-    const replace = () => { const value = { schema: draft.schema, name: 'Скопированная метка', records: lastRead.records.map(snapshot => ({ key: crypto.randomUUID(), kind: 'raw', snapshot })) }; try { compileDraft(value); draft = value; selected = 0; view = 'write'; persist(); render(); } catch (error) { toast(error.message); } };
+    const replace = () => { const value = { schema: draft.schema, name: 'Скопированная метка', records: lastRead.records.map(snapshot => ({ key: crypto.randomUUID(), kind: 'raw', snapshot })) }; try { compileDraft(value); draft = value; selected = 0; view = 'write'; stage = 'edit'; persist(); render(); } catch (error) { toast(error.message); } };
     confirm('Использовать содержимое метки?', 'Текущий черновик будет заменён. Сначала сохраните его как шаблон, если он вам нужен.', 'Использовать', replace);
   }));
 }
@@ -286,18 +366,23 @@ function importTemplate() {
   }); input.click();
 }
 function acceptDraft(value) {
-  const use = () => { draft = value; selected = 0; view = 'write'; persist(); render(); toast('Шаблон открыт. Проверьте содержимое перед записью.'); };
+  const use = () => { draft = value; selected = 0; view = 'write'; stage = 'edit'; showValidation = false; persist(); render(); toast('Шаблон открыт. Проверьте содержимое перед записью.'); };
   confirm('Открыть шаблон «' + (value.name || 'Моя метка') + '»?', 'Он заменит текущий черновик. Сохраните прежний как шаблон, если он вам нужен.', 'Открыть шаблон', use);
 }
 function renderTemplates() {
-  const head = el('div', 'templates-head'); const copy = el('div'); copy.append(el('h2', '', 'Всегда под рукой'), el('p', 'muted', 'Ваши сохранённые метки на этом устройстве.'));
-  const actions = el('div', 'action-row'); actions.append(button('Открыть файл', 'upload', 'button', importTemplate), button('Скачать черновик', 'download', 'button', () => { try { compileDraft(draft); download(draft); } catch (error) { toast(error.message); } })); head.append(copy, actions); content.append(head);
-  if (!templates.length) { const empty = el('section', 'card templates-empty'); empty.append(icon('templates'), el('h3', '', 'Первая метка станет шаблоном'), el('p', 'muted', 'Подготовьте ссылку, контакт или Wi-Fi и нажмите «Сохранить шаблон». В следующий раз останется только приложить метку.'), button('Подготовить метку', 'plus', 'button button-primary', () => { view = 'write'; render(); })); content.append(empty); return; }
+  const head = el('div', 'templates-head'); head.append(el('h1', 'stage-title', 'Мои метки'), button('Открыть файл', 'upload', 'icon-button', importTemplate)); content.append(head);
+  if (!templates.length) {
+    const empty = el('section', 'templates-empty'); empty.append(tagVisual('templates'), el('h2', '', 'Сохраните первую'), button('Новая метка', 'plus', 'button button-dark button-wide', () => { view = 'write'; render(); }));
+    content.append(empty); return;
+  }
   const grid = el('div', 'templates-grid');
   for (const template of templates) {
-    const card = el('article', 'card template-card'); const info = previewLabel(template.records[0]); card.append(el('span', 'template-symbol').appendChild(icon(recordTypes.find(type => type.id === template.records[0].kind)?.icon || 'chip')).parentNode, el('h3', '', template.name), el('p', 'template-detail', info.detail), el('small', 'muted', recordCount(template.records.length) + ' · ' + estimateBytes(compileDraft(template)) + ' Б'));
-    const controls = el('div', 'template-controls'); controls.append(button('Открыть', 'arrow', 'button button-small', () => acceptDraft(validateDraft(template))),
-      button('Скачать', 'download', 'icon-button', () => download(template)), button('Удалить', 'trash', 'icon-button', () => confirm('Удалить шаблон?', 'Шаблон «' + template.name + '» будет удалён с этого устройства. Скачайте его, если хотите сохранить копию.', 'Удалить', () => { const next = templates.filter(value => value.key !== template.key); if (!saveLocal(storage, storageKeys.templates, next)) { toast('Не удалось сохранить изменение. Шаблон сохранён.'); return; } templates = next; render(); }, true))); card.append(controls); grid.append(card);
+    const card = el('article', 'template-card'), info = previewLabel(template.records[0]), symbol = recordTypes.find(type => type.id === template.records[0].kind)?.icon || 'chip';
+    const open = button(template.name, symbol, 'template-open', () => acceptDraft(validateDraft(template))); open.append(el('small', '', info.detail));
+    const menu = button('Действия с шаблоном ' + template.name, 'more', 'icon-button', () => {
+      const { dialog, body } = modal(template.name);
+      body.append(button('Скачать файл', 'download', 'menu-item', () => { dialog.close(); download(template); }), button('Удалить', 'trash', 'menu-item danger-text', () => { dialog.close(); confirm('Удалить шаблон?', 'Шаблон исчезнет с этого устройства. Записанные метки останутся.', 'Удалить', () => { const values = templates.filter(item => item.key !== template.key); if (!saveLocal(storage, storageKeys.templates, values)) { toast('Не удалось сохранить изменение.'); return; } templates = values; render(); }, true); }));
+    }); card.append(open, menu); grid.append(card);
   } content.append(grid);
 }
 async function share() {
@@ -312,9 +397,9 @@ async function share() {
   const update = async () => {
     const request = ++revision; error.textContent = '';
     try { link = check.checked ? draftLink(location.href, draft) : new URL('/', location.href).href; linkText.value = link; privacy.textContent = check.checked ? 'В этой ссылке есть содержимое шаблона, включая пароль Wi-Fi, если вы его указали. Отправляйте её только нужному человеку.' : 'QR содержит только адрес приложения. Ваши данные с меток в него не входят.';
-      const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#183e30', light: '#ffffff' } }); if (request !== revision || !dialog.isConnected) return;
+      const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#171926', light: '#ffffff' } }); if (request !== revision || !dialog.isConnected) return;
       const image = el('img'); image.src = qr; image.alt = 'QR-код для открытия NFC-приложения на телефоне'; qrHost.replaceChildren(image);
-    } catch (reason) { if (request !== revision || !dialog.isConnected) return; check.checked = false; link = new URL('/', location.href).href; linkText.value = link; privacy.textContent = 'QR содержит только адрес приложения. Шаблон можно скачать файлом.'; const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, color: { dark: '#183e30', light: '#ffffff' } }); if (request === revision && dialog.isConnected) { const image = el('img'); image.src = qr; image.alt = 'QR-код приложения без содержимого шаблона'; qrHost.replaceChildren(image); error.textContent = reason.message; } }
+    } catch (reason) { if (request !== revision || !dialog.isConnected) return; check.checked = false; link = new URL('/', location.href).href; linkText.value = link; privacy.textContent = 'QR содержит только адрес приложения. Шаблон можно скачать файлом.'; const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, color: { dark: '#171926', light: '#ffffff' } }); if (request === revision && dialog.isConnected) { const image = el('img'); image.src = qr; image.alt = 'QR-код приложения без содержимого шаблона'; qrHost.replaceChildren(image); error.textContent = reason.message; } }
   };
   check.addEventListener('change', () => void update());
   const controls = el('div', 'action-row'); controls.append(button('Скопировать ссылку', 'copy', 'button button-primary', () => void navigator.clipboard.writeText(link).then(() => toast('Ссылка скопирована.')).catch(() => { linkText.focus(); linkText.select(); toast('Выделили ссылку. Скопируйте её вручную.'); })), button('Скачать шаблон', 'download', 'button', () => { try { compileDraft(draft); download(draft); } catch (reason) { error.textContent = reason.message; } }));
@@ -340,6 +425,7 @@ function help() {
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) controller.cancel('hidden'); });
 window.addEventListener('pagehide', () => controller.cancel('hidden'));
+if (!embedded && 'serviceWorker' in navigator) window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => {}); }, { once: true });
 render();
 if (initialError) toast(initialError);
 if (incomingDraft) acceptDraft(incomingDraft);
