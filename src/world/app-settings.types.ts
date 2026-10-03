@@ -16,7 +16,7 @@ export interface AppInspection {
     observation: { state: 'offline' | 'unknown' | 'responding' | 'unreachable'; observedAt: number | null; freshUntil: number | null; evidence: 'connector-offline' | 'not-observed' | 'connector-v1-observation' | 'connector-v2-observation' } };
   actions: { canReserveName: boolean; canEdit: boolean; canPublish: boolean; canPreview: boolean };
 }
-export interface SettingsDraft { name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }
+export interface SettingsDraft { name: string; communityIds: string[]; launchPolicy: 'restricted' | 'anyone'; listed: boolean; activeDomainIds: string[]; exposureConfirmed: boolean; slug: string }
 export interface AppSourceTarget {
   revision: number; digest: string; profile: 'soty.relay-restricted.v1'; hostDeviceId: string; connectorId: string;
   deviceName: string; port: number; entryPath: string;

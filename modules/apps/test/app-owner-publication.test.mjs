@@ -31,15 +31,15 @@ async function fixture(t) {
   const appId = app.app.id;
   const claim = slug => call('apps.domains.claim', { appId, slug, requestId: `claim-${++sequence}`,
     expectedDomainsRevision: call('apps.domains.get', { appId }).revision }).receipt;
-  const publish = (domainIds, launchPolicy = 'anyone') => {
+  const publish = (domainIds, launchPolicy = 'anyone', listed = false) => {
     const current = call('apps.publication.get', { appId });
     return call('apps.publication.update', { appId, requestId: `policy-${++sequence}`, expectedPolicyEpoch: current.policyEpoch,
-      expectedTargetRevision: current.activeTargetRevision, launchPolicy, listed: false, activeDomainIds: domainIds,
+      expectedTargetRevision: current.activeTargetRevision, launchPolicy, listed, activeDomainIds: domainIds,
       ...(launchPolicy === 'anyone' ? { exposureAck: { scope: 'whole-port', targetRevision: current.target.revision,
         targetDigest: current.target.digest, profile: current.target.profile } } : {}) });
   };
   const current = () => call('apps.list').apps.find(item => item.id === appId);
-  return { call, appId, db, claim, publish, current, policy: () => service.policy, setActorCheck(fn) { actorCheck = fn; },
+  return { call, appId, db, claim, publish, current, catalog: () => service.publicCatalog(), policy: () => service.policy, setActorCheck(fn) { actorCheck = fn; },
     reopenWithoutClaims() { service.close(); service = createAppsService({ ...options, namedAppZone: '' }); } };
 }
 
@@ -60,6 +60,28 @@ test('owner projection reports public named policy while canonical and foreign l
   for (const field of ['publication', 'grants', 'port', 'entryPath', 'connectorId', 'deviceName']) assert.equal(Object.hasOwn(shared, field), false, field);
   assert.equal(JSON.stringify(shared).includes(a.origin), false);
   assert.equal(JSON.stringify(shared).includes(b.domainId), false);
+});
+
+test('public catalog includes only listed admitted named entries, without connector or grant metadata', async t => {
+  const f = await fixture(t), alias = f.claim('nfc'), next = f.claim('nfc-two');
+  assert.deepEqual(f.catalog(), { schema: 'soty.app-catalog.v1', apps: [] });
+  f.publish([alias.domainId]); assert.deepEqual(f.catalog(), { schema: 'soty.app-catalog.v1', apps: [] }, 'unlisted public links stay out of discovery');
+  f.publish([alias.domainId], 'anyone', true);
+  const catalog = f.catalog(); assert.equal(catalog.apps.length, 1);
+  const app = catalog.apps[0];
+  assert.equal(app.id, f.appId); assert.equal(app.name, 'Project'); assert.equal(app.state, 'offline');
+  assert.equal(app.entry.domainId, alias.domainId); assert.equal(app.entry.origin, alias.origin);
+  for (const field of ['port', 'connectorId', 'connectorKey', 'hostDeviceId', 'deviceName', 'grants', 'targetDigest']) assert.equal(Object.hasOwn(app, field), false, field);
+  assert.deepEqual(f.call('apps.catalog', {}, outsider), catalog);
+  assert.deepEqual(f.call('apps.list', {}, outsider).apps, [], 'listing never grants the canonical entry');
+  f.reopenWithoutClaims(); assert.equal(f.catalog().apps.length, 1, 'retained named publications survive claim disable');
+  assert.throws(() => f.publish([], 'anyone', true), { code: 'app_publication_domain_required' });
+  f.publish([alias.domainId], 'restricted'); assert.deepEqual(f.catalog(), { schema: 'soty.app-catalog.v1', apps: [] });
+  f.publish([alias.domainId], 'anyone', true);
+  f.call('apps.domains.retire', { appId: f.appId, domainId: alias.domainId, requestId: 'catalog-retire', expectedDomainsRevision: f.call('apps.domains.get', { appId: f.appId }).revision });
+  assert.deepEqual(f.catalog(), { schema: 'soty.app-catalog.v1', apps: [] });
+  f.publish([next.domainId], 'anyone', true);
+  f.call('apps.revoke', { appId: f.appId }); assert.deepEqual(f.catalog(), { schema: 'soty.app-catalog.v1', apps: [] });
 });
 
 test('active count excludes merely claimed, disabled and retired aliases, and retained named policy survives claim disable', async t => {

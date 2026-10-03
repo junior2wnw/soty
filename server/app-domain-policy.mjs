@@ -38,7 +38,8 @@ export function legacyAppFrameSource(template = '') {
 }
 
 /** Configuration admission only: this does not prove DNS ownership or a live TLS deployment. */
-export function validateNamedAppZone({ namedAppZone = '', shellOrigins = [], appOriginTemplate = '' } = {}) {
+export function validateNamedAppZone({ namedAppZone = '', shellOrigins = [], appOriginTemplate = '', domainProfile = 'separate-site' } = {}) {
+  requireValue(['separate-site', 'shell-subdomains-v1'].includes(domainProfile), 'apps_zone_invalid_profile');
   if (namedAppZone === '') return '';
   const zone = baseOrigin(namedAppZone);
   requireValue(shellOrigins.length > 0, 'apps_zone_shell_origins_required');
@@ -53,11 +54,13 @@ export function validateNamedAppZone({ namedAppZone = '', shellOrigins = [], app
   } else {
     requireValue(zone.protocol === 'https:' && !zone.port, 'apps_zone_https_required');
     const domain = registrable(zone.hostname);
+    const shellSubdomains = domainProfile === 'shell-subdomains-v1';
+    if (shellSubdomains) requireValue(shells.some(shell => shell.origin === zone.origin), 'apps_zone_shell_root_required');
     for (const shell of shells) {
       // Changing scheme or port does not separate parent-domain cookies.
       requireValue(!loopback(shell.hostname), 'apps_zone_trusted_sites_required');
-      requireValue(!overlap(zone.hostname, shell.hostname) && registrable(shell.hostname) !== domain,
-        'apps_zone_separate_site_required');
+      if (shellSubdomains && shell.origin === zone.origin) continue;
+      requireValue(!overlap(zone.hostname, shell.hostname) && registrable(shell.hostname) !== domain, 'apps_zone_separate_site_required');
     }
   }
   if (appOriginTemplate) {

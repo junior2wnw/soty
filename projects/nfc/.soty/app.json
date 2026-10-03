@@ -1,0 +1,6 @@
+{
+  "schema": "soty.local-app.v1",
+  "name": "Метки · NFC",
+  "port": 5318,
+  "entryPath": "/"
+}

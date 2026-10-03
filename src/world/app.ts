@@ -24,7 +24,7 @@ import { entityId, entityName, worldColor, worldColors, type WorldApi, type Worl
 
 type GroupTab = 'about' | 'chat' | 'apps';
 type CatalogKind = 'all' | 'people' | 'communities';
-interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId: string; deviceName?: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; publication?: WorldAppRecord['publication']; port?: number; }
+interface AppProjection { id: string; name: string; ownerAccountId: string; hostDeviceId?: string; deviceName?: string; state: string; grants?: { accountIds: string[]; communityIds: string[] }; publication?: WorldAppRecord['publication']; entry?: WorldAppRecord['entry']; port?: number; }
 interface DeviceProjection { hostDeviceId: string; connectorId: string; name: string; online: boolean; claimed: boolean; }
 interface HomeNote { noteId: string; title: string; preview: string; pinned: boolean; updatedAt: number; }
 type HomeSection = 'devices' | 'apps' | 'communities' | 'notes';
@@ -1063,16 +1063,25 @@ class WorldApplication {
 
   private appStateLabel(status: string): string { return appStatusLabel(status); }
 
-  private async loadApps(communityId?: string): Promise<WorldAppRecord[]> {
+  private async loadApps(communityId?: string, includeCatalog = true): Promise<WorldAppRecord[]> {
     const current = this.accountTask(), accountId = this.deskAccount;
     if (!current()) throw Object.assign(new Error('No current account'), { code: 'authentication_required' });
+    const personal = this.options.listApps ? null : (await this.api.request<{ apps: AppProjection[] }>('apps.list',
+      { ...(communityId ? { communityId } : {}), expectedAccountId: accountId })).apps;
+    let publicApps: AppProjection[] = [];
+    if (includeCatalog && !this.options.listApps && !communityId) {
+      try { publicApps = (await this.api.request<{ apps: AppProjection[] }>('apps.catalog', { expectedAccountId: accountId })).apps; }
+      catch { if (current()) this.toast('Общий каталог пока недоступен. Ваши приложения доступны.'); }
+    }
+    const projections = personal ? [...personal.map(app => ({ ...app, ...(publicApps.find(value => value.id === app.id)?.entry
+      ? { entry: publicApps.find(value => value.id === app.id)!.entry } : {}) })), ...publicApps.filter(app => !personal.some(value => value.id === app.id))] : [];
     const apps = this.options.listApps ? await this.options.listApps(communityId)
-      : (await this.api.request<{ apps: AppProjection[] }>('apps.list', { ...(communityId ? { communityId } : {}), expectedAccountId: accountId })).apps
+      : projections
         .map(app => {
-          const record: WorldAppRecord = { appId: app.id, name: app.name, deviceId: app.hostDeviceId,
+          const record: WorldAppRecord = { appId: app.id, name: app.name, ...(app.hostDeviceId ? { deviceId: app.hostDeviceId } : {}),
             ...(app.deviceName ? { deviceLabel: app.deviceName } : {}), status: app.state, ownerAccountId: app.ownerAccountId,
             ...(communityId ? { communityId } : {}), ...(app.grants ? { grants: app.grants } : {}),
-            ...(app.publication ? { publication: app.publication } : {}) };
+            ...(app.publication ? { publication: app.publication } : {}), ...(app.entry ? { entry: app.entry } : {}) };
           return { ...record, audience: describeAppAudience(record, accountId).label };
         });
     if (!current()) throw Object.assign(new Error('Identity changed'), { code: 'ACTIVE_PROFILE_CHANGED' });
@@ -1105,7 +1114,8 @@ class WorldApplication {
   private async openApplication(app: WorldAppRecord, intent?: AppLaunchIntent, resolveMetadata = false): Promise<void> {
     if (this.destroyed || !this.deskAccount) return;
     const previousGroup = this.group?.membership?.state === 'active' && (this.group.communityId === app.communityId || app.grants?.communityIds.includes(this.group.communityId)) ? this.group : null;
-    const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId }, previousGroup?.communityId))!;
+    const launchIntent = intent ?? parseAppLaunchRoute(formatAppLaunchRoute({ appId: app.appId,
+      ...(app.entry ? { domainId: app.entry.domainId, path: app.entry.path } : {}) }, previousGroup?.communityId))!;
     const communityId = launchIntent.communityId;
     const knownGroup = communityId ? [previousGroup, ...this.communities].find(value => value?.communityId === communityId && value.membership?.state === 'active') ?? null : null;
     this.group = knownGroup; this.view = 'mine'; this.renderNavigation(); this.writeRoute(launchIntent.route);
@@ -1146,7 +1156,7 @@ class WorldApplication {
         if (!current() || result.community.membership?.state !== 'active') return;
         this.group = result.community; this.renderNavigation(); this.avatars.setContext(communityId); stage.updateCommunity(result.community);
       }).catch(() => { /* App admission does not grant or require community chat access. */ });
-    if (resolveMetadata) void this.loadApps(communityId).then(apps => {
+    if (resolveMetadata) void this.loadApps(communityId, false).then(apps => {
       if (!current()) return;
       const found = apps.find(value => value.appId === launchIntent.target.appId);
       if (found) { app = found; stage.updateApp(found); }

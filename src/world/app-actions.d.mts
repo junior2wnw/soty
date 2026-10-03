@@ -1,0 +1,1 @@
+export function isAppExternalRequest(event: Pick<MessageEvent, 'data' | 'origin' | 'source'>, context: { frameWindow: Window | null; origin: string | undefined; current: boolean; activated: boolean }): boolean;

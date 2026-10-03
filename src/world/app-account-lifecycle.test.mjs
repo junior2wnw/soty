@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import * as appLaunch from './app-launch.mjs';
 import * as appAudience from './app-audience.mjs';
+import * as appActions from './app-actions.mjs';
 import { createClientWithStorage } from '../../modules/connect/browser/client.mjs';
 import { createConnectService } from '../../modules/connect/server/index.mjs';
 import { validateState } from '../../modules/connect/browser/storage.mjs';
@@ -43,7 +44,7 @@ class ElementPort {
 function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
   const module = { exports: {} }, location = { hash, href: `https://shell.example/${hash}` };
   const document = { activeElement: null, visibilityState: 'visible', addEventListener() {} };
-  const view = { location, Node: ElementPort, matchMedia: () => ({ matches: false, addEventListener() {} }) };
+  const view = Object.assign(new EventTarget(), { location, Node: ElementPort, navigator: { userActivation: { isActive: false } }, matchMedia: () => ({ matches: false, addEventListener() {} }) });
   document.defaultView = view;
   const makeElement = (tagName, className, label) => Object.assign(new ElementPort(), { ownerDocument: document, textContent: label ?? '', tagName, className: className ?? '' });
   const ports = {
@@ -53,6 +54,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     './hex-field': { createHexFieldState: () => ({ fresh: true }) },
     './app-launch.mjs': appLaunch,
     './app-audience.mjs': appAudience,
+    './app-actions.mjs': appActions,
     './application-card': { appTone: () => 'neutral' },
     './app-saved': { mountAppSaved: () => ({ dispose() {}, async refresh() {} }) },
     './app-discussion': { mountAppDiscussion: () => ({ dispose() {}, async refresh() {}, async flush() {}, hasUnsavedChanges: () => false, setVisible() {}, async updateEntry() {}, async updateSelection() {}, focus() {} }) },
@@ -102,6 +104,7 @@ function fixture({ initial = 'account-A', hash = '#mine' } = {}) {
     if (op === 'world.profile.get') return { profile: { profileId: local, displayName: `profile-${local}` } };
     if (op === 'world.community.list') return { communities: [{ communityId: `group-${local}` }] };
     if (op === 'apps.list') return { apps: [{ id: `app-${local}`, name: `project-${local}`, hostDeviceId: `device-${local}`, state: 'enabled', ownerAccountId: local }] };
+    if (op === 'apps.catalog') return { apps: [] };
     if (op === 'notes.list') return { notes: [{ noteId: `note-${local}` }] };
     throw failure('unexpected_fixture_operation');
   } };

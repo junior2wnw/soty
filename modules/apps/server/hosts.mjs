@@ -27,7 +27,7 @@ function matchesOrigin(authority, origin) {
 }
 const within = (hostname, suffix) => hostname === suffix || hostname.endsWith(`.${suffix}`);
 
-export function createHostClassifier({ db, shellOrigins = [] }) {
+export function createHostClassifier({ db, shellOrigins = [], allowShellZoneRoot = false }) {
   const findDomain = db.prepare('SELECT id,app_id,hostname,origin,role,state FROM app_domains WHERE hostname=?');
   const findZones = db.prepare('SELECT kind,suffix FROM app_domain_zones');
   return {
@@ -42,7 +42,8 @@ export function createHostClassifier({ db, shellOrigins = [] }) {
         : { kind: 'unknown-app-zone' };
       const zones = findZones.all();
       const named = zones.some(zone => zone.kind === 'named' && within(authority.hostname, zone.suffix));
-      if (!named && shellOrigins.some(origin => matchesOrigin(authority, origin))) return { kind: 'outside' };
+      if (shellOrigins.some(origin => matchesOrigin(authority, origin)) && (!named || (allowShellZoneRoot
+        && zones.some(zone => zone.kind === 'named' && authority.hostname === zone.suffix)))) return { kind: 'outside' };
       if (zones.some(zone => within(authority.hostname, zone.suffix))) return { kind: 'unknown-app-zone' };
       return { kind: 'outside' };
     },

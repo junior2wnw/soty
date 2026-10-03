@@ -92,13 +92,13 @@ export function createSotyOAuthProvider({ profile, oauth }) {
     if (!Number.isSafeInteger(remaining) || remaining <= 0) failGrant();
     return Math.min(maximum, remaining);
   };
-  const cookiePrefix = profile.secure ? '__Secure-soty_oauth_' : 'soty_oauth_';
+  const cookiePrefix = profile.secure ? '__Host-soty_oauth_' : 'soty_oauth_';
   const provider = new Provider(profile.issuer, {
     adapter: Adapter, clients: profile.clients(), jwks: keyConfiguration.jwks,
     cookies: { keys: keyConfiguration.cookieKeys,
       names: { session: cookiePrefix + 'session', interaction: cookiePrefix + 'interaction', resume: cookiePrefix + 'resume' },
-      long: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: '/oauth', maxAge: 600000 },
-      short: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: '/oauth', maxAge: 600000 } },
+      long: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: profile.secure ? '/' : '/oauth', maxAge: 600000 },
+      short: { httpOnly: true, secure: profile.secure, sameSite: 'lax', path: profile.secure ? '/' : '/oauth', maxAge: 600000 } },
     responseTypes: ['code'], scopes: [], claims: {}, clientAuthMethods: ['none'], pkce: { required: () => true },
     clockTolerance: 0, acceptQueryParamAccessTokens: false, clientBasedCORS: () => false,
     findAccount: async (_ctx, accountId) => ({ accountId, claims: async () => ({ sub: accountId }) }),

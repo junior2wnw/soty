@@ -21,14 +21,14 @@ import { createSavedRegistry, savedOperations } from './saved.mjs';
 import { createDiscussionRegistry, discussionOperations } from './discussions.mjs';
 import { createEngagementTransaction } from './engagement-transaction.mjs';
 
-export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations]);
+export const operations = new Set(['apps.devices', 'apps.claim', 'apps.list', 'apps.catalog', 'apps.register', 'apps.update', 'apps.revoke', 'apps.launch', 'apps.entry.get', 'apps.inspect', 'apps.source.promote', 'apps.source.history', ...domainOperations, ...publicationOperations, ...savedOperations, ...discussionOperations]);
 const cookieName = 'soty_app_session';
 const accountSessionMs = 3_600_000, publicLeaseMs = 30_000, publicStreams = 24;
 const secret = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest('hex');
 const equalDigest = (a, b) => typeof a === 'string' && typeof b === 'string' && /^[a-f0-9]{64}$/u.test(a) && /^[a-f0-9]{64}$/u.test(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 
-export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], actorActive = () => false,
+export function createAppsService({ dataDir = 'data', databasePath = join(dataDir, 'apps', 'registry.sqlite'), appOriginTemplate = '', namedAppZone = '', domainLimits = {}, validateNamedZone, shellOrigins = [], allowShellZoneRoot = false, actorActive = () => false,
   canAccessCommunity = () => false, isGroupAdmin = () => false, activeCommunityIds, subscribeMembership, withAuthorityFence,
   readCommunityAuthority, discussionLimits, webSocketLiveness, authenticateConnector = async () => false, now = Date.now, blockedPorts = [], connectorAuthCheckMs = 10_000, accessAuditMs = 10_000 } = {}) {
   // Trusted host/test settings may shorten deadlines, never disable or widen
@@ -38,22 +38,22 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   assertApps(origins.size > 0, 'apps_shell_origins_required');
   const template = validateTemplate(appOriginTemplate, origins);
   const namedZone = normalizeNamedAppZone(namedAppZone), limits = normalizeDomainLimits(domainLimits);
-  validateNamedOrigins([namedZone], { shellOrigins: [...origins], validateNamedZone });
+  validateNamedOrigins([namedZone], { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
   let domains, publications;
   try {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
     const schema = inspectAppsSchema(db);
-    if (['v2', 'v3', 'v4', 'v5', 'v6'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone });
+    if (['v2', 'v3', 'v4', 'v5', 'v6'].includes(schema)) validateNamedOrigins(readNamedOrigins(db), { shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot });
     migrateAppsSchema(db, { legacyTemplate: template, now });
     publications = createPublicationRegistry({ db, now, assertActor, canUse, onChanged: event => invalidateAccess({ appId: event.appId }) });
     domains = createDomainRegistry({ db, now, assertActor, legacyTemplate: template, namedAppZone: namedZone, domainLimits: limits,
-      shellOrigins: [...origins], validateNamedZone, onRetireInTransaction: publications.retireInTransaction,
+      shellOrigins: [...origins], validateNamedZone, allowShellZoneRoot, onRetireInTransaction: publications.retireInTransaction,
       onPolicyChanged: publications.notifyChanged });
     db.exec('PRAGMA journal_mode=WAL;');
   } catch (error) { db.close(); throw error; }
-  const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins] });
+  const hostClassifier = createHostClassifier({ db, shellOrigins: [...origins], allowShellZoneRoot });
   const channels = new Map(), tickets = new Map(), sessions = new Map(), live = new Map();
   let inspection, saved, discussions, entryRead;
   try {
@@ -157,6 +157,34 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
     // A user companion is preferable for OpenCode; caller can select a specific
     // connector when it needs machine-scope terminal capabilities instead.
     return matches.find(item => !item.connectorId.endsWith(':machine')) || matches[0];
+  }
+  function publicCatalog() {
+    assertApps(!closed, 'apps_closed', 503);
+    const rows = db.prepare(`SELECT a.* FROM local_apps a JOIN app_publications p
+      ON p.app_id=a.id AND p.owner_account_id=a.owner_account_id
+      WHERE a.state='enabled' AND p.launch_policy='anyone' AND p.listed=1
+      ORDER BY a.created_at DESC,a.id LIMIT 100`).all();
+    const apps = [];
+    for (const app of rows) {
+      const address = db.prepare(`SELECT ad.id,ad.origin FROM app_publication_domains pd
+        JOIN app_domains ad ON ad.id=pd.domain_id AND ad.app_id=pd.app_id AND ad.owner_account_id=pd.owner_account_id
+        JOIN app_domain_zones z ON z.id=ad.zone_id AND z.kind='named'
+        WHERE pd.app_id=? AND pd.owner_account_id=? AND ad.role='alias' AND ad.state='bound'
+        ORDER BY ad.created_at,ad.id LIMIT 1`).get(app.id, app.owner_account_id);
+      if (!address) continue;
+      let decision; try { decision = publications.decideAccess({ domainId: address.id, origin: address.origin }); } catch { continue; }
+      if (decision.subject !== 'public') continue;
+      const row = db.prepare('SELECT * FROM app_runtime_targets WHERE app_id=? AND revision=? AND owner_account_id=?')
+        .get(app.id, decision.targetRevision, app.owner_account_id);
+      if (!row || row.digest !== decision.targetDigest) continue;
+      const target = { connectorKey: row.connector_key, revision: row.revision, digest: row.digest, entryPath: row.entry_path };
+      const observed = inspectSource({ app, target });
+      apps.push({ id: app.id, name: app.name, ownerAccountId: app.owner_account_id,
+        state: ({ offline: 'offline', unknown: 'starting', responding: 'ready', unreachable: 'stopped' })[observed.state],
+        publication: { launchPolicy: 'anyone', activeNamedAddressCount: 1 },
+        entry: { domainId: address.id, origin: address.origin, path: target.entryPath } });
+    }
+    return { schema: 'soty.app-catalog.v1', apps };
   }
   function publicApp(app, actor) {
     // One statement observes the current app, target and publication together.
@@ -331,6 +359,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
       channel.claimDigest = ''; channel.claimExpiresAt = 0; send(channel, { type: 'claimed' }); sync(channel);
       return { device: deviceProjection(binding(channel.key)) };
     }
+    if (op === 'apps.catalog') { exact(args, []); return publicCatalog(); }
     if (op === 'apps.list') {
       exact(args, ['communityId']); const community = args.communityId === undefined ? '' : textId(args.communityId);
       if (community) assertApps(canAccessCommunity(actor.accountId, community) === true, 'apps_access_denied', 403);
@@ -496,7 +525,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   }
   function setPolicy(res, origin) {
     const frameOrigins = [...origins].join(' ');
-    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin`);
+    res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; frame-ancestors ${frameOrigins}; sandbox allow-scripts allow-forms allow-same-origin allow-downloads`);
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=()');
     res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'no-referrer'); res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Origin-Agent-Cluster', '?1');
@@ -806,7 +835,7 @@ export function createAppsService({ dataDir = 'data', databasePath = join(dataDi
   function allowsTlsDomain(domain) {
     return hostClassifier.allowsTlsDomain(domain);
   }
-  return { operations, execute, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
+  return { operations, execute, publicCatalog, sourcePreparationExtension, handleRequest, handleUpgrade, invalidateAccess, invalidateConnector, resolveOwnedDevice, allowsTlsDomain,
     policy: Object.freeze({
       decideAccess(value) { assertApps(!closed, 'apps_closed', 503); return publications.decideAccess(value); },
       recheckAccess(value, options) { assertApps(!closed, 'apps_closed', 503); return publications.recheckAccess(value, options); },

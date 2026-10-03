@@ -5,6 +5,7 @@ import { createAppLauncher, formatAppLaunchRoute, parseAppLaunchRoute, sameAppLa
 import { mountAppSaved, type AppSavedHandle } from './app-saved';
 import { mountAppDiscussion, type AppDiscussionHandle } from './app-discussion';
 import type { WorldApi, WorldAppRecord } from './types';
+import { isAppExternalRequest } from './app-actions.mjs';
 
 export interface AppStageOptions {
   api: WorldApi; accountId: string; app: WorldAppRecord; intent: AppLaunchIntent;
@@ -169,7 +170,7 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
       const url = await launcher.launch();
       if (!url || !current()) return;
       captureEntry();
-      const frame = el('iframe', 'sa-frame'); frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin'); frame.referrerPolicy = 'no-referrer'; frame.src = url;
+      const frame = el('iframe', 'sa-frame'); frame.title = app.name; frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-downloads'); frame.referrerPolicy = 'no-referrer'; frame.src = url;
       runtime.replaceChildren(frame);
     } catch (reason) {
       if (!current()) return;
@@ -243,6 +244,10 @@ export function mountAppStage(host: HTMLElement, options: AppStageOptions): AppS
   host.ownerDocument.addEventListener('keydown', event => { if (event.key === 'Escape' && !moreBody.hidden) { event.preventDefault(); closeMore(true); } }, { signal: controller.signal });
   host.ownerDocument.addEventListener('visibilitychange', showPanel, { signal: controller.signal });
   narrow.addEventListener('change', showPanel, { signal: controller.signal });
+  view.addEventListener('message', event => {
+    if (isAppExternalRequest(event, { frameWindow: runtime.querySelector('iframe')?.contentWindow ?? null,
+      origin: selectedEntry?.origin, current: current(), activated: view.navigator.userActivation?.isActive === true })) external.click();
+  }, { signal: controller.signal });
   updateApp(app);
   // Start admission synchronously before the owner asks for optional metadata.
   const ready = initial.presentation?.administrative

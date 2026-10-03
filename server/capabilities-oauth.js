@@ -14,7 +14,7 @@ const AUTHORIZE_FIELDS = new Set(['client_id', 'redirect_uri', 'response_type', 
 const epoch = () => Math.floor(Date.now() / 1000);
 
 function browserBinding(profile) {
-  const cookieName = (profile.secure ? '__Secure-' : '') + 'soty_oauth_browser';
+  const cookieName = (profile.secure ? '__Host-' : '') + 'soty_oauth_browser';
   const keys = profile.providerKeys().cookieKeys;
   const mac = (body, key) => createHmac('sha256', key).update('soty.oauth.browser.v1\0' + body).digest('base64url');
   function read(req) {
@@ -40,7 +40,7 @@ function browserBinding(profile) {
       // cookie lifetime. Keep the same binding for other tabs, but refresh its
       // signed timestamp; durable interaction deadlines never move.
       const nonce = read(req) || randomBytes(32).toString('base64url'), body = nonce + '.' + epoch();
-      res.append('Set-Cookie', `${cookieName}=${body}.${mac(body, keys[0])}; Path=/oauth; Max-Age=600; HttpOnly; SameSite=Lax${profile.secure ? '; Secure' : ''}`);
+      res.append('Set-Cookie', `${cookieName}=${body}.${mac(body, keys[0])}; Path=${profile.secure ? '/' : '/oauth'}; Max-Age=600; HttpOnly; SameSite=Lax${profile.secure ? '; Secure' : ''}`);
       return nonce;
     },
   });

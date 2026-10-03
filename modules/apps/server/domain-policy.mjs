@@ -79,12 +79,12 @@ export function namedZone(origin) {
   return { kind: 'named', template: `${url.protocol}//{slug}.${url.host}`, suffix: url.hostname, scheme: url.protocol.slice(0, -1), port: url.port };
 }
 
-export function validateNamedOrigins(values, { shellOrigins = [], validateNamedZone = () => {} } = {}) {
+export function validateNamedOrigins(values, { shellOrigins = [], validateNamedZone = () => {}, allowShellZoneRoot = false } = {}) {
   assertApps(typeof validateNamedZone === 'function', 'invalid_named_app_zone_validator');
   const shellHosts = shellOrigins.map(value => new URL(value).hostname);
   for (const value of new Set(values.filter(Boolean))) {
     const origin = normalizeNamedAppZone(value), hostname = new URL(origin).hostname;
-    assertApps(!shellHosts.some(host => host === hostname || host.endsWith(`.${hostname}`)), 'apps_named_zone_shell_overlap', 409);
+    assertApps(!shellHosts.some(host => (!allowShellZoneRoot && host === hostname) || host.endsWith(`.${hostname}`)), 'apps_named_zone_shell_overlap', 409);
     const verdict = validateNamedZone(origin);
     assertApps(verdict !== false && !(verdict && typeof verdict.then === 'function'), 'invalid_named_app_zone_validator');
   }

@@ -1,0 +1,15 @@
+{
+  "name": "soty-nfc",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5318 --strictPort",
+    "build": "vite build",
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": { "qrcode": "1.5.4" },
+  "devDependencies": { "vite": "7.3.2" },
+  "engines": { "node": ">=22.12.0" }
+}

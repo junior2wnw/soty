@@ -18,7 +18,7 @@ export function readNamedOrigins(db) {
   });
 }
 
-export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', domainLimits = {}, shellOrigins = [], validateNamedZone,
+export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTemplate = '', namedAppZone = '', domainLimits = {}, shellOrigins = [], validateNamedZone, allowShellZoneRoot = false,
   onRetireInTransaction, onPolicyChanged }) {
   assertApps(typeof assertActor === 'function', 'apps_actor_validator_required', 500);
   assertApps(typeof onRetireInTransaction === 'function' && typeof onPolicyChanged === 'function', 'apps_policy_validator_required', 500);
@@ -32,7 +32,7 @@ export function createDomainRegistry({ db, now = Date.now, assertActor, legacyTe
   }
   let zoneId = null;
   transaction(() => {
-    validateNamedOrigins([...readNamedOrigins(db), zoneOrigin], { shellOrigins, validateNamedZone });
+    validateNamedOrigins([...readNamedOrigins(db), zoneOrigin], { shellOrigins, validateNamedZone, allowShellZoneRoot });
     if (!zoneOrigin) return;
     const zone = namedZone(zoneOrigin);
     const existing = db.prepare("SELECT * FROM app_domain_zones WHERE kind='named'").all();

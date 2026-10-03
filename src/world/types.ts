@@ -67,6 +67,7 @@ export interface WorldAppRecord {
   status: string;
   audience?: string;
   publication?: WorldAppPublication;
+  entry?: { domainId: string; origin: string; path: string };
   symbol?: string;
   color?: string;
   ownerAccountId?: string;

@@ -69,7 +69,7 @@ test('actual controller settings update and subsequent list refresh use the same
     grants, publication: app.publication };
   const dialogs = [];
   Object.assign(controller, { deskAccount: owner, accountGeneration: 1, screenSequence: 1, destroyed: false, communities: [], apps: [], options: {},
-    api: { request: async op => { assert.equal(op, 'apps.list'); return { apps: [projection] }; } },
+    api: { request: async op => { if (op === 'apps.catalog') return { apps: [] }; assert.equal(op, 'apps.list'); return { apps: [projection] }; } },
     dialog() { const dialog = { element: el('dialog'), body: el('div'), close() {} }; dialogs.push(dialog); return dialog; } });
   controller.apps = await controller.loadApps();
   assert.equal(controller.apps[0].audience, 'Именные ссылки: всем');

@@ -66,7 +66,7 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
     const panel = dialog('Подключить устройство', () => { closed = true; });
     const status = el('p', 'sw-muted', 'Соединяемся с вашим коннектором…'); status.setAttribute('role', 'status');
     const body = el('div', 'sw-stack'); body.append(status); panel.body.append(body);
-    let busy = false;
+    let busy = false, forwardedPort: number | null = null;
     const connect = async () => {
       if (busy || closed) return; busy = true;
       let stage: 'service' | 'connector' | 'claim' = 'service';
@@ -75,7 +75,7 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
         const response = await fetch('/api/apps/capabilities', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
         if (!response.ok) throw new TypeError('Network unavailable');
         const capabilities = await response.json() as { localConnectorOrigin: string };
-        const local = new URL(capabilities.localConnectorOrigin);
+        const local = new URL(forwardedPort ? `http://127.0.0.1:${forwardedPort}` : capabilities.localConnectorOrigin);
         if (local.protocol !== 'http:' || local.hostname !== '127.0.0.1' || local.pathname !== '/' || local.search || local.hash || local.username || local.password) throw new Error('invalid_local_endpoint');
         stage = 'connector';
         const claimed = await fetch(new URL('/apps/claim', local), {
@@ -105,14 +105,26 @@ export function createAppActions(client: ConnectClient, refresh: () => Promise<v
         const downloads = el('div', 'sw-row');
         downloads.append(installer(windows, !mobile), installer(!windows));
         body.replaceChildren(status, el('p', 'sw-muted', 'Установите коннектор на этом компьютере, откройте его и нажмите «Повторить».'),
-          button('Повторить', 'refresh', '', () => { void connect(); }), downloads);
+          button('Повторить', 'refresh', '', () => { void connect(); }),
+          button('Другое подключение', 'settings', 'sw-button-quiet', forwardedConnection), downloads);
         if (openAccount) body.append(button('Открыть мой профиль на другом устройстве', 'phone', 'sw-button-quiet', () => { panel.close(); void openAccount(); }));
       } finally { busy = false; }
     };
     const choice = (title: string, detail: string, symbol: string, action: () => void) => {
       const target = el('button', 'sw-connect-choice'); target.type = 'button'; const copy = el('span'); copy.append(el('strong', '', title), el('small', '', detail)); target.append(icon(symbol), copy, icon('next')); target.addEventListener('click', action); return target;
     };
+    function forwardedConnection(): void {
+      const form = el('form', 'sw-stack'), port = textInput('', 'Например, 49427', 5);
+      port.type = 'number'; port.min = '1024'; port.max = '65535'; port.required = true;
+      const submit = button('Подключить сервер', 'laptop', 'sw-button-primary'); submit.type = 'submit';
+      form.append(el('p', 'sw-muted', 'Для сервера с SSH подключите его коннектор через локальный туннель. Соты обращаются только к вашему компьютеру, а туннель передаёт запрос серверу.'),
+        labeledField('Локальный порт туннеля', port, 'Сам коннектор на сервере должен быть подключён к этому адресу Сот.'), submit);
+      form.addEventListener('submit', event => { event.preventDefault(); if (!form.reportValidity()) return; const value = Number(port.value);
+        if (!Number.isSafeInteger(value) || value < 1024 || value > 65535) return; forwardedPort = value; void connect(); });
+      body.replaceChildren(form); port.focus();
+    }
     body.replaceChildren(choice('Подключить этот компьютер', 'Открывать его приложения и управлять им из Сот', 'laptop', () => { void connect(); }));
+    body.append(choice('Подключить сервер по SSH', 'Для проекта, который уже работает на сервере', 'server', forwardedConnection));
     if (openAccount) body.append(choice('Мой профиль на другом устройстве', 'Те же записки, контакты и сообщества — по QR', 'phone', () => { panel.close(); void openAccount(); }));
     if (/Android|iPhone|iPad/i.test(navigator.userAgent)) body.append(el('p', 'sw-muted', 'Чтобы подключить компьютер, откройте Соты на нём. На телефоне можно открыть свой профиль по QR.'));
   }

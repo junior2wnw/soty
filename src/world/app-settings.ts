@@ -381,7 +381,10 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
   const ackInput = keyed(el('input'), 'public-ack'), ackText = el('span'); ackInput.type = 'checkbox';
   ackInput.addEventListener('change', () => { model?.patch({ exposureConfirmed: ackInput.checked }); render(); }); ack.append(ackInput, ackText);
   const noPublicAliases = el('p', 'sw-muted', 'Сначала отметьте хотя бы один именной адрес.');
-  publicDetails.append(el('p', 'sw-muted', 'Открыть сможет любой, кто узнает или угадает адрес.'), ack, noPublicAliases);
+  const listing = el('label', 'sw-app-settings-ack'), listingInput = keyed(el('input'), 'public-listing'); listingInput.type = 'checkbox';
+  listingInput.addEventListener('change', () => { model?.patch({ listed: listingInput.checked }); render(); });
+  listing.append(listingInput, el('span', '', 'Показывать всем в разделе приложений Сот'));
+  publicDetails.append(el('p', 'sw-muted', 'Открыть сможет любой, кто узнает или угадает адрес.'), listing, ack, noPublicAliases);
   const legacyListed = el('p', 'sw-muted sw-app-settings-hint');
   const publish = keyed(button('Сохранить доступ по адресам', 'check', 'sw-button-primary', () => {
     if (!model) return; void perform(async () => { const args = appPublicationArgs(model!.base('publication'), model!.read().draft, accountId); await mutation('apps.publication.update', args); });
@@ -647,7 +650,8 @@ export function mountAppSettings(options: AppSettingsOptions): { dispose(): void
     const base = model.base('publication');
     text(ackText, `Открыть всем весь проект на устройстве «${base.source.deviceName}», порт ${base.source.port}, включая его страницы и API.`);
     noPublicAliases.hidden = draft.activeDomainIds.length > 0;
-    legacyListed.hidden = !snapshot.publication.listed; text(legacyListed, draft.launchPolicy === 'restricted' ? 'Прежняя отметка каталога будет снята вместе с ограничением доступа.' : 'Прежняя отметка каталога сохранится. Появление в каталоге здесь не обещается.');
+    listingInput.checked = draft.listed; listingInput.disabled = !snapshot.actions.canPublish;
+    legacyListed.hidden = !snapshot.publication.listed; text(legacyListed, draft.launchPolicy === 'restricted' ? 'Приложение исчезнет из общего списка после сохранения ограниченного доступа.' : 'Приложение опубликовано в общем списке.');
     disable(publish, blocked || !snapshot.actions.canPublish || !state.publicationDirty || state.publicationConflict || (draft.launchPolicy === 'anyone' && (!draft.exposureConfirmed || !draft.activeDomainIds.length)));
     text(groupsSummary, `Выбранные люди и группы · ${snapshot.app.grants.accountIds.length + snapshot.app.grants.communityIds.length}`);
     text(contactsHint, snapshot.app.grants.accountIds.length ? `Контактов с доступом: ${snapshot.app.grants.accountIds.length}. Их доступ сохраняется.` : 'Доступ владельца сохраняется всегда.'); publicGroupsHint.hidden = snapshot.publication.launchPolicy !== 'anyone';

@@ -213,7 +213,7 @@ export function appPublicationArgs(snapshot, draft, accountId) {
   if (draft.launchPolicy === 'anyone') check(draft.exposureConfirmed === true && activeDomainIds.length > 0, 'app_exposure_ack_required');
   return normalize('apps.publication.update', { appId: snapshot.app.id, expectedAccountId: accountId,
     expectedPolicyEpoch: snapshot.publication.policyEpoch, expectedTargetRevision: snapshot.source.revision,
-    launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? snapshot.publication.listed : false, activeDomainIds,
+    launchPolicy: draft.launchPolicy, listed: draft.launchPolicy === 'anyone' ? (draft.listed ?? snapshot.publication.listed) : false, activeDomainIds,
     ...(draft.launchPolicy === 'anyone' ? { exposureAck: { scope: 'whole-port', targetRevision: snapshot.source.revision,
       targetDigest: snapshot.source.digest, profile: snapshot.source.profile } } : {}),
   });
@@ -224,12 +224,13 @@ export function appPublicationArgs(snapshot, draft, accountId) {
 export function createAppSettingsDraftState(initial) {
   let snapshot = clone(initial), nameBase = clone(initial), grantsBase = clone(initial), publicationBase = clone(initial);
   const freshDraft = value => ({ name: value.app.name, communityIds: [...value.app.grants.communityIds],
-    launchPolicy: value.publication.launchPolicy, activeDomainIds: [...value.publication.activeDomainIds], exposureConfirmed: false, slug: '' });
+    launchPolicy: value.publication.launchPolicy, listed: value.publication.listed, activeDomainIds: [...value.publication.activeDomainIds], exposureConfirmed: false, slug: '' });
   let draft = freshDraft(initial);
   const idsEqual = (a, b) => same([...a].sort(), [...b].sort());
   const nameDirty = () => draft.name !== nameBase.app.name;
   const grantsDirty = () => !idsEqual(draft.communityIds, grantsBase.app.grants.communityIds);
   const publicationDirty = () => draft.launchPolicy !== publicationBase.publication.launchPolicy
+    || (draft.launchPolicy === 'anyone' && draft.listed !== publicationBase.publication.listed)
     || !idsEqual(draft.activeDomainIds, publicationBase.publication.activeDomainIds);
   const unavailableDomainIds = () => draft.activeDomainIds.filter(id => !snapshot.addresses.aliases.some(alias => alias.id === id && alias.state === 'bound'));
   return {
@@ -241,7 +242,7 @@ export function createAppSettingsDraftState(initial) {
         || publicationBase.source.revision !== snapshot.source.revision || publicationBase.source.digest !== snapshot.source.digest)) }); },
     base(kind) { check(['name', 'grants', 'publication'].includes(kind)); return clone(kind === 'name' ? nameBase : kind === 'grants' ? grantsBase : publicationBase); },
     patch(value) {
-      check(value && Object.keys(value).every(key => ['name', 'communityIds', 'launchPolicy', 'activeDomainIds', 'exposureConfirmed', 'slug'].includes(key)));
+      check(value && Object.keys(value).every(key => ['name', 'communityIds', 'launchPolicy', 'listed', 'activeDomainIds', 'exposureConfirmed', 'slug'].includes(key)));
       draft = { ...draft, ...clone(value) };
     },
     observe(next, completed) {
@@ -249,6 +250,7 @@ export function createAppSettingsDraftState(initial) {
       const nameDone = completed?.kind === 'name' && draft.name.trim() === completed.args.name;
       const grantsDone = completed?.kind === 'grants' && idsEqual(draft.communityIds, completed.args.grants.communityIds);
       const pubDone = completed?.kind === 'publication' && draft.launchPolicy === completed.args.launchPolicy
+        && (draft.launchPolicy !== 'anyone' || draft.listed === completed.args.listed)
         && idsEqual(draft.activeDomainIds, completed.args.activeDomainIds)
         && (draft.launchPolicy !== 'anyone' || (draft.exposureConfirmed && publicationBase.source.digest === completed.args.exposureAck?.targetDigest));
       if (snapshot.source.revision !== next.source.revision || snapshot.source.digest !== next.source.digest
@@ -256,12 +258,13 @@ export function createAppSettingsDraftState(initial) {
       if (!nameDirty() || nameDone) { nameBase = clone(next); draft.name = next.app.name; }
       if (!grantsDirty() || grantsDone) { grantsBase = clone(next); draft.communityIds = [...next.app.grants.communityIds]; }
       if (!publicationDirty() || pubDone) {
-        publicationBase = clone(next); draft.launchPolicy = next.publication.launchPolicy; draft.activeDomainIds = [...next.publication.activeDomainIds]; draft.exposureConfirmed = false;
+        publicationBase = clone(next); draft.launchPolicy = next.publication.launchPolicy; draft.listed = next.publication.listed; draft.activeDomainIds = [...next.publication.activeDomainIds]; draft.exposureConfirmed = false;
       } else publicationBase.addresses = clone(next.addresses); // New claims are selectable; the policy/target CAS is not rebased.
       snapshot = clone(next);
     },
     reset() { const slug = draft.slug; nameBase = clone(snapshot); grantsBase = clone(snapshot); publicationBase = clone(snapshot); draft = { ...freshDraft(snapshot), slug }; },
     resetPublication() { publicationBase = clone(snapshot); draft.launchPolicy = snapshot.publication.launchPolicy;
+      draft.listed = snapshot.publication.listed;
       draft.activeDomainIds = [...snapshot.publication.activeDomainIds]; draft.exposureConfirmed = false; },
   };
 }

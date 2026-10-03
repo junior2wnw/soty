@@ -20,12 +20,14 @@ import { startNativeRecovery } from './capabilities-recovery.js';
 import { createOAuthHostProfile, reserveOAuthNamespaces } from './capabilities-oauth-profile.js';
 import { attachCapabilitiesOAuth } from './capabilities-oauth.js';
 import { startOAuthCleanup } from './capabilities-oauth-cleanup.js';
+import { readAppHostingConfig } from './app-hosting-config.mjs';
 import { attachCapabilitiesMcp } from './capabilities-mcp.js';
 
-export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE || '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN || '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
+export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins, gonka, capabilityAudience = '', nativeNotesEnabled = false, oauth, appHosting = readAppHostingConfig(), appOriginTemplate = process.env.SOTY_APP_ORIGIN_TEMPLATE || '', namedAppZone = process.env.SOTY_NAMED_APP_ZONE ?? appHosting.namedAppZone ?? '', discoveryOrigin = process.env.SOTY_DISCOVERY_ORIGIN ?? appHosting.discoveryOrigin ?? '', localConnectorPort = Number(process.env.SOTY_LOCAL_CONNECTOR_PORT || 49424) } = {}) {
   const shellOrigins = connectAllowedOrigins(connectOrigins);
   // Validate before opening any storage: a rejected configuration cannot migrate data.
-  const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate });
+  const domainProfile = appHosting.domainProfile || 'separate-site';
+  const admittedNamedZone = validateNamedAppZone({ namedAppZone, shellOrigins, appOriginTemplate, domainProfile });
   const admittedDiscoveryOrigin = validateDiscoveryOrigin({ discoveryOrigin, shellOrigins });
   const admittedCapabilityAudience = validateCapabilityAudience({ audience: capabilityAudience, shellOrigins, enabled: nativeNotesEnabled });
   const oauthProfile = createOAuthHostProfile(oauth, { shellOrigins, audience: admittedCapabilityAudience });
@@ -56,7 +58,7 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' blob: data:",
       "font-src 'self'",
-      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:49424 http://localhost:49424 ${localConnectorOrigin}${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
+      `connect-src 'self' wss://xn--n1afe0b.online http://127.0.0.1:* http://localhost:49424 ${localConnectorOrigin}${devConnectSrc ? ` ${devConnectSrc}` : ""}`,
       "manifest-src 'self'",
       "worker-src 'self'",
       `frame-src 'self'${[...new Set([legacyFrameSource, ...(app.locals.appsService?.frameSources() || [])].filter(Boolean))].map(origin => ` ${origin}`).join('')}`,
@@ -121,7 +123,8 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     });
   } catch (error) { failedStart(); throw error; }
   try { apps = createAppsService({ dataDir, appOriginTemplate, namedAppZone: admittedNamedZone, shellOrigins,
-    validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate }),
+    allowShellZoneRoot: domainProfile === 'shell-subdomains-v1',
+    validateNamedZone: zone => validateNamedAppZone({ namedAppZone: zone, shellOrigins, appOriginTemplate, domainProfile }),
     actorActive: actor => connect?.isActorActive(actor) === true,
     canAccessCommunity: (accountId, communityId) => world.canAccessCommunity(accountId, communityId),
     activeCommunityIds: accountId => world.activeCommunityIds(accountId),
@@ -140,6 +143,10 @@ export function createHttpApp(distDir, { dataDir, trafficTunnel, connectOrigins,
     inferenceReady: () => connectors.modelProxy.ready === true,
     resolveOwnedDevice: (actor, ids) => apps.resolveOwnedDevice(actor, ids.hostDeviceId, ids.connectorId) });
   app.locals.appsService = apps;
+  app.get('/api/apps/catalog', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store'); res.setHeader('Access-Control-Allow-Origin', '*');
+    try { res.json(apps.publicCatalog()); } catch { res.status(503).json({ ok: false, code: 'apps_catalog_unavailable' }); }
+  });
   // Public, content-free permission check for the TLS edge. Only a registered
   // application on the configured isolated origin can request a certificate.
   app.get('/api/apps/tls-allow', (req, res) => {
