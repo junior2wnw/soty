@@ -327,7 +327,7 @@ function snapshotCard(snapshot) {
   }
   if (snapshot.records) for (const child of snapshot.records) card.append(snapshotCard(child));
   if (snapshot.recordType === 'url' && /^https?:\/\//i.test(snapshot.text || '')) {
-    try { const url = new URL(snapshot.text); if (!url.username && !url.password) { const link = el('a', 'text-button', 'Открыть ссылку'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; card.append(link); } } catch { /* Never launch malformed input. */ }
+    try { const url = new URL(snapshot.text); if (!url.username && !url.password) { const link = el('a', 'text-button', 'Открыть ссылку'); link.href = url.href; link.rel = 'noopener noreferrer'; card.append(link); } } catch { /* Never launch malformed input. */ }
   }
   return card;
 }
@@ -393,13 +393,14 @@ async function share() {
   checkRow.append(check, el('span', '', 'Передать подготовленное содержимое'));
   const privacy = el('p', 'muted small', 'По умолчанию QR содержит только адрес приложения.'), error = el('p', 'validation'); error.setAttribute('role', 'alert');
   const linkText = el('input', 'input share-link'); linkText.readOnly = true; linkText.setAttribute('aria-label', 'Ссылка для телефона');
-  let link = new URL('/', location.href).href, revision = 0;
+  const appAddress = 'https://nfc.xn--n1afe0b.online/';
+  let link = appAddress, revision = 0;
   const update = async () => {
     const request = ++revision; error.textContent = '';
-    try { link = check.checked ? draftLink(location.href, draft) : new URL('/', location.href).href; linkText.value = link; privacy.textContent = check.checked ? 'В этой ссылке есть содержимое шаблона, включая пароль Wi-Fi, если вы его указали. Отправляйте её только нужному человеку.' : 'QR содержит только адрес приложения. Ваши данные с меток в него не входят.';
+    try { link = check.checked ? draftLink(appAddress, draft) : appAddress; linkText.value = link; privacy.textContent = check.checked ? 'В этой ссылке есть содержимое шаблона, включая пароль Wi-Fi, если вы его указали. Отправляйте её только нужному человеку.' : 'QR содержит только адрес приложения. Ваши данные с меток в него не входят.';
       const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, errorCorrectionLevel: 'M', color: { dark: '#171926', light: '#ffffff' } }); if (request !== revision || !dialog.isConnected) return;
       const image = el('img'); image.src = qr; image.alt = 'QR-код для открытия NFC-приложения на телефоне'; qrHost.replaceChildren(image);
-    } catch (reason) { if (request !== revision || !dialog.isConnected) return; check.checked = false; link = new URL('/', location.href).href; linkText.value = link; privacy.textContent = 'QR содержит только адрес приложения. Шаблон можно скачать файлом.'; const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, color: { dark: '#171926', light: '#ffffff' } }); if (request === revision && dialog.isConnected) { const image = el('img'); image.src = qr; image.alt = 'QR-код приложения без содержимого шаблона'; qrHost.replaceChildren(image); error.textContent = reason.message; } }
+    } catch (reason) { if (request !== revision || !dialog.isConnected) return; check.checked = false; link = appAddress; linkText.value = link; privacy.textContent = 'QR содержит только адрес приложения. Шаблон можно скачать файлом.'; const qr = await QRCode.toDataURL(link, { width: 240, margin: 2, color: { dark: '#171926', light: '#ffffff' } }); if (request === revision && dialog.isConnected) { const image = el('img'); image.src = qr; image.alt = 'QR-код приложения без содержимого шаблона'; qrHost.replaceChildren(image); error.textContent = reason.message; } }
   };
   check.addEventListener('change', () => void update());
   const controls = el('div', 'action-row'); controls.append(button('Скопировать ссылку', 'copy', 'button button-primary', () => void navigator.clipboard.writeText(link).then(() => toast('Ссылка скопирована.')).catch(() => { linkText.focus(); linkText.select(); toast('Выделили ссылку. Скопируйте её вручную.'); })), button('Скачать шаблон', 'download', 'button', () => { try { compileDraft(draft); download(draft); } catch (reason) { error.textContent = reason.message; } }));
