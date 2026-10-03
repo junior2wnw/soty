@@ -9,7 +9,7 @@ export function nfcAvailability({ secure = true, embedded = false, Reader, userA
 }
 export function nfcError(error) {
   const messages = {
-    NotAllowedError: 'Телефон не разрешил эту операцию. Проверьте разрешение NFC, защиту метки и разрешение на перезапись.',
+    NotAllowedError: 'Разрешите этому сайту доступ к NFC в настройках браузера и повторите действие.',
     NotSupportedError: 'Телефон или метка не поддерживает эту операцию. Попробуйте обычную перезаписываемую NDEF-метку.',
     NotReadableError: 'Не удалось включить NFC. Проверьте, что NFC включён и экран телефона разблокирован.',
     InvalidStateError: 'Откройте приложение отдельным окном и повторите действие.',
@@ -20,7 +20,18 @@ export function nfcError(error) {
   };
   return messages[error?.name] || 'Не удалось выполнить операцию. Попробуйте ещё раз.';
 }
-export function createNfcController({ Reader, onState = () => {}, timeoutMs = 45_000, verifyMs = 12_000 } = {}) {
+export function nfcFailure(error, { action = 'read', overwrite = false, permission = 'unknown' } = {}) {
+  const failure = { action, errorName: error?.name || 'Error', canOverwrite: false, title: 'Не получилось', message: nfcError(error) };
+  if (error?.name !== 'NotAllowedError') return failure;
+  if (permission === 'denied') return { ...failure, title: 'Нужен доступ к NFC' };
+  if (action === 'write' && !overwrite) {
+    return { ...failure, canOverwrite: true, title: permission === 'granted' ? 'На метке уже есть данные' : 'Запись остановлена',
+      message: permission === 'granted' ? 'Можно заменить их новым содержимым.' : 'Метка может быть занята. Замените её содержимое или проверьте доступ к NFC.' };
+  }
+  if (action === 'write' && permission === 'granted') return { ...failure, title: 'Запись запрещена', message: 'Проверьте защиту метки. Для записи нужна перезаписываемая NDEF-метка.' };
+  return { ...failure, title: 'Нужен доступ к NFC' };
+}
+export function createNfcController({ Reader, onState = () => {}, getPermission = () => 'unknown', timeoutMs = 45_000, verifyMs = 12_000 } = {}) {
   let active = null;
   const state = (phase, extra = {}) => onState({ phase, ...extra });
   function cancel(reason = 'cancelled') { if (active) { active.reason = reason; active.controller.abort(); } }
@@ -49,7 +60,7 @@ export function createNfcController({ Reader, onState = () => {}, timeoutMs = 45
   async function read() {
     const operation = begin(); state('scanning');
     try { const result = await scan(operation, timeoutMs); state('read', { result }); return result; }
-    catch (error) { state(error.name === 'AbortError' ? 'cancelled' : 'error', { message: operation.reason === 'hidden' ? 'Чтение остановлено: приложение было свёрнуто.' : nfcError(error) }); throw error; }
+    catch (error) { state(error.name === 'AbortError' ? 'cancelled' : 'error', { ...nfcFailure(error, { permission: getPermission() }), message: operation.reason === 'hidden' ? 'Чтение остановлено: приложение было свёрнуто.' : nfcError(error) }); throw error; }
     finally { release(operation); }
   }
   async function write(message, { overwrite = false } = {}) {
@@ -67,7 +78,8 @@ export function createNfcController({ Reader, onState = () => {}, timeoutMs = 45
       }
     } catch (error) {
       const aborted = error.name === 'AbortError';
-      state(aborted ? 'cancelled' : 'error', { message: operation.reason === 'hidden' ? 'Запись остановлена: приложение было свёрнуто. Прочитайте метку, чтобы проверить её содержимое.' : operation.reason === 'timeout' ? nfcError({ name: 'TimeoutError' }) : aborted ? 'Запись остановлена. Прочитайте метку, если хотите проверить её содержимое.' : nfcError(error) });
+      const failure = nfcFailure(error, { action: 'write', overwrite, permission: getPermission() });
+      state(aborted ? 'cancelled' : 'error', { ...failure, message: operation.reason === 'hidden' ? 'Запись остановлена: приложение было свёрнуто. Прочитайте метку, чтобы проверить её содержимое.' : operation.reason === 'timeout' ? nfcError({ name: 'TimeoutError' }) : aborted ? 'Запись остановлена. Прочитайте метку, если хотите проверить её содержимое.' : failure.message });
       throw error;
     } finally { clearTimeout(timer); release(operation); }
   }
@@ -76,7 +88,7 @@ export function createNfcController({ Reader, onState = () => {}, timeoutMs = 45
     if (typeof operation.reader.makeReadOnly !== 'function') { release(operation); throw new DOMException('Unsupported', 'NotSupportedError'); }
     state('locking'); const timer = setTimeout(() => { operation.reason = 'timeout'; operation.controller.abort(); }, timeoutMs);
     try { await operation.reader.makeReadOnly({ signal: operation.controller.signal }); state('locked'); }
-    catch (error) { state(error.name === 'AbortError' ? 'cancelled' : 'error', { message: nfcError(error) }); throw error; }
+    catch (error) { state(error.name === 'AbortError' ? 'cancelled' : 'error', nfcFailure(error, { action: 'lock', permission: getPermission() })); throw error; }
     finally { clearTimeout(timer); release(operation); }
   }
   return { read, write, lock, cancel, get busy() { return active !== null; } };

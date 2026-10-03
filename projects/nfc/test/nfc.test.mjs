@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createNfcController, nfcAvailability } from '../src/nfc.mjs';
+import { createNfcController, nfcAvailability, nfcFailure } from '../src/nfc.mjs';
 const message = { records: [{ recordType: 'text', lang: 'ru', data: 'Тест' }] };
 function fixture(config = {}, options = {}) {
   const states = [], readers = [];
@@ -68,4 +68,34 @@ test('permission failure and lock report their actual outcomes', async () => {
   const f = fixture({ writeError: new DOMException('Permission', 'NotAllowedError') });
   await assert.rejects(f.controller.write(message), { name: 'NotAllowedError' }); assert.equal(f.states.at(-1).phase, 'error');
   const g = fixture(); await g.controller.lock(); assert.equal(g.states.at(-1).phase, 'locked'); assert.equal(g.readers[0].lockOptions.signal.aborted, true);
+});
+test('a populated tag offers an explicit overwrite without automatically writing again', async () => {
+  const config = { writeError: new DOMException('The tag contains data', 'NotAllowedError') };
+  const f = fixture(config, { getPermission: () => 'granted' });
+  await assert.rejects(f.controller.write(message), { name: 'NotAllowedError' });
+  assert.equal(f.readers.length, 1); assert.equal(f.readers[0].options.overwrite, false);
+  assert.equal(f.readers[0].options.signal.aborted, true); assert.equal(f.controller.busy, false);
+  assert.equal(f.states.at(-1).canOverwrite, true); assert.equal(f.states.at(-1).title, 'На метке уже есть данные');
+  delete config.writeError;
+  const result = await f.controller.write(message, { overwrite: true });
+  assert.equal(f.readers.length, 2); assert.equal(f.readers[1].options.overwrite, true); assert.equal(result.verified, true);
+  await f.controller.write(message); assert.equal(f.readers[2].options.overwrite, false);
+});
+test('denied NFC access, ambiguous failures and protected writes are distinguished', () => {
+  const error = new DOMException('Denied', 'NotAllowedError');
+  const denied = nfcFailure(error, { action: 'write', permission: 'denied' });
+  assert.equal(denied.canOverwrite, false); assert.equal(denied.title, 'Нужен доступ к NFC');
+  const unknown = nfcFailure(error, { action: 'write' });
+  assert.equal(unknown.canOverwrite, true); assert.equal(unknown.title, 'Запись остановлена');
+  const protectedTag = nfcFailure(error, { action: 'write', overwrite: true, permission: 'granted' });
+  assert.equal(protectedTag.canOverwrite, false); assert.equal(protectedTag.title, 'Запись запрещена');
+  assert.equal(nfcFailure(error, { action: 'read', permission: 'granted' }).canOverwrite, false);
+  assert.equal(nfcFailure(new DOMException('Lost tag', 'NetworkError'), { action: 'write', permission: 'granted' }).canOverwrite, false);
+});
+test('a failed overwrite does not repeat or report any completed write', async () => {
+  const f = fixture({ writeError: new DOMException('Read only', 'NotAllowedError') }, { getPermission: () => 'granted' });
+  await assert.rejects(f.controller.write(message, { overwrite: true }), { name: 'NotAllowedError' });
+  assert.equal(f.readers.length, 1); assert.equal(f.states.at(-1).phase, 'error'); assert.equal(f.states.at(-1).canOverwrite, false);
+  assert.equal(f.controller.busy, false); assert.equal(f.readers[0].options.signal.aborted, true);
+  assert.equal(f.states.some(state => ['written', 'verified', 'verifying'].includes(state.phase)), false);
 });

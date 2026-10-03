@@ -51,7 +51,14 @@ if (location.hash.startsWith('#draft=')) {
   try { incomingDraft = parseDraftLink(location.hash); } catch (error) { initialError = error.message; }
   history.replaceState(null, '', location.pathname + location.search);
 }
-let templates = loadTemplates(storage), selected = 0, view = 'write', capacity = 0, overwrite = false, lastRead = null, operation = { phase: 'idle' }, compiled = null;
+let templates = loadTemplates(storage), selected = 0, view = 'write', capacity = 0, lastRead = null, operation = { phase: 'idle' }, compiled = null, pendingWrite = null, nfcPermission = 'unknown';
+// Observe permission without delaying write() beyond the user's click.
+if (availability.supported && navigator.permissions?.query) {
+  navigator.permissions.query({ name: 'nfc' }).then(status => {
+    nfcPermission = status.state;
+    status.addEventListener('change', () => { nfcPermission = status.state; });
+  }).catch(() => { /* Some browsers expose Web NFC without this permission query. */ });
+}
 let storageReady = true, noticeTimer;
 let stage = draft.records.some(record => record.kind === 'raw' || Object.entries(record.values).some(([key, value]) => !['security', 'mediaType'].includes(key) && value.trim())) ? 'edit' : 'choose';
 let choiceKind = draft.records[0].kind, showValidation = false;
@@ -71,8 +78,8 @@ const content = el('main', 'content'); content.id = 'main'; content.tabIndex = -
 const footer = el('footer', 'footer'); const compatibility = button(availability.supported ? 'NFC готов' : embedded ? 'NFC · отдельное окно' : 'Запись · Android + NFC', availability.supported ? 'check' : 'phone', 'compatibility', help); compatibility.title = availability.detail; footer.append(compatibility);
 const toastNode = el('div', 'toast'); toastNode.setAttribute('role', 'status'); toastNode.hidden = true;
 root.append(header, content, footer, nav, toastNode);
-const operationDialog = el('dialog', 'operation-screen'); operationDialog.setAttribute('aria-labelledby', 'operation-title'); operationDialog.addEventListener('cancel', event => { if (controller.busy) { event.preventDefault(); controller.cancel(); } }); document.body.append(operationDialog);
-const controller = createNfcController({ Reader: window.NDEFReader, onState: next => { operation = next; updateOperation(); if (next.phase === 'read') { lastRead = next.result; if (view === 'read') renderReadResult(); } } });
+const operationDialog = el('dialog', 'operation-screen'); operationDialog.setAttribute('aria-labelledby', 'operation-title'); operationDialog.setAttribute('aria-describedby', 'operation-hint'); operationDialog.addEventListener('cancel', event => { if (controller.busy) { event.preventDefault(); controller.cancel(); } }); document.body.append(operationDialog);
+const controller = createNfcController({ Reader: window.NDEFReader, getPermission: () => nfcPermission, onState: next => { operation = next; updateOperation(); if (next.phase === 'read') { lastRead = next.result; if (view === 'read') renderReadResult(); } } });
 function draftStatus() { const note = document.querySelector('[data-draft-status]'); if (note) { note.hidden = storageReady; note.textContent = storageReady ? '' : 'Черновик не сохранился. Скачайте его в меню.'; } }
 function persist() { storageReady = saveLocal(storage, storageKeys.draft, draft); draftStatus(); }
 function toast(text) { clearTimeout(noticeTimer); toastNode.textContent = text; toastNode.hidden = false; noticeTimer = setTimeout(() => { toastNode.hidden = true; }, 4500); }
@@ -154,7 +161,8 @@ function tagVisual(symbol = 'nfc', detail = '', className = '') {
   const coils = el('div', 'tag-coils'); coils.setAttribute('aria-hidden', 'true');
   for (let i = 0; i < 6; i++) coils.append(el('i'));
   const label = el('div', 'tag-label'); label.append(icon(symbol));
-  const text = el('div', 'preview-copy', detail); label.append(text); tag.append(coils, label, el('span', 'tag-engraving', 'NFC'));
+  const display = symbol === 'link' ? detail.replace(/^https?:\/\//i, '').replace(/\/$/, '') : detail;
+  const text = el('div', 'preview-copy', display); text.title = detail; label.append(text); tag.append(coils, label, el('span', 'tag-engraving', 'NFC'));
   return tag;
 }
 function typeGrid(host, select) {
@@ -184,7 +192,7 @@ function renderWrite() {
   const type = recordTypes.find(type => type.id === (stage === 'choose' ? choiceKind : draft.records[0].kind));
   const visual = tagVisual(type?.icon || 'chip'); visual.querySelector('.preview-copy').dataset.preview = '';
   preview.append(visual);
-  const meter = button('Память и перезапись', 'chip', 'memory', settings); meter.dataset.memory = ''; preview.append(meter);
+  const meter = button('Память метки', 'chip', 'memory', settings); meter.dataset.memory = ''; preview.append(meter);
   const builder = el('section', 'builder');
   if (stage === 'choose') {
     builder.append(el('h1', 'stage-title', 'Что запишем?'));
@@ -207,7 +215,7 @@ function renderWrite() {
     builder.append(editing, editor(record), validation, status);
     const action = mainAction(), write = button(action.label, action.symbol, 'button button-primary button-wide primary-action', action.action); write.dataset.write = '';
     builder.append(write);
-    if (overwrite) builder.append(button('Перезапись включена', 'settings', 'overwrite-indicator', settings));
+    if (availability.supported) builder.append(button('Перезаписать метку', undefined, 'text-button overwrite-action', () => requestOverwrite()));
   }
   layout.append(preview, builder); content.append(layout); draftStatus(); updatePreview(); updateOperation();
 }
@@ -219,20 +227,17 @@ function settings() {
     const option = el('option', '', label); option.value = String(value); option.selected = capacity === value; sizes.append(option);
   }
   sizes.addEventListener('change', () => { capacity = Number(sizes.value); updatePreview(); }); field.append(sizes);
-  const permission = el('label', 'check-field'), check = el('input'); check.type = 'checkbox'; check.checked = overwrite;
-  check.addEventListener('change', () => { overwrite = check.checked; render(); });
-  permission.append(check, el('span', '', 'Заменить прежнее содержимое'));
-  body.append(field, permission, el('p', 'muted small', 'По умолчанию записываем только пустую метку. Размер — ваша оценка; телефон проверит реальную память.'));
+  body.append(field, el('p', 'muted small', 'Размер — ваша оценка; телефон проверит реальную память. Для занятой метки выберите «Перезаписать метку» под кнопкой записи.'));
 }
 function actionsMenu() {
   if (controller.busy) return;
   const { dialog, body } = modal('Действия');
   const items = [
-    ['Новая метка', 'plus', () => confirm('Новая метка?', 'Текущий черновик будет заменён. Сохраните его, если он нужен.', 'Создать', () => { draft = { schema: draft.schema, name: '', records: [makeRecord()] }; selected = 0; choiceKind = 'url'; stage = 'choose'; view = 'write'; overwrite = false; persist(); render(); })],
+    ['Новая метка', 'plus', () => confirm('Новая метка?', 'Текущий черновик будет заменён. Сохраните его, если он нужен.', 'Создать', () => { draft = { schema: draft.schema, name: '', records: [makeRecord()] }; selected = 0; choiceKind = 'url'; stage = 'choose'; view = 'write'; persist(); render(); })],
     ['Сохранить', 'templates', saveTemplate],
     ['На телефон', 'phone', () => void share()],
     ['Добавить запись', 'plus', () => chooseRecord()],
-    ['Память и перезапись', 'settings', settings],
+    ['Память метки', 'settings', settings],
     ['Скачать файл', 'download', () => { try { compileDraft(draft); download(draft); } catch (error) { toast(error.message); } }],
     ['Открыть файл', 'upload', importTemplate],
     ['Как работает NFC', 'help', help],
@@ -295,21 +300,48 @@ function updateOperation() {
     if (phase === 'cancelled') toast(operation.message || 'Остановлено'); return;
   }
   const titles = { scanning: 'Поднесите метку', writing: 'Поднесите метку', verifying: 'Проверяем', verified: 'Готово', written: 'Записано', locking: 'Поднесите метку', locked: 'Запись закрыта', error: 'Не получилось' };
-  operationDialog.dataset.phase = phase; operationDialog.replaceChildren();
+  operationDialog.dataset.phase = phase; operationDialog.dataset.canOverwrite = String(!!operation.canOverwrite); operationDialog.replaceChildren();
   const signal = el('div', 'signal-stage ' + (busy ? 'pulsing' : ''));
   signal.append(el('i', 'signal-ring'), el('i', 'signal-ring'), tagVisual(recordTypes.find(type => type.id === draft.records[0].kind)?.icon || 'chip', previewLabel(draft.records[0]).detail));
-  if (!busy) { const badge = el('span', 'result-badge'); badge.append(icon(phase === 'error' ? 'close' : phase === 'written' ? 'help' : 'check')); signal.append(badge); }
-  const title = el('h2', '', titles[phase] || 'NFC'); title.id = 'operation-title';
+  if (!busy) { const badge = el('span', 'result-badge'); badge.append(icon(operation.canOverwrite ? 'write' : phase === 'error' ? 'close' : phase === 'written' ? 'help' : 'check')); signal.append(badge); }
+  const title = el('h2', '', operation.title || titles[phase] || 'NFC'); title.id = 'operation-title';
   const hint = el('p', 'operation-hint', operation.message || operation.hint || (phase === 'verified' ? 'Записано и проверено' : phase === 'verifying' ? 'Не убирайте метку' : busy ? 'К задней стороне телефона' : ''));
-  const action = button(busy ? 'Отмена' : 'Готово', undefined, 'button button-wide operation-action', () => { if (busy) controller.cancel(); else operationDialog.close(); });
-  operationDialog.append(signal, title, hint, action);
+  hint.id = 'operation-hint';
+  const actions = el('div', 'operation-actions');
+  if (phase === 'error' && operation.canOverwrite && pendingWrite) {
+    actions.append(button('Перезаписать метку', 'write', 'button button-primary button-wide operation-action', () => requestOverwrite(pendingWrite)));
+  }
+  const action = button(busy ? 'Отмена' : phase === 'error' ? 'Закрыть' : 'Готово', undefined, 'button button-wide operation-action', () => { if (busy) controller.cancel(); else operationDialog.close(); });
+  actions.append(action);
+  operationDialog.append(signal, title, hint, actions);
   if (!operationDialog.open) operationDialog.showModal();
+  if (!busy) actions.querySelector('button')?.focus({ preventScroll: true });
 }
 async function writeDraft() {
   showValidation = true; updatePreview();
   if (!compiled) { document.querySelector('.editor-fields .input')?.focus(); return; }
   if (!availability.supported) return; persist();
-  try { await controller.write(compiled, { overwrite }); } catch { /* Controller exposes the actual outcome. */ }
+  pendingWrite = compiled;
+  try { await controller.write(pendingWrite, { overwrite: false }); } catch { /* Controller exposes the actual outcome. */ }
+}
+function requestOverwrite(message) {
+  if (controller.busy || !availability.supported) return;
+  if (!message) {
+    showValidation = true; updatePreview();
+    if (!compiled) { document.querySelector('.editor-fields .input')?.focus(); return; }
+    message = compiled;
+  }
+  if (operationDialog.open) operationDialog.close();
+  const { dialog, body } = modal('Перезаписать метку?');
+  body.classList.add('overwrite-confirm');
+  body.append(el('p', 'muted', 'Прежнее содержимое исчезнет. Новые данные:'), tagVisual(recordTypes.find(type => type.id === draft.records[0].kind)?.icon || 'chip', previewLabel(draft.records[0]).detail));
+  const row = el('div', 'action-row');
+  row.append(button('Отмена', undefined, 'button', () => dialog.close()), button('Заменить и записать', 'write', 'button button-primary', () => {
+    dialog.close(); pendingWrite = message; persist();
+    // Start directly in this confirmation click: Web NFC requires a user gesture.
+    void controller.write(message, { overwrite: true }).catch(() => {});
+  }));
+  body.append(row);
 }
 function renderRead() {
   const card = el('section', 'read-card'); card.append(tagVisual('nfc'), el('h1', 'stage-title', 'Считать метку'));
