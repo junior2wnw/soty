@@ -425,7 +425,6 @@ function help() {
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) controller.cancel('hidden'); });
 window.addEventListener('pagehide', () => controller.cancel('hidden'));
-if (!embedded && 'serviceWorker' in navigator) window.addEventListener('load', () => { void navigator.serviceWorker.register('/sw.js').catch(() => {}); }, { once: true });
 render();
 if (initialError) toast(initialError);
 if (incomingDraft) acceptDraft(incomingDraft);
