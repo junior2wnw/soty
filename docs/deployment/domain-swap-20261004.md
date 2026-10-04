@@ -29,3 +29,10 @@ receipt. Preserve NFC and its connector container IDs. The outer Caddy exchange
 must preserve wildcard hosts, soty.pochinit.online, identity and /ecolab routes,
 retain old HIVE APIs at the original origin, validate before reload and retain
 an encrypted baseline plus an immediate route rollback guard.
+
+## Проверка после переключения
+
+На основном origin 4-2.рф worker Сот также исключает `/__hive`, старые
+HIVE-ссылки `?project=`, пути входа HIVE и `/ecolab/*` из offline-подмены и
+handshake перезагрузки. Несохранённая вкладка самих Сот продолжает блокировать
+обновление. Обе стороны совместного origin покрыты исполняемыми worker-тестами.

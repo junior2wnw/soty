@@ -113,6 +113,36 @@ test('HIVE windows on the shared old origin do not receive Soty draft or reload 
   assert.equal(blocked.records.activated, 0);
 });
 
+test('the new primary Soty worker leaves retained HIVE and inner-app navigation alone offline', async () => {
+  const origin = 'https://4-2.xn--p1ai', runtime = worker({ origin });
+  await runtime.emit('install');
+  assert.equal(runtime.records.cache.has('/'), true);
+  for (const path of ['/__hive', '/__hive?project=test', '/?project=test', '/?hive=1', '/ecolab/guide/', '/account/callback']) {
+    let response;
+    runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'navigate', url: `${origin}${path}` }, respondWith: promise => { response = promise; } });
+    assert.equal(response, undefined, path);
+  }
+  for (const path of ['/', '/#mine', '/?j=test', '/install/windows']) {
+    let response;
+    runtime.handlers.get('fetch')({ request: { method: 'GET', mode: 'navigate', url: `${origin}${path}` }, respondWith: promise => { response = promise; } });
+    assert.equal(await (await response).text(), 'cached shell', path);
+  }
+});
+
+test('HIVE and inner-app windows on the primary origin cannot block or receive Soty update reloads', async () => {
+  const origin = 'https://4-2.xn--p1ai', committed = [];
+  const editor = client('soty', true, committed); editor.url = `${origin}/#mine`;
+  const hive = client('hive', false, committed); hive.url = `${origin}/__hive?project=test`;
+  const inner = client('inner', false, committed); inner.url = `${origin}/ecolab/guide/`;
+  const runtime = worker({ origin, clients: [editor, hive, inner] });
+  assert.equal((await runtime.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, true);
+  assert.deepEqual(committed, ['soty']);
+  const dirty = client('dirty', false, []); dirty.url = `${origin}/#notes/new`;
+  const blocked = worker({ origin, clients: [dirty, hive, inner] });
+  assert.equal((await blocked.emit('message', { type: 'SOTY_ACTIVATE_UPDATE' })).ready, false);
+  assert.equal(blocked.records.activated, 0);
+});
+
 test('offline discovery, OAuth consent and machine navigation cannot turn into a cached SPA200', async () => {
   const runtime = worker(); await runtime.emit('install');
   for (const pathname of ['/agents', '/agents?query=notes', '/agents/missing', '/api/capabilities',

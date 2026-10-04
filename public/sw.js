@@ -3,11 +3,19 @@ const buildAssets = [];
 const classicAssets = [];
 const shell = ["/", "/manifest.webmanifest", "/icon.svg", "/icons/soty.svg", "/icons/soty-180.png", "/icons/soty-192.png", "/icons/soty-512.png"];
 const legacyHost = new URL(self.location.origin).hostname === 'xn--n1afe0b.online';
+const sharedPrimaryHost = new URL(self.location.origin).hostname === '4-2.xn--p1ai';
 const offlineShell = legacyHost ? '/__soty' : '/';
 const shellUrls = shell.map(url => url === '/' ? offlineShell : url);
 function isSotyDocument(value) {
-  if (!legacyHost) return true;
   const url = new URL(value);
+  if (sharedPrimaryHost) {
+    // The retained HIVE and /ecolab documents share this origin, but cannot
+    // become an offline Soty shell or participate in Soty's reload handshake.
+    return (url.pathname === '/' && !['project', 'hive'].some(name => url.searchParams.has(name)))
+      || url.pathname === '/install' || url.pathname.startsWith('/install/')
+      || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/');
+  }
+  if (!legacyHost) return true;
   return url.pathname === '/__soty' || url.pathname.startsWith('/install/')
     || url.pathname === '/agents' || url.pathname.startsWith('/agents/') || url.pathname.startsWith('/oauth/')
     || ['j', 'connector', 'link', 'agent', 'agentRelay', 'agentRelayId', 'reset-local', 'soty-reset', 'repair', 'traffic', 'pwa'].some(name => url.searchParams.has(name))
@@ -94,7 +102,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (request.mode === "navigate") {
-    if (legacyHost && !isSotyDocument(url.href)) return;
+    if (!isSotyDocument(url.href)) return;
     event.respondWith(fetch(request).catch(() => caches.open(cacheName).then(async cache => await cache.match(offlineShell) || Response.error())));
     return;
   }
